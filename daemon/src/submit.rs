@@ -144,7 +144,7 @@ impl AppState {
             return term.write(b"\r".to_vec()).map_err(|e| e.to_string());
         }
         let agent = self.resolve_agent(target)?;
-        agent.session.send(text.to_string()).map(|_| ())
+        agent.agent.send(text.to_string()).map(|_| ())
     }
 }
 

@@ -30,7 +30,7 @@ COLS14="$(st ".panes[\"$PANE\"].cols")"
 w config set --machine terminal.font.size 22 >/dev/null
 check "font-size 22 reaches the controller within a second" wait_st ".panes[\"$PANE\"].ghostty_config | test(\"font-size = 22\")" 1
 check "the grid is narrower at 22 pt" wait_st ".panes[\"$PANE\"].cols < $COLS14" 3
-eq "the shell kept counting (same session)" "$(st ".panes[\"$PANE\"].viewport_text | test(\"tick2\")")" true
+eq "the shell kept counting (same agent)" "$(st ".panes[\"$PANE\"].viewport_text | test(\"tick2\")")" true
 
 w config set --machine terminal.line_height 1.3 >/dev/null
 w config set --machine terminal.cursor.style bar >/dev/null

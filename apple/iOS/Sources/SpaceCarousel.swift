@@ -63,7 +63,7 @@ struct SpaceCarousel: View {
         if case let .terminal(term, _) = pane.kind {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
-        } else if case let .agent(session, agent, _) = pane.kind, let chat = model.chats[session] {
+        } else if case let .agent(agent, _, _) = pane.kind, let chat = model.chats[agent] {
             AgentPane(model: model, pane: pane.id, agent: agent, chat: chat)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
@@ -191,10 +191,10 @@ struct SpaceCarousel: View {
         // the same call the document picker makes (HEIC converted, the size checked), once the
         // server has said it takes uploads; `WHEEL_ATTACH_REMOVE=<n>` then takes the n-th chip
         // back once every upload is done, as its ✕ does.
-        let firstAgent: () -> (pane: String, session: String)? = {
+        let firstAgent: () -> (pane: String, agent: String)? = {
             let panes = model.activeSpace?.root.readingOrder ?? []
             return panes.lazy.compactMap { pane -> (String, String)? in
-                if case let .agent(session, _, _) = pane.kind { (pane.id, session) } else { nil }
+                if case let .agent(agent, _, _) = pane.kind { (pane.id, agent) } else { nil }
             }.first
         }
         if let paths = env["WHEEL_ATTACH"] {
@@ -218,7 +218,7 @@ struct SpaceCarousel: View {
         // pane's oldest waiting request as its button does, once one waits.
         if let text = env["WHEEL_SEND"] {
             for _ in 0 ..< 30 {
-                if let agent = firstAgent(), let chat = model.chats[agent.session] {
+                if let agent = firstAgent(), let chat = model.chats[agent.agent] {
                     chat.draft = text
                     model.send(chat, attachments: model.trays[agent.pane])
                     break

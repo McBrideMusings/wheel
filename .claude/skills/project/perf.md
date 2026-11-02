@@ -12,7 +12,7 @@ keeps each table.
 
 | Scenario | Run | Diff that needs it |
 | --- | --- | --- |
-| chat | `bash .claude/skills/project/tools/perf-chat.sh` | anything under `apple/`; a daemon change to sessions, files, links or artifacts |
+| chat | `bash .claude/skills/project/tools/perf-chat.sh` | anything under `apple/`; a daemon change to agents, files, links or artifacts |
 | live | `bash .claude/skills/project/tools/perf-chat.sh --live` | every client deploy, against the installed app and running wheeld |
 | spaces | `bash .claude/skills/project/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
 | layout | `bash .claude/skills/project/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |

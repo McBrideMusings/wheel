@@ -1,16 +1,16 @@
-//! The agent interface ([`crate::agent`]) over pi: one `pi --mode rpc` process per conversation,
+//! The agent interface ([`crate::driver`]) over pi: one `pi --mode rpc` process per conversation,
 //! talking pi's RPC protocol (one JSON object per line) on its stdin and stdout.
 //!
 //! A command carries a `type` and an `id`; pi answers each with a `response` record repeating
 //! the id. Wheel names a new conversation itself (`--session-id`, which pi creates) and resumes
 //! one by handing `--session` the file pi keeps it in under the pane's directory. An id alone
-//! would let pi match a prefix or a session of another directory, which pi then offers to fork by
+//! would let pi match a prefix or an agent of another directory, which pi then offers to fork by
 //! asking on stdin, the channel this protocol runs on; a conversation with no file there is not
 //! started at all. The brief goes in
 //! with `--append-system-prompt`. Once up, the host asks `get_state`, the thinking levels the model
 //! offers, and for a resumed conversation `get_messages`, whose turns become its history.
 //!
-//! A prompt is `prompt`, a cancel `abort`. The reply streams as session events: `message_update`
+//! A prompt is `prompt`, a cancel `abort`. The reply streams as agent events: `message_update`
 //! carries text and thinking deltas, `tool_execution_*` a tool call from start to result, and
 //! `agent_settled` says pi will do nothing more on its own, which ends the turn; the host then asks
 //! `get_session_stats` for how full the context window is. pi runs tools without asking. The only
@@ -26,22 +26,22 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use wheel_proto::{
-    ConfigChoice, ConfigKind, ConfigOption, ContextUse, PermOption, SessionEvent, ToolContent,
+    ConfigChoice, ConfigKind, ConfigOption, ContextUse, PermOption, AgentEvent, ToolContent,
 };
 
-use crate::agent::{
-    self, Agent, AgentEvent, AgentInput, Conversation, Input, Launch, Process, ProcessGroup,
+use crate::driver::{
+    self, DriverHandle, DriverEvent, DriverInput, Conversation, Input, Launch, Process, ProcessGroup,
 };
 use crate::claude::History;
-use crate::resume::{self, Agent as Harness};
+use crate::resume::{self, Harness};
 
 /// Start `pi --mode rpc` for `launch`.
-pub fn launch(launch: Launch) -> Result<Agent, String> {
+pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     let mut args: Vec<String> = vec!["--mode".into(), "rpc".into()];
     match &launch.conversation {
         Conversation::New(id) => args.extend(["--session-id".into(), id.clone()]),
         Conversation::Resume(id) => {
-            // pi files a session under its working directory with links resolved.
+            // pi files an agent under its working directory with links resolved.
             let cwd = std::fs::canonicalize(&launch.cwd)
                 .unwrap_or_else(|_| launch.cwd.clone())
                 .display()
@@ -67,7 +67,7 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         stdin,
         stdout,
         last_error,
-    } = agent::spawn(&launch, args, "PI_CODING_AGENT_DIR")?;
+    } = driver::spawn(&launch, args, "PI_CODING_AGENT_DIR")?;
     let (input, inputs) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
     let driver = Driver {
@@ -89,8 +89,8 @@ pub fn launch(launch: Launch) -> Result<Agent, String> {
         pad_text: false,
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
-    Ok(Agent {
-        input: AgentInput(input),
+    Ok(DriverHandle {
+        input: DriverInput(input),
         events: events_rx,
         _group: ProcessGroup(pid),
     })
@@ -101,7 +101,7 @@ enum Pending {
     State,
     Levels,
     Messages,
-    /// The context stats a resumed session is asked for before it is ready; `history` waits.
+    /// The context stats a resumed agent is asked for before it is ready; `history` waits.
     ResumeStats {
         history: History,
     },
@@ -127,11 +127,11 @@ enum Dialog {
 struct Driver {
     pid: u32,
     stdin: tokio::process::ChildStdin,
-    events: mpsc::UnboundedSender<AgentEvent>,
+    events: mpsc::UnboundedSender<DriverEvent>,
     launch: Launch,
     next_request: u64,
     pending: HashMap<String, Pending>,
-    /// pi's id for the session, from `get_state`.
+    /// pi's id for the agent, from `get_state`.
     conversation: Option<String>,
     /// The thinking level in force.
     thinking: String,
@@ -183,22 +183,22 @@ impl Driver {
                             failed = Some(e);
                         }
                     }
-                    // The session dropped the agent; its process group is already killed.
+                    // The agent dropped the agent; its process group is already killed.
                     None => return,
                 },
             }
         }
-        let error = agent::exit_error(child, failed, &last_error).await;
+        let error = driver::exit_error(child, failed, &last_error).await;
         tracing::info!(pid = self.pid, error = ?error, "agent process exited");
-        let _ = self.events.send(AgentEvent::Exited { error });
+        let _ = self.events.send(DriverEvent::Exited { error });
     }
 
-    fn emit(&self, event: AgentEvent) {
+    fn emit(&self, event: DriverEvent) {
         let _ = self.events.send(event);
     }
 
-    fn transcript(&self, event: SessionEvent) {
-        self.emit(AgentEvent::Transcript(event));
+    fn transcript(&self, event: AgentEvent) {
+        self.emit(DriverEvent::Transcript(event));
     }
 
     async fn write(&mut self, line: Value) -> Result<(), String> {
@@ -327,7 +327,7 @@ impl Driver {
                 }
                 self.conversation = data["sessionId"].as_str().map(String::from);
                 self.thinking = data["thinkingLevel"].as_str().unwrap_or("off").to_string();
-                tracing::info!(pid = self.pid, session = ?self.conversation, model = %data["model"]["id"], provider = %data["model"]["provider"], thinking = %self.thinking, "agent initialized");
+                tracing::info!(pid = self.pid, agent = ?self.conversation, model = %data["model"]["id"], provider = %data["model"]["provider"], thinking = %self.thinking, "agent initialized");
                 self.request(
                     Pending::Levels,
                     json!({"type": "get_available_thinking_levels"}),
@@ -364,11 +364,11 @@ impl Driver {
                 .await
             }
             Pending::ResumeStats { history } => {
-                // A refused stats request leaves the pane without a figure, not without a session.
+                // A refused stats request leaves the pane without a figure, not without an agent.
                 if let Some(e) = error {
                     tracing::warn!(pid = self.pid, error = %e, "asking the resumed agent for its context failed");
                 } else {
-                    self.emit(AgentEvent::Context(context_use(data)));
+                    self.emit(DriverEvent::Context(context_use(data)));
                 }
                 self.ready(Some(history));
                 Ok(())
@@ -376,11 +376,11 @@ impl Driver {
             Pending::Prompt => {
                 if let Some(e) = error {
                     self.in_turn = false;
-                    self.emit(AgentEvent::TurnFailed { message: e });
+                    self.emit(DriverEvent::TurnFailed { message: e });
                 } else if data["disposition"] == "handled" {
                     // An extension command took the prompt; no run starts, so none will settle.
                     self.in_turn = false;
-                    self.emit(AgentEvent::TurnEnd {
+                    self.emit(DriverEvent::TurnEnd {
                         stop_reason: "end_turn".into(),
                     });
                 }
@@ -394,7 +394,7 @@ impl Driver {
             }
             Pending::Stats { aborted } => {
                 match error {
-                    None => self.emit(AgentEvent::Context(context_use(data))),
+                    None => self.emit(DriverEvent::Context(context_use(data))),
                     Some(e) => {
                         tracing::warn!(pid = self.pid, error = %e, "asking the agent for its context failed")
                     }
@@ -418,8 +418,8 @@ impl Driver {
     }
 
     fn ready(&self, history: Option<History>) {
-        tracing::info!(pid = self.pid, session = ?self.conversation, levels = ?self.levels, resumed = history.is_some(), turns = history.as_ref().map_or(0, |h| h.turns.len()), "agent ready");
-        self.emit(AgentEvent::Ready {
+        tracing::info!(pid = self.pid, agent = ?self.conversation, levels = ?self.levels, resumed = history.is_some(), turns = history.as_ref().map_or(0, |h| h.turns.len()), "agent ready");
+        self.emit(DriverEvent::Ready {
             options: vec![self.thinking_option()],
             conversation: self.conversation.clone(),
             history,
@@ -467,9 +467,9 @@ impl Driver {
                             delta.to_string()
                         };
                         self.wrote_text = true;
-                        self.transcript(SessionEvent::Text { text });
+                        self.transcript(AgentEvent::Text { text });
                     }
-                    Some("thinking_delta") => self.transcript(SessionEvent::Thought {
+                    Some("thinking_delta") => self.transcript(AgentEvent::Thought {
                         text: delta.to_string(),
                     }),
                     _ => {}
@@ -498,7 +498,7 @@ impl Driver {
                 let id = record["toolCallId"].as_str().unwrap_or_default();
                 let text = result_text(&record["partialResult"]);
                 if !id.is_empty() && !text.is_empty() && !self.shown.contains(id) {
-                    self.transcript(SessionEvent::ToolUpdate {
+                    self.transcript(AgentEvent::ToolUpdate {
                         id: id.to_string(),
                         title: None,
                         status: Some("in_progress".into()),
@@ -522,7 +522,7 @@ impl Driver {
             "thinking_level_changed" => {
                 if let Some(level) = record["level"].as_str() {
                     self.thinking = level.to_string();
-                    self.emit(AgentEvent::Options(vec![self.thinking_option()]));
+                    self.emit(DriverEvent::Options(vec![self.thinking_option()]));
                 }
             }
             "agent_settled" => {
@@ -555,15 +555,15 @@ impl Driver {
         }
         self.aborted = false;
         self.shown.clear();
-        // A dialog still open stays in `dialogs`: pi waits on it past the turn, and the session
+        // A dialog still open stays in `dialogs`: pi waits on it past the turn, and the agent
         // withdraws its request when the turn ends, which answers it as cancelled.
         let failure = self.failure.take();
         let event = match (aborted, failure) {
-            (true, _) => AgentEvent::TurnEnd {
+            (true, _) => DriverEvent::TurnEnd {
                 stop_reason: "cancelled".into(),
             },
-            (false, Some(message)) => AgentEvent::TurnFailed { message },
-            (false, None) => AgentEvent::TurnEnd {
+            (false, Some(message)) => DriverEvent::TurnFailed { message },
+            (false, None) => DriverEvent::TurnEnd {
                 stop_reason: "end_turn".into(),
             },
         };
@@ -627,7 +627,7 @@ impl Driver {
         };
         tracing::info!(pid = self.pid, request = %id, %method, %title, "agent asks permission");
         self.dialogs.insert(id.clone(), dialog);
-        self.emit(AgentEvent::Permission {
+        self.emit(DriverEvent::Permission {
             request: id,
             title,
             tool_call: None,
@@ -659,7 +659,7 @@ fn tool_call(
     tool: &str,
     args: &Value,
     shown: &mut HashSet<String>,
-) -> Option<SessionEvent> {
+) -> Option<AgentEvent> {
     if id.is_empty() {
         return None;
     }
@@ -699,7 +699,7 @@ fn tool_call(
         shown.insert(id.to_string());
     }
     tracing::debug!(id, tool, kind, %title, items = content.len(), "tool call");
-    Some(SessionEvent::ToolCall {
+    Some(AgentEvent::ToolCall {
         id: id.to_string(),
         title,
         tool_kind: kind.into(),
@@ -721,7 +721,7 @@ fn result_text(result: &Value) -> String {
 
 /// The update that finishes a tool call. A call that shows its input keeps it unless it failed;
 /// any other shows what the tool returned.
-fn tool_result(id: &str, result: &Value, failed: bool, shown: bool) -> Option<SessionEvent> {
+fn tool_result(id: &str, result: &Value, failed: bool, shown: bool) -> Option<AgentEvent> {
     if id.is_empty() {
         return None;
     }
@@ -735,7 +735,7 @@ fn tool_result(id: &str, result: &Value, failed: bool, shown: bool) -> Option<Se
         }
     });
     tracing::debug!(id, status, bytes = text.len(), "tool update");
-    Some(SessionEvent::ToolUpdate {
+    Some(AgentEvent::ToolUpdate {
         id: id.to_string(),
         title: None,
         status: Some(status.into()),
@@ -756,7 +756,7 @@ fn user_text(content: &Value) -> String {
     }
 }
 
-/// A resumed session's messages as history: each prompt with what the agent did after it.
+/// A resumed agent's messages as history: each prompt with what the agent did after it.
 /// Messages before the first prompt (the system message) are not shown.
 fn history(messages: &Value) -> History {
     let mut history = History::default();
@@ -781,18 +781,18 @@ fn history(messages: &Value) -> History {
                             };
                             let text = if events
                                 .iter()
-                                .any(|e| matches!(e, SessionEvent::Text { .. }))
+                                .any(|e| matches!(e, AgentEvent::Text { .. }))
                             {
                                 format!("\n\n{text}")
                             } else {
                                 text.to_string()
                             };
-                            events.push(SessionEvent::Text { text });
+                            events.push(AgentEvent::Text { text });
                         }
                         Some("thinking") => {
                             if let Some(text) = block["thinking"].as_str().filter(|t| !t.is_empty())
                             {
-                                events.push(SessionEvent::Thought { text: text.into() });
+                                events.push(AgentEvent::Thought { text: text.into() });
                             }
                         }
                         Some("toolCall") => {
@@ -824,7 +824,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_resumed_session_becomes_prompts_with_their_output() {
+    fn a_resumed_agent_becomes_prompts_with_their_output() {
         let messages = json!([
             {"role": "system", "content": ""},
             {"role": "user", "content": [{"type": "text", "text": "hi"}]},
@@ -841,11 +841,11 @@ mod tests {
         assert_eq!(prompt, "hi");
         assert_eq!(events.len(), 4, "{events:?}");
         assert!(
-            matches!(&events[1], SessionEvent::ToolCall { title, tool_kind, .. } if title == "echo hi" && tool_kind == "execute")
+            matches!(&events[1], AgentEvent::ToolCall { title, tool_kind, .. } if title == "echo hi" && tool_kind == "execute")
         );
         assert!(
-            matches!(&events[2], SessionEvent::ToolUpdate { status: Some(s), content: Some(c), .. } if s == "completed" && c == &vec![ToolContent::Text { text: "hi\n".into() }])
+            matches!(&events[2], AgentEvent::ToolUpdate { status: Some(s), content: Some(c), .. } if s == "completed" && c == &vec![ToolContent::Text { text: "hi\n".into() }])
         );
-        assert!(matches!(&events[3], SessionEvent::Text { text } if text == "done"));
+        assert!(matches!(&events[3], AgentEvent::Text { text } if text == "done"));
     }
 }

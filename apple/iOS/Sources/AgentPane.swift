@@ -3,15 +3,15 @@ import WheelKit
 import WheelUI
 
 /// An agent pane on the phone: the agent's conversation, the request it waits on, and a composer,
-/// all from WheelUI and bound to the session the daemon holds.
+/// all from WheelUI and bound to the agent the daemon holds.
 struct AgentPane: View {
     let model: PhoneModel
     let pane: String
     let agent: String
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var chat: AgentChat
 
     var body: some View {
-        let mine = model.perms.filter { $0.session == chat.name }
+        let mine = model.perms.filter { $0.agent == chat.name }
         let tray = model.trays[pane]
         VStack(spacing: 0) {
             TranscriptView(
@@ -24,7 +24,7 @@ struct AgentPane: View {
                     }, uniquingKeysWith: { first, _ in first }),
                     count: model.perms.count
                 ),
-                look: model.appearance(forSession: chat.name)
+                look: model.appearance(forAgent: chat.name)
             )
             .environment(\.chatLinks, model.links)
             if let notice = chat.notice {
@@ -67,14 +67,14 @@ struct PermissionCard: View {
     let perm: PermInfo
     let count: Int
     let answer: (PermInfo, String) -> Void
-    /// Who is asking, when the asker is not an agent session: a web pane's refresh command.
+    /// Who is asking, when the asker is not an agent: a web pane's refresh command.
     var asker: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
-                Text(asker ?? "\(perm.session) is asking").font(.subheadline.weight(.semibold))
+                Text(asker ?? "\(perm.agent) is asking").font(.subheadline.weight(.semibold))
                 Spacer()
                 if count > 1 { Text("+\(count - 1) more").font(.caption).foregroundStyle(.secondary) }
             }

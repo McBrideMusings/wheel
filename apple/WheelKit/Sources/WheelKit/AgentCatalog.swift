@@ -28,7 +28,7 @@ extension AgentInfo {
         }
     }
 
-    /// The home as written beside the composer: the home the pane saved for its own session, else the
+    /// The home as written beside the composer: the home the pane saved for its own agent, else the
     /// `agent.<name>.home` setting, else the agent's default.
     public static func shownHome(own: String? = nil, of name: String, in agents: [AgentInfo]) -> String {
         let info = agents.first { $0.name == name }

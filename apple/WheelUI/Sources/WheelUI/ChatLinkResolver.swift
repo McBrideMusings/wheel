@@ -7,7 +7,7 @@ import WheelKit
 /// one, fills in its closures, and hands it to the transcript through the environment.
 @MainActor @Observable
 public final class ChatLinkResolver {
-    /// Where a session's pane is.
+    /// Where an agent's pane is.
     public struct Place: Sendable {
         public var space: String
         public var cwd: String
@@ -20,14 +20,14 @@ public final class ChatLinkResolver {
         }
     }
 
-    /// Where the pane of agent session `session` is; nil when the layout does not hold it.
+    /// Where the pane of agent `agent` is; nil when the layout does not hold it.
     @ObservationIgnored public var locate: (String) -> Place? = { _ in nil }
     /// The chip text for pane `id` ("p1958 · Claude"); nil when no pane has that id.
     @ObservationIgnored public var paneChip: (String) -> String? = { _ in nil }
     /// Send a request; returns its id, or nil while the client is offline.
     @ObservationIgnored public var request: (_ make: (UInt64) -> ClientMsg) -> UInt64? = { _ in nil }
-    /// Do what a click on a link asks, for the chat of `session`.
-    @ObservationIgnored public var perform: (_ action: Action, _ session: String) -> Void = { _, _ in }
+    /// Do what a click on a link asks, for the chat of `agent`.
+    @ObservationIgnored public var perform: (_ action: Action, _ agent: String) -> Void = { _, _ in }
 
     /// What the app is asked to do for a click that is not a preview.
     public enum Action: Equatable, Sendable {
@@ -97,7 +97,7 @@ public final class ChatLinkResolver {
     }
 
     /// Tell the links the app's layout is now `spaces`; redraws the replies that read it when a
-    /// pane chip or a session's place changed.
+    /// pane chip or an agent's place changed.
     public func layoutChanged(_ spaces: [SpaceInfo]) {
         let key = ChatLinks.layoutKey(spaces)
         if key != layout {
@@ -132,13 +132,13 @@ public final class ChatLinkResolver {
 
     /// The Markdown of a reply with the links that exist written into it, asking the daemon
     /// about the paths and artifact names it has not heard of yet.
-    public func linked(_ markdown: String, look: ChatAppearance, session: String, settled: Bool = true) -> String {
-        linkedReading(markdown, look: look, session: session, settled: settled).markdown
+    public func linked(_ markdown: String, look: ChatAppearance, agent: String, settled: Bool = true) -> String {
+        linkedReading(markdown, look: look, agent: agent, settled: settled).markdown
     }
 
     /// Whether every lookup in `reads` would answer the same now.
-    public func stillReads(_ reads: Reads, look: ChatAppearance, session: String) -> Bool {
-        let place = locate(session)
+    public func stillReads(_ reads: Reads, look: ChatAppearance, agent: String) -> Bool {
+        let place = locate(agent)
         guard reads.place == place.map({ "\($0.space)\u{0}\($0.cwd)" }) else { return false }
         for (path, was) in reads.files where file(path, place: place) != was { return false }
         for (id, was) in reads.panes where (look.links.panes ? paneChip(id) : nil) != was { return false }
@@ -156,9 +156,9 @@ public final class ChatLinkResolver {
     }
 
     /// `linked`, and what it read to make the links.
-    public func linkedReading(_ markdown: String, look: ChatAppearance, session: String, settled: Bool = true) -> (markdown: String, reads: Reads) {
+    public func linkedReading(_ markdown: String, look: ChatAppearance, agent: String, settled: Bool = true) -> (markdown: String, reads: Reads) {
         let settings = look.links
-        let place = locate(session)
+        let place = locate(agent)
         var reads = Reads(place: place.map { "\($0.space)\u{0}\($0.cwd)" })
         let knowledge = ChatLinkKnowledge(
             file: { path in
@@ -231,8 +231,8 @@ public final class ChatLinkResolver {
     }
 
     /// Lines of `path` around `line` for a preview; `done` runs when the daemon answers.
-    func preview(path: String, line: Int?, session: String, done: @escaping (FilePeek) -> Void) {
-        let cwd = locate(session)?.cwd
+    func preview(path: String, line: Int?, agent: String, done: @escaping (FilePeek) -> Void) {
+        let cwd = locate(agent)?.cwd
         let sent = request { .filePeek(req: $0, path: path, cwd: cwd, line: line, context: 8) }
         guard let sent else {
             done(FilePeek(path: path, found: false, start: 1, lines: [], error: "not connected"))
@@ -242,9 +242,9 @@ public final class ChatLinkResolver {
     }
 
     /// The bytes of the image file `path` on the daemon's machine, read against the directory of
-    /// `session`'s pane. A phone gets a file this way as a Mac does.
-    func fetchImage(path: String, session: String) async -> FileImage {
-        let cwd = locate(session)?.cwd
+    /// `agent`'s pane. A phone gets a file this way as a Mac does.
+    func fetchImage(path: String, agent: String) async -> FileImage {
+        let cwd = locate(agent)?.cwd
         return await withCheckedContinuation { continuation in
             let sent = request { .fileImage(req: $0, path: path, cwd: cwd) }
             guard let sent else {
@@ -269,15 +269,15 @@ public final class ChatLinkResolver {
         public var id: String { "\(row) \(path)" }
     }
 
-    /// The full-size image open in each session's chat, if any. One at a time per chat.
+    /// The full-size image open in each agent's chat, if any. One at a time per chat.
     public private(set) var fullImages: [String: FullImage] = [:]
 
-    func openImage(session: String, row: Int, path: String, data: Data) {
-        fullImages[session] = FullImage(row: row, path: path, data: data)
+    func openImage(agent: String, row: Int, path: String, data: Data) {
+        fullImages[agent] = FullImage(row: row, path: path, data: data)
     }
 
-    public func closeImage(session: String) {
-        fullImages[session] = nil
+    public func closeImage(agent: String) {
+        fullImages[agent] = nil
     }
 
     /// Take the daemon's answer to a request this resolver made; false for any other message.
@@ -334,34 +334,34 @@ public final class ChatLinkResolver {
         }
     }
 
-    /// The preview open in each session's chat, if any. One at a time per chat.
+    /// The preview open in each agent's chat, if any. One at a time per chat.
     public private(set) var previews: [String: Preview] = [:]
 
-    public func closePreview(session: String) {
-        previews[session] = nil
+    public func closePreview(agent: String) {
+        previews[agent] = nil
     }
 
-    /// What a click on a link in reply row `row` of the chat of `session` does.
-    public func click(_ action: ChatLinkAction, look: ChatAppearance, session: String, row: Int) {
+    /// What a click on a link in reply row `row` of the chat of `agent` does.
+    public func click(_ action: ChatLinkAction, look: ChatAppearance, agent: String, row: Int) {
         switch action {
         case let .file(path, line):
             switch look.links.files {
-            case .preview: previews[session] = Preview(row: row, path: path, line: line)
-            case .pane: perform(.openFile(path), session)
+            case .preview: previews[agent] = Preview(row: row, path: path, line: line)
+            case .pane: perform(.openFile(path), agent)
             case .off: break
             }
         case let .pane(id):
-            perform(.focusPane(id), session)
+            perform(.focusPane(id), agent)
         case let .artifact(name):
-            perform(.openArtifact(name), session)
+            perform(.openArtifact(name), agent)
         case let .run(command):
-            perform(.runCommand(command), session)
+            perform(.runCommand(command), agent)
         case let .copy(text):
-            perform(.copyText(text), session)
+            perform(.copyText(text), agent)
         case let .loadImage(url):
-            ChatImageRegistry.shared.loadRemote(url, session: session, row: row)
+            ChatImageRegistry.shared.loadRemote(url, agent: agent, row: row)
         case let .web(url):
-            perform(look.links.web == .system ? .openInSystemBrowser(url) : .openPage(url), session)
+            perform(look.links.web == .system ? .openInSystemBrowser(url) : .openPage(url), agent)
         }
     }
 }

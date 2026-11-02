@@ -123,8 +123,8 @@ extension AppModel {
     func lastLine(ofPane pane: String, kind: PaneKind) -> String? {
         switch kind {
         case .empty: return nil
-        case let .agent(session, _, _):
-            guard let rows = chats[session]?.transcript.rows else { return nil }
+        case let .agent(agent, _, _):
+            guard let rows = chats[agent]?.transcript.rows else { return nil }
             for row in rows.reversed() {
                 switch row.kind {
                 case let .agent(text): if let line = Self.lastLine(of: text) { return line }

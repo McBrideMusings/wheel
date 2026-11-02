@@ -31,7 +31,7 @@ private enum ToolPhase {
 /// composer holds the request.
 struct ToolLine: View {
     @Environment(\.chatAppearance) private var look
-    let chat: SessionChat
+    let chat: AgentChat
     let row: TranscriptRow
     let title: String
     let kind: String
@@ -108,7 +108,7 @@ struct ToolGroupView: View {
     /// Whether the line stands for a whole turn.
     var turn = false
     @Environment(\.chatAppearance) private var look
-    let chat: SessionChat
+    let chat: AgentChat
     /// Observed: the chat tells the group whenever one of its calls changes.
     @ObservedObject var group: ToolGroupModel
     let context: RowContext
@@ -318,7 +318,7 @@ struct DiffView: View {
 /// under the line; "Thought for 4s" once it ends, collapsed, opening onto the whole of it.
 struct ReasoningLine: View {
     @Environment(\.chatAppearance) private var look
-    let chat: SessionChat
+    let chat: AgentChat
     let row: TranscriptRow
     let text: String
     let context: RowContext
@@ -419,7 +419,7 @@ private struct Shimmer: ViewModifier {
 /// file, and "View changes", which opens the combined diff in the card.
 struct EditsCard: View {
     @Environment(\.chatAppearance) private var look
-    let chat: SessionChat
+    let chat: AgentChat
     @ObservedObject var group: ToolGroupModel
     let context: RowContext
 

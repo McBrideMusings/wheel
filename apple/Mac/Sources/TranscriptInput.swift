@@ -37,7 +37,7 @@ enum TranscriptInput {
     /// Moves the transcript's scroll view for a key the table ignores: Home to the top, End to
     /// the end, an arrow by one line. Marked as a person's scroll while it lands, so the view
     /// leaves the end or follows it again the way it does for a wheel.
-    private static func step(_ scroll: NSScrollView, key: UInt16, chat: SessionChat) {
+    private static func step(_ scroll: NSScrollView, key: UInt16, chat: AgentChat) {
         guard let document = scroll.documentView else { return }
         let clip = scroll.contentView
         let line: CGFloat = 24
@@ -67,7 +67,7 @@ enum TranscriptInput {
     /// Home, End, the arrows) while a view inside the transcript, not a text editor, has the keyboard.
     /// Keys produce no wheel event, and a text editor takes them for its own caret. A printable key
     /// goes to the focused chat's composer from the app-level monitor (`typeIntoFocusedComposer`).
-    private static func watchWheel(_ chat: SessionChat) {
+    private static func watchWheel(_ chat: AgentChat) {
         if let monitor = chat.wheelMonitor { NSEvent.removeMonitor(monitor) }
         chat.wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { event in
             guard let window = event.window else { return event }
@@ -121,9 +121,9 @@ extension AppModel {
         guard let window = event.window, window.isWheelWindow, window.attachedSheet == nil,
               commandPalette == nil, !shortcutsOpen,
               event.modifierFlags.intersection(.deviceIndependentFlagsMask).isDisjoint(with: [.command, .control, .option, .function]),
-              let characters = event.characters, SessionChat.isTyped(characters),
-              let pane = activeSpace?.focus, case let .agent(session, _, _)? = kind(of: pane),
-              let chat = chats[session], chat.composerShown,
+              let characters = event.characters, AgentChat.isTyped(characters),
+              let pane = activeSpace?.focus, case let .agent(agent, _, _)? = kind(of: pane),
+              let chat = chats[agent], chat.composerShown,
               !holdsTextKeys(window.firstResponder)
         else { return false }
         Log.info("key typed in \(pane): \(characters.count) char(s) to the composer, first responder \(window.firstResponder.map { String(describing: type(of: $0)) } ?? "none")")
@@ -136,14 +136,14 @@ extension AppModel {
 /// permission requests the model holds.
 struct AgentTranscript: View {
     var model: AppModel
-    @ObservedObject var chat: SessionChat
+    @ObservedObject var chat: AgentChat
     @Environment(\.spaceShown) private var spaceShown
     let empty: String
     var agent: String? = nil
 
     private var intro: String? {
-        guard let agent, model.appearance(forSession: chat.name).home == .transcript else { return nil }
-        return model.homeIntro(session: chat.name, agent: agent)
+        guard let agent, model.appearance(forAgent: chat.name).home == .transcript else { return nil }
+        return model.homeIntro(agent: chat.name, harness: agent)
     }
 
     @ViewBuilder var body: some View {
@@ -155,12 +155,12 @@ struct AgentTranscript: View {
             chat: chat,
             empty: empty,
             permissions: PermissionQueue(
-                waiting: Set(model.perms.filter { $0.session == chat.name }.compactMap(\.toolCall)),
+                waiting: Set(model.perms.filter { $0.agent == chat.name }.compactMap(\.toolCall)),
                 places: Dictionary(
                     model.perms.compactMap { perm in perm.toolCall.map { ($0, model.position(of: perm)) } },
                     uniquingKeysWith: { first, _ in first }),
                 count: model.perms.count),
-            look: model.appearance(forSession: chat.name),
+            look: model.appearance(forAgent: chat.name),
             intro: intro
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)

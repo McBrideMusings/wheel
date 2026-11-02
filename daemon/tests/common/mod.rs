@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-/// A daemon serving in this process. `abort` stops it serving and ends its agent sessions, so the
+/// A daemon serving in this process. `abort` stops it serving and ends its agents, so the
 /// agent processes do not run on until the test process exits.
 pub struct Daemon {
     serving: JoinHandle<anyhow::Result<()>>,
@@ -29,6 +29,6 @@ impl Daemon {
 
     pub fn abort(&self) {
         self.serving.abort();
-        self.state.stop_sessions();
+        self.state.stop_agents();
     }
 }

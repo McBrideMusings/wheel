@@ -12,7 +12,7 @@ import WheelUI
 ///     curl -H "Authorization: Bearer $(cat <token file>)" http://127.0.0.1:7421/state
 ///
 /// It also drives the UI's own code paths, so a script exercises what the buttons do. An agent
-/// pane, by `session=<s>`: `POST /agent` with the message as the body (it replaces the composer's
+/// pane, by `agent=<s>`: `POST /agent` with the message as the body (it replaces the composer's
 /// draft, then sends it as Return does), `/agent/draft` (the text, not sent), `/agent/typing` (a person typing into the composer, in-app), `/agent/focus` (the
 /// keyboard goes into that composer, as a click would put it), `/agent/expand?id=` (a click on a
 /// tool line, tool group or thought), `/agent/notice/dismiss` (the banner's close button),
@@ -150,12 +150,12 @@ final class DebugServer {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
              ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"):
-            guard let session = query["session"], let chat = model.chats[session] else {
-                return refuse("404 Not Found", "no agent pane shows that session")
+            guard let agent = query["agent"], let chat = model.chats[agent] else {
+                return refuse("404 Not Found", "no agent pane shows that agent")
             }
             switch target.path {
             case "/agent":
-                Log.info("debug: send to \(session)")
+                Log.info("debug: send to \(agent)")
                 chat.draft = text
                 model.send(chat)
             case "/agent/typing":
@@ -165,7 +165,7 @@ final class DebugServer {
                 // per key or a state build of its own.
                 let chars = query["chars"].flatMap(Int.init) ?? 300
                 let interval = 1 / (query["per_second"].flatMap(Double.init) ?? 10)
-                Log.info("debug: typing \(chars) characters into \(session)")
+                Log.info("debug: typing \(chars) characters into \(agent)")
                 func key(_ n: Int) {
                     guard n < chars else { return }
                     chat.draft += n % 6 == 5 ? " " : "a"
@@ -175,10 +175,10 @@ final class DebugServer {
                 return ("200 OK", Data("{}".utf8))
             case "/agent/draft":
                 // Text in the composer, not sent: what a person typing sees.
-                Log.info("debug: draft for \(session), \(text.count) chars")
+                Log.info("debug: draft for \(agent), \(text.count) chars")
                 chat.draft = text
             case "/agent/focus":
-                Log.info("debug: focus the composer of \(session)")
+                Log.info("debug: focus the composer of \(agent)")
                 chat.composerFocusRequest += 1
             case "/agent/queue":
                 // A click on a message's action: `action=edit|remove` with the message's `turn`
@@ -202,15 +202,15 @@ final class DebugServer {
                       let row = query["row"].flatMap(Int.init) else {
                     return refuse("400 Bad Request", "url (a link address) and row are required")
                 }
-                Log.info("debug: click \(url.absoluteString) in \(session) row \(row)")
-                model.links.click(action, look: model.appearance(forSession: session), session: session, row: row)
+                Log.info("debug: click \(url.absoluteString) in \(agent) row \(row)")
+                model.links.click(action, look: model.appearance(forAgent: agent), agent: agent, row: row)
             case "/agent/expand":
                 // Open or close a tool line, tool group or thought by its id from `transcript_items`:
                 // the click on its line.
                 guard let id = query["id"].flatMap(Int.init) else { return refuse("400 Bad Request", "id is required") }
                 chat.toggle(id)
             case "/agent/notice/dismiss":
-                Log.info("debug: notice dismiss over \(session)")
+                Log.info("debug: notice dismiss over \(agent)")
                 model.dismissNotice(chat)
             case "/agent/key":
                 // Press a scrolling key the way a keyboard does: a key event through the
@@ -232,7 +232,7 @@ final class DebugServer {
                     return refuse("500 Internal Server Error", "could not make a key event")
                 }
                 let focused = window.makeFirstResponder(scroll.documentView ?? scroll)
-                Log.info("debug: key \(key.rawValue) to \(session)'s transcript (first responder taken: \(focused))")
+                Log.info("debug: key \(key.rawValue) to \(agent)'s transcript (first responder taken: \(focused))")
                 NSApp.sendEvent(event)
             case "/agent/type":
                 // Type one printable character (`text=h`, optional `mods=cmd`) as a keyboard does, through
@@ -330,9 +330,9 @@ final class DebugServer {
                     return refuse("400 Bad Request", "config and value are required")
                 }
                 guard let option = chat.config.first(where: { $0.id == id }) else {
-                    return refuse("404 Not Found", "\(session) has no config option \(id)")
+                    return refuse("404 Not Found", "\(agent) has no config option \(id)")
                 }
-                Log.info("debug: set \(session) \(id) to \(value)")
+                Log.info("debug: set \(agent) \(id) to \(value)")
                 model.setConfig(chat, option, to: value)
             }
         case ("POST", "/perm"):
@@ -344,12 +344,12 @@ final class DebugServer {
         case ("POST", "/scroll"):
             // Put a transcript's view a given distance above its end by moving its scroll view's
             // clip view: the scroll a person's wheel makes, which no SwiftUI call can place.
-            // `session` is an agent pane's session.
-            guard let session = query["session"], let fromEnd = query["from_end"].flatMap(Double.init) else {
-                return refuse("400 Bad Request", "session and from_end are required")
+            // `agent` is an agent pane's agent.
+            guard let agent = query["agent"], let fromEnd = query["from_end"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "agent and from_end are required")
             }
-            guard let chat = model.chats[session] else {
-                return refuse("404 Not Found", "no transcript shows that session")
+            guard let chat = model.chats[agent] else {
+                return refuse("404 Not Found", "no transcript shows that agent")
             }
             let found = transcriptScrollView(chat)
             guard case let .success((_, scroll)) = found, let document = scroll.documentView else {
@@ -365,7 +365,7 @@ final class DebugServer {
             clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
             scroll.reflectScrolledClipView(clip)
             DispatchQueue.main.async { chat.userScrolling = false }
-            Log.info("debug: scroll \(session) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
+            Log.info("debug: scroll \(agent) to \(Int(fromEnd)) from its end (content \(Int(document.frame.height)), visible \(Int(clip.bounds.height)))")
         case ("POST", "/cursor"):
             // Which page views can set the cursor at window point (`x`, `y`, AppKit coordinates,
             // origin bottom left): AppKit delivers a view's tracking areas and cursor rects only
@@ -411,44 +411,44 @@ final class DebugServer {
             }
             return ("", Data())
         case ("POST", "/code/copy"):
-            // Press the copy button of the `index`-th code block on screen in a session's
+            // Press the copy button of the `index`-th code block on screen in an agent's
             // transcript (the order of `code_blocks` in the state) and answer with the pasteboard.
-            guard let session = query["session"], let index = query["index"].flatMap(Int.init) else {
-                return refuse("400 Bad Request", "session and index are required")
+            guard let agent = query["agent"], let index = query["index"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "agent and index are required")
             }
-            let blocks = CodeBlockRegistry.shared.blocks(session: session)
+            let blocks = CodeBlockRegistry.shared.blocks(agent: agent)
             guard blocks.indices.contains(index) else {
-                return refuse("404 Not Found", "\(blocks.count) code blocks on screen for that session")
+                return refuse("404 Not Found", "\(blocks.count) code blocks on screen for that agent")
             }
             NSPasteboard.general.clearContents()
             blocks[index].press()
             let copied = NSPasteboard.general.string(forType: .string) ?? ""
-            Log.info("debug: pressed copy on code block \(index) of \(session), \(copied.count) characters")
+            Log.info("debug: pressed copy on code block \(index) of \(agent), \(copied.count) characters")
             let body = (try? JSONSerialization.data(withJSONObject: ["pasteboard": copied])) ?? Data("{}".utf8)
             return ("200 OK", body)
         case ("POST", "/image/open"):
-            // Do what a click on the `index`-th image of a session's replies does (the order of
+            // Do what a click on the `index`-th image of an agent's replies does (the order of
             // `images` in the state): open it at full size, listed as `image_full` in the state.
-            guard let session = query["session"], let index = query["index"].flatMap(Int.init) else {
-                return refuse("400 Bad Request", "session and index are required")
+            guard let agent = query["agent"], let index = query["index"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "agent and index are required")
             }
-            guard ChatImageRegistry.shared.click(session: session, index: index) else {
-                return refuse("404 Not Found", "no loaded image \(index) for that session")
+            guard ChatImageRegistry.shared.click(agent: agent, index: index) else {
+                return refuse("404 Not Found", "no loaded image \(index) for that agent")
             }
-            Log.info("debug: opened image \(index) of \(session) at full size")
+            Log.info("debug: opened image \(index) of \(agent) at full size")
             return ("200 OK", Data("{}".utf8))
         case ("POST", "/transcript/select"):
-            // Select text across rows and copy it. `session` is an agent pane's session; `from_row`
+            // Select text across rows and copy it. `agent` is an agent pane's agent; `from_row`
             // and `to_row` are row ids from `transcript_items`, `from_offset` and `to_offset`
             // characters into the row's plain text. Rows need not be on screen; `mouse=1` drives the
             // transcript's mouse handlers at the offsets' window points instead (both rows built).
             // The answer is a JSON object, not the state.
-            guard let session = query["session"],
+            guard let agent = query["agent"],
                   let fromRow = query["from_row"].flatMap(Int.init), let fromOffset = query["from_offset"].flatMap(Int.init),
                   let toRow = query["to_row"].flatMap(Int.init), let toOffset = query["to_offset"].flatMap(Int.init) else {
-                return refuse("400 Bad Request", "session, from_row, from_offset, to_row and to_offset are required")
+                return refuse("400 Bad Request", "agent, from_row, from_offset, to_row and to_offset are required")
             }
-            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane shows that agent") }
             // `clicks=2|3` presses at the from point that many times (word, paragraph) and ignores
             // the to point; `extend=left,right,up,down` (`word:` before Left or Right for a word)
             // then presses those shift-arrows, in order, before the copy.
@@ -460,11 +460,11 @@ final class DebugServer {
             // them) through the transcript's mouse handlers, then copy the way ⌘C does. The answer
             // names the offsets the points resolved to, so a check can compare them with the
             // characters it expects under the pointer.
-            guard let session = query["session"], let fx = query["from_x"].flatMap(Double.init), let fy = query["from_y"].flatMap(Double.init),
+            guard let agent = query["agent"], let fx = query["from_x"].flatMap(Double.init), let fy = query["from_y"].flatMap(Double.init),
                   let tx = query["to_x"].flatMap(Double.init), let ty = query["to_y"].flatMap(Double.init) else {
-                return refuse("400 Bad Request", "session, from_x, from_y, to_x and to_y are required")
+                return refuse("400 Bad Request", "agent, from_x, from_y, to_x and to_y are required")
             }
-            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane shows that agent") }
             guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else { return refuse("404 Not Found", "that transcript is not on screen") }
             let selection = chat.selection
             selection.mouseDown(at: CGPoint(x: fx, y: fy), extend: false, in: chat)
@@ -481,10 +481,10 @@ final class DebugServer {
         case ("GET", "/transcript/point"):
             // The window point (top-left origin) of a character offset in a built reply, from the
             // layout SwiftUI drew, for `/transcript/drag`.
-            guard let session = query["session"], let row = query["row"].flatMap(Int.init), let offset = query["offset"].flatMap(Int.init) else {
-                return refuse("400 Bad Request", "session, row and offset are required")
+            guard let agent = query["agent"], let row = query["row"].flatMap(Int.init), let offset = query["offset"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "agent, row and offset are required")
             }
-            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane shows that agent") }
             guard let target = chat.selection.targets[row], let item = chat.items.first(where: { $0.id == row }) else {
                 return refuse("404 Not Found", "row \(row) is not built")
             }
@@ -1331,7 +1331,7 @@ final class DebugServer {
     /// press, drag and release go through the transcript's own mouse handlers at the window points
     /// of those offsets, otherwise the selection is set on the model, which reaches rows scrolled
     /// out of view.
-    private func selectAndCopy(_ chat: SessionChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int), mouse: Bool, clicks: Int, extend: [String]) -> (String, Data) {
+    private func selectAndCopy(_ chat: AgentChat, from: (row: Int, offset: Int), to: (row: Int, offset: Int), mouse: Bool, clicks: Int, extend: [String]) -> (String, Data) {
         func fail(_ status: String, _ why: String) -> (String, Data) {
             Log.info("debug request refused: \(why)")
             return (status, Data(#"{"error":"\#(why)"}"#.utf8))
@@ -1389,7 +1389,7 @@ final class DebugServer {
     struct Refusal: Error { let status: String; let message: String }
 
     /// The window and scroll view behind a transcript.
-    private func transcriptScrollView(_ chat: SessionChat) -> Result<(NSWindow, NSScrollView), Refusal> {
+    private func transcriptScrollView(_ chat: AgentChat) -> Result<(NSWindow, NSScrollView), Refusal> {
         guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else {
             return .failure(Refusal(status: "404 Not Found", message: "that transcript is not on screen"))
         }
@@ -1400,7 +1400,7 @@ final class DebugServer {
     }
 
     /// A row as one line; a tool row a request gates ends with `· waiting perm <id>`.
-    private func rowText(_ row: TranscriptRow, session: String) -> String {
+    private func rowText(_ row: TranscriptRow, agent: String) -> String {
         var text = rowText(row.kind)
         // What the tool or thought line shows of its time: running, and for how long.
         switch row.kind {
@@ -1409,13 +1409,13 @@ final class DebugServer {
             if let seconds = row.elapsed(now: .now) { text += " · \(formatElapsed(seconds))" }
         default: break
         }
-        guard let call = row.toolCall, let perm = model.perms.first(where: { $0.session == session && $0.toolCall == call }) else { return text }
+        guard let call = row.toolCall, let perm = model.perms.first(where: { $0.agent == agent && $0.toolCall == call }) else { return text }
         return "\(text) · waiting perm \(perm.id)"
     }
 
     /// The transcript as laid out, with the ids `/agent/expand` takes: `<kind> <id>` for a row drawn
     /// alone, `tools <n> @<id> [<ids>]` for a group of n calls; `open` after one the person opened.
-    private func itemsText(_ chat: SessionChat) -> [String] {
+    private func itemsText(_ chat: AgentChat) -> [String] {
         let open = { (id: Int) in chat.expanded.contains(id) ? " open" : "" }
         return chat.items.map { item in
             switch item {
@@ -1487,10 +1487,10 @@ final class DebugServer {
             var o: [String: Any] = switch kind {
             case .empty: ["kind": "empty"]
             case let .terminal(term, agent):
-                ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "session": $0.session, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
+                ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "conversation": $0.conversation, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
-            case let .agent(session, agent, _): ["kind": "agent", "session": session, "agent": agent]
+            case let .agent(agent, harness, _): ["kind": "agent", "agent": agent, "harness": harness]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -1504,8 +1504,8 @@ final class DebugServer {
     /// the artifact's scope and name, its page address (without the token), when it last loaded and
     /// reloaded, the load's HTTP status, and the page's title and visible text; for a browser pane,
     /// the page the daemon holds and the page the view is on, its title, load progress, history
-    /// buttons, whether the chrome is narrow, the field's text while edited and any failure; for an agent pane, its session, that
-    /// session's state, its last 20 transcript rows, its composer's draft, the error and notice
+    /// buttons, whether the chrome is narrow, the field's text while edited and any failure; for an agent pane, its agent, that
+    /// agent's state, its last 20 transcript rows, its composer's draft, the error and notice
     /// under it, the request card it draws and the controls under its composer.
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
@@ -1537,50 +1537,50 @@ final class DebugServer {
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
                 }
-                if case let .agent(session, agent, _) = pane.kind {
+                if case let .agent(agent, harness, _) = pane.kind {
                     o["agent"] = agent
-                    let chat = model.chats[session]
-                    o["session"] = session
+                    let chat = model.chats[agent]
+                    o["harness"] = harness
                     o["state"] = chat.map { model.stateLabel($0) } ?? NSNull()
-                    o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, session: session) } } ?? NSNull()
-                    let look = model.appearance(forSession: session)
+                    o["transcript"] = chat.map { chat in chat.transcript.rows.suffix(20).map { rowText($0, agent: agent) } } ?? NSNull()
+                    let look = model.appearance(forAgent: agent)
                     o["appearance"] = [
                         "family": look.family.rawValue, "size": look.size, "line_height": look.lineHeight,
                         "paragraph_spacing": look.paragraphSpacing, "max_width": look.maxWidth ?? NSNull(),
                         "density": look.density.rawValue, "quote_style": look.quoteStyle.rawValue,
                         "code_theme": look.codeTheme.rawValue, "code_font": look.codeFont.rawValue,
                         "code_size": look.codeSize, "code_wrap": look.codeWrap.rawValue,
-                        "code_line_numbers": look.lineNumbers, "session_home": look.home.rawValue,
+                        "code_line_numbers": look.lineNumbers, "agent_home": look.home.rawValue,
                     ] as [String: Any]
-                    o["home"] = ["where": look.home.rawValue, "text": model.shownHome(session: session, agent: agent),
-                                 "intro": model.homeIntro(session: session, agent: agent),
-                                 "variable": AgentInfo.homeVariable(of: agent)] as [String: Any]
-                    o["code_blocks"] = CodeBlockRegistry.shared.blocks(session: session).enumerated().map { index, block in
+                    o["home"] = ["where": look.home.rawValue, "text": model.shownHome(agent: agent, harness: harness),
+                                 "intro": model.homeIntro(agent: agent, harness: harness),
+                                 "variable": AgentInfo.homeVariable(of: harness)] as [String: Any]
+                    o["code_blocks"] = CodeBlockRegistry.shared.blocks(agent: agent).enumerated().map { index, block in
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable, "drawn": block.drawn,
                          "copy_button": "Copy code"] as [String: Any]
                     }
-                    o["images"] = ChatImageRegistry.shared.images(session: session).map { image in
+                    o["images"] = ChatImageRegistry.shared.images(agent: agent).map { image in
                         ["row": image.row, "source": image.source, "path": image.path ?? NSNull(), "loaded": image.loaded,
                          "remote": image.remote, "width": image.width, "height": image.height, "bytes": image.bytes,
                          "error": image.error ?? NSNull()] as [String: Any]
                     }
-                    o["image_full"] = model.links.fullImages[session].map {
+                    o["image_full"] = model.links.fullImages[agent].map {
                         ["row": $0.row, "path": $0.path, "bytes": $0.data.count] as [String: Any]
                     } ?? NSNull()
                     o["rich"] = chat.map { chat in
                         ChatRichReport.report(of: chat.rows.compactMap { row -> String? in
                             guard case let .agent(text) = row.row.kind else { return nil }
-                            return model.links.linked(text, look: look, session: session)
+                            return model.links.linked(text, look: look, agent: agent)
                         })
                     } ?? NSNull()
                     o["links"] = [
                         "linked": chat.map { chat in
                             chat.rows.compactMap { row -> [String: Any]? in
                                 guard case let .agent(text) = row.row.kind else { return nil }
-                                return ["row": row.id, "markdown": model.links.linked(text, look: look, session: session)]
+                                return ["row": row.id, "markdown": model.links.linked(text, look: look, agent: agent)]
                             }
                         } ?? [],
-                        "preview": model.links.previews[session].map {
+                        "preview": model.links.previews[agent].map {
                             ["row": $0.row, "path": $0.path, "line": $0.line ?? NSNull()] as [String: Any]
                         } ?? NSNull(),
                     ] as [String: Any]
@@ -1601,7 +1601,7 @@ final class DebugServer {
                     o["notice"] = chat?.notice ?? NSNull()
                     o["title"] = chat?.title ?? NSNull()
                     o["context"] = contextJSON(chat?.context, pane: pane.id)
-                    o["request"] = model.perms.first { $0.session == session }?.id ?? NSNull()
+                    o["request"] = model.perms.first { $0.agent == agent }?.id ?? NSNull()
                     o["config"] = chat.map { configJSON($0.config) } ?? NSNull()
                     o["transcript_redraws"] = chat.map { chat -> [String: Any] in
                         ["rows": chat.rows.count, "list_updates": chat.listUpdates, "row_updates": chat.rowUpdates,
@@ -1612,7 +1612,7 @@ final class DebugServer {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
                     o["scope"] = artifact.scope.rawValue
                     o["artifact"] = artifact.name
-                    o["request"] = model.perms.first { $0.session == pane.id }?.id ?? NSNull()
+                    o["request"] = model.perms.first { $0.agent == pane.id }?.id ?? NSNull()
                     o["url"] = web.address ?? NSNull()
                     o["last_reload_at"] = time(web.lastReloadAt)
                     o["loaded_at"] = time(web.loadedAt)
@@ -1904,7 +1904,7 @@ final class DebugServer {
             } ?? NSNull(),
             "pane_move_menu": model.paneMoveGroupsJSON(),
             "perms": model.perms.map { perm in
-                ["id": perm.id, "session": perm.session, "title": perm.title, "tool_call": perm.toolCall ?? NSNull(),
+                ["id": perm.id, "agent": perm.agent, "title": perm.title, "tool_call": perm.toolCall ?? NSNull(),
                  "reason": perm.reason ?? NSNull(), "decision_reason": perm.decisionReason ?? NSNull(),
                  "blocked_path": perm.blockedPath ?? NSNull(), "always_rule": perm.alwaysRule ?? NSNull(),
                  // Each button's tooltip, as the card shows it.

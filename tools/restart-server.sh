@@ -1,6 +1,6 @@
 #!/bin/bash
 # Restart the installed app's wheeld from the bundle its launch agent names. This ends every
-# terminal and agent session, the pane that ran this one included, so the restart runs detached
+# terminal and agent, the pane that ran this one included, so the restart runs detached
 # and writes what happened to ~/Library/Logs/wheel/restart-server.log.
 #   restart-server.sh release   com.piercemakes.wheel.daemon (Wheel.app)
 #   restart-server.sh dev       com.piercemakes.wheel.dev.daemon (Wheel Dev.app)
@@ -22,7 +22,7 @@ if [ "${1:-}" != --detached ]; then
   launchctl print "$SERVICE" >/dev/null 2>&1 || { echo "$LABEL is not loaded; open the app that runs it first" >&2; exit 1; }
   mkdir -p "$LOG_DIR"
   nohup bash "$0" --detached "$LABEL" >>"$LOG" 2>&1 </dev/null &
-  echo "restarting $LABEL (pid $(pid_of)); every terminal and agent session ends. Log: $LOG"
+  echo "restarting $LABEL (pid $(pid_of)); every terminal and agent ends. Log: $LOG"
   exit 0
 fi
 

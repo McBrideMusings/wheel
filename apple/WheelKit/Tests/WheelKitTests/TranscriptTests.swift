@@ -146,7 +146,7 @@ struct TranscriptTests {
     @Test func resetReplacesEverything() {
         var t = Transcript()
         t.apply(.user(turn: 1, text: "old"))
-        t.reset([SessionEvent.user(turn: 5, text: "new"), .turnStart(turn: 5), .text("hi")].map { StampedEvent($0) }, daemonNow: Date())
+        t.reset([AgentEvent.user(turn: 5, text: "new"), .turnStart(turn: 5), .text("hi")].map { StampedEvent($0) }, daemonNow: Date())
         #expect(t.rows.map(\.kind) == [.user("new", queued: false), .agent("hi")])
     }
 
@@ -197,7 +197,7 @@ struct TranscriptTests {
         #expect(!t.rows[3].open && t.rows[3].elapsed(now: t0 + 99) == 1)
         // Replayed history has no times: it still closes, and says nothing about duration.
         var replayed = Transcript()
-        replayed.reset([SessionEvent.toolCall(id: "c", title: "ls", kind: "execute", status: "pending", content: []),
+        replayed.reset([AgentEvent.toolCall(id: "c", title: "ls", kind: "execute", status: "pending", content: []),
                         .turnEnd(turn: 1, stopReason: "end_turn")].map { StampedEvent($0) }, daemonNow: Date())
         #expect(!replayed.rows[0].open && replayed.rows[0].elapsed(now: t0) == nil)
     }
@@ -213,13 +213,13 @@ struct TranscriptTests {
         #expect(t.rows.filter(\.open).isEmpty)
     }
 
-    private func replay(_ events: [SessionEvent]) -> Transcript {
+    private func replay(_ events: [AgentEvent]) -> Transcript {
         var t = Transcript()
         for event in events { t.apply(event) }
         return t
     }
 
-    private static let sevenCalls: [SessionEvent] = [
+    private static let sevenCalls: [AgentEvent] = [
         .user(turn: 1, text: "go"), .turnStart(turn: 1), .thought("hm"),
         .toolCall(id: "1", title: "ls", kind: "execute", status: "completed", content: []),
         .toolCall(id: "2", title: "a", kind: "read", status: "completed", content: []),

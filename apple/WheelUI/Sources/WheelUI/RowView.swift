@@ -11,12 +11,12 @@ import WheelKit
 /// the model and the chat, hands it down, and a row redraws when it changes rather than for every
 /// change to the model.
 public struct RowContext: Equatable {
-    /// This session's tool calls with a request waiting on a person.
+    /// This agent's tool calls with a request waiting on a person.
     public var waiting: Set<String> = []
     /// Each waiting request's place in the queue by tool call, and how many wait in all.
     public var places: [String: Int] = [:]
     public var waitingCount = 0
-    /// The session is working on a turn.
+    /// The agent is working on a turn.
     public var busy = false
     /// Rows and groups the person opened, by id.
     public var expanded: Set<Int> = []
@@ -34,7 +34,7 @@ public struct RowContext: Equatable {
 
 /// One laid-out entry: a row, or a group of tool calls.
 struct ChatItemView: View {
-    let chat: SessionChat
+    let chat: AgentChat
     let item: ChatItem
     /// The last part of a finished turn, which carries the turn's copy button.
     let copyable: Bool
@@ -64,7 +64,7 @@ struct ChatItemView: View {
 
 /// One row, observing its own `RowModel` so a chunk streamed into it redraws it and no other row.
 struct TranscriptRowView: View {
-    let chat: SessionChat
+    let chat: AgentChat
     @ObservedObject var row: RowModel
     let copyable: Bool
     let context: RowContext
@@ -97,12 +97,12 @@ extension TranscriptRow.Kind {
 
 public struct RowView: View {
     @Environment(\.chatAppearance) private var look
-    let chat: SessionChat
+    let chat: AgentChat
     let row: TranscriptRow
     let copyable: Bool
     let context: RowContext
 
-    public init(chat: SessionChat, row: TranscriptRow, copyable: Bool, context: RowContext) {
+    public init(chat: AgentChat, row: TranscriptRow, copyable: Bool, context: RowContext) {
         self.chat = chat
         self.row = row
         self.copyable = copyable
@@ -141,13 +141,13 @@ public struct RowView: View {
 /// when `chat.timestamps` is on.
 struct UserMessage: View {
     @Environment(\.chatAppearance) private var look
-    let chat: SessionChat
+    let chat: AgentChat
     @ObservedObject var queue: QueueState
     let row: TranscriptRow
     let text: String
     let queued: Bool
 
-    init(chat: SessionChat, row: TranscriptRow, text: String, queued: Bool) {
+    init(chat: AgentChat, row: TranscriptRow, text: String, queued: Bool) {
         self.chat = chat
         self.queue = chat.queue
         self.row = row
@@ -221,7 +221,7 @@ struct UserMessage: View {
     }
 }
 
-/// Each reply's links, rich text and selectable prose, kept by session and row until something
+/// Each reply's links, rich text and selectable prose, kept by agent and row until something
 /// they are made from changes. Kept outside the view: the transcript's list rebuilds row views,
 /// which would drop anything a row held itself.
 @MainActor
@@ -248,11 +248,11 @@ enum PreparedReply {
     private static var hits = 0
     private static var misses: [String: Int] = [:]
 
-    static func reply(session: String, row: Int, links: ChatLinkResolver?, _ key: Key, make: () -> Value) -> Value {
-        let slot = "\(session)\u{0}\(row)"
+    static func reply(agent: String, row: Int, links: ChatLinkResolver?, _ key: Key, make: () -> Value) -> Value {
+        let slot = "\(agent)\u{0}\(row)"
         let held = kept[slot]
         let current = held.map { held in
-            held.key == key && (held.value.reads.map { links?.stillReads($0, look: key.look, session: session) ?? false } ?? (links == nil))
+            held.key == key && (held.value.reads.map { links?.stillReads($0, look: key.look, agent: agent) ?? false } ?? (links == nil))
         } ?? false
         if let held, current {
             hits += 1
@@ -291,7 +291,7 @@ enum PreparedReply {
 /// and under any other reply while the pointer is over it.
 struct AgentText: View {
     @Environment(\.chatAppearance) private var look
-    let chat: SessionChat
+    let chat: AgentChat
     let id: Int
     let text: String
     let copyable: Bool
@@ -305,13 +305,13 @@ struct AgentText: View {
     /// reply read changed. Tracking its reads redraws the row when one of its own lookups answers.
     private func prepared(_ pictured: String) -> PreparedReply.Value {
         // Only the last item can still be streaming; every reply above it is settled.
-        let session = chat.name, settled = !chat.isBusy || chat.items.last?.id != id
+        let agent = chat.name, settled = !chat.isBusy || chat.items.last?.id != id
         let key = PreparedReply.Key(text: pictured, look: look, settled: settled, day: Calendar.current.startOfDay(for: .now))
-        let value = PreparedReply.reply(session: session, row: id, links: links, key) {
+        let value = PreparedReply.reply(agent: agent, row: id, links: links, key) {
             guard let links else {
                 return PreparedReply.Value(rich: ChatRich.prepare(pictured), prose: .markdown(pictured), reads: nil)
             }
-            let made = links.linkedReading(pictured, look: look, session: session, settled: settled)
+            let made = links.linkedReading(pictured, look: look, agent: agent, settled: settled)
             return PreparedReply.Value(rich: ChatRich.prepare(made.markdown), prose: .markdown(made.markdown), reads: made.reads)
         }
         links?.track(value.reads)
@@ -321,9 +321,9 @@ struct AgentText: View {
     var body: some View {
         // The reply with its existing file paths, pane ids and web links as links; the text the
         // selection counts in is the linked one, so a label that shows a file's name selects as such.
-        let session = chat.name, row = id
+        let agent = chat.name, row = id
         let drawn = ChatImages.rewritten(text, inline: look.imagesInline) {
-            ChatImageRegistry.shared.isLoaded($0, session: session, row: row)
+            ChatImageRegistry.shared.isLoaded($0, agent: agent, row: row)
         }
         let reply = prepared(drawn.markdown)
         let rich = reply.rich
@@ -341,11 +341,11 @@ struct AgentText: View {
                 .textual.unorderedListMarker(ChatListMarker(bullet: look.listBullet))
                 .textual.listItemSpacing(.fontScaled(top: look.listSpacing / look.size))
                 .textual.blockQuoteStyle(ChatBlockQuoteStyle(style: look.quoteStyle))
-                .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, session: chat.name))
+                .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, agent: chat.name))
                 .textual.highlighterTheme(look.codeTheme.highlighter)
                 .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
                 .textual.imageAttachmentLoader(
-                    ChatImageLoader(session: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
+                    ChatImageLoader(agent: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
                 .textual.emojiAttachmentLoader(SwatchLoader(side: (look.size * 0.85).rounded()))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.openURL, OpenURLAction { url in
@@ -354,7 +354,7 @@ struct AgentText: View {
                         return .handled
                     }
                     guard let links, let action = ChatLinkAction(url: url) else { return .systemAction }
-                    links.click(action, look: look, session: chat.name, row: id)
+                    links.click(action, look: look, agent: chat.name, row: id)
                     return .handled
                 })
                 .modifier(InlineCodeBoxes(prose: look.inlineCode == .box ? reply.prose : .plain("")))
@@ -368,7 +368,7 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
-        .task(id: drawn.pending) { ChatImageRegistry.shared.waiting(drawn.pending, session: session, row: row) }
+        .task(id: drawn.pending) { ChatImageRegistry.shared.waiting(drawn.pending, agent: agent, row: row) }
         .popover(item: Binding(get: { timeShown.map(TimeStamp.init) }, set: { timeShown = $0?.iso })) { stamp in
             Text(ChatRich.localTime(stamp.iso) ?? stamp.iso)
                 .font(look.body)
@@ -377,16 +377,16 @@ struct AgentText: View {
         }
         .popover(item: Binding(
             get: { links?.previews[chat.name].flatMap { $0.row == id ? $0 : nil } },
-            set: { if $0 == nil { links?.closePreview(session: chat.name) } }
+            set: { if $0 == nil { links?.closePreview(agent: chat.name) } }
         )) { preview in
-            FilePreview(preview: preview, session: chat.name, openInPane: {
-                links?.closePreview(session: chat.name)
+            FilePreview(preview: preview, agent: chat.name, openInPane: {
+                links?.closePreview(agent: chat.name)
                 links?.perform(.openFile(preview.path), chat.name)
             })
         }
         .popover(item: Binding(
             get: { links?.fullImages[chat.name].flatMap { $0.row == id ? $0 : nil } },
-            set: { if $0 == nil { links?.closeImage(session: chat.name) } }
+            set: { if $0 == nil { links?.closeImage(agent: chat.name) } }
         )) { image in
             ChatImageFull(image: image)
         }

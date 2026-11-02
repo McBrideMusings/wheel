@@ -60,7 +60,7 @@ function render() {
     const deny = p.options.find(o => o.kind === 'reject_once') || p.options.find(o => o.kind.startsWith('reject'));
     const line = (verb, o) => o ? `<code class="ans">wheel perm answer ${esc(p.id)} ${verb}</code>` : '';
     return `<div class="req" data-id="${esc(p.id)}">
-      <div class="top"><span>from <b>${esc(p.session)}</b></span><span class="wait" data-id="${esc(p.id)}">seen waiting ${waited(now - seen[p.id])}</span></div>
+      <div class="top"><span>from <b>${esc(p.agent)}</b></span><span class="wait" data-id="${esc(p.id)}">seen waiting ${waited(now - seen[p.id])}</span></div>
       <div class="title">${esc(p.title)}</div>
       ${line('allow', allow)}${line('deny', deny)}
     </div>`;

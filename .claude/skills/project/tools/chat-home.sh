@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# § A chat shows the configuration directory its own session runs under (wheel-h3z5.29). Three
+# § A chat shows the configuration directory its own agent runs under (wheel-h3z5.29). Three
 # agent panes in one window: a Claude pane whose saved layout names ~/.claude-work, a Claude pane
 # naming ~/.claude, and a Codex pane naming ~/.codex-work, plus a Claude pane with no home of its
-# own while `agent.claude.home` is unset. The status row (`chat.session.home = row`) and the
+# own while `agent.claude.home` is unset. The status row (`chat.agent.home = row`) and the
 # transcript's first line (`transcript`) must show each pane's own home, and /state's home text must
 # match the `agent.home` wheeld holds for the pane (`wheel space ls`). The homes are directories of
 # this check's own under the real $HOME (removed on exit), so the labels start with "~".
@@ -68,7 +68,7 @@ done
 eq "the status row is where the home shows" "$(st --arg p "$P1" '.panes[$p].home.where')" "row"
 
 # 2. the transcript's first line.
-w config set chat.session.home transcript --machine >/dev/null
+w config set chat.agent.home transcript --machine >/dev/null
 check "placement becomes transcript" wait_st ".panes[\"$P1\"].home.where == \"transcript\"" 10
 eq "the intro line of the work pane" "$(st --arg p "$P1" '.panes[$p].home.intro')" "Claude Code · $T/.claude-work"
 eq "the intro line of the ~/.claude pane" "$(st --arg p "$P2" '.panes[$p].home.intro')" "Claude Code · $T/.claude"
@@ -78,7 +78,7 @@ eq "the intro line of the Codex pane" "$(st --arg p "$P3" '.panes[$p].home.intro
 w pane close "$P3" >/dev/null
 w pane close "$P4" >/dev/null
 wait_st '[.panes[] | select(.kind == "agent")] | length == 2' 10
-w config set chat.session.home row --machine >/dev/null
+w config set chat.agent.home row --machine >/dev/null
 wait_st ".panes[\"$P1\"].home.where == \"row\"" 10
 app_post "/window/front" >/dev/null
 sleep 1

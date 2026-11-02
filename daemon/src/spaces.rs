@@ -12,11 +12,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
     AgentPermissions, ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget,
-    NewPaneKind, Node, PaneKind, ServerMsg, SessionState, SpaceInfo, StartKind,
+    NewPaneKind, Node, PaneKind, ServerMsg, AgentState, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
-use crate::resume::Agent as Harness;
+use crate::resume::Harness;
 use crate::server::{AgentStart, AppState, Owner};
 use crate::settings::{page, HOMEPAGE, PLACEMENT};
 
@@ -540,14 +540,14 @@ pub struct StartOptions {
     pub permissions: AgentPermissions,
 }
 
-/// What `pane_start` returns: the pane, and for an agent its session and state.
+/// What `pane_start` returns: the pane, and for an agent its agent and state.
 #[derive(Debug, Serialize)]
 pub struct Started {
     pub pane: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<String>,
+    pub agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<SessionState>,
+    pub state: Option<AgentState>,
 }
 
 impl AppState {
@@ -566,7 +566,7 @@ impl AppState {
     }
 
     /// The layout for a reader that asks (`status`): every agent pane
-    /// carries its session's state beside the session's name, and every pane and space its
+    /// carries its agent's state beside the agent's name, and every pane and space its
     /// status. The saved layout and the broadcast leave them out, since they change without the
     /// layout changing.
     pub fn listing(&self) -> Spaces {
@@ -574,7 +574,7 @@ impl AppState {
         for space in &mut spaces.spaces {
             each_kind_mut(&mut space.root, &mut |kind| {
                 if let PaneKind::Agent {
-                    session,
+                    agent,
                     state,
                     model,
                     context,
@@ -582,7 +582,7 @@ impl AppState {
                     ..
                 } = kind
                 {
-                    let running = self.session(session).ok();
+                    let running = self.agent(agent).ok();
                     *state = running.as_ref().map(|s| Box::new(s.state()));
                     *model = running.as_ref().and_then(|s| s.model());
                     *context = running.as_ref().and_then(|s| s.context());
@@ -690,9 +690,9 @@ impl AppState {
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
             PaneKind::Browser { .. } => self.console.lock().unwrap().clear(pane),
-            PaneKind::Agent { session, .. } => {
-                self.end_session(session);
-                // The caller holds the spaces lock, so the sweep that deletes this session's
+            PaneKind::Agent { agent, .. } => {
+                self.end_agent(agent);
+                // The caller holds the spaces lock, so the sweep that deletes this agent's
                 // artifacts waits for the layout without the pane.
                 if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                     let me = self.me.clone();
@@ -1338,7 +1338,7 @@ impl AppState {
         if kind == StartKind::Agent {
             self.agent_ready(&agent)?;
             let harness = Harness::parse(&agent).ok_or_else(|| format!("no agent {agent}"))?;
-            crate::agent::check_permissions(
+            crate::driver::check_permissions(
                 harness,
                 permissions.permission_mode.as_deref(),
                 permissions.sandbox.as_deref(),
@@ -1374,7 +1374,7 @@ impl AppState {
         match started {
             Ok(agent) => Ok(Started {
                 pane,
-                session: agent.as_ref().map(|(session, _)| session.clone()),
+                agent: agent.as_ref().map(|(agent, _)| agent.clone()),
                 state: agent.map(|(_, state)| state),
             }),
             Err((e, kept)) => {
@@ -1489,15 +1489,15 @@ impl AppState {
         // A hand-edited layout can name a mode the agent does not have; say so here rather than
         // let the agent fail at spawn.
         let harness =
-            Harness::parse(&saved.agent).ok_or_else(|| format!("no agent {}", saved.agent))?;
-        crate::agent::check_permissions(
+            Harness::parse(&saved.harness).ok_or_else(|| format!("no agent {}", saved.harness))?;
+        crate::driver::check_permissions(
             harness,
             permissions.permission_mode.as_deref(),
             permissions.sandbox.as_deref(),
         )?;
         self.spawn_agent(
-            &saved.session,
-            (&saved.pane, &saved.agent),
+            &saved.agent,
+            (&saved.pane, &saved.harness),
             (cwd.as_deref().unwrap_or(space_cwd), space_cwd),
             AgentStart {
                 conversation: saved.conversation,
@@ -1521,46 +1521,46 @@ impl AppState {
                 .flat_map(|space| {
                     agent_panes(&space.root)
                         .into_iter()
-                        .filter(|a| kept.contains(&a.session))
+                        .filter(|a| kept.contains(&a.agent))
                         .map(|a| (space.id.clone(), space.cwd.clone(), space.root.clone(), a))
                 })
                 .collect()
         };
         for (space, cwd, root, saved) in waiting {
-            let (pane, session) = (saved.pane.clone(), saved.session.clone());
+            let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
             match self.start_saved_agent(&cwd, &root, saved) {
                 Ok(()) => {
-                    tracing::info!(%space, %pane, %session, "agent started now that its program is found")
+                    tracing::info!(%space, %pane, %agent, "agent started now that its program is found")
                 }
                 Err(e) => {
-                    tracing::warn!(%space, %pane, %session, error = %e, "agent still cannot start")
+                    tracing::warn!(%space, %pane, %agent, error = %e, "agent still cannot start")
                 }
             }
         }
     }
 
     /// Make `pane` an agent pane, send its agent `message` if there is one, and wait for it to
-    /// be ready. Returns the session's name and state; an error carries whether the pane is now
+    /// be ready. Returns the agent's name and state; an error carries whether the pane is now
     /// an agent pane, which a caller that made the pane for this start keeps.
     async fn start_agent(
         &self,
         space: &str,
         pane: &str,
-        agent: &str,
+        harness: &str,
         message: Option<String>,
         model: Option<String>,
         permissions: AgentPermissions,
-    ) -> Result<(String, SessionState), (String, bool)> {
+    ) -> Result<(String, AgentState), (String, bool)> {
         let cwd = {
             let spaces = self.spaces.lock().unwrap();
             spaces.spaces[spaces.holding(pane).map_err(|e| (e, false))?]
                 .cwd
                 .clone()
         };
-        let session = self.new_id('w');
+        let name = self.new_id('w');
         self.spawn_agent(
-            &session,
-            (pane, agent),
+            &name,
+            (pane, harness),
             (&cwd, &cwd),
             AgentStart {
                 model: model.clone(),
@@ -1570,8 +1570,8 @@ impl AppState {
         )
         .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
-            session: session.clone(),
-            agent: agent.to_string(),
+            agent: name.clone(),
+            harness: harness.to_string(),
             conversation: None,
             state: None,
             model,
@@ -1580,30 +1580,30 @@ impl AppState {
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
             extra: Extra::default(),
         };
-        // A pane that closed while the agent spawned ends the session it was given.
+        // A pane that closed while the agent spawned ends the agent it was given.
         self.install(pane, new, None).map_err(|e| (e, false))?;
-        let agent = self.session(&session).map_err(|e| (e, true))?;
+        let live = self.agent(&name).map_err(|e| (e, true))?;
         if let Some(message) = message {
-            agent.send(message).map_err(|e| (e, true))?;
+            live.send(message).map_err(|e| (e, true))?;
         }
-        tracing::info!(%space, %pane, %session, "agent started");
+        tracing::info!(%space, %pane, %name, "agent started");
         let start_wait = self.agent_timing.lock().unwrap().start_wait;
-        match tokio::time::timeout(start_wait, agent.started()).await {
-            Ok(Ok(())) => tracing::info!(%session, "agent ready"),
+        match tokio::time::timeout(start_wait, live.started()).await {
+            Ok(Ok(())) => tracing::info!(%name, "agent ready"),
             Ok(Err(e)) => {
-                tracing::warn!(%space, %pane, %session, error = %e, "agent could not start");
+                tracing::warn!(%space, %pane, %name, error = %e, "agent could not start");
                 return Err((
                     format!(
-                        "agent {session} in pane {pane} could not start: {e}. Its pane stays open showing the error; wheel pane close removes it"
+                        "agent {name} in pane {pane} could not start: {e}. Its pane stays open showing the error; wheel pane close removes it"
                     ),
                     true,
                 ));
             }
             Err(_) => {
-                tracing::info!(%session, wait_ms = start_wait.as_millis() as u64, "agent still starting")
+                tracing::info!(%name, wait_ms = start_wait.as_millis() as u64, "agent still starting")
             }
         }
-        Ok((session, agent.state()))
+        Ok((name, live.state()))
     }
 
     /// A browser pane is showing `url` now: store it, so the saved layout follows where the person
@@ -1813,9 +1813,9 @@ impl AppState {
         Ok(())
     }
 
-    /// Claude Code in a terminal pane says it is in conversation `session` now. The next sample
-    /// saves it as the pane's agent session, so a view switch resumes this conversation.
-    pub fn pane_report_session(&self, pane: &str, session: &str, pid: u32) -> Result<(), String> {
+    /// Claude Code in a terminal pane says it is in conversation `agent` now. The next sample
+    /// saves it as the pane's agent, so a view switch resumes this conversation.
+    pub fn pane_report_conversation(&self, pane: &str, conversation: &str, pid: u32) -> Result<(), String> {
         let term = {
             let spaces = self.spaces.lock().unwrap();
             let kind = spaces
@@ -1840,18 +1840,18 @@ impl AppState {
             Some(claude) == foreground || (group > 0 && Some(group as u32) == foreground)
         };
         if !reporter.is_some_and(is_foreground) {
-            tracing::warn!(%pane, %term, %pid, ?reporter, ?foreground, "session report ignored; it is not from the terminal's Claude Code");
+            tracing::warn!(%pane, %term, %pid, ?reporter, ?foreground, "agent report ignored; it is not from the terminal's Claude Code");
             return Err(format!(
                 "{pane}'s foreground program did not send this report"
             ));
         }
         let old = self
-            .session_reports
+            .conversation_reports
             .lock()
             .unwrap()
-            .insert(term.clone(), session.to_string());
-        if old.as_deref() != Some(session) {
-            tracing::info!(%pane, %term, old = ?old, new = %session, "terminal agent reported its session");
+            .insert(term.clone(), conversation.to_string());
+        if old.as_deref() != Some(conversation) {
+            tracing::info!(%pane, %term, old = ?old, new = %conversation, "terminal agent reported its conversation");
         }
         Ok(())
     }
@@ -1912,7 +1912,7 @@ impl AppState {
         tracing::info!(rows = recent.len(), "space recent restored");
         *self.recent.lock().unwrap() = recent;
         let (mut respawned, mut agents) = (0, 0);
-        let mut resumed_sessions = std::collections::HashSet::new();
+        let mut resumed_conversations = std::collections::HashSet::new();
         let named_web: Vec<String> = loaded
             .spaces
             .iter()
@@ -1979,23 +1979,23 @@ impl AppState {
                         let mut resumed = None;
                         if let Some(agent) = saved_agent {
                             let line = crate::resume::resume_line(&agent);
-                            let key = (agent.name.clone(), agent.session.clone());
-                            if resumed_sessions.contains(&key) {
-                                outcome = format!("{outcome}; {} session {} already resumed in another pane, so a plain shell", agent.name, agent.session);
-                            } else if !crate::resume::session_exists(&agent, &dir) {
-                                tracing::warn!(space = %space.id, %pane, agent = %agent.name, session = %agent.session, %dir, "the agent's session is gone; the pane starts a plain shell");
+                            let key = (agent.name.clone(), agent.conversation.clone());
+                            if resumed_conversations.contains(&key) {
+                                outcome = format!("{outcome}; {} conversation {} already resumed in another pane, so a plain shell", agent.name, agent.conversation);
+                            } else if !crate::resume::conversation_exists(&agent, &dir) {
+                                tracing::warn!(space = %space.id, %pane, agent = %agent.name, conversation = %agent.conversation, %dir, "the agent's conversation is gone; the pane starts a plain shell");
                                 outcome = format!(
-                                    "{outcome}; {} session {} is gone, so a plain shell",
-                                    agent.name, agent.session
+                                    "{outcome}; {} conversation {} is gone, so a plain shell",
+                                    agent.name, agent.conversation
                                 );
                             } else if let Some(line) = line {
                                 match term.write(format!("{line}\n").into_bytes()) {
                                     Ok(()) => {
                                         outcome = format!(
-                                            "{outcome}; resumed {} session {}",
-                                            agent.name, agent.session
+                                            "{outcome}; resumed {} conversation {}",
+                                            agent.name, agent.conversation
                                         );
-                                        resumed_sessions.insert(key);
+                                        resumed_conversations.insert(key);
                                         resumed = Some(agent);
                                     }
                                     Err(e) => {
@@ -2030,22 +2030,22 @@ impl AppState {
             // Agents do not outlive the daemon: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
             for saved in agent_panes(&space.root) {
-                let (pane, session) = (saved.pane.clone(), saved.session.clone());
+                let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
                 match self.start_saved_agent(&space.cwd, &space.root, saved) {
                     Ok(()) => {
                         agents += 1;
                         outcomes.insert(
                             pane,
-                            format!("agent {session} started, loading its saved conversation"),
+                            format!("agent {agent} started, loading its saved conversation"),
                         );
                     }
                     // Kept as saved, so a later start with an agent command runs it again.
                     Err(e) => {
-                        tracing::warn!(space = %space.id, %pane, %session, error = %e, "could not restart the pane's agent");
-                        self.kept_agents.lock().unwrap().insert(session.clone());
+                        tracing::warn!(space = %space.id, %pane, %agent, error = %e, "could not restart the pane's agent");
+                        self.kept_agents.lock().unwrap().insert(agent.clone());
                         outcomes.insert(
                             pane,
-                            format!("agent {session} kept as saved, not started: {e}"),
+                            format!("agent {agent} kept as saved, not started: {e}"),
                         );
                     }
                 }
@@ -2119,17 +2119,17 @@ impl AppState {
                 let claimed = saved
                     .iter()
                     .filter(|(term, _)| **term != t.id)
-                    .map(|(_, agent)| agent.session.clone())
+                    .map(|(_, agent)| agent.conversation.clone())
                     .collect();
                 let reported = self.context_reports.lock().unwrap().get(&t.id).copied();
-                let reported_session = self.session_reports.lock().unwrap().get(&t.id).cloned();
+                let reported_conversation = self.conversation_reports.lock().unwrap().get(&t.id).cloned();
                 let sample = crate::resume::sample(
                     t.pid,
                     t.foreground(),
                     saved.get(&t.id),
                     &claimed,
                     reported,
-                    reported_session.as_deref(),
+                    reported_conversation.as_deref(),
                 );
                 if sample.agent.is_some() {
                     t.saw_job();
@@ -2170,9 +2170,9 @@ impl AppState {
                 }
                 if *settled
                     && sample.agent.is_none()
-                    && self.session_reports.lock().unwrap().remove(term).is_some()
+                    && self.conversation_reports.lock().unwrap().remove(term).is_some()
                 {
-                    tracing::info!(%term, "terminal agent session report dropped; no agent runs here");
+                    tracing::info!(%term, "terminal agent report dropped; no agent runs here");
                 }
                 // The context figure moves with every turn; the save cares about where the pane
                 // is and which conversation it is in.
@@ -2218,7 +2218,7 @@ impl AppState {
             .lock()
             .unwrap()
             .retain(|term, _| live.contains(term.as_str()));
-        self.session_reports
+        self.conversation_reports
             .lock()
             .unwrap()
             .retain(|term, _| live.contains(term.as_str()));
@@ -2230,7 +2230,7 @@ impl AppState {
         changed
     }
 
-    /// An agent pane's agent gave its session a new conversation id: save it in the pane.
+    /// An agent pane's agent gave its agent a new conversation id: save it in the pane.
     pub(crate) fn conversations_changed(&self) {
         let mut spaces = self.spaces.lock().unwrap();
         if self.sync_conversations(&mut spaces) {
@@ -2238,18 +2238,18 @@ impl AppState {
         }
     }
 
-    /// Copy each running agent session's conversation id into its agent pane; true when one changed.
-    /// Agents run while the spaces lock is free, so a pane takes its session's id here, under the
+    /// Copy each running agent's conversation id into its agent pane; true when one changed.
+    /// Agents run while the spaces lock is free, so a pane takes its agent's id here, under the
     /// lock, whichever of the two comes first.
     fn sync_conversations(&self, spaces: &mut Spaces) -> bool {
         let mut changed = false;
         for space in &mut spaces.spaces {
             each_kind_mut(&mut space.root, &mut |kind| {
                 if let PaneKind::Agent {
-                    session, context, ..
+                    agent, context, ..
                 } = kind
                 {
-                    if let Ok(running) = self.session(session).map(|s| s.context()) {
+                    if let Ok(running) = self.agent(agent).map(|s| s.context()) {
                         if *context != running {
                             *context = running;
                             changed = true;
@@ -2257,18 +2257,18 @@ impl AppState {
                     }
                 }
                 let PaneKind::Agent {
-                    session,
+                    agent,
                     conversation,
                     ..
                 } = kind
                 else {
                     return;
                 };
-                let Ok(running) = self.session(session).map(|s| s.saved_conversation()) else {
+                let Ok(running) = self.agent(agent).map(|s| s.saved_conversation()) else {
                     return;
                 };
                 if *conversation != running {
-                    tracing::info!(%session, conversation = ?running, "agent pane saves its conversation");
+                    tracing::info!(%agent, conversation = ?running, "agent pane saves its conversation");
                     *conversation = running;
                     changed = true;
                 }
@@ -2306,11 +2306,11 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
     }
 }
 
-/// An agent pane as saved: its session's name, the agent it runs and the conversation it keeps.
+/// An agent pane as saved: its agent id, the program it runs and the conversation it keeps.
 pub(crate) struct AgentPane {
     pub pane: String,
-    pub session: String,
     pub agent: String,
+    pub harness: String,
     pub conversation: Option<String>,
     pub context: Option<ContextUse>,
     pub model: Option<String>,
@@ -2322,16 +2322,16 @@ pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
         .into_iter()
         .filter_map(|(id, kind)| match kind {
             PaneKind::Agent {
-                session,
                 agent,
+                harness,
                 conversation,
                 context,
                 model,
                 ..
             } => Some(AgentPane {
                 pane: id.to_string(),
-                session: session.clone(),
                 agent: agent.clone(),
+                harness: harness.clone(),
                 conversation: conversation.clone(),
                 context: *context,
                 model: model.clone(),

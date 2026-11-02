@@ -4,7 +4,7 @@ import Testing
 struct NodeShapeTests {
     private func tree(url: String) -> Node {
         let browser = Node.pane(id: "p2", kind: .browser(url: url))
-        let term = Node.pane(id: "p1", kind: .terminal(term: "t1", agent: TermAgent(name: "claude", session: "s", context: ContextUse(used: UInt64(url.count), size: 100))))
+        let term = Node.pane(id: "p1", kind: .terminal(term: "t1", agent: TermAgent(name: "claude", conversation: "s", context: ContextUse(used: UInt64(url.count), size: 100))))
         return .split(id: "x1", axis: .horizontal, ratio: 0.5, a: term, b: browser)
     }
 

@@ -63,7 +63,7 @@ function panesOf(node, out) {
 
 function row(space, pane) {
   const w = pane.work;
-  const name = pane.session || pane.id;
+  const name = pane.agent || pane.id;
   const items = w && w.items && w.items.length
     ? w.items.map(i => `<span class="item"><i>${esc(i.kind)}</i>${esc(i.id)}</span>`).join('')
     : '';
