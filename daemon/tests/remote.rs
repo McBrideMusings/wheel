@@ -530,6 +530,7 @@ async fn a_peer_past_its_connection_share_is_closed_and_gets_the_slot_back_when_
 
     // Sockets that never start a handshake each hold a slot until the daemon's 10s timeout.
     let mut held = Vec::new();
+    let held_since = tokio::time::Instant::now();
     for _ in 0..16 {
         held.push(TcpStream::connect(("127.0.0.1", remote)).await.unwrap());
     }
@@ -542,10 +543,22 @@ async fn a_peer_past_its_connection_share_is_closed_and_gets_the_slot_back_when_
         "the 17th connection from one peer stayed open: {closed:?}"
     );
 
+    // A slot comes back when its socket closes. Ask until a connection is held open, giving up
+    // before the daemon's 10s handshake timeout would free the held slots on its own, so only the
+    // drop can let this pass (the last 500ms read still ends before that timeout).
     drop(held);
-    tokio::time::sleep(Duration::from_secs(15)).await;
-    let mut again = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
-    let waiting = tokio::time::timeout(Duration::from_millis(500), again.read(&mut byte)).await;
-    assert!(waiting.is_err(), "a freed slot still refused a connection");
+    let deadline = held_since + Duration::from_secs(9);
+    loop {
+        let mut again = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
+        let waiting = tokio::time::timeout(Duration::from_millis(500), again.read(&mut byte)).await;
+        if waiting.is_err() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a freed slot still refused a connection"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     drop(daemon);
 }

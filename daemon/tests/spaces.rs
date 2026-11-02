@@ -4430,7 +4430,29 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
         .await
         .contains(&resume));
     for plain in ["p1", "p3", "p4", "p5"] {
-        let text = term_text(&mut ws, &term(plain), "--resume").await;
+        // The daemon types a resume line while it restores the layout, before it serves anyone,
+        // so a line typed now runs after any resume line, and the read ends when its output shows
+        // (the typed line itself reads `$((6*7))`, not 42).
+        let id = term(plain);
+        let mark = format!("restored-{plain}-42");
+        // Sent with no reply to wait for: p2's terminal is still attached, and its output arrives
+        // where `call` would look for an `ok`.
+        send_only(
+            &mut ws,
+            ClientMsg::TermInput {
+                req: None,
+                id: id.clone(),
+                data: wheel_proto::encode_bytes(
+                    format!("echo restored-{plain}-$((6*7))\r").as_bytes(),
+                ),
+            },
+        )
+        .await;
+        let text = term_text(&mut ws, &id, &mark).await;
+        assert!(
+            text.contains(&mark),
+            "{plain} never ran the typed line: {text:?}"
+        );
         assert!(
             !text.contains("--resume"),
             "{plain} types no resume command: {text:?}"

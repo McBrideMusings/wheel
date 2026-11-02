@@ -4510,7 +4510,9 @@ async fn a_local_commands_output_shows_as_a_text_row() {
 #[tokio::test(flavor = "multi_thread")]
 async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() {
     let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
-    let (url, _, daemon) = start_daemon_with(fake, None).await;
+    // A refused model goes through the restart backoff before the start fails (wheel-2fjs);
+    // quick() shortens that wait, which this test does not check.
+    let (url, _, daemon) = start_daemon_timed(fake, None, quick()).await;
     let (_, pane) = space(&url, "/tmp").await;
     let mut ws = connect(&url).await;
     let started = client_op(
