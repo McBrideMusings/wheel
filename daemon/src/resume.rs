@@ -57,7 +57,7 @@ impl Harness {
     }
 
     /// The environment variable that moves the agent's data directory, and where that is by default.
-    fn home_var(self) -> &'static str {
+    pub(crate) fn home_var(self) -> &'static str {
         match self {
             Harness::Claude => "CLAUDE_CONFIG_DIR",
             Harness::Codex => "CODEX_HOME",

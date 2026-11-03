@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -457,6 +457,42 @@ impl AppState {
             }
         }
         section
+    }
+
+    /// The configuration directory the person's login shell gives an agent started in `cwd`, asked
+    /// from the primary checkout `cwd` belongs to: a terminal opened there holds it, set by the
+    /// person's own startup files, so an agent picks the same account a terminal would. None when
+    /// `agent.<name>.home` is set (it decides), when the shell leaves the variable unset, or when it
+    /// is the daemon's own. Err when the shell gave no answer, since the agent would otherwise
+    /// start in whichever account the default is.
+    pub(crate) async fn shell_agent_home(
+        &self,
+        agent: &str,
+        cwd: &str,
+    ) -> Result<Option<String>, String> {
+        if self.agent_home(agent).is_some() {
+            return Ok(None);
+        }
+        let Some(harness) = Harness::parse(agent) else {
+            return Ok(None);
+        };
+        let asked = crate::checkout::primary(Path::new(cwd));
+        let var = harness.home_var();
+        let shell = crate::login_path::shell();
+        let answer = {
+            let (program, dir) = (shell.clone(), asked.clone());
+            tokio::task::spawn_blocking(move || {
+                crate::login_path::probe_in(&program, &dir, var, crate::login_path::LIMIT)
+            })
+            .await
+            .map_err(|e| format!("asking {shell} for {var} failed: {e}"))?
+        }
+        .map_err(|f| format!("{shell} gave no {var} for {}: {}", asked.display(), f.why))?;
+        tracing::info!(%agent, %var, asked = %asked.display(), home = %answer, "agent home from the login shell");
+        let home = (!answer.is_empty()).then(|| PathBuf::from(answer));
+        Ok(home
+            .filter(|h| Some(h) != harness.daemon_home().as_ref())
+            .map(|h| h.display().to_string()))
     }
 
     /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.

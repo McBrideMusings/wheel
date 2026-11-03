@@ -102,6 +102,26 @@ pub fn ask(shell: &str, own: &str, try_: u32) -> (wheel_proto::LoginPath, bool) 
 
 /// Ask `shell -il` for PATH; blocks for up to `limit`. Why not, when it gave none.
 pub fn probe(shell: &str, limit: Duration) -> Result<String, Failed> {
+    ask_shell(shell, None, r#"printf '\036%s\036' "$PATH""#, "PATH", limit)
+}
+
+/// Ask `shell -il`, started in `cwd`, for the value of environment variable `var`: what a terminal
+/// opened there would hold, since the person's startup files may set it per directory. An unset
+/// variable answers empty. Blocks for up to `limit`.
+pub fn probe_in(shell: &str, cwd: &Path, var: &str, limit: Duration) -> Result<String, Failed> {
+    let script = format!(r#"printf '\036%s\036' "${{{var}-}}""#);
+    ask_shell(shell, Some(cwd), &script, var, limit)
+}
+
+/// Run `script` in `shell -ilc`, in `cwd` when given, and return what it printed between two
+/// [`MARK`]s; `what` names the answer in the errors.
+fn ask_shell(
+    shell: &str,
+    cwd: Option<&Path>,
+    script: &str,
+    what: &str,
+    limit: Duration,
+) -> Result<String, Failed> {
     let failed = |why: String| Failed {
         why,
         timed_out: false,
@@ -113,10 +133,13 @@ pub fn probe(shell: &str, limit: Duration) -> Result<String, Failed> {
         .to_string();
     let mut command = Command::new(shell);
     command
-        .args(["-ilc", r#"printf '\036%s\036' "$PATH""#])
+        .args(["-ilc", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
     // SAFETY: setsid is async-signal-safe and touches no memory of this process. A new session
     // makes the shell lead its own group, with no terminal to wait on.
     unsafe {
@@ -141,7 +164,7 @@ pub fn probe(shell: &str, limit: Duration) -> Result<String, Failed> {
             break Ok(String::from_utf8_lossy(parts[1]).into_owned());
         }
         if bytes.len() > MOST {
-            break Err(failed(format!("{name} -il printed over 256 KB without PATH, so it was stopped; something in its startup files prints without end")));
+            break Err(failed(format!("{name} -il printed over 256 KB without {what}, so it was stopped; something in its startup files prints without end")));
         }
         let Some(left) = limit.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) else {
             break Err(Failed {
@@ -163,14 +186,14 @@ pub fn probe(shell: &str, limit: Duration) -> Result<String, Failed> {
                 continue;
             }
             break Err(failed(format!(
-                "wheeld could not wait for {name} -il to print PATH: {e}"
+                "wheeld could not wait for {name} -il to print {what}: {e}"
             )));
         }
         if ready == 0 {
             continue;
         }
         match out.read(&mut chunk) {
-            Ok(0) => break Err(failed(format!("{name} -il exited without printing PATH, so where it looks for commands is unknown"))),
+            Ok(0) => break Err(failed(format!("{name} -il exited without printing {what}"))),
             Ok(n) => bytes.extend_from_slice(&chunk[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => break Err(failed(format!("wheeld could not read what {name} -il printed: {e}"))),
@@ -274,6 +297,36 @@ mod tests {
         let gone = wait_for(|| sleepers_running("sleep 473[12]"), false);
         assert!(gone, "the shell's group outlived the probe");
     }
+    #[test]
+    fn the_shell_is_asked_from_the_directory_the_agent_runs_in() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = std::env::temp_dir().join(format!("wheel-login-var-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (routed, plain) = (root.join("routed"), root.join("plain"));
+        std::fs::create_dir_all(&routed).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        // A shell whose startup files set the variable for one directory only, as a per-directory
+        // hook in the person's rc file does.
+        let shell = root.join("shell");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\ncase \"$(pwd -P)\" in */routed) export WHEEL_TEST_HOME=/routed/home;; esac\neval \"$2\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shell = shell.display().to_string();
+        let limit = Duration::from_secs(20);
+        assert_eq!(
+            probe_in(&shell, &routed, "WHEEL_TEST_HOME", limit).unwrap(),
+            "/routed/home"
+        );
+        assert_eq!(
+            probe_in(&shell, &plain, "WHEEL_TEST_HOME", limit).unwrap(),
+            ""
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn a_wheeld_killed_mid_probe_takes_the_shells_group_with_it() {
         use std::os::unix::fs::PermissionsExt as _;

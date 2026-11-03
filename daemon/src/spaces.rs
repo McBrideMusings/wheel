@@ -1656,11 +1656,16 @@ impl AppState {
                 .clone()
         };
         let name = self.new_id('w');
+        let home = self
+            .shell_agent_home(harness, &cwd)
+            .await
+            .map_err(|e| (e, false))?;
         self.spawn_agent(
             &name,
             (pane, harness),
             (&cwd, &cwd),
             AgentStart {
+                home: home.clone(),
                 model: model.clone(),
                 permissions: permissions.clone(),
                 ..Default::default()
@@ -1674,7 +1679,8 @@ impl AppState {
             state: None,
             model,
             context: None,
-            place: None,
+            // The pane keeps the account it started in, so a restart finds its conversation there.
+            place: wheel_proto::AgentPlace::boxed(None, home),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
             extra: Extra::default(),
         };
