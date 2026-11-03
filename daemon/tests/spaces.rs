@@ -464,8 +464,9 @@ async fn a_space_lists_the_processes_its_panes_started_and_stops_one() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let sleeper = found.expect("sleep 4242 is listed under its pane");
-    assert_eq!(sleeper.pane, pane);
-    assert_eq!(sleeper.name, "sleep");
+    assert_eq!(sleeper.pane.as_deref(), Some(pane.as_str()));
+    assert_eq!(sleeper.how.as_deref(), Some("typed in the terminal"));
+    assert_eq!(sleeper.name, "sleep 4242");
 
     let refused = call(
         &mut ws,

@@ -202,17 +202,21 @@ pub enum OnEdited {
     Replace,
 }
 
-/// One process started from a pane: what a client's process list shows in a row.
+/// One process a space started: what a client's process list shows in a row. A client nests rows
+/// by `ppid`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProcInfo {
     pub pid: u32,
     pub ppid: u32,
-    /// The pane whose terminal or agent started it.
-    pub pane: String,
+    /// The pane whose terminal or agent started it; none for a detached process whose pane is
+    /// unknown or has closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
     /// The agent running in that pane (`claude`, `codex`, `pi`), when it runs one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// The program's name: its first argument's last path component.
+    /// The command as run: the command line, or for a Claude Code Bash-tool shell the command
+    /// inside it.
     pub name: String,
     /// The full command line.
     pub command: String,
@@ -224,6 +228,15 @@ pub struct ProcInfo {
     pub age_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// How it came to run, when its parent says: `typed in the terminal`, `Bash tool`, `LSP`,
+    /// `started by <agent>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub how: Option<String>,
+    /// For a process no pane holds any more, what ties it to this space ("detached from its
+    /// pane", "a Claude Bash command run in this folder; its pane is unknown"); none for one
+    /// still under its pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached: Option<String>,
 }
 
 /// One labelled value in a pane's info: what a person reads and copies.

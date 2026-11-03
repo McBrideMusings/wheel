@@ -3717,17 +3717,24 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
                     serde_json::to_string_pretty(&procs).unwrap_or_default()
                 );
             } else {
-                println!("PID\tPANE\tAGENT\tCPU%\tMEM_MB\tAGE_S\tCOMMAND");
+                println!("PID\tPPID\tPANE\tAGENT\tCPU%\tMEM_MB\tAGE_S\tHOW\tCOMMAND");
                 for p in &procs {
+                    let how = match (&p.detached, &p.how) {
+                        (Some(why), _) => format!("detached: {why}"),
+                        (None, Some(how)) => how.clone(),
+                        (None, None) => "-".into(),
+                    };
                     println!(
-                        "{}\t{}\t{}\t{:.1}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}",
                         p.pid,
-                        p.pane,
+                        p.ppid,
+                        p.pane.as_deref().unwrap_or("-"),
                         p.agent.as_deref().unwrap_or("-"),
                         p.cpu,
                         p.mem_kb / 1024,
                         p.age_secs,
-                        p.command
+                        how,
+                        p.name
                     );
                 }
             }
