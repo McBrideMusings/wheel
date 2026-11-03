@@ -97,6 +97,8 @@ pub struct LoginRead {
     /// The account's id, or the login's Keychain service when the account is unknown.
     pub key: String,
     pub name: String,
+    /// Every config directory whose login belongs to this account.
+    pub dirs: Vec<PathBuf>,
     pub result: Result<RawUsage, UsageFailure>,
 }
 
@@ -155,6 +157,7 @@ fn other_agent(id: &str, name: &str, listed: &[String]) -> UsageAgent {
 struct Account {
     key: String,
     name: String,
+    dirs: Vec<PathBuf>,
     last: Option<UsageReading>,
     /// Why the latest attempt gave nothing; None after a read that worked.
     problem: Option<Problem>,
@@ -231,6 +234,7 @@ impl Usage {
             .map(|a| UsageAccount {
                 id: account_id(&a.key),
                 name: a.name.clone(),
+                dirs: a.dirs.iter().map(|d| d.display().to_string()).collect(),
                 usage: a.state(now_ms, stale_after).info(now_ms),
             })
             .collect()
@@ -271,6 +275,15 @@ impl AppState {
                 board: self.usage_board(),
             });
         }
+    }
+
+    /// The account whose login lives in `dir`, as the readings stand.
+    pub(crate) fn usage_account_in(&self, dir: &Path) -> Option<UsageAccount> {
+        let dir = dir.display().to_string();
+        self.usage
+            .accounts(unix_ms_now())
+            .into_iter()
+            .find(|a| a.dirs.contains(&dir))
     }
 
     /// The agents the usage views list and the pinned rows, as the settings and the readings stand.
@@ -341,11 +354,13 @@ impl AppState {
                 None => Account {
                     key: read.key.clone(),
                     name: String::new(),
+                    dirs: Vec::new(),
                     last: None,
                     problem: None,
                 },
             };
             account.name = read.name;
+            account.dirs = read.dirs;
             match read.result {
                 Ok(raw) => {
                     if account.problem.is_some() {
@@ -565,6 +580,9 @@ fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginR
             if !named && ok.is_none() {
                 return None;
             }
+            let mut dirs: Vec<PathBuf> = members.iter().filter_map(|(l, _)| l.dir.clone()).collect();
+            dirs.sort();
+            dirs.dedup();
             let dir_name = members
                 .iter()
                 .filter_map(|(l, _)| l.dir.as_deref()?.file_name())
@@ -586,7 +604,12 @@ fn merge(reads: Vec<LoginResult>, known: &HashMap<String, String>) -> Vec<LoginR
                 Ok(raw) => account_label(raw),
                 Err(_) => "Claude".to_string(),
             });
-            Some(LoginRead { key, name, result })
+            Some(LoginRead {
+                key,
+                name,
+                dirs,
+                result,
+            })
         })
         .collect()
 }
@@ -915,6 +938,7 @@ impl UsageSource for FileUsage {
         let single = |result| LoginRead {
             key: "claude".into(),
             name: "Claude".into(),
+            dirs: Vec::new(),
             result,
         };
         let failed = |why: String| UsageFailure::Failed {
@@ -951,6 +975,12 @@ impl UsageSource for FileUsage {
                     LoginRead {
                         key: name.clone(),
                         name,
+                        dirs: a["dirs"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|d| d.as_str().map(PathBuf::from))
+                            .collect(),
                         result: one(a),
                     }
                 })
@@ -1342,6 +1372,7 @@ mod tests {
         LoginRead {
             key: key.into(),
             name: name.into(),
+            dirs: Vec::new(),
             result,
         }
     }

@@ -1636,11 +1636,12 @@ async fn handle(
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let reply = match (req, state.pane_info(&pane).await) {
-                    (Some(req), Ok((pane, kind, fields))) => Some(ServerMsg::PaneInfo {
+                    (Some(req), Ok((pane, kind, fields, login))) => Some(ServerMsg::PaneInfo {
                         req,
                         pane,
                         kind,
                         fields,
+                        login,
                     }),
                     (_, Ok(_)) => None,
                     (req, Err(message)) => {

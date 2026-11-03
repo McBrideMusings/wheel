@@ -68,10 +68,6 @@ final class PhoneModel {
     /// refused agent is the signal to attach again.
     private var attachReqs: Set<UInt64> = []
     private var refusedAttach: Set<String> = []
-    /// The coding agents' usage as the daemon last sent it; the bar under the top bar draws it.
-    private(set) var usage = UsageBoard()
-    /// A board has arrived since the last connect.
-    private(set) var usageLoaded = false
     /// The Settings screen: every setting resolved for `settingsSpace`, each carrying this machine's
     /// value and that project's, as the Mac's window reads them.
     private(set) var settings: [SettingInfo] = []
@@ -225,8 +221,7 @@ final class PhoneModel {
         agentReqs = [:]
         attachReqs = []
         refusedAttach = []
-        usage = UsageBoard()
-        usageLoaded = false
+        logins = [:]
         settings = []
         settingsLoaded = false
         settingRefusals = [:]
@@ -263,7 +258,6 @@ final class PhoneModel {
             connection = state
             if state != .connected { for terminal in terminals.values { terminal.attached = false } }
             if state != .connected { links.forget() }
-            usageLoaded = false
             if case .connected = state {
                 settingListReq = nil
                 settingChangeReqs = [:]
@@ -285,9 +279,6 @@ final class PhoneModel {
             guard let self else { return }
             handle(status)
             registerPush()
-            // The daemon reads at most once per its interval however often this asks.
-            Log.info("usage ask dueOnly=true")
-            if let client = self.client { client.send(.usage(req: client.req(), dueOnly: true)) }
             askStatusDots()
             appearances.keep(only: spaces, reset: true)
             appearanceReqs = [:]
@@ -375,8 +366,9 @@ final class PhoneModel {
             chats[agent]?.commands = Set(commands)
         case let .agentTitle(agent, title):
             chats[agent]?.title = title
-        case let .paneInfo(_, pane, kind, fields):
+        case let .paneInfo(_, pane, kind, fields, login):
             paneInfo[pane] = fields
+            logins[pane] = PaneHeaderInfo(folder: fields.first { $0.label == "Directory" }?.value, login: login)
             Log.info("pane \(pane) info (\(kind)): \(fields.count) fields")
         case let .agentNotice(agent, notice):
             chats[agent]?.notice = notice
@@ -411,10 +403,9 @@ final class PhoneModel {
             terminal.attached = false
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
             terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
-        case let .usage(_, board), let .usageChanged(board):
-            usage = board
-            usageLoaded = true
-            Log.info("usage board shown=\(board.shown.map(\.id).joined(separator: ",")) pins=\(board.pins.joined(separator: ",")) rows=\(usageRowsText)")
+        case .usage, .usageChanged:
+            // A new reading changes the weekly figure of every login a header has asked about.
+            if let client { for pane in logins.keys { client.send(.paneInfo(req: client.req(), pane: pane)) } }
         case let .settings(req, space, list):
             receivedSettings(list, for: space, req: req)
         case let .artifacts(req, list):
@@ -896,13 +887,15 @@ final class PhoneModel {
     }
     // MARK: Usage and settings
 
-    /// What the usage bar shows, one `<agent> <account> <row> <percent>` per bar, for the log.
-    var usageRowsText: String {
-        usage.shown.flatMap { agent in
-            agent.accounts.flatMap { account in
-                usage.stripRows(for: account, of: agent).map { "\(agent.id) \(account.name) \($0.tag) \(UsageText.percent($0.pct))" }
-            }
-        }.joined(separator: ", ")
+    /// What an agent pane's header and card show beyond the chat: its folder and its login, by
+    /// pane id, from the last `paneInfo` reply.
+    private(set) var logins: [String: PaneHeaderInfo] = [:]
+    /// Ask for a pane's folder and login; with `refresh`, ask the daemon to read the usage first
+    /// (it reads at most once per its interval however often this asks).
+    func requestHeader(_ pane: String, refresh: Bool = false) {
+        guard let client else { return }
+        if refresh { client.send(.usage(req: client.req(), dueOnly: true)) }
+        client.send(.paneInfo(req: client.req(), pane: pane))
     }
 
     /// Ask for every setting as it resolves for `space` (nil: the machine-wide view). Each setting
@@ -1126,4 +1119,10 @@ struct SettingField: Hashable {
     enum Layer: String { case global, project }
     let layer: Layer
     let key: String
+}
+
+/// An agent pane's folder and the login it runs under, from `paneInfo`.
+struct PaneHeaderInfo: Equatable {
+    var folder: String?
+    var login: PaneLogin?
 }

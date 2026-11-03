@@ -24,7 +24,6 @@ struct SpaceCarousel: View {
             let panes = model.activeSpace?.root.readingOrder ?? []
             VStack(spacing: 0) {
                 topBar(panes: panes, dotsHere: landscape)
-                UsageStrip(model: model)
                 if panes.isEmpty {
                     ContentUnavailableView(connectionText, systemImage: "rectangle.on.rectangle")
                         .accessibilityIdentifier("no panes")
@@ -110,8 +109,8 @@ struct SpaceCarousel: View {
         if case let .terminal(term, _) = pane.kind {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
-        } else if case let .agent(agent, _, _) = pane.kind, let chat = model.chats[agent] {
-            AgentPane(model: model, pane: pane.id, agent: agent, chat: chat)
+        } else if case let .agent(agent, harness, _) = pane.kind, let chat = model.chats[agent] {
+            AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
         } else {

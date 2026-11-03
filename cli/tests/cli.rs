@@ -1057,6 +1057,7 @@ impl wheeld::usage::UsageSource for FixedUsage {
         vec![wheeld::usage::LoginRead {
             key: "acct".into(),
             name: ".claude".into(),
+            dirs: Vec::new(),
             result: self.0.clone(),
         }]
     }
@@ -1413,4 +1414,41 @@ async fn a_named_session_wins_over_wheel_pane_and_a_stale_pane_is_ignored() {
     assert_eq!(sessions_holding(&d, &named).await, vec![b.clone()]);
     let stale = ok(&d, &["space", "new", &dir, "--pane", "p99999"]).await;
     assert_eq!(sessions_holding(&d, &stale).await.len(), 1);
+}
+
+struct TwoLogins;
+
+impl wheeld::usage::UsageSource for TwoLogins {
+    fn read(&self) -> Vec<wheeld::usage::LoginRead> {
+        let login = |name: &str, weekly_pct: f64| wheeld::usage::LoginRead {
+            key: name.into(),
+            name: name.into(),
+            dirs: vec![format!("/logins/{name}").into()],
+            result: Ok(wheeld::usage::RawUsage {
+                weekly_pct,
+                ..Default::default()
+            }),
+        };
+        vec![login(".claude", 12.0), login(".claude-work", 71.0)]
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_info_reports_the_weekly_limit_of_the_panes_login() {
+    let d = daemon_with_agents_reading(Some(Arc::new(TwoLogins))).await;
+    let pane = agent_pane(&d, "hello").await;
+    ok(&d, &["usage"]).await;
+    for (dir, weekly) in [("/logins/.claude", "12%"), ("/logins/.claude-work", "71%")] {
+        ok(&d, &["config", "set", "agent.claude.home", dir, "--machine"]).await;
+        let info = ok(&d, &["pane", "info", &pane]).await;
+        assert!(info.contains(&format!("Weekly: {weekly}")), "{info}");
+        let json = ok(&d, &["pane", "info", &pane, "--json"]).await;
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json["login"]["dir"], dir, "{json}");
+        assert_eq!(
+            json["login"]["account"]["usage"]["reading"]["weekly_pct"],
+            weekly.trim_end_matches('%').parse::<f64>().unwrap(),
+            "{json}"
+        );
+    }
 }

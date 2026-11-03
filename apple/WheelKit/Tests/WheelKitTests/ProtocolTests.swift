@@ -360,12 +360,21 @@ struct ProtocolTests {
         #expect(json == #"{"agent":"w1","config":"model","op":"agent_config_set","req":7,"value":"haiku"}"#)
     }
 
+    @Test func paneInfoCarriesTheLoginAndItsAccount() throws {
+        let json = #"{"ev":"pane_info","req":4,"pane":"p2","kind":"agent","fields":[{"label":"Directory","value":"/w"}],"login":{"dir":"/h/.claude-work","account":{"id":"ab12cd34","name":".claude-work","dirs":["/h/.claude-work"],"usage":{"kind":"fresh","reading":{"session_pct":1,"weekly_pct":71,"read_at":5},"source":"s"}}}}"#
+        guard case let .paneInfo(_, _, _, _, login) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(login?.dir == "/h/.claude-work")
+        #expect(login?.account?.usage.reading?.weeklyPct == 71)
+        guard case let .paneInfo(_, _, _, _, none) = try ServerMsg.decode(#"{"ev":"pane_info","req":4,"pane":"p2","kind":"web","fields":[]}"#) else { Issue.record("wrong case"); return }
+        #expect(none == nil)
+    }
+
     @Test func decodesATitleAndAPaneInfo() throws {
         guard case let .agentTitle(agent, title) = try ServerMsg.decode(#"{"ev":"agent_title","agent":"w1","title":"Run an improve critique"}"#) else { Issue.record("wrong case"); return }
         #expect(agent == "w1")
         #expect(title == "Run an improve critique")
         let info = #"{"ev":"pane_info","req":3,"pane":"p2","kind":"agent","fields":[{"label":"Agent","value":"w1","hint":"Wheel's name"},{"label":"Pane","value":"p2"}]}"#
-        guard case let .paneInfo(req, pane, kind, fields) = try ServerMsg.decode(info) else { Issue.record("wrong case"); return }
+        guard case let .paneInfo(req, pane, kind, fields, _) = try ServerMsg.decode(info) else { Issue.record("wrong case"); return }
         #expect(req == 3)
         #expect(pane == "p2")
         #expect(kind == "agent")

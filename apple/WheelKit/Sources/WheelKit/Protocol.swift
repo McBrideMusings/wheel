@@ -1086,7 +1086,7 @@ public enum ServerMsg: Sendable {
     case agentTitle(agent: String, title: String?)
     /// What `paneInfo` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`,
     /// `empty`) and its labelled fields in display order.
-    case paneInfo(req: UInt64, pane: String, kind: String, fields: [InfoField])
+    case paneInfo(req: UInt64, pane: String, kind: String, fields: [InfoField], login: PaneLogin?)
     /// The processes `spaceProcs` found, in pane order.
     case procs(req: UInt64, space: String, procs: [ProcInfo])
     /// The conversations an agent's program holds for its directory, newest first.
@@ -1184,7 +1184,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1244,7 +1244,8 @@ extension ServerMsg: Decodable {
                           procs: try c.decode([ProcInfo].self, forKey: .procs))
         case "pane_info":
             self = .paneInfo(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
-                             kind: try c.decode(String.self, forKey: .kind), fields: try c.decode([InfoField].self, forKey: .fields))
+                             kind: try c.decode(String.self, forKey: .kind), fields: try c.decode([InfoField].self, forKey: .fields),
+                             login: try c.decodeIfPresent(PaneLogin.self, forKey: .login))
         case "conversations":
             self = .conversations(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
                                   conversations: try c.decode([ConversationInfo].self, forKey: .conversations))

@@ -4410,11 +4410,14 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             };
             match conn.call(msg, req).await? {
                 ServerMsg::PaneInfo {
-                    pane, kind, fields, ..
+                    pane,
+                    kind,
+                    fields,
+                    login,
+                    ..
                 } => {
                     if json {
-                        let value =
-                            serde_json::json!({"pane": pane, "kind": kind, "fields": fields});
+                        let value = serde_json::json!({"pane": pane, "kind": kind, "fields": fields, "login": login});
                         println!(
                             "{}",
                             serde_json::to_string_pretty(&value).unwrap_or_default()

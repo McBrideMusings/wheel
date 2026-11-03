@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1914,6 +1914,10 @@ pub enum ServerMsg {
         pane: String,
         kind: String,
         fields: Vec<InfoField>,
+        /// The login folder an agent pane runs under and the usage account read from it; unset
+        /// for any other pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        login: Option<PaneLogin>,
     },
     /// What `pane_view` left `pane` showing: `view` is `agent` or `terminal` (none for any other
     /// kind), and `conversation` the Claude Code agent id it shows, when it shows one.
@@ -2927,6 +2931,16 @@ pub struct UsageAgent {
     pub accounts: Vec<UsageAccount>,
 }
 
+/// The folder an agent pane takes its login from (`CLAUDE_CONFIG_DIR`, or the agent's default
+/// home) and the usage account read from that folder.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneLogin {
+    pub dir: String,
+    /// None while no account's login lives in `dir`: the agent has no usage reader, or `dir` holds no login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<UsageAccount>,
+}
+
 /// One account of a coding agent and its reading. Several logins of one account are one entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageAccount {
@@ -2935,6 +2949,9 @@ pub struct UsageAccount {
     /// The config directory the login lives in (`.claude-work`), or the plan and a masked email
     /// when no directory matched.
     pub name: String,
+    /// Every config directory whose login belongs to this account, as absolute paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirs: Vec<String>,
     pub usage: UsageInfo,
 }
 

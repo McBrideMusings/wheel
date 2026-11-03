@@ -1,7 +1,7 @@
 //! What a pane is, as labelled values a person copies: one builder behind the clients' ⓘ popover
 //! and `wheel pane info`, so every surface shows the same fields.
 
-use wheel_proto::{InfoField, PaneKind};
+use wheel_proto::{InfoField, PaneKind, PaneLogin};
 
 use crate::resume::{self, Harness};
 use crate::server::AppState;
@@ -17,7 +17,7 @@ fn field(label: &str, value: impl Into<String>, hint: &str) -> InfoField {
 
 impl AppState {
     /// The pane `name` means — a pane id, or an agent pane's agent name — its kind and its fields.
-    pub async fn pane_info(&self, name: &str) -> Result<(String, String, Vec<InfoField>), String> {
+    pub async fn pane_info(&self, name: &str) -> Result<(String, String, Vec<InfoField>, Option<PaneLogin>), String> {
         let (pane, kind, space_cwd) = {
             let spaces = self.spaces.lock().unwrap();
             let found = spaces.spaces.iter().find_map(|space| {
@@ -36,6 +36,7 @@ impl AppState {
             pane.clone(),
             "wheel pane … and wheel agent … take it",
         );
+        let mut login = None;
         let (kind_name, fields) = match kind {
             PaneKind::Agent {
                 agent,
@@ -58,8 +59,29 @@ impl AppState {
                         parsed
                             .and_then(|a| a.daemon_home())
                             .map(|h| h.display().to_string())
+                    });
+                if let Some(dir) = &home {
+                    let account = match parsed {
+                        Some(Harness::Claude) => self.usage_account_in(std::path::Path::new(dir)),
+                        _ => None,
+                    };
+                    login = Some(PaneLogin {
+                        dir: dir.clone(),
+                        account,
+                    });
+                }
+                let weekly = login
+                    .as_ref()
+                    .and_then(|l| l.account.as_ref())
+                    .map(|a| match &a.usage.reading {
+                        Some(r) => match &r.weekly_resets_at {
+                            Some(at) => format!("{}% (resets {at})", r.weekly_pct.round()),
+                            None => format!("{}%", r.weekly_pct.round()),
+                        },
+                        None => a.usage.why.clone().unwrap_or_else(|| "no reading".into()),
                     })
-                    .unwrap_or_else(|| "-".into());
+                    .unwrap_or_else(|| "no usage reading".into());
+                let home = home.unwrap_or_else(|| "-".into());
                 let mut fields = vec![field(
                     "Program",
                     parsed.map_or(harness.clone(), |a| a.title().to_string()),
@@ -83,6 +105,11 @@ impl AppState {
                     "Home",
                     home,
                     &format!("agent.{harness}.home, as the agent's config directory"),
+                ));
+                fields.push(field(
+                    "Weekly",
+                    weekly,
+                    "the weekly limit of the account whose login lives in Home",
                 ));
                 fields.push(field(
                     "Directory",
@@ -169,6 +196,6 @@ impl AppState {
             _ => ("empty", vec![pane_field]),
         };
         tracing::info!(pane = %pane, kind = kind_name, fields = fields.len(), "pane info");
-        Ok((pane, kind_name.into(), fields))
+        Ok((pane, kind_name.into(), fields, login))
     }
 }

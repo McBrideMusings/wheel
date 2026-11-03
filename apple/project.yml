@@ -26,6 +26,7 @@ targets:
     sources:
       - Mac/Sources
       - Mac/Assets.xcassets
+      - AgentLogos.xcassets
     dependencies:
       - package: WheelKit
       - package: WheelUI
@@ -58,6 +59,7 @@ targets:
     platform: iOS
     sources:
       - iOS/Sources
+      - AgentLogos.xcassets
     dependencies:
       - package: WheelKit
       - package: WheelUI
@@ -67,6 +69,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel.phone
         PRODUCT_NAME: Wheel
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Wheel

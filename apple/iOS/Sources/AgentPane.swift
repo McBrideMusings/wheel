@@ -8,12 +8,14 @@ struct AgentPane: View {
     let model: PhoneModel
     let pane: String
     let agent: String
+    let harness: String
     @ObservedObject var chat: AgentChat
 
     var body: some View {
         let mine = model.perms.filter { $0.agent == chat.name }
         let tray = model.trays[pane]
         VStack(spacing: 0) {
+            AgentHeader(model: model, pane: pane, agent: agent, harness: harness, chat: chat)
             TranscriptView(
                 chat: chat,
                 empty: "Give this agent a task.",

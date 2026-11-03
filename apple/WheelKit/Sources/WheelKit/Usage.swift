@@ -98,12 +98,37 @@ public struct UsageAccount: Sendable, Equatable, Identifiable, Decodable {
     public let id: String
     /// The config directory its login lives in (`.claude-work`), or plan and masked email.
     public let name: String
+    /// Every config directory whose login belongs to this account.
+    public let dirs: [String]
     public let usage: UsageInfo
 
-    public init(id: String, name: String, usage: UsageInfo) {
+    public init(id: String, name: String, dirs: [String] = [], usage: UsageInfo) {
         self.id = id
         self.name = name
+        self.dirs = dirs
         self.usage = usage
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, dirs, usage }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        dirs = try c.decodeIfPresent([String].self, forKey: .dirs) ?? []
+        usage = try c.decode(UsageInfo.self, forKey: .usage)
+    }
+}
+
+/// The folder an agent pane takes its login from and the usage account read from it.
+public struct PaneLogin: Sendable, Equatable, Decodable {
+    public let dir: String
+    /// nil while no account's login lives in `dir`.
+    public let account: UsageAccount?
+
+    public init(dir: String, account: UsageAccount?) {
+        self.dir = dir
+        self.account = account
     }
 }
 

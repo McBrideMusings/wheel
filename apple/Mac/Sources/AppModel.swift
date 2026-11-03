@@ -906,7 +906,7 @@ final class AppModel {
         case let .procs(_, space, list):
             procs[space] = list
             Log.info("space \(space) processes: \(list.map { "\($0.pid)=\($0.name)@\($0.pane)" }.joined(separator: " "))")
-        case let .paneInfo(_, pane, kind, fields):
+        case let .paneInfo(_, pane, kind, fields, _):
             paneInfo[pane] = fields
             Log.info("pane \(pane) info (\(kind)): \(fields.map { "\($0.label)=\($0.value)" }.joined(separator: " "))")
         case let .agentNotice(agent, notice):
