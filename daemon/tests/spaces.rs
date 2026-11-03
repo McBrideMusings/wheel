@@ -7279,3 +7279,310 @@ async fn an_mcp_server_over_http_lists_and_calls_its_tools() {
     mcp_session_works(&entry, "http").await;
     let _ = server.kill().await;
 }
+
+/// A raw request with a JSON body to the daemon's HTTP side, carrying the token as a bearer.
+async fn http_json(addr: &str, method: &str, target: &str, body: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "{method} {target} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let (head, rest) = response.split_once("\r\n\r\n").unwrap();
+    (head[9..12].parse().unwrap(), rest.to_string())
+}
+
+/// A pane showing an MCP server entry serves the host page, and the host's endpoints give the page
+/// its tools and its `ui://` view, call only the tools a page may call (a model-only tool is
+/// refused), run the tool that links the view for the host, and read resources. A server with no
+/// `ui://` resource has a null view and its tools listed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_pane_hosts_an_mcp_servers_view() {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-host-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let ui = mcp_example().with_file_name("mcp_ui_test_server");
+    std::fs::write(
+        base.join("wheel.toml"),
+        format!(
+            "[artifacts.apps]\nmcp = {}\n[artifacts.plain]\nmcp = {}\n",
+            toml::Value::from(format!("exec {} stdio", ui.display())),
+            toml::Value::from(format!("exec {} stdio", mcp_example().display())),
+        ),
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    let show = |artifact: &str| ClientMsg::PaneSetKind {
+        req: Some(10),
+        pane: pane.clone(),
+        kind: NewPaneKind::Web,
+        artifact: Some(artifact.into()),
+        scope: Some(wheel_proto::ArtifactScope::Project),
+        url: None,
+    };
+
+    ok(&mut ws, show("apps")).await;
+    let root = format!("/artifacts/{pane}/");
+    let (status, page) = http_json(&addr, "GET", &root, "").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains(r#"setAttribute("sandbox", "allow-scripts")"#));
+    let (status, _) = http_json(&addr, "GET", &format!("{root}other.html"), "").await;
+    assert_eq!(status, 404, "a pane on an MCP server serves one page");
+
+    let (status, view) = http_json(&addr, "GET", &format!("{root}.wheel/mcp/view"), "").await;
+    assert_eq!(status, 200, "{view}");
+    let view: serde_json::Value = serde_json::from_str(&view).unwrap();
+    assert_eq!(view["view"]["tool"]["name"], "show");
+    assert_eq!(view["view"]["uri"], "ui://test/view");
+    assert_eq!(
+        view["view"]["resource"]["mimeType"],
+        "text/html;profile=mcp-app"
+    );
+    assert!(view["view"]["resource"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("ui/initialize"));
+    assert_eq!(view["tools"].as_array().unwrap().len(), 5);
+
+    let call = |body: &str| {
+        let target = format!("{root}.wheel/mcp/call");
+        let body = body.to_string();
+        let addr = addr.clone();
+        async move { http_json(&addr, "POST", &target, &body).await }
+    };
+    let (status, bump) = call(r#"{"tool":"bump","arguments":{}}"#).await;
+    assert_eq!(status, 200, "{bump}");
+    assert!(bump.contains("bumped 1"), "{bump}");
+    let (status, refused) = call(r#"{"tool":"secret","arguments":{}}"#).await;
+    assert_eq!(
+        (status, refused.as_str()),
+        (400, "secret is not visible to an app")
+    );
+    let (status, shown) = call(r#"{"tool":"show","arguments":{},"initial":true}"#).await;
+    assert_eq!(status, 200, "{shown}");
+    assert!(shown.contains("hello from show"), "{shown}");
+    let (status, _) = call(r#"{"tool":"secret","arguments":{},"initial":true}"#).await;
+    assert_eq!(status, 400, "the host runs only the tool that links the view");
+    let (status, secret) = call(r#"{"tool":"secret","arguments":{},"person":true}"#).await;
+    assert_eq!(status, 200, "a person runs any listed tool: {secret}");
+    let (status, _) = call(r#"{"tool":"nope","arguments":{}}"#).await;
+    assert_eq!(status, 400);
+    let (status, read) = http_json(
+        &addr,
+        "POST",
+        &format!("{root}.wheel/mcp/read"),
+        r#"{"uri":"ui://test/view"}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "{read}");
+    assert!(read.contains("ui/initialize"));
+    let (status, _) = http_json(
+        &addr,
+        "POST",
+        &format!("{root}.wheel/mcp/read"),
+        r#"{"uri":"file:///etc/hosts"}"#,
+    )
+    .await;
+    assert_eq!(status, 400, "a page reads ui:// or listed resources only");
+
+    ok(&mut ws, show("plain")).await;
+    let (status, view) = http_json(&addr, "GET", &format!("{root}.wheel/mcp/view"), "").await;
+    assert_eq!(status, 200, "{view}");
+    let view: serde_json::Value = serde_json::from_str(&view).unwrap();
+    assert!(view["view"].is_null(), "{view}");
+    assert_eq!(view["tools"].as_array().unwrap().len(), 2);
+    let (status, echoed) = http_json(
+        &addr,
+        "POST",
+        &format!("{root}.wheel/mcp/call"),
+        r#"{"tool":"echo","arguments":{"text":"from the form"},"person":true}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "{echoed}");
+    assert!(echoed.contains("from the form"), "{echoed}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A pane showing an app entry shows the program's own page through the daemon: a plain page, a
+/// stream of server-sent events that arrives while the request is open, bytes echoed over an
+/// upgraded connection, a redirect that stays inside the pane's address, and a page saying the app
+/// is not running once it is stopped.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_pane_shows_its_apps_page_through_the_daemon() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let base = std::env::temp_dir().join(format!("wheel-app-proxy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let dash = base.join("dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>static</p>").unwrap();
+    std::fs::write(
+        base.join("server.py"),
+        r#"
+import http.server, os, time
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def do_GET(self):
+        if self.path == "/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for i in range(2):
+                self.wfile.write(("data: tick %d\n\n" % i).encode()); self.wfile.flush()
+                time.sleep(0.3)
+            self.wfile.write(b"data: last\n\n"); self.wfile.flush()
+            self.close_connection = True
+        elif self.path == "/up":
+            self.wfile.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: echo\r\nConnection: Upgrade\r\n\r\n"); self.wfile.flush()
+            while True:
+                b = self.rfile.read1(100) if hasattr(self.rfile, "read1") else self.rfile.read(1)
+                if not b: break
+                self.wfile.write(b.upper()); self.wfile.flush()
+            self.close_connection = True
+        elif self.path == "/go":
+            self.send_response(302); self.send_header("Location", "/page"); self.send_header("Content-Length", "0"); self.end_headers()
+        else:
+            body = ("page %s host=%s" % (self.path, self.headers.get("Host"))).encode()
+            self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            self.wfile.write(body)
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0)); data = self.rfile.read(n)
+        body = b"posted " + data
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+os.write(3, (str(s.server_address[1]) + "\n").encode())
+s.serve_forever()
+"#,
+    )
+    .unwrap();
+    let extra = format!(
+        "app = {}\n",
+        toml::Value::from(format!("exec python3 {}", base.join("server.py").display()))
+    );
+    register(&base, "dash", &dash, &extra);
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(10),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("dash".into()),
+            scope: None,
+            url: None,
+        },
+    )
+    .await;
+    let app = app_when(&mut ws, &pane, "running with its port", |a| {
+        a.state == wheel_proto::AppState::Running && a.port.is_some()
+    })
+    .await;
+    let cookie = format!("Cookie: wheel_token={TOKEN}\r\n");
+
+    // The program's own page, at its own paths; its Host is its own address.
+    let (status, page) = http_get(&addr, &format!("/artifacts/{pane}/some/x?a=1"), &cookie).await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains(&format!(
+            "page /some/x?a=1 host=127.0.0.1:{}",
+            app.port.unwrap()
+        )),
+        "{page}"
+    );
+    // No token, no page.
+    let (status, _) = http_get(&addr, &format!("/artifacts/{pane}/"), "").await;
+    assert_eq!(status, 401);
+    // A redirect to one of its own paths stays in the pane's address.
+    let (status, redirect) = http_get(&addr, &format!("/artifacts/{pane}/go"), &cookie).await;
+    assert_eq!(status, 302, "{redirect}");
+    assert!(
+        redirect
+            .to_lowercase()
+            .contains(&format!("location: /artifacts/{pane}/page")),
+        "{redirect}"
+    );
+    // A POST reaches it with its body.
+    {
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        let request = format!(
+            "POST /artifacts/{pane}/submit HTTP/1.1\r\nHost: {addr}\r\n{cookie}Content-Length: 5\r\nConnection: close\r\n\r\nhello"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert!(response.ends_with("posted hello"), "{response}");
+    }
+    // Server-sent events arrive as they are sent: the first event is in hand well before the
+    // stream (about 0.6s long) ends.
+    {
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        let request = format!(
+            "GET /artifacts/{pane}/events HTTP/1.1\r\nHost: {addr}\r\n{cookie}Connection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let started = std::time::Instant::now();
+        let mut seen = String::new();
+        let mut buf = [0u8; 512];
+        while !seen.contains("tick 0") {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "the stream ended before its first event: {seen}");
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(started.elapsed() < Duration::from_millis(500), "{seen}");
+        assert!(!seen.contains("last"), "{seen}");
+        stream.read_to_string(&mut seen).await.unwrap();
+        assert!(seen.contains("tick 1") && seen.contains("last"), "{seen}");
+    }
+    // An upgraded connection carries bytes both ways.
+    {
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        let request = format!(
+            "GET /artifacts/{pane}/up HTTP/1.1\r\nHost: {addr}\r\n{cookie}Connection: Upgrade\r\nUpgrade: echo\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut head = String::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with("\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0] as char);
+        }
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        stream.write_all(b"ping").await.unwrap();
+        let mut echoed = [0u8; 4];
+        stream.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(&echoed, b"PING");
+    }
+
+    // Stopped, the pane says so.
+    app_control(&mut ws, &pane, wheel_proto::AppAction::Stop).await;
+    let (status, page) = http_get(&addr, &format!("/artifacts/{pane}/"), &cookie).await;
+    assert_eq!(status, 502, "{page}");
+    assert!(page.contains("app is not running"), "{page}");
+    let _ = std::fs::remove_dir_all(&base);
+}

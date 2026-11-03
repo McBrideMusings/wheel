@@ -71,6 +71,7 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
     /// default browser.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let target = action.request.url, let url else { return .cancel }
+        if WebPanes.allowsInlineFrame(target, isMainFrame: action.targetFrame?.isMainFrame ?? true) { return .allow }
         // `URL.path` drops a trailing slash, which would refuse the folder's own address — the
         // page a pane opens — so the path is read as it was written.
         let path = URLComponents(url: target, resolvingAgainstBaseURL: false)?.path ?? target.path

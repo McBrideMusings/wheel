@@ -28,6 +28,7 @@ mod page_run;
 mod pane_info;
 mod pi;
 mod procs;
+mod proxy;
 mod push;
 pub mod pty;
 mod refresh;

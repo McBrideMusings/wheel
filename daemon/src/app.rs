@@ -191,6 +191,19 @@ impl App {
         }
     }
 
+    /// The port the program announced, or why a page cannot be fetched from it now.
+    pub(crate) fn upstream(&self) -> Result<u16, String> {
+        let seen = self.seen.lock().unwrap();
+        match (seen.state, seen.port) {
+            (AppState::Running, Some(port)) => Ok(port),
+            (AppState::Running | AppState::Starting, None) => {
+                Err("It has started and has not yet said which port it serves.".into())
+            }
+            (AppState::Waiting, _) => Err("It ended and is waiting to start again.".into()),
+            _ => Err("It was stopped, or ended and is not set to start again.".into()),
+        }
+    }
+
     fn log_file(&self, run: u64) -> PathBuf {
         self.logs.join(format!("{run}.log"))
     }

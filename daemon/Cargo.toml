@@ -18,6 +18,8 @@ clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 h2 = "0.4"
 http = "1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 ring = "0.17"
 webpki-roots = "1"
 libc = "0.2"
