@@ -217,3 +217,176 @@ impl AppState {
         })
     }
 }
+
+/// The MIME type an MCP Apps UI resource carries (SEP-1865).
+const APP_MIME: &str = "text/html;profile=mcp-app";
+
+/// Whether `mime` is `text/html` with the parameter `profile=mcp-app`, in any spacing, case or quoting.
+fn is_app_mime(mime: &str) -> bool {
+    let mut parts = mime.split(';').map(str::trim);
+    parts.next().is_some_and(|t| t.eq_ignore_ascii_case("text/html"))
+        && parts.any(|p| {
+            p.split_once('=').is_some_and(|(k, v)| {
+                k.trim().eq_ignore_ascii_case("profile") && v.trim().trim_matches('"') == "mcp-app"
+            })
+        })
+}
+
+/// The `ui://` resource a tool links to: `_meta.ui.resourceUri`, or the deprecated flat
+/// `_meta["ui/resourceUri"]`.
+fn linked_resource(tool: &serde_json::Value) -> Option<&str> {
+    let meta = tool.get("_meta")?;
+    meta.pointer("/ui/resourceUri")
+        .or_else(|| meta.get("ui/resourceUri"))?
+        .as_str()
+}
+
+/// Whether a page may call `tool`: its `_meta.ui.visibility` lists `app`, or is absent (default
+/// `["model", "app"]`).
+fn app_may_call(tool: &serde_json::Value) -> bool {
+    match tool
+        .pointer("/_meta/ui/visibility")
+        .and_then(|v| v.as_array())
+    {
+        Some(visibility) => visibility.iter().any(|v| v == "app"),
+        None => true,
+    }
+}
+
+impl AppState {
+    /// What a pane shows for the MCP server artifact `name` names: its tools as the server listed
+    /// them (`_meta` included) and the MCP Apps view, if the server has one. The view is the
+    /// `ui://` resource a tool links to (that tool beside it), else the first `ui://` resource in
+    /// the server's resource list; `null` when there is none, which the pane answers with the
+    /// tools alone.
+    pub async fn mcp_view(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let peer = self.mcp_peer(name, scope, space).await?;
+        let tools = peer
+            .list_all_tools()
+            .await
+            .map_err(|e| format!("{name}: list tools: {e}"))?;
+        let tools = tools
+            .iter()
+            .map(|t| serde_json::to_value(t).map_err(|e| format!("{name}: a tool: {e}")))
+            .collect::<Result<Vec<_>, _>>()?;
+        let linked = tools
+            .iter()
+            .find_map(|t| linked_resource(t).map(|uri| (Some(t.clone()), uri.to_string())));
+        let linked = match linked {
+            Some(linked) => Some(linked),
+            // A server without the capability answers `resources/list` with an error, which is
+            // the same as listing none.
+            None => peer
+                .list_all_resources()
+                .await
+                .ok()
+                .and_then(|all| all.into_iter().find(|r| r.uri.starts_with("ui://")))
+                .map(|r| (None, r.uri.clone())),
+        };
+        let mut view = serde_json::Value::Null;
+        if let Some((tool, uri)) = linked {
+            let read = self.mcp_read(name, scope, space, &uri).await?;
+            let html = read
+                .get("contents")
+                .and_then(|c| c.as_array())
+                .and_then(|c| c.first());
+            if let Some(html) = html {
+                let mime = html.get("mimeType").and_then(|m| m.as_str()).unwrap_or("");
+                if is_app_mime(mime) {
+                    view = serde_json::json!({ "tool": tool, "uri": uri, "resource": html });
+                } else {
+                    tracing::warn!(%name, %uri, %mime, "an MCP UI resource is not {APP_MIME}; showing the tools instead");
+                }
+            }
+        }
+        Ok(serde_json::json!({ "tools": tools, "view": view }))
+    }
+
+    /// `resources/read` of `uri` on artifact `name`'s server, as the server's JSON.
+    pub async fn mcp_read(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        uri: &str,
+    ) -> Result<serde_json::Value, String> {
+        let peer = self.mcp_peer(name, scope, space).await?;
+        let read = peer
+            .read_resource(rmcp::model::ReadResourceRequestParams::new(uri.to_string()))
+            .await
+            .map_err(|e| format!("{name}: read {uri}: {e}"))?;
+        serde_json::to_value(read).map_err(|e| format!("{name}: {uri}: {e}"))
+    }
+
+    /// A `resources/read` a page makes: only a `ui://` resource or one the server lists.
+    pub async fn mcp_app_read(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        uri: &str,
+    ) -> Result<serde_json::Value, String> {
+        if !uri.starts_with("ui://") {
+            let peer = self.mcp_peer(name, scope, space).await?;
+            let listed = peer.list_all_resources().await.unwrap_or_default();
+            if !listed.iter().any(|r| r.uri == uri) {
+                return Err(format!("{uri} is not a resource the server lists"));
+            }
+        }
+        self.mcp_read(name, scope, space, uri).await
+    }
+
+    /// A tool call from the pane: refused for a tool the server does not list, and, when a page
+    /// makes it, for a tool whose visibility leaves out `app`. `initial` is the host running the
+    /// tool that links the view, which only needs to be one that links a `ui://` resource.
+    pub async fn mcp_app_call(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        tool: &str,
+        arguments: Option<serde_json::Value>,
+        initial: bool,
+    ) -> Result<McpToolResult, String> {
+        let peer = self.mcp_peer(name, scope, space).await?;
+        let tools = peer
+            .list_all_tools()
+            .await
+            .map_err(|e| format!("{name}: list tools: {e}"))?;
+        let listed = tools
+            .iter()
+            .find(|t| t.name == tool)
+            .and_then(|t| serde_json::to_value(t).ok())
+            .ok_or_else(|| format!("{name} has no tool {tool}"))?;
+        let allowed = if initial {
+            linked_resource(&listed).is_some()
+        } else {
+            app_may_call(&listed)
+        };
+        if !allowed {
+            return Err(format!("{tool} is not visible to an app"));
+        }
+        self.mcp_call(name, scope, space, tool, arguments).await
+    }
+
+    /// The MCP server artifact pane `pane` shows: its name, scope and the id of its space. None
+    /// when the pane is no web pane or its entry names no MCP server.
+    pub(crate) fn mcp_pane(&self, pane: &str) -> Option<(String, ArtifactScope, String)> {
+        let (artifact, cwd, space) = self.spaces.lock().unwrap().spaces.iter().find_map(|s| {
+            match crate::spaces::find_pane(&s.root, pane) {
+                Some(wheel_proto::PaneKind::Web { artifact, .. }) => {
+                    Some((artifact.clone(), s.cwd.clone(), s.id.clone()))
+                }
+                _ => None,
+            }
+        })?;
+        let entry = self.artifact_entry(&artifact, &cwd).ok()??;
+        (entry.mcp.is_some() || entry.mcp_url.is_some())
+            .then(|| (artifact.name().to_string(), artifact.scope(), space))
+    }
+}

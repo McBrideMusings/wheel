@@ -44,6 +44,7 @@ final class WebPane: NSObject, WKNavigationDelegate {
     /// The page stays inside its pane's folder; a tapped link anywhere else opens in Safari.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let target = action.request.url, let url else { return .cancel }
+        if WebPanes.allowsInlineFrame(target, isMainFrame: action.targetFrame?.isMainFrame ?? true) { return .allow }
         let path = URLComponents(url: target, resolvingAgainstBaseURL: false)?.path ?? target.path
         if target.scheme == url.scheme, target.host == url.host, path.hasPrefix("/artifacts/\(pane)/") { return .allow }
         if action.navigationType == .linkActivated {

@@ -7280,6 +7280,132 @@ async fn an_mcp_server_over_http_lists_and_calls_its_tools() {
     let _ = server.kill().await;
 }
 
+/// A raw request with a JSON body to the daemon's HTTP side, carrying the token as a bearer.
+async fn http_json(addr: &str, method: &str, target: &str, body: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "{method} {target} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let (head, rest) = response.split_once("\r\n\r\n").unwrap();
+    (head[9..12].parse().unwrap(), rest.to_string())
+}
+
+/// A pane showing an MCP server entry serves the host page, and the host's endpoints give the page
+/// its tools and its `ui://` view, call only the tools a page may call (a model-only tool is
+/// refused), run the tool that links the view for the host, and read resources. A server with no
+/// `ui://` resource has a null view and its tools listed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_pane_hosts_an_mcp_servers_view() {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-host-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let ui = mcp_example().with_file_name("mcp_ui_test_server");
+    std::fs::write(
+        base.join("wheel.toml"),
+        format!(
+            "[artifacts.apps]\nmcp = {}\n[artifacts.plain]\nmcp = {}\n",
+            toml::Value::from(format!("exec {} stdio", ui.display())),
+            toml::Value::from(format!("exec {} stdio", mcp_example().display())),
+        ),
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    let show = |artifact: &str| ClientMsg::PaneSetKind {
+        req: Some(10),
+        pane: pane.clone(),
+        kind: NewPaneKind::Web,
+        artifact: Some(artifact.into()),
+        scope: Some(wheel_proto::ArtifactScope::Project),
+        url: None,
+    };
+
+    ok(&mut ws, show("apps")).await;
+    let root = format!("/artifacts/{pane}/");
+    let (status, page) = http_json(&addr, "GET", &root, "").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains(r#"setAttribute("sandbox", "allow-scripts")"#));
+    let (status, _) = http_json(&addr, "GET", &format!("{root}other.html"), "").await;
+    assert_eq!(status, 404, "a pane on an MCP server serves one page");
+
+    let (status, view) = http_json(&addr, "GET", &format!("{root}.wheel/mcp/view"), "").await;
+    assert_eq!(status, 200, "{view}");
+    let view: serde_json::Value = serde_json::from_str(&view).unwrap();
+    assert_eq!(view["view"]["tool"]["name"], "show");
+    assert_eq!(view["view"]["uri"], "ui://test/view");
+    assert_eq!(
+        view["view"]["resource"]["mimeType"],
+        "text/html;profile=mcp-app"
+    );
+    assert!(view["view"]["resource"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("ui/initialize"));
+    assert_eq!(view["tools"].as_array().unwrap().len(), 5);
+
+    let call = |body: &str| {
+        let target = format!("{root}.wheel/mcp/call");
+        let body = body.to_string();
+        let addr = addr.clone();
+        async move { http_json(&addr, "POST", &target, &body).await }
+    };
+    let (status, bump) = call(r#"{"tool":"bump","arguments":{}}"#).await;
+    assert_eq!(status, 200, "{bump}");
+    assert!(bump.contains("bumped 1"), "{bump}");
+    let (status, refused) = call(r#"{"tool":"secret","arguments":{}}"#).await;
+    assert_eq!(
+        (status, refused.as_str()),
+        (400, "secret is not visible to an app")
+    );
+    let (status, shown) = call(r#"{"tool":"show","arguments":{},"initial":true}"#).await;
+    assert_eq!(status, 200, "{shown}");
+    assert!(shown.contains("hello from show"), "{shown}");
+    let (status, _) = call(r#"{"tool":"secret","arguments":{},"initial":true}"#).await;
+    assert_eq!(status, 400, "the host runs only the tool that links the view");
+    let (status, _) = call(r#"{"tool":"nope","arguments":{}}"#).await;
+    assert_eq!(status, 400);
+    let (status, read) = http_json(
+        &addr,
+        "POST",
+        &format!("{root}.wheel/mcp/read"),
+        r#"{"uri":"ui://test/view"}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "{read}");
+    assert!(read.contains("ui/initialize"));
+    let (status, _) = http_json(
+        &addr,
+        "POST",
+        &format!("{root}.wheel/mcp/read"),
+        r#"{"uri":"file:///etc/hosts"}"#,
+    )
+    .await;
+    assert_eq!(status, 400, "a page reads ui:// or listed resources only");
+
+    ok(&mut ws, show("plain")).await;
+    let (status, view) = http_json(&addr, "GET", &format!("{root}.wheel/mcp/view"), "").await;
+    assert_eq!(status, 200, "{view}");
+    let view: serde_json::Value = serde_json::from_str(&view).unwrap();
+    assert!(view["view"].is_null(), "{view}");
+    assert_eq!(view["tools"].as_array().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// A pane showing an app entry shows the program's own page through the daemon: a plain page, a
 /// stream of server-sent events that arrives while the request is open, bytes echoed over an
 /// upgraded connection, a redirect that stays inside the pane's address, and a page saying the app

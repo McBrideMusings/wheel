@@ -1,0 +1,197 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; height: 100%; font: 13px -apple-system, system-ui, sans-serif; }
+  #root { height: 100%; }
+  iframe { border: 0; width: 100%; height: 100%; display: block; background: transparent; }
+  #tools { padding: 16px; }
+  #tools h1 { font-size: 15px; margin: 0 0 4px; }
+  #tools p { margin: 0 0 12px; opacity: .65; }
+  #tools dt { font: 600 13px ui-monospace, monospace; margin-top: 10px; }
+  #tools dd { margin: 2px 0 0; opacity: .75; }
+  #error { padding: 16px; color: #c0392b; white-space: pre-wrap; }
+</style>
+<div id="root"></div>
+<script>
+// The host half of MCP Apps (SEP-1865, spec 2026-01-26). The server's ui:// page runs in an
+// iframe sandboxed to `allow-scripts` alone: no `allow-same-origin`, so the frame has an opaque
+// origin and can reach neither this page, `window.wheel`, nor the daemon's cookie. Everything the
+// frame does goes through the JSON-RPC messages handled below, and the daemon relays only
+// `tools/call` and `resources/read` to the server.
+(() => {
+  const PROTOCOL = "2026-01-26";
+  const base = location.pathname.replace(/[^/]*$/, "") + ".wheel/mcp/";
+  const root = document.getElementById("root");
+
+  async function api(path, body) {
+    const response = await fetch(base + path, body === undefined ? {} : {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error((await response.text()) || response.status + "");
+    return response.json();
+  }
+
+  function fail(message) {
+    root.replaceChildren();
+    const box = document.createElement("div");
+    box.id = "error";
+    box.textContent = message;
+    root.append(box);
+  }
+
+  // Server-supplied text goes in as text, never as markup.
+  function showTools(tools) {
+    root.replaceChildren();
+    const box = document.createElement("div");
+    box.id = "tools";
+    const title = document.createElement("h1");
+    title.textContent = "MCP server";
+    const note = document.createElement("p");
+    note.textContent = tools.length
+      ? tools.length + (tools.length === 1 ? " tool" : " tools") + ", and no interface of its own."
+      : "This server offers no tools and no interface.";
+    const list = document.createElement("dl");
+    for (const tool of tools) {
+      const term = document.createElement("dt");
+      term.textContent = tool.name;
+      const detail = document.createElement("dd");
+      detail.textContent = tool.description || "";
+      list.append(term, detail);
+    }
+    box.append(title, note, list);
+    root.append(box);
+  }
+
+  // The Content-Security-Policy the resource's `_meta.ui.csp` allows; with none, the page
+  // can load and connect to nothing outside itself.
+  function policy(csp) {
+    csp = csp || {};
+    // Only an origin, with at most a leading `*.` on the host, is let into the policy: never `*`,
+    // a bare scheme, or anything that could end the directive.
+    const origin = /^(https?|wss?):\/\/(\*\.)?[A-Za-z0-9.-]+(:\d+)?$/;
+    const list = (a) => (Array.isArray(a) ? a.filter((s) => typeof s === "string" && origin.test(s)) : []);
+    const resources = list(csp.resourceDomains).join(" ");
+    const connect = list(csp.connectDomains).join(" ");
+    const frames = list(csp.frameDomains).join(" ");
+    const bases = list(csp.baseUriDomains).join(" ");
+    return [
+      "default-src 'none'",
+      "script-src 'unsafe-inline' 'unsafe-eval' " + resources,
+      "style-src 'unsafe-inline' " + resources,
+      "img-src data: blob: " + resources,
+      "font-src data: " + resources,
+      "media-src data: blob: " + resources,
+      "connect-src " + (connect || "'none'"),
+      "frame-src " + (frames || "'none'"),
+      "object-src 'none'",
+      "form-action 'none'",
+      "base-uri " + (bases || "'self'"),
+    ].join("; ");
+  }
+
+  function htmlOf(resource) {
+    if (typeof resource.text === "string") return resource.text;
+    if (typeof resource.blob === "string") {
+      const bytes = Uint8Array.from(atob(resource.blob), (c) => c.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    }
+    throw new Error("the UI resource has neither text nor blob");
+  }
+
+  function showView(view) {
+    const resource = view.resource;
+    const ui = (resource._meta && resource._meta.ui) || {};
+    const meta = document.createElement("meta");
+    meta.httpEquiv = "Content-Security-Policy";
+    meta.content = policy(ui.csp);
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    // The policy goes after the page's doctype, which must stay first for standards mode.
+    const html = htmlOf(resource);
+    const doctype = /^\s*<!doctype[^>]*>/i.exec(html);
+    const at = doctype ? doctype[0].length : 0;
+    frame.srcdoc = html.slice(0, at) + meta.outerHTML + html.slice(at);
+    root.replaceChildren(frame);
+
+    const send = (message) => frame.contentWindow.postMessage({ jsonrpc: "2.0", ...message }, "*");
+    const reply = (id, result) => send({ id, result });
+    const refuse = (id, code, message) => send({ id, error: { code, message } });
+    const tool = view.tool;
+    const scheme = matchMedia("(prefers-color-scheme: dark)");
+
+    const result = (r) => ({
+      content: r.content,
+      ...(r.structured != null ? { structuredContent: r.structured } : {}),
+      ...(r.is_error ? { isError: true } : {}),
+    });
+
+    // The tool that links the view runs once the view says it is ready, with no arguments: no
+    // agent is composing a call here.
+    async function start() {
+      send({ method: "ui/notifications/tool-input", params: { arguments: {} } });
+      if (!tool) return;
+      try {
+        send({ method: "ui/notifications/tool-result", params: result(await api("call", { tool: tool.name, arguments: {}, initial: true })) });
+      } catch (e) {
+        send({ method: "ui/notifications/tool-result", params: { isError: true, content: [{ type: "text", text: String(e.message || e) }] } });
+      }
+    }
+
+    async function handle(message) {
+      const { id, method, params } = message;
+      const isRequest = id !== undefined && method !== undefined;
+      try {
+        switch (method) {
+          case "ui/initialize":
+          case "initialize":
+            return reply(id, {
+              protocolVersion: PROTOCOL,
+              hostInfo: { name: "wheel", version: "1" },
+              hostCapabilities: { serverTools: {}, serverResources: {}, logging: {} },
+              hostContext: {
+                ...(tool ? { toolInfo: { tool } } : {}),
+                theme: scheme.matches ? "dark" : "light",
+                displayMode: "inline",
+                availableDisplayModes: ["inline"],
+                platform: "desktop",
+                locale: navigator.language,
+                timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                userAgent: "wheel",
+              },
+            });
+          case "ui/notifications/initialized":
+            return start();
+          case "ping":
+            return reply(id, {});
+          case "tools/call":
+            return reply(id, result(await api("call", { tool: params.name, arguments: params.arguments || {} })));
+          case "resources/read":
+            return reply(id, await api("read", { uri: params.uri }));
+          case "notifications/message":
+            return console.log("mcp app:", JSON.stringify(params));
+          case "ui/notifications/size-changed":
+            return;
+          default:
+            if (isRequest) refuse(id, -32601, "this host does not support " + method);
+        }
+      } catch (e) {
+        if (isRequest) refuse(id, -32000, String(e.message || e));
+      }
+    }
+
+    addEventListener("message", (event) => {
+      if (event.source === frame.contentWindow && event.data && event.data.jsonrpc === "2.0") handle(event.data);
+    });
+  }
+
+  api("view").then(
+    ({ tools, view }) => (view ? showView(view) : showTools(tools)),
+    (e) => fail(String(e.message || e)),
+  );
+})();
+</script>

@@ -64,6 +64,16 @@ struct WebPanesTests {
         }
     }
 
+    @Test func letsAFrameLoadItsInlineDocumentButNothingElse() {
+        for inline in ["about:srcdoc", "about:blank"] {
+            #expect(WebPanes.allowsInlineFrame(URL(string: inline)!, isMainFrame: false), "\(inline)")
+            #expect(!WebPanes.allowsInlineFrame(URL(string: inline)!, isMainFrame: true), "\(inline) in the main frame")
+        }
+        for other in ["about:config", "http://evil.example/", "wheel-page://pages/artifacts/p2/", "file:///etc/hosts"] {
+            #expect(!WebPanes.allowsInlineFrame(URL(string: other)!, isMainFrame: false), "\(other)")
+        }
+    }
+
     @Test func encodesAWebKindWithItsArtifactAndDecodesAReload() throws {
         #expect(try ClientMsg.paneSetKind(req: 4, pane: "p2", kind: .web, artifact: "site", scope: .machine).json()
             == #"{"artifact":"site","kind":"web","op":"pane_set_kind","pane":"p2","req":4,"scope":"machine"}"#)
