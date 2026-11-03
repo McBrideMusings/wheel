@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Implement</title>
+<!--
+  One implement pass on one item (a bead or an issue), as a dashboard: the six steps of the pass, what was
+  tried inside each and how it came out, the checks, the files and the commits. The page holds no logic of
+  its own; whatever drives the pass pushes one snapshot with `wheel artifact data "$WHEEL_PANE" -` at each
+  step change and each attempt:
+
+    { state?: "ok|none|error" (missing is ok; none = no pass in this space, error carries `error`),
+      item: { id, title, desc? }, branch, started_ms, now_ms?, stage: "plan|edit|build|verify|review|gate",
+      steps: [{ key, label, state: "done|now|todo|skipped", started_ms?, ended_ms?, summary?,
+                attempts: [{ id, result: "ok|fail|retry|running", what, detail?, output?, ms, took_ms? }] }],
+      checks: { tests?, typecheck?, lint?, diff?, files?, commits? },
+      files: [{ path, add, del, note? }], commits: [{ sha, subject, ms }] }
+
+  The look is Wheel's design system, `.wheel/wheel.css`.
+-->
+<link rel="stylesheet" href=".wheel/wheel.css">
+<style>
+.stepsbar { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); background: var(--group); border: 1px solid var(--separator); border-radius: var(--radius); overflow: hidden; }
+.stepsbar > button { all: unset; box-sizing: border-box; cursor: pointer; padding: 8px 12px; border-left: 1px solid var(--separator); min-width: 0; }
+.stepsbar > button:first-child { border-left: 0; }
+.stepsbar > button:hover { background: var(--fill); }
+.stepsbar > button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -3px; }
+.stepsbar b { display: block; font-size: var(--body); font-weight: 600; }
+.stepsbar span { display: block; font-size: var(--caption); color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stepsbar .done b { color: var(--green); } .stepsbar .now b { color: var(--blue); } .stepsbar .todo b { color: var(--tertiary); } .stepsbar .skipped b { color: var(--tertiary); }
+.stepsbar .now { background: var(--accent-fill); }
+.heading .st { font-weight: 600; font-size: var(--callout); }
+.st.done { color: var(--green); } .st.now { color: var(--blue); } .st.todo, .st.skipped { color: var(--tertiary); }
+.summary { padding: 8px 12px; color: var(--secondary); font-size: var(--callout); }
+.group .row.try { grid-template-columns: 18px minmax(0, 1fr) 54px; cursor: pointer; }
+.g { font-weight: 700; text-align: center; }
+.g.ok { color: var(--green); } .g.fail { color: var(--red); } .g.retry { color: var(--orange); } .g.running { color: var(--blue); }
+.try .what { display: flex; gap: 8px; min-width: 0; }
+.try .what .one:first-child { flex: 0 1 auto; max-width: 70%; }
+.try .why { color: var(--secondary); }
+.tm { color: var(--tertiary); text-align: right; font-size: var(--caption); font-variant-numeric: tabular-nums; }
+.group .row.file { grid-template-columns: minmax(0, 1fr) 44px 44px; }
+.group .row.file .p { font-family: var(--mono); font-size: var(--callout); }
+.a { color: var(--green); text-align: right; } .d { color: var(--red); text-align: right; }
+.group .row.commit { grid-template-columns: 62px minmax(0, 1fr) 54px; }
+.sha { font-family: var(--mono); font-size: var(--caption); color: var(--secondary); }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; align-items: start; }
+@media (max-width: 700px) { .two { grid-template-columns: minmax(0, 1fr); } .stepsbar span { display: none; } }
+.sheet-body pre { max-height: 320px; overflow: auto; margin: 0; }
+.sheet-body dd.g { font-weight: 700; text-align: left; }
+.one { unicode-bidi: plaintext; }
+.top .sub { font-variant-numeric: tabular-nums; }
+</style>
+<script src=".wheel/client.js"></script>
+<script src="vlist.js"></script>
+<style>
+/* Dense pages use the whole pane. */
+.page { max-width: none; }
+</style>
+</head>
+<body>
+<main class="page">
+  <div class="top"><h1 id="name">Implement</h1><span class="sub one" id="sub">Loading…</span></div>
+  <div id="app"><div class="blank"><b>Loading the pass</b><span>Waiting for the first snapshot.</span></div></div>
+</main>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const clock = ms => ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).replace(' ', '').toLowerCase() : '';
+function dur(ms) {
+  if (ms == null || ms < 0) return '';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+const GLYPH = { ok: '✓', fail: '✕', retry: '↺', running: '●' };
+const WORD = { ok: 'worked', fail: 'failed', retry: 'retried', running: 'running' };
+const STATE = { done: 'done', now: 'in progress', todo: 'not started', skipped: 'skipped' };
+
+let data = null, got = 0, open = null;   // open: [stepKey, attemptId]
+const now = () => data.now_ms ? data.now_ms + (Date.now() - got) : Date.now();
+const stepTime = (s, n) => s.state === 'todo' || s.state === 'skipped' ? '' : dur((s.ended_ms || n) - s.started_ms);
+
+function attemptRow(step, a) {
+  return `<div class="row try" title="${esc(a.what + (a.detail ? ' — ' + a.detail : ''))}">`
+    + `<span class="g ${a.result}">${GLYPH[a.result] || '·'}</span>`
+    + `<span class="what"><span class="one">${esc(a.what)}</span>${a.detail ? `<span class="one why">${esc(a.detail)}</span>` : ''}</span>`
+    + `<span class="tm">${a.took_ms != null ? dur(a.took_ms) : a.result === 'running' ? dur(now() - a.ms) : ''}</span></div>`;
+}
+
+const F = VList.fmt;
+function stepBlock(s, n) {
+  const at = s.attempts || [];
+  const t = stepTime(s, n);
+  let h = `<div class="heading" id="step-${esc(s.key)}">${esc(s.label)}<span class="n">${at.length ? F(at.length) + (at.length === 1 ? ' attempt' : ' attempts') : ''}</span>`
+    + `<span class="hint"><span class="st ${s.state}">${STATE[s.state] || ''}</span>${t ? ' · ' + t : ''}${VList.more('try:' + s.key, at.length, 10)}</span></div>`;
+  if (!at.length && !s.summary) return h + `<div class="group"><div class="empty-row">${s.state === 'skipped' ? 'Skipped.' : s.state === 'todo' ? 'Not started.' : 'Nothing tried yet.'}</div></div>`;
+  const rows = at.map(a => ({ ...a, id: s.key + ':' + a.id, aid: a.id }));
+  return h + `<div class="group">${s.summary ? `<div class="summary">${esc(s.summary)}</div>` : ''}${at.length ? VList.host('try:' + s.key, rows, a => attemptRow(s, a), a => { open = [s.key, a.aid]; drawModal(); }, 10) : ''}</div>`;
+}
+
+const listBox = (title, id, items, row, empty) => `<div><div class="heading">${title}<span class="n">${F(items.length)}</span>${VList.hint('', id, items.length, 10)}</div><div class="group">${items.length ? VList.host(id, items, row, null, 10) : `<div class="summary">${empty}</div>`}</div></div>`;
+
+function draw() {
+  if (!data) return;
+  const app = document.getElementById('app');
+  if (data.state === 'none' || data.state === 'error') {
+    document.getElementById('name').textContent = 'Implement';
+    document.getElementById('sub').textContent = '';
+    VList.drop();
+    VList.preserve(() => { app.innerHTML = data.state === 'none'
+      ? VList.blank('No implement pass here', 'Start one in this space and its steps, attempts and checks show up here.')
+      : VList.blank('The collector failed', VList.esc(data.error || 'It printed no reason.')); });
+    open = null; drawModal();
+    return;
+  }
+  const n = now(), steps = data.steps || [], it = data.item || {};
+  document.getElementById('name').textContent = it.title || 'Implement';
+  if (!steps.length) {
+    document.getElementById('sub').textContent = [it.id, data.branch].filter(Boolean).join(' · ');
+    VList.preserve(() => { app.innerHTML = VList.blank('The pass has no steps yet', 'The first step appears here when the pass starts.'); });
+    drawModal();
+    return;
+  }
+  const total = steps.reduce((c, s) => c + (s.attempts || []).filter(a => a.result === 'fail' || a.result === 'retry').length, 0);
+  document.getElementById('sub').textContent = [it.id, data.branch, 'started ' + clock(data.started_ms) + ' · ' + dur(n - data.started_ms), total ? F(total) + ' dead end' + (total > 1 ? 's' : '') : ''].filter(Boolean).join(' · ');
+  const c = data.checks || {};
+  const cell = (v, label, cls) => `<div class="${v ? '' : 'zero'}"><b class="${v ? (/error|fail/.test(v) ? 'c-red' : cls || '') : ''}">${esc(typeof v === 'number' ? F(v) : v || 0)}</b><span>${label}</span></div>`;
+  VList.drop();
+  let h = `<div class="stepsbar">${steps.map(s => `<button class="${s.state}" data-jump="${esc(s.key)}"><b>${esc(s.label)}</b><span>${s.state === 'done' ? '✓ ' + stepTime(s, n) : s.state === 'now' ? 'now · ' + stepTime(s, n) : STATE[s.state]}</span></button>`).join('')}</div>`;
+  h += `<div class="counts" style="--cells:6; margin-top:12px">${cell(c.tests, 'tests', 'c-green')}${cell(c.typecheck, 'typecheck', 'c-green')}${cell(c.lint, 'lint', 'c-green')}${cell(c.diff, 'diff', '')}${cell(c.files, 'files', '')}${cell(c.commits, 'commits', '')}</div>`;
+  if (it.desc) h += `<div class="heading">Item</div><div class="group"><div class="summary" style="color:var(--label); max-height:160px; overflow:auto">${esc(it.desc)}</div></div>`;
+  h += steps.filter(s => s.state !== 'todo' || (s.attempts || []).length).map(s => stepBlock(s, n)).join('');
+  const todo = steps.filter(s => s.state === 'todo' && !(s.attempts || []).length);
+  if (todo.length) h += `<div class="heading">Still to come<span class="hint">${todo.map(s => esc(s.label)).join(' · ')}</span></div>`;
+  const files = (data.files || []).map(f => ({ ...f, id: f.path })), commits = (data.commits || []).map(k => ({ ...k, id: k.sha }));
+  h += `<div class="two">${listBox('Files', 'files', files, f => `<div class="row file" title="${esc(f.path + (f.note ? ' — ' + f.note : ''))}"><span class="p one" dir="ltr">${esc(f.path)}</span><span class="a">+${F(f.add)}</span><span class="d">−${F(f.del)}</span></div>`, 'No files changed yet.')}`
+    + `${listBox('Commits', 'commits', commits, k => `<div class="row commit"><span class="sha">${esc(k.sha)}</span><span class="one">${esc(k.subject)}</span><span class="tm">${clock(k.ms)}</span></div>`, 'No commits yet.')}</div>`;
+  VList.preserve(() => { app.innerHTML = h; VList.mountAll(app); });
+  drawModal();
+}
+VList.bindExpand(() => draw());
+
+// One attempt's whole record in a sheet. It stays open while snapshots arrive: the text is updated in place, and an attempt that
+// leaves the snapshot stays on screen as it was last seen.
+const sheet = VList.sheet({ onClose: () => { open = null; lastTry = null; } });
+let lastTry = null;
+const cap = (t, n) => t.length > n ? t.slice(0, n) + `\n… ${F(t.length - n)} more characters not shown` : t;
+function drawModal() {
+  if (!open) { if (sheet.isOpen()) sheet.close(true); return; }
+  const s = (data.steps || []).find(x => x.key === open[0]), live = s && (s.attempts || []).find(x => x.id === open[1]);
+  const a = live || (lastTry && lastTry.a.id === open[1] ? lastTry.a : null);
+  const step = s || (lastTry && lastTry.s);
+  if (!a || !step) { open = null; lastTry = null; if (sheet.isOpen()) sheet.close(true); return; }
+  lastTry = { s: step, a };
+  const idx = (step.attempts || []).findIndex(x => x.id === a.id);
+  sheet.set({
+    head: `<span class="one">${esc(step.label)}${idx >= 0 ? ` · attempt ${F(idx + 1)} of ${F(step.attempts.length)}` : ''}</span>`,
+    body: `${live ? '' : '<p class="dim">No longer in the latest snapshot. This is its last known state.</p>'}<h3 dir="auto">${esc(a.what)}</h3>`
+      + `<dl><dt>Result</dt><dd class="g ${a.result}">${GLYPH[a.result] || ''} ${WORD[a.result] || esc(a.result)}</dd><dt>Started</dt><dd>${clock(a.ms)}</dd>`
+      + `${a.took_ms != null ? `<dt>Took</dt><dd>${dur(a.took_ms)}</dd>` : ''}</dl>`
+      + (a.detail ? `<div class="sect">What happened</div><p>${esc(a.detail)}</p>` : '')
+      + (a.output ? `<div class="sect">Output</div><pre>${esc(cap(String(a.output), 20000))}</pre>` : ''),
+  });
+}
+
+document.addEventListener('click', e => {
+  const j = e.target.closest('[data-jump]');
+  if (j) { const el = document.getElementById('step-' + j.dataset.jump); if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+});
+wheel.onData(v => { data = v; got = Date.now(); draw(); });
+setInterval(draw, 5000);
+</script>
+</body>
+</html>

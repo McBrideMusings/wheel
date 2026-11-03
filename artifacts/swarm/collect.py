@@ -32,7 +32,8 @@ import time
 HOME = os.path.expanduser("~")
 SWARM = os.path.join(HOME, ".claude/skills/swarm/swarm")
 SESSIONS = os.path.join(HOME, ".local/state/work-board/sessions")
-ACTIONS = 14          # latest actions kept per worker
+ACTIONS = 24          # latest actions kept per worker
+OUT_LINES = 4         # lines of a tool's output kept for the chat view
 TAIL_BYTES = 400_000  # how much of a transcript's end is read for them
 # Bead titles, kept between runs for this pane; never in the data
 # directory, where every write reloads the page.
@@ -205,19 +206,27 @@ def short_command(cmd, worktree):
     return t
 
 
-def actions_of(path, worktree):
-    """The transcript's latest actions, oldest first: tool calls (with whether each returned),
-    what the agent said, and each run of thinking blocks as one `think` action, timed from the
-    event before the run to its last block. A thinking block's text is not stored, so only its
-    time can show."""
+def tool_output(content):
+    """A tool result's text as non-empty lines: the result is a string or a list of text blocks."""
+    if isinstance(content, list):
+        content = "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    return [l.rstrip() for l in str(content or "").splitlines() if l.strip()]
+
+
+def read_tail(path, tail_bytes):
+    """A transcript's last `tail_bytes` as whole lines (the first, cut mid-line, is dropped)."""
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
-        fh.seek(max(0, size - TAIL_BYTES))
+        fh.seek(max(0, size - tail_bytes))
         raw = fh.read().decode("utf-8", "replace")
     lines = raw.splitlines()
-    if size > TAIL_BYTES:
-        lines = lines[1:]  # the first is cut mid-line
-    acts, by_id, prev = [], {}, None
+    return lines[1:] if size > tail_bytes else lines
+
+
+def walk(lines):
+    """Every content block of a transcript's JSONL lines, in order, as (event, block, ms, prev):
+    ms is the event's time and prev the time of the last event before it that had one."""
+    prev = None
     for line in lines:
         try:
             e = json.loads(line)
@@ -227,30 +236,40 @@ def actions_of(path, worktree):
             continue
         ms = iso_ms(e.get("timestamp"))
         content = e["message"].get("content") if isinstance(e.get("message"), dict) else None
-        if not isinstance(content, list):
-            prev = ms or prev
-            continue
-        for c in content:
-            if not isinstance(c, dict):
-                continue
-            if e.get("type") == "assistant" and c.get("type") == "thinking":
-                if acts and acts[-1]["kind"] == "think":
-                    acts[-1]["done"] = ms
-                else:
-                    acts.append({"ms": prev or ms, "kind": "think", "tool": "", "text": "thinking", "done": ms})
-            elif e.get("type") == "assistant" and c.get("type") == "tool_use":
-                a = {"ms": ms, "kind": "tool", "tool": c.get("name", ""),
-                     "text": str(summarize_tool(c.get("name", ""), c.get("input"), worktree))[:240], "done": None}
-                acts.append(a)
-                by_id[c.get("id")] = a
-            elif e.get("type") == "assistant" and c.get("type") == "text" and str(c.get("text") or "").strip():
-                acts.append({"ms": ms, "kind": "said", "tool": "", "text": str(c["text"]).strip()[:400]})
-            elif e.get("type") == "user" and c.get("type") == "tool_result":
-                a = by_id.get(c.get("tool_use_id"))
-                if a:
-                    a["done"] = ms
-                    a["error"] = bool(c.get("is_error"))
+        if isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict):
+                    yield e, c, ms, prev
         prev = ms or prev
+
+
+def actions_of(path, worktree):
+    """The transcript's latest actions, oldest first: tool calls (with whether each returned),
+    what the agent said (whole), the first lines each tool printed, and each run of thinking blocks as one `think` action, timed from the
+    event before the run to its last block. A thinking block's text is not stored, so only its
+    time can show."""
+    acts, by_id = [], {}
+    for e, c, ms, prev in walk(read_tail(path, TAIL_BYTES)):
+        if e.get("type") == "assistant" and c.get("type") == "thinking":
+            if acts and acts[-1]["kind"] == "think":
+                acts[-1]["done"] = ms
+            else:
+                acts.append({"ms": prev or ms, "kind": "think", "tool": "", "text": "thinking", "done": ms})
+        elif e.get("type") == "assistant" and c.get("type") == "tool_use":
+            a = {"ms": ms, "kind": "tool", "tool": c.get("name", ""),
+                 "text": str(summarize_tool(c.get("name", ""), c.get("input"), worktree))[:240], "done": None}
+            acts.append(a)
+            by_id[c.get("id")] = a
+        elif e.get("type") == "assistant" and c.get("type") == "text" and str(c.get("text") or "").strip():
+            acts.append({"ms": ms, "kind": "said", "tool": "", "text": str(c["text"]).strip()[:1500]})
+        elif e.get("type") == "user" and c.get("type") == "tool_result":
+            a = by_id.get(c.get("tool_use_id"))
+            if a:
+                a["done"] = ms
+                a["error"] = bool(c.get("is_error"))
+                out = tool_output(c.get("content"))
+                a["out"] = [l[:200] for l in out[:OUT_LINES]]
+                a["more"] = max(0, len(out) - OUT_LINES)
     return acts[-ACTIONS:]
 
 

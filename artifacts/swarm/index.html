@@ -23,7 +23,9 @@
 .worker .head .t { font-weight: 600; }
 .worker .head .who { color: var(--secondary); font-size: var(--callout); }
 .worker .head .lane { color: var(--blue); font-weight: 600; }
-.worker .line { grid-template-columns: 14px minmax(0, 1fr) auto; height: 20px; font-size: var(--callout); color: var(--secondary); }
+.worker .line { grid-template-columns: 14px minmax(0, 1fr) 84px; height: 20px; font-size: var(--callout); color: var(--secondary); }
+.worker .line > :last-child { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.top .sub { font-variant-numeric: tabular-nums; }
 .worker .line .now { color: var(--label); }
 .worker .line .alert { color: var(--red); font-weight: 600; }
 .worker .log { margin: 6px 12px 12px; }
@@ -36,14 +38,18 @@
 .settled .tm { text-align: right; color: var(--secondary); font-size: var(--callout); font-variant-numeric: tabular-nums; }
 .landed { color: var(--green); } .reopened { color: var(--orange); } .parked { color: var(--yellow); }
 .failed { color: var(--red); } .stopped { color: var(--secondary); }
-.waiting .row { grid-template-columns: 24px 112px minmax(0, 1fr) 60px; height: 26px; }
+.waiting .row { grid-template-columns: 24px 112px minmax(0, 1fr) 60px; }
+.mini .row { grid-template-columns: 14px minmax(0, 1fr) minmax(0, 40%); }
+.mini .row .now { color: var(--secondary); font-size: var(--callout); text-align: right; }
+.mini .row .alert { color: var(--red); font-size: var(--callout); text-align: right; font-weight: 600; }
+.one { unicode-bidi: plaintext; }
 .waiting .ord { color: var(--secondary); font-size: var(--caption); text-align: right; font-variant-numeric: tabular-nums; }
 .waiting .again { color: var(--orange); font-size: var(--callout); text-align: right; }
 .inbox .row { grid-template-columns: 112px minmax(0, 1fr) 56px; }
 @media (max-width: 700px) {
   /* A settled bead takes two fixed lines: glyph, id and time; then title and why. */
   .settled .row { grid-template-columns: 16px minmax(0, 1fr) 56px; grid-template-rows: 20px 18px; grid-auto-flow: row;
-    height: 46px; row-gap: 0; align-content: center; }
+    row-gap: 0; align-content: center; }
   .settled .glyph { grid-row: 1 / 3; }
   .settled .title { grid-column: 2; grid-row: 1; }
   .settled .tm { grid-column: 3; grid-row: 1; }
@@ -52,13 +58,30 @@
   .worker .head .who .bead { display: none; }
   .log .ln { grid-template-columns: 52px 62px minmax(0, 1fr) auto; }
 }
+.chat { background: var(--log-bg); border: 1px solid var(--separator); border-radius: 7px; padding: 8px 12px; margin-top: 6px; font: 11.5px/1.5 var(--mono);
+  color: var(--log-fg); max-height: 22em; overflow: auto; overflow-wrap: anywhere; }
+.chat .m { margin: 0 0 7px; white-space: pre-wrap; }
+.chat .m:last-child { margin-bottom: 0; }
+.chat .m::before { content: "● "; color: var(--label); }
+.chat .tool::before { color: var(--green); } .chat .tool.run::before { color: var(--orange); } .chat .tool.err::before { color: var(--red); }
+.chat .tool b { color: var(--label); font-weight: 600; } .chat .tool .args { color: var(--secondary); }
+.chat .tool.run .args::after { content: " · running"; color: var(--orange); }
+.chat .out { color: var(--secondary); white-space: pre; padding-left: 2ch; margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; }
+.chat .out.more { color: var(--tertiary); }
+.chat .think { color: var(--tertiary); font-style: italic; }
+.chat .think::before { content: "✻ "; color: var(--tertiary); }
 </style>
 <script src=".wheel/client.js"></script>
+<script src="vlist.js"></script>
+<style>
+/* Dense pages use the whole pane. */
+.page { max-width: none; }
+</style>
 </head>
 <body>
 <main class="page">
   <div class="top"><h1 id="name">Swarm</h1><span class="sub one" id="sub">Loading…</span></div>
-  <div id="app"><div class="notice">Waiting for the first snapshot…</div></div>
+  <div id="app"><div class="blank"><b>Loading the swarm</b><span>Waiting for the first snapshot.</span></div></div>
 </main>
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -71,10 +94,12 @@ function dur(ms) {
   if (m < 60) return m + 'm';
   return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
 }
+// The repo's name leads every bead id; the page's title already names the repo.
+const short = id => data && data.repo && String(id).startsWith(data.repo + '-') ? String(id).slice(data.repo.length + 1) : id;
 const first = s => String(s || '').split('\n')[0];
 
 const STUCK_MS = 10 * 60000;  // a worker whose transcript is this quiet needs you
-const LOG_LINES = 12;          // newest entries in each worker's log
+const LOG_LINES = 24;          // newest entries in each worker's chat
 
 let data = null, got = 0;
 
@@ -110,28 +135,28 @@ function current(w, now) {
   return { text: last.kind === 'said' ? '“' + first(last.text) + '”' : `${toolName(last)} · ${first(last.text)}`, since: dur(now - last.ms) + ' ago' };
 }
 
-function logLine(a, now) {
-  let d = '';
-  if (a.kind === 'tool') d = a.done ? `<span class="dur${a.error ? ' err' : ''}">${a.error ? 'error ' : ''}${dur(a.done - a.ms)}</span>`
-    : `<span class="dur running">● ${dur(now - a.ms)}</span>`;
-  else if (a.kind === 'think') d = `<span class="dur">${a.done && a.done - a.ms >= 1000 ? dur(a.done - a.ms) : '<1s'}</span>`;
-  else d = '<span></span>';
-  // A thinking block's text is not stored, so a thinking line has its kind and time only.
-  const k = kindClass(a), text = a.kind === 'think' ? '' : first(a.text);
-  const x = a.kind === 'tool' ? hl(text) : esc(text);
-  return `<div class="ln ${a.kind}"><span class="tm">${clock(a.ms)}</span><span class="k-${k}">${esc(toolName(a))}</span><span class="x" title="${esc(a.text)}">${x}</span>${d}</div>`;
+// One entry of the worker's chat, as the terminal prints it: what the agent said, a tool call with the first
+// lines it printed, or a thinking mark.
+const clip = (t, n) => { t = String(t == null ? '' : t); return t.length > n ? t.slice(0, n) + '… +' + VList.fmt(t.length - n) + ' characters' : t; };
+function chatEntry(a, now) {
+  if (a.kind === 'said') return `<div class="m">${esc(clip(a.text, 1200))}</div>`;
+  if (a.kind === 'think') return `<div class="m think">Thinking${a.done && a.done - a.ms >= 1000 ? ' · ' + dur(a.done - a.ms) : ''}</div>`;
+  const state = !a.done ? 'run' : a.error ? 'err' : '';
+  const out = (a.out || []).slice(0, 6).map((l, i) => `${i ? '   ' : '⎿  '}${esc(clip(l, 240))}`).join('\n');
+  return `<div class="m tool ${state}"><b>${esc(toolName(a))}</b>(<span class="args">${hl(clip(a.text, 400))}</span>)</div>`
+    + (out ? `<div class="out">${out}</div>` : '') + (a.more || (a.out || []).length > 6 ? `<div class="out more">   … +${VList.fmt((a.more || 0) + Math.max(0, (a.out || []).length - 6))} lines</div>` : '');
 }
 
 function workerBlock(w, lane, now) {
   const c = current(w, now);
   let h = `<div class="worker"><div class="row head"><span class="dot ${c.alert ? 'red' : 'blue'}"></span>`
     + `<span class="t one" title="${esc(w.title)}">${esc(w.title || w.bead)}</span>`
-    + `<span class="who one">${lane ? `<span class="lane">Lane ${esc(lane)}</span> · ` : ''}<span class="bead">${esc(w.bead)} · </span>${esc(w.model || '')}</span></div>`;
+    + `<span class="who one">${lane ? `<span class="lane">Lane ${esc(lane)}</span> · ` : ''}<span class="bead">${esc(short(w.bead))} · </span>${esc(w.model || '')}</span></div>`;
   h += `<div class="row line"><span></span><span class="one ${c.alert ? 'alert' : 'now'}" title="${esc(c.text)}">${esc(c.text)}</span><span>${esc(c.since || '')}</span></div>`;
   if (w.stage || w.note) h += `<div class="row line"><span></span><span class="one" title="${esc(w.note || '')}">declared ${esc([w.stage, w.note].filter(Boolean).join(': '))}</span><span>${w.stage_ms ? dur(now - w.stage_ms) + ' ago' : ''}</span></div>`;
-  const acts = (w.actions || []).slice(-LOG_LINES).reverse();
-  if (acts.length) h += `<div class="log fade">${acts.map(a => logLine(a, now)).join('')}</div>`;
-  else if (w.details_error) h += `<div class="log"><div class="ln"><span></span><span></span><span class="x c-red">${esc(w.details_error)}</span><span></span></div></div>`;
+  const acts = (w.actions || []).slice(-LOG_LINES);
+  if (acts.length) h += `<div class="chat" data-bead="${esc(w.bead)}">${acts.map(a => chatEntry(a, now)).join('')}</div>`;
+  else if (w.details_error) h += `<div class="chat"><div class="m" style="color:var(--red)">${esc(w.details_error)}</div></div>`;
   return h + `</div>`;
 }
 
@@ -148,6 +173,13 @@ const history = w => (w.attempts || []).map(a => {
   return `${a.model} ${clock(a.launched_ms)}: ${landed ? 'landed ' + landed.detail.slice(0, 8) + (after ? ', then ' : '') : ''}${after}`;
 }).join('  ·  ');
 
+const narrowQ = matchMedia('(max-width: 700px)');
+narrowQ.addEventListener('change', () => draw());
+const F = VList.fmt;
+const blank = (title, text, cls) => `<div class="blank"><b class="${cls || ''}">${esc(title)}</b><span>${text}</span></div>`;
+const emptyBox = t => `<div class="group"><div class="empty-row">${t}</div></div>`;
+const FULL_BLOCKS = 6;   // running workers drawn with their chat; the rest are one line each
+
 function draw() {
   if (!data) return;
   // The collector's clock, carried forward: the page may run on another device.
@@ -155,10 +187,10 @@ function draw() {
   const app = document.getElementById('app'), sub = document.getElementById('sub');
   document.getElementById('name').textContent = 'Swarm' + (data.name ? ' · ' + data.name : '');
   const fresh = `refreshed ${dur(Date.now() - got)} ago`;
-  const notice = (t, bad) => `<div class="notice${bad ? ' bad' : ''}">${t}</div>`;
-  if (data.state === 'error') { sub.textContent = fresh; app.innerHTML = notice(`The refresh failed: <span class="mono">${esc(data.error)}</span>`, true); return; }
-  if (data.state === 'no-repo') { sub.textContent = fresh; app.innerHTML = notice(`${esc(data.space_dir)} is not in a git repository, so it has no swarm.`); return; }
-  if (data.state === 'no-run') { sub.textContent = fresh; app.innerHTML = notice(`No swarm has run in ${esc(data.repo)}: there is no run log at <span class="mono">${esc(data.log_path || '')}</span>.`); return; }
+  const show = html => { VList.preserve(() => { app.innerHTML = html; }); };
+  if (data.state === 'error') { sub.textContent = fresh; return show(blank('The refresh failed', `<span class="mono">${esc(data.error)}</span>`, 'c-red')); }
+  if (data.state === 'no-repo') { sub.textContent = fresh; return show(blank('No swarm here', `${esc(data.space_dir)} is not in a git repository.`)); }
+  if (data.state === 'no-run') { sub.textContent = fresh; return show(blank('No swarm has run', `${esc(data.repo)} has no run log yet. Start one with <span class="mono">swarm</span> in an agent pane.`)); }
 
   const run = data.run || {}, lead = data.lead || {};
   const workers = data.workers || [];
@@ -171,8 +203,11 @@ function draw() {
   // Each bead is in one place, where it stands now: a reopened bead queued again is waiting.
   const queued = new Set(queue.map(q => q.id));
   const settled = workers.filter(w => !w.in_flight && w.state && !queued.has(w.bead)).sort((a, b) => (b.state_ms || 0) - (a.state_ms || 0));
-  const need = live.filter(w => current(w, now).alert);
-  const count = s => settled.filter(w => w.state === s).length;
+  const cur = new Map(live.map(w => [w.bead, current(w, now)]));
+  const need = live.filter(w => cur.get(w.bead).alert);
+  const tally = {};
+  for (const w of settled) tally[w.state] = (tally[w.state] || 0) + 1;
+  const count = s => tally[s] || 0;
 
   const bits = [];
   if (lead.goal) bits.push(lead.goal);
@@ -183,33 +218,55 @@ function draw() {
   const deadLead = run.lead_pid && run.lead_alive === false && data.state !== 'ended';
   sub.innerHTML = esc(bits.join(' · ')) + (deadLead ? ` · <span class="c-red">lead (pid ${esc(run.lead_pid)}) is not running</span>` : '');
 
-  const cell = (n, label, cls) => `<div class="${n ? '' : 'zero'}"><b class="${n ? cls : ''}">${n}</b><span>${label}</span></div>`;
+  if (!workers.length && !queue.length && !(data.inbox || []).length)
+    return show(blank('The swarm has not started a bead', 'The run log has no workers and nothing queued.'));
+
+  VList.drop();
+  const cell = (n, label, cls) => `<div class="${n ? '' : 'zero'}"><b class="${n ? cls : ''}">${F(n)}</b><span>${label}</span></div>`;
   let h = `<div class="counts">${cell(live.length, 'running', 'c-blue')}${cell(need.length, 'need you', 'c-red')}${cell(count('landed'), 'landed', 'c-green')}`
     + `${cell(count('reopened'), 'reopened', 'c-orange')}${cell(count('parked'), 'parked', 'c-yellow')}${cell(count('failed'), 'failed', 'c-red')}${cell(queue.length, 'waiting', '')}</div>`;
 
-  h += `<div class="heading">Running <span class="n">${live.length}</span><span class="hint">newest action first</span></div>`;
-  h += live.length ? `<div class="group">${live.map((w, i) => workerBlock(w, lanes[w.bead] || '', now)).join('')}</div>`
-    : notice('No worker is running.');
+  // Workers that need you come first; the first few show their chat, the rest are one line each.
+  const ordered = live.slice().sort((a, b) => !!cur.get(b.bead).alert - !!cur.get(a.bead).alert);
+  const full = ordered.slice(0, FULL_BLOCKS), rest = ordered.slice(FULL_BLOCKS).map(w => ({ id: w.bead, w }));
+  h += `<div class="heading">Running <span class="n">${F(live.length)}</span><span class="hint"><span class="cnt">the agent's own output, newest at the bottom</span></span></div>`;
+  h += live.length ? `<div class="group">${full.map(w => workerBlock(w, lanes[w.bead] || '', now)).join('')}</div>` : emptyBox('No worker is running.');
+  if (rest.length) {
+    h += `<div class="heading">More running <span class="n">${F(rest.length)}</span>${VList.hint('', 'run', rest.length, 10)}</div><div class="group mini">${VList.host('run', rest, ({ w }) => {
+      const c = cur.get(w.bead);
+      return `<div class="row" title="${esc(w.title || w.bead)}"><span class="dot ${c.alert ? 'red' : 'blue'}"></span><span class="one">${esc(w.title || w.bead)}</span><span class="${c.alert ? 'alert' : 'now'} one" title="${esc(c.text)}">${esc(c.text)}</span></div>`;
+    }, null, 10)}</div>`;
+  }
 
   if (data.inbox && data.inbox.length) {
-    h += `<div class="heading">Waiting for sign-off <span class="n">${data.inbox.length}</span></div><div class="group inbox">` + data.inbox.map(r =>
-      `<div class="row"><span class="mono one">${esc(r.bead)}</span><span class="one" title="${esc(r.detail)}">${esc(r.detail)}</span><span class="muted">${esc(r.t)}</span></div>`).join('') + `</div>`;
+    const rows = data.inbox.map((r, i) => ({ ...r, id: r.bead + ':' + i }));
+    h += `<div class="heading">Waiting for sign-off <span class="n">${F(rows.length)}</span>${VList.hint('', 'inbox', rows.length, 10)}</div><div class="group inbox">${VList.host('inbox', rows, r =>
+      `<div class="row"><span class="mono one">${esc(short(r.bead))}</span><span class="one" title="${esc(r.detail)}">${esc(r.detail)}</span><span class="muted one">${esc(r.t)}</span></div>`, null, 10)}</div>`;
   }
 
   if (settled.length) {
-    h += `<div class="heading">Settled <span class="n">${settled.length}</span><span class="hint">latest first</span></div><div class="group settled">` + settled.map(w =>
-      `<div class="row" title="${esc(history(w))}"><span class="glyph ${w.state}">${GLYPH[w.state] || '–'}</span><span class="id one">${esc(w.bead)}</span>`
+    const rows = settled.map(w => ({ ...w, id: w.bead }));
+    h += `<div class="heading">Settled <span class="n">${F(settled.length)}</span>${VList.hint('latest first', 'settled', settled.length, 10)}</div><div class="group settled">${VList.host('settled', rows, w =>
+      `<div class="row" title="${esc(history(w))}"><span class="glyph ${w.state}">${GLYPH[w.state] || '–'}</span><span class="id one">${esc(short(w.bead))}</span>`
       + `<span class="title one">${esc(w.title || w.bead)}</span><span class="why one"><span class="st ${w.state}">${esc(w.state)}</span>${why(w) ? ' · ' + esc(why(w)) : ''}</span>`
-      + `<span class="tm">${clock(w.state_ms)}</span></div>`).join('') + `</div>`;
+      + `<span class="tm">${clock(w.state_ms)}</span></div>`, null, 10, { rowH: () => narrowQ.matches ? 46 : 28 })}</div>`;
   }
 
   if (queue.length) {
-    h += `<div class="heading">Waiting <span class="n">${queue.length}</span><span class="hint">launch order</span></div><div class="group waiting">` + queue.map((q, i) =>
-      `<div class="row"${launched[q.id] ? ` title="${esc(history(launched[q.id]))}"` : ''}><span class="ord">${i + 1}</span><span class="id one">${esc(q.id)}</span><span class="one" title="${esc(q.note || '')}">${esc((data.titles || {})[q.id] || (launched[q.id] || {}).title || q.note || '')}</span>`
-      + `<span class="again">${launched[q.id] ? '↺ again' : ''}</span></div>`).join('') + `</div>`;
+    const rows = queue.map((q, i) => ({ ...q, n: i + 1 }));
+    h += `<div class="heading">Waiting <span class="n">${F(queue.length)}</span>${VList.hint('launch order', 'waiting', queue.length, 10)}</div><div class="group waiting">${VList.host('waiting', rows, q =>
+      `<div class="row"${launched[q.id] ? ` title="${esc(history(launched[q.id]))}"` : ''}><span class="ord">${F(q.n)}</span><span class="id one">${esc(short(q.id))}</span><span class="one" title="${esc(q.note || '')}">${esc((data.titles || {})[q.id] || (launched[q.id] || {}).title || q.note || '')}</span>`
+      + `<span class="again">${launched[q.id] ? '↺ again' : ''}</span></div>`, null, 10)}</div>`;
   }
-  app.innerHTML = h;
+  const keep = {};
+  app.querySelectorAll('.chat[data-bead]').forEach(el => { keep[el.dataset.bead] = { top: el.scrollTop, pin: el.scrollHeight - el.scrollTop - el.clientHeight < 24 }; });
+  VList.preserve(() => {
+    app.innerHTML = h;
+    VList.mountAll(app);
+    app.querySelectorAll('.chat[data-bead]').forEach(el => { const k = keep[el.dataset.bead]; el.scrollTop = !k || k.pin ? el.scrollHeight : k.top; });
+  });
 }
+VList.bindExpand(() => draw());
 
 wheel.onData(v => { data = v; got = Date.now(); draw(); });
 setInterval(draw, 5000);
