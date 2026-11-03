@@ -40,6 +40,8 @@ final class PhoneModel {
     /// What to show once the daemon's answer names the space, pane or session an op made.
     private enum ShowWhenMade { case space, pane, session }
     private var showWhenMade: [UInt64: ShowWhenMade] = [:]
+    /// The agent each `pane_split` request was made to start in its new pane, by request id.
+    private var startWhenMade: [UInt64: String] = [:]
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]
     private let pageDaemon = PageDaemon()
@@ -431,6 +433,7 @@ final class PhoneModel {
             }
         case let .created(req, id):
             if menuReqs.remove(req) != nil || spaceReqs.remove(req) != nil { Log.info("created \(id)") }
+            if let agent = startWhenMade.removeValue(forKey: req) { startPane(id, .agent, agent: agent) }
             switch showWhenMade.removeValue(forKey: req) {
             case .space?: select(space: id)
             case .session?: selectSession(id)
@@ -443,6 +446,7 @@ final class PhoneModel {
                 settingRefusals[field] = message
                 Log.info("setting \(field.key) refused: \(message)")
             }
+            if let req { startWhenMade[req] = nil }
             if let req, menuReqs.remove(req) != nil { menuError = message }
             if let req, spaceReqs.remove(req) != nil {
                 spaceError = message
@@ -1057,17 +1061,28 @@ final class PhoneModel {
 
     // MARK: Pane menu ops. A refusal reaches `menuError`; the layout the daemon broadcasts is what moves the screen.
 
-    private func menuOp(clearsError: Bool = true, showing: ShowWhenMade? = nil, _ make: (UInt64) -> ClientMsg) {
+    private func menuOp(clearsError: Bool = true, showing: ShowWhenMade? = nil, startingAgent: String? = nil, _ make: (UInt64) -> ClientMsg) {
         guard let client else { return }
         if clearsError { menuError = nil }
         let req = client.req()
         menuReqs.insert(req)
         if let showing { showWhenMade[req] = showing }
+        if let startingAgent { startWhenMade[req] = startingAgent }
         let msg = make(req)
         Log.info("pane op: \((try? msg.json()) ?? "?")")
         client.send(msg)
     }
 
+    /// A new pane right of the space's shown pane, started as `agent` and shown once it is made.
+    func newAgentPane(in space: String, agent: String) {
+        guard let pane = spaces.first(where: { $0.id == space })?.focus else { return }
+        menuOp(showing: .pane, startingAgent: agent) { .paneSplit(req: $0, pane: pane, dir: .right, focus: false) }
+    }
+    /// `artifact` in a new pane right of the space's shown pane, shown once it is made.
+    func openArtifact(_ artifact: ArtifactInfo, in space: String) {
+        guard let pane = spaces.first(where: { $0.id == space })?.focus else { return }
+        menuOp(showing: .pane) { .paneOpen(req: $0, pane: pane, dir: .right, url: nil, artifact: artifact.name, focus: false) }
+    }
     func split(_ pane: String, _ dir: Dir?) { menuOp(showing: .pane) { .paneSplit(req: $0, pane: pane, dir: dir, focus: false) } }
     func closePane(_ pane: String) { menuOp { .paneClose(req: $0, pane: pane) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: ArtifactInfo? = nil, url: String? = nil) {

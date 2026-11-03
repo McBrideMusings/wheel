@@ -104,6 +104,7 @@ private struct PaletteRow: View {
         case .space: "rectangle.3.group"
         case .pane: "rectangle.split.2x1"
         case .artifact: "doc.richtext"
+        case .session: "square.stack"
         case .recent: "clock.arrow.circlepath"
         case .openFolder: "folder.badge.plus"
         case .newSpaceMode: "plus.rectangle.on.folder"

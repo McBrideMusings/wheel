@@ -20,6 +20,7 @@ final class TitleMenuUITests: XCTestCase {
         app = XCUIApplication()
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
+        allowNotifications()
         let title = app.buttons["title"]
         XCTAssertTrue(title.waitForExistence(timeout: 40), "the title shows once paired")
         expectTitle("wheel", session: "wheel")
@@ -151,5 +152,11 @@ final class TitleMenuUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(60)
         while !FileManager.default.fileExists(atPath: ack) && Date() < deadline { Thread.sleep(forTimeInterval: 0.2) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: ack), "the script acknowledged \(step)")
+    }
+
+    /// The system asks to send notifications on the first launch; its alert sits over the app until answered.
+    private func allowNotifications() {
+        let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons["Allow"]
+        if allow.waitForExistence(timeout: 10) { allow.tap() }
     }
 }

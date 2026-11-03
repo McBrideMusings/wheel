@@ -27,6 +27,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
     case pane(id: String, space: String, name: String, spaceName: String)
     /// An artifact a web pane can show, opened in a new pane split right of the focused one.
     case artifact(scope: ArtifactScope, name: String, title: String)
+    /// A session, switched to when chosen.
+    case session(id: String, name: String)
     /// A directory a space was made for and is not open now.
     case recent(dir: String)
     /// Switch the palette to New Space mode.
@@ -44,6 +46,7 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .space(id, _, _): "space:\(id)"
         case let .pane(id, _, _, _): "pane:\(id)"
         case let .artifact(scope, name, _): "artifact:\(scope.rawValue)/\(name)"
+        case let .session(id, _): "session:\(id)"
         case let .recent(dir): "recent:\(dir)"
         case .newSpaceMode: "action:new-space"
         case let .folder(path, _): "folder:\(path)"
@@ -52,13 +55,14 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         }
     }
 
-    /// `action`, `space`, `pane`, `artifact`, `recent`, `new_space_mode`, `folder`, `missing` or `open_folder`: what the log and the debug state call it.
+    /// `action`, `space`, `pane`, `artifact`, `session`, `recent`, `new_space_mode`, `folder`, `missing` or `open_folder`: what the log and the debug state call it.
     public var kind: String {
         switch self {
         case .action: "action"
         case .space: "space"
         case .pane: "pane"
         case .artifact: "artifact"
+        case .session: "session"
         case .recent: "recent"
         case .newSpaceMode: "new_space_mode"
         case .folder: "folder"
@@ -73,6 +77,7 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .space(_, name, _): name
         case let .pane(_, _, name, _): name
         case let .artifact(_, name, title): title.isEmpty ? name : title
+        case let .session(_, name): "Switch to \(name)"
         case let .recent(dir): CommandPalette.lastComponent(of: dir)
         case .newSpaceMode: "New Space…"
         case let .folder(path, _): CommandPalette.lastComponent(of: path)
@@ -88,6 +93,7 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .space(_, _, dir): dir
         case let .pane(id, _, _, spaceName): "\(spaceName) · \(id)"
         case let .artifact(scope, name, _): "\(scope.rawValue) · \(name)"
+        case .session: "session"
         case let .recent(dir): dir
         case .newSpaceMode: ""
         case let .folder(path, space): space == nil ? path : "open · \(path)"
@@ -115,6 +121,17 @@ public struct CommandPalette: Sendable, Equatable {
             self.id = id
             self.name = name
             self.dir = dir
+        }
+    }
+
+    /// One session, as the palette lists it.
+    public struct OpenSession: Sendable, Equatable {
+        public let id: String
+        public let name: String
+
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
         }
     }
 
@@ -156,6 +173,7 @@ public struct CommandPalette: Sendable, Equatable {
     private var spaces: [OpenSpace] = []
     private var panes: [OpenPane] = []
     private var artifacts: [ArtifactInfo] = []
+    private var sessions: [OpenSession] = []
     private var recents: [RecentDir] = []
     private var actions: [PaletteAction] = []
     private var roots: [String] = []
@@ -167,10 +185,11 @@ public struct CommandPalette: Sendable, Equatable {
 
     /// Replace what the palette lists from; the query stays and the selection returns to the top.
     public mutating func list(spaces: [OpenSpace], panes: [OpenPane] = [], artifacts: [ArtifactInfo] = [],
-                              recents: [RecentDir], actions: [PaletteAction]) {
+                              sessions: [OpenSession] = [], recents: [RecentDir], actions: [PaletteAction]) {
         self.spaces = spaces
         self.panes = panes
         self.artifacts = artifacts
+        self.sessions = sessions
         self.recents = recents
         self.actions = actions
         refilter()
@@ -239,7 +258,7 @@ public struct CommandPalette: Sendable, Equatable {
 
     private mutating func refilter() {
         switch mode {
-        case .root: rows = Self.filter(spaces: spaces, panes: panes, artifacts: artifacts, recents: recents, actions: actions, query: query)
+        case .root: rows = Self.filter(spaces: spaces, panes: panes, artifacts: artifacts, sessions: sessions, recents: recents, actions: actions, query: query)
         case .newSpace: rows = Self.newSpaceRows(spaces: spaces, recents: recents, roots: roots, listings: listings, query: query)
         }
         selected = 0
@@ -315,17 +334,18 @@ public struct CommandPalette: Sendable, Equatable {
             .map(\.element)
     }
 
-    /// With no query: the open spaces, the panes of every space, the artifacts, then the recent
+    /// With no query: the open spaces, the panes of every space, the artifacts, the sessions, then the recent
     /// directories not open now (newest first), then the actions. With one: every item it
     /// matches, best score first, ties in that order.
     public static func filter(spaces: [OpenSpace], panes: [OpenPane] = [], artifacts: [ArtifactInfo] = [],
-                              recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
+                              sessions: [OpenSession] = [], recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
         let open = Set(spaces.map(\.dir))
         let closed = recents.filter { !open.contains($0.dir) }.sorted { $0.openedMs > $1.openedMs }
         var items: [(item: PaletteItem, texts: [String])] = []
         items += spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), [$0.name, $0.dir]) }
         items += panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), [$0.name, "\($0.spaceName) \($0.name)"]) }
         items += artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), [$0.title, $0.name]) }
+        items += sessions.map { (.session(id: $0.id, name: $0.name), ["Switch to \($0.name)", $0.name]) }
         items += closed.map { (.recent(dir: $0.dir), [$0.dir]) }
         items.append((.newSpaceMode, ["New Space…"]))
         items += actions.map { action in
