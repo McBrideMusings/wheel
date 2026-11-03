@@ -16,7 +16,7 @@ use std::time::Duration;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{any, get, post, put};
 use axum::Extension;
 use axum::Router;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -1100,8 +1100,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/artifacts/{pane}/.wheel/review-flag",
             post(page_review_flag),
         )
-        .route("/artifacts/{pane}/", get(artifact))
-        .route("/artifacts/{pane}/{*path}", get(artifact))
+        .route("/artifacts/{pane}/", any(artifact))
+        .route("/artifacts/{pane}/{*path}", any(artifact))
         .with_state(state)
 }
 
@@ -1195,20 +1195,53 @@ fn authorize(
     state.check_token(via, token, listener).map(|_| ())
 }
 
+/// A token in the URL is traded for a cookie only this pane's address gets, and the page loads
+/// again from its address without it, so no script in the page reads the token off its URL.
+fn token_for_cookie(via: &str, pane: &str, token: &str, uri: &Uri) -> Response {
+    let cookie = format!("{COOKIE}={token}; Path=/artifacts/{pane}/; HttpOnly; SameSite=Strict");
+    let (Ok(cookie), Ok(location)) = (
+        HeaderValue::from_str(&cookie),
+        HeaderValue::from_str(uri.path()),
+    ) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    tracing::info!(via, "artifact token traded for a cookie");
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, cookie),
+            (header::LOCATION, location),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+    )
+        .into_response()
+}
+
 async fn artifact(
     State(state): State<Arc<AppState>>,
     Extension(listener): Extension<Listener>,
     UrlPath(params): UrlPath<HashMap<String, String>>,
-    uri: Uri,
     Query(query): Query<HashMap<String, String>>,
-    headers: HeaderMap,
+    req: axum::extract::Request,
 ) -> Response {
+    let (uri, headers) = (req.uri().clone(), req.headers().clone());
     let pane = params.get("pane").map(String::as_str).unwrap_or_default();
     let path = params.get("path").map(String::as_str).unwrap_or_default();
     let via = format!("artifacts {pane}/{path}");
     let from_query = from_query_token(&query);
     if let Err(status) = authorize(&state, listener, &via, &headers, from_query) {
         return status.into_response();
+    }
+    // A pane showing an app serves no folder: the program's own page comes through the proxy
+    // (ADR-0026), the token traded for a cookie first as for any pane.
+    if let Ok(app) = state.app_of(pane) {
+        if let Some(token) = from_query {
+            return token_for_cookie(&via, pane, token, &uri);
+        }
+        return crate::proxy::forward(&app, pane, COOKIE, req).await;
+    }
+    if req.method() != axum::http::Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     let serve = match state.serve(pane, path) {
         None => {
@@ -1221,27 +1254,8 @@ async fn artifact(
         }
         Some(Ok(serve)) => serve,
     };
-    // A token in the URL is traded for a cookie only this pane's folder gets, and the page loads
-    // again from its address without it, so no script in the page reads the token off its URL.
     if let Some(token) = from_query {
-        let cookie =
-            format!("{COOKIE}={token}; Path=/artifacts/{pane}/; HttpOnly; SameSite=Strict");
-        let (Ok(cookie), Ok(location)) = (
-            HeaderValue::from_str(&cookie),
-            HeaderValue::from_str(uri.path()),
-        ) else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        tracing::info!(via, "artifact token traded for a cookie");
-        return (
-            StatusCode::SEE_OTHER,
-            [
-                (header::SET_COOKIE, cookie),
-                (header::LOCATION, location),
-                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
-            ],
-        )
-            .into_response();
+        return token_for_cookie(&via, pane, token, &uri);
     }
     let Serve {
         base,

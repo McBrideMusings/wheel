@@ -3140,6 +3140,8 @@ dependencies = [
  "ghostty-vt",
  "h2",
  "http",
+ "hyper",
+ "hyper-util",
  "libc",
  "mime_guess",
  "notify",

@@ -183,9 +183,11 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
         let work = Task { @MainActor [weak self] in
             defer { if self?.running[key]?.serial == mine { self?.running.removeValue(forKey: key) } }
             do {
-                // The page's event stream never completes, so it is handed over as it arrives;
+                // The page's event stream, and any `EventSource` an app's page opens (it asks
+                // for `text/event-stream`), never completes, so it is handed over as it arrives;
                 // every other response is held whole so its length is known.
                 let streaming = target.path.hasSuffix("/.wheel/events")
+                    || (sent.value(forHTTPHeaderField: "Accept") ?? "").contains("text/event-stream")
                 UILog.info("web pane \(pane) page \(shown) requested \(transport.isPinned ? "through the pinned connection" : "over URLSession")")
                 let reply = try await Self.fetch(sent, over: transport, streaming: streaming)
                 var held = Data()
