@@ -38,6 +38,14 @@ A page a pane can show, defined by one `[artifacts.<name>]` entry in a `wheel.to
 _Avoid_: manifest, artifact.toml, plugin
 _applies-to_: daemon/src/artifacts.rs
 
+**Static artifact**:
+An artifact whose page is HTML or Markdown on disk and which runs no process of its own.
+_Avoid_: plain artifact
+
+**App artifact**:
+An artifact whose entry names a process (`app`, `mcp` or `mcp_url`) that the daemon runs for the pane showing it.
+_applies-to_: daemon/src/app.rs
+
 **Scope**:
 Which `wheel.toml` holds an artifact's entry: `project` (the space's) or `machine` (this machine's, `~/.wheel/wheel.toml`).
 _Avoid_: repo, local, shared
