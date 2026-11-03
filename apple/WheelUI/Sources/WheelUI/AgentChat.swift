@@ -68,11 +68,14 @@ public final class AgentChat: ObservableObject {
     @Published public var context: ContextUse?
     /// The slash commands the agent accepts, by name; nil until it has listed them.
     @Published public var commands: Set<String>?
-    /// `offered` without the commands this agent's program does not accept. All of them while the
-    /// agent has listed none.
-    public func accepted(_ offered: [SkillInfo]) -> [SkillInfo] {
-        guard let commands else { return offered }
-        return offered.filter { commands.contains($0.name) }
+    /// What a composer's picker offers for `agent`: the commands the agent reported, each with the
+    /// description from `scanned` where the names match. Nothing until the agent has reported. An
+    /// agent whose program lists no commands (Codex) offers `scanned` as it is.
+    public func accepted(_ scanned: [SkillInfo], agent: String) -> [SkillInfo] {
+        guard agent == "claude" else { return scanned }
+        guard let commands else { return [] }
+        let described = Dictionary(scanned.map { ($0.name, $0.description) }, uniquingKeysWith: { first, _ in first })
+        return commands.sorted().map { SkillInfo(name: $0, description: described[$0] ?? "") }
     }
     /// The titles of the items in the last right-click menu a message opened, separators as "-".
     public var lastMessageMenu: [String] = []

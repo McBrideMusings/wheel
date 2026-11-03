@@ -923,6 +923,15 @@ enum AgentCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the slash commands an agent accepts, one per line, as the agent reported them: the
+    /// list a composer's picker offers. Fails while the agent has reported none.
+    Commands {
+        /// An agent pane's id or its agent name.
+        agent: String,
+        /// Print them as a JSON array of names.
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop an agent's running turn; messages queued behind it still run. Fails when no turn is
     /// running.
     Cancel {
@@ -2043,6 +2052,53 @@ async fn context_of(
         return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
     Ok((agent, context))
+}
+
+/// Print the slash commands an agent reported. The daemon sends them right after the attach reply,
+/// when it holds them.
+async fn agent_commands(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::AgentAttached { agent, .. } = conn
+        .call(
+            ClientMsg::AgentAttach {
+                req: Some(req),
+                agent,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to agent_attach".into()));
+    };
+    let mut commands = None;
+    while let Some(msg) = conn.recv(Duration::from_secs(2)).await? {
+        match msg {
+            ServerMsg::AgentCommands {
+                agent: from,
+                commands: list,
+            } if from == agent => {
+                commands = Some(list);
+                break;
+            }
+            // The daemon sends the commands before the title and the notice, so one of them
+            // means there are none.
+            ServerMsg::AgentTitle { .. } | ServerMsg::AgentNotice { .. } => break,
+            _ => {}
+        }
+    }
+    let Some(commands) = commands else {
+        return Err(Fail::Other(format!(
+            "agent {agent} has not reported its commands yet"
+        )));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&commands).map_err(other)?);
+    } else {
+        for command in commands {
+            println!("{command}");
+        }
+    }
+    Ok(())
 }
 
 async fn agent_context(conn: &mut Conn, agent: Option<String>, json: bool) -> Result<(), Fail> {
@@ -4905,6 +4961,9 @@ async fn main() -> ExitCode {
             }) => agent_send(&mut conn, agent, text, timeout).await,
             Command::Agent(AgentCommand::Read { agent, json }) => {
                 agent_read(&mut conn, agent, json).await
+            }
+            Command::Agent(AgentCommand::Commands { agent, json }) => {
+                agent_commands(&mut conn, agent, json).await
             }
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await

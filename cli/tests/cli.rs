@@ -584,6 +584,18 @@ async fn agent_commands_accept_a_pane_id_and_wait_for_ready() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn agent_commands_prints_what_the_agent_reported() {
+    let d = daemon_with_agents().await;
+    let pane = agent_pane(&d, "first task").await;
+
+    let plain = ok(&d, &["agent", "commands", &pane]).await;
+    assert_eq!(plain.lines().collect::<Vec<_>>(), ["clear", "compact", "review"]);
+    let json: serde_json::Value =
+        serde_json::from_str(&ok(&d, &["agent", "commands", &pane, "--json"]).await).unwrap();
+    assert_eq!(json, serde_json::json!(["clear", "compact", "review"]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn agent_read_prints_a_diff_as_counts_and_json_keeps_its_text() {
     let d = daemon_with_agents().await;
     let pane = agent_pane(&d, "show a diff").await;

@@ -52,7 +52,7 @@ struct AgentPane: View {
                 removeAttachment: { tray?.remove($0) },
                 retryAttachment: { tray?.retry($0) },
                 focusRequest: chat.composerFocusRequest,
-                skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? []),
+                skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? [], agent: agent),
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
                 stop: { model.cancel(chat) },
