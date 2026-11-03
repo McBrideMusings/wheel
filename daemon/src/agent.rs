@@ -1052,7 +1052,9 @@ impl Agent {
     }
 
     fn push_locked(&self, inner: &mut Inner, event: AgentEvent) {
-        if inner.running.is_some() && !matches!(event, AgentEvent::TurnStart { .. }) {
+        if inner.running.is_some()
+            && !matches!(event, AgentEvent::TurnStart { .. } | AgentEvent::Notice { .. })
+        {
             inner.answered = true;
         }
         let event = StampedEvent::now(event);
@@ -1707,6 +1709,7 @@ fn event_bytes(event: &AgentEvent) -> usize {
     64 + match event {
         AgentEvent::User { text, .. }
         | AgentEvent::Text { text }
+        | AgentEvent::Notice { text }
         | AgentEvent::Thought { text } => text.len(),
         AgentEvent::ToolCall {
             title,

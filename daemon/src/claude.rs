@@ -567,6 +567,11 @@ impl Driver {
                     self.emit(DriverEvent::Commands(names.collect()));
                 }
             }
+            Some("task_notification") => {
+                let line = notice_line(message["summary"].as_str(), message["status"].as_str());
+                tracing::info!(pid = self.pid, status = ?message["status"].as_str(), "a background task ended");
+                self.emit(DriverEvent::Transcript(AgentEvent::Notice { text: line }));
+            }
             Some("status") => {
                 if let Some(mode) = message["permissionMode"].as_str() {
                     if set_current(&mut self.options, "mode", mode) {
@@ -1118,9 +1123,41 @@ pub struct History {
     pub turns: Vec<(String, Vec<AgentEvent>)>,
 }
 
+/// The line a background task's end shows as: Claude Code's own summary of it, else its status.
+fn notice_line(summary: Option<&str>, status: Option<&str>) -> String {
+    match (summary.map(str::trim).filter(|s| !s.is_empty()), status) {
+        (Some(summary), _) => summary.to_string(),
+        (None, Some(status)) => format!("Background task {status}"),
+        (None, None) => "Background task ended".to_string(),
+    }
+}
+
+/// What `tag` holds in `text`, between `<tag>` and `</tag>`.
+fn tag_text<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let rest = text.split_once(&format!("<{tag}>"))?.1;
+    Some(rest.split_once(&format!("</{tag}>"))?.0)
+}
+
+/// The line a user entry shows as when it is Claude Code's note that a background task ended,
+/// not something the person wrote: the entry says so in `origin.kind`, and its text opens with a
+/// `<task-notification>` block. A message that only mentions the tag later in its text is the
+/// person's.
+fn task_notice(entry: &Value) -> Option<String> {
+    let text = match &entry["message"]["content"] {
+        Value::String(text) => text.clone(),
+        Value::Array(blocks) => blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    };
+    let text = text.trim_start();
+    if entry["origin"]["kind"] != "task-notification" && !text.starts_with("<task-notification>") {
+        return None;
+    }
+    Some(notice_line(tag_text(text, "summary"), tag_text(text, "status")))
+}
+
 /// The prompt a user entry carries, if it is one the person wrote.
 fn prompt_text(entry: &Value) -> Option<String> {
-    if entry["isMeta"] == true || between_turns(&entry["message"]) {
+    if entry["isMeta"] == true || between_turns(&entry["message"]) || task_notice(entry).is_some() {
         return None;
     }
     let text = match &entry["message"]["content"] {
@@ -1164,11 +1201,14 @@ pub fn history(home: &Path, cwd: &Path, id: &str) -> Option<History> {
         }
         let events = match entry["type"].as_str() {
             Some("user") => {
-                if let Some(prompt) = prompt_text(&entry) {
+                if let Some(text) = task_notice(&entry) {
+                    vec![AgentEvent::Notice { text }]
+                } else if let Some(prompt) = prompt_text(&entry) {
                     history.turns.push((prompt, Vec::new()));
                     continue;
+                } else {
+                    tool_results(&entry["message"]["content"], &calls)
                 }
-                tool_results(&entry["message"]["content"], &calls)
             }
             Some("assistant") => entry["message"]["content"]
                 .as_array()
@@ -1255,7 +1295,76 @@ fn iso8601(at: std::time::SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{words, Rest, Streamed};
+    use super::{notice_line, prompt_text, task_notice, words, Rest, Streamed};
+    use serde_json::json;
+
+    fn user(content: &str) -> serde_json::Value {
+        json!({"type": "user", "message": {"role": "user", "content": content}})
+    }
+
+    fn notification(status: &str, summary: &str) -> String {
+        format!("<task-notification>\n<task-id>b1</task-id>\n<status>{status}</status>\n<summary>{summary}</summary>\n</task-notification>")
+    }
+
+    #[test]
+    fn a_completed_task_notification_is_a_notice_not_a_prompt() {
+        let entry = user(&notification("completed", "Background command \"wait\" completed (exit code 0)"));
+        assert_eq!(prompt_text(&entry), None);
+        assert_eq!(task_notice(&entry).as_deref(), Some("Background command \"wait\" completed (exit code 0)"));
+    }
+
+    #[test]
+    fn a_killed_task_notification_is_a_notice_not_a_prompt() {
+        let entry = user(&notification("killed", "Background command \"wait\" was stopped"));
+        assert_eq!(prompt_text(&entry), None);
+        assert_eq!(task_notice(&entry).as_deref(), Some("Background command \"wait\" was stopped"));
+    }
+
+    #[test]
+    fn an_entry_marked_as_a_task_notification_is_one_whatever_its_text() {
+        let mut entry = user("something else");
+        entry["origin"] = json!({"kind": "task-notification"});
+        assert_eq!(prompt_text(&entry), None);
+        assert_eq!(task_notice(&entry).as_deref(), Some("Background task ended"));
+    }
+
+    #[test]
+    fn a_message_that_mentions_the_tag_mid_text_is_still_the_persons() {
+        let text = "why does <task-notification> show up as my message?";
+        let entry = user(text);
+        assert_eq!(task_notice(&entry), None);
+        assert_eq!(prompt_text(&entry).as_deref(), Some(text));
+    }
+
+    #[test]
+    fn a_notice_with_no_summary_names_its_status() {
+        assert_eq!(notice_line(None, Some("killed")), "Background task killed");
+        assert_eq!(notice_line(Some("  "), None), "Background task ended");
+    }
+
+    #[test]
+    fn history_shows_a_task_notification_as_a_notice_inside_its_turn() {
+        use super::history;
+        use wheel_proto::AgentEvent;
+        let home = std::env::temp_dir().join(format!("wheel-j6ry-{}", std::process::id()));
+        let cwd = std::path::Path::new("/work/proj");
+        let dir = crate::resume::claude_project_dir(&home, &super::store_cwd(cwd));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines = [
+            user("start the build"),
+            user(&notification("completed", "Background command \"build\" completed (exit code 0)")),
+        ];
+        let body: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        std::fs::write(dir.join("c1.jsonl"), body.join("\n")).unwrap();
+        let found = history(&home, cwd, "c1").unwrap();
+        std::fs::remove_dir_all(&home).unwrap();
+        assert_eq!(found.turns.len(), 1);
+        assert_eq!(found.turns[0].0, "start the build");
+        assert_eq!(
+            found.turns[0].1,
+            vec![AgentEvent::Notice { text: "Background command \"build\" completed (exit code 0)".into() }]
+        );
+    }
 
     #[test]
     fn a_block_the_stream_carried_is_not_sent_again() {
