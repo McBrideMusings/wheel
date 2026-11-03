@@ -54,7 +54,7 @@ impl AppState {
         spaces
             .spaces
             .iter()
-            .find_map(|s| match crate::spaces::find_pane(&s.root, pane) {
+            .find_map(|s| match crate::spaces::space_find(s, pane) {
                 Some(PaneKind::Web { artifact, .. }) => {
                     Some((artifact.clone(), s.cwd.clone(), s.id.clone()))
                 }
@@ -129,7 +129,7 @@ impl AppState {
             spaces
                 .spaces
                 .iter()
-                .find_map(|s| match crate::spaces::find_pane(&s.root, target) {
+                .find_map(|s| match crate::spaces::space_find(s, target) {
                     Some(PaneKind::Terminal { term, .. }) => Some(term.clone()),
                     _ => None,
                 })

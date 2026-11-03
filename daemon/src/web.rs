@@ -698,7 +698,7 @@ impl AppState {
         let (artifact, cwd) = spaces
             .spaces
             .iter()
-            .find_map(|s| match crate::spaces::find_pane(&s.root, pane) {
+            .find_map(|s| match crate::spaces::space_find(s, pane) {
                 Some(PaneKind::Web { artifact, .. }) => Some((artifact.clone(), s.cwd.clone())),
                 _ => None,
             })?;
@@ -791,7 +791,11 @@ fn hidden(root: &Path, path: &Path) -> bool {
 }
 
 /// Each web pane in the tree, with the artifact it shows.
-pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &ArtifactRef)> {
+pub(crate) fn web_panes(space: &wheel_proto::SpaceInfo) -> Vec<(&str, &ArtifactRef)> {
+    space.trees().flat_map(web_panes_in).collect()
+}
+
+fn web_panes_in(node: &Node) -> Vec<(&str, &ArtifactRef)> {
     match node {
         Node::Pane {
             id,
@@ -800,8 +804,8 @@ pub(crate) fn web_panes(node: &Node) -> Vec<(&str, &ArtifactRef)> {
         } => vec![(id, artifact)],
         Node::Pane { .. } => vec![],
         Node::Split { a, b, .. } => {
-            let mut all = web_panes(a);
-            all.extend(web_panes(b));
+            let mut all = web_panes_in(a);
+            all.extend(web_panes_in(b));
             all
         }
     }

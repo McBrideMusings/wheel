@@ -49,6 +49,7 @@ pub use server::{serve, AgentTiming, AppState};
 pub mod perms;
 pub mod agent;
 mod shell;
+mod sites;
 pub mod spaces;
 mod status;
 mod uploads;

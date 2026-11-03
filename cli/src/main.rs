@@ -1806,7 +1806,7 @@ async fn default_space(conn: &mut Conn, space: Option<String>) -> Result<Option<
             wheel_proto::Node::Split { a, b, .. } => holds(a, pane) || holds(b, pane),
         }
     }
-    match spaces.iter().find(|s| holds(&s.root, &pane)) {
+    match spaces.iter().find(|s| s.trees().any(|t| holds(t, &pane))) {
         Some(s) => Ok(Some(s.id.clone())),
         None => Err(Fail::Daemon(format!("no space holds {pane} (WHEEL_PANE)"))),
     }
@@ -1829,7 +1829,7 @@ async fn terminal_id(conn: &mut Conn, id: String) -> Result<String, Fail> {
             wheel_proto::Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
         }
     }
-    match spaces.iter().find_map(|s| find(&s.root, &id)) {
+    match spaces.iter().find_map(|s| s.trees().find_map(|t| find(t, &id))) {
         Some(wheel_proto::PaneKind::Terminal { term, .. }) => Ok(term.clone()),
         Some(_) => Err(Fail::Daemon(format!("{id} is not a terminal pane"))),
         None => Err(Fail::Daemon(format!("no pane {id}"))),
@@ -2187,7 +2187,9 @@ async fn agent_context(conn: &mut Conn, agent: Option<String>, json: bool) -> Re
             };
             let mut names = Vec::new();
             for space in &spaces {
-                agent_names_in(&space.root, &mut names);
+                for tree in space.trees() {
+                    agent_names_in(tree, &mut names);
+                }
             }
             names
         }
@@ -2771,7 +2773,9 @@ async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
             .iter()
             .map(|space| {
                 let mut panes = Vec::new();
-                pane_ids(&space.root, &mut panes);
+                for tree in space.trees() {
+                    pane_ids(tree, &mut panes);
+                }
                 serde_json::json!({
                     "id": space.id, "name": space.name, "cwd": space.cwd,
                     "status": space.status, "panes": panes,
@@ -2831,7 +2835,9 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
     for space in &spaces {
         println!("{}  {}", space.name, status_words(space.status));
         let mut panes = Vec::new();
-        walk(&space.root, &mut panes);
+        for tree in space.trees() {
+            walk(tree, &mut panes);
+        }
         for (pane, kind, status) in panes {
             println!("  {pane}  {kind}  {}", status_words(status));
         }
@@ -4320,7 +4326,9 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     let mut rows = Vec::new();
     for space in &spaces {
         let mut panes = Vec::new();
-        walk(&space.root, &mut panes);
+        for tree in space.trees() {
+            walk(tree, &mut panes);
+        }
         for (pane, kind) in panes {
             rows.push(serde_json::json!({
                 "space": space.id, "pane": pane, "kind": kind,
@@ -4635,6 +4643,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
                 dir,
                 focus,
+                site: None,
             };
             match conn.call(msg, req).await? {
                 ServerMsg::Created {

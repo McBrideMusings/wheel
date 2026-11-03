@@ -8,7 +8,7 @@ use wheel_proto::{PaneKind, ProcInfo};
 
 use crate::resume;
 use crate::server::AppState;
-use crate::spaces::panes;
+use crate::spaces::space_panes;
 
 /// One line of `ps`: a running process before it is tied to a pane.
 #[derive(Debug, Clone, PartialEq)]
@@ -118,7 +118,7 @@ impl AppState {
                 .iter()
                 .find(|s| s.id == space)
                 .ok_or_else(|| format!("no space {space}"))?;
-            panes(&found.root)
+            space_panes(found)
                 .into_iter()
                 .filter_map(|(id, kind)| match kind {
                     PaneKind::Terminal { term, agent, .. } => {

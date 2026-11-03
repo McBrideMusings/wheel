@@ -9,7 +9,7 @@ use tokio::sync::broadcast::error::RecvError;
 use wheel_proto::{Node, PaneKind, PaneStatus, ReportedStatus, ServerMsg, AgentState};
 
 use crate::server::AppState;
-use crate::spaces::{panes, Spaces};
+use crate::spaces::{space_panes, Spaces};
 
 /// The statuses last sent, so a recompute that gives the same values sends nothing.
 #[derive(Default)]
@@ -50,7 +50,7 @@ impl AppState {
         for space in &spaces.spaces {
             let mut ids = Vec::new();
             let mut found = Vec::new();
-            for (pane, kind) in panes(&space.root) {
+            for (pane, kind) in space_panes(space) {
                 ids.push(pane.to_string());
                 let status = match kind {
                     PaneKind::Agent { agent, .. } => {
@@ -93,7 +93,9 @@ impl AppState {
         let (by_pane, by_space) = self.statuses(&spaces);
         for (space, computed) in spaces.spaces.iter_mut().zip(by_space) {
             space.status = computed.status;
-            set_pane_statuses(&mut space.root, &by_pane);
+            for tree in space.trees_mut() {
+                set_pane_statuses(tree, &by_pane);
+            }
         }
         spaces
     }

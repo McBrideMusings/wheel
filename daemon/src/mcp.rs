@@ -383,7 +383,7 @@ impl AppState {
     /// when the pane is no web pane or its entry names no MCP server.
     pub(crate) fn mcp_pane(&self, pane: &str) -> Option<(String, ArtifactScope, String)> {
         let (artifact, cwd, space) = self.spaces.lock().unwrap().spaces.iter().find_map(|s| {
-            match crate::spaces::find_pane(&s.root, pane) {
+            match crate::spaces::space_find(s, pane) {
                 Some(wheel_proto::PaneKind::Web { artifact, .. }) => {
                     Some((artifact.clone(), s.cwd.clone(), s.id.clone()))
                 }

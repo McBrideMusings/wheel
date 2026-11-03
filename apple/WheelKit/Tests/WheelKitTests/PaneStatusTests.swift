@@ -76,3 +76,33 @@ struct PaneStatusTests {
         #expect(space.agentStatuses(shown: []).marks.isEmpty)
     }
 }
+
+struct PaneSiteTests {
+    private let text = #"{"ev":"spaces","spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","root":{"node":"pane","id":"p1","kind":"empty"},"popped":[{"node":"split","id":"x1","axis":"vertical","ratio":0.5,"a":{"node":"pane","id":"p2","kind":"empty"},"b":{"node":"pane","id":"p3","kind":"empty"}},{"node":"pane","id":"p4","kind":"empty"}],"backgrounded":[{"node":"pane","id":"p5","kind":"agent","agent":"w1","harness":"claude","status":{"kind":"needs_you","waiting":1}}]}]}"#
+
+    @Test func decodesPoppedTreesAndBackgroundedPanes() throws {
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        let space = spaces[0]
+        #expect(space.popped.count == 2)
+        #expect(space.popped[0].panes.map(\.id) == ["p2", "p3"])
+        #expect(space.backgrounded.map(\.id) == ["p5"])
+        #expect(space.root.panes.map(\.id) == ["p1"])
+        #expect(space.allPanes.map(\.id) == ["p1", "p2", "p3", "p4", "p5"])
+        #expect(["p1", "p3", "p4", "p5", "p9"].map(space.site(of:)) == [.grid, .popped, .popped, .backgrounded, nil])
+        // A backgrounded pane that needs the person still shows its status.
+        #expect(space.paneStatuses == ["p5": .needsYou(waiting: 1)])
+    }
+
+    @Test func aSpaceWithNoneIsAsBefore() throws {
+        let plain = #"{"ev":"spaces","spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","root":{"node":"pane","id":"p1","kind":"empty"}}]}"#
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(plain) else { Issue.record("wrong case"); return }
+        #expect(spaces[0].popped.isEmpty && spaces[0].backgrounded.isEmpty)
+    }
+
+    @Test func aLayoutBroadcastKeepsTheStatusOfABackgroundedPane() throws {
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        var fresh = spaces[0]
+        fresh.paneStatuses = [:]
+        #expect(fresh.keepingStatuses(of: spaces[0]).paneStatuses == ["p5": .needsYou(waiting: 1)])
+    }
+}

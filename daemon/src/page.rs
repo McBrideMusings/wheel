@@ -166,7 +166,7 @@ impl AppState {
     pub(crate) fn page(&self, pane: &str) -> Result<Arc<Page>, String> {
         let is_web = self.spaces.lock().unwrap().spaces.iter().any(|s| {
             matches!(
-                crate::spaces::find_pane(&s.root, pane),
+                crate::spaces::space_find(s, pane),
                 Some(wheel_proto::PaneKind::Web { .. })
             )
         });

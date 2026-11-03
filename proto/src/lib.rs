@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -830,6 +830,20 @@ pub enum ClientMsg {
         /// changes.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
+        /// Create the new pane popped out or backgrounded instead of beside `pane`: `popped`
+        /// makes it a new popped tree, `backgrounded` puts it in the tray. Incompatible with
+        /// `dir`. `grid` and none split as before, in the tree that holds `pane`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<PaneSite>,
+    },
+    /// Put a pane in the grid, in a popped tree of its own, or in the tray. It keeps its id, its
+    /// process and its scrollback. To the grid it goes where `panes.placement` puts a split with
+    /// no side. A popped pane sent to `popped` leaves its tree for one of its own.
+    PaneSetSite {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        site: PaneSite,
     },
     /// Swap the places of two panes in one space. Each keeps running; only the layout changes.
     PaneSwap {
@@ -2665,6 +2679,73 @@ pub struct SpaceInfo {
     /// placed this space keeps it in the background rather than in a window.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
+    /// Panes popped out of the grid (a floating window over it, always visible). Each is its own
+    /// split tree, splittable like the grid; one that loses its last pane is gone. Window
+    /// positions and sizes belong to each client (ADR-0022), not to wheeld.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub popped: Vec<Node>,
+    /// Panes in the space's tray, each a single pane leaf: running, shown nowhere, in the order
+    /// they were backgrounded. Backgrounding is per pane, even out of a popped tree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backgrounded: Vec<Node>,
+}
+
+/// Where a pane is in its space: in the grid, popped out, or in the tray.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneSite {
+    Grid,
+    Popped,
+    Backgrounded,
+}
+
+impl PaneSite {
+    pub fn name(self) -> &'static str {
+        match self {
+            PaneSite::Grid => "grid",
+            PaneSite::Popped => "popped",
+            PaneSite::Backgrounded => "backgrounded",
+        }
+    }
+}
+
+impl SpaceInfo {
+    /// Every tree the space holds: the grid, then each popped tree, then each tray leaf.
+    pub fn trees(&self) -> impl Iterator<Item = &Node> {
+        std::iter::once(&self.root)
+            .chain(self.popped.iter())
+            .chain(self.backgrounded.iter())
+    }
+
+    pub fn trees_mut(&mut self) -> impl Iterator<Item = &mut Node> {
+        std::iter::once(&mut self.root)
+            .chain(self.popped.iter_mut())
+            .chain(self.backgrounded.iter_mut())
+    }
+
+    /// Where `pane` is, or none when the space does not hold it.
+    pub fn site_of(&self, pane: &str) -> Option<PaneSite> {
+        let holds = |node: &Node| node.holds(pane);
+        if holds(&self.root) {
+            Some(PaneSite::Grid)
+        } else if self.popped.iter().any(holds) {
+            Some(PaneSite::Popped)
+        } else if self.backgrounded.iter().any(holds) {
+            Some(PaneSite::Backgrounded)
+        } else {
+            None
+        }
+    }
+}
+
+impl Node {
+    /// Whether a pane `pane` is a leaf of this tree.
+    pub fn holds(&self, pane: &str) -> bool {
+        match self {
+            Node::Pane { id, .. } => id == pane,
+            Node::Split { a, b, .. } => a.holds(pane) || b.holds(pane),
+        }
+    }
 }
 
 /// What a pane or space asks of the person, highest rank first: a permission waits
