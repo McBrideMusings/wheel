@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Prints the hash of the Apple Development certificate in the keychain, or "-" (ad hoc) with none.
+# Every build of Wheel signs with it, so macOS sees one identity and keeps the permissions it
+# granted: an ad-hoc signature is the build's own hash and asks again after each rebuild.
+security find-identity -v -p codesigning | awk '/"Apple Development/ { print $2; found = 1; exit } END { if (!found) print "-" }'

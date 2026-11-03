@@ -28,10 +28,10 @@ exec > >(tee -a "$LOG") 2>&1
 say() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 say "install-app $VARIANT from $ROOT"
 
-# Sign with the Apple Development certificate by its hash, as every build before did, so macOS
-# keeps the permissions it granted the app. With no such certificate the app is signed ad hoc.
-IDENTITY="$(security find-identity -v -p codesigning | awk '/"Apple Development/ { print $2; exit }')"
-if [ -z "$IDENTITY" ]; then
+# Sign with the Apple Development certificate by its hash, so macOS keeps the permissions it
+# granted the app. With no such certificate the app is signed ad hoc.
+IDENTITY="$("$ROOT/tools/signing-identity")"
+if [ "$IDENTITY" = - ]; then
   say "warning: no Apple Development certificate in the keychain; signing ad hoc"
   IDENTITY=-
 fi

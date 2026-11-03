@@ -19,7 +19,7 @@ build-server: ## Build wheeld and the wheel CLI (cargo, debug)
 build-client: ## Build the Debug Mac app into WHEEL_DERIVED_DATA (xcodegen, then xcodebuild)
 	cd $(ROOT) && xcodegen generate --spec apple/project.yml --project apple
 	xcodebuild -project $(ROOT)/apple/Wheel.xcodeproj -scheme Wheel -configuration Debug \
-		-derivedDataPath "$(WHEEL_DERIVED_DATA)" build
+		-derivedDataPath "$(WHEEL_DERIVED_DATA)" CODE_SIGN_IDENTITY="$$($(ROOT)/tools/signing-identity)" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER= build
 
 dev: ## Run wheeld from source on its default port
 	cd $(ROOT) && cargo run --bin wheeld
