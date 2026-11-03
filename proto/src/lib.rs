@@ -2458,6 +2458,11 @@ pub enum AgentEvent {
     Thought {
         text: String,
     },
+    /// One line the agent's host wrote about the conversation, not the agent and not the person: a
+    /// background command that ended. It belongs to no turn and does not mean the agent answered.
+    Notice {
+        text: String,
+    },
     ToolCall {
         id: String,
         title: String,

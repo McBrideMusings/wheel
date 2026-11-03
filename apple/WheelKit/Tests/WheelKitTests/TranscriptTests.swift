@@ -112,6 +112,17 @@ struct TranscriptTests {
         #expect(t.rows.map(\.kind) == [.user("second", queued: false), .thought("hm")])
     }
 
+    @Test func aNoticeIsALineOfItsOwnAndAnswersNothing() {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "build"))
+        t.apply(.turnStart(turn: 1))
+        t.apply(.notice("Background command \"build\" completed (exit code 0)"))
+        #expect(t.unansweredTurn == 1)
+        t.apply(.text("Done"))
+        #expect(t.rows.map(\.kind) == [.user("build", queued: false), .notice("Background command \"build\" completed (exit code 0)"), .agent("Done")])
+        #expect(!t.rows.contains { if case .user(let text, _) = $0.kind { text.contains("task-notification") } else { false } })
+    }
+
     @Test func aTurnStartForAnUnknownTurnChangesNothing() {
         var t = Transcript()
         t.apply(.user(turn: 2, text: "waiting"))

@@ -155,13 +155,13 @@ public struct Transcript: Sendable, Equatable {
         // the turn's end. An update to an earlier tool call, or a later message being queued, is
         // not the turn moving on.
         switch event {
-        case .text, .toolCall, .plan, .mode, .turnEnd, .error:
+        case .text, .notice, .toolCall, .plan, .mode, .turnEnd, .error:
             if let last = lastSettled, case .thought = rows[last].kind, rows[last].open { close(last, at: at) }
         case .user, .turnStart, .retract, .thought, .toolUpdate, .other:
             break
         }
         switch event {
-        case .user, .turnStart, .retract, .other:
+        case .user, .turnStart, .retract, .notice, .other:
             break
         default:
             unansweredTurn = nil
@@ -223,6 +223,8 @@ public struct Transcript: Sendable, Equatable {
             }
         case let .mode(mode):
             append(.mode(mode), at: at)
+        case let .notice(text):
+            append(.notice(text), at: at)
         case let .turnEnd(_, stopReason):
             closeAll(at: at)
             finishTurn(at: at, stopped: stopReason == "cancelled")

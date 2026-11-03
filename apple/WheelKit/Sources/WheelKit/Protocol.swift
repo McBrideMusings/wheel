@@ -537,6 +537,8 @@ public enum AgentEvent: Sendable, Equatable {
     case turnStart(turn: UInt64)
     case text(String)
     case thought(String)
+    /// A line the agent's host wrote about the conversation: a background command ended.
+    case notice(String)
     case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent], detail: String? = nil)
     /// `content`, when present, replaces the call's whole content.
     case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
@@ -559,6 +561,7 @@ extension AgentEvent: Decodable {
         case "turn_start": self = .turnStart(turn: try c.decode(UInt64.self, forKey: .turn))
         case "text": self = .text(try c.decode(String.self, forKey: .text))
         case "thought": self = .thought(try c.decode(String.self, forKey: .text))
+        case "notice": self = .notice(try c.decode(String.self, forKey: .text))
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
                              kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status),

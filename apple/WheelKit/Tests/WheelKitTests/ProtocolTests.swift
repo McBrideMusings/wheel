@@ -267,6 +267,13 @@ struct ProtocolTests {
         #expect(events.map(\.event) == [.user(turn: 1, text: "hi"), .turnStart(turn: 1), .text("hello"), .turnEnd(turn: 1, stopReason: "end_turn"), .error(turn: nil, message: "agent exited")])
     }
 
+    @Test func decodesANoticeEvent() throws {
+        guard case let .agent(_, stamped) = try ServerMsg.decode(
+            #"{"ev":"agent","agent":"w1","event":{"kind":"notice","text":"Background command \"build\" completed (exit code 0)"}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(stamped.event == .notice("Background command \"build\" completed (exit code 0)"))
+    }
+
     /// The daemon's stamp sits beside the event's fields; replayed history has none.
     @Test func decodesWhenTheDaemonRecordedAnEvent() throws {
         guard case let .agent(_, stamped) = try ServerMsg.decode(

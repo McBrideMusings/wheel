@@ -2437,6 +2437,7 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
             }
             AgentEvent::Text { text } => println!("{text}"),
             AgentEvent::Thought { text } => println!("[thought] {text}"),
+            AgentEvent::Notice { text } => println!("[notice] {text}"),
             AgentEvent::ToolCall {
                 id,
                 title,
