@@ -21,6 +21,7 @@ struct ToolRowTests {
         #expect(create.symbol == "doc.badge.plus")
         #expect(info("Write /a/new.go", "edit", "completed", [.diff(path: "/a/new.go", oldText: "y\n", newText: "x\n")]).label == "Edited new.go")
         #expect(info("rm", "delete").symbol == "trash")
+        #expect(info("Delete /a/old.rs", "delete").label == "Deleted old.rs")
         #expect(info("make build", "execute").label == "Ran make build")
         #expect(info("Run the tests", "execute", detail: "cargo test").label == "Run the tests")
         #expect(info("Skill implement", "skill").label == "Used the implement skill")

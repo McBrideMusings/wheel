@@ -13,12 +13,13 @@ mkdir -p "$SHOTS"
 
 export CLAUDE_CONFIG_DIR="$SCR/claude"
 use_fake_agent
+printf '[agent.codex]\ncommand = "%s"\n' "$FAKE_AGENT" >>"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
 prefs_reset
 
 mkdir -p "$SCR/a"
 A="$(w space new "$SCR/a")"
-P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | .focus')"
+P="$(w space ls | jq -r --arg s "$A" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$P" agent >/dev/null
 
 launch_app
@@ -45,9 +46,16 @@ check "Task: person.2" has 'icon person.2 · label "Survey the parser"'
 check "MCP tool: puzzlepiece.extension" has 'icon puzzlepiece.extension · label "github: list_issues"'
 check "the turn's work line totals the lines" wait_st ".panes[\"$P\"].transcript_items | map(select(startswith(\"work \") and contains(\" +4 -1 \"))) | length == 1" 5
 
+# Codex reports a change set that only removes a file as a delete: a trash icon and "Deleted old.rs".
+PC="$(w pane split "$P" right)"
+w pane start "$PC" agent --agent codex >/dev/null
+w agent send "$PC" "delete" >/dev/null
+w agent wait "$PC" >/dev/null
+check "Codex delete: trash, 'Deleted old.rs'" wait_st ".panes[\"$PC\"].transcript_tools | map(select(contains(\"icon trash · label \\\"Deleted old.rs\\\"\"))) | length == 1" 10
+
 FIRST="$(app_get /state | jq -r --arg p "$P" '.panes[$p].transcript_items[] | select(startswith("work "))' | head -1 | sed 's/^work [0-9]* [^@]*@\(-\{0,1\}[0-9]*\).*/\1/')"
-S="$(w space ls | jq -r --arg p "$P" '[.. | objects | select(.id? == $p) | .session?] | map(select(. != null)) | first')"
-app_post "/agent/expand?session=$S&id=$FIRST" >/dev/null || echo "expand refused"
+S="$(w space ls | jq -r --arg p "$P" '[.. | objects | select(.id? == $p)][0] | .agent')"
+app_post "/agent/expand?agent=$S&id=$FIRST" >/dev/null || echo "expand refused"
 sleep 1
 for look in light dark; do
   WHEEL_APPEARANCE=$look
@@ -55,7 +63,7 @@ for look in light dark; do
   launch_app
   app_post "/focus?space=$A" >/dev/null
   wait_st ".panes[\"$P\"].transcript_tools | length == 11" 20
-  app_post "/agent/expand?session=$S&id=$FIRST" >/dev/null || echo "expand refused"
+  app_post "/agent/expand?agent=$S&id=$FIRST" >/dev/null || echo "expand refused"
   sleep 1
   app_post "/window/snapshot?path=$SHOTS/tool-rows-$look.png" >/dev/null && echo "shot $SHOTS/tool-rows-$look.png"
 done
