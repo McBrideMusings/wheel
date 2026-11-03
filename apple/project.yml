@@ -78,3 +78,26 @@ targets:
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ${IOS_DEVELOPMENT_TEAM}
+    scheme:
+      testTargets:
+        - WheelPhoneUITests
+  # Drives the phone with real taps where a launch variable cannot reach: the title menu's popover
+  # and a row's long-press menu. `.claude/skills/project/tools/ios-title-menu.sh` runs it against
+  # its own wheeld, passing the pairing code and a shots folder as TEST_RUNNER_ variables.
+  WheelPhoneUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - iOS/UITests
+    dependencies:
+      - target: WheelPhone
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel.phone.uitests
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ${IOS_DEVELOPMENT_TEAM}
+        TEST_TARGET_NAME: WheelPhone

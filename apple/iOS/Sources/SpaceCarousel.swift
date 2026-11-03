@@ -2,11 +2,18 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-/// The paired phone's screen: a space dropdown on top, and the space's panes as swipeable pages.
+/// The paired phone's screen: the title menu on top, and the shown space's panes as swipeable pages.
 struct SpaceCarousel: View {
     let model: PhoneModel
     @State private var page: String?
     @State private var newSpaceOpen = false
+    @State private var titleOpen = false
+    /// What the title menu asked for, presented once its popover has closed.
+    @State private var queued: TitleMenuRequest?
+    @State private var renaming: (space: String, name: String)?
+    @State private var closing: (space: String, question: String)?
+    @State private var newSessionOpen = false
+    @State private var newSessionName = ""
     @State private var settingsOpen = false
     @State private var settingsTab: SettingsTab = .global
     @State private var settingsProject: String?
@@ -20,6 +27,7 @@ struct SpaceCarousel: View {
                 UsageStrip(model: model)
                 if panes.isEmpty {
                     ContentUnavailableView(connectionText, systemImage: "rectangle.on.rectangle")
+                        .accessibilityIdentifier("no panes")
                 } else {
                     TabView(selection: $page) {
                         ForEach(panes, id: \.id) { pane in
@@ -57,6 +65,45 @@ struct SpaceCarousel: View {
             Text(model.menuError ?? "")
         }
         .sheet(isPresented: $newSpaceOpen) { NewSpaceSheet(model: model) }
+        .onChange(of: titleOpen) { _, open in
+            guard !open, let request = queued else { return }
+            queued = nil
+            present(request)
+        }
+        .alert("Rename space", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: Binding(get: { renaming?.name ?? "" }, set: { renaming?.name = $0 }))
+                .accessibilityIdentifier("rename field")
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") { if let renaming { model.renameSpace(renaming.space, to: renaming.name) } }
+        }
+        // An alert, not a confirmation dialog: iOS 26 draws a dialog with no anchor as a card with no
+        // Cancel that a tap outside does not close, so the person could not back out.
+        .alert(closing?.question ?? "", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } })) {
+            Button("Close space", role: .destructive) { if let closing { model.closeSpace(closing.space) } }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("New session", isPresented: $newSessionOpen) {
+            TextField("Name", text: $newSessionName).accessibilityIdentifier("session name field")
+            Button("Cancel", role: .cancel) {}
+            Button("Create") { model.newSession(named: newSessionName) }
+        }
+        .alert("Could not change the space", isPresented: Binding(get: { model.spaceError != nil }, set: { if !$0 { model.spaceError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.spaceError ?? "")
+        }
+    }
+
+    private func present(_ request: TitleMenuRequest) {
+        Log.info("title menu asks: \(request)")
+        switch request {
+        case let .rename(space, name): renaming = (space, name)
+        case let .close(space, question): closing = (space, question)
+        case .newSession:
+            newSessionName = ""
+            newSessionOpen = true
+        case .newSpace: newSpaceOpen = true
+        }
     }
 
     @ViewBuilder private func paneView(_ pane: (id: String, kind: PaneKind)) -> some View {
@@ -75,33 +122,13 @@ struct SpaceCarousel: View {
     private var connectionText: String {
         switch model.connection {
         case .connecting: "Connecting…"
-        case .connected: "No panes"
+        case .connected: model.activeSpace == nil ? "No spaces in \(model.shownSession?.name ?? "this session")" : "No panes"
         case let .unreachable(why): "Cannot reach the Mac: \(why)"
         }
     }
 
     private func topBar(panes: [(id: String, kind: PaneKind)], dotsHere: Bool) -> some View {
         HStack {
-            Menu {
-                ForEach(model.spaces) { space in
-                    Button {
-                        model.select(space: space.id)
-                    } label: {
-                        Text("\(space.name) · \(space.root.panes.count) \(space.root.panes.count == 1 ? "pane" : "panes")\(menuCaption(space))")
-                        if space.id == model.activeSpace?.id { Image(systemName: "checkmark") }
-                    }
-                }
-                Divider()
-                Button("New space", systemImage: "plus") { newSpaceOpen = true }
-            } label: {
-                HStack(spacing: 6) {
-                    if let space = model.activeSpace {
-                        SpaceDots(space: space, shown: model.statusDots)
-                    }
-                    Text(model.activeSpace?.name ?? "Spaces").font(.headline)
-                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
-                }
-            }
             Spacer()
             if dotsHere && panes.count > 1 {
                 Dots(count: panes.count, current: panes.firstIndex { $0.id == page } ?? 0)
@@ -114,14 +141,19 @@ struct SpaceCarousel: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
-
-    /// What a menu row says beside the name for a space that needs you or stopped: a menu item
-    /// cannot carry a coloured dot, so the words stand in.
-    private func menuCaption(_ space: SpaceInfo) -> String {
-        guard let status = space.status, model.statusDots.contains(status.rank), let caption = status.caption else { return "" }
-        return " · \(caption)"
+        .padding(.vertical, 6)
+        // Tall enough for the title's two lines, which sit over the bar rather than in its row.
+        .frame(minHeight: 50)
+        .overlay {
+            TitleButton(model: model, open: $titleOpen)
+                .popover(isPresented: $titleOpen) {
+                    TitleMenu(model: model) { request in
+                        queued = request
+                        titleOpen = false
+                    }
+                    .presentationCompactAdaptation(.popover)
+                }
+        }
     }
 
     private func openSettings(_ tab: SettingsTab) {

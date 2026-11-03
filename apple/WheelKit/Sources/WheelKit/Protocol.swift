@@ -25,11 +25,16 @@ public enum ClientMsg: Sendable, Equatable {
     /// Take back every message still waiting in the queue.
     case agentClearQueue(req: UInt64?, agent: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
-    case spaceCreate(req: UInt64?, cwd: String, focus: Bool)
+    /// `session` names the session the space joins (id or name); with none, wheeld picks it.
+    case spaceCreate(req: UInt64?, cwd: String, focus: Bool, session: String? = nil)
     /// `ifEmpty`: only while the space holds one empty pane; wheeld refuses it otherwise.
     case spaceClose(req: UInt64?, id: String, ifEmpty: Bool = false)
     /// Name a space; the daemon saves the name and tells every client. An empty name is refused.
     case spaceRename(req: UInt64?, space: String, name: String)
+    /// Make an empty session named `name` (ADR-0021); the daemon answers `created` with its id.
+    case sessionNew(req: UInt64?, name: String)
+    /// Move `space` to the end of `session`; nothing in it stops.
+    case sessionMove(req: UInt64?, space: String, session: String)
     /// This connection owns the Mac windows, so the daemon may send it `windowRequest`.
     case windowOffer
     /// The answer to `windowRequest` `id`: `data`, a JSON document, when it worked; `error` when not.
@@ -63,7 +68,7 @@ public enum ClientMsg: Sendable, Equatable {
     case focus(req: UInt64?, space: String?, pane: String?)
     /// What one of this client's windows shows. The daemon lists it in `client_ls` and never sends it
     /// to another client; with no space and no pane the window is gone.
-    case view(req: UInt64?, window: String, space: String?, pane: String?)
+    case view(req: UInt64?, window: String, space: String?, pane: String?, session: String? = nil)
     /// Every attached client and what each of its windows shows. Replies `clients`.
     case clientLs(req: UInt64?)
     /// Split `pane`; with no `dir` the daemon places the new pane by `panes.placement`. It answers `created`.
@@ -209,9 +214,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "agent_clear_queue", "agent": agent]; put(req)
         case let .permAnswer(req, id, choice):
             o = ["op": "perm_answer", "id": id, "choice": choice]; put(req)
-        case let .spaceCreate(req, cwd, focus):
+        case let .spaceCreate(req, cwd, focus, session):
             o = ["op": "space_create", "cwd": cwd]; put(req)
             if focus { o["focus"] = true }
+            if let session { o["session"] = session }
         case let .spaceRecent(req):
             o = ["op": "space_recent"]; put(req)
         case let .dirList(req, path):
@@ -247,8 +253,9 @@ public enum ClientMsg: Sendable, Equatable {
         case let .spaceClose(req, id, ifEmpty):
             o = ["op": "space_close", "id": id]; put(req)
             if ifEmpty { o["if_empty"] = true }
-        case let .view(req, window, space, pane):
+        case let .view(req, window, space, pane, session):
             o = ["op": "view", "window": window]; put(req)
+            if let session { o["session"] = session }
             if let space { o["space"] = space }
             if let pane { o["pane"] = pane }
         case let .clientLs(req):
@@ -342,6 +349,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "agent_conversation_resume", "agent": agent, "id": id]; put(req)
         case let .spaceRename(req, space, name):
             o = ["op": "space_rename", "space": space, "name": name]; put(req)
+        case let .sessionNew(req, name):
+            o = ["op": "session_new", "name": name]; put(req)
+        case let .sessionMove(req, space, session):
+            o = ["op": "session_move", "space": space, "session": session]; put(req)
         case .windowOffer:
             o = ["op": "window_offer"]
         case let .windowAnswer(id, data, error):
@@ -1040,7 +1051,7 @@ public struct RecentDir: Decodable, Sendable, Equatable {
 public enum ServerMsg: Sendable {
     case status(req: UInt64?, version: String, logPath: String, uptimeSecs: UInt64, terms: [TermInfo], perms: [PermInfo],
                 spaces: [SpaceInfo], agents: [AgentInfo], shellIntegration: String?, loginPath: LoginPath?,
-                logs: LogShipping?, host: HostAccess?, protocolVersion: UInt32)
+                logs: LogShipping?, host: HostAccess?, protocolVersion: UInt32, sessions: [SessionInfo])
     case termOpened(req: UInt64?, id: String, pid: UInt32?)
     case termAttached(req: UInt64?, id: String, replayBytes: Int)
     case termOutput(id: String, data: Data)
@@ -1096,8 +1107,8 @@ public enum ServerMsg: Sendable {
     case paired(device: String, credential: String)
     /// A remote client connected, whether it paired just now or presented its credential.
     case deviceConnected(device: String, name: String, address: String, paired: Bool)
-    /// The whole layout, after any change to spaces or panes.
-    case spaces(spaces: [SpaceInfo])
+    /// The whole layout, after any change to spaces, panes or sessions.
+    case spaces(spaces: [SpaceInfo], sessions: [SessionInfo])
     /// Someone asked every client to show `space` (or `pane` in it): `wheel space focus`, `wheel pane
     /// focus`, or `focus` on an op that makes one. A request, not a view: a client decides what to do
     /// and the daemon never sends one client's view to another.
@@ -1168,7 +1179,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1185,7 +1196,8 @@ extension ServerMsg: Decodable {
                            loginPath: try c.decodeIfPresent(LoginPath.self, forKey: .login_path),
                            logs: try c.decodeIfPresent(LogShipping.self, forKey: .logs),
                            host: try c.decodeIfPresent(HostAccess.self, forKey: .host),
-                           protocolVersion: try c.decodeIfPresent(UInt32.self, forKey: .`protocol`) ?? 1)
+                           protocolVersion: try c.decodeIfPresent(UInt32.self, forKey: .`protocol`) ?? 1,
+                           sessions: try c.decodeIfPresent([SessionInfo].self, forKey: .sessions) ?? [])
         case "term_opened": self = .termOpened(req: req, id: try c.decode(String.self, forKey: .id), pid: try c.decodeIfPresent(UInt32.self, forKey: .pid))
         case "term_attached": self = .termAttached(req: req, id: try c.decode(String.self, forKey: .id), replayBytes: try c.decode(Int.self, forKey: .replay_bytes))
         case "term_output":
@@ -1254,7 +1266,7 @@ extension ServerMsg: Decodable {
         case "device_connected":
             self = .deviceConnected(device: try c.decode(String.self, forKey: .device), name: try c.decode(String.self, forKey: .name),
                                     address: try c.decode(String.self, forKey: .address), paired: try c.decode(Bool.self, forKey: .paired))
-        case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces))
+        case "spaces": self = .spaces(spaces: try c.decode([SpaceInfo].self, forKey: .spaces), sessions: try c.decodeIfPresent([SessionInfo].self, forKey: .sessions) ?? [])
         case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "clients": self = .clients(req: try c.decode(UInt64.self, forKey: .req), clients: try c.decode([ClientInfo].self, forKey: .clients))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))

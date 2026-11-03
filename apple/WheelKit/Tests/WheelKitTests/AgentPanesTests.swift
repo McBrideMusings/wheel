@@ -5,7 +5,7 @@ import Testing
 struct AgentPanesTests {
     @Test func decodesAnAgentPaneAndListsItsAgent() throws {
         let text = #"{"ev":"spaces","spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","focus":"p2","root":{"node":"split","id":"x3","axis":"horizontal","ratio":0.5,"a":{"node":"pane","id":"p2","kind":"agent","agent":"w7","harness":"claude"},"b":{"node":"pane","id":"p4","kind":"terminal","term":"t1"}}}]}"#
-        guard case let .spaces(spaces) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(spaces.first?.root.panes.first?.kind == .agent(agent: "w7", harness: "claude"))
         #expect(AgentPanes.agents(spaces) == ["p2": "w7"])
         // An agent pane missing its agent is unsupported, not a reason to drop the frame.
@@ -19,7 +19,7 @@ struct AgentPanesTests {
     /// A waiting request counts against the space whose agent pane runs the agent that asked.
     @Test func countsWaitingRequestsBySpace() throws {
         let text = #"{"ev":"spaces","spaces":[{"id":"s1","name":"a","cwd":"/a","focus":"p2","root":{"node":"pane","id":"p2","kind":"agent","agent":"w7","harness":"claude"}},{"id":"s2","name":"b","cwd":"/b","focus":"p4","root":{"node":"pane","id":"p4","kind":"agent","agent":"w9","harness":"claude"}}]}"#
-        guard case let .spaces(spaces) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         let ask = { (id: String, agent: String) in
             try JSONDecoder().decode(PermInfo.self, from: Data(#"{"id":"\#(id)","agent":"\#(agent)","title":"rm","options":[]}"#.utf8))
         }
@@ -31,7 +31,7 @@ struct AgentPanesTests {
     /// A web pane's refresh command asks with the pane id as its agent.
     @Test func countsAWebPanesRefreshRequestAgainstItsSpace() throws {
         let text = #"{"ev":"spaces","spaces":[{"id":"s1","name":"a","cwd":"/a","focus":"p2","root":{"node":"pane","id":"p2","kind":"web","scope":"project","name":"dash"}}]}"#
-        guard case let .spaces(spaces) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         let perm = try JSONDecoder().decode(PermInfo.self, from: Data(#"{"id":"q1","agent":"p2","title":"Refresh","options":[]}"#.utf8))
         #expect(AgentPanes.waiting([perm], in: spaces) == ["s1": 1])
     }

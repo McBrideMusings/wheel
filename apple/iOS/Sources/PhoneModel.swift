@@ -20,15 +20,25 @@ final class PhoneModel {
     private(set) var spaces: [SpaceInfo] = [] {
         didSet { links.layoutChanged(spaces) }
     }
-    /// The space this phone shows. The daemon keeps no active space (ADR-0022): switching here moves
-    /// no other client, and the phone reports it with `view`.
-    private(set) var active: String?
+    /// The sessions wheeld holds, in order, each naming its spaces (ADR-0021).
+    private(set) var sessions: [SessionInfo] = []
+    /// The session and space this phone shows. The daemon keeps no view (ADR-0022): switching here
+    /// draws from the layout already held, moves no other client, and the phone reports it with `view`.
+    private(set) var view = SessionView()
+    /// The space this phone shows; nil while the shown session holds none.
+    var active: String? { view.space }
     private var reportedView: String?
+    /// Set until the first layout of a launch arrives: that layout restores the view saved last time.
+    private var restorePending = true
     /// A space or pane to show whose layout has not arrived yet (the answer to the op that made it can
     /// come ahead of the `spaces` broadcast).
     private var pendingShow: (space: String?, pane: String?) = (nil, nil)
-    /// What to show once the daemon's answer names the space or pane an op made.
-    private enum ShowWhenMade { case space, pane }
+    /// A session made here, to show once a layout names it.
+    private var pendingSession: String?
+    /// A pane made here, to show once a layout holds it.
+    private var pendingPane: String?
+    /// What to show once the daemon's answer names the space, pane or session an op made.
+    private enum ShowWhenMade { case space, pane, session }
     private var showWhenMade: [UInt64: ShowWhenMade] = [:]
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]
@@ -116,7 +126,14 @@ final class PhoneModel {
         if case .connected = connection { return true }
         return false
     }
-    var activeSpace: SpaceInfo? { spaces.first { $0.id == active } ?? spaces.first }
+    var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
+    /// The session this phone shows.
+    var shownSession: SessionInfo? { sessions.first { $0.id == view.session } }
+    /// The shown session's spaces, in its order: the only ones the title menu lists.
+    var sessionSpaces: [SpaceInfo] {
+        let ids = shownSession?.spaces ?? []
+        return spaces.filter { ids.contains($0.id) }.sorted { (ids.firstIndex(of: $0.id) ?? 0) < (ids.firstIndex(of: $1.id) ?? 0) }
+    }
 
     /// Whether the composer offers attachments: the server takes uploads from protocol 3 on
     /// (ADR-0020), and a server that predates that hides the paperclip.
@@ -171,7 +188,12 @@ final class PhoneModel {
         pairing = nil
         trying = nil
         spaces = []
-        active = nil
+        sessions = []
+        view = SessionView()
+        restorePending = true
+        pendingShow = (nil, nil)
+        pendingSession = nil
+        pendingPane = nil
         reportedView = nil
         terminals = [:]
         shownTerm = nil
@@ -282,7 +304,7 @@ final class PhoneModel {
     private func handle(_ msg: ServerMsg) {
         if links.received(msg) { return }
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, protocolVersion):
+        case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, protocolVersion, sessions):
             if serverProtocol != protocolVersion {
                 Log.info("server protocol \(protocolVersion), this app's \(ServerProtocol.current); attachments \(protocolVersion >= ServerProtocol.current ? "offered" : "hidden")")
             }
@@ -292,7 +314,7 @@ final class PhoneModel {
             self.perms = perms
             let known = Array(chats.values)
             reportedView = nil
-            layoutArrived(spaces)
+            layoutArrived(spaces, sessions: sessions)
             // A fresh connection starts with its first status: attach the page that is showing again.
             if let shownTerm { attach(shownTerm) }
             // The attaches below replace each held transcript with the daemon's current one.
@@ -305,8 +327,8 @@ final class PhoneModel {
             pageDaemon.token = credential
             pageDaemon.pairing = credentialed
             Log.info("device \(device) paired; holding its credential")
-        case let .spaces(spaces):
-            layoutArrived(spaces)
+        case let .spaces(spaces, sessions):
+            layoutArrived(spaces, sessions: sessions)
         case let .spaceFocused(space, pane):
             Log.info("show requested: space \(space) pane \(pane ?? "-")")
             if let pane { focus(space: space, pane: pane) } else { select(space: space) }
@@ -387,6 +409,7 @@ final class PhoneModel {
             }
         case let .ok(req):
             menuReqs.remove(req)
+            spaceReqs.remove(req)
         case let .paneView(req, pane, view, conversation):
             menuReqs.remove(req)
             Log.info("pane \(pane) view \(view?.rawValue ?? "-") conversation \(conversation ?? "-")")
@@ -400,10 +423,12 @@ final class PhoneModel {
                 client?.send(.paneBrowserUrl(req: nil, pane: pane, url: url))
             }
         case let .created(req, id):
-            if menuReqs.remove(req) != nil { Log.info("created \(id)") }
+            if menuReqs.remove(req) != nil || spaceReqs.remove(req) != nil { Log.info("created \(id)") }
             switch showWhenMade.removeValue(forKey: req) {
             case .space?: select(space: id)
-            case .pane?: if let space = spaces.first(where: { $0.root.panes.contains { $0.id == id } }) { focus(space: space.id, pane: id) }
+            case .session?: selectSession(id)
+            case .pane?:
+                if let space = spaces.first(where: { $0.root.panes.contains { $0.id == id } }) { focus(space: space.id, pane: id) } else { pendingPane = id }
             case nil: break
             }
         case let .error(req, _, message):
@@ -412,6 +437,10 @@ final class PhoneModel {
                 Log.info("setting \(field.key) refused: \(message)")
             }
             if let req, menuReqs.remove(req) != nil { menuError = message }
+            if let req, spaceReqs.remove(req) != nil {
+                spaceError = message
+                showWhenMade[req] = nil
+            }
             if let req, req == artifactReq {
                 artifactReq = nil
                 artifacts = []
@@ -456,7 +485,7 @@ final class PhoneModel {
         }
     }
 
-    private func layoutArrived(_ spaces: [SpaceInfo]) {
+    private func layoutArrived(_ spaces: [SpaceInfo], sessions: [SessionInfo]) {
         // The layout broadcast leaves statuses out; `status_changed` carries them. The daemon keeps no
         // focused pane, so each space keeps the one this phone had, while that pane is there.
         let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
@@ -465,14 +494,31 @@ final class PhoneModel {
             if let was = held[space.id] { space.focus = was.focusKept(in: space.root) }
             return space
         }
-        if !spaces.contains(where: { $0.id == active }) { active = spaces.first?.id }
+        let old = self.sessions
+        self.sessions = sessions
+        // A layout with no sessions (a server still loading) restores nothing and saves nothing.
+        if restorePending, !sessions.isEmpty {
+            restorePending = false
+            restoreView()
+        } else {
+            view.layoutChanged(from: old, to: sessions)
+        }
         if let space = pendingShow.space, self.spaces.contains(where: { $0.id == space }) {
             let pane = pendingShow.pane
             pendingShow = (nil, nil)
             if let pane { focus(space: space, pane: pane) } else { select(space: space) }
         }
+        if let pane = pendingPane, let space = self.spaces.first(where: { $0.root.panes.contains { $0.id == pane } }) {
+            pendingPane = nil
+            focus(space: space.id, pane: pane)
+        }
+        if let session = pendingSession, sessions.contains(where: { $0.id == session }) {
+            pendingSession = nil
+            selectSession(session)
+        }
         reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
+        Log.info("sessions: \(sessions.map { "\($0.id)=\($0.name)[\($0.spaces.joined(separator: ","))]" }.joined(separator: " ")); shown \(view.session ?? "none")")
         appearances.keep(only: self.spaces)
         askAppearances()
         syncWebPanes()
@@ -603,7 +649,7 @@ final class PhoneModel {
             return
         }
         if spaces[i].focus != pane { spaces[i].focus = pane }
-        active = space
+        view.show(space: space, in: sessions)
         reportView()
         showTerm()
     }
@@ -615,27 +661,91 @@ final class PhoneModel {
             pendingShow = (space, nil)
             return
         }
-        active = space
+        view.show(space: space, in: sessions)
         reportView()
         showTerm()
     }
 
+    /// Show `session`: the space this phone last showed in it, else its first; nothing is sent but `view`.
+    func selectSession(_ session: String) {
+        guard sessions.contains(where: { $0.id == session }) else {
+            pendingSession = session
+            return
+        }
+        view.show(session: session, in: sessions)
+        Log.info("switch to session \(session): space \(view.space ?? "none")")
+        reportView()
+        showTerm()
+    }
+
+    /// The view saved at the last launch for this Mac, restored once the first layout is here.
+    private func restoreView() {
+        let saved = pairing.flatMap { UserDefaults.standard.dictionary(forKey: Self.viewKey($0)) as? [String: String] } ?? [:]
+        let (restored, took) = SessionView.restored(session: saved["session"], space: saved["space"], in: sessions)
+        view = restored
+        if let pane = saved["pane"], let i = spaces.firstIndex(where: { $0.id == restored.space }), spaces[i].root.panes.contains(where: { $0.id == pane }) {
+            spaces[i].focus = pane
+        }
+        Log.info("restored last view session=\(saved["session"] ?? "-") space=\(saved["space"] ?? "-") pane=\(saved["pane"] ?? "-"): took \(took), showing \(view.session ?? "none")/\(view.space ?? "none")/\(activeSpace?.focus ?? "none")")
+    }
+
+    /// Each Mac's ids are its own, so the view is saved per paired daemon.
+    private static func viewKey(_ pairing: Pairing) -> String { "lastView \(pairing.url.absoluteString)" }
+
     /// Tell the daemon what this phone shows (`client_ls` lists it); only a change is sent.
     private func reportView() {
         let space = activeSpace
-        let key = "\(space?.id ?? "-")/\(space?.focus ?? "-")"
+        let key = "\(view.session ?? "-")/\(space?.id ?? "-")/\(space?.focus ?? "-")"
         guard key != reportedView else { return }
         reportedView = key
-        client?.send(.view(req: nil, window: "phone", space: space?.id, pane: space?.focus))
+        if let pairing, view.session != nil {
+            var saved: [String: String] = [:]
+            saved["session"] = view.session
+            saved["space"] = space?.id
+            saved["pane"] = space?.focus
+            UserDefaults.standard.set(saved, forKey: Self.viewKey(pairing))
+        }
+        client?.send(.view(req: nil, window: "phone", space: space?.id, pane: space?.focus, session: view.session))
     }
 
     func createSpace(path: String) {
         let cwd = path.trimmingCharacters(in: .whitespaces)
-        guard !cwd.isEmpty, let client else { return }
+        guard !cwd.isEmpty else { return }
         Log.info("new space at \(cwd)")
+        let session = view.session
+        spaceOp(showing: .space) { .spaceCreate(req: $0, cwd: cwd, focus: false, session: session) }
+    }
+
+    // MARK: Space and session ops, from the title menu. A refusal reaches `spaceError`.
+
+    /// The daemon's refusal of the last space or session op, shown as an alert until dismissed.
+    var spaceError: String?
+    private var spaceReqs: Set<UInt64> = []
+
+    private func spaceOp(showing: ShowWhenMade? = nil, _ make: (UInt64) -> ClientMsg) {
+        guard let client else { return }
+        spaceError = nil
         let req = client.req()
-        showWhenMade[req] = .space
-        client.send(.spaceCreate(req: req, cwd: cwd, focus: false))
+        spaceReqs.insert(req)
+        if let showing { showWhenMade[req] = showing }
+        let msg = make(req)
+        Log.info("space op: \((try? msg.json()) ?? "?")")
+        client.send(msg)
+    }
+
+    func renameSpace(_ space: String, to name: String) {
+        spaceOp { .spaceRename(req: $0, space: space, name: name.trimmingCharacters(in: .whitespaces)) }
+    }
+    func closeSpace(_ space: String) { spaceOp { .spaceClose(req: $0, id: space) } }
+    func moveSpace(_ space: String, toSession session: String) { spaceOp { .sessionMove(req: $0, space: space, session: session) } }
+    /// A new pane beside the space's shown pane, shown once it is made.
+    func newPane(in space: String) {
+        guard let pane = spaces.first(where: { $0.id == space })?.focus else { return }
+        spaceOp(showing: .pane) { .paneSplit(req: $0, pane: pane, dir: .right, focus: false) }
+    }
+    /// A new empty session, shown once it is made.
+    func newSession(named name: String) {
+        spaceOp(showing: .session) { .sessionNew(req: $0, name: name.trimmingCharacters(in: .whitespaces)) }
     }
 
     // MARK: New Space folders

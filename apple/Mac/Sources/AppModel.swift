@@ -488,7 +488,7 @@ final class AppModel {
         if commandPalette != nil { askRecentDirs(); askRunners() }
         if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, protocolVersion) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, protocolVersion, _) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
@@ -738,13 +738,13 @@ final class AppModel {
         if links.received(msg) { return }
         if receivedBuiltins(msg) { return }
         switch msg {
-        case let .status(req, _, _, _, _, _, _, _, _, _, logs, host, _) where req != nil && req == settings.statusReq:
+        case let .status(req, _, _, _, _, _, _, _, _, _, logs, host, _, _) where req != nil && req == settings.statusReq:
             // Settings asking after the log shipping and folder access: the rest of the reply is no news.
             settings.statusReq = nil
             showLogShipping(logs)
             settings.hostAccess = host
             serverHost = host
-        case let .status(_, _, _, _, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, _):
+        case let .status(_, _, _, _, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, _, _):
             self.agents = agents
             showLogShipping(logs)
             settings.hostAccess = host
@@ -754,7 +754,7 @@ final class AppModel {
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
             apply(spaces).forEach(attach)
-        case let .spaces(spaces):
+        case let .spaces(spaces, _):
             // The layout broadcast leaves statuses out; `status_changed` carries them.
             let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
             apply(spaces.map { $0.keepingStatuses(of: held[$0.id]) }).forEach(attach)
