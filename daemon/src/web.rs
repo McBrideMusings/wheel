@@ -1135,6 +1135,9 @@ struct McpCall {
     /// The host running the tool that links the view, not the view.
     #[serde(default)]
     initial: bool,
+    /// The person calling a tool from the pane's own tool list.
+    #[serde(default)]
+    person: bool,
 }
 
 /// `POST /artifacts/<pane>/.wheel/mcp/call`: `{tool, arguments}`, answered with the server's result.
@@ -1158,6 +1161,7 @@ async fn mcp_call(
             &call.tool,
             call.arguments,
             call.initial,
+            call.person,
         )
         .await
     {

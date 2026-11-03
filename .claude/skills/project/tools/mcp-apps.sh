@@ -38,4 +38,11 @@ shot view
 expect_exit 0 "a pane shows an MCP server with no ui:// resource" w pane kind "$P" web --artifact plain
 check "the pane lists the server's tools" poll 20 sh -c "[ \"\$(curl -s -X POST -H 'Authorization: Bearer $(TOKEN)' -d '{\"pane\":\"$P\",\"js\":\"document.getElementById(\\\"tools\\\") ? document.getElementById(\\\"tools\\\").innerText : \\\"\\\"\"}' http://127.0.0.1:$DEBUG_PORT/web/eval | grep -c 'echo')\" = 1 ]"
 shot tools
+ev() { curl -s -X POST -H "Authorization: Bearer $(TOKEN)" -d "$(jq -n --arg p "$P" --arg js "$1" '{pane:$p,js:$js}')" "http://127.0.0.1:$DEBUG_PORT/web/eval"; }
+has_text() { ev "var n=document.querySelector(\"$1\"); n ? n.innerText : \"\"" | grep -q "$2"; }
+ev 'Array.from(document.querySelectorAll("#list button")).find(b=>b.textContent==="echo").click(); 1' >/dev/null
+check "choosing echo shows a form with its text field" poll 10 has_text "#detail form" "text"
+ev 'var i=document.querySelector("#detail input[type=text]"); i.value="typed in the form"; document.querySelector("#detail form").requestSubmit(); 1' >/dev/null
+check "submitting the form shows the tool's result" poll 15 has_text "#detail .result" "typed in the form"
+shot form
 finish

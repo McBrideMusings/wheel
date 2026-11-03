@@ -7377,6 +7377,8 @@ async fn a_web_pane_hosts_an_mcp_servers_view() {
     assert!(shown.contains("hello from show"), "{shown}");
     let (status, _) = call(r#"{"tool":"secret","arguments":{},"initial":true}"#).await;
     assert_eq!(status, 400, "the host runs only the tool that links the view");
+    let (status, secret) = call(r#"{"tool":"secret","arguments":{},"person":true}"#).await;
+    assert_eq!(status, 200, "a person runs any listed tool: {secret}");
     let (status, _) = call(r#"{"tool":"nope","arguments":{}}"#).await;
     assert_eq!(status, 400);
     let (status, read) = http_json(
@@ -7403,6 +7405,15 @@ async fn a_web_pane_hosts_an_mcp_servers_view() {
     let view: serde_json::Value = serde_json::from_str(&view).unwrap();
     assert!(view["view"].is_null(), "{view}");
     assert_eq!(view["tools"].as_array().unwrap().len(), 2);
+    let (status, echoed) = http_json(
+        &addr,
+        "POST",
+        &format!("{root}.wheel/mcp/call"),
+        r#"{"tool":"echo","arguments":{"text":"from the form"},"person":true}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "{echoed}");
+    assert!(echoed.contains("from the form"), "{echoed}");
     let _ = std::fs::remove_dir_all(&base);
 }
 

@@ -343,7 +343,9 @@ impl AppState {
 
     /// A tool call from the pane: refused for a tool the server does not list, and, when a page
     /// makes it, for a tool whose visibility leaves out `app`. `initial` is the host running the
-    /// tool that links the view, which only needs to be one that links a `ui://` resource.
+    /// tool that links the view, which only needs to be one that links a `ui://` resource. `person` is
+    /// the pane's own tool list, where the person picks the tool: any tool the server lists, whatever
+    /// its visibility, since no app page is running.
     pub async fn mcp_app_call(
         &self,
         name: &str,
@@ -352,6 +354,7 @@ impl AppState {
         tool: &str,
         arguments: Option<serde_json::Value>,
         initial: bool,
+        person: bool,
     ) -> Result<McpToolResult, String> {
         let peer = self.mcp_peer(name, scope, space).await?;
         let tools = peer
@@ -363,7 +366,9 @@ impl AppState {
             .find(|t| t.name == tool)
             .and_then(|t| serde_json::to_value(t).ok())
             .ok_or_else(|| format!("{name} has no tool {tool}"))?;
-        let allowed = if initial {
+        let allowed = if person {
+            true
+        } else if initial {
             linked_resource(&listed).is_some()
         } else {
             app_may_call(&listed)

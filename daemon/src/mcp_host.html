@@ -7,11 +7,26 @@
   html, body { margin: 0; height: 100%; font: 13px -apple-system, system-ui, sans-serif; }
   #root { height: 100%; }
   iframe { border: 0; width: 100%; height: 100%; display: block; background: transparent; }
-  #tools { padding: 16px; }
-  #tools h1 { font-size: 15px; margin: 0 0 4px; }
-  #tools p { margin: 0 0 12px; opacity: .65; }
-  #tools dt { font: 600 13px ui-monospace, monospace; margin-top: 10px; }
-  #tools dd { margin: 2px 0 0; opacity: .75; }
+  #tools { display: flex; height: 100%; }
+  #list { width: 200px; flex: none; overflow-y: auto; padding: 8px; border-right: 1px solid rgba(128,128,128,.3); display: flex; flex-direction: column; gap: 2px; }
+  #list button { text-align: left; font: 12px ui-monospace, monospace; padding: 5px 8px; border: 0; border-radius: 5px; background: none; color: inherit; cursor: default; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #list button:hover { background: rgba(128,128,128,.15); }
+  #list button.on { background: rgba(10,132,255,.25); }
+  #detail { flex: 1; min-width: 0; overflow-y: auto; padding: 16px; }
+  #detail h1 { font: 600 15px ui-monospace, monospace; margin: 0 0 4px; }
+  #detail .desc, #detail .hint, #detail small { opacity: .65; }
+  #detail .desc { margin: 0 0 12px; }
+  #detail form { display: flex; flex-direction: column; gap: 10px; max-width: 480px; }
+  #detail label { display: flex; flex-direction: column; gap: 3px; }
+  #detail label .name { font: 600 12px ui-monospace, monospace; }
+  #detail input[type=text], #detail input[type=number], #detail select, #detail textarea { font: inherit; padding: 4px 6px; }
+  #detail textarea { font-family: ui-monospace, monospace; }
+  #detail form button { align-self: flex-start; padding: 4px 14px; }
+  #detail .status { color: #c0392b; margin: 8px 0 0; }
+  #detail .result { margin-top: 12px; border-left: 3px solid rgba(128,128,128,.4); padding-left: 10px; }
+  #detail .result.bad { border-color: #c0392b; }
+  #detail pre { margin: 0 0 8px; font: 12px ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; }
+  #detail img { max-width: 100%; }
   #error { padding: 16px; color: #c0392b; white-space: pre-wrap; }
 </style>
 <div id="root"></div>
@@ -44,27 +59,123 @@
     root.append(box);
   }
 
+  const el = (tag, props, ...kids) => {
+    const node = Object.assign(document.createElement(tag), props || {});
+    node.append(...kids.filter((k) => k != null));
+    return node;
+  };
+
+  // A form field for one property of a tool's input schema. `read()` returns the value to send,
+  // `undefined` to leave it out, and throws a message the form shows when the text is not valid.
+  function field(name, schema, required) {
+    schema = schema || {};
+    const types = [].concat(schema.type || []);
+    const type = types.find((t) => t !== "null") || (schema.enum ? "string" : "json");
+    let input, read;
+    if (Array.isArray(schema.enum)) {
+      input = el("select");
+      if (!required) input.append(el("option", { value: "", textContent: "" }));
+      schema.enum.forEach((v, i) => input.append(el("option", { value: String(i), textContent: String(v) })));
+      if (schema.default !== undefined) input.value = String(schema.enum.indexOf(schema.default));
+      read = () => (input.value === "" ? undefined : schema.enum[Number(input.value)]);
+    } else if (type === "boolean") {
+      input = el("input", { type: "checkbox", checked: schema.default === true });
+      read = () => input.checked;
+    } else if (type === "integer" || type === "number") {
+      input = el("input", { type: "number", step: type === "integer" ? "1" : "any" });
+      if (schema.default !== undefined) input.value = schema.default;
+      read = () => (input.value === "" ? undefined : Number(input.value));
+    } else if (type === "string") {
+      input = el("input", { type: "text" });
+      if (schema.default !== undefined) input.value = schema.default;
+      read = () => (input.value === "" ? undefined : input.value);
+    } else {
+      // An object, an array or a schema with no single type: JSON the person types.
+      input = el("textarea", { rows: 3, spellcheck: false });
+      if (schema.default !== undefined) input.value = JSON.stringify(schema.default);
+      read = () => {
+        if (input.value.trim() === "") return undefined;
+        try { return JSON.parse(input.value); } catch (e) { throw new Error(name + " is not valid JSON"); }
+      };
+    }
+    const label = el("label", null,
+      el("span", { className: "name", textContent: name + (required ? " *" : "") }),
+      input,
+      schema.description ? el("small", { textContent: schema.description }) : null);
+    return { label, read: () => {
+      const value = read();
+      if (value === undefined && required) throw new Error(name + " is required");
+      return value;
+    } };
+  }
+
+  function resultBlocks(result) {
+    const out = el("div", { className: "result" + (result.is_error ? " bad" : "") });
+    for (const block of result.content || []) {
+      if (block.type === "text") out.append(el("pre", { textContent: block.text }));
+      else if (block.type === "image" && /^image\/(png|jpeg|gif|webp)$/.test(block.mimeType || "")) {
+        out.append(el("img", { src: "data:" + block.mimeType + ";base64," + block.data }));
+      } else out.append(el("pre", { textContent: JSON.stringify(block, null, 2) }));
+    }
+    if (result.structured != null) out.append(el("pre", { className: "structured", textContent: JSON.stringify(result.structured, null, 2) }));
+    if (!out.children.length) out.append(el("pre", { textContent: result.is_error ? "The tool failed with no message." : "The tool returned nothing." }));
+    return out;
+  }
+
   // Server-supplied text goes in as text, never as markup.
   function showTools(tools) {
-    root.replaceChildren();
-    const box = document.createElement("div");
-    box.id = "tools";
-    const title = document.createElement("h1");
-    title.textContent = "MCP server";
-    const note = document.createElement("p");
-    note.textContent = tools.length
-      ? tools.length + (tools.length === 1 ? " tool" : " tools") + ", and no interface of its own."
-      : "This server offers no tools and no interface.";
-    const list = document.createElement("dl");
-    for (const tool of tools) {
-      const term = document.createElement("dt");
-      term.textContent = tool.name;
-      const detail = document.createElement("dd");
-      detail.textContent = tool.description || "";
-      list.append(term, detail);
+    const list = el("nav", { id: "list" });
+    const detail = el("main", { id: "detail" }, el("p", { className: "hint", textContent: tools.length ? "Choose a tool." : "This server offers no tools and no interface." }));
+    root.replaceChildren(el("div", { id: "tools" }, list, detail));
+    const buttons = [];
+
+    function open(tool, button) {
+      buttons.forEach((b) => b.classList.toggle("on", b === button));
+      const schema = tool.inputSchema || {};
+      const required = new Set(schema.required || []);
+      const fields = Object.entries(schema.properties || {}).map(([n, s]) => [n, field(n, s, required.has(n))]);
+      const output = el("div", { className: "output" });
+      const status = el("p", { className: "status" });
+      const run = el("button", { type: "submit", textContent: "Run" });
+      const form = el("form", null, ...(fields.length ? fields.map(([, f]) => f.label) : [el("p", { className: "hint", textContent: "No arguments." })]), run);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        status.textContent = "";
+        output.replaceChildren();
+        const args = {};
+        try {
+          for (const [n, f] of fields) {
+            const v = f.read();
+            if (v !== undefined) args[n] = v;
+          }
+        } catch (e) {
+          status.textContent = e.message;
+          return;
+        }
+        run.disabled = true;
+        status.textContent = "Running…";
+        try {
+          output.replaceChildren(resultBlocks(await api("call", { tool: tool.name, arguments: args, person: true })));
+          status.textContent = "";
+        } catch (e) {
+          status.textContent = String(e.message || e);
+        } finally {
+          run.disabled = false;
+        }
+      });
+      detail.replaceChildren(
+        el("h1", { textContent: tool.title || tool.name }),
+        tool.description ? el("p", { className: "desc", textContent: tool.description }) : null,
+        form, status, output);
     }
-    box.append(title, note, list);
-    root.append(box);
+
+    for (const tool of tools) {
+      const button = el("button", { type: "button", textContent: tool.name, title: tool.description || "" });
+      button.addEventListener("click", () => open(tool, button));
+      buttons.push(button);
+      list.append(button);
+    }
+    if (tools.length === 1) buttons[0].click();
   }
 
   // The Content-Security-Policy the resource's `_meta.ui.csp` allows; with none, the page
