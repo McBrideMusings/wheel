@@ -4486,6 +4486,12 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
     agent_reply(&mut ws, &agent, "after the clear").await;
     let second = saved_conversation(&state_file).expect("the new conversation is saved");
     assert_ne!(second, first);
+    // The saved id is the one the agent wrote its transcript under, so a restart can reopen it.
+    let held = conversations_of(&mut ws, &agent, 900).await;
+    assert!(
+        held.iter().any(|c| c.id == second),
+        "the saved conversation {second} is not in the store: {held:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

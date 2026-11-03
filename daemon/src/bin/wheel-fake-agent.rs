@@ -880,9 +880,16 @@ async fn main() {
         };
         out.send(json!({"type": "system", "subtype": "init", "cwd": std::env::current_dir().unwrap_or_default(), "session_id": session, "slash_commands": ["clear", "compact", "review"], "model": state.resolved_model(), "permissionMode": *state.mode.lock().unwrap()}));
         if text == "/clear" {
-            let next = made_up_id();
-            out.send(json!({"type": "conversation_reset", "new_conversation_id": next, "trigger": "clear", "session_id": session}));
-            session = next;
+            // Like Claude Code, announce an id the transcript is never written under: the
+            // messages after the reset carry the real one.
+            let announced = made_up_id();
+            out.send(json!({"type": "conversation_reset", "new_conversation_id": announced, "trigger": "clear", "session_id": session}));
+            session = loop {
+                let id = made_up_id();
+                if id != announced {
+                    break id;
+                }
+            };
         } else if text == "/compact" {
             out.send(json!({"type": "user", "message": {"role": "user", "content": "<local-command-stdout>Compacted </local-command-stdout>"}, "session_id": session}));
         } else {

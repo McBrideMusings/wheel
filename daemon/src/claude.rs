@@ -199,6 +199,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         streaming: None,
         calls: Calls::default(),
         last_usage: None,
+        reset_from: None,
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
     Ok(DriverHandle {
@@ -296,6 +297,9 @@ struct Driver {
     calls: Calls,
     /// The model and the tokens of the last top-level request: the conversation as the model saw it.
     last_usage: Option<(String, u64)>,
+    /// A `/clear` has started a new conversation, whose id is not known yet: the session id the
+    /// reset message itself carried, which the first message of the new conversation differs from.
+    reset_from: Option<String>,
 }
 
 impl Driver {
@@ -422,6 +426,15 @@ impl Driver {
             );
             return Ok(());
         };
+        // The id a `/clear` announces is not the one the transcript is written under; the
+        // messages that follow carry the real one in `session_id`.
+        if let (Some(from), Some(id)) = (&self.reset_from, message["session_id"].as_str()) {
+            if id != from {
+                tracing::info!(pid = self.pid, id, "agent is in the conversation its first message after a clear names");
+                self.emit(DriverEvent::Conversation { id: id.into() });
+                self.reset_from = None;
+            }
+        }
         // A subagent's own messages belong to its tool call, not to the conversation.
         if !message["parent_tool_use_id"].is_null() {
             return Ok(());
@@ -441,10 +454,11 @@ impl Driver {
             Some("system") => self.system(&message),
             Some("result") => self.result(&message),
             Some("conversation_reset") => {
-                // `/clear` keeps the process and starts a new conversation under a new id.
-                if let Some(id) = message["new_conversation_id"].as_str() {
-                    tracing::info!(pid = self.pid, id, trigger = ?message["trigger"].as_str(), "agent started a new conversation");
-                    self.emit(DriverEvent::Conversation { id: id.into() });
+                // `/clear` keeps the process and starts a new conversation. Its id comes from the
+                // first message after this one, not from `new_conversation_id`.
+                if let Some(from) = message["session_id"].as_str() {
+                    tracing::info!(pid = self.pid, announced = ?message["new_conversation_id"].as_str(), trigger = ?message["trigger"].as_str(), "agent started a new conversation");
+                    self.reset_from = Some(from.into());
                 }
             }
             Some("control_request") => self.control_request(&message).await?,
