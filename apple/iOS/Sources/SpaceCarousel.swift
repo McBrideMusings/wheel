@@ -8,6 +8,7 @@ struct SpaceCarousel: View {
     @State private var page: String?
     @State private var newSpaceOpen = false
     @State private var titleOpen = false
+    @State private var paletteOpen = false
     /// What the title menu asked for, presented once its popover has closed.
     @State private var queued: TitleMenuRequest?
     @State private var renaming: (space: String, name: String)?
@@ -64,11 +65,14 @@ struct SpaceCarousel: View {
             Text(model.menuError ?? "")
         }
         .sheet(isPresented: $newSpaceOpen) { NewSpaceSheet(model: model) }
-        .onChange(of: titleOpen) { _, open in
-            guard !open, let request = queued else { return }
-            queued = nil
-            present(request)
+        .sheet(isPresented: $paletteOpen) {
+            CommandPaletteSheet(model: model) { request in
+                queued = request
+                paletteOpen = false
+            }
         }
+        .onChange(of: titleOpen) { _, open in presentQueued(whenClosed: !open) }
+        .onChange(of: paletteOpen) { _, open in presentQueued(whenClosed: !open) }
         .alert("Rename space", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: Binding(get: { renaming?.name ?? "" }, set: { renaming?.name = $0 }))
                 .accessibilityIdentifier("rename field")
@@ -91,6 +95,12 @@ struct SpaceCarousel: View {
         } message: {
             Text(model.spaceError ?? "")
         }
+    }
+
+    private func presentQueued(whenClosed closed: Bool) {
+        guard closed, let request = queued else { return }
+        queued = nil
+        present(request)
     }
 
     private func present(_ request: TitleMenuRequest) {
@@ -132,6 +142,9 @@ struct SpaceCarousel: View {
             if dotsHere && panes.count > 1 {
                 Dots(count: panes.count, current: panes.firstIndex { $0.id == page } ?? 0)
             }
+            Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
+                .accessibilityLabel("Search")
+                .accessibilityIdentifier("search")
             Button { openSettings(.global) } label: { Image(systemName: "gearshape") }
                 .accessibilityLabel("Settings")
             if let current = panes.first(where: { $0.id == page }) ?? panes.first {

@@ -442,6 +442,7 @@ extension AppModel {
                 return Log.info("command palette: artifact \(scope.rawValue)/\(name) is no longer listed")
             }
             openArtifactInNewPane(info)
+        case .session: break
         case let .recent(dir): createSpace(cwd: dir)
         case .newSpaceMode: break
         case let .folder(path, space):

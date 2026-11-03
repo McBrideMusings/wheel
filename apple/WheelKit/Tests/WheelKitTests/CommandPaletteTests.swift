@@ -47,6 +47,20 @@ struct CommandPaletteTests {
         #expect(p.rows.first?.item == .pane(id: "p1", space: "s1", name: "Terminal", spaceName: "wheel"))
     }
 
+    @Test func sessionsListAfterArtifactsAndAQueryFindsThemByName() {
+        var p = CommandPalette()
+        p.list(
+            spaces: [.init(id: "s1", name: "wheel", dir: "/w")],
+            artifacts: [ArtifactInfo(scope: .project, name: "status", title: "Build Status")],
+            sessions: [.init(id: "x1", name: "open-assistant")],
+            recents: [], actions: []
+        )
+        #expect(p.rows.map(\.id) == ["space:s1", "artifact:project/status", "session:x1", "action:new-space"])
+        p.type("assist")
+        #expect(p.rows.first?.item == .session(id: "x1", name: "open-assistant"))
+        #expect(p.rows.first?.item.title == "Switch to open-assistant")
+    }
+
     @Test func letterScatteredThroughAPathMatchesAndWordStartsAndTheLastComponentScoreHigher() throws {
         let plain = try #require(CommandPalette.score("tmpa", in: "/tmp/a"))
         #expect(CommandPalette.score("tmpb", in: "/tmp/a") == nil)
