@@ -3,6 +3,7 @@
 
 mod driver;
 mod agents;
+mod app;
 mod artifacts;
 mod brief;
 mod builtins;

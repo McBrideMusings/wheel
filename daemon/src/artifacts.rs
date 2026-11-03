@@ -29,7 +29,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 14] = [
     "path",
     "url",
     "title",
@@ -42,6 +42,8 @@ const KEYS: [&str; 12] = [
     "renderer",
     "reply_to",
     "webhook",
+    "app",
+    "restart",
 ];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
@@ -75,6 +77,11 @@ pub(crate) struct Entry {
     pub(crate) reply_to: Option<String>,
     /// The URL the daemon POSTs a page's Send to.
     pub(crate) webhook: Option<String>,
+    /// The command of an app artifact: a process the daemon runs for the pane showing it. Set,
+    /// the entry needs no page, since the page is the program's.
+    pub(crate) app: Option<String>,
+    /// When an app's process is started again after it ends; absent means `on-failure`.
+    pub(crate) restart: Option<wheel_proto::AppRestart>,
     problems: Vec<String>,
 }
 
@@ -226,6 +233,8 @@ impl Entry {
             renderer: None,
             reply_to: None,
             webhook: None,
+            app: None,
+            restart: None,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -245,7 +254,7 @@ impl Entry {
                 // path would be the directory the file is in.
                 (
                     key @ ("path" | "url" | "title" | "description" | "command" | "ends_with_pane"
-                    | "renderer" | "reply_to" | "webhook"),
+                    | "renderer" | "reply_to" | "webhook" | "app"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
@@ -280,6 +289,15 @@ impl Entry {
                     e.description = Some(text.trim().to_string())
                 }
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
+                ("app", toml::Value::String(command)) => e.app = Some(command.clone()),
+                ("restart", toml::Value::String(policy)) => match policy.trim() {
+                    "on-failure" => e.restart = Some(wheel_proto::AppRestart::OnFailure),
+                    "always" => e.restart = Some(wheel_proto::AppRestart::Always),
+                    "never" => e.restart = Some(wheel_proto::AppRestart::Never),
+                    other => e.problems.push(format!(
+                        "restart is {other:?}, not on-failure, always or never"
+                    )),
+                },
                 ("every", toml::Value::Integer(secs)) if *secs > 0 => e.every = Some(*secs as u64),
                 ("every", _) => e
                     .problems
@@ -299,6 +317,8 @@ impl Entry {
             }
         }
         match (table.contains_key("path"), table.contains_key("url")) {
+            // An app's page is its program's, so it names none of its own.
+            (false, false) if e.app.is_some() => {}
             (false, false) => e
                 .problems
                 .push("no path, so there is no page to show".into()),
@@ -326,6 +346,19 @@ impl Entry {
             e.problems.push(
                 "every asks for a refresh on a timer, but no command says what to run".into(),
             );
+        }
+        if table.contains_key("url") && e.app.is_some() {
+            e.problems.push(
+                "a url entry opens a browser pane, which has no process of ours to run for app"
+                    .into(),
+            );
+        }
+        if e.renderer.is_some() && e.app.is_some() {
+            e.problems.push("a post carries no app".into());
+        }
+        if e.restart.is_some() && e.app.is_none() {
+            e.problems
+                .push("restart says when an app starts again, but no app says what to run".into());
         }
         e
     }

@@ -55,6 +55,12 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   (`--wait` blocks until the key is written: post a question, wait for the answer);
   `wheel artifact data <pane> <file|->` pushes a JSON value into the running page (its
   `wheel.onData(fn)`), no reload. A page loads the helper with `<script src=".wheel/client.js">`.
+- `wheel artifact app status | logs | start | stop | restart <pane>`: the process of an app artifact, an
+  entry with `app = "<command>"` (and `restart = "on-failure" | "always" | "never"`) in a wheel.toml.
+  The daemon starts the command when a web pane shows the artifact, restarts it by the policy, and
+  ends it and its children with the pane. The program announces its port by writing it as a line to
+  file descriptor 3 (`$WHEEL_APP_PORT_FD`); `status` prints the pid and that port, `logs` the output of
+  the current run (`--run N`, `--tail N`).
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
 - `wheel run [<name>]`: the `[runner]` table of wheel.toml maps names you choose to shell commands
   (`build = "make -j8"`); a project's table overrides the machine's. `wheel run` lists them,

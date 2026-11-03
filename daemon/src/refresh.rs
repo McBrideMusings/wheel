@@ -469,10 +469,10 @@ impl Drop for Refresher {
 /// (kqueue's `NOTE_EXIT`) and kills its own group when that happens, at that moment and with no
 /// restart needed. It holds nothing of wheeld's — no pipe, no descriptor — so no other process
 /// wheeld started can keep it from seeing the exit. Killing the group kills the warden with it.
-struct Group<'a> {
+pub(crate) struct Group<'a> {
     pane: &'a str,
     /// The warden's pid, which is the group's id; 0 once killed.
-    pgid: i32,
+    pub(crate) pgid: i32,
     /// The warden, never waited on while the group lives: an unreaped warden keeps its pid, and so
     /// the group's id, from being handed to any other process.
     _warden: tokio::process::Child,
@@ -490,7 +490,7 @@ const WARDEN_START: Duration = Duration::from_secs(5);
 impl<'a> Group<'a> {
     /// Start a run's warden, `program` with [`WARDEN_ARG`], as the leader of a new group, and wait
     /// for it to say it is watching wheeld.
-    async fn arm(pane: &'a str, program: &Path) -> Result<Group<'a>, String> {
+    pub(crate) async fn arm(pane: &'a str, program: &Path) -> Result<Group<'a>, String> {
         let mut warden = tokio::process::Command::new(program)
             .arg(WARDEN_ARG)
             .current_dir("/")
@@ -527,7 +527,7 @@ impl<'a> Group<'a> {
         Ok(group)
     }
 
-    fn kill(&mut self) {
+    pub(crate) fn kill(&mut self) {
         if self.pgid <= 0 {
             return;
         }

@@ -6811,3 +6811,341 @@ async fn a_hand_edit_of_wheel_toml_reaches_a_connected_client() {
         "the watch repeated wheeld's own write: {again:?}"
     );
 }
+
+async fn app_info(ws: &mut Ws, pane: &str) -> wheel_proto::AppInfo {
+    match call(
+        ws,
+        ClientMsg::ArtifactAppStatus {
+            req: Some(70),
+            pane: pane.into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::App { app, .. } => app,
+        other => panic!("expected app, got {other:?}"),
+    }
+}
+
+/// Poll the app of `pane` until `want` holds of it, for up to 8s.
+async fn app_when(
+    ws: &mut Ws,
+    pane: &str,
+    what: &str,
+    want: impl Fn(&wheel_proto::AppInfo) -> bool,
+) -> wheel_proto::AppInfo {
+    for _ in 0..160 {
+        let app = app_info(ws, pane).await;
+        if want(&app) {
+            return app;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "{pane}'s app never reached: {what}: {:?}",
+        app_info(ws, pane).await
+    );
+}
+
+async fn app_control(
+    ws: &mut Ws,
+    pane: &str,
+    action: wheel_proto::AppAction,
+) -> wheel_proto::AppInfo {
+    match call(
+        ws,
+        ClientMsg::ArtifactAppControl {
+            req: Some(71),
+            pane: pane.into(),
+            action,
+        },
+    )
+    .await
+    {
+        ServerMsg::App { app, .. } => app,
+        other => panic!("expected app, got {other:?}"),
+    }
+}
+
+async fn app_logs(ws: &mut Ws, pane: &str, run: Option<u64>) -> String {
+    match call(
+        ws,
+        ClientMsg::ArtifactAppLogs {
+            req: Some(72),
+            pane: pane.into(),
+            run,
+            tail: None,
+        },
+    )
+    .await
+    {
+        ServerMsg::AppLogs { text, .. } => text,
+        other => panic!("expected app_logs, got {other:?}"),
+    }
+}
+
+fn alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+async fn gone(pid: u32) -> bool {
+    for _ in 0..100 {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// An app entry starts its command when the pane shows the artifact, reports the pid and the port
+/// the program announced on descriptor 3, restarts it after a kill with both runs' output kept,
+/// stops and starts on request, and ends it and its children when the pane's space closes — in
+/// either scope.
+async fn an_app_lives_with_its_pane(machine: bool) {
+    let base =
+        std::env::temp_dir().join(format!("wheel-app-test-{}-{machine}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let dash = base.join("dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    let command =
+        "sleep 300 & echo $! > \"$WHEEL_DATA_DIR/child\"; echo 4242 >&3; echo hello; wait";
+    let extra = format!("app = {}\n", toml::Value::from(command));
+    let (home, scope) = if machine {
+        (base.join("inst"), Some(ArtifactScope::Machine))
+    } else {
+        (base.clone(), None)
+    };
+    register(&home, "dash", &dash, &extra);
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    let data = base.join("inst/panes").join(&pane);
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            req: Some(10),
+            pane: pane.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("dash".into()),
+            scope,
+            url: None,
+        },
+    )
+    .await;
+
+    let app = app_when(&mut ws, &pane, "running with its port", |a| {
+        a.port == Some(4242) && a.state == wheel_proto::AppState::Running
+    })
+    .await;
+    assert_eq!((app.runs, app.command.as_str()), (1, command));
+    assert_eq!(app.restart, wheel_proto::AppRestart::OnFailure);
+    let first_pid = app.pid.expect("a running app has a pid");
+    assert!(alive(first_pid));
+    assert!(app_logs(&mut ws, &pane, None).await.contains("hello"));
+    let first_child: u32 = std::fs::read_to_string(data.join("child"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(alive(first_child));
+
+    // Killing the shell restarts the app; the run it had keeps its output, and the child it left
+    // is killed with its group.
+    assert!(std::process::Command::new("kill")
+        .args(["-9", &first_pid.to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let app = app_when(&mut ws, &pane, "a second run, running", |a| {
+        a.runs == 2 && a.state == wheel_proto::AppState::Running && a.port == Some(4242)
+    })
+    .await;
+    assert_ne!(app.pid, Some(first_pid));
+    assert!(app.last_exit.unwrap().error.unwrap().contains("signal 9"));
+    assert!(gone(first_child).await, "the first run's child outlived it");
+    assert!(app_logs(&mut ws, &pane, Some(1)).await.contains("hello"));
+    assert!(app_logs(&mut ws, &pane, Some(2)).await.contains("hello"));
+
+    // Stop keeps it stopped; start brings it back.
+    let child: u32 = std::fs::read_to_string(data.join("child"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let pid = app.pid.unwrap();
+    let stopped = app_control(&mut ws, &pane, wheel_proto::AppAction::Stop).await;
+    assert_eq!(
+        (stopped.state, stopped.pid, stopped.port),
+        (wheel_proto::AppState::Stopped, None, None)
+    );
+    assert!(gone(pid).await && gone(child).await);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        app_info(&mut ws, &pane).await.runs,
+        2,
+        "a stopped app stays stopped"
+    );
+    app_control(&mut ws, &pane, wheel_proto::AppAction::Start).await;
+    let app = app_when(&mut ws, &pane, "a third run, running", |a| {
+        a.runs == 3 && a.state == wheel_proto::AppState::Running
+    })
+    .await;
+
+    // Closing the space ends the app and its child.
+    let child: u32 = std::fs::read_to_string(data.join("child"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let pid = app.pid.unwrap();
+    ok(
+        &mut ws,
+        ClientMsg::SpaceClose {
+            req: Some(11),
+            id: space,
+            if_empty: false,
+        },
+    )
+    .await;
+    assert!(gone(pid).await, "the app's shell outlived its pane");
+    assert!(gone(child).await, "the app's child outlived its pane");
+    assert!(matches!(
+        call(
+            &mut ws,
+            ClientMsg::ArtifactAppStatus {
+                req: Some(73),
+                pane: pane.clone()
+            }
+        )
+        .await,
+        ServerMsg::Error { .. }
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_app_lives_with_its_pane() {
+    an_app_lives_with_its_pane(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_app_lives_with_its_pane() {
+    an_app_lives_with_its_pane(true).await;
+}
+
+/// Two apps that bind port 0 announce different ports, and each pane reads its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_apps_announce_different_ports() {
+    let base = std::env::temp_dir().join(format!("wheel-app-ports-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let dash = base.join("dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    let command = "exec python3 -c 'import socket,os,time; s=socket.socket(); s.bind((\"127.0.0.1\",0)); s.listen(); os.write(3, (str(s.getsockname()[1])+\"\\n\").encode()); time.sleep(300)'";
+    register(
+        &base,
+        "dash",
+        &dash,
+        &format!("app = {}\n", toml::Value::from(command)),
+    );
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let mut ports = Vec::new();
+    for n in 0..2 {
+        created(&mut ws, new_space(&base.to_string_lossy())).await;
+        let (spaces, _) = layout(&mut ws).await;
+        let pane = first_pane(&spaces[n].root);
+        ok(
+            &mut ws,
+            ClientMsg::PaneSetKind {
+                req: Some(10),
+                pane: pane.clone(),
+                kind: NewPaneKind::Web,
+                artifact: Some("dash".into()),
+                scope: None,
+                url: None,
+            },
+        )
+        .await;
+        let app = app_when(&mut ws, &pane, "a port", |a| a.port.is_some()).await;
+        ports.push(app.port.unwrap());
+    }
+    assert_ne!(ports[0], ports[1], "{ports:?}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The restart policy decides what an exit leads to: `on-failure` restarts a failure and leaves a
+/// clean exit stopped, `never` leaves both, and an entry may name an app with no page at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_restart_policy_decides_what_an_exit_leads_to() {
+    let base = std::env::temp_dir().join(format!("wheel-app-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    std::fs::write(
+        base.join("wheel.toml"),
+        r#"
+[artifacts.clean]
+app = "exit 0"
+[artifacts.broken]
+app = "exit 3"
+[artifacts.never]
+app = "exit 3"
+restart = "never"
+"#,
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    for (n, name) in ["clean", "broken", "never"].into_iter().enumerate() {
+        created(&mut ws, new_space(&base.to_string_lossy())).await;
+        let (spaces, _) = layout(&mut ws).await;
+        let pane = first_pane(&spaces[n].root);
+        ok(
+            &mut ws,
+            ClientMsg::PaneSetKind {
+                req: Some(10),
+                pane: pane.clone(),
+                kind: NewPaneKind::Web,
+                artifact: Some(name.into()),
+                scope: None,
+                url: None,
+            },
+        )
+        .await;
+        match name {
+            "broken" => {
+                let app = app_when(&mut ws, &pane, "restarted", |a| a.runs >= 2).await;
+                assert_eq!(app.last_exit.unwrap().exit, Some(3));
+            }
+            _ => {
+                let code = if name == "clean" { 0 } else { 3 };
+                let app = app_when(&mut ws, &pane, "stopped", |a| {
+                    a.state == wheel_proto::AppState::Stopped
+                })
+                .await;
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                let later = app_info(&mut ws, &pane).await;
+                assert_eq!(
+                    (later.runs, app.last_exit.unwrap().exit),
+                    (1, Some(code)),
+                    "{name}"
+                );
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}

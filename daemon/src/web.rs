@@ -326,13 +326,16 @@ impl AppState {
                 // A refresh writes there and nowhere else, so a pane with no data directory to
                 // name gets no runner either rather than a command with nowhere to put its work.
                 if post_dir.is_none() {
+                    self.start_app(pane, artifact, cwd, dir.clone());
                     self.start_refresh(pane, artifact, cwd, dir);
                 } else {
+                    self.stop_app(pane);
                     self.stop_refresh(pane);
                 }
             }
             Err(e) => {
                 tracing::warn!(%pane, error = %e, "no data directory for this pane; it serves nothing under data/ and nothing refreshes it");
+                self.stop_app(pane);
                 self.stop_refresh(pane);
             }
         }
@@ -551,6 +554,7 @@ impl AppState {
     pub(crate) fn drop_artifact(&self, pane: &str) {
         // Before the directory goes: dropping the runner cancels every run of this pane in flight,
         // which kills its command, so nothing is still writing what is about to be removed.
+        self.stop_app(pane);
         self.stop_refresh(pane);
         self.stop_runner_feed(pane);
         self.drop_page(pane);

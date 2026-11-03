@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -267,6 +267,98 @@ pub struct RefreshInfo {
     /// The last run, or None before the first has finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<RunInfo>,
+}
+
+/// What an app artifact's process is doing, as `artifact app status` reports it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppState {
+    /// Started; no port announced yet.
+    Starting,
+    /// Running, and its port announced when it announces one.
+    Running,
+    /// Exited and waiting out the delay before the restart policy starts it again.
+    Waiting,
+    /// Stopped by `artifact app stop`, or ended and not restarted by its policy.
+    Stopped,
+}
+
+/// When an app artifact's process is started again after it ends.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppRestart {
+    /// After a non-zero exit or a signal; a clean exit leaves it stopped.
+    #[default]
+    OnFailure,
+    /// After every exit.
+    Always,
+    /// Never.
+    Never,
+}
+
+impl AppRestart {
+    pub fn name(self) -> &'static str {
+        match self {
+            AppRestart::OnFailure => "on-failure",
+            AppRestart::Always => "always",
+            AppRestart::Never => "never",
+        }
+    }
+}
+
+/// How one run of an app's process ended.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppExit {
+    /// The exit status; None when a signal ended it or it never started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<i32>,
+    /// Why there is no exit status: the signal that ended it, or why it would not start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One pane's app: the process the daemon runs for the app artifact the pane shows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppInfo {
+    pub pane: String,
+    pub scope: ArtifactScope,
+    /// The artifact's name.
+    pub name: String,
+    /// The command as the entry declares it now.
+    pub command: String,
+    /// The space directory the command runs in.
+    pub cwd: String,
+    pub restart: AppRestart,
+    pub state: AppState,
+    /// The running process's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// The port the program last announced on its announcement descriptor (`WHEEL_APP_PORT_FD`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// How many times the process has been started.
+    pub runs: u64,
+    /// When the current or last run started, in milliseconds since the Unix epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_ms: Option<u64>,
+    /// How the last finished run ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<AppExit>,
+    /// The seconds until the restart, while `state` is `waiting`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_in_secs: Option<u64>,
+    /// The file holding the current or last run's output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+}
+
+/// What `artifact_app_control` asks of a pane's app.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppAction {
+    Start,
+    Stop,
+    Restart,
 }
 
 /// What a pane's refresh timer would do now — read when this record is made, not remembered from
@@ -1260,6 +1352,32 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
     },
+    /// Read the app web pane `pane` runs for its artifact: its process, port and restarts. Replies
+    /// `app`. Refused when the pane's artifact is not an app.
+    ArtifactAppStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
+    /// Read the output of the current (or, with `run`, that numbered) run of pane `pane`'s app,
+    /// the last `tail` lines when given. Replies `app_logs`.
+    ArtifactAppLogs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail: Option<usize>,
+    },
+    /// Start, stop or restart pane `pane`'s app process. Replies `app` once the request is
+    /// carried out (a started process has its pid by then).
+    ArtifactAppControl {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        action: AppAction,
+    },
     /// Read the values the page of web pane `pane` has written to its state store (key to JSON
     /// value): the one `key` names, or all of them. With `wait_ms`, waits up to that long for
     /// `key` to be written before replying; a key already written replies at once. Replies
@@ -1817,6 +1935,17 @@ pub enum ServerMsg {
         space: Option<String>,
         settings: Vec<SettingInfo>,
     },
+    /// One pane's app, in reply to `artifact_app_status` and `artifact_app_control`.
+    App {
+        req: u64,
+        app: AppInfo,
+    },
+    /// The text of a run's output, in reply to `artifact_app_logs`.
+    AppLogs {
+        req: u64,
+        run: u64,
+        text: String,
+    },
     /// One pane's refresh runner, in reply to `artifact_refresh`: `last` is the run it just made.
     Refresh {
         req: u64,
@@ -2043,6 +2172,8 @@ impl ServerMsg {
             | ServerMsg::Builtins { req, .. }
             | ServerMsg::BuiltinEdited { req, .. }
             | ServerMsg::Refresh { req, .. }
+            | ServerMsg::App { req, .. }
+            | ServerMsg::AppLogs { req, .. }
             | ServerMsg::PageState { req, .. }
             | ServerMsg::SpaceRecent { req, .. }
             | ServerMsg::DirList { req, .. }

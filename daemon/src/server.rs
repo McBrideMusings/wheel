@@ -180,6 +180,8 @@ pub struct AppState {
     pub(crate) pages: Mutex<HashMap<String, Arc<crate::page::Page>>>,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
+    /// The app process of each web pane whose artifact declares one, keyed by pane id.
+    pub(crate) apps: Mutex<crate::app::Apps>,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
     /// This state, for callbacks an agent runs later and for a task that saves the layout after
@@ -295,6 +297,7 @@ impl AppState {
             watchers: Mutex::new(HashMap::new()),
             pages: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
+            apps: Mutex::new(crate::app::Apps::new()),
             runner_feeds: Mutex::new(HashMap::new()),
             me: me.clone(),
             renderers: Default::default(),
@@ -2228,6 +2231,45 @@ async fn handle(
                     Ok(refresh) => req.map(|req| ServerMsg::Refresh { req, refresh }),
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %message, "artifact refresh refused");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::ArtifactAppStatus { req, pane } => match state.app_of(&pane) {
+            Ok(app) => req.map(|req| ServerMsg::App { req, app: app.info() }),
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %message, "artifact app status refused");
+                Some(failed(req, message))
+            }
+        },
+        ClientMsg::ArtifactAppLogs { req, pane, run, tail } => {
+            match state.app_of(&pane).and_then(|app| app.logs(run, tail)) {
+                Ok((run, text)) => req.map(|req| ServerMsg::AppLogs { req, run, text }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "artifact app logs refused");
+                    Some(failed(req, message))
+                }
+            }
+        }
+        // On a task of its own: the request waits for the process to start or stop, and this
+        // connection has to keep reading frames meanwhile.
+        ClientMsg::ArtifactAppControl { req, pane, action } => {
+            let out = out.clone();
+            let app = state.app_of(&pane);
+            tokio::spawn(async move {
+                let result = match app {
+                    Ok(app) => app.control(action).await,
+                    Err(message) => Err(message),
+                };
+                let reply = match result {
+                    Ok(app) => req.map(|req| ServerMsg::App { req, app }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %message, "artifact app control refused");
                         Some(failed(req, message))
                     }
                 };
