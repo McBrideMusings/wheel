@@ -11,7 +11,7 @@
 //! The program announces its port by writing it as a line of decimal digits to the descriptor named
 //! in `WHEEL_APP_PORT_FD` (3): a pipe the daemon reads, so the announcement is an event rather than
 //! a file polled for. A program that binds port 0 gets a port nothing else holds, which is how two
-//! apps never collide. Output (standard output and error) goes to one log file per run under the
+//! apps never collide. Output (standard output and error) goes to a log per run under the
 //! instance directory, removed with the pane.
 
 use std::collections::HashMap;
@@ -33,6 +33,55 @@ static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 /// The descriptor number a program finds its announcement pipe at.
 const PORT_FD: i32 = 3;
+
+/// How much of a run's output one log file holds. When the file would pass this, it becomes the
+/// run's `.log.old` (replacing the one before) and a new file starts, so a run keeps its last
+/// `LOG_SEGMENT` to twice that in bytes and a chatty app cannot fill the disk.
+const LOG_SEGMENT: u64 = 2 << 20;
+
+/// How long a run that has ended keeps reading output a process that left its group still sends.
+const PIPE_GRACE: Duration = Duration::from_secs(1);
+
+/// A run's log: the current file and the size written to it.
+struct Rotating {
+    file: std::fs::File,
+    path: PathBuf,
+    old: PathBuf,
+    size: u64,
+}
+
+impl Rotating {
+    fn create(path: PathBuf, old: PathBuf) -> std::io::Result<Rotating> {
+        Ok(Rotating {
+            file: std::fs::File::create(&path)?,
+            path,
+            old,
+            size: 0,
+        })
+    }
+
+    fn write(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        if self.size > 0 && self.size + chunk.len() as u64 > LOG_SEGMENT {
+            std::fs::rename(&self.path, &self.old)?;
+            self.file = std::fs::File::create(&self.path)?;
+            self.size = 0;
+        }
+        self.size += chunk.len() as u64;
+        self.file.write_all(chunk)
+    }
+}
+
+/// Copy a pipe into the run's log until it closes.
+async fn copy_log(mut pipe: impl tokio::io::AsyncRead + Unpin, sink: Arc<Mutex<Rotating>>) {
+    use tokio::io::AsyncReadExt;
+    let mut chunk = [0u8; 8192];
+    while let Ok(n) = pipe.read(&mut chunk).await {
+        if n == 0 || sink.lock().unwrap().write(&chunk[..n]).is_err() {
+            break;
+        }
+    }
+}
 
 /// A run that lasted this long was not a crash loop: the delay before the next restart starts over.
 const STEADY: Duration = Duration::from_secs(10);
@@ -146,6 +195,11 @@ impl App {
         self.logs.join(format!("{run}.log"))
     }
 
+    /// The earlier half of a run's output, once it has written more than [`LOG_SEGMENT`].
+    fn old_log_file(&self, run: u64) -> PathBuf {
+        self.logs.join(format!("{run}.log.old"))
+    }
+
     /// Ask the supervisor to start, stop or restart the process, and wait until it has.
     pub(crate) async fn control(&self, action: AppAction) -> Result<AppInfo, String> {
         let (done, wait) = oneshot::channel();
@@ -175,10 +229,12 @@ impl App {
         if run == 0 {
             return Err(format!("pane {}'s app has not been started", self.pane));
         }
-        let file = self.log_file(run);
-        let text = std::fs::read(&file)
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .map_err(|e| format!("no log for run {run} of pane {}: {e}", self.pane))?;
+        let mut bytes = std::fs::read(self.old_log_file(run)).unwrap_or_default();
+        bytes.extend(
+            std::fs::read(self.log_file(run))
+                .map_err(|e| format!("no log for run {run} of pane {}: {e}", self.pane))?,
+        );
+        let text = String::from_utf8_lossy(&bytes).into_owned();
         let text = match tail {
             Some(n) => {
                 let lines: Vec<&str> = text.lines().collect();
@@ -257,11 +313,10 @@ async fn run_once(
         .map_err(|e| fail(format!("make {}: {e}", app.logs.display())))?;
     std::fs::create_dir_all(&app.data)
         .map_err(|e| fail(format!("make {}: {e}", app.data.display())))?;
-    let log = std::fs::File::create(app.log_file(run))
-        .map_err(|e| fail(format!("make the log {}: {e}", app.log_file(run).display())))?;
-    let log_err = log
-        .try_clone()
-        .map_err(|e| fail(format!("share the log: {e}")))?;
+    let sink = Arc::new(Mutex::new(
+        Rotating::create(app.log_file(run), app.old_log_file(run))
+            .map_err(|e| fail(format!("make the log {}: {e}", app.log_file(run).display())))?,
+    ));
     let group = Group::arm(&app.pane, &app.warden).await.map_err(&fail)?;
     let (sender, receiver) =
         tokio::net::unix::pipe::pipe().map_err(|e| fail(format!("make the port pipe: {e}")))?;
@@ -283,8 +338,8 @@ async fn run_once(
         .env("WHEEL_DATA_DIR", &app.data)
         .env("WHEEL_APP_PORT_FD", PORT_FD.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(group.pgid)
         .kill_on_drop(true);
     // SAFETY: the closure runs between fork and exec and makes one async-signal-safe call on two
@@ -306,6 +361,19 @@ async fn run_once(
     // The daemon's copy of the write end closes now, so the pipe ends when the program's does.
     drop(write);
     let mut child = spawned.map_err(|e| fail(format!("run {command:?}: {e}")))?;
+    let copies: Vec<_> = [
+        child
+            .stdout
+            .take()
+            .map(|p| tokio::spawn(copy_log(p, sink.clone()))),
+        child
+            .stderr
+            .take()
+            .map(|p| tokio::spawn(copy_log(p, sink.clone()))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     {
         let mut seen = app.seen.lock().unwrap();
         seen.runs = run;
@@ -367,6 +435,12 @@ async fn run_once(
             },
         }
     };
+    // What the program wrote before it ended is in the log before the run is reported over.
+    for mut copy in copies {
+        if tokio::time::timeout(PIPE_GRACE, &mut copy).await.is_err() {
+            copy.abort();
+        }
+    }
     Ok(ended)
 }
 
@@ -537,5 +611,32 @@ impl Daemon {
             .ok_or_else(|| {
                 format!("pane {pane} runs no app: it shows no artifact, or that artifact's entry declares no app")
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run's log never holds more than two segments: the file that passed the limit becomes
+    /// `.log.old`, the one before it is replaced, and the newest bytes are always kept.
+    #[test]
+    fn a_runs_log_keeps_its_last_two_segments() {
+        let dir = std::env::temp_dir().join(format!("wheel-applog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (path, old) = (dir.join("1.log"), dir.join("1.log.old"));
+        let mut log = Rotating::create(path.clone(), old.clone()).unwrap();
+        let chunk = vec![b'a'; (LOG_SEGMENT as usize * 3) / 4];
+        for n in 0..6u8 {
+            log.write(&chunk).unwrap();
+            log.write(&[b'0' + n]).unwrap();
+        }
+        let (new, older) = (
+            std::fs::metadata(&path).unwrap().len(),
+            std::fs::metadata(&old).unwrap().len(),
+        );
+        assert!(new <= LOG_SEGMENT && older <= LOG_SEGMENT, "{new} {older}");
+        assert_eq!(std::fs::read(&path).unwrap().last(), Some(&b'5'));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
