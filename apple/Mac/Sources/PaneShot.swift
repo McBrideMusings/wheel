@@ -21,7 +21,9 @@ extension AppModel {
         // A palette or a refresh request open over the pane is drawn by the window, not by WebKit's
         // snapshot of the page.
         let covered = palettes[pane] != nil || perms.contains { $0.agent == pane }
-        let web = covered ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
+        // A web pane on an A2UI server draws native controls, so its shot is the window's, not WebKit's.
+        let native = a2uiPanes[pane]?.isNative == true
+        let web = covered || native ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
         guard web != nil || shownSpaces.contains(space.id) else {
             Log.info("render \(id): pane \(pane) is not on screen")
             reply(.renderRefused(id: id, message: RenderRefusal.notShown))

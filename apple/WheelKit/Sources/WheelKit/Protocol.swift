@@ -138,6 +138,12 @@ public enum ClientMsg: Sendable, Equatable {
     /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
     /// Replies `artifacts`.
     case artifactLs(req: UInt64?, space: String?, paneOnly: Bool)
+    /// The tools of the MCP server artifact `name` names, as the server listed them; replies `tools`.
+    case artifactTools(req: UInt64?, name: String, scope: ArtifactScope?, space: String?)
+    /// Call `tool` of that server with `arguments` (the text of a JSON object); replies `toolResult`.
+    case artifactCall(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, tool: String, arguments: String?)
+    /// `resources/read` of `uri` on that server; replies `resource`.
+    case artifactRead(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, uri: String)
     /// Every built-in artifact wheeld carries; replies `builtins`.
     case builtinLs(req: UInt64?)
     /// Install a built-in at machine scope; replies `builtins`.
@@ -327,6 +333,20 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
             if paneOnly { o["pane"] = true }
+        case let .artifactTools(req, name, scope, space):
+            o = ["op": "artifact_tools", "name": name]; put(req)
+            if let scope { o["scope"] = scope.rawValue }
+            if let space { o["space"] = space }
+        case let .artifactCall(req, name, scope, space, tool, arguments):
+            o = ["op": "artifact_call", "name": name, "tool": tool]; put(req)
+            if let scope { o["scope"] = scope.rawValue }
+            if let space { o["space"] = space }
+            if let arguments, let data = arguments.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) { o["arguments"] = object }
+        case let .artifactRead(req, name, scope, space, uri):
+            o = ["op": "artifact_read", "name": name, "uri": uri]; put(req)
+            if let scope { o["scope"] = scope.rawValue }
+            if let space { o["space"] = space }
         case let .builtinLs(req):
             o = ["op": "builtin_ls"]; put(req)
         case let .builtinInstall(req, name):
@@ -1135,6 +1155,13 @@ public enum ServerMsg: Sendable {
     case settings(req: UInt64?, space: String?, settings: [SettingInfo])
     /// Every artifact `artifactLs` asked for.
     case artifacts(req: UInt64?, artifacts: [ArtifactInfo])
+    /// The tools of an MCP server, each as the server sent it (`name`, `description`, `input_schema`,
+    /// `meta`), in reply to `artifactTools`.
+    case tools(req: UInt64, tools: [JSONValue])
+    /// What an MCP tool returned (`content`, `structured`, `is_error`, `meta`), in reply to `artifactCall`.
+    case toolResult(req: UInt64, result: JSONValue)
+    /// The `contents` of a `resources/read`, in reply to `artifactRead`.
+    case resource(req: UInt64, contents: [JSONValue])
     /// Every built-in as it now stands, in reply to any built-in request.
     case builtins(req: UInt64, builtins: [BuiltinInfo])
     /// `builtinUpdate` with `ask` found files a person edited and changed nothing.
@@ -1184,7 +1211,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1285,6 +1312,9 @@ extension ServerMsg: Decodable {
             self = .settings(req: req, space: try c.decodeIfPresent(String.self, forKey: .space),
                              settings: try c.decode([SettingInfo].self, forKey: .settings))
         case "artifacts": self = .artifacts(req: req, artifacts: try c.decode([ArtifactInfo].self, forKey: .artifacts))
+        case "tools": self = .tools(req: try c.decode(UInt64.self, forKey: .req), tools: try c.decode([JSONValue].self, forKey: .tools))
+        case "tool_result": self = .toolResult(req: try c.decode(UInt64.self, forKey: .req), result: try c.decode(JSONValue.self, forKey: .result))
+        case "resource": self = .resource(req: try c.decode(UInt64.self, forKey: .req), contents: try c.decode([JSONValue].self, forKey: .contents))
         case "builtins": self = .builtins(req: try c.decode(UInt64.self, forKey: .req), builtins: try c.decode([BuiltinInfo].self, forKey: .builtins))
         case "builtin_edited":
             self = .builtinEdited(req: try c.decode(UInt64.self, forKey: .req), name: try c.decode(String.self, forKey: .name),

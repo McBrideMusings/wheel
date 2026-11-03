@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -112,6 +112,9 @@ pub struct McpTool {
     pub description: Option<String>,
     /// The JSON Schema of the tool's arguments.
     pub input_schema: serde_json::Value,
+    /// The tool's `_meta` as the server sent it: where `ui.resourceUri` names the tool's view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 /// What an MCP tool call returned.
@@ -123,6 +126,9 @@ pub struct McpToolResult {
     pub structured: Option<serde_json::Value>,
     /// The tool reported a failure of its own; `content` says what.
     pub is_error: bool,
+    /// The result's `_meta` as the server sent it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1394,6 +1400,17 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arguments: Option<serde_json::Value>,
     },
+    /// `resources/read` of `uri` on the MCP server artifact `name` names. Replies `resource`.
+    ArtifactRead {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        uri: String,
+    },
     /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run and
     /// replies `refresh` with the runner and that run. Refused when the pane shows no
     /// artifact, or its entry declares no command.
@@ -1953,6 +1970,12 @@ pub enum ServerMsg {
         req: u64,
         result: McpToolResult,
     },
+    /// What an MCP server returned for `resources/read`, in reply to `artifact_read`: its
+    /// `contents` as the server sent them.
+    Resource {
+        req: u64,
+        contents: Vec<serde_json::Value>,
+    },
     /// Every built-in artifact as it is now, in reply to `builtin_ls`, `builtin_install`,
     /// `builtin_update` and `builtin_remove`.
     Builtins {
@@ -2234,6 +2257,7 @@ impl ServerMsg {
             | ServerMsg::Artifacts { req, .. }
             | ServerMsg::Tools { req, .. }
             | ServerMsg::ToolResult { req, .. }
+            | ServerMsg::Resource { req, .. }
             | ServerMsg::Builtins { req, .. }
             | ServerMsg::BuiltinEdited { req, .. }
             | ServerMsg::Refresh { req, .. }

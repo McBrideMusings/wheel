@@ -176,6 +176,7 @@ impl AppState {
                 name: t.name.into_owned(),
                 description: t.description.map(|d| d.into_owned()),
                 input_schema: serde_json::Value::Object((*t.input_schema).clone()),
+                meta: t.meta.and_then(|m| serde_json::to_value(m).ok()),
             })
             .collect())
     }
@@ -214,7 +215,26 @@ impl AppState {
             content,
             structured: result.structured_content,
             is_error: result.is_error.unwrap_or(false),
+            meta: result.meta.and_then(|m| serde_json::to_value(m).ok()),
         })
+    }
+}
+
+impl AppState {
+    /// `resources/read` of `uri` on artifact `name`'s server: the `contents` it returned.
+    pub async fn mcp_resource(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+        uri: &str,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let read = self.mcp_read(name, scope, space, uri).await?;
+        Ok(read
+            .get("contents")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default())
     }
 }
 

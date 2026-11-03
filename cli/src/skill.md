@@ -68,6 +68,10 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   and input schema (`--json` for the schemas whole); `call` passes the JSON object (none for a tool with no
   arguments) and prints the result; a tool that fails prints its message and exits 1. Both take `--scope`
   and `--space` like `artifact show`. An mcp entry takes no `path`, and neither `app` nor the other mcp key.
+  `wheel artifact read <name> <uri>` prints a resource the server lists (`resources/read`). A server that
+  links a tool to an `a2ui://` resource (`_meta.ui.resourceUri`, MIME `application/a2ui+json`) gets a native
+  pane on the Mac and iPhone: the resource is the layout, a tool's result carries `updateDataModel`
+  messages, and a button's action calls the tool named by the action event with its context as arguments.
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
 - `wheel run [<name>]`: the `[runner]` table of wheel.toml maps names you choose to shell commands
   (`build = "make -j8"`); a project's table overrides the machine's. `wheel run` lists them,
