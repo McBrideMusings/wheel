@@ -189,6 +189,7 @@ extension AppModel {
         // Measurements of windows that are gone would aim a drop at them.
         let open = Set(layout.windows.map(\.id))
         rowFrames = rowFrames.filter { open.contains($0.key) }
+        tabFrames = tabFrames.filter { open.contains($0.key) }
         sidebarFrames = sidebarFrames.filter { open.contains($0.key) }
         tabStripFrames = tabStripFrames.filter { open.contains($0.key) }
         titleButtonFrames = titleButtonFrames.filter { open.contains($0.key) }

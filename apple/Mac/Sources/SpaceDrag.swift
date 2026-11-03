@@ -56,6 +56,7 @@ extension AppModel {
         guard spaceDrag == nil, spaces.contains(where: { $0.id == space }) else { return }
         spaceDrag = SpaceDrag(space: space, byPointer: byPointer)
         frozenRowFrames = rowFrames
+        frozenTabFrames = tabFrames
         frozenSidebarFrames = sidebarFrames
         frozenTabStripFrames = tabStripFrames
         // A release is watched here as well as by the gesture: a row whose view went away mid-drag
@@ -148,6 +149,7 @@ extension AppModel {
 
     private func removeSpaceDragMonitor() {
         frozenRowFrames = nil
+        frozenTabFrames = nil
         frozenSidebarFrames = nil
         frozenTabStripFrames = nil
         if let dragMonitorForSpaces { NSEvent.removeMonitor(dragMonitorForSpaces) }
@@ -174,7 +176,8 @@ extension AppModel {
             guard let record = layout.window(id) else { continue }
             let sidebar = record.sidebar ? (frozenSidebarFrames ?? sidebarFrames)[id].map { screenRect($0, in: nswindow) } : nil
             let strip = record.sidebar ? nil : (frozenTabStripFrames ?? tabStripFrames)[id].map { screenRect($0, in: nswindow) }
-            let frames = record.spaces.compactMap { (frozenRowFrames ?? rowFrames)[id]?[$0] }.map { screenRect($0, in: nswindow) }
+            let measured = record.sidebar ? (frozenRowFrames ?? rowFrames) : (frozenTabFrames ?? tabFrames)
+            let frames = record.spaces.compactMap { measured[id]?[$0] }.map { screenRect($0, in: nswindow) }
             windows.append(DropWindow(id: id, frame: nswindow.frame, sidebar: sidebar, rows: record.sidebar ? frames : [], tabStrip: strip, tabs: record.sidebar ? [] : frames))
         }
         var popover: DropPopover?
@@ -404,7 +407,7 @@ extension AppModel {
             if let grid = gridFrames[id] { entry["grid"] = rect(screenRect(grid, in: nswindow)) }
             if layout.window(id)?.sidebar == false, let strip = tabStripFrames[id] { entry["tab_strip"] = rect(screenRect(strip, in: nswindow)) }
             entry["title_buttons"] = (titleButtonFrames[id] ?? [:]).mapValues { rect(screenRect($0, in: nswindow)) }
-            entry["rows"] = Dictionary(uniqueKeysWithValues: (rowFrames[id] ?? [:]).map { ($0.key, rect(screenRect($0.value, in: nswindow))) })
+            entry["rows"] = Dictionary(uniqueKeysWithValues: ((layout.window(id)?.sidebar == false ? tabFrames : rowFrames)[id] ?? [:]).map { ($0.key, rect(screenRect($0.value, in: nswindow))) })
             windows[id] = entry
         }
         var out: [String: Any] = ["windows": windows]
