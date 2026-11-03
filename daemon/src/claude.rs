@@ -219,34 +219,52 @@ enum Pending {
     },
 }
 
-/// The text and thoughts of one message that arrived as stream events, and how much of each the
-/// message's whole blocks have accounted for so far.
+/// The text and thoughts of one message that arrived as stream events, one entry per content
+/// block by the block's index, and how many of the message's whole blocks have been seen.
 #[derive(Default)]
 struct Streamed {
-    text: String,
-    thought: String,
-    text_used: usize,
-    thought_used: usize,
+    blocks: Vec<String>,
+    seen: usize,
+}
+
+/// What a whole block holds beyond the stream events that carried it.
+#[derive(Debug, PartialEq)]
+enum Rest<'a> {
+    /// Nothing; the stream carried the block.
+    None,
+    /// The part of the block the stream events missed.
+    Missed(&'a str),
+    /// The stream's copy and the whole copy differ somewhere inside the block.
+    Differs,
 }
 
 impl Streamed {
-    /// What of a whole block the stream events did not carry. The block follows the blocks of its
-    /// kind already taken from the stream, so its streamed part starts at the used offset.
-    fn take_rest<'a>(&mut self, whole: &'a str, thought: bool) -> &'a str {
-        let (streamed, used) = if thought {
-            (&self.thought, &mut self.thought_used)
+    fn push(&mut self, index: usize, text: &str) {
+        if self.blocks.len() <= index {
+            self.blocks.resize(index + 1, String::new());
+        }
+        self.blocks[index].push_str(text);
+    }
+
+    /// Compare the next whole block (the message's blocks arrive in index order, one at a time,
+    /// whatever their kind) with what streamed for the same index. Only a block the stream
+    /// started is completed from the whole copy; one that differs is left as streamed, because
+    /// sending it again shows the reader the same words twice.
+    fn take_rest<'a>(&mut self, whole: &'a str) -> Rest<'a> {
+        let have = self.blocks.get(self.seen).map_or("", String::as_str);
+        self.seen += 1;
+        if have.starts_with(whole) {
+            Rest::None
+        } else if let Some(rest) = whole.strip_prefix(have) {
+            Rest::Missed(rest)
         } else {
-            (&self.text, &mut self.text_used)
-        };
-        let have = streamed.get(*used..).unwrap_or_default();
-        let n = whole
-            .char_indices()
-            .zip(have.chars())
-            .take_while(|((_, a), b)| a == b)
-            .count();
-        let end = whole.char_indices().nth(n).map_or(whole.len(), |(i, _)| i);
-        *used = (*used + whole.len()).min(streamed.len());
-        &whole[end..]
+            Rest::Differs
+        }
+    }
+
+    /// A whole block that is not text or a thought still takes its index.
+    fn skip(&mut self) {
+        self.seen += 1;
     }
 }
 
@@ -446,10 +464,11 @@ impl Driver {
             }
             Some("content_block_delta") => {
                 let delta = &event["delta"];
+                let index = event["index"].as_u64().unwrap_or(0) as usize;
                 match delta["type"].as_str() {
                     Some("text_delta") => {
                         if let Some(text) = delta["text"].as_str() {
-                            self.streamed_of_current().text.push_str(text);
+                            self.streamed_of_current().push(index, text);
                             self.emit(DriverEvent::Transcript(AgentEvent::Text {
                                 text: text.into(),
                             }));
@@ -457,7 +476,7 @@ impl Driver {
                     }
                     Some("thinking_delta") => {
                         if let Some(text) = delta["thinking"].as_str() {
-                            self.streamed_of_current().thought.push_str(text);
+                            self.streamed_of_current().push(index, text);
                             self.emit(DriverEvent::Transcript(AgentEvent::Thought {
                                 text: text.into(),
                             }));
@@ -480,31 +499,37 @@ impl Driver {
         let id = message["id"].as_str();
         for block in message["content"].as_array().into_iter().flatten() {
             let kind = block["type"].as_str();
-            if let (Some(id), Some("text" | "thinking")) = (id, kind) {
-                if let Some(streamed) = self.streamed.get_mut(id) {
-                    let thought = kind == Some("thinking");
+            if let Some(streamed) = id.and_then(|id| self.streamed.get_mut(id)) {
+                if let Some(kind @ ("text" | "thinking")) = kind {
+                    let thought = kind == "thinking";
                     let whole = block[if thought { "thinking" } else { "text" }]
                         .as_str()
                         .unwrap_or_default();
-                    // The deltas that did arrive are the start of the block; what they missed
-                    // is sent from the whole copy.
-                    let rest = streamed.take_rest(whole, thought);
-                    if !rest.is_empty() {
-                        tracing::warn!(
+                    match streamed.take_rest(whole) {
+                        Rest::None => {}
+                        Rest::Missed(rest) => {
+                            tracing::warn!(
+                                pid = self.pid,
+                                id,
+                                missed = rest.len(),
+                                "agent's stream events left out part of a block; sent from the whole message"
+                            );
+                            let text = rest.to_string();
+                            self.emit(DriverEvent::Transcript(if thought {
+                                AgentEvent::Thought { text }
+                            } else {
+                                AgentEvent::Text { text }
+                            }));
+                        }
+                        Rest::Differs => tracing::warn!(
                             pid = self.pid,
                             id,
-                            missed = rest.len(),
-                            "agent's stream events left out part of a block; sent from the whole message"
-                        );
-                        let text = rest.to_string();
-                        self.emit(DriverEvent::Transcript(if thought {
-                            AgentEvent::Thought { text }
-                        } else {
-                            AgentEvent::Text { text }
-                        }));
+                            "agent's stream events and whole block differ; kept what streamed"
+                        ),
                     }
                     continue;
                 }
+                streamed.skip();
             }
             if let Some(event) = assistant_block(block, &mut self.calls) {
                 self.emit(DriverEvent::Transcript(event));
@@ -1207,7 +1232,42 @@ fn iso8601(at: std::time::SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::words;
+    use super::{words, Rest, Streamed};
+
+    #[test]
+    fn a_block_the_stream_carried_is_not_sent_again() {
+        let mut s = Streamed::default();
+        s.push(0, "");
+        s.push(1, "Tea is ");
+        s.push(1, "old.");
+        assert_eq!(s.take_rest(""), Rest::None);
+        assert_eq!(s.take_rest("Tea is old."), Rest::None);
+    }
+
+    #[test]
+    fn a_whole_block_trimmed_shorter_than_the_stream_is_not_sent_again() {
+        let mut s = Streamed::default();
+        s.push(0, "First.\n\n");
+        s.push(2, "Second.");
+        assert_eq!(s.take_rest("First."), Rest::None);
+        s.skip();
+        assert_eq!(s.take_rest("Second."), Rest::None);
+    }
+
+    #[test]
+    fn only_what_the_stream_missed_is_sent() {
+        let mut s = Streamed::default();
+        s.push(0, "Hello");
+        assert_eq!(s.take_rest("Hello world"), Rest::Missed(" world"));
+        assert_eq!(s.take_rest("never streamed"), Rest::Missed("never streamed"));
+    }
+
+    #[test]
+    fn a_block_that_differs_is_left_as_streamed() {
+        let mut s = Streamed::default();
+        s.push(0, "abc def");
+        assert_eq!(s.take_rest("abc xyz"), Rest::Differs);
+    }
 
     #[test]
     fn a_command_splits_into_words_as_a_shell_would() {
