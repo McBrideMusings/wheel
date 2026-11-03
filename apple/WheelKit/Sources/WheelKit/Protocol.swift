@@ -1164,7 +1164,7 @@ public enum ServerMsg: Sendable {
     case opened(req: UInt64, pane: String, url: String)
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
     /// a connection that sent `renderOffer`.
-    case renderPane(id: UInt64, pane: String)
+    case renderPane(id: UInt64, pane: String, full: Bool)
     /// Run `op` (`eval`, `dom`, `shot` or `record`) on browser pane `pane` with `arg` and answer with
     /// `inspected` (`eval`, `dom`), `rendered` (`shot`), `recorded` (`record`) or `renderRefused`, naming `id`.
     case inspectPane(id: UInt64, pane: String, op: String, arg: String?)
@@ -1184,7 +1184,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1328,7 +1328,7 @@ extension ServerMsg: Decodable {
             default: self = .unknown("window_request \(command)")
             }
         case "inspect_pane": self = .inspectPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), op: try c.decode(String.self, forKey: .action), arg: try c.decodeIfPresent(String.self, forKey: .arg))
-        case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane))
+        case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), full: try c.decodeIfPresent(Bool.self, forKey: .full) ?? false)
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))
         case let other: self = .unknown(other)

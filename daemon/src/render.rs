@@ -158,7 +158,13 @@ impl Renderers {
 impl AppState {
     /// Ask the connected clients for a PNG of `pane` and write it to `path`, which must be
     /// absolute. Returns the byte count of the finished file.
-    pub async fn pane_shot(&self, pane: &str, path: &str, side: Side) -> Result<u64, String> {
+    pub async fn pane_shot(
+        &self,
+        pane: &str,
+        path: &str,
+        side: Side,
+        full: bool,
+    ) -> Result<u64, String> {
         let target = PathBuf::from(path);
         if !target.is_absolute() {
             return Err(format!("{path} is not an absolute path"));
@@ -169,6 +175,7 @@ impl AppState {
                 ServerMsg::RenderPane {
                     id,
                     pane: pane.to_string(),
+                    full,
                 }
             })
             .await?;

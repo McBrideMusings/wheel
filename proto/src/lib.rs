@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1043,6 +1043,9 @@ pub enum ClientMsg {
         /// Which client draws it: `mac` (the default) or `phone`, a paired device's connection.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on: Option<String>,
+        /// Draw the pane's whole scrollable content as one tall image, not the part in view.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        full: bool,
     },
     /// Run JavaScript in the page of browser pane `pane` (`action` `eval`, `arg` the script; the reply
     /// `inspected` text is the result as JSON), read its HTML (`action` `dom`, `arg` an optional CSS
@@ -2148,6 +2151,9 @@ pub enum ServerMsg {
     RenderPane {
         id: u64,
         pane: String,
+        /// Draw the pane's whole scrollable content as one tall image.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        full: bool,
     },
     /// `pane_inspect` `record` wrote `bytes` bytes of movie to `path`: `frames` frames over
     /// `millis` milliseconds.

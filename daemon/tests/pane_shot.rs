@@ -84,6 +84,7 @@ async fn shot(ws: &mut Ws, pane: &str, path: &str) {
             pane: pane.into(),
             path: path.into(),
             on: None,
+            full: false,
         },
     )
     .await;
@@ -107,7 +108,7 @@ async fn shot_reply(ws: &mut Ws) -> Result<u64, String> {
 /// The next `render_pane` request this client is sent.
 async fn render_request(ws: &mut Ws) -> (u64, String) {
     loop {
-        if let ServerMsg::RenderPane { id, pane } = recv(ws).await {
+        if let ServerMsg::RenderPane { id, pane, .. } = recv(ws).await {
             return (id, pane);
         }
     }

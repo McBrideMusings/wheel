@@ -1988,7 +1988,13 @@ async fn handle(
             state.renderers.answer(peer, id, Err(message));
             None
         }
-        ClientMsg::PaneShot { req, pane, path, on } => {
+        ClientMsg::PaneShot {
+            req,
+            pane,
+            path,
+            on,
+            full,
+        } => {
             // On a task of its own: a client takes as long as it takes to draw.
             let state = state.clone();
             let out = out.clone();
@@ -2000,7 +2006,7 @@ async fn handle(
                         return;
                     }
                 };
-                let reply = match state.pane_shot(&pane, &path, side).await {
+                let reply = match state.pane_shot(&pane, &path, side, full).await {
                     Ok(bytes) => req.map(|req| ServerMsg::PaneShot {
                         req,
                         pane,

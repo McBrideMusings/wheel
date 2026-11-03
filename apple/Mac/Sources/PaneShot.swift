@@ -11,7 +11,7 @@ extension AppModel {
     /// Draw `pane` and answer request `id`. A terminal or agent pane in a space no window shows is
     /// not shown: its views are mounted but drawn at zero opacity. A web or browser pane in such a
     /// space still has its WebKit view mounted, and WebKit renders the page itself, so it is drawn.
-    func renderPane(id: UInt64, pane: String) {
+    func renderPane(id: UInt64, pane: String, full: Bool = false) {
         guard let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
               let kind = space.root.panes.first(where: { $0.id == pane })?.kind else {
             Log.info("render \(id): pane \(pane) is not on screen")
@@ -35,7 +35,8 @@ extension AppModel {
             if header == nil { Log.info("render \(id): \(pane) has no header to draw (no window shows it); the shot is the page alone") }
             // A page in a hidden space is hidden (no cursor rects); WebKit draws it only when shown.
             web.isHidden = false
-            web.takeSnapshot(with: nil) { [weak self] image, error in
+            let take: (WKSnapshotConfiguration?) -> Void = { configuration in
+              web.takeSnapshot(with: configuration) { [weak self] image, error in
                 MainActor.assumeIsolated {
                     self?.updatePageVisibility()
                     let whole = image.map { page in header.map { Self.stack($0, over: page) } ?? page }
@@ -49,6 +50,20 @@ extension AppModel {
                     }
                     self?.answerRender(id, pane, png)
                 }
+              }
+            }
+            guard full else { take(nil); return }
+            // The page's own size, as the document lays it out: the snapshot's rect covers all of it.
+            web.evaluateJavaScript("[Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)]") { value, _ in
+                MainActor.assumeIsolated {
+                    let size = (value as? [Double]).flatMap { $0.count == 2 ? CGSize(width: $0[0], height: $0[1]) : nil }
+                    guard let size, size.width > 0, size.height > 0 else { take(nil); return }
+                    let configuration = WKSnapshotConfiguration()
+                    configuration.rect = CGRect(origin: .zero, size: size)
+                    configuration.snapshotWidth = NSNumber(value: Double(size.width))
+                    Log.info("render \(id): \(pane) page is \(Int(size.width))x\(Int(size.height)) pt; drawing all of it")
+                    take(configuration)
+                }
             }
             return
         }
@@ -59,6 +74,21 @@ extension AppModel {
             return
         }
         let paneRect = Self.contentRect(frame, in: content)
+        if full, let scroll = Self.scrollView(under: paneRect, in: content),
+           let document = scroll.documentView, document.frame.height > scroll.contentView.bounds.height + 1 {
+            Task { @MainActor in
+                guard let png = await Self.stitched(scroll, in: content, within: paneRect) else {
+                    self.refuseRender(id, pane, "the window could not draw the pane's whole content")
+                    return
+                }
+                self.answerRender(id, pane, png)
+            }
+            return
+        }
+        if full, kind.name == "terminal" {
+            refuseRender(id, pane, "the terminal's scrollback is not a scroll view the window can draw whole; read it with `wheel term read`")
+            return
+        }
         // A pane's frame is rarely whole device pixels (a 1090.5 pt pane on a 1x display). The bitmap
         // rounds its size up to whole pixels, so an unaligned rect draws a partial pixel row of the
         // neighbour beyond the pane's edge; snapping every edge inward keeps the image inside the frame.
@@ -74,6 +104,66 @@ extension AppModel {
             return
         }
         answerRender(id, pane, png)
+    }
+
+    /// The smallest scroll view whose frame holds the middle of `rect` (a rect of `content`).
+    private static func scrollView(under rect: NSRect, in content: NSView) -> NSScrollView? {
+        let point = NSPoint(x: rect.midX, y: rect.midY)
+        func all(in view: NSView) -> [NSScrollView] {
+            view.subviews.flatMap { ($0 as? NSScrollView).map { [$0] } ?? [] + all(in: $0) }
+        }
+        return all(in: content)
+            .filter { $0.convert($0.bounds, to: content).contains(point) }
+            .min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
+    }
+
+    /// The scroll view's whole document as one PNG: the scroll view's area of the window drawn at
+    /// each scroll position from the top to the end, each slice placed at its offset in the
+    /// document. The scroll position is put back afterwards.
+    private static func stitched(_ scroll: NSScrollView, in content: NSView, within pane: NSRect) async -> Data? {
+        guard let document = scroll.documentView else { return nil }
+        let clip = scroll.contentView
+        let origin = clip.bounds.origin
+        defer {
+            clip.scroll(to: origin)
+            scroll.reflectScrolledClipView(clip)
+        }
+        let view = clip.bounds.height
+        let total = document.frame.height
+        let area = scroll.convert(scroll.bounds, to: content).intersection(pane)
+        guard view > 0, area.width > 0, area.height > 0 else { return nil }
+        let rect = content.backingAlignedRect(area, options: .alignAllEdgesInward)
+        var slices: [(top: CGFloat, rep: NSBitmapImageRep)] = []
+        var top: CGFloat = 0
+        while true {
+            let at = min(top, total - view)
+            let y = document.isFlipped ? at : total - view - at
+            clip.scroll(to: NSPoint(x: origin.x, y: y))
+            scroll.reflectScrolledClipView(clip)
+            // A table builds the rows of a new position on the next turn of the run loop.
+            try? await Task.sleep(for: .milliseconds(80))
+            content.layoutSubtreeIfNeeded()
+            guard let rep = content.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+            content.cacheDisplay(in: rect, to: rep)
+            slices.append((at, rep))
+            if at >= total - view - 0.5 { break }
+            top += view
+        }
+        guard let first = slices.first else { return nil }
+        let pixels = CGFloat(first.rep.pixelsHigh) / rect.height
+        let width = first.rep.pixelsWide
+        let height = Int((total * pixels).rounded())
+        guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: out) else { return nil }
+        // A later slice repeats rows an earlier one drew, so drawing each at its offset joins them.
+        for slice in slices {
+            guard let image = slice.rep.cgImage else { continue }
+            let h = CGFloat(slice.rep.pixelsHigh)
+            context.cgContext.draw(image, in: CGRect(x: 0, y: CGFloat(height) - slice.top * pixels - h, width: CGFloat(width), height: h))
+        }
+        return out.representation(using: .png, properties: [:])
     }
 
     /// The pane's header, drawn by the window: the part of the pane's frame above its body. Nil when

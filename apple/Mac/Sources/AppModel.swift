@@ -765,8 +765,8 @@ final class AppModel {
         case let .statusChanged(space, pane, status, spaceStatus):
             spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
-        case let .renderPane(id, pane):
-            renderPane(id: id, pane: pane)
+        case let .renderPane(id, pane, full):
+            renderPane(id: id, pane: pane, full: full)
         case let .inspectPane(id, pane, op, arg):
             inspectPane(id: id, pane: pane, op: op, arg: arg)
         case let .windowRequest(id, command):

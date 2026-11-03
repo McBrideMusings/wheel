@@ -920,6 +920,10 @@ enum PaneCommand {
         /// with "the phone is not attached" while the app is suspended.
         #[arg(long, value_parser = ["mac", "phone"])]
         on: Option<String>,
+        /// Capture the pane's whole scrollable content as one tall image, not the part in view:
+        /// a web or artifact page at its full height, an agent chat's whole conversation.
+        #[arg(long, conflicts_with = "selector")]
+        full: bool,
     },
     /// Record a browser pane to a QuickTime movie and print the absolute path, frames written and
     /// duration.
@@ -4944,6 +4948,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             out,
             selector,
             on,
+            full,
         } => {
             let path = std::path::absolute(&out).map_err(other)?;
             let req = conn.req();
@@ -4962,6 +4967,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     pane,
                     path,
                     on,
+                    full,
                 },
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {

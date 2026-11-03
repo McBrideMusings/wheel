@@ -226,9 +226,9 @@ struct ProtocolTests {
 
     /// The daemon asks for a pane drawn with `render_pane`; the client's answers carry the same id.
     @Test func rendersAPaneOnRequest() throws {
-        guard case let .renderPane(id, pane) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6"}"#)
+        guard case let .renderPane(id, pane, full) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6","full":true}"#)
         else { Issue.record("wrong case"); return }
-        #expect(id == 4 && pane == "p6")
+        #expect(id == 4 && pane == "p6" && full)
         #expect(try ClientMsg.renderOffer.json() == #"{"op":"render_offer"}"#)
         #expect(try ClientMsg.rendered(id: 4, png: Data([0x89, 0x50])).json() == #"{"id":4,"op":"rendered","png":"iVA="}"#)
         #expect(try ClientMsg.renderRefused(id: 4, message: RenderRefusal.notShown).json()
