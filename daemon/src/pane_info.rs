@@ -155,10 +155,17 @@ impl AppState {
                 }
                 ("web", fields)
             }
-            PaneKind::Browser { url, .. } => (
-                "browser",
-                vec![pane_field, field("Page", url, "what the pane shows now")],
-            ),
+            PaneKind::Browser { url, .. } => {
+                let mut fields = vec![pane_field, field("Page", url, "what the pane shows now")];
+                for (phone, mode) in self.renderers.phone_modes(&pane) {
+                    fields.push(field(
+                        &format!("Phone {phone}"),
+                        if mode == "phone" { "own page" } else { "the Mac's page" },
+                        "what this phone shows; --on phone reaches its own page",
+                    ));
+                }
+                ("browser", fields)
+            }
             _ => ("empty", vec![pane_field]),
         };
         tracing::info!(pane = %pane, kind = kind_name, fields = fields.len(), "pane info");

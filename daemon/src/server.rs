@@ -1780,8 +1780,24 @@ async fn handle(
             None
         }
         ClientMsg::RenderOffer {} => {
-            state.renderers.offer(peer, out.clone());
+            let phone = match caller {
+                Caller::Device(id) => Some(state.devices.name(id).unwrap_or_else(|| id.clone())),
+                Caller::Local => None,
+            };
+            state.renderers.offer(peer, out.clone(), phone);
             None
+        }
+        ClientMsg::PaneBrowserMode { req, pane, mode } => {
+            let set = state
+                .browser_pane(&pane)
+                .and_then(|()| state.renderers.set_mode(peer, &pane, &mode));
+            match set {
+                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "pane browser mode failed");
+                    Some(failed(req, message))
+                }
+            }
         }
         ClientMsg::Rendered { id, png } => {
             tracing::info!(%peer, id, base64_chars = png.len(), "rendered");
@@ -1822,13 +1838,21 @@ async fn handle(
             action,
             arg,
             path,
+            on,
         } => {
             // On a task of its own: a client takes as long as it takes to answer.
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
+                let side = match crate::render::Side::parse(on.as_deref()) {
+                    Ok(side) => side,
+                    Err(message) => {
+                        let _ = out.send(failed(req, message)).await;
+                        return;
+                    }
+                };
                 if action == "record" {
-                    let reply = match record_request(&state, &pane, arg, path.clone()).await {
+                    let reply = match record_request(&state, &pane, arg, path.clone(), side).await {
                         Ok((recorded_path, rec)) => req.map(|req| ServerMsg::PaneRecorded {
                             req,
                             pane,
@@ -1847,7 +1871,7 @@ async fn handle(
                     }
                     return;
                 }
-                let reply = match state.pane_inspect(&pane, &action, arg, path.clone()).await {
+                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side).await {
                     Ok(crate::render::InspectOutcome::Text(text)) => {
                         req.map(|req| ServerMsg::Inspected { req, pane, text })
                     }
@@ -1875,12 +1899,19 @@ async fn handle(
             state.renderers.answer(peer, id, Err(message));
             None
         }
-        ClientMsg::PaneShot { req, pane, path } => {
+        ClientMsg::PaneShot { req, pane, path, on } => {
             // On a task of its own: a client takes as long as it takes to draw.
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
-                let reply = match state.pane_shot(&pane, &path).await {
+                let side = match crate::render::Side::parse(on.as_deref()) {
+                    Ok(side) => side,
+                    Err(message) => {
+                        let _ = out.send(failed(req, message)).await;
+                        return;
+                    }
+                };
+                let reply = match state.pane_shot(&pane, &path, side).await {
                     Ok(bytes) => req.map(|req| ServerMsg::PaneShot {
                         req,
                         pane,
@@ -2305,13 +2336,14 @@ async fn record_request(
     pane: &str,
     arg: Option<String>,
     path: Option<String>,
+    side: crate::render::Side,
 ) -> Result<(String, crate::render::Recording), String> {
     let path = path.ok_or("record needs a path")?;
     let seconds = arg
         .as_deref()
         .and_then(|a| a.trim().parse::<u64>().ok())
         .ok_or("record needs a whole number of seconds")?;
-    let recording = state.pane_record(pane, seconds, &path).await?;
+    let recording = state.pane_record(pane, seconds, &path, side).await?;
     Ok((path, recording))
 }
 

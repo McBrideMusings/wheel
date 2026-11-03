@@ -6041,6 +6041,7 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
             action: op.into(),
             arg: arg.map(str::to_string),
             path: path.map(|p| p.to_string_lossy().into_owned()),
+            on: None,
         };
     let refusal = |reply: ServerMsg| match reply {
         ServerMsg::Error { message, .. } => message,

@@ -834,6 +834,10 @@ enum PaneCommand {
         /// Crop the picture to the first element this CSS selector matches (browser panes only).
         #[arg(long)]
         selector: Option<String>,
+        /// Which client runs it: the Mac app (default) or the phone's own web view. `phone` fails
+        /// with "the phone is not attached" while the app is suspended.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
     },
     /// Record a browser pane to a QuickTime movie and print the absolute path, frames written and
     /// duration.
@@ -849,19 +853,34 @@ enum PaneCommand {
         /// How long to record, 1 to 60.
         #[arg(long)]
         seconds: u64,
+        /// Which client runs it: the Mac app (default) or the phone's own web view. `phone` fails
+        /// with "the phone is not attached" while the app is suspended.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
     },
     /// Run JavaScript in a browser pane's page (main frame) and print the result as JSON.
     ///
     /// The script is evaluated as an expression or statements; the value of the last expression is
     /// the result. A thrown error prints its message and exits non-zero. Fails when the pane is
     /// not a browser pane or no client shows it.
-    Eval { pane: String, script: String },
+    Eval {
+        pane: String,
+        script: String,
+        /// Which client runs it: the Mac app (default) or the phone's own web view. `phone` fails
+        /// with "the phone is not attached" while the app is suspended.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
+    },
     /// Print a browser pane's document HTML, or the outer HTML of every element a CSS selector
     /// matches. No match fails with "no element matches <selector>".
     Dom {
         pane: String,
         /// A CSS selector; without one, the whole document.
         selector: Option<String>,
+        /// Which client runs it: the Mac app (default) or the phone's own web view. `phone` fails
+        /// with "the phone is not attached" while the app is suspended.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
     },
     /// Ask every client to show a pane. wheeld keeps no focused pane; each client shows its own.
     Focus { pane: String },
@@ -4570,7 +4589,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 }
             }
         }
-        PaneCommand::Eval { pane, script } => {
+        PaneCommand::Eval { pane, script, on } => {
             let req = conn.req();
             let msg = ClientMsg::PaneInspect {
                 req: Some(req),
@@ -4578,6 +4597,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 action: "eval".into(),
                 arg: Some(script),
                 path: None,
+                on,
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Inspected { text, .. } => {
@@ -4587,7 +4607,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
             }
         }
-        PaneCommand::Dom { pane, selector } => {
+        PaneCommand::Dom { pane, selector, on } => {
             let req = conn.req();
             let msg = ClientMsg::PaneInspect {
                 req: Some(req),
@@ -4595,6 +4615,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 action: "dom".into(),
                 arg: selector,
                 path: None,
+                on,
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Inspected { text, .. } => {
@@ -4608,6 +4629,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             pane,
             out,
             selector,
+            on,
         } => {
             let path = std::path::absolute(&out).map_err(other)?;
             let req = conn.req();
@@ -4619,11 +4641,13 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     action: "shot".into(),
                     arg: Some(selector),
                     path: Some(path),
+                    on,
                 },
                 None => ClientMsg::PaneShot {
                     req: Some(req),
                     pane,
                     path,
+                    on,
                 },
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
@@ -4634,7 +4658,12 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
             }
         }
-        PaneCommand::Record { pane, out, seconds } => {
+        PaneCommand::Record {
+            pane,
+            out,
+            seconds,
+            on,
+        } => {
             let path = std::path::absolute(&out).map_err(other)?;
             let req = conn.req();
             let msg = ClientMsg::PaneInspect {
@@ -4643,6 +4672,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 action: "record".into(),
                 arg: Some(seconds.to_string()),
                 path: Some(path.to_string_lossy().into_owned()),
+                on,
             };
             let wait = Duration::from_secs(seconds.min(3600) + 60);
             match conn.call_within(msg, req, wait).await? {

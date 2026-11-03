@@ -29,28 +29,96 @@ const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 type Answer = Result<Vec<u8>, String>;
 
+/// Which kind of client a request goes to: the Mac app, or a paired device's connection (the phone).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    Mac,
+    Phone,
+}
+
+impl Side {
+    /// The `on` of `pane_inspect` and `pane_shot`: `mac` when absent.
+    pub fn parse(on: Option<&str>) -> Result<Side, String> {
+        match on {
+            None | Some("mac") => Ok(Side::Mac),
+            Some("phone") => Ok(Side::Phone),
+            Some(other) => Err(format!("--on takes mac or phone, not {other}")),
+        }
+    }
+}
+
+/// A connection that offered to draw panes.
+struct Offer {
+    peer: SocketAddr,
+    out: mpsc::Sender<ServerMsg>,
+    /// The paired device's name when this connection is a phone.
+    phone: Option<String>,
+    /// For a phone: `mac` or `phone` for each browser pane it reported a mode for.
+    modes: HashMap<String, String>,
+}
+
 /// The connections that offered to draw panes, and the requests waiting on one of them.
 #[derive(Default)]
 pub(crate) struct Renderers {
     next: AtomicU64,
     /// In connection order; the last is the newest.
-    offered: Mutex<Vec<(SocketAddr, mpsc::Sender<ServerMsg>)>>,
+    offered: Mutex<Vec<Offer>>,
     pending: Mutex<HashMap<u64, (SocketAddr, oneshot::Sender<Answer>)>>,
     /// Frames and milliseconds a client reported with the movie it answered request `id` with.
     pub(crate) recorded: Mutex<HashMap<u64, (u64, u64)>>,
 }
 
 impl Renderers {
-    pub(crate) fn offer(&self, peer: SocketAddr, out: mpsc::Sender<ServerMsg>) {
+    pub(crate) fn offer(&self, peer: SocketAddr, out: mpsc::Sender<ServerMsg>, phone: Option<String>) {
         let mut offered = self.offered.lock().unwrap();
-        offered.retain(|(p, _)| *p != peer);
-        offered.push((peer, out));
+        let modes = offered
+            .iter()
+            .find(|o| o.peer == peer)
+            .map(|o| o.modes.clone())
+            .unwrap_or_default();
+        offered.retain(|o| o.peer != peer);
+        offered.push(Offer {
+            peer,
+            out,
+            phone,
+            modes,
+        });
         tracing::info!(%peer, offered = offered.len(), "client offers to render panes");
+    }
+
+    /// A phone says which side draws browser pane `pane` for it.
+    pub(crate) fn set_mode(&self, peer: SocketAddr, pane: &str, mode: &str) -> Result<(), String> {
+        if mode != "mac" && mode != "phone" {
+            return Err(format!("a browser mode is mac or phone, not {mode}"));
+        }
+        let mut offered = self.offered.lock().unwrap();
+        match offered.iter_mut().find(|o| o.peer == peer && o.phone.is_some()) {
+            Some(offer) => {
+                offer.modes.insert(pane.to_string(), mode.to_string());
+                Ok(())
+            }
+            None => Err("only a phone that offered rendering reports a browser mode".into()),
+        }
+    }
+
+    /// The attached phones' names and what each shows browser pane `pane` from (`mac` unless it
+    /// reported `phone`).
+    pub(crate) fn phone_modes(&self, pane: &str) -> Vec<(String, String)> {
+        self.offered
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|o| {
+                let name = o.phone.clone()?;
+                let mode = o.modes.get(pane).cloned().unwrap_or_else(|| "mac".into());
+                Some((name, mode))
+            })
+            .collect()
     }
 
     /// A connection closed: it no longer renders, and what waited on it is refused.
     pub(crate) fn gone(&self, peer: SocketAddr) {
-        self.offered.lock().unwrap().retain(|(p, _)| *p != peer);
+        self.offered.lock().unwrap().retain(|o| o.peer != peer);
         let mut pending = self.pending.lock().unwrap();
         let ids: Vec<u64> = pending
             .iter()
@@ -90,14 +158,14 @@ impl Renderers {
 impl AppState {
     /// Ask the connected clients for a PNG of `pane` and write it to `path`, which must be
     /// absolute. Returns the byte count of the finished file.
-    pub async fn pane_shot(&self, pane: &str, path: &str) -> Result<u64, String> {
+    pub async fn pane_shot(&self, pane: &str, path: &str, side: Side) -> Result<u64, String> {
         let target = PathBuf::from(path);
         if !target.is_absolute() {
             return Err(format!("{path} is not an absolute path"));
         }
         tracing::info!(pane, path, "pane shot requested");
         let png = self
-            .ask_clients(pane, Some("cannot draw"), true, RENDER_WAIT, |id| {
+            .ask_clients(pane, side, Some("cannot draw"), true, RENDER_WAIT, |id| {
                 ServerMsg::RenderPane {
                     id,
                     pane: pane.to_string(),
@@ -116,6 +184,7 @@ impl AppState {
         op: &str,
         arg: Option<String>,
         path: Option<String>,
+        side: Side,
     ) -> Result<InspectOutcome, String> {
         self.browser_pane(pane)?;
         let target = match (op, path) {
@@ -138,7 +207,7 @@ impl AppState {
         }
         tracing::info!(pane, op, arg = ?arg, "pane inspect requested");
         let bytes = self
-            .ask_clients(pane, None, target.is_some(), RENDER_WAIT, |id| {
+            .ask_clients(pane, side, None, target.is_some(), RENDER_WAIT, |id| {
                 ServerMsg::InspectPane {
                     id,
                     pane: pane.to_string(),
@@ -163,6 +232,7 @@ impl AppState {
         pane: &str,
         seconds: u64,
         path: &str,
+        side: Side,
     ) -> Result<Recording, String> {
         self.browser_pane(pane)?;
         let target = PathBuf::from(path);
@@ -179,6 +249,7 @@ impl AppState {
         let mov = self
             .ask_clients(
                 pane,
+                side,
                 None,
                 false,
                 Duration::from_secs(seconds) + RENDER_WAIT,
@@ -223,11 +294,13 @@ impl AppState {
     async fn ask_clients(
         &self,
         pane: &str,
+        side: Side,
         refused_as: Option<&str>,
         png: bool,
         wait: Duration,
         make: impl Fn(u64) -> ServerMsg,
     ) -> Result<Vec<u8>, String> {
+        let mut refusals: Vec<String> = Vec::new();
         let clients: Vec<_> = self
             .renderers
             .offered
@@ -235,14 +308,29 @@ impl AppState {
             .unwrap()
             .iter()
             .rev()
-            .cloned()
+            .filter(|o| o.phone.is_some() == (side == Side::Phone))
+            .filter(|o| {
+                let showing_own = side == Side::Mac || o.modes.get(pane).is_some_and(|m| m == "phone");
+                if !showing_own {
+                    refusals.push(format!(
+                        "the phone shows pane {pane} from the Mac, not its own page"
+                    ));
+                }
+                showing_own
+            })
+            .map(|o| (o.peer, o.out.clone()))
             .collect();
-        if clients.is_empty() {
-            return Err(format!(
-                "no client is connected that can draw pane {pane} (is the Mac app running?)"
-            ));
+        if clients.is_empty() && refusals.is_empty() {
+            return Err(match side {
+                Side::Phone => "the phone is not attached".to_string(),
+                Side::Mac => format!(
+                    "no client is connected that can draw pane {pane} (is the Mac app running?)"
+                ),
+            });
         }
-        let mut refusals: Vec<String> = Vec::new();
+        if clients.is_empty() {
+            return Err(refusals.join("; "));
+        }
         for (peer, out) in clients {
             let id = self.renderers.next.fetch_add(1, Ordering::SeqCst) + 1;
             let (tx, rx) = oneshot::channel();
@@ -259,7 +347,7 @@ impl AppState {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|(p, _)| *p == peer);
+                .any(|o| o.peer == peer);
             if !still_offered {
                 self.renderers.pending.lock().unwrap().remove(&id);
                 tracing::info!(%peer, id, pane, "render skipped: the client is gone");

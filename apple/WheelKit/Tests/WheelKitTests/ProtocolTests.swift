@@ -79,7 +79,7 @@ struct ProtocolTests {
         let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[]"#
         guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, old, _) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
         #expect(old == 1)
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, now, _) = try ServerMsg.decode(base + #","protocol":6}"#) else { Issue.record("wrong case"); return }
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, now, _) = try ServerMsg.decode(base + #","protocol":\#(ServerProtocol.current)}"#) else { Issue.record("wrong case"); return }
         #expect(now == ServerProtocol.current)
     }
 

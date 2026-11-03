@@ -562,3 +562,145 @@ async fn a_peer_past_its_connection_share_is_closed_and_gets_the_slot_back_when_
     }
     drop(daemon);
 }
+
+type Local = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
+
+/// Send `frame` on the local listener and return the first reply carrying `"req":<req>`.
+async fn local_req(ws: &mut Local, frame: serde_json::Value) -> serde_json::Value {
+    let req = frame["req"].clone();
+    ws.send(Message::text(frame.to_string())).await.unwrap();
+    while let Some(msg) = ws.next().await {
+        if let Message::Text(text) = msg.unwrap() {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value["req"] == req {
+                return value;
+            }
+        }
+    }
+    panic!("no reply to {req}");
+}
+
+/// `local_req` for a request a scripted peer answers while it waits.
+async fn local_req_after(
+    ws: &mut Local,
+    frame: serde_json::Value,
+    peer: impl std::future::Future<Output = ()>,
+) -> serde_json::Value {
+    let (reply, ()) = tokio::join!(local_req(ws, frame), peer);
+    reply
+}
+
+#[tokio::test]
+async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
+    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-phone-page-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote]\nlisten = \"127.0.0.1:{remote}\"\n"),
+    )
+    .unwrap();
+    let _daemon = start(&dir.0, local);
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let token = token.trim();
+    let fingerprint = remote_info(local, token).await["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (mut cli, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{local}/ws?token={token}"))
+            .await
+            .unwrap();
+    let space = local_req(
+        &mut cli,
+        serde_json::json!({"op":"space_create","req":1,"cwd":project.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(space["ev"], "created", "{space}");
+    let status = local_req(&mut cli, serde_json::json!({"op":"status","req":2})).await;
+    let status: wheel_proto::ServerMsg = serde_json::from_value(status).unwrap();
+    let wheel_proto::ServerMsg::Status { spaces, .. } = status else {
+        panic!("expected status");
+    };
+    let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
+    let set = local_req(
+        &mut cli,
+        serde_json::json!({"op":"pane_set_kind","req":3,"pane":pane,"kind":"browser","url":"https://example.com/"}),
+    )
+    .await;
+    assert_eq!(set["ev"], "ok", "{set}");
+
+    let inspect = |req: u64, on: &str| {
+        serde_json::json!({"op":"pane_inspect","req":req,"pane":pane,"action":"eval","arg":"1+1","on":on})
+    };
+
+    // No phone attached: the command says so, without waiting.
+    let refused = local_req(&mut cli, inspect(10, "phone")).await;
+    assert_eq!(refused["message"], "the phone is not attached", "{refused}");
+    let refused = local_req(&mut cli, inspect(11, "tablet")).await;
+    assert!(refused["message"].as_str().unwrap().contains("mac or phone"), "{refused}");
+
+    // Pair a phone, which offers to render and shows the pane from the Mac.
+    let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
+    let pairing = issued["token"].as_str().unwrap();
+    let mut phone = remote_ws(remote, &fingerprint, &format!("pair={pairing}&name=Test%20phone"))
+        .await
+        .unwrap();
+    next_event(&mut phone, "paired").await.unwrap();
+    phone.send(Message::text(r#"{"op":"render_offer"}"#)).await.unwrap();
+    let mode = |m: &str| {
+        Message::text(
+            serde_json::json!({"op":"pane_browser_mode","req":5,"pane":pane,"mode":m}).to_string(),
+        )
+    };
+    phone.send(mode("mac")).await.unwrap();
+    next_event(&mut phone, "ok").await.unwrap();
+
+    let refused = local_req(&mut cli, inspect(12, "phone")).await;
+    assert!(
+        refused["message"].as_str().unwrap().contains("from the Mac, not its own page"),
+        "{refused}"
+    );
+    let mac = local_req(&mut cli, inspect(13, "mac")).await;
+    assert!(mac["message"].as_str().unwrap().contains("no client is connected"), "{mac}");
+
+    let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":14,"pane":pane})).await;
+    assert!(info.to_string().contains("Phone Test phone"), "{info}");
+    assert!(info.to_string().contains("the Mac's page"), "{info}");
+
+    // The phone turns to its own page: the command reaches it and its answer comes back.
+    phone.send(mode("phone")).await.unwrap();
+    next_event(&mut phone, "ok").await.unwrap();
+    let asked = local_req_after(&mut cli, inspect(15, "phone"), async {
+        let req = next_event(&mut phone, "inspect_pane").await.unwrap();
+        assert_eq!(req["pane"], pane);
+        assert_eq!(req["action"], "eval");
+        phone
+            .send(Message::text(
+                serde_json::json!({"op":"inspected","id":req["id"],"text":"2"}).to_string(),
+            ))
+            .await
+            .unwrap();
+    })
+    .await;
+    assert_eq!(asked["text"], "2", "{asked}");
+
+    let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":16,"pane":pane})).await;
+    assert!(info.to_string().contains("own page"), "{info}");
+
+    // The app suspends: the connection closes and the command fails at once.
+    drop(phone);
+    let started = Instant::now();
+    let gone = loop {
+        let reply = local_req(&mut cli, inspect(17, "phone")).await;
+        if reply["message"] == "the phone is not attached" || started.elapsed() > Duration::from_secs(10) {
+            break reply;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(gone["message"], "the phone is not attached", "{gone}");
+}
