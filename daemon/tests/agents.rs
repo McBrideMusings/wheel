@@ -2214,10 +2214,10 @@ async fn a_cancel_stops_an_agent_panes_turn_and_an_idle_cancel_is_an_error() {
     );
 }
 
-/// The data-loss guard: a load that fails must not overwrite the saved id, or one flaky start
-/// would lose a conversation the agent still has.
+/// A transcript that is not in the store can never load, so the pane takes the new conversation's
+/// id instead of trying the dead one on every start.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_pane_whose_saved_conversation_will_not_load_keeps_the_saved_id_and_says_so() {
+async fn an_agent_pane_whose_saved_conversation_is_not_in_the_store_saves_the_new_one_and_says_so() {
     let dir = Scratch::new("agent-restart-lost");
     // The agents keep their conversations in the instance's Claude config directory.
     let store = dir.0.join("agent-home").join("projects");
@@ -2225,6 +2225,55 @@ async fn an_agent_pane_whose_saved_conversation_will_not_load_keeps_the_saved_id
     let state_file = dir.0.join("spaces.json");
     let (url, agent) = restart_with_an_agent(&command, &dir.0, || {
         std::fs::remove_dir_all(&store).unwrap();
+    })
+    .await;
+    let saved = saved_conversation(&state_file).expect("the pane saved its conversation");
+    let mut ws = connect(&url).await;
+    let (notice, events) = notice_when_up(&mut ws, &agent).await;
+    assert_eq!(notice, wheel_proto::AGENT_NOT_REOPENED);
+    assert_eq!(events, [], "the notice is never a transcript line");
+    // The agent still works, in a new conversation, and the pane saves that one.
+    assert_eq!(reply(&mut ws, &agent, "fresh").await, "echo: fresh");
+    let mut now = saved_conversation(&state_file);
+    for _ in 0..50 {
+        if now.as_ref() != Some(&saved) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        now = saved_conversation(&state_file);
+    }
+    assert!(
+        now.as_ref().is_some_and(|id| id != &saved),
+        "the pane still holds the dead id {saved}: {now:?}"
+    );
+}
+
+/// The data-loss guard: a transcript that is there but cannot be read may read next time, so a
+/// load that fails on it must not overwrite the saved id.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_pane_whose_saved_conversation_will_not_read_keeps_the_saved_id_and_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    fn transcripts(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                transcripts(&path, found);
+            } else if path.extension().is_some_and(|e| e == "jsonl") {
+                found.push(path);
+            }
+        }
+    }
+    let dir = Scratch::new("agent-restart-unreadable");
+    let store = dir.0.join("agent-home").join("projects");
+    let command = env!("CARGO_BIN_EXE_wheel-fake-agent").to_string();
+    let state_file = dir.0.join("spaces.json");
+    let (url, agent) = restart_with_an_agent(&command, &dir.0, || {
+        let mut found = Vec::new();
+        transcripts(&store, &mut found);
+        assert!(!found.is_empty(), "the agent wrote no transcript");
+        for path in found {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
     })
     .await;
     let saved = saved_conversation(&state_file).expect("the pane saved its conversation");

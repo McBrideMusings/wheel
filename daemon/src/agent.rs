@@ -1224,14 +1224,22 @@ impl Agent {
         // Claude Code keeps its conversations where wheel reads them; Codex hands a resumed
         // conversation's history over when it opens it.
         let reads_store = config.agent == Harness::Claude;
+        // The saved conversation's transcript is not in the store at all, so no later start can
+        // reopen it either.
+        let mut gone = false;
         let mut history = match (&saved, &home) {
             (Some(id), Some(home)) if reads_store => {
                 let (home, cwd, id) = (home.clone(), config.cwd.clone(), id.clone());
-                let found = tokio::task::spawn_blocking(move || claude::history(&home, &cwd, &id))
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let (found, missing) = tokio::task::spawn_blocking(move || {
+                    let found = claude::history(&home, &cwd, &id);
+                    let missing = found.is_none() && claude::missing(&home, &cwd, &id);
+                    (found, missing)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                gone = missing;
                 if found.is_none() {
-                    tracing::warn!(agent = %self.name, conversation = ?saved, "saved conversation is not in the agent's store");
+                    tracing::warn!(agent = %self.name, conversation = ?saved, gone, "saved conversation is not in the agent's store");
                 }
                 found
             }
@@ -1321,12 +1329,14 @@ impl Agent {
                 // A saved figure belongs to the conversation that did not come back.
                 self.set_context(None);
                 *self.conversation_id.lock().unwrap() = Some(conversation.id().to_string());
-                // A conversation that would not reopen keeps its saved id: this cannot tell a
-                // deleted one from a passing failure, and overwriting would turn one flaky start
-                // into the permanent loss of a conversation the agent still has. The new one runs
-                // this agent; the next start tries the saved one again.
-                self.held.store(load_failed, Ordering::SeqCst);
-                if !load_failed {
+                // A conversation that would not reopen keeps its saved id: a transcript that is
+                // there but would not load may load next time, and overwriting would turn one
+                // flaky start into the permanent loss of a conversation the agent still has. The
+                // new one runs this agent; the next start tries the saved one again. A transcript
+                // that is not in the store can never load, so the new conversation replaces its id.
+                let held = load_failed && !gone;
+                self.held.store(held, Ordering::SeqCst);
+                if !held {
                     *self.saved_id.lock().unwrap() = None;
                     if let Some(saved) = &config.on_saved {
                         saved();

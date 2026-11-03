@@ -1141,6 +1141,15 @@ fn prompt_text(entry: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// True when the store holds no transcript for conversation `id`: the file is not there. A file
+/// that is there but cannot be read is not missing — that may pass.
+pub fn missing(home: &Path, cwd: &Path, id: &str) -> bool {
+    matches!(
+        std::fs::metadata(transcript(home, cwd, id)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
 /// Read conversation `id`'s history, or None when the store does not hold it.
 pub fn history(home: &Path, cwd: &Path, id: &str) -> Option<History> {
     let text = std::fs::read_to_string(transcript(home, cwd, id)).ok()?;
