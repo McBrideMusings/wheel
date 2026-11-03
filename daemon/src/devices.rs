@@ -28,6 +28,9 @@ struct Device {
     hash: String,
     paired_ms: u64,
     last_seen_ms: u64,
+    /// The phone's push token, once it has registered one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    push_token: Option<String>,
 }
 
 struct Pending {
@@ -183,6 +186,7 @@ impl Devices {
             hash: hash(&credential),
             paired_ms: at,
             last_seen_ms: at,
+            push_token: None,
         });
         if !self.save(&inner) {
             // A device the daemon would forget at its next start is not paired.
@@ -213,6 +217,30 @@ impl Devices {
             .iter()
             .find(|d| d.id == id)
             .map(|d| d.name.clone())
+    }
+
+    /// Keep `token` as device `id`'s push token (`None` forgets it). False when no such device is
+    /// paired or the file cannot be written.
+    pub fn set_push_token(&self, id: &str, token: Option<String>) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(device) = inner.devices.iter_mut().find(|d| d.id == id) else {
+            return false;
+        };
+        if device.push_token == token {
+            return true;
+        }
+        device.push_token = token;
+        self.save(&inner)
+    }
+
+    /// Every paired device that has registered a push token: its id and the token.
+    pub fn push_tokens(&self) -> Vec<(String, String)> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .devices
+            .iter()
+            .filter_map(|d| Some((d.id.clone(), d.push_token.clone()?)))
+            .collect()
     }
 
     /// A connection of `id` opened.
@@ -299,6 +327,21 @@ mod tests {
         assert!(devices.redeem(&token, "Another phone").is_err());
         assert_eq!(devices.list().len(), 1);
         assert_eq!(devices.name(&id).as_deref(), Some("Pierce's iPhone"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_push_token_is_kept_with_its_device_and_leaves_with_it() {
+        let dir = scratch("push");
+        let devices = Devices::load(&dir);
+        let (token, _) = devices.issue();
+        let (id, _) = devices.redeem(&token, "phone").unwrap();
+        assert!(devices.push_tokens().is_empty());
+        assert!(devices.set_push_token(&id, Some("ab12".into())));
+        assert!(!devices.set_push_token("d99", Some("ff".into())));
+        assert_eq!(Devices::load(&dir).push_tokens(), vec![(id.clone(), "ab12".to_string())]);
+        assert!(devices.set_push_token(&id, None));
+        assert!(Devices::load(&dir).push_tokens().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

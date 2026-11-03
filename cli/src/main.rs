@@ -73,6 +73,9 @@ enum Command {
     /// Remote access to the daemon.
     #[command(subcommand)]
     Remote(RemoteCommand),
+    /// Push notifications to the paired phone.
+    #[command(subcommand)]
+    Push(PushCommand),
     /// Terminals.
     #[command(subcommand)]
     Term(TermCommand),
@@ -126,6 +129,15 @@ enum Command {
         #[arg(long)]
         focus: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum PushCommand {
+    /// Send every phone that registered a push token a test notification for `event`
+    /// (needs_you, failed or turn_done), whether or not `push.events` lists it. Prints how it
+    /// went; exits non-zero with the reason when nothing was sent (no phone registered, the push
+    /// key unset, Apple refusing).
+    Test { event: String },
 }
 
 #[derive(Subcommand)]
@@ -1509,6 +1521,20 @@ async fn remote_devices(conn: &mut Conn, json: bool) -> Result<(), Fail> {
             }
         );
     }
+    Ok(())
+}
+
+async fn push_test(conn: &mut Conn, event: String) -> Result<(), Fail> {
+    let req = conn.req();
+    conn.call(
+        ClientMsg::PushTest {
+            req: Some(req),
+            event: event.clone(),
+        },
+        req,
+    )
+    .await?;
+    println!("sent a {event} test notification");
     Ok(())
 }
 
@@ -4831,6 +4857,7 @@ async fn main() -> ExitCode {
             Command::Remote(RemoteCommand::Pair { address }) => remote_pair(&mut conn, address).await,
             Command::Remote(RemoteCommand::Devices { json }) => remote_devices(&mut conn, json).await,
             Command::Remote(RemoteCommand::Revoke { id }) => remote_revoke(&mut conn, id).await,
+            Command::Push(PushCommand::Test { event }) => push_test(&mut conn, event).await,
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await
             }

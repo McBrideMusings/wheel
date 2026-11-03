@@ -45,6 +45,8 @@ enum Accepts {
     PushUrl,
     /// A whole number of seconds, at least 1.
     Seconds,
+    /// A reverse-DNS app id such as `com.piercemakes.wheel.phone`, or nothing.
+    AppId,
     /// Comma-separated folders, each `~`, `~/…` or an absolute path; at least one.
     Roots,
     /// Key bindings as Ghostty writes them, comma separated: [`crate::keybind`].
@@ -83,6 +85,7 @@ impl Accepts {
             Accepts::Listen => listen(value),
             Accepts::PushUrl => push_url(value),
             Accepts::Seconds => seconds(value),
+            Accepts::AppId => app_id(value),
             Accepts::Roots => roots(value),
             Accepts::Keybind => crate::keybind::take(value),
             Accepts::Font => font(value),
@@ -313,6 +316,21 @@ fn seconds(value: &str) -> Result<String, String> {
     }
 }
 
+/// A reverse-DNS app id: dot-separated parts of letters, digits and `-`, or empty.
+fn app_id(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let ok = value.is_empty()
+        || value.split('.').all(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        });
+    match ok {
+        true => Ok(value.to_string()),
+        false => Err(format!(
+            "{value:?} is not an app id: give dot-separated letters, digits and -, such as com.piercemakes.wheel.phone"
+        )),
+    }
+}
+
 fn agent(value: &str) -> Result<String, String> {
     let value = value.trim();
     match agent_names().contains(&value) {
@@ -373,6 +391,14 @@ pub(crate) const LOGS_RETRY_S: &str = "logs.retry_s";
 /// The key listing the status ranks that show a dot.
 pub(crate) const STATUS_DOTS: &str = "status.dots";
 
+pub(crate) const PUSH_EVENTS: &str = "push.events";
+pub(crate) const PUSH_AFTER_S: &str = "push.after_seconds";
+pub(crate) const PUSH_KEY: &str = "push.apns.key";
+pub(crate) const PUSH_KEY_ID: &str = "push.apns.key_id";
+pub(crate) const PUSH_TEAM_ID: &str = "push.apns.team_id";
+pub(crate) const PUSH_TOPIC: &str = "push.apns.topic";
+pub(crate) const PUSH_SERVER: &str = "push.apns.server";
+
 /// The key listing the folders the space browser starts from.
 pub(crate) const SPACES_ROOTS: &str = "spaces.roots";
 
@@ -389,6 +415,7 @@ fn machine_only(id: &str) -> bool {
         || id.starts_with("remote.")
         || id.starts_with("status.")
         || id.starts_with("logs.")
+        || id.starts_with("push.")
         || id.starts_with("spaces.")
 }
 
@@ -396,7 +423,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 58] = [
+const KEYS: [Key; 65] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -480,6 +507,48 @@ const KEYS: [Key; 58] = [
         accepts: Accepts::List,
         default: "needs_you,stopped,working,idle",
         help: "The status ranks that show a dot beside a pane, a space's sidebar row and its tab, comma separated (needs_you, stopped, working, idle); empty shows no dots. Read from this machine's file only.",
+    },
+    Key {
+        id: PUSH_EVENTS,
+        accepts: Accepts::List,
+        default: "needs_you,failed,turn_done",
+        help: "The events that send the paired phone a notification, comma separated: needs_you (an agent waits on a permission or a question), failed (an agent stopped and will not run again), turn_done (an agent finished a turn that ran at least push.after_seconds). Empty sends none. Read from this machine's file only.",
+    },
+    Key {
+        id: PUSH_AFTER_S,
+        accepts: Accepts::Seconds,
+        default: "120",
+        help: "The seconds a turn has to run before finishing it sends a turn_done notification. Read from this machine's file only.",
+    },
+    Key {
+        id: PUSH_KEY,
+        accepts: Accepts::Directory,
+        default: "",
+        help: "The absolute path of the Apple Push Notification service key (the AuthKey_<id>.p8 file) wheeld signs its requests with; empty means no push. Read from this machine's file only.",
+    },
+    Key {
+        id: PUSH_KEY_ID,
+        accepts: Accepts::List,
+        default: "",
+        help: "The 10-character id of the push key, shown beside it in the Apple developer account. Read from this machine's file only.",
+    },
+    Key {
+        id: PUSH_TEAM_ID,
+        accepts: Accepts::List,
+        default: "",
+        help: "The 10-character id of the Apple developer team that owns the push key. Read from this machine's file only.",
+    },
+    Key {
+        id: PUSH_TOPIC,
+        accepts: Accepts::AppId,
+        default: "com.piercemakes.wheel.phone",
+        help: "The bundle id of the phone app, which Apple's push service takes as the notification's topic. Read from this machine's file only.",
+    },
+    Key {
+        id: PUSH_SERVER,
+        accepts: Accepts::PushUrl,
+        default: "https://api.push.apple.com",
+        help: "The push service wheeld sends to: https://api.push.apple.com for an app installed from the App Store or TestFlight, https://api.sandbox.push.apple.com for a build run from Xcode. Read from this machine's file only.",
     },
     Key {
         id: LOGS_PUSH_URL,

@@ -149,6 +149,21 @@ final class PhoneModel {
         return Uploads(client: client, daemon: pairing.url, token: token)
     }
 
+    /// Apple's push token for this install, once it has given one.
+    private var apnsToken: String?
+
+    /// Keep `token` and give it to the daemon now, and again at every connection.
+    func pushToken(_ token: String) {
+        apnsToken = token
+        registerPush()
+    }
+
+    /// Tell the daemon the push token, once connected to a server that takes it (protocol 8).
+    private func registerPush() {
+        guard let token = apnsToken, let client, serverProtocol >= 8 else { return }
+        client.send(.pushRegister(req: client.req(), token: token))
+    }
+
     func start() {
         #if DEBUG
         if let marks = ProcessInfo.processInfo.environment["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
@@ -269,6 +284,7 @@ final class PhoneModel {
         client.onConnect = { [weak self] status in
             guard let self else { return }
             handle(status)
+            registerPush()
             // The daemon reads at most once per its interval however often this asks.
             Log.info("usage ask dueOnly=true")
             if let client = self.client { client.send(.usage(req: client.req(), dueOnly: true)) }

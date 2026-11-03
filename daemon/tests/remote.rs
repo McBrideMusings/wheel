@@ -704,3 +704,192 @@ async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
     };
     assert_eq!(gone["message"], "the phone is not attached", "{gone}");
 }
+
+/// What the fake Apple push service received: the request path, its headers and its body.
+struct Pushed {
+    path: String,
+    headers: std::collections::HashMap<String, String>,
+    body: serde_json::Value,
+}
+
+/// An HTTP/2 server in cleartext that records every push and answers 410 `Unregistered` for a
+/// token that starts with `dead`, 200 for any other.
+async fn fake_apns() -> (u16, tokio::sync::mpsc::UnboundedReceiver<Pushed>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut conn = h2::server::handshake(tcp).await.unwrap();
+                while let Some(Ok((request, mut respond))) = conn.accept().await {
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let (parts, mut body) = request.into_parts();
+                        let mut bytes = Vec::new();
+                        while let Some(chunk) = body.data().await {
+                            let chunk = chunk.unwrap();
+                            let _ = body.flow_control().release_capacity(chunk.len());
+                            bytes.extend_from_slice(&chunk);
+                        }
+                        let path = parts.uri.path().to_string();
+                        let dead = path.starts_with("/3/device/dead");
+                        let headers = parts
+                            .headers
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
+                            .collect();
+                        let _ = tx.send(Pushed {
+                            path,
+                            headers,
+                            body: serde_json::from_slice(&bytes).unwrap(),
+                        });
+                        let status = if dead { 410 } else { 200 };
+                        let response = http::Response::builder().status(status).body(()).unwrap();
+                        let mut send = respond.send_response(response, false).unwrap();
+                        let reply = if dead { br#"{"reason":"Unregistered"}"#.to_vec() } else { Vec::new() };
+                        let _ = send.send_data(reply.into(), true);
+                    });
+                }
+            });
+        }
+    });
+    (port, rx)
+}
+
+fn push_key_pem() -> String {
+    use base64::Engine as _;
+    use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+    let rng = ring::rand::SystemRandom::new();
+    let der = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+    format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        base64::engine::general_purpose::STANDARD.encode(der.as_ref())
+    )
+}
+
+async fn next_push(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Pushed>) -> Pushed {
+    tokio::time::timeout(Duration::from_secs(20), rx.recv())
+        .await
+        .expect("a push within 20s")
+        .expect("the fake push service is running")
+}
+
+#[tokio::test]
+async fn a_phone_with_a_token_is_pushed_when_an_agent_needs_the_person() {
+    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-push-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(dir.0.join("AuthKey_TESTKEY123.p8"), push_key_pem()).unwrap();
+    let (apns, mut pushes) = fake_apns().await;
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!(
+            "[remote]\nlisten = \"127.0.0.1:{remote}\"\n\n[agent.claude]\ncommand = \"{fake}\"\n\n[push]\nafter_seconds = \"1\"\n\n[push.apns]\nkey = \"{key}\"\nkey_id = \"TESTKEY123\"\nteam_id = \"TEAM123456\"\ntopic = \"com.example.phone\"\nserver = \"http://127.0.0.1:{apns}\"\n",
+            fake = env!("CARGO_BIN_EXE_wheel-fake-agent"),
+            key = dir.0.join("AuthKey_TESTKEY123.p8").display(),
+        ),
+    )
+    .unwrap();
+    let _daemon = start(&dir.0, local);
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let token = token.trim();
+    let fingerprint = remote_info(local, token).await["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (mut cli, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{local}/ws?token={token}"))
+            .await
+            .unwrap();
+
+    // A phone that never registered a token cannot be pushed to, and the test says so.
+    let refused = local_req(&mut cli, serde_json::json!({"op":"push_test","req":1,"event":"needs_you"})).await;
+    assert!(
+        refused["message"].as_str().unwrap().contains("no phone has registered a push token"),
+        "{refused}"
+    );
+    let bad = local_req(&mut cli, serde_json::json!({"op":"push_test","req":2,"event":"lunch"})).await;
+    assert!(bad["message"].as_str().unwrap().contains("not a push event"), "{bad}");
+
+    // Only a paired phone keeps a token.
+    let local_register = local_req(&mut cli, serde_json::json!({"op":"push_register","req":3,"token":"abcd"})).await;
+    assert_eq!(local_register["ev"], "error", "{local_register}");
+    let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
+    let pairing = issued["token"].as_str().unwrap();
+    let mut phone = remote_ws(remote, &fingerprint, &format!("pair={pairing}&name=Test%20phone"))
+        .await
+        .unwrap();
+    next_event(&mut phone, "paired").await.unwrap();
+    phone
+        .send(Message::text(r#"{"op":"push_register","req":7,"token":"not hex!"}"#))
+        .await
+        .unwrap();
+    assert_eq!(next_event(&mut phone, "error").await.unwrap()["req"], 7);
+    phone
+        .send(Message::text(r#"{"op":"push_register","req":8,"token":"AB12cd34"}"#))
+        .await
+        .unwrap();
+    assert_eq!(next_event(&mut phone, "ok").await.unwrap()["req"], 8);
+
+    // The test notification reaches Apple's service signed, with the pane a tap opens.
+    let space = local_req(
+        &mut cli,
+        serde_json::json!({"op":"space_create","req":4,"cwd":project.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(space["ev"], "created", "{space}");
+    let sent = local_req(&mut cli, serde_json::json!({"op":"push_test","req":5,"event":"needs_you"})).await;
+    assert_eq!(sent["ev"], "ok", "{sent}");
+    let push = next_push(&mut pushes).await;
+    assert_eq!(push.path, "/3/device/ab12cd34");
+    assert!(push.headers["authorization"].starts_with("bearer ey"), "{:?}", push.headers);
+    assert_eq!(push.headers["apns-topic"], "com.example.phone");
+    assert_eq!(push.headers["apns-push-type"], "alert");
+    assert_eq!(push.body["event"], "needs_you");
+    assert!(push.body["pane"].as_str().is_some_and(|p| p.starts_with('p')), "{}", push.body);
+
+    // An agent waiting on a permission pushes the request's own words, once.
+    let status = local_req(&mut cli, serde_json::json!({"op":"status","req":6})).await;
+    let status: wheel_proto::ServerMsg = serde_json::from_value(status).unwrap();
+    let wheel_proto::ServerMsg::Status { spaces, .. } = status else { panic!("expected status") };
+    let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
+    let started = local_req(
+        &mut cli,
+        serde_json::json!({"op":"pane_start","req":9,"pane":pane,"kind":"agent"}),
+    )
+    .await;
+    assert_eq!(started["ev"], "started", "{started}");
+    let agent = started["agent"].as_str().unwrap().to_string();
+    let queued = local_req(
+        &mut cli,
+        serde_json::json!({"op":"agent_send","req":10,"agent":agent,"text":"needs permission"}),
+    )
+    .await;
+    assert_eq!(queued["ev"], "agent_queued", "{queued}");
+    let waiting = next_push(&mut pushes).await;
+    assert_eq!(waiting.body["event"], "needs_you");
+    assert_eq!(waiting.body["pane"], pane.as_str());
+    assert_eq!(waiting.body["aps"]["alert"]["body"], "rm -rf build");
+    assert!(
+        waiting.body["aps"]["alert"]["title"].as_str().unwrap().ends_with("needs you"),
+        "{}",
+        waiting.body
+    );
+
+    // A token Apple calls unregistered is forgotten: the next test finds no phone.
+    phone
+        .send(Message::text(r#"{"op":"push_register","req":11,"token":"dead01"}"#))
+        .await
+        .unwrap();
+    next_event(&mut phone, "ok").await.unwrap();
+    let dead = local_req(&mut cli, serde_json::json!({"op":"push_test","req":12,"event":"failed"})).await;
+    assert!(dead["message"].as_str().unwrap().contains("Unregistered"), "{dead}");
+    let gone = local_req(&mut cli, serde_json::json!({"op":"push_test","req":13,"event":"failed"})).await;
+    assert!(gone["message"].as_str().unwrap().contains("no phone has registered"), "{gone}");
+}

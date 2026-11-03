@@ -131,6 +131,9 @@ public enum ClientMsg: Sendable, Equatable {
     case deviceList(req: UInt64?)
     /// Forget a paired device and close its connections. Local clients only.
     case deviceRevoke(req: UInt64?, id: String)
+    /// The phone's Apple push token (hex), for the notifications the daemon sends. Paired devices
+    /// only; the daemon answers `ok`. Needs a server speaking protocol 8.
+    case pushRegister(req: UInt64?, token: String)
     /// The artifacts of `space` (the machine's only, with none), project first then machine. With
     /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
     /// Replies `artifacts`.
@@ -318,6 +321,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "device_list"]; put(req)
         case let .deviceRevoke(req, id):
             o = ["op": "device_revoke", "id": id]; put(req)
+        case let .pushRegister(req, token):
+            o = ["op": "push_register", "token": token]; put(req)
         case let .artifactLs(req, space, paneOnly):
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }

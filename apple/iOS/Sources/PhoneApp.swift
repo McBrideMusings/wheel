@@ -4,6 +4,7 @@ import WheelUI
 
 @main
 struct PhoneApp: App {
+    @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var delegate
     @State private var model = PhoneModel()
 
     init() { UILog.sink = { Log.info($0) } }
@@ -17,7 +18,12 @@ struct PhoneApp: App {
                     PairView(model: model)
                 }
             }
-            .task { model.start() }
+            .task {
+                model.start()
+                PushCenter.shared.listen { space, pane in model.focus(space: space, pane: pane) }
+                PushCenter.shared.onToken = { model.pushToken($0) }
+                PushCenter.shared.start()
+            }
         }
     }
 }

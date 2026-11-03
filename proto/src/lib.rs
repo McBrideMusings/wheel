@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -456,6 +456,22 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         id: String,
+    },
+    /// The phone's push token (Apple's device token, hex) for the notifications `wheeld` sends.
+    /// Sent when the phone connects and whenever the token changes; the daemon keeps it with the
+    /// phone's credential. Paired devices only: a local client has no device to keep it with.
+    PushRegister {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        token: String,
+    },
+    /// Send every registered phone a test notification for `event` (`needs_you`, `failed` or
+    /// `turn_done`), whether or not `push.events` lists it. Replies `ok`, or an error saying why
+    /// nothing was sent. Local clients only.
+    PushTest {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        event: String,
     },
     /// Give an agent a message. Replies `agent_queued` with the message's turn id; the turn
     /// streams as `agent` events carrying that id.

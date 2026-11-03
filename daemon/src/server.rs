@@ -110,6 +110,8 @@ pub struct AppState {
     started: Instant,
     /// The paired devices and the pairing tokens waiting to be used.
     pub(crate) devices: crate::devices::Devices,
+    /// The signing token for Apple's push service.
+    pub(crate) push: crate::push::Push,
     /// A device id whose pairing was just revoked; its connections close.
     pub(crate) revoked: broadcast::Sender<String>,
     /// The Mac app that owns the windows, once it has attached (ADR-0014).
@@ -261,6 +263,7 @@ impl AppState {
             started: Instant::now(),
             devices,
             revoked,
+            push: Default::default(),
             mac_apps: Default::default(),
             views: Default::default(),
             remote: Mutex::new(None),
@@ -792,6 +795,7 @@ const ARTIFACT_SWEEP: Duration = Duration::from_secs(30);
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     crate::status::follow(state.clone());
+    crate::push::follow(state.clone());
     state.sync_settings_watch();
     let shipper = state.clone();
     tokio::spawn(async move {
@@ -1112,6 +1116,48 @@ async fn handle(
                 Some(failed(req, format!("no paired device {id}")))
             }
         }
+        ClientMsg::PushRegister { req, token } => {
+            let token = token.trim().to_ascii_lowercase();
+            let valid = !token.is_empty()
+                && token.len() <= 200
+                && token.chars().all(|c| c.is_ascii_hexdigit());
+            match (caller, valid) {
+                (Caller::Local, _) => Some(failed(
+                    req,
+                    "a push token belongs to a paired phone; register it from the phone".into(),
+                )),
+                (_, false) => Some(failed(req, "a push token is hexadecimal".into())),
+                (Caller::Device(id), true) => {
+                    if state.devices.set_push_token(id, Some(token)) {
+                        tracing::info!(%peer, device = %id, "push token registered");
+                        req.map(|req| ServerMsg::Ok { req })
+                    } else {
+                        Some(failed(req, "the daemon could not keep the push token".into()))
+                    }
+                }
+            }
+        }
+        ClientMsg::PushTest { req, event } => match crate::push::Event::parse(&event) {
+            None => Some(failed(
+                req,
+                format!("{event:?} is not a push event: needs_you, failed or turn_done"),
+            )),
+            Some(event) => {
+                let notice = state.push_test_notice(event);
+                let state = state.clone();
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let reply = match state.push_send(&notice).await {
+                        Ok(_) => req.map(|req| ServerMsg::Ok { req }),
+                        Err(why) => Some(failed(req, why)),
+                    };
+                    if let Some(reply) = reply {
+                        let _ = out.send(reply).await;
+                    }
+                });
+                None
+            }
+        },
         ClientMsg::Status { req } => Some(state.status(req).await),
         ClientMsg::Log {
             req,

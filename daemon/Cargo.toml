@@ -16,6 +16,10 @@ base64.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
+h2 = "0.4"
+http = "1"
+ring = "0.17"
+webpki-roots = "1"
 libc = "0.2"
 mime_guess = "2.0.5"
 notify = "7.0.0"

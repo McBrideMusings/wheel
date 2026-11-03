@@ -220,6 +220,10 @@ struct ProtocolTests {
         #expect(tree.replacing(pane: "p9", with: .browser(url: url)) == tree)
     }
 
+    @Test func registersThePushToken() throws {
+        #expect(try ClientMsg.pushRegister(req: 3, token: "ab12").json() == #"{"op":"push_register","req":3,"token":"ab12"}"#)
+    }
+
     /// The daemon asks for a pane drawn with `render_pane`; the client's answers carry the same id.
     @Test func rendersAPaneOnRequest() throws {
         guard case let .renderPane(id, pane) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6"}"#)
