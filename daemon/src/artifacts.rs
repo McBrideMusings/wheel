@@ -29,7 +29,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 14] = [
+const KEYS: [&str; 16] = [
     "path",
     "url",
     "title",
@@ -44,6 +44,8 @@ const KEYS: [&str; 14] = [
     "webhook",
     "app",
     "restart",
+    "mcp",
+    "mcp_url",
 ];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
@@ -82,6 +84,10 @@ pub(crate) struct Entry {
     pub(crate) app: Option<String>,
     /// When an app's process is started again after it ends; absent means `on-failure`.
     pub(crate) restart: Option<wheel_proto::AppRestart>,
+    /// The command of an MCP server the daemon runs and talks to over its stdin and stdout.
+    pub(crate) mcp: Option<String>,
+    /// The URL of an MCP server that speaks streamable HTTP.
+    pub(crate) mcp_url: Option<String>,
     problems: Vec<String>,
 }
 
@@ -235,6 +241,8 @@ impl Entry {
             webhook: None,
             app: None,
             restart: None,
+            mcp: None,
+            mcp_url: None,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -254,7 +262,8 @@ impl Entry {
                 // path would be the directory the file is in.
                 (
                     key @ ("path" | "url" | "title" | "description" | "command" | "ends_with_pane"
-                    | "renderer" | "reply_to" | "webhook" | "app"),
+                    | "renderer" | "reply_to" | "webhook" | "app" | "mcp"
+                    | "mcp_url"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
@@ -290,6 +299,11 @@ impl Entry {
                 }
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
                 ("app", toml::Value::String(command)) => e.app = Some(command.clone()),
+                ("mcp", toml::Value::String(command)) => e.mcp = Some(command.clone()),
+                ("mcp_url", toml::Value::String(url)) => match mcp_url(url.trim()) {
+                    Ok(()) => e.mcp_url = Some(url.trim().to_string()),
+                    Err(why) => e.problems.push(why),
+                },
                 ("restart", toml::Value::String(policy)) => match policy.trim() {
                     "on-failure" => e.restart = Some(wheel_proto::AppRestart::OnFailure),
                     "always" => e.restart = Some(wheel_proto::AppRestart::Always),
@@ -318,7 +332,7 @@ impl Entry {
         }
         match (table.contains_key("path"), table.contains_key("url")) {
             // An app's page is its program's, so it names none of its own.
-            (false, false) if e.app.is_some() => {}
+            (false, false) if e.app.is_some() || e.mcp.is_some() || e.mcp_url.is_some() => {}
             (false, false) => e
                 .problems
                 .push("no path, so there is no page to show".into()),
@@ -356,11 +370,30 @@ impl Entry {
         if e.renderer.is_some() && e.app.is_some() {
             e.problems.push("a post carries no app".into());
         }
+        if e.mcp.is_some() && e.mcp_url.is_some() {
+            e.problems
+                .push("mcp and mcp_url both name the server; keep one".into());
+        }
+        if (e.mcp.is_some() || e.mcp_url.is_some()) && e.app.is_some() {
+            e.problems
+                .push("an entry names one process: app or an MCP server, not both".into());
+        }
+        if (e.mcp.is_some() || e.mcp_url.is_some())
+            && (table.contains_key("url") || e.renderer.is_some())
+        {
+            e.problems
+                .push("an MCP server entry is neither a url entry nor a post".into());
+        }
         if e.restart.is_some() && e.app.is_none() {
             e.problems
                 .push("restart says when an app starts again, but no app says what to run".into());
         }
         e
+    }
+
+    /// What is wrong with the entry as written, before anything on disk is looked at.
+    pub(crate) fn problems(&self) -> &[String] {
+        &self.problems
     }
 
     /// Where `text`, an entry's `path`, points: a leading `~` from the home directory, and a
@@ -531,7 +564,7 @@ impl AppState {
     /// The directory of space `space`. A `project` artifact's entry is in a space's `wheel.toml`,
     /// so every artifact verb comes through here, and a call that names no space is refused
     /// rather than resolved against nothing: the daemon has no active space (ADR-0022).
-    fn artifact_space(&self, space: Option<&str>) -> Result<String, String> {
+    pub(crate) fn artifact_space(&self, space: Option<&str>) -> Result<String, String> {
         let spaces = self.spaces.lock().unwrap();
         let id = space
             .ok_or("no space to resolve an artifact against; run from a Wheel pane, or name one with --space")?
@@ -1637,6 +1670,10 @@ fn renderer_reads(located: &Located) -> Option<String> {
 }
 
 /// A webhook is an `http://` or `https://` URL with a host and no whitespace.
+fn mcp_url(url: &str) -> Result<(), String> {
+    webhook_url(url).map_err(|e| e.replacen("webhook", "mcp_url", 1))
+}
+
 fn webhook_url(url: &str) -> Result<(), String> {
     let rest = url
         .strip_prefix("https://")

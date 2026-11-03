@@ -7149,3 +7149,133 @@ restart = "never"
     }
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// The example MCP server the daemon's tests talk to, built beside the test binary.
+fn mcp_example() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_wheeld"))
+        .parent()
+        .unwrap()
+        .join("examples/mcp_test_server")
+}
+
+async fn mcp_tools(
+    ws: &mut Ws,
+    name: &str,
+    space: &str,
+) -> Result<Vec<wheel_proto::McpTool>, String> {
+    let msg = ClientMsg::ArtifactTools {
+        req: Some(40),
+        name: name.into(),
+        scope: None,
+        space: Some(space.into()),
+    };
+    match call(ws, msg).await {
+        ServerMsg::Tools { tools, .. } => Ok(tools),
+        ServerMsg::Error { message, .. } => Err(message),
+        other => panic!("expected tools, got {other:?}"),
+    }
+}
+
+async fn mcp_call(
+    ws: &mut Ws,
+    name: &str,
+    space: &str,
+    tool: &str,
+    arguments: Option<serde_json::Value>,
+) -> Result<wheel_proto::McpToolResult, String> {
+    let msg = ClientMsg::ArtifactCall {
+        req: Some(41),
+        name: name.into(),
+        scope: None,
+        space: Some(space.into()),
+        tool: tool.into(),
+        arguments,
+    };
+    match call(ws, msg).await {
+        ServerMsg::ToolResult { result, .. } => Ok(result),
+        ServerMsg::Error { message, .. } => Err(message),
+        other => panic!("expected a tool result, got {other:?}"),
+    }
+}
+
+/// What an MCP entry's tools and calls do over `entry`'s transport: the daemon lists `echo` and
+/// `fail` with their schemas, echoes, reports a failing tool as an error result, refuses arguments
+/// that are not an object, and replaces its session when the entry changes.
+async fn mcp_session_works(entry: &str, tag: &str) {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-test-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let file = base.join("wheel.toml");
+    let write = |entry: &str| std::fs::write(&file, format!("[artifacts.server]\n{entry}")).unwrap();
+    write(entry);
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
+
+    let tools = mcp_tools(&mut ws, "server", &space).await.unwrap();
+    let mut names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["echo", "fail"]);
+    let echo = tools.iter().find(|t| t.name == "echo").unwrap();
+    assert_eq!(echo.description.as_deref(), Some("Return the text given"));
+    assert_eq!(echo.input_schema["properties"]["text"]["type"], "string");
+
+    let args = Some(serde_json::json!({"text": "hi"}));
+    let said = mcp_call(&mut ws, "server", &space, "echo", args).await.unwrap();
+    assert!(!said.is_error);
+    assert_eq!(said.content[0]["text"], "hi");
+
+    let failed = mcp_call(&mut ws, "server", &space, "fail", None)
+        .await
+        .unwrap();
+    assert!(failed.is_error);
+    assert_eq!(failed.content[0]["text"], "the fail tool failed");
+
+    let args = Some(serde_json::json!([1]));
+    let refused = mcp_call(&mut ws, "server", &space, "echo", args).await;
+    assert!(refused.unwrap_err().contains("JSON object"));
+    let unknown = mcp_call(&mut ws, "server", &space, "nope", None).await;
+    assert!(unknown.is_err() || unknown.unwrap().is_error);
+
+    // A definition that names no working server replaces the session; the old one does not answer.
+    write("mcp = \"exit 3\"\n");
+    assert!(mcp_tools(&mut ws, "server", &space).await.is_err());
+    // An entry that names two servers is refused with the reason.
+    write("mcp = \"true\"\nmcp_url = \"http://127.0.0.1:1/mcp\"\n");
+    let both = mcp_tools(&mut ws, "server", &space).await.unwrap_err();
+    assert!(both.contains("both name the server"), "{both}");
+    // And the original definition connects again.
+    write(entry);
+    assert_eq!(mcp_tools(&mut ws, "server", &space).await.unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test]
+async fn an_mcp_server_over_stdio_lists_and_calls_its_tools() {
+    let command = format!("exec {} stdio", mcp_example().display());
+    mcp_session_works(&format!("mcp = {}\n", toml::Value::from(command)), "stdio").await;
+}
+
+#[tokio::test]
+async fn an_mcp_server_over_http_lists_and_calls_its_tools() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut server = tokio::process::Command::new(mcp_example())
+        .args(["http", &port.to_string()])
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let entry = format!("mcp_url = \"http://127.0.0.1:{port}/mcp\"\n");
+    mcp_session_works(&entry, "http").await;
+    let _ = server.kill().await;
+}

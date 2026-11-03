@@ -22,6 +22,7 @@ pub mod checkout;
 pub mod login_path;
 pub mod logship;
 mod mac_windows;
+mod mcp;
 mod page;
 mod page_run;
 mod pane_info;

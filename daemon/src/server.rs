@@ -182,6 +182,8 @@ pub struct AppState {
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
     /// The app process of each web pane whose artifact declares one, keyed by pane id.
     pub(crate) apps: Mutex<crate::app::Apps>,
+    /// The MCP session of each artifact entry that names a server.
+    pub(crate) mcp: crate::mcp::Sessions,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
     /// This state, for callbacks an agent runs later and for a task that saves the layout after
@@ -298,6 +300,7 @@ impl AppState {
             pages: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             apps: Mutex::new(crate::app::Apps::new()),
+            mcp: Default::default(),
             runner_feeds: Mutex::new(HashMap::new()),
             me: me.clone(),
             renderers: Default::default(),
@@ -2142,6 +2145,55 @@ async fn handle(
             state.artifact_show(&name, scope, space.as_deref()),
             "artifact show",
         ),
+        // On a task of its own: connecting starts a process, and a tool call can run long, while
+        // this connection has to keep reading frames.
+        ClientMsg::ArtifactTools {
+            req,
+            name,
+            scope,
+            space,
+        } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match state.mcp_tools(&name, scope, space.as_deref()).await {
+                    Ok(tools) => req.map(|req| ServerMsg::Tools { req, tools }),
+                    Err(message) => {
+                        tracing::warn!(%name, %message, "artifact tools refused");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::ArtifactCall {
+            req,
+            name,
+            scope,
+            space,
+            tool,
+            arguments,
+        } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let called = state
+                    .mcp_call(&name, scope, space.as_deref(), &tool, arguments)
+                    .await;
+                let reply = match called {
+                    Ok(result) => req.map(|req| ServerMsg::ToolResult { req, result }),
+                    Err(message) => {
+                        tracing::warn!(%name, %tool, %message, "artifact call refused");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::RunnerLs { req, space } => match state.runner_ls(space.as_deref()) {
             Ok(runners) => req.map(|req| ServerMsg::Runners { req, runners }),
             Err(message) => Some(failed(req, message)),

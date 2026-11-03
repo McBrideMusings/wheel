@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -104,6 +104,27 @@ pub struct PostFile {
 /// resolved to, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
 /// everything else is reported whether or not there are problems, so a pane on a broken artifact
 /// still says what it is.
+/// One tool an MCP server offers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The JSON Schema of the tool's arguments.
+    pub input_schema: serde_json::Value,
+}
+
+/// What an MCP tool call returned.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpToolResult {
+    /// The content blocks as the server sent them (`{"type":"text","text":...}` and others).
+    pub content: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured: Option<serde_json::Value>,
+    /// The tool reported a failure of its own; `content` says what.
+    pub is_error: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArtifactInfo {
     pub scope: ArtifactScope,
@@ -1344,6 +1365,32 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// List the tools of the MCP server artifact `name` names (an entry with `mcp` or `mcp_url`),
+    /// connecting to it first when the daemon holds no session. Replies `tools`.
+    ArtifactTools {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Call `tool` of the MCP server artifact `name` names, with `arguments` (a JSON object, none
+    /// for a tool that takes nothing). Replies `tool_result`; a tool that fails is a result with
+    /// `is_error`, a call that cannot be made is an `error`.
+    ArtifactCall {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ArtifactScope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        tool: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments: Option<serde_json::Value>,
+    },
     /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run and
     /// replies `refresh` with the runner and that run. Refused when the pane shows no
     /// artifact, or its entry declares no command.
@@ -1893,6 +1940,16 @@ pub enum ServerMsg {
         req: u64,
         artifact: ArtifactInfo,
     },
+    /// The tools of an MCP server, in reply to `artifact_tools`.
+    Tools {
+        req: u64,
+        tools: Vec<McpTool>,
+    },
+    /// What an MCP tool returned, in reply to `artifact_call`.
+    ToolResult {
+        req: u64,
+        result: McpToolResult,
+    },
     /// Every built-in artifact as it is now, in reply to `builtin_ls`, `builtin_install`,
     /// `builtin_update` and `builtin_remove`.
     Builtins {
@@ -2169,6 +2226,8 @@ impl ServerMsg {
             | ServerMsg::Conversation { req, .. }
             | ServerMsg::Artifact { req, .. }
             | ServerMsg::Artifacts { req, .. }
+            | ServerMsg::Tools { req, .. }
+            | ServerMsg::ToolResult { req, .. }
             | ServerMsg::Builtins { req, .. }
             | ServerMsg::BuiltinEdited { req, .. }
             | ServerMsg::Refresh { req, .. }

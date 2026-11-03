@@ -61,6 +61,13 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   ends it and its children with the pane. The program announces its port by writing it as a line to
   file descriptor 3 (`$WHEEL_APP_PORT_FD`); `status` prints the pid and that port, `logs` the output of
   the current run (`--run N`, `--tail N`).
+- `wheel artifact tools <name>` and `wheel artifact call <name> <tool> [<json>]`: an entry with
+  `mcp = "<command>"` (run through `sh -c` in the space's directory, speaking MCP on stdin and stdout) or
+  `mcp_url = "<http(s) URL>"` (streamable HTTP) names an MCP server. The daemon connects on the first use
+  and keeps the session until the entry's definition changes. `tools` lists each tool's name, description
+  and input schema (`--json` for the schemas whole); `call` passes the JSON object (none for a tool with no
+  arguments) and prints the result; a tool that fails prints its message and exits 1. Both take `--scope`
+  and `--space` like `artifact show`. An mcp entry takes no `path`, and neither `app` nor the other mcp key.
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
 - `wheel run [<name>]`: the `[runner]` table of wheel.toml maps names you choose to shell commands
   (`build = "make -j8"`); a project's table overrides the machine's. `wheel run` lists them,

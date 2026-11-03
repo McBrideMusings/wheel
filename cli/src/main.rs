@@ -417,6 +417,32 @@ enum ArtifactCommand {
     /// output, start, stop or restart it.
     #[command(subcommand)]
     App(AppCommand),
+    /// List the tools of the MCP server an artifact entry names (`mcp` or `mcp_url`).
+    Tools {
+        name: String,
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the tools as JSON, input schemas whole.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Call a tool of the MCP server an artifact entry names, with a JSON object for arguments.
+    /// A tool that fails prints its message and exits 1.
+    Call {
+        name: String,
+        tool: String,
+        /// The arguments, a JSON object; none for a tool that takes nothing.
+        arguments: Option<String>,
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print one artifact's record.
     Show {
         name: String,
@@ -3554,6 +3580,85 @@ async fn artifact_ls(
     Ok(())
 }
 
+async fn artifact_tools(
+    conn: &mut Conn,
+    name: String,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+    json: bool,
+) -> Result<(), Fail> {
+    let req = conn.req();
+    let msg = ClientMsg::ArtifactTools {
+        req: Some(req),
+        name,
+        scope,
+        space,
+    };
+    let ServerMsg::Tools { tools, .. } = conn.call(msg, req).await? else {
+        return Err(Fail::Other("unexpected reply to artifact tools".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&tools).map_err(other)?);
+        return Ok(());
+    }
+    if tools.is_empty() {
+        eprintln!("[the server offers no tools]");
+    }
+    for tool in &tools {
+        println!("{}", tool.name);
+        if let Some(description) = &tool.description {
+            println!("  {}", description.trim().replace('\n', "\n  "));
+        }
+        println!("  input: {}", tool.input_schema);
+    }
+    Ok(())
+}
+
+async fn artifact_call(
+    conn: &mut Conn,
+    name: String,
+    tool: String,
+    arguments: Option<String>,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+    json: bool,
+) -> Result<(), Fail> {
+    let arguments = arguments
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(&text)
+                .map_err(|e| Fail::Other(format!("the arguments are not JSON: {e}")))
+        })
+        .transpose()?;
+    let req = conn.req();
+    let msg = ClientMsg::ArtifactCall {
+        req: Some(req),
+        name,
+        scope,
+        space,
+        tool,
+        arguments,
+    };
+    let ServerMsg::ToolResult { result, .. } = conn.call(msg, req).await? else {
+        return Err(Fail::Other("unexpected reply to artifact call".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result).map_err(other)?);
+    } else {
+        for block in &result.content {
+            match block.get("text").and_then(|t| t.as_str()) {
+                Some(text) if result.is_error => eprintln!("{text}"),
+                Some(text) => println!("{text}"),
+                None if result.is_error => eprintln!("{block}"),
+                None => println!("{block}"),
+            }
+        }
+    }
+    if result.is_error {
+        return Err(Fail::Other("the tool reported an error".into()));
+    }
+    Ok(())
+}
+
 async fn artifact_show(
     conn: &mut Conn,
     name: String,
@@ -5267,6 +5372,26 @@ async fn main() -> ExitCode {
             }
             Command::Artifact(ArtifactCommand::Builtin(command)) => builtin(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::App(command)) => artifact_app(&mut conn, command).await,
+            Command::Artifact(ArtifactCommand::Tools {
+                name,
+                scope,
+                space,
+                json,
+            }) => {
+                let space = default_space(&mut conn, space).await?;
+                artifact_tools(&mut conn, name, scope, space, json).await
+            }
+            Command::Artifact(ArtifactCommand::Call {
+                name,
+                tool,
+                arguments,
+                scope,
+                space,
+                json,
+            }) => {
+                let space = default_space(&mut conn, space).await?;
+                artifact_call(&mut conn, name, tool, arguments, scope, space, json).await
+            }
             Command::Artifact(ArtifactCommand::Show {
                 name,
                 scope,
