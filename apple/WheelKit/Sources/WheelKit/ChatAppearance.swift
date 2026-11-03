@@ -80,6 +80,7 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.message.align").flatMap(MessageAlign.init(rawValue:)) { messageAlign = v }
         if let v = value("chat.timestamps") { timestamps = v == "true" }
         if let v = value("chat.tools.summary").flatMap(TranscriptLayout.ToolSummary.init(rawValue:)) { layout.tools = v }
+        if let v = value("chat.work.summary").flatMap(TranscriptLayout.WorkSummary.init(rawValue:)) { layout.workSummary = v }
         if let v = value("chat.thinking").flatMap(TranscriptLayout.Thinking.init(rawValue:)) { layout.thinking = v }
         if let v = value("chat.edits.card") { layout.editsCard = v == "true" }
         if let v = value("chat.edits.shown").flatMap(Int.init), v >= 1 { layout.editsShown = v }

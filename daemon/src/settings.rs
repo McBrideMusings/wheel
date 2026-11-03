@@ -423,7 +423,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 65] = [
+const KEYS: [Key; 66] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -687,6 +687,12 @@ const KEYS: [Key; 65] = [
         accepts: Accepts::Choice(&["each", "runs", "turn"]),
         default: "turn",
         help: "How tool calls are summarised: each call, each run of calls, or one line per turn.",
+    },
+    Key {
+        id: "chat.work.summary",
+        accepts: Accepts::Choice(&["time", "counts", "both"]),
+        default: "time",
+        help: "What a finished work line says: time (\"Worked for 1m 23s\"), counts (\"Ran 2 commands, read 3 files\") or both.",
     },
     Key {
         id: "chat.thinking",

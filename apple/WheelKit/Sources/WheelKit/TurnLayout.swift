@@ -7,7 +7,11 @@ public struct TranscriptLayout: Equatable, Sendable {
     /// `chat.thinking`: reasoning streams in view, shows as a "Thought for" line, or is not drawn.
     public enum Thinking: String, Sendable, CaseIterable { case live, collapsed, hidden }
 
+    /// `chat.work.summary`: a work line says how long the work took, what it did, or both.
+    public enum WorkSummary: String, Sendable, CaseIterable { case time, counts, both }
+
     public var tools: ToolSummary = .turn
+    public var workSummary: WorkSummary = .time
     public var thinking: Thinking = .collapsed
     /// `chat.edits.card`: a finished turn that edited files ends with a card of them.
     public var editsCard = true
@@ -139,6 +143,60 @@ public enum LineDiff {
         var parts = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         if text.hasSuffix("\n") { parts.removeLast() }
         return parts
+    }
+}
+
+/// One entry of a work section once its consecutive calls of one kind are folded.
+public enum WorkEntry: Equatable, Sendable {
+    /// One row of the section, by its index there.
+    case row(Int)
+    /// Two or more consecutive tool calls of one kind, by their indices: `Read files`.
+    case run(kind: String, [Int])
+}
+
+public enum WorkRuns {
+    /// The section's rows with each stretch of two or more consecutive tool calls of one kind
+    /// folded into one entry. A thought between two calls ends the stretch.
+    public static func entries(_ rows: [TranscriptRow]) -> [WorkEntry] {
+        func kind(_ row: TranscriptRow) -> String? { if case let .tool(_, kind, _, _, _) = row.kind { kind } else { nil } }
+        var out: [WorkEntry] = []
+        var i = 0
+        while i < rows.count {
+            guard let k = kind(rows[i]) else { out.append(.row(i)); i += 1; continue }
+            var j = i + 1
+            while j < rows.count, kind(rows[j]) == k { j += 1 }
+            if j - i >= 2 { out.append(.run(kind: k, Array(i..<j))) } else { out.append(.row(i)) }
+            i = j
+        }
+        return out
+    }
+
+    /// A fold's entry in the set of opened lines: below every group's key and every row's id.
+    public static func openKey(first id: Int) -> Int { -(1 << 42) - id }
+
+    /// The folded row's words: `Read files`, `Edited files`, `Ran commands`.
+    public static func label(kind: String) -> String {
+        switch kind {
+        case "read": "Read files"
+        case "edit": "Edited files"
+        case "delete": "Deleted files"
+        case "move": "Moved files"
+        case "search": "Searched"
+        case "execute": "Ran commands"
+        case "fetch": "Fetched pages"
+        case "skill": "Used skills"
+        case "subagent": "Ran agents"
+        default: "Used tools"
+        }
+    }
+
+    /// A finished work line's words under `chat.work.summary`: `Worked for 1m 23s`, the counts of
+    /// what the calls did, or both. A section with no tool call has no counts to give.
+    public static func summary(_ mode: TranscriptLayout.WorkSummary, time: String, rows: [TranscriptRow]) -> String {
+        let hasCalls = rows.contains { if case .tool = $0.kind { true } else { false } }
+        guard hasCalls, mode != .time else { return time }
+        let counts = ToolWords.summary(of: rows)
+        return mode == .counts ? counts : "\(time) · \(counts)"
     }
 }
 

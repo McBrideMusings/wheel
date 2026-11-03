@@ -1447,7 +1447,7 @@ final class DebugServer {
             case let .tools(group):
                 return "tools \(group.rows.count) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))]"
             case let .work(group):
-                return "work \(group.rows.count)\(Self.totalsText(group.rows.map(\.row))) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))] · label \"\(group.turnLabel)\""
+                return "work \(group.rows.count)\(Self.totalsText(group.rows.map(\.row))) @\(group.openKey)\(open(group.openKey)) [\(group.rows.map { "\($0.id)\(open($0.id))" }.joined(separator: ","))] · label \"\(group.turnLabel(summary: model.appearance(forAgent: agent).layout.workSummary))\"\(Self.runsText(group.rows.map(\.row), open: open))"
             case let .edits(group):
                 let files = Edits.files(in: group.rows.map(\.row))
                 let shown = model.appearance(forAgent: agent).layout.editsShown
@@ -1460,6 +1460,17 @@ final class DebugServer {
                 return "edits \(files.count) files · listed \(fold.listed.map { "\($0.path) +\($0.added) -\($0.removed)" }.joined(separator: ", "))\(more) · open [\(opened.joined(separator: ","))] · collapse_all \(opened.isEmpty ? "hidden" : "shown") @\(group.id)\(open(group.id))"
             }
         }
+    }
+
+    /// ` · folds [Searched files 2 @-4398046511105 open [7,8], ...]` for the consecutive same-kind calls a work
+    /// section folds, else nothing.
+    private static func runsText(_ rows: [TranscriptRow], open: (Int) -> String) -> String {
+        let folds = WorkRuns.entries(rows).compactMap { entry -> String? in
+            guard case let .run(kind, indices) = entry else { return nil }
+            let key = WorkRuns.openKey(first: rows[indices[0]].id)
+            return "\(WorkRuns.label(kind: kind)) \(indices.count) @\(key)\(open(key)) [\(indices.map { "\(rows[$0].id)" }.joined(separator: ","))]"
+        }
+        return folds.isEmpty ? "" : " · folds [\(folds.joined(separator: ", "))]"
     }
 
     /// ` +a -r` when the turn's calls changed lines, else nothing.

@@ -142,7 +142,7 @@ struct ToolGroupView: View {
             Button { chat.toggle(group.openKey) } label: {
                 HStack(spacing: 6) {
                     phase.icon.font(look.meta)
-                    Text(turn ? turnLabel(current, running: running > 0) : summary(current, running: running, failed: failed))
+                    Text(turn ? group.turnLabel(rows: current, running: running > 0, summary: look.layout.workSummary) : summary(current, running: running, failed: failed))
                         .font(look.line)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -160,8 +160,13 @@ struct ToolGroupView: View {
             .buttonStyle(.plain)
             if open {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(rows) { row in
-                        TranscriptRowView(chat: chat, row: row, copyable: false, context: context)
+                    ForEach(Array(WorkRuns.entries(current).enumerated()), id: \.offset) { _, entry in
+                        switch entry {
+                        case let .row(index):
+                            TranscriptRowView(chat: chat, row: rows[index], copyable: false, context: context)
+                        case let .run(kind, indices):
+                            KindRunView(chat: chat, kind: kind, rows: indices.map { rows[$0] }, context: context)
+                        }
                     }
                 }
                 .padding(.leading, 20)
@@ -177,8 +182,54 @@ struct ToolGroupView: View {
         return failed > 0 ? "\(words) · \(failed) failed" : words
     }
 
-    private func turnLabel(_ rows: [TranscriptRow], running: Bool) -> String {
-        group.turnLabel(rows: rows, running: running)
+}
+
+/// Consecutive calls of one kind as one line ("Read files") that opens onto each call's own line.
+struct KindRunView: View {
+    @Environment(\.chatAppearance) private var look
+    let chat: AgentChat
+    let kind: String
+    let rows: [RowModel]
+    let context: RowContext
+
+    /// The fold's entry in `AgentChat.expanded`: below every group's key, never a row's id.
+    var openKey: Int { WorkRuns.openKey(first: rows[0].id) }
+
+    var body: some View {
+        let current = rows.map(\.row)
+        let waiting = current.contains { context.isWaiting($0.toolCall) }
+        let running = current.contains(where: \.open)
+        let failed = current.contains { if case let .tool(_, _, status, _, _) = $0.kind { status == "failed" } else { false } }
+        let open = context.expanded.contains(openKey) || waiting
+        let phase: ToolPhase = waiting ? .waiting : running ? .running : failed ? .failed : .completed
+        VStack(alignment: .leading, spacing: 4) {
+            Button { chat.toggle(openKey) } label: {
+                HStack(spacing: 6) {
+                    phase.icon.font(look.meta)
+                    Text("\(WorkRuns.label(kind: kind)) \(rows.count)")
+                        .font(look.line)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .shimmer(phase == .running)
+                    let total = Edits.totals(in: current)
+                    if total.added + total.removed > 0 { Counts(added: total.added, removed: total.removed) }
+                    GroupElapsed(rows: current)
+                    Chevron(open: open)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(rows) { row in
+                        TranscriptRowView(chat: chat, row: row, copyable: false, context: context)
+                    }
+                }
+                .padding(.leading, 20)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.2), value: open)
     }
 }
 
@@ -186,22 +237,23 @@ extension ToolGroupModel {
     /// A work line's words: "Worked for 38s" once its work is over (for the line that closes a
     /// finished turn, the turn's length, or "Stopped after" when the person stopped it), and the
     /// calls under way while it runs.
-    func turnLabel(rows: [TranscriptRow], running: Bool) -> String {
+    func turnLabel(rows: [TranscriptRow], running: Bool, summary: TranscriptLayout.WorkSummary) -> String {
         guard running else {
             if let turn {
                 let length = formatElapsed(max(0, turn.end.timeIntervalSince(turn.start)))
-                return turn.stopped ? "Stopped after \(length)" : "Worked for \(length)"
+                if turn.stopped { return "Stopped after \(length)" }
+                return WorkRuns.summary(summary, time: "Worked for \(length)", rows: rows)
             }
             guard let start = rows.compactMap(\.started).min(), let end = rows.compactMap(\.ended).max() else { return "Worked" }
-            return "Worked for \(formatElapsed(max(0, end.timeIntervalSince(start))))"
+            return WorkRuns.summary(summary, time: "Worked for \(formatElapsed(max(0, end.timeIntervalSince(start))))", rows: rows)
         }
         return ToolWords.summary(of: rows).replacingOccurrences(of: "Ran ", with: "Running ")
     }
 
     /// The words of this work line now, for the state query.
-    public var turnLabel: String {
+    public func turnLabel(summary: TranscriptLayout.WorkSummary) -> String {
         let current = rows.map(\.row)
-        return turnLabel(rows: current, running: current.contains { $0.open })
+        return turnLabel(rows: current, running: current.contains { $0.open }, summary: summary)
     }
 }
 
@@ -310,17 +362,35 @@ struct ToolDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(look.code)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            ForEach(Array(content.enumerated()), id: \.offset) { _, item in
-                ContentItem(item: item)
+            field("Input") {
+                Text(title)
+                    .font(look.code)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !content.isEmpty {
+                field("Output") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(content.enumerated()), id: \.offset) { _, item in
+                            ContentItem(item: item)
+                        }
+                    }
+                }
             }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+extension ToolDetail {
+    /// A labelled field of the card: a small caption over its content.
+    func field<Body: View>(_ name: String, @ViewBuilder _ body: () -> Body) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(name).font(look.meta).foregroundStyle(.tertiary)
+            body()
+        }
     }
 }
 
