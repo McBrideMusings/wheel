@@ -85,7 +85,7 @@ app_post "/windows?action=sidebar&window=$A&open=false" >/dev/null
 ACTIVE="$(st --arg w "$A" '.windows[] | select(.id==$w) | .active')"
 app_post "/spacedrag?action=start&space=$ACTIVE" >/dev/null
 app_post "/spacedrag?action=hover&target=window:$B" >/dev/null
-eq "over another window's body the hint says move" "$(st '.space_drag.hint' | cut -c1-8)" "Move “pr"
+eq "over another window's body the hint says move" "$(st '.space_drag.hint[:8]')" "Move “pr"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
 eq "the dragged space moved to the end of the other window" "$(order "$B" | awk -F, '{print $NF}')" "$ACTIVE"
@@ -100,7 +100,7 @@ check "the tab strip is measured" test "$(geo | jq -r --arg w "$A" '.windows[$w]
 app_post "/spacedrag?action=start&space=$T_LAST" >/dev/null
 app_post "/spacedrag?action=hover&at=$(tab_left "$T_FIRST")" >/dev/null
 eq "over a tab's left edge the bar is left of that tab" "$(st -c '.space_drag.insertion')" "{\"index\":0,\"window\":\"$A\"}"
-eq "and the hint says where it lands" "$(st '.space_drag.hint' | cut -c1-8)" "Place “p"
+eq "and the hint says where it lands" "$(st '.space_drag.hint[:8]')" "Place “p"
 if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; app_post "/window/snapshot?window=$A&path=$WHEEL_SHOTS/drag-tabs-${WHEEL_APPEARANCE:-light}.png" >/dev/null && echo "     shot $WHEEL_SHOTS/drag-tabs-${WHEEL_APPEARANCE:-light}.png"; fi
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
@@ -125,7 +125,7 @@ card_of() { geo | jq -r --arg k "$1" '.popover.cards[$k] | "\(.[0] + .[2] / 2),\
 VICTIM="$(st --arg w "$B" '.windows[] | select(.id==$w) | .spaces[0]')"
 app_post "/spacedrag?action=start&space=$VICTIM" >/dev/null
 app_post "/spacedrag?action=hover&at=$(card_of background)" >/dev/null
-eq "over the Background card the hint says it runs with no window" "$(st '.space_drag.hint' | cut -c1-9)" "Run “proj"
+eq "over the Background card the hint says it runs with no window" "$(st '.space_drag.hint[:9]')" "Run “proj"
 app_post "/spacedrag?action=drop" >/dev/null
 sleep 0.4
 eq "dragging a window's space onto Background backgrounds it" "$(st -c '.background | index("'"$VICTIM"'") != null')" "true"
