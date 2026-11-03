@@ -240,8 +240,11 @@ final class AppModel {
     /// Where each sidebar row, sidebar and popover card is drawn, in its window's top-left space:
     /// what a drag is hit-tested against. Not published, so measuring redraws nothing.
     @ObservationIgnored var rowFrames: [String: [String: CGRect]] = [:]
+    /// Each tab, by window and space: kept apart from `rowFrames` because a sidebar fading out still
+    /// measures its rows, and those would overwrite the tabs drawn in its place.
+    @ObservationIgnored var tabFrames: [String: [String: CGRect]] = [:]
     @ObservationIgnored var sidebarFrames: [String: CGRect] = [:]
-    /// Each window's tab strip, in its window's top-left space; its tabs are in `rowFrames`.
+    /// Each window's tab strip, in its window's top-left space; its tabs are in `tabFrames`.
     @ObservationIgnored var tabStripFrames: [String: CGRect] = [:]
     /// Each window's title row buttons by id (`sidebar`, `processes`, `palette`, `pin`, `new-space`),
     /// in its window's top-left space.
@@ -255,6 +258,7 @@ final class AppModel {
     @ObservationIgnored var popoverRowFrames: [String: [String: CGRect]] = [:]
     /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
     @ObservationIgnored var frozenRowFrames: [String: [String: CGRect]]?
+    @ObservationIgnored var frozenTabFrames: [String: [String: CGRect]]?
     @ObservationIgnored var frozenSidebarFrames: [String: CGRect]?
     @ObservationIgnored var frozenTabStripFrames: [String: CGRect]?
     @ObservationIgnored var dragMonitorForSpaces: Any?

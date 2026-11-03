@@ -99,7 +99,7 @@ extension AppModel {
             let id = String(raw.dropFirst(WindowManager.idPrefix.count))
             guard let record = layout.window(id) else { return nil }
             for space in record.spaces {
-                guard let frame = rowFrames[id]?[space], screenRect(frame, in: nswindow).contains(point) else { continue }
+                guard let frame = (record.sidebar ? rowFrames : tabFrames)[id]?[space], screenRect(frame, in: nswindow).contains(point) else { continue }
                 return space == home ? nil : (.end(space: space), (id, space))
             }
             let strip = record.sidebar ? sidebarFrames[id] : tabStripFrames[id]

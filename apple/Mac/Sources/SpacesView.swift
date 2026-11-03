@@ -131,7 +131,7 @@ struct SpaceTabs: View {
                                 let divided = offset > 0 && space.id != active && held[offset - 1].id != active
                                 SpaceTab(model: model, windowID: windowID, space: space, active: space.id == active, width: width, divided: divided)
                                     .id(space.id)
-                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.rowFrames[windowID, default: [:]][space.id] = $0 }
+                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.tabFrames[windowID, default: [:]][space.id] = $0 }
                                     .overlay(alignment: .leading) { if insertion == offset { TabInsertionBar().offset(x: -2) } }
                                     .overlay(alignment: .trailing) { if offset == held.count - 1, insertion == held.count { TabInsertionBar().offset(x: 2) } }
                             }
