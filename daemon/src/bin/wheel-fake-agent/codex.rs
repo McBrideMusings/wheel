@@ -393,6 +393,16 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
         out.notify("item/completed", at(json!({"item": done})));
         say(&format!("edit: {}", decision.as_deref().unwrap_or("none")));
     }
+    if prompt.contains("delete") {
+        // A change set that only removes a file: the daemon calls it a delete.
+        let item = json!({"type": "fileChange", "id": "call-9", "status": "inProgress", "changes": [
+            {"path": "src/old.rs", "kind": {"type": "delete"}, "diff": ""}]});
+        out.notify("item/started", at(json!({"item": item})));
+        let mut done = item.clone();
+        done["status"] = json!("completed");
+        out.notify("item/completed", at(json!({"item": done})));
+        say("deleted");
+    }
     if prompt.contains("work slowly") {
         for _ in 0..300 {
             if state.interrupted.load(Ordering::SeqCst) {

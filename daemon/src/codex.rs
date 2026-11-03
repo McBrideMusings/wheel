@@ -743,10 +743,15 @@ fn tool_call(item: &Value) -> Option<AgentEvent> {
         "commandExecution" => (command_title(item), "execute", Vec::new()),
         "fileChange" => {
             let paths = change_paths(item);
+            // A change set that only removes files is a delete, not an edit.
+            let deletes = item["changes"].as_array().is_some_and(|c| {
+                !c.is_empty() && c.iter().all(|c| c["kind"]["type"].as_str() == Some("delete"))
+            });
+            let verb = if deletes { "Delete" } else { "Edit" };
             let title = if paths.is_empty() {
-                "Edit files".to_string()
+                format!("{verb} files")
             } else {
-                format!("Edit {}", paths.join(", "))
+                format!("{verb} {}", paths.join(", "))
             };
             let content = item["changes"]
                 .as_array()
@@ -759,7 +764,7 @@ fn tool_call(item: &Value) -> Option<AgentEvent> {
                     })
                 })
                 .collect();
-            (title, "edit", content)
+            (title, if deletes { "delete" } else { "edit" }, content)
         }
         "mcpToolCall" => (
             format!(
@@ -871,6 +876,14 @@ mod tests {
             command_title(&json!({"command": "ls", "commandActions": []})),
             "ls"
         );
+    }
+
+    #[test]
+    fn a_file_change_that_only_deletes_is_a_delete_call() {
+        let change = |kind: &str| json!({"path": "src/old.rs", "kind": {"type": kind}, "diff": ""});
+        let call = |changes: Vec<Value>| tool_call(&json!({"type": "fileChange", "id": "f", "status": "inProgress", "changes": changes}));
+        assert!(matches!(call(vec![change("delete")]), Some(AgentEvent::ToolCall { title, tool_kind, .. }) if title == "Delete src/old.rs" && tool_kind == "delete"));
+        assert!(matches!(call(vec![change("delete"), change("update")]), Some(AgentEvent::ToolCall { tool_kind, .. }) if tool_kind == "edit"));
     }
 
     #[test]

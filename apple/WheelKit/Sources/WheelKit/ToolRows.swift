@@ -70,6 +70,7 @@ public struct ToolRowInfo: Equatable, Sendable {
             if let path = rest("Edit ") { return "Edited \(name(path))" }
             if let path = rest("Write ") { return "\(creates ? "Created" : "Edited") \(name(path))" }
             return title
+        case "delete": return rest("Delete ").map { "Deleted \(name($0))" } ?? title
         case "search":
             if let pattern = rest("grep ") {
                 // `grep <pattern> in <path>`: the path is named by its last component.
