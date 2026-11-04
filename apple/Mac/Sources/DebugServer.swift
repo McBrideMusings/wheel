@@ -1216,6 +1216,12 @@ final class DebugServer {
             }
             if let open { model.setSidebar(open: open) }
             if let space = query["space"] { model.focus(space: space) }
+        case ("POST", "/a2ui/action"):
+            // An A2UI button's action, raised without a pointer: `name` is the action event's name,
+            // and every other query item is a string in its context.
+            guard let pane = query["pane"], let name = query["name"] else { return refuse("400 Bad Request", "pane and name are required") }
+            guard let a2ui = model.a2uiPanes[pane], a2ui.surface != nil else { return refuse("404 Not Found", "pane \(pane) draws no A2UI surface") }
+            a2ui.press(name, context: query.filter { $0.key != "pane" && $0.key != "name" })
         case ("POST", "/context/toggle"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             model.toggleContextLabel(pane)
@@ -1709,6 +1715,11 @@ final class DebugServer {
                     o["view_hidden"] = web.view.isHidden
                     o["load_count"] = web.loadCount
                     o["view_size"] = [web.view.frame.width, web.view.frame.height]
+                    if let a2ui = model.a2uiPanes[pane.id] {
+                        let data: [String: Any] = Dictionary(uniqueKeysWithValues: ["/status", "/count", "/draft"].map { ($0, a2ui.text(at: $0) as Any? ?? NSNull()) })
+                        o["a2ui"] = ["state": a2ui.stateName, "native": a2ui.isNative, "notice": a2ui.notice as Any? ?? NSNull(),
+                                     "unsupported": a2ui.unsupported, "data": data] as [String: Any]
+                    }
                 }
                 if case let .browser(daemonURL) = pane.kind, let browser = model.browserPanes[pane.id] {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }

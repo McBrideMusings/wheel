@@ -176,7 +176,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
             Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
         }
     }
-    find(&space.root, pane).expect("pane in space")
+    space.trees().find_map(|t| find(t, pane)).expect("pane in space")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -209,6 +209,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
             pane: first.clone(),
             dir: Some(Dir::Down),
             focus: true,
+        site: None,
         },
     )
     .await;
@@ -593,6 +594,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             pane: left.clone(),
             dir: Some(Dir::Right),
             focus: true,
+        site: None,
         },
     )
     .await;
@@ -619,6 +621,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             pane: left.clone(),
             dir: Some(Dir::Down),
             focus: true,
+        site: None,
         },
     )
     .await;
@@ -658,6 +661,7 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
             pane: left.clone(),
             dir: Some(Dir::Down),
             focus: true,
+        site: None,
         },
     )
     .await;
@@ -4213,6 +4217,7 @@ async fn split(ws: &mut Ws, pane: &str, dir: Dir) -> String {
             pane: pane.into(),
             dir: Some(dir),
             focus: true,
+        site: None,
         },
     )
     .await
@@ -5863,6 +5868,7 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
         pane: pane.into(),
         dir: None,
         focus: true,
+        site: None,
     };
     let placed = |reply: ServerMsg| match reply {
         ServerMsg::Created {
@@ -5968,6 +5974,7 @@ async fn a_split_with_no_side_is_placed_by_panes_placement() {
             pane: second.clone(),
             dir: Some(Dir::Down),
             focus: true,
+        site: None,
         },
     )
     .await;
@@ -6216,6 +6223,7 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
             pane: left.clone(),
             dir: Some(Dir::Right),
             focus: true,
+        site: None,
         },
     )
     .await;
@@ -6538,6 +6546,7 @@ async fn a_new_pane_or_space_is_shown_only_when_asked() {
         pane: pane.into(),
         dir: Some(Dir::Right),
         focus,
+        site: None,
     };
     created(&mut ws, split(12, &b_first, false)).await;
     created(
@@ -7280,6 +7289,61 @@ async fn an_mcp_server_over_http_lists_and_calls_its_tools() {
     let _ = server.kill().await;
 }
 
+/// An A2UI-over-MCP server reaches a client through the three ops it already has plus
+/// `artifact_read`: the tool list carries `_meta.ui` naming the layout resource, the resource
+/// reads back as `application/a2ui+json`, and a call returns the data model as an embedded
+/// resource of that type.
+#[tokio::test]
+async fn an_a2ui_over_mcp_server_gives_a_client_its_layout_and_data() {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-a2ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let server = mcp_example().with_file_name("mcp_a2ui_test_server");
+    std::fs::write(
+        base.join("wheel.toml"),
+        format!(
+            "[artifacts.notes]\nmcp = {}\n",
+            toml::Value::from(format!("exec {} stdio", server.display())),
+        ),
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
+
+    let tools = mcp_tools(&mut ws, "notes", &space).await.unwrap();
+    let get = tools.iter().find(|t| t.name == "get_notes").unwrap();
+    let meta = get.meta.as_ref().unwrap();
+    assert_eq!(meta["ui"]["resourceUri"], "a2ui://notes");
+    assert_eq!(meta["ui"]["mimeType"], "application/a2ui+json");
+
+    let read = ClientMsg::ArtifactRead {
+        req: Some(42),
+        name: "notes".into(),
+        scope: None,
+        space: Some(space.clone()),
+        uri: "a2ui://notes".into(),
+    };
+    let ServerMsg::Resource { contents, .. } = call(&mut ws, read).await else {
+        panic!("expected a resource")
+    };
+    assert_eq!(contents[0]["mimeType"], "application/a2ui+json");
+    let layout: serde_json::Value =
+        serde_json::from_str(contents[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(layout[0]["createSurface"]["surfaceId"], "notes");
+
+    let args = Some(serde_json::json!({"text": "hello"}));
+    let saved = mcp_call(&mut ws, "notes", &space, "save_note", args).await.unwrap();
+    assert_eq!(saved.content[0]["resource"]["mimeType"], "application/a2ui+json");
+    let data: serde_json::Value =
+        serde_json::from_str(saved.content[0]["resource"]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(data[0]["updateDataModel"]["path"], "/status");
+    assert_eq!(data[0]["updateDataModel"]["value"], "saved: hello");
+    assert_eq!(data[1]["updateDataModel"]["value"], "1 notes");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// A raw request with a JSON body to the daemon's HTTP side, carrying the token as a bearer.
 async fn http_json(addr: &str, method: &str, target: &str, body: &str) -> (u16, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7585,4 +7649,273 @@ s.serve_forever()
     assert_eq!(status, 502, "{page}");
     assert!(page.contains("app is not running"), "{page}");
     let _ = std::fs::remove_dir_all(&base);
+}
+
+fn split_msg(req: u64, pane: &str, dir: Option<Dir>, site: Option<wheel_proto::PaneSite>) -> ClientMsg {
+    ClientMsg::PaneSplit {
+        req: Some(req),
+        pane: pane.into(),
+        dir,
+        focus: false,
+        site,
+    }
+}
+
+fn set_site(req: u64, pane: &str, site: wheel_proto::PaneSite) -> ClientMsg {
+    ClientMsg::PaneSetSite {
+        req: Some(req),
+        pane: pane.into(),
+        site,
+    }
+}
+
+fn pane_ids(node: &Node) -> Vec<String> {
+    wheeld::spaces::panes(node)
+        .into_iter()
+        .map(|(id, _)| id.to_string())
+        .collect()
+}
+
+/// A pane is in the grid, popped out or in the tray; wheeld holds which, and the moves keep every
+/// pane's id.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_moves_between_the_grid_popped_trees_and_the_tray() {
+    use wheel_proto::PaneSite::{Backgrounded, Grid, Popped};
+    let (url, _daemon) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let a = first_pane(&spaces[0].root);
+    let b = created(&mut ws, split_msg(2, &a, Some(Dir::Right), None)).await;
+    let c = created(&mut ws, split_msg(3, &b, Some(Dir::Right), None)).await;
+
+    // Case 1: popping a grid pane out takes it from the grid and makes it a tree of its own.
+    ok(&mut ws, set_site(4, &b, Popped)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let space = &spaces[0];
+    assert_eq!(pane_ids(&space.root), vec![a.clone(), c.clone()]);
+    assert_eq!(space.popped.len(), 1);
+    assert!(matches!(&space.popped[0], Node::Pane { id, .. } if *id == b));
+    assert_eq!(space.site_of(&b), Some(Popped));
+
+    // Case 2: a split beside a popped pane joins that popped tree, and the grid is untouched.
+    let d = created(&mut ws, split_msg(5, &b, Some(Dir::Down), None)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let space = &spaces[0];
+    assert_eq!(space.popped.len(), 1);
+    assert_eq!(pane_ids(&space.popped[0]), vec![b.clone(), d.clone()]);
+    assert_eq!(pane_ids(&space.root), vec![a.clone(), c.clone()]);
+
+    // Case 3: backgrounding a pane of a popped tree takes only that pane; its sibling stays.
+    ok(&mut ws, set_site(6, &b, Backgrounded)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let space = &spaces[0];
+    assert_eq!(pane_ids(&space.popped[0]), vec![d.clone()]);
+    assert_eq!(space.backgrounded.len(), 1);
+    assert_eq!(space.site_of(&b), Some(Backgrounded));
+
+    // A backgrounded pane cannot be split or have a pane put beside it.
+    let refused = call(&mut ws, split_msg(7, &b, Some(Dir::Right), None)).await;
+    assert!(matches!(refused, ServerMsg::Error { .. }), "{refused:?}");
+
+    // A popped pane is moved beside a grid pane with the ordinary move.
+    ok(
+        &mut ws,
+        ClientMsg::PaneMove {
+            req: Some(8),
+            pane: d.clone(),
+            to: wheel_proto::MoveTarget::Beside {
+                pane: a.clone(),
+                dir: Dir::Down,
+            },
+        },
+    )
+    .await;
+    let (spaces, _) = layout(&mut ws).await;
+    let space = &spaces[0];
+    // Case 6: its tree lost its last pane, so the tree is gone.
+    assert!(space.popped.is_empty(), "{:?}", space.popped);
+    assert_eq!(space.site_of(&d), Some(Grid));
+
+    // Create directly popped and directly backgrounded.
+    let e = created(&mut ws, split_msg(9, &a, None, Some(Popped))).await;
+    let f = created(&mut ws, split_msg(10, &a, None, Some(Backgrounded))).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].site_of(&e), Some(Popped));
+    assert_eq!(spaces[0].site_of(&f), Some(Backgrounded));
+    let both = call(&mut ws, split_msg(11, &a, Some(Dir::Right), Some(Popped))).await;
+    assert!(matches!(both, ServerMsg::Error { .. }), "{both:?}");
+
+    // A backgrounded pane pops out; closing the last pane of a popped tree removes the tree.
+    ok(&mut ws, set_site(12, &f, Popped)).await;
+    ok(&mut ws, ClientMsg::PaneClose { req: Some(13), pane: f.clone() }).await;
+    ok(&mut ws, ClientMsg::PaneClose { req: Some(14), pane: e.clone() }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(spaces[0].popped.is_empty());
+    assert!(spaces[0].site_of(&e).is_none() && spaces[0].site_of(&f).is_none());
+
+    // Popping a space's only grid pane leaves the grid one new empty pane.
+    let (spaces, _) = layout(&mut ws).await;
+    let grid = pane_ids(&spaces[0].root);
+    for (n, pane) in grid.iter().enumerate() {
+        ok(&mut ws, set_site(20 + n as u64, pane, Backgrounded)).await;
+    }
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(
+        matches!(&spaces[0].root, Node::Pane { kind: PaneKind::Empty { .. }, .. }),
+        "{:?}",
+        spaces[0].root
+    );
+    assert_eq!(spaces[0].backgrounded.len(), grid.len() + 1, "b was already in the tray");
+}
+
+/// Case 4: a backgrounded pane returns to its own space's grid where `panes.placement` puts a
+/// split with no side.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_returned_pane_is_placed_by_panes_placement() {
+    use wheel_proto::PaneSite::{Backgrounded, Grid};
+    let (url, _daemon) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let space_id = created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let a = first_pane(&spaces[0].root);
+    let b = created(&mut ws, split_msg(2, &a, Some(Dir::Right), None)).await;
+    let c = created(&mut ws, split_msg(3, &b, Some(Dir::Right), None)).await;
+    let tray = created(&mut ws, split_msg(4, &a, None, Some(Backgrounded))).await;
+    for (n, value) in ["dwindle", "off", "main-stack", "grid"].into_iter().enumerate() {
+        let set = call(
+            &mut ws,
+            ClientMsg::SettingSet {
+                req: Some(10 + n as u64),
+                key: "panes.placement".into(),
+                value: value.into(),
+                space: Some(space_id.clone()),
+                machine: false,
+            },
+        )
+        .await;
+        assert!(matches!(set, ServerMsg::Settings { .. }), "{set:?}");
+        ok(&mut ws, set_site(30 + n as u64, &tray, Grid)).await;
+        let (spaces, _) = layout(&mut ws).await;
+        let space = &spaces[0];
+        assert_eq!(space.site_of(&tray), Some(Grid), "{value}");
+        assert!(space.backgrounded.is_empty(), "{value}");
+        let mut grid = pane_ids(&space.root);
+        grid.sort();
+        let mut want = vec![a.clone(), b.clone(), c.clone(), tray.clone()];
+        want.sort();
+        assert_eq!(grid, want, "{value}: every pane is in the grid");
+        assert_eq!(wheeld::spaces::panes(&space.root).last().unwrap().0, tray, "{value}: last in reading order");
+        ok(&mut ws, set_site(40 + n as u64, &tray, Backgrounded)).await;
+    }
+}
+
+/// Case 5: popped trees and the tray are saved with the space and come back after a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn popped_trees_and_the_tray_survive_a_restart() {
+    use wheel_proto::PaneSite::{Backgrounded, Popped};
+    let dir = std::env::temp_dir().join(format!("wheel-sites-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state_file = dir.join("spaces.json");
+    let (url, first) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let a = first_pane(&spaces[0].root);
+    let b = created(&mut ws, split_msg(2, &a, Some(Dir::Right), None)).await;
+    let c = created(&mut ws, split_msg(3, &b, Some(Dir::Right), None)).await;
+    ok(&mut ws, terminal(&b)).await;
+    ok(&mut ws, set_site(4, &b, Popped)).await;
+    let d = created(&mut ws, split_msg(5, &b, Some(Dir::Down), None)).await;
+    ok(&mut ws, set_site(6, &c, Backgrounded)).await;
+    let (before, _) = layout(&mut ws).await;
+    drop(ws);
+    first.abort();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let (after, terms) = layout(&mut ws).await;
+    assert_eq!(after[0].popped.len(), 1);
+    assert_eq!(pane_ids(&after[0].popped[0]), vec![b.clone(), d.clone()]);
+    assert_eq!(after[0].site_of(&c), Some(Backgrounded));
+    assert_eq!(pane_ids(&after[0].root), pane_ids(&before[0].root));
+    let term = term_of(&after[0], &b);
+    assert!(term.is_some(), "the popped terminal pane got a shell again");
+    assert!(terms.iter().any(|t| Some(&t.id) == term.as_ref() && t.alive));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Case 7: a backgrounded pane whose agent needs the person reports it, and stays in the tray.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backgrounded_pane_that_needs_the_person_still_says_so() {
+    use wheel_proto::{PaneSite::Backgrounded, PaneStatus, ReportedStatus};
+    let base = std::env::temp_dir().join(format!("wheel-sites-needs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let work = base.join("work");
+    let claude = base.join("claude-home");
+    let project: String = work
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    std::fs::create_dir_all(claude.join("projects").join(&project)).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(claude.join("projects").join(&project).join(format!("{AGENT}.jsonl")), "{}").unwrap();
+    let root = serde_json::json!({"node": "pane", "id": "p1", "kind": "terminal", "term": "t1",
+        "cwd": work.to_string_lossy(),
+        "agent": {"name": "claude", "conversation": AGENT, "home": claude.to_string_lossy()}});
+    let state_file = saved_terminals(&base, root);
+    let (url, _daemon) = start_daemon(Some(state_file)).await;
+    let mut watcher = connect(&url).await;
+    let mut ws = connect(&url).await;
+    let other = created(&mut ws, split_msg(1, "p1", Some(Dir::Right), None)).await;
+    ok(&mut ws, set_site(2, "p1", Backgrounded)).await;
+    ok(
+        &mut ws,
+        ClientMsg::PaneReport {
+            req: Some(3),
+            pane: "p1".into(),
+            status: ReportedStatus::NeedsYou,
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::StatusChanged { pane, space_status, .. } = recv(&mut watcher).await {
+            if pane.as_deref() == Some("p1") {
+                assert_eq!(space_status, Some(PaneStatus::NeedsYou { waiting: 1 }));
+                break;
+            }
+        }
+    }
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].status, Some(PaneStatus::NeedsYou { waiting: 1 }));
+    assert_eq!(spaces[0].site_of("p1"), Some(Backgrounded), "it was not moved");
+    assert_eq!(pane_ids(&spaces[0].root), vec![other]);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A space whose grid is one empty pane but whose tray holds a pane is not empty: an `if_empty`
+/// close leaves it, and its pane running.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_if_empty_close_leaves_a_space_that_has_a_backgrounded_pane() {
+    use wheel_proto::PaneSite::Backgrounded;
+    let (url, _daemon) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let only = first_pane(&spaces[0].root);
+    ok(&mut ws, set_site(2, &only, Backgrounded)).await;
+    let refused = call(
+        &mut ws,
+        ClientMsg::SpaceClose {
+            req: Some(3),
+            id: space.clone(),
+            if_empty: true,
+        },
+    )
+    .await;
+    assert!(matches!(refused, ServerMsg::Error { .. }), "{refused:?}");
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].site_of(&only), Some(Backgrounded));
 }

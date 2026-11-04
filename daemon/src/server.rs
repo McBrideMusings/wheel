@@ -1558,7 +1558,8 @@ async fn handle(
             pane,
             dir,
             focus,
-        } => match state.pane_split(&pane, dir) {
+            site,
+        } => match state.pane_split(&pane, dir, site) {
             Ok((id, strategy)) => {
                 if focus {
                     state.show_pane(&id);
@@ -1571,6 +1572,7 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
+        ClientMsg::PaneSetSite { req, pane, site } => done(req, state.pane_set_site(&pane, site)),
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
         ClientMsg::PaneMove { req, pane, to } => {
             let focus = matches!(&to, wheel_proto::MoveTarget::NewSpace { focus: true, .. });
@@ -2165,6 +2167,28 @@ async fn handle(
                     Ok(tools) => req.map(|req| ServerMsg::Tools { req, tools }),
                     Err(message) => {
                         tracing::warn!(%name, %message, "artifact tools refused");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::ArtifactRead {
+            req,
+            name,
+            scope,
+            space,
+            uri,
+        } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match state.mcp_resource(&name, scope, space.as_deref(), &uri).await {
+                    Ok(contents) => req.map(|req| ServerMsg::Resource { req, contents }),
+                    Err(message) => {
+                        tracing::warn!(%name, %uri, %message, "artifact read refused");
                         Some(failed(req, message))
                     }
                 };

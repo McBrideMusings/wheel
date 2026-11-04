@@ -24,7 +24,7 @@ use crate::server::AppState;
 use crate::settings::{
     PUSH_AFTER_S, PUSH_EVENTS, PUSH_KEY, PUSH_KEY_ID, PUSH_SERVER, PUSH_TEAM_ID, PUSH_TOPIC,
 };
-use crate::spaces::panes;
+use crate::spaces::space_panes;
 
 /// How long one request to Apple may take, connecting included.
 const REQUEST_LIFE: Duration = Duration::from_secs(20);
@@ -273,7 +273,7 @@ impl AppState {
     fn agent_pane(&self, agent: &str) -> Option<(String, String, String)> {
         let spaces = self.spaces();
         spaces.spaces.iter().find_map(|space| {
-            panes(&space.root).into_iter().find_map(|(pane, kind)| match kind {
+            space_panes(space).into_iter().find_map(|(pane, kind)| match kind {
                 PaneKind::Agent { agent: a, .. } if a == agent => {
                     Some((space.id.clone(), space.name.clone(), pane.to_string()))
                 }
@@ -287,14 +287,14 @@ impl AppState {
         spaces
             .spaces
             .iter()
-            .find(|s| panes(&s.root).into_iter().any(|(p, _)| p == pane))
+            .find(|s| space_panes(s).into_iter().any(|(p, _)| p == pane))
             .map(|s| (s.id.clone(), s.name.clone()))
     }
 
     /// What the agent in `pane` is waiting on, from the permission request in front of it.
     fn waiting_on(&self, pane: &str) -> String {
         let agent = self.spaces().spaces.iter().find_map(|s| {
-            panes(&s.root).into_iter().find_map(|(p, kind)| match kind {
+            space_panes(s).into_iter().find_map(|(p, kind)| match kind {
                 PaneKind::Agent { agent, .. } if p == pane => Some(agent.clone()),
                 _ => None,
             })

@@ -25,9 +25,15 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     /// Made to run with no window (`wheel space new --background`): a window never shows it until
     /// the person brings it forward.
     public let background: Bool
+    /// Panes popped out of the grid: each tree is a floating window over it. Where those windows
+    /// sit and how big they are is the client's own (ADR-0022).
+    public var popped: [Node]
+    /// The space's tray: one pane leaf each, running and shown nowhere.
+    public var backgrounded: [Node]
 
     public init(id: String, name: String, cwd: String, root: Node, focus: String,
-                status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:], background: Bool = false) {
+                status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:], background: Bool = false,
+                popped: [Node] = [], backgrounded: [Node] = []) {
         self.id = id
         self.name = name
         self.cwd = cwd
@@ -36,9 +42,11 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         self.status = status
         self.paneStatuses = paneStatuses
         self.background = background
+        self.popped = popped
+        self.backgrounded = backgrounded
     }
 
-    private enum K: String, CodingKey { case id, name, cwd, root, status, background }
+    private enum K: String, CodingKey { case id, name, cwd, root, status, background, popped, backgrounded }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -49,12 +57,36 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         focus = root.readingOrder.first?.id ?? ""
         // A status this build can't read is no status, not a failed layout frame.
         status = try? c.decodeIfPresent(PaneStatus.self, forKey: .status)
-        paneStatuses = (try? c.decode(StatusTree.self, forKey: .root).statuses) ?? [:]
+        popped = try c.decodeIfPresent([Node].self, forKey: .popped) ?? []
+        backgrounded = try c.decodeIfPresent([Node].self, forKey: .backgrounded) ?? []
+        var statuses = (try? c.decode(StatusTree.self, forKey: .root).statuses) ?? [:]
+        for key in [K.popped, K.backgrounded] {
+            for tree in (try? c.decodeIfPresent([StatusTree].self, forKey: key)) ?? [] { statuses.merge(tree.statuses) { $1 } }
+        }
+        paneStatuses = statuses
         background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? false
     }
 }
 
+/// Where a pane is in its space: in the grid, popped out, or in the tray.
+public enum PaneSite: String, Sendable, Equatable {
+    case grid, popped, backgrounded
+}
+
 extension SpaceInfo {
+    /// Every pane the space holds, wherever it is: the grid, each popped tree, then the tray.
+    public var allPanes: [(id: String, kind: PaneKind)] {
+        root.panes + popped.flatMap(\.panes) + backgrounded.flatMap(\.panes)
+    }
+
+    /// Where `pane` is, or nil when the space does not hold it.
+    public func site(of pane: String) -> PaneSite? {
+        if root.panes.contains(where: { $0.id == pane }) { return .grid }
+        if popped.contains(where: { $0.panes.contains { $0.id == pane } }) { return .popped }
+        if backgrounded.contains(where: { $0.panes.contains { $0.id == pane } }) { return .backgrounded }
+        return nil
+    }
+
     /// The pane this client keeps focused when the space's tree becomes `root`: the same pane while it
     /// is there, else the pane that now sits where it was in reading order (a closed pane's neighbour).
     public func focusKept(in root: Node) -> String {

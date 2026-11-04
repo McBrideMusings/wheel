@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
     AgentPermissions, ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget,
-    NewPaneKind, Node, PaneKind, ServerMsg, AgentState, SessionInfo, SpaceInfo, StartKind,
+    NewPaneKind, Node, PaneKind, PaneSite, ServerMsg, AgentState, SessionInfo, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
@@ -42,7 +42,7 @@ impl Spaces {
     pub(crate) fn holding(&self, pane: &str) -> Result<usize, String> {
         self.spaces
             .iter()
-            .position(|s| find_pane(&s.root, pane).is_some())
+            .position(|s| space_find(s, pane).is_some())
             .ok_or_else(|| format!("no pane {pane}"))
     }
 
@@ -144,7 +144,7 @@ pub(crate) fn is_agent_pane(spaces: &Spaces, pane: &str) -> bool {
     spaces
         .spaces
         .iter()
-        .find_map(|s| find_pane(&s.root, pane))
+        .find_map(|s| space_find(s, pane))
         .is_some_and(|kind| matches!(kind, PaneKind::Agent { .. }))
 }
 
@@ -167,7 +167,7 @@ pub fn first_pane(node: &Node) -> &str {
 }
 
 /// The bottom-right pane.
-fn last_pane(node: &Node) -> &str {
+pub(crate) fn last_pane(node: &Node) -> &str {
     match node {
         Node::Pane { id, .. } => id,
         Node::Split { b, .. } => last_pane(b),
@@ -422,12 +422,49 @@ fn find_leaf<'a>(node: &'a Node, pane: &str) -> Option<&'a Node> {
     }
 }
 
-fn find_leaf_mut<'a>(node: &'a mut Node, pane: &str) -> Option<&'a mut Node> {
+pub(crate) fn find_leaf_mut<'a>(node: &'a mut Node, pane: &str) -> Option<&'a mut Node> {
     match node {
         Node::Pane { id, .. } if id == pane => Some(node),
         Node::Pane { .. } => None,
         Node::Split { a, b, .. } => find_leaf_mut(a, pane).or_else(|| find_leaf_mut(b, pane)),
     }
+}
+
+/// Take pane `pane` out of whichever tree of `space` holds it, whole, and give the leaf back. The
+/// grid left with no pane gets one new empty pane named by `fresh`; a popped tree left with none
+/// is gone; a tray leaf leaves the tray.
+pub(crate) fn take_leaf(
+    space: &mut SpaceInfo,
+    pane: &str,
+    fresh: &mut dyn FnMut() -> String,
+) -> Option<Node> {
+    let leaf = space.trees().find_map(|t| find_leaf(t, pane)).cloned()?;
+    match space.site_of(pane)? {
+        PaneSite::Grid => {
+            let root = std::mem::replace(&mut space.root, leaf_placeholder());
+            space.root = match remove(root, pane) {
+                Removal::Removed { rest, .. } | Removal::NotFound(rest) => rest,
+                Removal::Last(_) => Node::Pane {
+                    id: fresh(),
+                    status: None,
+                    work: None,
+                    kind: PaneKind::empty(),
+                },
+            };
+        }
+        PaneSite::Popped => {
+            let at = space.popped.iter().position(|t| t.holds(pane))?;
+            let tree = space.popped.remove(at);
+            match remove(tree, pane) {
+                Removal::Removed { rest, .. } | Removal::NotFound(rest) => {
+                    space.popped.insert(at, rest)
+                }
+                Removal::Last(_) => {}
+            }
+        }
+        PaneSite::Backgrounded => space.backgrounded.retain(|t| !t.holds(pane)),
+    }
+    Some(leaf)
 }
 
 /// Exchange the places of panes `x` and `y`; each keeps its id, its manager and what it shows.
@@ -607,7 +644,7 @@ impl AppState {
     pub fn listing(&self) -> Spaces {
         let mut spaces = self.spaces();
         for space in &mut spaces.spaces {
-            each_kind_mut(&mut space.root, &mut |kind| {
+            each_space_kind_mut(space, &mut |kind| {
                 if let PaneKind::Agent {
                     agent,
                     state,
@@ -773,6 +810,8 @@ impl AppState {
             },
             status: None,
             background,
+            popped: Vec::new(),
+            backgrounded: Vec::new(),
         };
         let mut spaces = self.spaces.lock().unwrap();
         let joined = self.session_to_join(&mut spaces, from_pane, session)?;
@@ -938,14 +977,17 @@ impl AppState {
     pub fn space_close(&self, id: &str, if_empty: bool) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
+        let held = &spaces.spaces[index];
         if if_empty
-            && !matches!(
-                &spaces.spaces[index].root,
-                Node::Pane {
-                    kind: PaneKind::Empty { .. },
-                    ..
-                }
-            )
+            && (!held.popped.is_empty()
+                || !held.backgrounded.is_empty()
+                || !matches!(
+                    &held.root,
+                    Node::Pane {
+                        kind: PaneKind::Empty { .. },
+                        ..
+                    }
+                ))
         {
             tracing::info!(space = %id, "space close refused: it no longer holds just one empty pane");
             return Err(format!("space {id} is no longer empty; not closed"));
@@ -959,7 +1001,7 @@ impl AppState {
     /// announces the change.
     fn close_locked(&self, spaces: &mut Spaces, index: usize) {
         let space = spaces.remove(index);
-        for (pane, kind) in panes(&space.root) {
+        for (pane, kind) in space_panes(&space) {
             self.drop_content(pane, kind);
         }
         tracing::info!(space = %space.id, "space closed");
@@ -1003,9 +1045,15 @@ impl AppState {
         &self,
         pane: &str,
         dir: Option<Dir>,
+        site: Option<PaneSite>,
     ) -> Result<(String, Option<Placement>), String> {
+        let created_apart = matches!(site, Some(PaneSite::Popped | PaneSite::Backgrounded));
+        if created_apart && dir.is_some() {
+            return Err("a popped or backgrounded pane has no side".into());
+        }
         let strategy = match dir {
             Some(_) => None,
+            None if created_apart => None,
             None => {
                 let space_id = {
                     let spaces = self.spaces.lock().unwrap();
@@ -1023,15 +1071,41 @@ impl AppState {
         let index = spaces.holding(pane)?;
         let (split_id, new_id) = (self.new_id('x'), self.new_id('p'));
         let space = &mut spaces.spaces[index];
+        if created_apart {
+            let leaf = Node::Pane {
+                id: new_id.clone(),
+                status: None,
+                work: None,
+                kind: PaneKind::empty(),
+            };
+            let placed = match site {
+                Some(PaneSite::Popped) => {
+                    space.popped.push(leaf);
+                    PaneSite::Popped
+                }
+                _ => {
+                    space.backgrounded.push(leaf);
+                    PaneSite::Backgrounded
+                }
+            };
+            tracing::info!(space = %space.id, %pane, new = %new_id, site = placed.name(), "pane created apart from the grid");
+            self.changed(&spaces);
+            return Ok((new_id, None));
+        }
+        if space.site_of(pane) == Some(PaneSite::Backgrounded) {
+            return Err(format!("{pane} is backgrounded; return it before splitting it"));
+        }
+        let tree = space
+            .trees_mut()
+            .find(|t| t.holds(pane))
+            .ok_or_else(|| format!("no pane {pane}"))?;
         let dir = match (dir, strategy) {
             (Some(dir), _) => {
-                split(&mut space.root, pane, dir, &split_id, &new_id);
+                split(tree, pane, dir, &split_id, &new_id);
                 dir
             }
-            (None, Some(strategy)) => {
-                place(&mut space.root, pane, strategy, size, &split_id, &new_id)
-                    .ok_or_else(|| format!("no pane {pane}"))?
-            }
+            (None, Some(strategy)) => place(tree, pane, strategy, size, &split_id, &new_id)
+                .ok_or_else(|| format!("no pane {pane}"))?,
             (None, None) => unreachable!("a missing side always has a strategy"),
         };
         let space_id = space.id.clone();
@@ -1041,11 +1115,11 @@ impl AppState {
     }
 
     /// The terminal grid of `pane`, columns by rows, when it shows a terminal the daemon holds.
-    fn pane_grid(&self, pane: &str) -> Option<(u16, u16)> {
+    pub(crate) fn pane_grid(&self, pane: &str) -> Option<(u16, u16)> {
         let term = {
             let spaces = self.spaces.lock().unwrap();
             let index = spaces.holding(pane).ok()?;
-            panes(&spaces.spaces[index].root)
+            space_panes(&spaces.spaces[index])
                 .into_iter()
                 .find_map(|(id, kind)| match kind {
                     PaneKind::Terminal { term, .. } if id == pane => Some(term.clone()),
@@ -1064,7 +1138,11 @@ impl AppState {
             return Err(format!("{pane} and {with} are in different spaces"));
         }
         let space = &mut spaces.spaces[index];
-        if !swap(&mut space.root, pane, with) {
+        let tree = space
+            .trees_mut()
+            .find(|t| t.holds(pane) && t.holds(with))
+            .ok_or_else(|| format!("{pane} and {with} are not in the same place"))?;
+        if !swap(tree, pane, with) {
             return Err(format!("{pane} cannot swap with itself"));
         }
         tracing::info!(space = %space.id, %pane, %with, "panes swapped");
@@ -1086,7 +1164,11 @@ impl AppState {
                 if target == pane {
                     return Err(format!("{pane} cannot move beside itself"));
                 }
-                Some(spaces.holding(target)?)
+                let held = spaces.holding(target)?;
+                if spaces.spaces[held].site_of(target) == Some(PaneSite::Backgrounded) {
+                    return Err(format!("{target} is backgrounded; nothing can be put beside it"));
+                }
+                Some(held)
             }
             MoveTarget::End { space } => Some(spaces.index(space)?),
             MoveTarget::NewSpace { .. } => None,
@@ -1094,13 +1176,32 @@ impl AppState {
         if let (Some(dest), MoveTarget::Beside { pane: target, dir }) = (dest, &to) {
             if dest == from {
                 let space = &mut spaces.spaces[from];
-                move_pane(&mut space.root, pane, target, *dir, &split_id)?;
+                let one_tree = space.trees().any(|t| t.holds(pane) && t.holds(target));
+                if one_tree {
+                    let tree = space
+                        .trees_mut()
+                        .find(|t| t.holds(pane))
+                        .expect("the tree was found above");
+                    move_pane(tree, pane, target, *dir, &split_id)?;
+                } else {
+                    let mut fresh = || self.new_id('p');
+                    let leaf = take_leaf(space, pane, &mut fresh)
+                        .ok_or_else(|| format!("no pane {pane}"))?;
+                    let tree = space
+                        .trees_mut()
+                        .find(|t| t.holds(target))
+                        .ok_or_else(|| format!("no pane {target}"))?;
+                    if insert_beside(tree, target, *dir, &split_id, leaf).is_err() {
+                        unreachable!("{target} was found in its space above");
+                    }
+                }
                 tracing::info!(space = %space.id, %pane, %target, ?dir, split = %split_id, "pane moved");
                 self.changed(&spaces);
                 return Ok(());
             }
         }
-        let alone = matches!(&spaces.spaces[from].root, Node::Pane { .. });
+        let alone = matches!(&spaces.spaces[from].root, Node::Pane { .. })
+            && spaces.spaces[from].site_of(pane) == Some(PaneSite::Grid);
         if alone && dest == Some(from) {
             return Err(format!("{pane} is already the whole of its space"));
         }
@@ -1113,27 +1214,12 @@ impl AppState {
             _ => None,
         };
         // Everything that can refuse has; from here the tree changes.
-        let leaf = find_leaf(&spaces.spaces[from].root, pane)
-            .cloned()
-            .ok_or_else(|| format!("no pane {pane}"))?;
         let fresh = alone.then(|| self.new_id('p'));
         let source = &mut spaces.spaces[from];
-        let root = std::mem::replace(&mut source.root, leaf_placeholder());
-        match remove(root, pane) {
-            Removal::Removed { rest, .. } => {
-                source.root = rest;
-            }
-            Removal::Last(_) => {
-                let fresh = fresh.expect("a lone pane was counted above");
-                source.root = Node::Pane {
-                    id: fresh,
-                    status: None,
-                    work: None,
-                    kind: PaneKind::empty(),
-                };
-            }
-            Removal::NotFound(_) => unreachable!("{pane} was found in its space above"),
-        }
+        let leaf = take_leaf(source, pane, &mut || {
+            fresh.clone().expect("a lone pane was counted above")
+        })
+        .ok_or_else(|| format!("no pane {pane}"))?;
         let from_id = source.id.clone();
         let dest_id = match (dest, new_space) {
             (Some(dest), _) => {
@@ -1144,15 +1230,22 @@ impl AppState {
                         kind: PaneKind::Empty { .. },
                         ..
                     }
-                );
+                ) && match &to {
+                    MoveTarget::Beside { pane: target, .. } => {
+                        space.site_of(target) == Some(PaneSite::Grid)
+                    }
+                    _ => true,
+                };
                 if lone_empty {
                     space.root = leaf;
                 } else {
                     match &to {
                         MoveTarget::Beside { pane: target, dir } => {
-                            if insert_beside(&mut space.root, target, *dir, &split_id, leaf)
-                                .is_err()
-                            {
+                            let tree = space
+                                .trees_mut()
+                                .find(|t| t.holds(target))
+                                .expect("the target was found in its space above");
+                            if insert_beside(tree, target, *dir, &split_id, leaf).is_err() {
                                 unreachable!("{target} was found in its space above");
                             }
                         }
@@ -1171,6 +1264,8 @@ impl AppState {
                         root: leaf,
                         status: None,
                         background: false,
+                        popped: Vec::new(),
+                        backgrounded: Vec::new(),
                     },
                 );
                 let session = spaces.session_holding(&from_id);
@@ -1188,45 +1283,29 @@ impl AppState {
         Ok(())
     }
 
-    /// Close a pane; closing a space's last pane leaves the space with one new empty pane.
+    /// Close a pane; closing a space's last grid pane leaves the space with one new empty pane.
+    /// A popped tree that loses its last pane is gone; a backgrounded pane leaves the tray.
     pub fn pane_close(&self, pane: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.holding(pane)?;
         let space = &mut spaces.spaces[index];
+        let site = space.site_of(pane).expect("holding found the pane");
         // An empty pane that is the whole space is already what closing it would leave.
-        if matches!(&space.root, Node::Pane { id, kind: PaneKind::Empty { .. }, .. } if id == pane)
+        if site == PaneSite::Grid
+            && matches!(&space.root, Node::Pane { id, kind: PaneKind::Empty { .. }, .. } if id == pane)
         {
             return Ok(());
         }
-        let root = std::mem::replace(
-            &mut space.root,
-            Node::Pane {
-                id: String::new(),
-                status: None,
-                work: None,
-                kind: PaneKind::empty(),
-            },
-        );
-        match remove(root, pane) {
-            Removal::NotFound(root) => {
-                space.root = root;
-                return Err(format!("no pane {pane}"));
-            }
-            Removal::Removed { rest, kind, .. } => {
-                self.drop_content(pane, &kind);
-                space.root = rest;
-                tracing::info!(space = %space.id, %pane, "pane closed");
-            }
-            Removal::Last(kind) => {
-                self.drop_content(pane, &kind);
-                let fresh = self.new_id('p');
-                space.root = Node::Pane {
-                    id: fresh.clone(),
-                    status: None,
-                    work: None,
-                    kind: PaneKind::empty(),
-                };
+        let kind = space_find(space, pane).cloned().expect("holding found the pane");
+        let fresh = self.new_id('p');
+        take_leaf(space, pane, &mut || fresh.clone());
+        self.drop_content(pane, &kind);
+        match site {
+            PaneSite::Grid if matches!(&space.root, Node::Pane { id, .. } if *id == fresh) => {
                 tracing::info!(space = %space.id, %pane, new = %fresh, "pane closed; it was the last, so the space holds one empty pane");
+            }
+            _ => {
+                tracing::info!(space = %space.id, %pane, site = site.name(), "pane closed");
             }
         }
         self.changed(&spaces);
@@ -1249,7 +1328,7 @@ impl AppState {
             (None, Some(_)) => NewPaneKind::Web,
             _ => return Err("pane_open needs a url or an artifact, and only one".into()),
         };
-        let new = self.pane_split(pane, Some(dir))?.0;
+        let new = self.pane_split(pane, Some(dir), None)?.0;
         if let Err(e) = self.pane_set_kind(&new, kind, artifact, scope, url).await {
             let _ = self.pane_close(&new);
             return Err(e);
@@ -1370,7 +1449,7 @@ impl AppState {
         let Some(slot) = spaces
             .spaces
             .iter_mut()
-            .find_map(|s| find_pane_mut(&mut s.root, pane))
+            .find_map(|s| space_find_mut(s, pane))
         else {
             self.drop_content(pane, &new);
             return Err(format!("no pane {pane}"));
@@ -1380,7 +1459,7 @@ impl AppState {
         if let Some(Node::Pane { work, .. }) = spaces
             .spaces
             .iter_mut()
-            .find_map(|s| find_leaf_mut(&mut s.root, pane))
+            .find_map(|s| space_leaf_mut(s, pane))
         {
             if work.take().is_some() {
                 tracing::info!(%pane, "pane kind changed; its declared work is cleared");
@@ -1391,7 +1470,7 @@ impl AppState {
         }
         // A new agent may have its conversation id already.
         self.sync_conversations(&mut spaces);
-        let now = find_pane(&spaces.spaces[spaces.holding(pane)?].root, pane)
+        let now = space_find(&spaces.spaces[spaces.holding(pane)?], pane)
             .cloned()
             .ok_or_else(|| format!("no pane {pane}"))?;
         tracing::info!(%pane, kind = ?now, "pane kind");
@@ -1449,7 +1528,7 @@ impl AppState {
             let spaces = self.spaces.lock().unwrap();
             let held = &spaces.spaces[spaces.index(space)?];
             match pane {
-                Some(pane) if find_pane(&held.root, &pane).is_none() => {
+                Some(pane) if space_find(held, &pane).is_none() => {
                     return Err(format!("pane {pane} is not in space {space}"))
                 }
                 Some(pane) => Ok(pane),
@@ -1458,7 +1537,7 @@ impl AppState {
         };
         let (pane, split) = match pane {
             Ok(pane) => (pane, false),
-            Err(last) => (self.pane_split(&last, Some(Dir::Right))?.0, true),
+            Err(last) => (self.pane_split(&last, Some(Dir::Right), None)?.0, true),
         };
         let started = match kind {
             StartKind::Terminal => self
@@ -1513,7 +1592,7 @@ impl AppState {
         let term = {
             let spaces = self.spaces.lock().unwrap();
             let held = &spaces.spaces[spaces.index(space)?];
-            match find_pane(&held.root, &started.pane) {
+            match space_find(held, &started.pane) {
                 Some(PaneKind::Terminal { term, .. }) => term.clone(),
                 _ => return Err(format!("pane {} did not start a terminal", started.pane)),
             }
@@ -1533,7 +1612,7 @@ impl AppState {
         if command.trim().is_empty() {
             return Err("there is no command to run".into());
         }
-        let new = self.pane_split(pane, Some(Dir::Right))?.0;
+        let new = self.pane_split(pane, Some(Dir::Right), None)?.0;
         let term = match self
             .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None)
             .await
@@ -1567,18 +1646,18 @@ impl AppState {
     fn start_saved_agent(
         &self,
         space_cwd: &str,
-        root: &Node,
+        root: &SpaceInfo,
         saved: AgentPane,
     ) -> Result<(), String> {
         // A conversation switched over from a terminal runs where Claude Code ran it.
-        let place = match find_pane(root, &saved.pane) {
+        let place = match space_find(root, &saved.pane) {
             Some(PaneKind::Agent {
                 place: Some(place), ..
             }) => (**place).clone(),
             _ => Default::default(),
         };
         let wheel_proto::AgentPlace { cwd, home } = place;
-        let permissions = match find_pane(root, &saved.pane) {
+        let permissions = match space_find(root, &saved.pane) {
             Some(PaneKind::Agent { permissions, .. }) => {
                 permissions.as_deref().cloned().unwrap_or_default()
             }
@@ -1611,16 +1690,16 @@ impl AppState {
     /// is a program not yet found. Called once the login shell's PATH arrives late.
     pub(crate) fn start_unstarted_agents(&self) {
         let kept = std::mem::take(&mut *self.kept_agents.lock().unwrap());
-        let waiting: Vec<(String, String, Node, AgentPane)> = {
+        let waiting: Vec<(String, String, SpaceInfo, AgentPane)> = {
             let spaces = self.spaces.lock().unwrap();
             spaces
                 .spaces
                 .iter()
                 .flat_map(|space| {
-                    agent_panes(&space.root)
+                    agent_panes(space)
                         .into_iter()
                         .filter(|a| kept.contains(&a.agent))
-                        .map(|a| (space.id.clone(), space.cwd.clone(), space.root.clone(), a))
+                        .map(|a| (space.id.clone(), space.cwd.clone(), space.clone(), a))
                 })
                 .collect()
         };
@@ -1723,7 +1802,7 @@ impl AppState {
         let slot = spaces
             .spaces
             .iter_mut()
-            .find_map(|s| find_pane_mut(&mut s.root, pane))
+            .find_map(|s| space_find_mut(s, pane))
             .ok_or_else(|| format!("no pane {pane}"))?;
         let PaneKind::Browser { url: at, .. } = slot else {
             return Err(format!("{pane} is not a browser pane"));
@@ -1795,7 +1874,7 @@ impl AppState {
         let kind = spaces
             .spaces
             .iter()
-            .find_map(|s| find_pane(&s.root, pane))
+            .find_map(|s| space_find(s, pane))
             .ok_or_else(|| format!("no such pane {pane}"))?;
         match kind {
             PaneKind::Browser { .. } => Ok(()),
@@ -1815,7 +1894,7 @@ impl AppState {
             let kind = spaces
                 .spaces
                 .iter()
-                .flat_map(|s| panes(&s.root))
+                .flat_map(|s| space_panes(s))
                 .find(|(id, _)| *id == pane)
                 .map(|(_, kind)| kind)
                 .ok_or_else(|| format!("no pane {pane}"))?;
@@ -1872,7 +1951,7 @@ impl AppState {
         let Some(Node::Pane { work, .. }) = spaces
             .spaces
             .iter_mut()
-            .find_map(|s| find_leaf_mut(&mut s.root, pane))
+            .find_map(|s| space_leaf_mut(s, pane))
         else {
             return Err(format!("no pane {pane}"));
         };
@@ -1897,7 +1976,7 @@ impl AppState {
             let kind = spaces
                 .spaces
                 .iter()
-                .flat_map(|s| panes(&s.root))
+                .flat_map(|s| space_panes(s))
                 .find(|(id, _)| *id == pane)
                 .map(|(_, kind)| kind)
                 .ok_or_else(|| format!("no pane {pane}"))?;
@@ -1925,7 +2004,7 @@ impl AppState {
             let kind = spaces
                 .spaces
                 .iter()
-                .flat_map(|s| panes(&s.root))
+                .flat_map(|s| space_panes(s))
                 .find(|(id, _)| *id == pane)
                 .map(|(_, kind)| kind)
                 .ok_or_else(|| format!("no pane {pane}"))?;
@@ -1978,7 +2057,7 @@ impl AppState {
         if !spaces
             .spaces
             .iter_mut()
-            .any(|s| set_ratio(&mut s.root, split, ratio))
+            .any(|s| s.trees_mut().any(|t| set_ratio(t, split, ratio)))
         {
             return Err(format!("no split {split}"));
         }
@@ -2024,33 +2103,33 @@ impl AppState {
             .iter()
             .flat_map(|space| {
                 // A pane this build cannot read is kept whole, so its data directory stays too.
-                let web = crate::web::web_panes(&space.root)
+                let web = crate::web::web_panes(space)
                     .into_iter()
                     .map(|(p, _)| p);
-                web.chain(unknown_panes(&space.root).into_iter().map(|(p, _)| p))
+                web.chain(unknown_panes(space).into_iter().map(|(p, _)| p))
             })
             .map(str::to_string)
             .collect();
         let named_all: Vec<String> = loaded
             .spaces
             .iter()
-            .flat_map(|space| panes(&space.root).into_iter().map(|(p, _)| p.to_string()))
+            .flat_map(|space| space_panes(space).into_iter().map(|(p, _)| p.to_string()))
             .collect();
         self.sweep_uploads(&named_all.iter().map(String::as_str).collect());
         for space in &mut loaded.spaces {
             let mut outcomes: HashMap<String, String> = HashMap::new();
-            for (pane, kind) in unknown_panes(&space.root) {
+            for (pane, kind) in unknown_panes(space) {
                 tracing::warn!(space = %space.id, %pane, %kind, "unknown pane kind; kept as is");
             }
             // A restored web pane keeps its artifact whether or not the folder is there: the watch
             // waits for a missing one to appear, as it does for a folder removed while watched.
-            for (pane, artifact) in crate::web::web_panes(&space.root) {
+            for (pane, artifact) in crate::web::web_panes(space) {
                 self.show_artifact(pane, artifact, &space.cwd);
             }
             let mut ids = Vec::new();
-            collect_terminal_panes(&space.root, &mut ids);
+            collect_terminal_panes(space, &mut ids);
             for pane in ids {
-                let (saved_cwd, saved_agent) = match find_pane(&space.root, &pane) {
+                let (saved_cwd, saved_agent) = match space_find(space, &pane) {
                     Some(PaneKind::Terminal { cwd, agent, .. }) => (cwd.clone(), agent.clone()),
                     _ => (None, None),
                 };
@@ -2076,7 +2155,8 @@ impl AppState {
                         Some((&pane, &space.cwd)),
                     )
                     .await;
-                let Some(slot) = find_pane_mut(&mut space.root, &pane) else {
+                let space_id = space.id.clone();
+                let Some(slot) = space_find_mut(space, &pane) else {
                     continue;
                 };
                 match opened {
@@ -2089,7 +2169,7 @@ impl AppState {
                             if resumed_conversations.contains(&key) {
                                 outcome = format!("{outcome}; {} conversation {} already resumed in another pane, so a plain shell", agent.name, agent.conversation);
                             } else if !crate::resume::conversation_exists(&agent, &dir) {
-                                tracing::warn!(space = %space.id, %pane, agent = %agent.name, conversation = %agent.conversation, %dir, "the agent's conversation is gone; the pane starts a plain shell");
+                                tracing::warn!(space = %space_id, %pane, agent = %agent.name, conversation = %agent.conversation, %dir, "the agent's conversation is gone; the pane starts a plain shell");
                                 outcome = format!(
                                     "{outcome}; {} conversation {} is gone, so a plain shell",
                                     agent.name, agent.conversation
@@ -2105,7 +2185,7 @@ impl AppState {
                                         resumed = Some(agent);
                                     }
                                     Err(e) => {
-                                        tracing::warn!(space = %space.id, %pane, error = %e, "could not type the agent's resume command");
+                                        tracing::warn!(space = %space_id, %pane, error = %e, "could not type the agent's resume command");
                                         outcome =
                                             format!("{outcome}; could not resume {}", agent.name);
                                     }
@@ -2126,7 +2206,7 @@ impl AppState {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(space = %space.id, %pane, error = %e, "could not restart the pane's shell; it is empty now");
+                        tracing::warn!(space = %space_id, %pane, error = %e, "could not restart the pane's shell; it is empty now");
                         outcome = format!("empty: {e}");
                         *slot = PaneKind::empty();
                     }
@@ -2135,9 +2215,9 @@ impl AppState {
             }
             // Agents do not outlive the daemon: each agent pane's agent starts again under
             // its saved name, and loads its saved conversation where the agent can.
-            for saved in agent_panes(&space.root) {
+            for saved in agent_panes(space) {
                 let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
-                match self.start_saved_agent(&space.cwd, &space.root, saved) {
+                match self.start_saved_agent(&space.cwd, space, saved) {
                     Ok(()) => {
                         agents += 1;
                         outcomes.insert(
@@ -2157,7 +2237,7 @@ impl AppState {
                 }
             }
             // One line per pane, so a log read afterwards says what each came back as and why.
-            for (pane, kind) in panes(&space.root) {
+            for (pane, kind) in space_panes(space) {
                 let outcome = outcomes.remove(pane).unwrap_or_else(|| match kind {
                     PaneKind::Web { artifact, .. } => format!(
                         "showing artifact {} again, watching its folder",
@@ -2210,7 +2290,7 @@ impl AppState {
             let held = self.terms.lock().unwrap();
             let mut terms = Vec::new();
             let mut saved = HashMap::new();
-            for (_, kind) in spaces.spaces.iter().flat_map(|space| panes(&space.root)) {
+            for (_, kind) in spaces.spaces.iter().flat_map(|space| space_panes(space)) {
                 if let PaneKind::Terminal { term, agent, .. } = kind {
                     if let Some(h) = held.get(term) {
                         terms.push(h.term.clone());
@@ -2254,7 +2334,7 @@ impl AppState {
         let mut context_changed = false;
         let mut spaces = self.spaces.lock().unwrap();
         for space in &mut spaces.spaces {
-            each_kind_mut(&mut space.root, &mut |kind| {
+            each_space_kind_mut(space, &mut |kind| {
                 let PaneKind::Terminal {
                     term, cwd, agent, ..
                 } = kind
@@ -2314,7 +2394,7 @@ impl AppState {
         let live: std::collections::HashSet<&str> = spaces
             .spaces
             .iter()
-            .flat_map(|space| panes(&space.root))
+            .flat_map(|space| space_panes(space))
             .filter_map(|(_, kind)| match kind {
                 PaneKind::Terminal { term, .. } => Some(term.as_str()),
                 _ => None,
@@ -2354,7 +2434,7 @@ impl AppState {
     fn sync_conversations(&self, spaces: &mut Spaces) -> bool {
         let mut changed = false;
         for space in &mut spaces.spaces {
-            each_kind_mut(&mut space.root, &mut |kind| {
+            each_space_kind_mut(space, &mut |kind| {
                 if let PaneKind::Agent {
                     agent, context, ..
                 } = kind
@@ -2400,7 +2480,11 @@ fn pane_kind_name(kind: &PaneKind) -> &str {
 }
 
 /// Each pane of a kind this build does not know, with that kind's name.
-fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
+fn unknown_panes(space: &SpaceInfo) -> Vec<(&str, &str)> {
+    space.trees().flat_map(unknown_in).collect()
+}
+
+fn unknown_in(node: &Node) -> Vec<(&str, &str)> {
     match node {
         Node::Pane {
             id,
@@ -2409,8 +2493,8 @@ fn unknown_panes(node: &Node) -> Vec<(&str, &str)> {
         } => vec![(id, unknown.kind())],
         Node::Pane { .. } => vec![],
         Node::Split { a, b, .. } => {
-            let mut all = unknown_panes(a);
-            all.extend(unknown_panes(b));
+            let mut all = unknown_in(a);
+            all.extend(unknown_in(b));
             all
         }
     }
@@ -2427,8 +2511,8 @@ pub(crate) struct AgentPane {
 }
 
 /// Each agent pane in `node`.
-pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
-    panes(node)
+pub(crate) fn agent_panes(space: &SpaceInfo) -> Vec<AgentPane> {
+    space_panes(space)
         .into_iter()
         .filter_map(|(id, kind)| match kind {
             PaneKind::Agent {
@@ -2451,6 +2535,29 @@ pub(crate) fn agent_panes(node: &Node) -> Vec<AgentPane> {
         .collect()
 }
 
+/// Every pane of a space, wherever it is: the grid, a popped tree or the tray.
+pub fn space_panes(space: &SpaceInfo) -> Vec<(&str, &PaneKind)> {
+    space.trees().flat_map(panes).collect()
+}
+
+pub fn space_find<'a>(space: &'a SpaceInfo, pane: &str) -> Option<&'a PaneKind> {
+    space.trees().find_map(|tree| find_pane(tree, pane))
+}
+
+fn space_find_mut<'a>(space: &'a mut SpaceInfo, pane: &str) -> Option<&'a mut PaneKind> {
+    space.trees_mut().find_map(|tree| find_pane_mut(tree, pane))
+}
+
+fn space_leaf_mut<'a>(space: &'a mut SpaceInfo, pane: &str) -> Option<&'a mut Node> {
+    space.trees_mut().find_map(|tree| find_leaf_mut(tree, pane))
+}
+
+fn each_space_kind_mut(space: &mut SpaceInfo, f: &mut impl FnMut(&mut PaneKind)) {
+    for tree in space.trees_mut() {
+        each_kind_mut(tree, f);
+    }
+}
+
 /// Call `f` on every pane's kind.
 fn each_kind_mut(node: &mut Node, f: &mut impl FnMut(&mut PaneKind)) {
     match node {
@@ -2462,7 +2569,13 @@ fn each_kind_mut(node: &mut Node, f: &mut impl FnMut(&mut PaneKind)) {
     }
 }
 
-fn collect_terminal_panes(node: &Node, out: &mut Vec<String>) {
+fn collect_terminal_panes(space: &SpaceInfo, out: &mut Vec<String>) {
+    for tree in space.trees() {
+        collect_terminals_in(tree, out);
+    }
+}
+
+fn collect_terminals_in(node: &Node, out: &mut Vec<String>) {
     match node {
         Node::Pane {
             id,
@@ -2471,8 +2584,8 @@ fn collect_terminal_panes(node: &Node, out: &mut Vec<String>) {
         } => out.push(id.clone()),
         Node::Pane { .. } => {}
         Node::Split { a, b, .. } => {
-            collect_terminal_panes(a, out);
-            collect_terminal_panes(b, out);
+            collect_terminals_in(a, out);
+            collect_terminals_in(b, out);
         }
     }
 }

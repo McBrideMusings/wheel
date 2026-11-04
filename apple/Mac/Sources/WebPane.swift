@@ -115,6 +115,20 @@ final class WebPane: NSObject, ObservableObject, WKNavigationDelegate {
 }
 
 /// Shows a web pane's view where SwiftUI puts it.
+/// The artifact's page, or the native A2UI surface when its MCP server speaks A2UI.
+struct WebOrA2UI: View {
+    let web: WebPane
+    let a2ui: A2UIPane?
+
+    var body: some View {
+        if let a2ui, a2ui.isNative {
+            A2UIPaneView(pane: a2ui)
+        } else {
+            WebBody(web: web)
+        }
+    }
+}
+
 struct WebBody: NSViewRepresentable {
     let web: WebPane
 

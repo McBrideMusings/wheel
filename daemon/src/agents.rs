@@ -10,7 +10,7 @@ use wheel_proto::{PaneKind, AgentState};
 
 use crate::server::AppState;
 use crate::agent::Agent;
-use crate::spaces::{agent_panes, find_pane};
+use crate::spaces::{agent_panes, space_find};
 
 /// An agent and the pane that owns it; `pane` is unset once the pane has gone.
 pub(crate) struct AgentRef {
@@ -48,7 +48,7 @@ impl AppState {
             match spaces
                 .spaces
                 .iter()
-                .find_map(|s| find_pane(&s.root, target))
+                .find_map(|s| space_find(s, target))
             {
                 Some(PaneKind::Agent { agent, .. }) => Some(Ok(agent.clone())),
                 Some(other) => {
@@ -76,7 +76,7 @@ impl AppState {
             spaces
                 .spaces
                 .iter()
-                .flat_map(|s| agent_panes(&s.root))
+                .flat_map(agent_panes)
                 .find(|p| p.agent == target)
                 .map(|p| p.pane)
         };

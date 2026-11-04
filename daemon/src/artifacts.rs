@@ -1258,7 +1258,7 @@ impl AppState {
         match spaces
             .spaces
             .iter()
-            .find_map(|s| crate::spaces::find_pane(&s.root, pane))
+            .find_map(|s| crate::spaces::space_find(s, pane))
         {
             Some(wheel_proto::PaneKind::Agent { agent, .. }) => agent.clone(),
             _ => pane.to_string(),
@@ -1330,7 +1330,7 @@ impl AppState {
                 if !cwds.contains(&space.cwd) {
                     cwds.push(space.cwd.clone());
                 }
-                for (id, kind) in crate::spaces::panes(&space.root) {
+                for (id, kind) in crate::spaces::space_panes(space) {
                     if matches!(kind, wheel_proto::PaneKind::Agent { .. }) {
                         live.insert(id.to_string());
                     }

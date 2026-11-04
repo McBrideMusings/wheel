@@ -5,7 +5,7 @@ use wheel_proto::{InfoField, PaneKind, PaneLogin};
 
 use crate::resume::{self, Harness};
 use crate::server::AppState;
-use crate::spaces::panes;
+use crate::spaces::space_panes;
 
 fn field(label: &str, value: impl Into<String>, hint: &str) -> InfoField {
     InfoField {
@@ -18,16 +18,18 @@ fn field(label: &str, value: impl Into<String>, hint: &str) -> InfoField {
 impl AppState {
     /// The pane `name` means — a pane id, or an agent pane's agent name — its kind and its fields.
     pub async fn pane_info(&self, name: &str) -> Result<(String, String, Vec<InfoField>, Option<PaneLogin>), String> {
-        let (pane, kind, space_cwd) = {
+        let (pane, kind, space_cwd, site) = {
             let spaces = self.spaces.lock().unwrap();
             let found = spaces.spaces.iter().find_map(|space| {
-                panes(&space.root)
+                space_panes(space)
                     .into_iter()
                     .find(|(id, kind)| {
                         *id == name
                             || matches!(kind, PaneKind::Agent { agent, .. } if agent == name)
                     })
-                    .map(|(id, kind)| (id.to_string(), kind.clone(), space.cwd.clone()))
+                    .map(|(id, kind)| {
+                        (id.to_string(), kind.clone(), space.cwd.clone(), space.site_of(id))
+                    })
             });
             found.ok_or_else(|| format!("no pane {name}"))?
         };
@@ -195,6 +197,13 @@ impl AppState {
             }
             _ => ("empty", vec![pane_field]),
         };
+        let mut fields = fields;
+        if let Some(site) = site {
+            fields.insert(
+                1.min(fields.len()),
+                field("Place", site.name(), "grid, popped or backgrounded"),
+            );
+        }
         tracing::info!(pane = %pane, kind = kind_name, fields = fields.len(), "pane info");
         Ok((pane, kind_name.into(), fields, login))
     }

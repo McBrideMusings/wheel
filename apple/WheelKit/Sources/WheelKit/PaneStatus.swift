@@ -116,7 +116,7 @@ extension SpaceInfo {
         guard let old else { return self }
         var out = self
         if status == nil { out.status = old.status }
-        let held = Set(root.panes.map(\.id))
+        let held = Set(allPanes.map(\.id))
         for (pane, status) in old.paneStatuses where paneStatuses[pane] == nil && held.contains(pane) {
             out.paneStatuses[pane] = status
         }

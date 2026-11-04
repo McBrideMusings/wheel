@@ -19,7 +19,7 @@ use wheel_proto::{
 
 use crate::resume::{self, Harness};
 use crate::server::{AgentStart, AppState, CarriedView, Owner};
-use crate::spaces::{find_pane, panes, PANE_COLS, PANE_ROWS};
+use crate::spaces::{space_find, space_panes, PANE_COLS, PANE_ROWS};
 
 /// How long Claude Code in a terminal has to quit after SIGTERM before the switch gives up.
 const TUI_EXIT: Duration = Duration::from_secs(10);
@@ -48,7 +48,7 @@ impl AppState {
         let kind = spaces
             .spaces
             .iter()
-            .find_map(|s| find_pane(&s.root, pane))
+            .find_map(|s| space_find(s, pane))
             .ok_or_else(|| format!("no pane {pane}"))?;
         let (view, conversation) = match kind {
             PaneKind::Terminal { agent, .. } => (
@@ -75,7 +75,7 @@ impl AppState {
     fn kind_and_space(&self, pane: &str) -> Result<(PaneKind, String), String> {
         let spaces = self.spaces.lock().unwrap();
         let space = &spaces.spaces[spaces.holding(pane)?];
-        let kind = find_pane(&space.root, pane)
+        let kind = space_find(space, pane)
             .cloned()
             .ok_or_else(|| format!("no pane {pane}"))?;
         Ok((kind, space.cwd.clone()))
@@ -325,7 +325,7 @@ impl AppState {
         spaces
             .spaces
             .iter()
-            .flat_map(|s| panes(&s.root))
+            .flat_map(|s| space_panes(s))
             .filter_map(|(_, kind)| match kind {
                 PaneKind::Terminal {
                     term: t,
