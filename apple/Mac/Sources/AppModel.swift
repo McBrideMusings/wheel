@@ -313,6 +313,9 @@ final class AppModel {
     @ObservationIgnored private(set) var terminals: [String: PaneTerminal] = [:]
     /// One page per web pane, keyed by pane id.
     @ObservationIgnored private(set) var webPanes: [String: WebPane] = [:]
+    /// The A2UI model of each web pane: it asks the artifact's MCP server for an A2UI layout and,
+    /// when there is one, the pane draws that natively in place of the page.
+    @ObservationIgnored private(set) var a2uiPanes: [String: A2UIPane] = [:]
     /// Browser storage of artifacts whose entries are gone, deleted once no pane shows it.
     @ObservationIgnored private var storeReaper = WebStoreReaper()
     /// One page and its chrome per browser pane, keyed by pane id.
@@ -613,6 +616,7 @@ final class AppModel {
             let leaving = !spaces.contains { $0.root.panes.contains { $0.id == pane } }
             retire("web:\(pane)", animated: animated && leaving, stillWanted: { [self] in WebPanes.panes(self.spaces)[pane]?.artifact == web.artifact }) { [self] in
                 webPanes[pane] = nil
+                a2uiPanes[pane] = nil
                 Log.info("web pane \(pane) left the layout")
                 reapGoneStores(shown: Set(WebPanes.panes(spaces).values.map(\.store)))
             }
@@ -622,6 +626,10 @@ final class AppModel {
             let web = WebPane(pane: pane, artifact: shown.artifact, store: shown.store, daemon: pageDaemon)
             webPanes[pane] = web
             open(web)
+            let space = spaces.first { $0.root.panes.contains { $0.id == pane } }?.id
+            let a2ui = A2UIPane(pane: pane, artifact: shown.artifact, space: space, send: { [client] in client.send($0) }, nextReq: { [client] in client.req() })
+            a2uiPanes[pane] = a2ui
+            a2ui.start()
         }
         reapGoneStores(shown: Set(wanted.values.map(\.store)))
         let pages = BrowserPanes.urls(spaces)
@@ -741,6 +749,7 @@ final class AppModel {
     private func handle(_ msg: ServerMsg) {
         if links.received(msg) { return }
         if receivedBuiltins(msg) { return }
+        if a2uiPanes.values.contains(where: { $0.handle(msg) }) { return }
         switch msg {
         case let .status(req, _, _, _, _, _, _, _, _, _, logs, host, _, _) where req != nil && req == settings.statusReq:
             // Settings asking after the log shipping and folder access: the rest of the reply is no news.

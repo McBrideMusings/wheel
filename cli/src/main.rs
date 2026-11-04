@@ -428,6 +428,16 @@ enum ArtifactCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Read a resource of the MCP server an artifact entry names (`resources/read`), printing its
+    /// contents as JSON.
+    Read {
+        name: String,
+        uri: String,
+        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
+        scope: Option<ArtifactScope>,
+        #[arg(long)]
+        space: Option<String>,
+    },
     /// Call a tool of the MCP server an artifact entry names, with a JSON object for arguments.
     /// A tool that fails prints its message and exits 1.
     Call {
@@ -3625,6 +3635,28 @@ async fn artifact_tools(
     Ok(())
 }
 
+async fn artifact_read(
+    conn: &mut Conn,
+    name: String,
+    uri: String,
+    scope: Option<ArtifactScope>,
+    space: Option<String>,
+) -> Result<(), Fail> {
+    let req = conn.req();
+    let msg = ClientMsg::ArtifactRead {
+        req: Some(req),
+        name,
+        scope,
+        space,
+        uri,
+    };
+    let ServerMsg::Resource { contents, .. } = conn.call(msg, req).await? else {
+        return Err(Fail::Other("unexpected reply to artifact read".into()));
+    };
+    println!("{}", serde_json::to_string_pretty(&contents).map_err(other)?);
+    Ok(())
+}
+
 async fn artifact_call(
     conn: &mut Conn,
     name: String,
@@ -5396,6 +5428,15 @@ async fn main() -> ExitCode {
             }) => {
                 let space = default_space(&mut conn, space).await?;
                 artifact_tools(&mut conn, name, scope, space, json).await
+            }
+            Command::Artifact(ArtifactCommand::Read {
+                name,
+                uri,
+                scope,
+                space,
+            }) => {
+                let space = default_space(&mut conn, space).await?;
+                artifact_read(&mut conn, name, uri, scope, space).await
             }
             Command::Artifact(ArtifactCommand::Call {
                 name,

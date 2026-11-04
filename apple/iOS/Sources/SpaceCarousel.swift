@@ -121,6 +121,8 @@ struct SpaceCarousel: View {
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
         } else if case let .agent(agent, harness, _) = pane.kind, let chat = model.chats[agent] {
             AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat)
+        } else if let a2ui = model.a2uiPanes[pane.id], a2ui.isNative {
+            A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
         } else {

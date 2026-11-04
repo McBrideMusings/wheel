@@ -524,7 +524,7 @@ struct PaneView: View {
             if let web = model.webPanes[paneId] {
                 // makeNSView runs once per view identity, so a pane switched to another artifact
                 // (a new WebPane) must be a new identity or the window keeps drawing the old view.
-                WebBody(web: web)
+                WebOrA2UI(web: web, a2ui: model.a2uiPanes[paneId])
                     .id(ObjectIdentifier(web))
             } else {
                 ProgressView()
