@@ -272,6 +272,7 @@ public struct CommandPalette: Sendable, Equatable {
 
     /// Switch to New Space mode with an empty field.
     public mutating func enterNewSpace() {
+        verb = nil
         mode = .newSpace
         query = ""
         refilter()
@@ -402,36 +403,37 @@ public struct CommandPalette: Sendable, Equatable {
             action.id == PaletteAction.openFolderID
                 ? .openFolder() : .action(id: action.id, title: action.title, shortcut: action.shortcut)
         }
+        func unclaimed(_ action: PaletteAction) -> Bool {
+            action.id != "new-space" && !PaletteVerb.allCases.contains { $0.claims(action: action.id) }
+        }
         func targets(_ verb: PaletteVerb) -> [(item: PaletteItem, texts: [String])] {
             switch verb {
             case .switchSpace:
-                spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), ["Switch to \($0.name)", $0.dir]) }
+                return spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), ["Switch to \($0.name)", $0.dir]) }
             case .closeSpace:
-                spaces.map {
+                return spaces.map {
                     (.target(verb: .closeSpace, id: $0.id, title: "Close Space \($0.name)", detail: $0.dir), ["Close Space \($0.name)", $0.dir])
                 }
             case .goToPane:
-                panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), ["Go to \($0.name)", "\($0.spaceName) \($0.name)"]) }
+                return panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), ["Go to \($0.name)", "\($0.spaceName) \($0.name)"]) }
             case .closePane:
-                panes.map {
+                return panes.map {
                     (.target(verb: .closePane, id: $0.id, title: "Close Pane \($0.name)", detail: "\($0.spaceName) · \($0.id)"),
                      ["Close Pane \($0.name)", "\($0.spaceName) \($0.name)"])
                 }
             case .showArtifact:
-                artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), ["Show \($0.title)", $0.name]) }
+                return artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), ["Show \($0.title)", $0.name]) }
             case .newPane, .changePaneType, .run:
-                actions.filter { verb.claims(action: $0.id) }.map { (actionItem($0), [$0.title]) }
+                return actions.filter { verb.claims(action: $0.id) }.map { (actionItem($0), [$0.title]) }
             }
         }
         let populated = PaletteVerb.allCases.filter { !targets($0).isEmpty }
         if let verb { return rank(targets(verb), query: query) }
-        let query = query.trimmingCharacters(in: .whitespaces)
-        if query.isEmpty {
+        let needle = query.trimmingCharacters(in: .whitespaces)
+        if needle.isEmpty {
             var rows = populated.map { Row(item: .verb($0), score: 0) }
             rows.append(Row(item: .newSpaceMode, score: 0))
-            for action in actions where !PaletteVerb.allCases.contains(where: { $0.claims(action: action.id) }) && action.id != "new-space" {
-                rows.append(Row(item: actionItem(action), score: 0))
-            }
+            rows += actions.filter(unclaimed).map { Row(item: actionItem($0), score: 0) }
             return rows
         }
         let open = Set(spaces.map(\.dir))
@@ -444,9 +446,8 @@ public struct CommandPalette: Sendable, Equatable {
         for recent in recents.sorted(by: { $0.openedMs > $1.openedMs }) where !open.contains(recent.dir) {
             items.append((.recent(dir: recent.dir), ["New Space in \(lastComponent(of: recent.dir))", recent.dir]))
         }
-        let plain = actions.filter { a in !PaletteVerb.allCases.contains { $0.claims(action: a.id) } && a.id != "new-space" }
-        items += plain.map { (actionItem($0), [$0.title]) }
-        return rank(items, query: query)
+        items += actions.filter(unclaimed).map { (actionItem($0), [$0.title]) }
+        return rank(items, query: needle)
     }
 
     /// Every entry the query matches, best score first, ties in the entries' order; all of them

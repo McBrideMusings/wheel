@@ -456,7 +456,13 @@ extension AppModel {
         case .session: break
         case let .recent(dir): createSpace(cwd: dir)
         case let .newSpaceHere(dir, _): createSpace(cwd: dir)
-        case .newSpaceMode: break
+        case .newSpaceMode, .verb: break
+        case let .target(verb, id, _, _):
+            switch verb {
+            case .closeSpace: askCloseSpace(id)
+            case .closePane: askClosePane(id)
+            default: break
+            }
         case let .folder(path, _): createSpace(cwd: path)
         case .missing: break
         }
