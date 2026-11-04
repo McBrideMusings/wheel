@@ -8,9 +8,11 @@ set -euo pipefail
 if [ "$CONFIGURATION" = "Release" ]; then
   PROFILE=release CARGO_FLAGS=--release
   INSTANCE=wheel LISTEN=127.0.0.1:7420 LABEL=com.piercemakes.wheel.daemon
+  BUNDLE_ID=com.piercemakes.wheel.daemon
 else
   PROFILE=debug CARGO_FLAGS=
   INSTANCE=wheel-dev LISTEN=127.0.0.1:7422 LABEL=com.piercemakes.wheel.dev.daemon
+  BUNDLE_ID=com.piercemakes.wheel.dev.daemon
 fi
 
 REPO="$SRCROOT/.."
@@ -18,7 +20,7 @@ CONTENTS="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH"
 
 # Xcode's environment (SDKROOT, deployment targets, its own PATH) leaks into cargo's C and Zig
 # builds; build from a clean one.
-env -i HOME="$HOME" USER="$USER" \
+env -i HOME="$HOME" USER="$USER" WHEELD_BUNDLE_ID="$BUNDLE_ID" \
   PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
   cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel $CARGO_FLAGS
 

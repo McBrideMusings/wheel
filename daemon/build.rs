@@ -94,6 +94,7 @@ fn main() {
     for (name, file) in [
         ("daemon/Cargo.toml", "Cargo.toml"),
         ("daemon/build.rs", "build.rs"),
+        ("daemon/Info.plist.in", "Info.plist.in"),
         ("proto/Cargo.toml", "../proto/Cargo.toml"),
         ("Cargo.lock", "../Cargo.lock"),
     ] {
@@ -112,6 +113,34 @@ fn main() {
     }
     let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     println!("cargo:rustc-env=WHEELD_SOURCE_HASH={}", &hex[..16]);
+    embed_bundle_identity(&manifest);
+}
+
+/// On macOS, puts an Info.plist in the binary's `__TEXT,__info_plist` section, so the system
+/// names wheeld (bundle id, "Wheel Server") in Privacy & Security and `tccutil reset <service>
+/// <bundle id>` finds it; without one wheeld is signed by its file name alone. The id comes from
+/// `WHEELD_BUNDLE_ID` (the app's embed script sets the dev daemon's), default
+/// `com.piercemakes.wheel.daemon`.
+fn embed_bundle_identity(manifest: &Path) {
+    println!("cargo:rerun-if-env-changed=WHEELD_BUNDLE_ID");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let id = std::env::var("WHEELD_BUNDLE_ID")
+        .unwrap_or_else(|_| "com.piercemakes.wheel.daemon".to_string());
+    let name = if id.contains(".dev.") {
+        "Wheel Dev Server"
+    } else {
+        "Wheel Server"
+    };
+    let template = std::fs::read_to_string(manifest.join("Info.plist.in")).unwrap();
+    let plist = template.replace("@BUNDLE_ID@", &id).replace("@NAME@", name);
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("Info.plist");
+    std::fs::write(&dest, plist).unwrap();
+    println!(
+        "cargo:rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        dest.display()
+    );
 }
 
 /// Every file under `dir`, as its path relative to `base` with `/` between parts, and its absolute path.

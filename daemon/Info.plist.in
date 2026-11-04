@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleName</key>
+	<string>@NAME@</string>
+	<key>CFBundleDisplayName</key>
+	<string>@NAME@</string>
+	<key>CFBundleExecutable</key>
+	<string>wheeld</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Wheel Server runs your terminals and agents in project folders on your Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Wheel Server runs your terminals and agents in project folders in your Documents.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Wheel Server runs your terminals and agents in project folders in your Downloads.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Wheel Server runs your terminals and agents in project folders on removable drives.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Wheel Server runs your terminals and agents in project folders on network volumes.</string>
+</dict>
+</plist>
