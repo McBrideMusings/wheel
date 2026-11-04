@@ -1,0 +1,23 @@
+- generic [active] [ref=f33e1]:
+  - banner [ref=f33e2]:
+    - heading "Change a pane type" [level=1] [ref=f33e3]
+    - generic [ref=f33e4]:
+      - generic [ref=f33e5]:
+        - generic [ref=f33e6]: Option
+        - group "Option" [ref=f33e7]:
+          - button "Menu" [pressed] [ref=f33e8] [cursor=pointer]
+          - button "Chip" [ref=f33e9] [cursor=pointer]
+          - button "Toggle" [ref=f33e10] [cursor=pointer]
+      - generic [ref=f33e11]:
+        - generic [ref=f33e12]: Theme
+        - group "Theme" [ref=f33e13]:
+          - button "System" [pressed] [ref=f33e14] [cursor=pointer]
+          - button "Light" [ref=f33e15] [cursor=pointer]
+          - button "Dark" [ref=f33e16] [cursor=pointer]
+  - main [ref=f33e17]:
+    - iframe [ref=f33e19]
+  - contentinfo [ref=f33e20]:
+    - button "Pick Menu" [ref=f33e21] [cursor=pointer]
+    - textbox "Note for the agent" [ref=f33e22]:
+      - /placeholder: Note for the agent (optional)
+    - status [ref=f33e23]: Nothing reaches the agent until you pick.

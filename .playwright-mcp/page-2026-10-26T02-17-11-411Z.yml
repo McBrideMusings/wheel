@@ -1,0 +1,19 @@
+- generic [active] [ref=f15e1]:
+  - banner [ref=f15e2]:
+    - heading "Mockup" [level=1] [ref=f15e3]
+    - generic [ref=f15e4]:
+      - generic [ref=f15e5]:
+        - generic [ref=f15e6]: Theme
+        - group "Theme" [ref=f15e7]:
+          - button "System" [pressed] [ref=f15e8] [cursor=pointer]
+          - button "Light" [ref=f15e9] [cursor=pointer]
+          - button "Dark" [ref=f15e10] [cursor=pointer]
+      - generic [ref=f15e11]:
+        - generic [ref=f15e12]: Width
+        - group "Width" [ref=f15e13]:
+          - button "Fit" [pressed] [ref=f15e14] [cursor=pointer]
+          - button "Phone 390" [ref=f15e15] [cursor=pointer]
+          - button "Tablet 820" [ref=f15e16] [cursor=pointer]
+          - button "Desktop 1280" [ref=f15e17] [cursor=pointer]
+  - main [ref=f15e18]:
+    - iframe [ref=f15e20]

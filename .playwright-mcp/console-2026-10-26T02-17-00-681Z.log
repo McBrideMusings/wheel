@@ -1,0 +1,2 @@
+[      36ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:7553/artifacts/p2/?token=f35f7f168d4c728f4e890d1e41d38efcc3fbc89083aa40a3483309f364068887:0
+[     125ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:7553/favicon.ico:0

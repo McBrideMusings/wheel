@@ -1,0 +1,104 @@
+- generic [active] [ref=f4e1]:
+  - banner [ref=f4e2]:
+    - 'heading "Process viewer: where it lives" [level=1] [ref=f4e3]'
+    - generic [ref=f4e4]:
+      - generic [ref=f4e5]:
+        - generic [ref=f4e6]: Option
+        - group "Option" [ref=f4e7]:
+          - button "Drawer" [pressed] [ref=f4e8] [cursor=pointer]
+          - button "Inspector" [ref=f4e9] [cursor=pointer]
+          - button "Window" [ref=f4e10] [cursor=pointer]
+          - button "Popover" [ref=f4e11] [cursor=pointer]
+      - generic [ref=f4e12]:
+        - generic [ref=f4e13]: State
+        - group "State" [ref=f4e14]:
+          - button "Open" [pressed] [ref=f4e15] [cursor=pointer]
+          - button "Selected" [ref=f4e16] [cursor=pointer]
+          - button "Empty" [ref=f4e17] [cursor=pointer]
+      - generic [ref=f4e18]:
+        - generic [ref=f4e19]: Theme
+        - group "Theme" [ref=f4e20]:
+          - button "System" [pressed] [ref=f4e21] [cursor=pointer]
+          - button "Light" [ref=f4e22] [cursor=pointer]
+          - button "Dark" [ref=f4e23] [cursor=pointer]
+      - generic [ref=f4e24]:
+        - generic [ref=f4e25]: Width
+        - group "Width" [ref=f4e26]:
+          - button "Fit" [pressed] [ref=f4e27] [cursor=pointer]
+          - button "Phone 390" [ref=f4e28] [cursor=pointer]
+          - button "Tablet 820" [ref=f4e29] [cursor=pointer]
+          - button "Desktop 1280" [ref=f4e30] [cursor=pointer]
+  - main [ref=f4e31]:
+    - iframe [ref=f4e33]:
+      - generic [ref=f5e4]:
+        - generic [ref=f5e5]:
+          - generic [ref=f5e10]: wheel
+          - generic [ref=f5e11]: Processes · 6
+        - generic [ref=f5e12]:
+          - generic [ref=f5e13]:
+            - generic [ref=f5e14]: weblogs
+            - generic [ref=f5e15]: wheel
+            - generic [ref=f5e16]: iptv-mac
+          - generic [ref=f5e17]:
+            - generic [ref=f5e18]:
+              - generic [ref=f5e19]: claude
+              - generic [ref=f5e23]: terminal
+            - generic [ref=f5e26]:
+              - generic [ref=f5e27]:
+                - generic [ref=f5e28]: Processes
+                - text: in wheelCPU 141% · 3.7 GB
+              - table [ref=f5e30]:
+                - rowgroup [ref=f5e31]:
+                  - row [ref=f5e32]:
+                    - columnheader "Process" [ref=f5e33]
+                    - columnheader "PID" [ref=f5e34]
+                    - columnheader "CPU" [ref=f5e35]
+                    - columnheader "Mem" [ref=f5e36]
+                    - columnheader "Age" [ref=f5e37]
+                  - row [ref=f5e38]:
+                    - cell "claude · p540" [ref=f5e39]
+                  - row [ref=f5e41]:
+                    - cell "claude" [ref=f5e42]
+                    - cell "37410" [ref=f5e43]
+                    - cell "3%" [ref=f5e44]
+                    - cell "612 MB" [ref=f5e45]
+                    - cell "3h 02m" [ref=f5e46]
+                  - row [ref=f5e47]:
+                    - cell "cargo build" [ref=f5e48]
+                    - cell "51022" [ref=f5e49]
+                    - cell "88%" [ref=f5e50]
+                    - cell "1.4 GB" [ref=f5e51]
+                    - cell "0:41" [ref=f5e52]
+                  - row [ref=f5e53]:
+                    - cell "rustc wheeld" [ref=f5e54]
+                    - cell "51140" [ref=f5e55]
+                    - cell "48%" [ref=f5e56]
+                    - cell "1.1 GB" [ref=f5e57]
+                    - cell "0:33" [ref=f5e58]
+                  - row [ref=f5e59]:
+                    - cell "claude · p701" [ref=f5e60]
+                  - row [ref=f5e62]:
+                    - cell "claude" [ref=f5e63]
+                    - cell "38002" [ref=f5e64]
+                    - cell "1%" [ref=f5e65]
+                    - cell "540 MB" [ref=f5e66]
+                    - cell "1h 40m" [ref=f5e67]
+                  - row [ref=f5e68]:
+                    - cell "terminal · p612" [ref=f5e69]
+                  - row [ref=f5e70]:
+                    - cell "zsh" [ref=f5e71]
+                    - cell "40118" [ref=f5e72]
+                    - cell "0%" [ref=f5e73]
+                    - cell "9 MB" [ref=f5e74]
+                    - cell "5h 12m" [ref=f5e75]
+                  - row [ref=f5e76]:
+                    - cell "wheeld --listen 127.0.0.1:7499" [ref=f5e77]
+                    - cell "52201" [ref=f5e78]
+                    - cell "1%" [ref=f5e79]
+                    - cell "38 MB" [ref=f5e80]
+                    - cell "0:12" [ref=f5e81]
+  - contentinfo [ref=f4e34]:
+    - button "Pick Drawer" [ref=f4e35] [cursor=pointer]
+    - textbox "Note for the agent" [ref=f4e36]:
+      - /placeholder: Note for the agent (optional)
+    - status [ref=f4e37]: Nothing reaches the agent until you pick.

@@ -1,0 +1,40 @@
+- generic [active] [ref=f29e1]:
+  - banner [ref=f29e2]:
+    - heading "Mockup" [level=1] [ref=f29e3]
+    - generic [ref=f29e5]:
+      - generic [ref=f29e6]: Theme
+      - group "Theme" [ref=f29e7]:
+        - button "System" [pressed] [ref=f29e8] [cursor=pointer]
+        - button "Light" [ref=f29e9] [cursor=pointer]
+        - button "Dark" [ref=f29e10] [cursor=pointer]
+  - main [ref=f29e11]:
+    - iframe [ref=f29e13]:
+      - generic [ref=f30e3]:
+        - generic [ref=f30e4]:
+          - generic [ref=f30e5]: Wheel
+          - generic [ref=f30e6]: Window
+          - generic [ref=f30e7]: Wed 9:14 PM
+        - generic [ref=f30e8]:
+          - generic [ref=f30e9]: Notes
+          - generic [ref=f30e15]: Shopping· oat milk· coffee filtersAn ordinary app’s window. Click it to bring it forward.
+        - generic [ref=f30e16]:
+          - generic [ref=f30e17]:
+            - generic [ref=f30e22]: Wheel
+            - generic "Keep on top" [ref=f30e23]: 📌
+          - generic [ref=f30e24]:
+            - generic [ref=f30e25]:
+              - generic [ref=f30e26]: wheel
+              - generic [ref=f30e28]: iptv-mac
+              - generic [ref=f30e30]: plex-db-ex swarm
+            - generic [ref=f30e32]:
+              - generic [ref=f30e33]:
+                - generic [ref=f30e34]:
+                  - generic [ref=f30e36]: claude
+                  - text: ⋯
+                - generic [ref=f30e37]: Which one do we spike next?1A. pane type1B. menu bar dots
+              - generic [ref=f30e38]:
+                - generic [ref=f30e39]:
+                  - generic [ref=f30e40]: terminal
+                  - text: ⋯
+                - generic [ref=f30e41]: $ cargo build -p wheeldFinished dev in 12s
+        - generic: "Drag a space out of its window onto the desktop: a new Wheel window. Right-click a space: Pop Out to New Window, or Open as Little Window (one space, no sidebar). 📌 in any window’s strip keeps it above other apps. Click Notes to see stacking; drag title bars to move."

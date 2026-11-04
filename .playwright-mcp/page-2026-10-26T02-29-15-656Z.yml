@@ -1,0 +1,11 @@
+- generic [active] [ref=f27e1]:
+  - banner [ref=f27e2]:
+    - heading "Mockup" [level=1] [ref=f27e3]
+    - generic [ref=f27e5]:
+      - generic [ref=f27e6]: Theme
+      - group "Theme" [ref=f27e7]:
+        - button "System" [pressed] [ref=f27e8] [cursor=pointer]
+        - button "Light" [ref=f27e9] [cursor=pointer]
+        - button "Dark" [ref=f27e10] [cursor=pointer]
+  - main [ref=f27e11]:
+    - iframe [ref=f27e13]

@@ -1,0 +1,76 @@
+- generic [active] [ref=f37e1]:
+  - banner [ref=f37e2]:
+    - heading "Menu bar dots" [level=1] [ref=f37e3]
+    - generic [ref=f37e4]:
+      - generic [ref=f37e5]:
+        - generic [ref=f37e6]: Option
+        - group "Option" [ref=f37e7]:
+          - button "Dots replace badge" [pressed] [ref=f37e8] [cursor=pointer]
+          - button "Dots and approvals" [ref=f37e9] [cursor=pointer]
+          - button "Dots and menu bar icon" [ref=f37e10] [cursor=pointer]
+      - generic [ref=f37e11]:
+        - generic [ref=f37e12]: Theme
+        - group "Theme" [ref=f37e13]:
+          - button "System" [pressed] [ref=f37e14] [cursor=pointer]
+          - button "Light" [ref=f37e15] [cursor=pointer]
+          - button "Dark" [ref=f37e16] [cursor=pointer]
+  - main [ref=f37e17]:
+    - iframe [ref=f37e19]:
+      - generic [ref=f38e3]:
+        - generic [ref=f38e4]:
+          - generic [ref=f38e5]: Wed 9:14 PM
+          - generic [ref=f38e6]:
+            - text: ◎
+            - generic [ref=f38e7]: "1"
+        - generic [ref=f38e8]:
+          - 'heading "Simulate: click an agent to change its status" [level=5] [ref=f38e9]'
+          - generic [ref=f38e10]: wheel
+          - generic [ref=f38e11]: claude · needs you
+          - generic [ref=f38e13]: claude · working
+          - generic [ref=f38e15]: codex · idle
+          - generic [ref=f38e17]: iptv-mac
+          - generic [ref=f38e18]: claude · idle
+          - generic [ref=f38e20]: plex-db-ex swarm
+          - generic [ref=f38e21]: claude · working
+          - generic [ref=f38e23]: claude · working
+          - generic [ref=f38e25]: claude · working
+          - generic [ref=f38e27]: claude · working
+          - generic [ref=f38e29]: codex · working
+          - generic [ref=f38e31]: claude · stopped
+          - generic [ref=f38e33]:
+            - generic [ref=f38e34]: needs you
+            - generic [ref=f38e36]: stopped
+            - generic [ref=f38e38]: working
+            - generic [ref=f38e40]: idle
+        - generic [ref=f38e42]:
+          - generic [ref=f38e44]:
+            - generic [ref=f38e45]: Wheel Server
+            - generic [ref=f38e46]: ● Running
+          - generic [ref=f38e47]:
+            - generic [ref=f38e48]:
+              - generic [ref=f38e49]: Wheel
+              - generic [ref=f38e50]: Wheel window · 2
+            - generic [ref=f38e51]:
+              - generic [ref=f38e52]: wheel
+              - generic "claude needs you, claude working, codex idle" [ref=f38e53]
+            - generic [ref=f38e57]:
+              - generic [ref=f38e58]: iptv-mac
+              - generic "claude idle" [ref=f38e59]
+          - generic [ref=f38e61]:
+            - generic [ref=f38e62]:
+              - generic [ref=f38e63]: Review
+              - generic [ref=f38e64]: Review window · 1
+            - generic [ref=f38e65]: weblogs
+          - generic [ref=f38e67]:
+            - generic [ref=f38e68]:
+              - generic [ref=f38e69]: Background
+              - generic [ref=f38e70]: no window · still running · 1
+            - generic [ref=f38e71]:
+              - generic [ref=f38e72]: plex-db-ex swarm
+              - generic "claude working, claude working, claude working, claude working, codex working, claude stopped" [ref=f38e73]: "+2"
+          - generic [ref=f38e79]: ＋ New Window
+  - contentinfo [ref=f37e20]:
+    - button "Pick Dots replace badge" [ref=f37e21] [cursor=pointer]
+    - textbox "Note for the agent" [ref=f37e22]:
+      - /placeholder: Note for the agent (optional)
+    - status [ref=f37e23]: Nothing reaches the agent until you pick.

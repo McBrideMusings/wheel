@@ -1,0 +1,23 @@
+- generic [active] [ref=f23e1]:
+  - banner [ref=f23e2]:
+    - heading "Popped-out window and keep-on-top" [level=1] [ref=f23e3]
+    - generic [ref=f23e4]:
+      - generic [ref=f23e5]:
+        - generic [ref=f23e6]: Option
+        - group "Option" [ref=f23e7]:
+          - button "Strip" [pressed] [ref=f23e8] [cursor=pointer]
+          - button "Menu" [ref=f23e9] [cursor=pointer]
+          - button "Auto" [ref=f23e10] [cursor=pointer]
+      - generic [ref=f23e11]:
+        - generic [ref=f23e12]: Theme
+        - group "Theme" [ref=f23e13]:
+          - button "System" [pressed] [ref=f23e14] [cursor=pointer]
+          - button "Light" [ref=f23e15] [cursor=pointer]
+          - button "Dark" [ref=f23e16] [cursor=pointer]
+  - main [ref=f23e17]:
+    - iframe [ref=f23e19]
+  - contentinfo [ref=f23e20]:
+    - button "Pick Strip" [ref=f23e21] [cursor=pointer]
+    - textbox "Note for the agent" [ref=f23e22]:
+      - /placeholder: Note for the agent (optional)
+    - status [ref=f23e23]: Nothing reaches the agent until you pick.

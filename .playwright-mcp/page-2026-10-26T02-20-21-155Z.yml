@@ -1,0 +1,33 @@
+- generic [active] [ref=f17e1]:
+  - banner [ref=f17e2]:
+    - heading "Named" [level=1] [ref=f17e3]
+    - generic [ref=f17e4]:
+      - generic [ref=f17e5]:
+        - generic [ref=f17e6]: Option
+        - group "Option" [ref=f17e7]:
+          - button "A" [pressed] [ref=f17e8] [cursor=pointer]
+          - button "B" [ref=f17e9] [cursor=pointer]
+      - generic [ref=f17e10]:
+        - generic [ref=f17e11]: State
+        - group "State" [ref=f17e12]:
+          - button "X" [pressed] [ref=f17e13] [cursor=pointer]
+      - generic [ref=f17e14]:
+        - generic [ref=f17e15]: Theme
+        - group "Theme" [ref=f17e16]:
+          - button "System" [pressed] [ref=f17e17] [cursor=pointer]
+          - button "Light" [ref=f17e18] [cursor=pointer]
+          - button "Dark" [ref=f17e19] [cursor=pointer]
+      - generic [ref=f17e20]:
+        - generic [ref=f17e21]: Width
+        - group "Width" [ref=f17e22]:
+          - button "Fit" [pressed] [ref=f17e23] [cursor=pointer]
+          - button "390" [ref=f17e24] [cursor=pointer]
+          - button "1280" [ref=f17e25] [cursor=pointer]
+  - main [ref=f17e26]:
+    - iframe [ref=f17e28]:
+      - paragraph [ref=f18e4]: a
+  - contentinfo [ref=f17e29]:
+    - button "Pick A" [ref=f17e30] [cursor=pointer]
+    - textbox "Note for the agent" [ref=f17e31]:
+      - /placeholder: Note for the agent (optional)
+    - status [ref=f17e32]: Nothing reaches the agent until you pick.
