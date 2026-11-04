@@ -3691,6 +3691,7 @@ async fn artifact_tools(
         req: Some(req),
         name,
         scope,
+        pane: None,
         space,
     };
     let ServerMsg::Tools { tools, .. } = conn.call(msg, req).await? else {
@@ -3725,6 +3726,7 @@ async fn artifact_read(
         req: Some(req),
         name,
         scope,
+        pane: None,
         space,
         uri,
     };
@@ -3755,6 +3757,7 @@ async fn artifact_call(
         req: Some(req),
         name,
         scope,
+        pane: None,
         space,
         tool,
         arguments,

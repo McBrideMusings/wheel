@@ -29,7 +29,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 16] = [
+const KEYS: [&str; 17] = [
     "path",
     "url",
     "title",
@@ -46,6 +46,7 @@ const KEYS: [&str; 16] = [
     "restart",
     "mcp",
     "mcp_url",
+    "shared",
 ];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
@@ -88,6 +89,9 @@ pub(crate) struct Entry {
     pub(crate) mcp: Option<String>,
     /// The URL of an MCP server that speaks streamable HTTP.
     pub(crate) mcp_url: Option<String>,
+    /// The MCP server declares it serves every project at once: one process for every space,
+    /// told the open projects as roots (ADR-0028). Absent means one process per space.
+    pub(crate) shared: bool,
     problems: Vec<String>,
 }
 
@@ -243,6 +247,7 @@ impl Entry {
             restart: None,
             mcp: None,
             mcp_url: None,
+            shared: false,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -300,6 +305,8 @@ impl Entry {
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
                 ("app", toml::Value::String(command)) => e.app = Some(command.clone()),
                 ("mcp", toml::Value::String(command)) => e.mcp = Some(command.clone()),
+                ("shared", toml::Value::Boolean(on)) => e.shared = *on,
+                ("shared", _) => e.problems.push("shared is true or false".into()),
                 ("mcp_url", toml::Value::String(url)) => match mcp_url(url.trim()) {
                     Ok(()) => e.mcp_url = Some(url.trim().to_string()),
                     Err(why) => e.problems.push(why),
@@ -383,6 +390,10 @@ impl Entry {
         {
             e.problems
                 .push("an MCP server entry is neither a url entry nor a post".into());
+        }
+        if e.shared && e.mcp.is_none() && e.mcp_url.is_none() {
+            e.problems
+                .push("shared says an MCP server serves every project, but no mcp or mcp_url names one".into());
         }
         if e.restart.is_some() && e.app.is_none() {
             e.problems

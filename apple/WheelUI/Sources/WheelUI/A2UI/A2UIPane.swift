@@ -83,7 +83,7 @@ public final class A2UIPane {
         state = .probing
         let req = nextReq()
         pending[req] = .tools
-        send(.artifactTools(req: req, name: artifact.name, scope: artifact.scope, space: space))
+        send(.artifactTools(req: req, name: artifact.name, scope: artifact.scope, space: space, pane: pane))
     }
 
     /// Take one daemon message; true when it answered a request of this pane.
@@ -114,7 +114,7 @@ public final class A2UIPane {
             guard pane == self.pane, let link, state == .ready else { return false }
             let req = nextReq()
             pending[req] = .data
-            send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, tool: link.tool, arguments: nil))
+            send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, pane: pane, tool: link.tool, arguments: nil))
         case let .error(req, _, message):
             guard let req, let step = pending.removeValue(forKey: req) else { return false }
             switch step {
@@ -130,7 +130,7 @@ public final class A2UIPane {
     private func read(_ link: A2UIMessages.Link) {
         let req = nextReq()
         pending[req] = .layout
-        send(.artifactRead(req: req, name: artifact.name, scope: artifact.scope, space: space, uri: link.uri))
+        send(.artifactRead(req: req, name: artifact.name, scope: artifact.scope, space: space, pane: pane, uri: link.uri))
     }
 
     private func layout(_ text: String) {
@@ -153,7 +153,7 @@ public final class A2UIPane {
         guard let link else { return }
         let req = nextReq()
         pending[req] = .data
-        send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, tool: link.tool, arguments: nil))
+        send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, pane: pane, tool: link.tool, arguments: nil))
     }
 
     /// A button's action calls the tool the action's event names, its context as the arguments.
@@ -161,7 +161,7 @@ public final class A2UIPane {
         notice = nil
         let req = nextReq()
         pending[req] = .action(action.name)
-        send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, tool: action.name,
+        send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, pane: pane, tool: action.name,
                            arguments: A2UIMessages.arguments(action)))
     }
 

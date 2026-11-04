@@ -3166,8 +3166,23 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
+ "url",
  "webpki-roots",
  "wheel-proto",
+]
+
+[[package]]
+name = "wheelhouse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml_edit",
+ "url",
 ]
 
 [[package]]
