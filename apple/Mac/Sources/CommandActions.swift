@@ -339,6 +339,12 @@ extension AppModel {
         Log.info("command palette: root mode")
     }
 
+    /// Esc: leave New Space mode, else close the palette.
+    func commandPaletteEscape() {
+        if commandPalette?.mode == .newSpace { return commandPaletteBack() }
+        closeCommandPalette()
+    }
+
     /// Tab: complete the selected folder's path.
     func commandPaletteTab() {
         guard var palette = commandPalette, palette.mode == .newSpace else { return }
@@ -444,9 +450,9 @@ extension AppModel {
             openArtifactInNewPane(info)
         case .session: break
         case let .recent(dir): createSpace(cwd: dir)
+        case let .newSpaceHere(dir, _): createSpace(cwd: dir)
         case .newSpaceMode: break
-        case let .folder(path, space):
-            if let space { focus(space: space) } else { createSpace(cwd: path) }
+        case let .folder(path, _): createSpace(cwd: path)
         case .missing: break
         }
     }

@@ -31,7 +31,7 @@ struct CommandPaletteOverlay: View {
             .shadow(color: .black.opacity(inline ? 0 : 0.28), radius: 14, y: 4)
             .padding(.horizontal, inline ? 0 : 16)
             .padding(.top, inline ? 0 : 48)
-            .onExitCommand { model.closeCommandPalette() }
+            .onExitCommand { model.commandPaletteEscape() }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Command palette")
         }
@@ -102,6 +102,7 @@ private struct PaletteRow: View {
         switch row.item {
         case .action: "command"
         case .space: "rectangle.3.group"
+        case .newSpaceHere: "plus.rectangle.on.folder"
         case .pane: "rectangle.split.2x1"
         case .artifact: "doc.richtext"
         case .session: "square.stack"

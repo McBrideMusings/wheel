@@ -26,7 +26,7 @@ struct CommandPaletteTests {
             ]
         )
         #expect(p.rows.map(\.id) == [
-            "space:s2", "space:s1", "recent:/Users/p/new", "recent:/Users/p/old",
+            "space:s2", "new-space-here:/Users/p/wheel", "space:s1", "new-space-here:/tmp", "recent:/Users/p/new", "recent:/Users/p/old",
             "action:new-space", "action:open-folder", "action:settings", "action:toggle-sidebar", "action:chat-terminal",
         ])
     }
@@ -40,7 +40,7 @@ struct CommandPaletteTests {
             artifacts: [ArtifactInfo(scope: .project, name: "status", title: "Build Status")],
             recents: [], actions: Self.actions
         )
-        #expect(p.rows.prefix(4).map(\.id) == ["space:s1", "pane:p1", "pane:p2", "artifact:project/status"])
+        #expect(p.rows.prefix(5).map(\.id) == ["space:s1", "new-space-here:/w", "pane:p1", "pane:p2", "artifact:project/status"])
         p.type("BUILD")
         #expect(p.rows.map(\.id) == ["artifact:project/status"])
         p.type("term")
@@ -55,7 +55,7 @@ struct CommandPaletteTests {
             sessions: [.init(id: "x1", name: "open-assistant")],
             recents: [], actions: []
         )
-        #expect(p.rows.map(\.id) == ["space:s1", "artifact:project/status", "session:x1", "action:new-space"])
+        #expect(p.rows.map(\.id) == ["space:s1", "new-space-here:/w", "artifact:project/status", "session:x1", "action:new-space"])
         p.type("assist")
         #expect(p.rows.first?.item == .session(id: "x1", name: "open-assistant"))
         #expect(p.rows.first?.item.title == "Switch to open-assistant")
@@ -169,5 +169,13 @@ struct CommandPaletteTests {
         #expect(p.rows.first?.item.title == "No folder at ~/Projcts/")
         p.tab()
         #expect(p.query == "~/Projcts/wh")
+    }
+
+    @Test func eachOpenSpaceListsSwitchingAndANewSpaceInItsFolderAsSeparateRows() {
+        let p = palette(spaces: [.init(id: "s1", name: "reddit-protos", dir: "/Work/reddit-protos")])
+        #expect(p.rows.prefix(2).map(\.item.title) == ["Switch to reddit-protos", "New Space in reddit-protos"])
+        var q = p
+        q.type("new space reddit")
+        #expect(q.rows.first?.item == .newSpaceHere(dir: "/Work/reddit-protos", name: "reddit-protos"))
     }
 }

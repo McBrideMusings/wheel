@@ -23,6 +23,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
     case action(id: String, title: String, shortcut: String?)
     /// A space that is open now.
     case space(id: String, name: String, dir: String)
+    /// Make another space in the folder of one that is open now; `name` is that space's.
+    case newSpaceHere(dir: String, name: String)
     /// A pane of an open space; `space` is the id of the space holding it.
     case pane(id: String, space: String, name: String, spaceName: String)
     /// An artifact a web pane can show, opened in a new pane split right of the focused one.
@@ -44,6 +46,7 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case let .action(id, _, _): "action:\(id)"
         case let .space(id, _, _): "space:\(id)"
+        case let .newSpaceHere(dir, _): "new-space-here:\(dir)"
         case let .pane(id, _, _, _): "pane:\(id)"
         case let .artifact(scope, name, _): "artifact:\(scope.rawValue)/\(name)"
         case let .session(id, _): "session:\(id)"
@@ -60,6 +63,7 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case .action: "action"
         case .space: "space"
+        case .newSpaceHere: "new_space_here"
         case .pane: "pane"
         case .artifact: "artifact"
         case .session: "session"
@@ -74,11 +78,12 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
     public var title: String {
         switch self {
         case let .action(_, title, _): title
-        case let .space(_, name, _): name
+        case let .space(_, name, _): "Switch to \(name)"
+        case let .newSpaceHere(_, name): "New Space in \(name)"
         case let .pane(_, _, name, _): name
         case let .artifact(_, name, title): title.isEmpty ? name : title
         case let .session(_, name): "Switch to \(name)"
-        case let .recent(dir): CommandPalette.lastComponent(of: dir)
+        case let .recent(dir): "New Space in \(CommandPalette.lastComponent(of: dir))"
         case .newSpaceMode: "New Space…"
         case let .folder(path, _): CommandPalette.lastComponent(of: path)
         case let .missing(path): "No folder at \(path)"
@@ -91,6 +96,7 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case let .action(_, _, shortcut): shortcut ?? ""
         case let .space(_, _, dir): dir
+        case let .newSpaceHere(dir, _): dir
         case let .pane(id, _, _, spaceName): "\(spaceName) · \(id)"
         case let .artifact(scope, name, _): "\(scope.rawValue) · \(name)"
         case .session: "session"
@@ -342,11 +348,14 @@ public struct CommandPalette: Sendable, Equatable {
         let open = Set(spaces.map(\.dir))
         let closed = recents.filter { !open.contains($0.dir) }.sorted { $0.openedMs > $1.openedMs }
         var items: [(item: PaletteItem, texts: [String])] = []
-        items += spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), [$0.name, $0.dir]) }
+        for space in spaces {
+            items.append((.space(id: space.id, name: space.name, dir: space.dir), ["Switch to \(space.name)", space.dir]))
+            items.append((.newSpaceHere(dir: space.dir, name: space.name), ["New Space in \(space.name)", space.dir]))
+        }
         items += panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), [$0.name, "\($0.spaceName) \($0.name)"]) }
         items += artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), [$0.title, $0.name]) }
         items += sessions.map { (.session(id: $0.id, name: $0.name), ["Switch to \($0.name)", $0.name]) }
-        items += closed.map { (.recent(dir: $0.dir), [$0.dir]) }
+        items += closed.map { (.recent(dir: $0.dir), ["New Space in \(lastComponent(of: $0.dir))", $0.dir]) }
         items.append((.newSpaceMode, ["New Space…"]))
         items += actions.map { action in
             let item: PaletteItem = action.id == PaletteAction.openFolderID
