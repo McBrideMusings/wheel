@@ -109,6 +109,12 @@ public final class A2UIPane {
             case let .action(name)?: apply(result, action: name)
             default: return false
             }
+        case let .mcpUpdated(pane):
+            // The server announced a change: ask the linked tool for the data again.
+            guard pane == self.pane, let link, state == .ready else { return false }
+            let req = nextReq()
+            pending[req] = .data
+            send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, tool: link.tool, arguments: nil))
         case let .error(req, _, message):
             guard let req, let step = pending.removeValue(forKey: req) else { return false }
             switch step {

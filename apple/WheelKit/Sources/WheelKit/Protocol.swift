@@ -1149,6 +1149,8 @@ public enum ServerMsg: Sendable {
     case clients(req: UInt64, clients: [ClientInfo])
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
+    /// The MCP server behind pane `pane` said a resource changed.
+    case mcpUpdated(pane: String)
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
     /// space directory of a `project` artifact, nil for a `machine` one.
     case artifactGone(scope: ArtifactScope, name: String, cwd: String?)
@@ -1310,6 +1312,7 @@ extension ServerMsg: Decodable {
         case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "clients": self = .clients(req: try c.decode(UInt64.self, forKey: .req), clients: try c.decode([ClientInfo].self, forKey: .clients))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
+        case "mcp_updated": self = .mcpUpdated(pane: try c.decode(String.self, forKey: .pane))
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
                                  cwd: try c.decodeIfPresent(String.self, forKey: .cwd))

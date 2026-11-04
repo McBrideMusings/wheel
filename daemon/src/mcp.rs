@@ -34,7 +34,7 @@ enum Def {
 
 struct Session {
     def: Def,
-    service: RunningService<RoleClient, ()>,
+    service: RunningService<RoleClient, Watch>,
 }
 
 /// The sessions of every artifact, keyed by scope, name and the space's directory. Each key has a
@@ -52,6 +52,29 @@ impl Sessions {
             .entry(key.to_string())
             .or_default()
             .clone()
+    }
+}
+
+/// The client side of a session: a server's `notifications/resources/updated` reaches every
+/// connection as `mcp_updated` for each pane showing the artifact in a space of this directory.
+#[derive(Clone)]
+struct Watch {
+    state: std::sync::Weak<AppState>,
+    scope: ArtifactScope,
+    name: String,
+    cwd: String,
+}
+
+impl rmcp::ClientHandler for Watch {
+    async fn on_resource_updated(
+        &self,
+        _params: rmcp::model::ResourceUpdatedNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleClient>,
+    ) {
+        let Some(state) = self.state.upgrade() else { return };
+        for pane in state.mcp_panes(self.scope, &self.name, &self.cwd) {
+            let _ = state.global.send(wheel_proto::ServerMsg::McpUpdated { pane });
+        }
     }
 }
 
@@ -99,7 +122,12 @@ impl AppState {
         }
         // Dropping the old session ends its process, or its HTTP session, before the new one starts.
         *held = None;
-        let service = tokio::time::timeout(CONNECT, self.mcp_connect(&def, &cwd, name))
+        let service = tokio::time::timeout(CONNECT, self.mcp_connect(
+            &def,
+            &cwd,
+            name,
+            Watch { state: self.me.clone(), scope: artifact.scope(), name: name.to_string(), cwd: cwd.clone() },
+        ))
             .await
             .map_err(|_| {
                 format!(
@@ -118,7 +146,8 @@ impl AppState {
         def: &Def,
         cwd: &str,
         name: &str,
-    ) -> Result<RunningService<RoleClient, ()>, String> {
+        watch: Watch,
+    ) -> Result<RunningService<RoleClient, Watch>, String> {
         match def {
             Def::Stdio(command) => {
                 let mut cmd = tokio::process::Command::new("/bin/sh");
@@ -144,14 +173,14 @@ impl AppState {
                         }
                     });
                 }
-                ().serve(transport)
+                watch.serve(transport)
                     .await
                     .map_err(|e| format!("{name}: {command:?} did not start an MCP session: {e}"))
             }
             Def::Http(url) => {
                 // A https URL needs the process's TLS provider, which nothing else may have set.
                 let _ = rustls::crypto::ring::default_provider().install_default();
-                ().serve(StreamableHttpClientTransport::from_uri(url.as_str()))
+                watch.serve(StreamableHttpClientTransport::from_uri(url.as_str()))
                     .await
                     .map_err(|e| format!("{name}: cannot open an MCP session with {url}: {e}"))
             }
@@ -397,6 +426,25 @@ impl AppState {
             return Err(format!("{tool} is not visible to an app"));
         }
         self.mcp_call(name, scope, space, tool, arguments).await
+    }
+
+    /// The web panes showing artifact `name` of `scope` in the spaces whose directory is `cwd`.
+    fn mcp_panes(&self, scope: ArtifactScope, name: &str, cwd: &str) -> Vec<String> {
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .filter(|s| s.cwd == cwd)
+            .flat_map(crate::spaces::space_panes)
+            .filter_map(|(pane, kind)| match kind {
+                wheel_proto::PaneKind::Web { artifact, .. }
+                    if artifact.scope() == scope && artifact.name() == name =>
+                {
+                    Some(pane.to_string())
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The MCP server artifact pane `pane` shows: its name, scope and the id of its space. None

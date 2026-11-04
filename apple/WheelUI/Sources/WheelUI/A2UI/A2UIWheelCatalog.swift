@@ -3,7 +3,7 @@ import A2UISwiftUI
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
-let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "Unsupported"]
+let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Unsupported"]
 
 // The palette Wheel's pages use, light and dark.
 struct WheelPalette {
@@ -212,6 +212,41 @@ struct A2UIDisclosureView: View {
     }
 }
 
+// MARK: SearchField — a one-line monospaced field that raises its action, text as `q`, as the person types
+struct A2UISearchFieldView: View {
+    let node: ComponentNode
+    let surface: SurfaceModel
+    @State private var text: String
+    @State private var pending: Task<Void, Never>?
+    @Environment(\.colorScheme) private var cs
+    init(node: ComponentNode, surface: SurfaceModel) {
+        self.node = node; self.surface = surface
+        _text = State(initialValue: node.instance.properties["value"]?.stringValue ?? "")
+    }
+    var body: some View {
+        let pal = WheelPalette(dark: cs == .dark)
+        let p = node.instance.properties
+        let bad = p["error"]?.boolValue == true
+        TextField("", text: $text, prompt: Text(p["placeholder"]?.stringValue ?? "").foregroundColor(pal.muted))
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, design: .monospaced))
+            .autocorrectionDisabled()
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(pal.card))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(bad ? pal.bad : pal.line, lineWidth: 1))
+            .accessibilityIdentifier("a2ui.search")
+            .onChange(of: text) { _, new in
+                pending?.cancel()
+                guard let name = p["action"]?.stringValue else { return }
+                pending = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    if Task.isCancelled { return }
+                    surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: ["q": .string(new)])
+                }
+            }
+    }
+}
+
 /// Wheel's additions to the basic catalog, drawn natively: styled text, a box, a progress bar, a
 /// disclosure and the placeholder for a component the catalog does not hold.
 struct WheelA2UICatalog: CustomComponentCatalog {
@@ -222,6 +257,7 @@ struct WheelA2UICatalog: CustomComponentCatalog {
         case "Disclosure": A2UIDisclosureView(node: node, surface: surface)
         case "Label": A2UILabelView(node: node, surface: surface)
         case "Box": A2UIBoxView(node: node, surface: surface)
+        case "SearchField": A2UISearchFieldView(node: node, surface: surface)
         case "Unsupported": A2UIUnsupportedView(node: node)
         default: EmptyView()
         }
