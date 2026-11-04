@@ -51,7 +51,7 @@ extension AppModel {
 
     /// The submenu as the debug state reports it: for every pane, its groups of spaces.
     func paneMoveGroupsJSON() -> [String: Any] {
-        let panes = spaces.flatMap { $0.root.panes.map(\.id) }
+        let panes = spaces.flatMap { $0.allPanes.map(\.id) }
         return Dictionary(uniqueKeysWithValues: panes.map { pane in
             (pane, paneMoveGroups(for: pane).map { group in
                 ["title": group.title, "rows": group.rows.map { ["space": $0.space, "title": $0.title, "here": $0.here] as [String: Any] }] as [String: Any]
@@ -234,12 +234,12 @@ extension AppModel {
 
     /// The glyph a pane's header shows, for the chip.
     func paneSymbol(_ pane: String) -> String? {
-        space(holding: pane)?.root.panes.first(where: { $0.id == pane })?.kind.icon
+        space(holding: pane)?.allPanes.first(where: { $0.id == pane })?.kind.icon
     }
 
     /// A pane's name for the chip that follows the pointer.
     func paneLabel(_ pane: String) -> String {
-        switch space(holding: pane)?.root.panes.first(where: { $0.id == pane })?.kind {
+        switch space(holding: pane)?.allPanes.first(where: { $0.id == pane })?.kind {
         case let .terminal(term, agent)?: agent?.name.capitalized ?? terminals[term]?.view.title.nonEmpty ?? "Terminal"
         case let .agent(_, agent, _)?: agent.capitalized
         case let .web(artifact)?: artifact.name

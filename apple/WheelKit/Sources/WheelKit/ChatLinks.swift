@@ -561,7 +561,7 @@ extension ChatLinks {
     /// Where agent `agent`'s pane is: its space, the space's directory and the pane's id.
     public static func place(ofAgent agent: String, in spaces: [SpaceInfo]) -> (space: String, cwd: String, pane: String)? {
         for space in spaces {
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 if case let .agent(name, _, _) = pane.kind, name == agent { return (space.id, space.cwd, pane.id) }
             }
         }
@@ -573,7 +573,7 @@ extension ChatLinks {
     public static func layoutKey(_ spaces: [SpaceInfo]) -> String {
         var parts: [String] = []
         for space in spaces {
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 var part = "\(space.id) \(space.cwd) \(chip(for: pane.id, in: [space]) ?? pane.id)"
                 if case let .agent(name, _, _) = pane.kind { part += " \(name)" }
                 parts.append(part)
@@ -586,7 +586,7 @@ extension ChatLinks {
     /// shows; nil when no pane has that id.
     public static func chip(for id: String, in spaces: [SpaceInfo]) -> String? {
         for space in spaces {
-            for pane in space.root.panes where pane.id == id {
+            for pane in space.allPanes where pane.id == id {
                 let what: String
                 switch pane.kind {
                 case .empty: what = "Empty"

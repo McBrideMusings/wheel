@@ -121,7 +121,7 @@ extension AppModel {
                 if let pending = pendingNewSpace, Date().timeIntervalSince(pending.at) >= 10 {
                     pendingNewSpace = nil
                 } else if let pending = pendingNewSpace,
-                          let space = fresh.first(where: { id in spaces.first { $0.id == id }?.root.panes.contains { $0.id == pending.pane } == true }) {
+                          let space = fresh.first(where: { id in spaces.first { $0.id == id }?.allPanes.contains { $0.id == pending.pane } == true }) {
                     pendingNewSpace = nil
                     do {
                         layout.place(space, in: pending.window, at: pending.position)
@@ -260,7 +260,7 @@ extension AppModel {
     /// "It holds 3 spaces with 6 panes. 1 of them is in a little window."
     func closeSummary(of window: WindowRecord) -> String {
         let held = spaces(in: window.id)
-        let panes = held.reduce(0) { $0 + $1.root.panes.count }
+        let panes = held.reduce(0) { $0 + $1.allPanes.count }
         let little = window.spaces.filter { layout.little(showing: $0) != nil }.count
         var text = "It holds \(held.count) \(held.count == 1 ? "space" : "spaces") with \(panes) \(panes == 1 ? "pane" : "panes")."
         if little > 0 { text += " \(little) of them \(little == 1 ? "is" : "are") in a little window." }
@@ -428,7 +428,7 @@ extension AppModel {
     func updatePageVisibility() {
         let shown = shownSpaces
         var space: [String: String] = [:]
-        for s in spaces { for pane in s.root.panes { space[pane.id] = s.id } }
+        for s in spaces { for pane in s.allPanes { space[pane.id] = s.id } }
         func set(_ view: NSView, _ pane: String) {
             guard let id = space[pane] else { return }
             let hidden = !shown.contains(id)

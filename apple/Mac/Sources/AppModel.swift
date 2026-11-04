@@ -386,7 +386,7 @@ final class AppModel {
     /// The space holding the terminal `term`.
     private func spaceId(ofTerm term: String) -> String? {
         spaces.first { space in
-            space.root.panes.contains { if case let .terminal(t, _) = $0.kind { return t == term } else { return false } }
+            space.allPanes.contains { if case let .terminal(t, _) = $0.kind { return t == term } else { return false } }
         }?.id
     }
 
@@ -545,7 +545,7 @@ final class AppModel {
         // that pane is there, else the first.
         let spaces = spaces.map { space -> SpaceInfo in
             var space = space
-            if let was = old.first(where: { $0.id == space.id }) { space.focus = was.focusKept(in: space.root) }
+            if let was = old.first(where: { $0.id == space.id }) { space.focus = space.allPanes.contains { $0.id == was.focus } ? was.focus : was.focusKept(in: space.root) }
             return space
         }
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
@@ -557,7 +557,7 @@ final class AppModel {
             self.spaces = spaces
         }
         reconcileWindows(spaces)
-        if let pane = pendingShow.pane, spaces.contains(where: { $0.root.panes.contains { $0.id == pane } }) {
+        if let pane = pendingShow.pane, spaces.contains(where: { $0.allPanes.contains { $0.id == pane } }) {
             pendingShow.pane = nil
             focus(pane: pane)
         }
@@ -572,13 +572,13 @@ final class AppModel {
             sendLayoutOp { .spaceClose(req: $0, id: space, ifEmpty: true) }
         }
         refreshCommandPalette()
-        let held = Set(spaces.flatMap { $0.root.panes.map { $0.id } })
+        let held = Set(spaces.flatMap { $0.allPanes.map { $0.id } })
         rawContextPanes.formIntersection(held)
         paneFrames = paneFrames.filter { held.contains($0.key) }
         paneBodyFrames = paneBodyFrames.filter { held.contains($0.key) }
         // A palette is for the pane as it was when it opened: a pane that left, or that something
         // else (an agent, the CLI) changed to another kind, closes it.
-        let kinds = Dictionary(uniqueKeysWithValues: spaces.flatMap { $0.root.panes }.map { ($0.id, $0.kind.name) })
+        let kinds = Dictionary(uniqueKeysWithValues: spaces.flatMap { $0.allPanes }.map { ($0.id, $0.kind.name) })
         for (pane, palette) in palettes where kinds[pane] != palette.openedOver {
             palettes[pane] = nil
             Log.info("palette \(pane): its pane \(kinds[pane] == nil ? "left the layout" : "became \(kinds[pane] ?? "")"); closed")
@@ -613,7 +613,7 @@ final class AppModel {
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
-            let leaving = !spaces.contains { $0.root.panes.contains { $0.id == pane } }
+            let leaving = !spaces.contains { $0.allPanes.contains { $0.id == pane } }
             retire("web:\(pane)", animated: animated && leaving, stillWanted: { [self] in WebPanes.panes(self.spaces)[pane]?.artifact == web.artifact }) { [self] in
                 webPanes[pane] = nil
                 a2uiPanes[pane] = nil
@@ -626,7 +626,7 @@ final class AppModel {
             let web = WebPane(pane: pane, artifact: shown.artifact, store: shown.store, daemon: pageDaemon)
             webPanes[pane] = web
             open(web)
-            let space = spaces.first { $0.root.panes.contains { $0.id == pane } }?.id
+            let space = spaces.first { $0.allPanes.contains { $0.id == pane } }?.id
             let a2ui = A2UIPane(pane: pane, artifact: shown.artifact, space: space, send: { [client] in client.send($0) }, nextReq: { [client] in client.req() })
             a2uiPanes[pane] = a2ui
             a2ui.start()
@@ -680,7 +680,7 @@ final class AppModel {
         terminalLooks = terminalLooks.filter { live.contains($0.key) }
         terminalControllers = terminalControllers.filter { live.contains($0.key) }
         askAppearances()
-        let layoutLog = "spaces: \(spaces.map { "\($0.id)(\($0.root.panes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " "))"
+        let layoutLog = "spaces: \(spaces.map { "\($0.id)(\($0.allPanes.map { "\($0.id):\($0.kind.name)" }.joined(separator: ",")))" }.joined(separator: " "))"
         if layoutLog != lastLayoutLog {
             lastLayoutLog = layoutLog
             Log.info(layoutLog)
@@ -1013,7 +1013,7 @@ final class AppModel {
     /// Focus `pane` in this client: it is the one its space's keys and header act on. The daemon is
     /// told only through the next `view` report.
     func focus(pane: String) {
-        guard let i = spaces.firstIndex(where: { $0.root.panes.contains { $0.id == pane } }) else {
+        guard let i = spaces.firstIndex(where: { $0.allPanes.contains { $0.id == pane } }) else {
             pendingShow.pane = pane
             return
         }
@@ -1065,6 +1065,50 @@ final class AppModel {
         sendLayoutOp(showing: .pane) { .paneSplit(req: $0, pane: pane, dir: dir, focus: false) }
     }
 
+    /// Move `pane` to `site`; a pane already there goes back to the grid, so the header's button toggles.
+    func toggleSite(_ pane: String, _ site: PaneSite) {
+        guard let space = space(holding: pane) else { return }
+        zoomedPanes[space.id] = nil
+        let to: PaneSite = space.site(of: pane) == site ? .grid : site
+        Log.info("pane \(pane): \(space.site(of: pane)?.rawValue ?? "?") -> \(to.rawValue)")
+        sendLayoutOp { .paneSetSite(req: $0, pane: pane, site: to) }
+    }
+
+    /// Where each popped window sits in its space's grid, by the panes it holds. These belong to this
+    /// client (ADR-0022): wheeld never hears them, and a second client keeps its own.
+    var poppedFrames: [String: CGRect] = AppModel.loadPoppedFrames()
+    private static let poppedFramesKey = "wheel.poppedFrames"
+
+    private static func loadPoppedFrames() -> [String: CGRect] {
+        guard let data = UserDefaults.standard.data(forKey: poppedFramesKey),
+              let raw = try? JSONDecoder().decode([String: [Double]].self, from: data) else { return [:] }
+        return raw.compactMapValues { $0.count == 4 ? CGRect(x: $0[0], y: $0[1], width: $0[2], height: $0[3]) : nil }
+    }
+
+    /// Where `tree`'s window sits in a grid of `size`: where one of its panes was left, else a cascade
+    /// step from the grid's top left. It always stays reachable inside the grid.
+    func poppedFrame(of tree: Node, index: Int, in size: CGSize) -> CGRect {
+        let remembered = tree.panes.lazy.compactMap { self.poppedFrames[$0.id] }.first
+        let fallback = CGRect(x: size.width * 0.4 + CGFloat(index) * 36, y: size.height * 0.1 + CGFloat(index) * 36,
+                              width: max(size.width * 0.5, 320), height: max(size.height * 0.5, 220))
+        let frame = remembered ?? fallback
+        let width = min(frame.width, max(size.width, 1)), height = min(frame.height, max(size.height, 1))
+        return CGRect(x: min(max(frame.minX, 0), max(size.width - width, 0)),
+                      y: min(max(frame.minY, 0), max(size.height - height, 0)), width: width, height: height)
+    }
+
+    func setPoppedFrame(_ frame: CGRect, of tree: Node) {
+        for pane in tree.panes { poppedFrames[pane.id] = frame }
+        let raw = poppedFrames.mapValues { [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)] }
+        if let data = try? JSONEncoder().encode(raw) { UserDefaults.standard.set(data, forKey: Self.poppedFramesKey) }
+    }
+
+    /// A popped window dropped on the space's edge: every pane in it goes to the tray.
+    func backgroundWindow(_ tree: Node) {
+        Log.info("popped window \(tree.panes.map(\.id).joined(separator: ",")): dropped on the edge, backgrounded")
+        for pane in tree.panes { sendLayoutOp { .paneSetSite(req: $0, pane: pane.id, site: .backgrounded) } }
+    }
+
     /// Show artifact `info` in a new pane split right of the focused one: split now, and the
     /// daemon's `created` answer for the split names the pane to switch to the artifact.
     func openArtifactInNewPane(_ info: ArtifactInfo) {
@@ -1108,7 +1152,18 @@ final class AppModel {
         let zoomed = space.flatMap { zoomedPane(in: $0) } == pane
         return HeaderButton(id: "zoom", title: zoomed ? "Unzoom Pane (⇧⌘↩)" : "Zoom Pane (⇧⌘↩)",
                             symbol: zoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                            enabled: zoomed || (space?.root.panes.count ?? 0) > 1, on: zoomed)
+                            enabled: zoomed || (space?.site(of: pane) == .grid && (space?.root.panes.count ?? 0) > 1), on: zoomed)
+    }
+
+    /// The header's pop-out button: lit while the pane is popped out, and pressing it again returns the pane to the grid.
+    func popButton(for pane: String) -> HeaderButton {
+        let popped = space(holding: pane)?.site(of: pane) == .popped
+        return HeaderButton(id: "pop", title: "Pop out", symbol: "rectangle.on.rectangle", enabled: true, on: popped)
+    }
+
+    /// The header's background button; a backgrounded pane has no header, so it is never lit.
+    func backgroundButton() -> HeaderButton {
+        HeaderButton(id: "background", title: "Background", symbol: "tray.and.arrow.down", enabled: true, on: false)
     }
 
     /// One entry of a pane header's context menu.
@@ -1328,7 +1383,7 @@ final class AppModel {
     }
 
     func space(holding pane: String) -> SpaceInfo? {
-        spaces.first { $0.root.panes.contains { $0.id == pane } }
+        spaces.first { $0.allPanes.contains { $0.id == pane } }
     }
 
     /// The daemon answered: drop the overrides of every divider whose ratio it has heard.
@@ -1618,7 +1673,7 @@ final class AppModel {
         func beside(url: String? = nil, artifact: String? = nil) {
             guard let place = links.locate(agent) else { return }
             lastLinkClick[agent] = LinkClick(action: "\(action)", page: url, artifact: artifact,
-                                             before: Set(spaces.flatMap(\.root.panes).map(\.id)))
+                                             before: Set(spaces.flatMap(\.allPanes).map(\.id)))
             zoomedPanes[place.space] = nil
             sendLayoutOp(showing: .pane) { .paneOpen(req: $0, pane: place.pane, dir: .right, url: url, artifact: artifact, focus: false) }
         }

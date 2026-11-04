@@ -33,7 +33,7 @@ extension AppModel {
         }
         guard let shown, let space = spaces.first(where: { $0.id == shown }) else { return nil }
         if let zoomed = zoomedPane(in: space) { return paneFrames[zoomed]?.contains(point) == true ? zoomed : nil }
-        return space.root.panes.first { paneFrames[$0.id]?.contains(point) == true }?.id
+        return space.allPanes.reversed().first { paneFrames[$0.id]?.contains(point) == true }?.id
     }
 }
 

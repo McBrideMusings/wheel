@@ -137,7 +137,7 @@ extension AppModel {
     }
 
     func kind(of pane: String) -> PaneKind? {
-        space(holding: pane)?.root.panes.first { $0.id == pane }?.kind
+        space(holding: pane)?.allPanes.first { $0.id == pane }?.kind
     }
 
     /// The home directory text for the agent pane running `agent`: the home that pane saved, else
@@ -171,7 +171,7 @@ extension AppModel {
     func askCloseSpace(_ id: String) {
         guard let space = spaces.first(where: { $0.id == id }) else { return }
         var shells = 0, agents = 0
-        for pane in space.root.panes {
+        for pane in space.allPanes {
             if case .terminal = pane.kind { shells += 1 }
             if case .agent = pane.kind { agents += 1 }
         }

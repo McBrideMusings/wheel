@@ -640,7 +640,7 @@ final class DebugServer {
             // (Return: open the selected row, or list again after a failure), escape, click (a row,
             // by scope and name), confirm (the yes asked before a shell or agent is replaced) and
             // close (a click on the dimmed body).
-            guard let pane = query["pane"], model.spaces.contains(where: { $0.root.panes.contains { $0.id == pane } }) else {
+            guard let pane = query["pane"], model.spaces.contains(where: { $0.allPanes.contains { $0.id == pane } }) else {
                 return refuse("404 Not Found", "no pane with that id")
             }
             let action = query["action"] ?? ""
@@ -843,6 +843,22 @@ final class DebugServer {
             guard let window = found else { return refuse("404 Not Found", "no such window") }
             if target.path == "/window/front" { window.orderFrontRegardless() } else { window.orderBack(nil) }
             Log.info("debug: window \(target.path == "/window/front" ? "in front" : "sent back")")
+        case ("POST", "/popped/frame"):
+            // Where a popped window sits, as its drag or its resize handle sets it at the end:
+            // `pane` names any pane in the window; `x`, `y`, `w` and `h` are points in its space's grid.
+            guard let pane = query["pane"],
+                  let tree = model.spaces.lazy.flatMap(\.popped).first(where: { $0.panes.contains { $0.id == pane } })
+            else { return refuse("404 Not Found", "no popped pane with that id") }
+            let n = ["x", "y", "w", "h"].compactMap { query[$0].flatMap(Double.init) }
+            guard n.count == 4 else { return refuse("400 Bad Request", "x, y, w and h are required") }
+            model.setPoppedFrame(CGRect(x: n[0], y: n[1], width: n[2], height: n[3]), of: tree)
+        case ("POST", "/popped/edge-drop"):
+            // A popped window dropped on its space's edge, without a pointer: the model call the
+            // window's drag makes when it ends over the edge.
+            guard let pane = query["pane"],
+                  let tree = model.spaces.lazy.flatMap(\.popped).first(where: { $0.panes.contains { $0.id == pane } })
+            else { return refuse("404 Not Found", "no popped pane with that id") }
+            model.backgroundWindow(tree)
         case ("POST", "/pane/drag"):
             // A header drag without a pointer: `action` is start (`pane`), hover (`target` and
             // `zone`: center, left, right, up or down; a target in another space takes a side), hover
@@ -853,7 +869,7 @@ final class DebugServer {
             Log.info("debug: pane drag \(query["action"] ?? "-")")
             switch query["action"] {
             case "start":
-                let held = Set(model.spaces.flatMap { $0.root.panes.map(\.id) })
+                let held = Set(model.spaces.flatMap { $0.allPanes.map(\.id) })
                 guard let pane = query["pane"], held.contains(pane) else { return refuse("404 Not Found", "no pane with that id") }
                 model.beginPaneDrag(pane, fresh: true)
             case "hover":
@@ -1228,7 +1244,7 @@ final class DebugServer {
         case ("POST", "/pane/menu"):
             // A pick from the pane header's context menu, by the item id `/state` lists under `menu`.
             guard let pane = query["pane"], let item = query["item"] else { return refuse("400 Bad Request", "pane and item are required") }
-            guard let found = model.spaces.lazy.flatMap({ $0.root.panes }).first(where: { $0.id == pane }) else {
+            guard let found = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane }) else {
                 return refuse("404 Not Found", "no pane \(pane)")
             }
             guard let entry = model.headerMenu(for: pane, kind: found.kind).first(where: { $0.id == item }), entry.enabled else {
@@ -1238,11 +1254,15 @@ final class DebugServer {
         case ("POST", "/pane/button"):
             // A press of a pane header's own button, by the id `/state` lists under `header_buttons`.
             guard let pane = query["pane"], let button = query["button"] else { return refuse("400 Bad Request", "pane and button are required") }
-            guard model.spaces.lazy.flatMap({ $0.root.panes }).contains(where: { $0.id == pane }) else {
+            guard model.spaces.lazy.flatMap({ $0.allPanes }).contains(where: { $0.id == pane }) else {
                 return refuse("404 Not Found", "no pane \(pane)")
             }
-            guard button == "zoom", model.zoomButton(for: pane).enabled else { return refuse("409 Conflict", "no enabled header button \(button)") }
-            model.toggleZoom(pane)
+            switch button {
+            case "pop": model.toggleSite(pane, .popped)
+            case "background": model.toggleSite(pane, .backgrounded)
+            case "zoom" where model.zoomButton(for: pane).enabled: model.toggleZoom(pane)
+            default: return refuse("409 Conflict", "no enabled header button \(button)")
+            }
         case ("POST", "/space/menu"):
             // A pick from a space's context menu (tab or sidebar row), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
@@ -1575,10 +1595,10 @@ final class DebugServer {
     private func panes() -> [String: Any] {
         var out: [String: Any] = [:]
         for space in model.spaces {
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name, "status": statusJSON(space.paneStatuses[pane.id]),
                                         "zoomed": model.zoomedPane(in: space) == pane.id,
-                                        "header_buttons": [model.zoomButton(for: pane.id)].map { ["id": $0.id, "title": $0.title, "symbol": $0.symbol, "enabled": $0.enabled, "on": $0.on] as [String: Any] },
+                                        "header_buttons": [model.popButton(for: pane.id), model.backgroundButton(), model.zoomButton(for: pane.id)].map { ["id": $0.id, "title": $0.title, "symbol": $0.symbol, "enabled": $0.enabled, "on": $0.on] as [String: Any] },
                                         "menu": model.headerMenu(for: pane.id, kind: pane.kind).map { ["id": $0.id, "title": $0.title, "enabled": $0.enabled] as [String: Any] }]
                 if case .empty = pane.kind { o["picker"] = AgentInfo.pickable(model.agents).map(\.name) }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
@@ -1648,7 +1668,7 @@ final class DebugServer {
                         // The last click that opened a pane beside this chat: the action, the page or
                         // artifact it asked for, and the pane now showing that page (null until it exists).
                         "click": model.lastLinkClick[agent].map { click -> [String: Any] in
-                            let opened = model.spaces.flatMap(\.root.panes).first { pane in
+                            let opened = model.spaces.flatMap(\.allPanes).first { pane in
                                 guard !click.before.contains(pane.id) else { return false }
                                 switch pane.kind {
                                 case let .browser(url): return click.page == url
@@ -1873,6 +1893,12 @@ final class DebugServer {
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root),
                  "status": statusJSON(space.status),
+                 "popped": space.popped.map { tree in
+                     ["panes": tree.panes.map(\.id),
+                      "frame": tree.panes.lazy.compactMap { self.model.poppedFrames[$0.id] }.first
+                          .map { [$0.minX, $0.minY, $0.width, $0.height] as [Double] } ?? NSNull()] as [String: Any]
+                 },
+                 "backgrounded": space.backgrounded.flatMap(\.panes).map(\.id),
                  "stack": ["layers": space.stackLayers, "glyph": space.firstPaneKind.icon] as [String: Any]] as [String: Any]
             },
             "status_dots": StatusRank.allCases.filter(model.statusDots.contains).map(\.rawValue),

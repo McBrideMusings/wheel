@@ -7,7 +7,7 @@ public enum AgentPanes {
     public static func agents(_ spaces: [SpaceInfo]) -> [String: String] {
         var out: [String: String] = [:]
         for space in spaces {
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 switch pane.kind {
                 case let .agent(agent, _, _): out[pane.id] = agent
                 default: break
@@ -21,7 +21,7 @@ public enum AgentPanes {
     /// pane runs the agent.
     public static func home(ofAgent agent: String, in spaces: [SpaceInfo]) -> String? {
         for space in spaces {
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 if case let .agent(name, _, home) = pane.kind, name == agent { return home }
             }
         }
@@ -35,7 +35,7 @@ public enum AgentPanes {
         var out: [String: Int] = [:]
         for space in spaces {
             var agents = Set(agents([space]).values)
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 if case .web = pane.kind { agents.insert(pane.id) }
             }
             let count = perms.filter { agents.contains($0.agent) }.count
