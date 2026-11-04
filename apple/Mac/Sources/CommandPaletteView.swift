@@ -23,8 +23,6 @@ struct CommandPaletteOverlay: View {
                 searchField
                 Divider()
                 rows
-                Divider()
-                footer
             }
             .frame(maxWidth: 560)
             .background(.background, in: RoundedRectangle(cornerRadius: 10))
@@ -32,9 +30,8 @@ struct CommandPaletteOverlay: View {
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5))
             .shadow(color: .black.opacity(inline ? 0 : 0.28), radius: 14, y: 4)
             .padding(.horizontal, inline ? 0 : 16)
-            .overlay(alignment: .bottomTrailing) { actionList.padding(.bottom, 24) }
             .padding(.top, inline ? 0 : 48)
-            .onExitCommand { model.commandPaletteEscape() }
+            .onExitCommand { model.closeCommandPalette() }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Command palette")
         }
@@ -66,48 +63,6 @@ struct CommandPaletteOverlay: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 40)
-    }
-
-    /// Return's action for the selected row, and ⌘K when the row has more.
-    private var footer: some View {
-        HStack(spacing: 12) {
-            if let primary = palette.selectedItem?.subActions.first {
-                Text("↩ \(primary.title)")
-            }
-            Spacer()
-            if (palette.selectedItem?.subActions.count ?? 0) > 1 {
-                Text("⌘K Actions")
-            }
-            if palette.mode == .newSpace { Text("⎋ Back") }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .frame(height: 24)
-    }
-
-    @ViewBuilder private var actionList: some View {
-        if let panel = palette.panel {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(panel.enumerated()), id: \.element.id) { index, action in
-                    Text(action.title)
-                        .padding(.horizontal, 8)
-                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                        .background(index == palette.panelSelected ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
-                                    in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.commandPaletteSelect(index); model.commandPaletteRun() }
-                        .accessibilityAddTraits(index == palette.panelSelected ? .isSelected : [])
-                }
-            }
-            .padding(4)
-            .frame(width: 220)
-            .background(.background, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
-            .padding(8)
-            .accessibilityLabel("Actions")
-        }
     }
 
     @ViewBuilder private var rows: some View {

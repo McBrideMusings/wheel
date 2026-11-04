@@ -18,29 +18,6 @@ public struct PaletteAction: Sendable, Equatable {
     }
 }
 
-/// One thing a row can do. Return runs the row's first; ⌘K lists them all (Raycast's Action Panel).
-public enum PaletteSubAction: Sendable, Equatable, Identifiable {
-    case switchToSpace(id: String)
-    case newSpace(dir: String)
-    case closeSpace(id: String)
-
-    public var id: String {
-        switch self {
-        case let .switchToSpace(id): "switch:\(id)"
-        case let .newSpace(dir): "new:\(dir)"
-        case let .closeSpace(id): "close:\(id)"
-        }
-    }
-
-    public var title: String {
-        switch self {
-        case .switchToSpace: "Switch to Space"
-        case .newSpace: "New Space in This Folder"
-        case .closeSpace: "Close Space"
-        }
-    }
-}
-
 /// What a palette row runs.
 public enum PaletteItem: Sendable, Equatable, Identifiable {
     case action(id: String, title: String, shortcut: String?)
@@ -106,18 +83,6 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .folder(path, _): CommandPalette.lastComponent(of: path)
         case let .missing(path): "No folder at \(path)"
         case let .openFolder(chooseInFinder): chooseInFinder ? "Choose in Finder…" : "Open Folder…"
-        }
-    }
-
-    /// Everything the row can do, the primary action (Return) first. Empty for a row with no
-    /// action of its own to list.
-    public var subActions: [PaletteSubAction] {
-        switch self {
-        case let .space(id, _, dir): [.switchToSpace(id: id), .newSpace(dir: dir), .closeSpace(id: id)]
-        case let .recent(dir): [.newSpace(dir: dir)]
-        case let .folder(path, space):
-            [.newSpace(dir: path)] + (space.map { [.switchToSpace(id: $0)] } ?? [])
-        default: []
         }
     }
 
@@ -204,10 +169,6 @@ public struct CommandPalette: Sendable, Equatable {
     /// Index into `rows`; 0 when there are none.
     public private(set) var selected = 0
     public private(set) var rows: [Row] = []
-    /// The selected row's action list while ⌘K has it open, else nil.
-    public private(set) var panel: [PaletteSubAction]?
-    /// Index into `panel`.
-    public private(set) var panelSelected = 0
 
     private var spaces: [OpenSpace] = []
     private var panes: [OpenPane] = []
@@ -282,39 +243,16 @@ public struct CommandPalette: Sendable, Equatable {
     public mutating func type(_ text: String) {
         guard text != query else { return }
         query = text
-        panel = nil
         refilter()
     }
 
-    /// ⌘K: open the selected row's action list, or close it. A row with one action has none to list.
-    public mutating func toggleActions() {
-        if panel != nil { panel = nil; return }
-        guard let item = selectedItem, item.subActions.count > 1 else { return }
-        panel = item.subActions
-        panelSelected = 0
-    }
-
-    /// Esc closes the action list first; true when it did.
-    public mutating func closeActions() -> Bool {
-        defer { panel = nil }
-        return panel != nil
-    }
-
-    /// The action Return runs: the list's selected one when it is open, else the row's primary.
-    public var selectedAction: PaletteSubAction? {
-        if let panel { return panel.indices.contains(panelSelected) ? panel[panelSelected] : nil }
-        return selectedItem?.subActions.first
-    }
-
-    /// ↑ and ↓ stop at the first and last row (or action, while the list is open).
+    /// ↑ and ↓ stop at the first and last row.
     public mutating func move(_ by: Int) {
-        if let panel { panelSelected = min(panel.count - 1, max(0, panelSelected + by)); return }
         guard !rows.isEmpty else { return }
         selected = min(rows.count - 1, max(0, selected + by))
     }
 
     public mutating func select(_ index: Int) {
-        if let panel { if panel.indices.contains(index) { panelSelected = index }; return }
         if rows.indices.contains(index) { selected = index }
     }
 
@@ -324,7 +262,6 @@ public struct CommandPalette: Sendable, Equatable {
         case .newSpace: rows = Self.newSpaceRows(spaces: spaces, recents: recents, roots: roots, listings: listings, query: query)
         }
         selected = 0
-        panel = nil
     }
 
     /// A path query split at its last `/`: the folder to list (as typed, with its slash) and the
