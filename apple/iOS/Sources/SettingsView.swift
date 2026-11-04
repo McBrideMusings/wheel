@@ -64,6 +64,10 @@ private struct SettingsList: View {
                                    systemImage: "gearshape")
         } else {
             Form {
+                Section {
+                    NavigationLink("Appearance") { AppearanceView(model: model, layer: layer) }
+                        .accessibilityIdentifier("appearance-\(layer.rawValue)")
+                }
                 ForEach(SettingSection.grouping(model.settings), id: \.name) { section in
                     Section(section.name) {
                         ForEach(section.settings) { setting in

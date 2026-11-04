@@ -26,7 +26,7 @@ struct CommandPaletteTests {
             ]
         )
         #expect(p.rows.map(\.id) == [
-            "space:s2", "space:s1", "recent:/Users/p/new", "recent:/Users/p/old",
+            "space:s2", "new-space-here:/Users/p/wheel", "space:s1", "new-space-here:/tmp", "recent:/Users/p/new", "recent:/Users/p/old",
             "action:new-space", "action:open-folder", "action:settings", "action:toggle-sidebar", "action:chat-terminal",
         ])
     }
@@ -40,7 +40,7 @@ struct CommandPaletteTests {
             artifacts: [ArtifactInfo(scope: .project, name: "status", title: "Build Status")],
             recents: [], actions: Self.actions
         )
-        #expect(p.rows.prefix(4).map(\.id) == ["space:s1", "pane:p1", "pane:p2", "artifact:project/status"])
+        #expect(p.rows.prefix(5).map(\.id) == ["space:s1", "new-space-here:/w", "pane:p1", "pane:p2", "artifact:project/status"])
         p.type("BUILD")
         #expect(p.rows.map(\.id) == ["artifact:project/status"])
         p.type("term")
@@ -55,7 +55,7 @@ struct CommandPaletteTests {
             sessions: [.init(id: "x1", name: "open-assistant")],
             recents: [], actions: []
         )
-        #expect(p.rows.map(\.id) == ["space:s1", "artifact:project/status", "session:x1", "action:new-space"])
+        #expect(p.rows.map(\.id) == ["space:s1", "new-space-here:/w", "artifact:project/status", "session:x1", "action:new-space"])
         p.type("assist")
         #expect(p.rows.first?.item == .session(id: "x1", name: "open-assistant"))
         #expect(p.rows.first?.item.title == "Switch to open-assistant")
@@ -171,29 +171,52 @@ struct CommandPaletteTests {
         #expect(p.query == "~/Projcts/wh")
     }
 
-    @Test func aFolderAlreadyOpenStillCreatesByDefaultAndOffersSwitching() {
-        let item = PaletteItem.folder(path: "/w", space: "s1")
-        #expect(item.subActions == [.newSpace(dir: "/w"), .switchToSpace(id: "s1")])
-        #expect(PaletteItem.folder(path: "/x", space: nil).subActions == [.newSpace(dir: "/x")])
+    @Test func eachOpenSpaceListsSwitchingAndANewSpaceInItsFolderAsSeparateRows() {
+        let p = palette(spaces: [.init(id: "s1", name: "reddit-protos", dir: "/Work/reddit-protos")])
+        #expect(p.rows.prefix(2).map(\.item.title) == ["Switch to reddit-protos", "New Space in reddit-protos"])
+        var q = p
+        q.type("new space reddit")
+        #expect(q.rows.first?.item == .newSpaceHere(dir: "/Work/reddit-protos", name: "reddit-protos"))
     }
 
-    @Test func commandKListsASpacesActionsAndEscapeClosesThem() {
-        var p = palette(spaces: [.init(id: "s1", name: "wheel", dir: "/w")])
-        #expect(p.selectedAction == .switchToSpace(id: "s1"))
-        p.toggleActions()
-        #expect(p.panel == [.switchToSpace(id: "s1"), .newSpace(dir: "/w"), .closeSpace(id: "s1")])
-        p.move(1)
-        #expect(p.selectedAction == .newSpace(dir: "/w"))
-        let closed = p.closeActions()
-        #expect(closed)
-        #expect(p.panel == nil)
-        let again = p.closeActions()
-        #expect(!again)
+    private func verbPalette() -> CommandPalette {
+        var p = CommandPalette(verbs: true)
+        p.list(
+            spaces: [.init(id: "s1", name: "wheel", dir: "/w"), .init(id: "s2", name: "etv", dir: "/e")],
+            panes: [.init(id: "p1", space: "s1", spaceName: "wheel", name: "Terminal")],
+            recents: [RecentDir(dir: "/old", openedMs: 1)],
+            actions: Self.actions + [PaletteAction(id: "split-right", title: "Split Right"),
+                                     PaletteAction(id: "pane-browser", title: "Show a Browser in This Pane")]
+        )
+        return p
     }
 
-    @Test func aRowWithOneActionOpensNoList() {
-        var p = palette(recents: [RecentDir(dir: "/old", openedMs: 1)])
-        p.toggleActions()
-        #expect(p.panel == nil)
+    @Test func theFirstListIsTheVerbsThenTheActionsNoVerbClaims() {
+        let ids = verbPalette().rows.map(\.id)
+        #expect(ids.prefix(7) == ["verb:switchSpace", "verb:closeSpace", "verb:goToPane", "verb:closePane",
+                                  "verb:newPane", "verb:changePaneType", "action:new-space"])
+        #expect(!ids.contains("space:s1") && !ids.contains("action:split-right"))
+    }
+
+    @Test func aVerbListsWhatItActsOnAndBackingOutReturnsToTheVerbs() {
+        var p = verbPalette()
+        p.enter(.switchSpace)
+        #expect(p.rows.map(\.id) == ["space:s1", "space:s2"])
+        p.type("etv")
+        #expect(p.rows.map(\.id) == ["space:s2"])
+        #expect(p.isStaged)
+        p.leaveStage()
+        #expect(p.verb == nil && p.rows.first?.id == "verb:switchSpace")
+    }
+
+    @Test func aFolderNameFindsWhatCanBeDoneToItAndAVerbNameFindsWhatItActsOn() {
+        var p = verbPalette()
+        p.type("etv")
+        #expect(p.rows.map(\.id).contains("new-space-here:/e"))
+        #expect(p.rows.map(\.id).contains("space:s2"))
+        p.type("close space")
+        let ids = p.rows.map(\.id)
+        #expect(ids.contains("verb:closeSpace"))
+        #expect(ids.contains("target:closeSpace/s1") && ids.contains("target:closeSpace/s2"))
     }
 }

@@ -53,14 +53,14 @@ import WheelKit
     @Test func aServerThatLinksALayoutBecomesANativePaneWithItsFirstData() throws {
         let (pane, sent) = pane()
         pane.start()
-        #expect(sent.sent == [.artifactTools(req: 1, name: "notes", scope: .project, space: "s1")])
+        #expect(sent.sent == [.artifactTools(req: 1, name: "notes", scope: .project, space: "s1", pane: "p1")])
         #expect(pane.handle(try tools(linking: "a2ui://notes")))
         #expect(pane.state == .loading)
-        #expect(sent.sent.last == .artifactRead(req: 2, name: "notes", scope: .project, space: "s1", uri: "a2ui://notes"))
+        #expect(sent.sent.last == .artifactRead(req: 2, name: "notes", scope: .project, space: "s1", pane: "p1", uri: "a2ui://notes"))
 
         let escaped = String(decoding: try JSONSerialization.data(withJSONObject: [Self.layout]), as: UTF8.self).dropFirst().dropLast()
         #expect(pane.handle(try frame(#"{"ev":"resource","req":2,"contents":[{"uri":"a2ui://notes","mimeType":"application/a2ui+json","text":\#(escaped)}]}"#)))
-        #expect(sent.sent.last == .artifactCall(req: 3, name: "notes", scope: .project, space: "s1", tool: "get_notes", arguments: nil))
+        #expect(sent.sent.last == .artifactCall(req: 3, name: "notes", scope: .project, space: "s1", pane: "p1", tool: "get_notes", arguments: nil))
 
         #expect(pane.handle(try result(Self.first)))
         #expect(pane.state == .ready)
@@ -91,7 +91,7 @@ import WheelKit
         _ = pane.handle(try result(Self.first))
 
         pane.surface?.surface.dispatchAction(name: "save_note", sourceComponentId: "save", context: ["text": .string("Ship the spike")])
-        guard case let .artifactCall(req, _, _, _, tool, arguments)? = sent.sent.last else { Issue.record("no call sent"); return }
+        guard case let .artifactCall(req, _, _, _, _, tool, arguments)? = sent.sent.last else { Issue.record("no call sent"); return }
         #expect(tool == "save_note")
         #expect(arguments == #"{"text":"Ship the spike"}"#)
 
@@ -110,7 +110,7 @@ import WheelKit
         _ = pane.handle(try frame(#"{"ev":"resource","req":2,"contents":[{"text":\#(escaped)}]}"#))
         _ = pane.handle(try result(Self.first))
         pane.surface?.surface.dispatchAction(name: "save_note", sourceComponentId: "save")
-        guard case let .artifactCall(req, _, _, _, _, _)? = sent.sent.last else { Issue.record("no call sent"); return }
+        guard case let .artifactCall(req, _, _, _, _, _, _)? = sent.sent.last else { Issue.record("no call sent"); return }
         _ = pane.handle(try frame(#"{"ev":"error","req":\#(req ?? 0),"message":"the MCP server closed"}"#))
         #expect(pane.notice == "save_note: the MCP server closed")
         #expect(pane.state == .ready)

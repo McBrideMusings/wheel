@@ -141,11 +141,11 @@ public enum ClientMsg: Sendable, Equatable {
     /// Replies `artifacts`.
     case artifactLs(req: UInt64?, space: String?, paneOnly: Bool)
     /// The tools of the MCP server artifact `name` names, as the server listed them; replies `tools`.
-    case artifactTools(req: UInt64?, name: String, scope: ArtifactScope?, space: String?)
+    case artifactTools(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?)
     /// Call `tool` of that server with `arguments` (the text of a JSON object); replies `toolResult`.
-    case artifactCall(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, tool: String, arguments: String?)
+    case artifactCall(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, tool: String, arguments: String?)
     /// `resources/read` of `uri` on that server; replies `resource`.
-    case artifactRead(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, uri: String)
+    case artifactRead(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, uri: String)
     /// Every built-in artifact wheeld carries; replies `builtins`.
     case builtinLs(req: UInt64?)
     /// Install a built-in at machine scope; replies `builtins`.
@@ -337,20 +337,23 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
             if paneOnly { o["pane"] = true }
-        case let .artifactTools(req, name, scope, space):
+        case let .artifactTools(req, name, scope, space, pane):
             o = ["op": "artifact_tools", "name": name]; put(req)
             if let scope { o["scope"] = scope.rawValue }
             if let space { o["space"] = space }
-        case let .artifactCall(req, name, scope, space, tool, arguments):
+            if let pane { o["pane"] = pane }
+        case let .artifactCall(req, name, scope, space, pane, tool, arguments):
             o = ["op": "artifact_call", "name": name, "tool": tool]; put(req)
             if let scope { o["scope"] = scope.rawValue }
             if let space { o["space"] = space }
+            if let pane { o["pane"] = pane }
             if let arguments, let data = arguments.data(using: .utf8),
                let object = try? JSONSerialization.jsonObject(with: data) { o["arguments"] = object }
-        case let .artifactRead(req, name, scope, space, uri):
+        case let .artifactRead(req, name, scope, space, pane, uri):
             o = ["op": "artifact_read", "name": name, "uri": uri]; put(req)
             if let scope { o["scope"] = scope.rawValue }
             if let space { o["space"] = space }
+            if let pane { o["pane"] = pane }
         case let .builtinLs(req):
             o = ["op": "builtin_ls"]; put(req)
         case let .builtinInstall(req, name):
@@ -563,6 +566,11 @@ public enum AgentEvent: Sendable, Equatable {
     case thought(String)
     /// A line the agent's host wrote about the conversation: a background command ended.
     case notice(String)
+    /// The finished reply block reads `text`, not the `streamed` chunks the reply text ends with:
+    /// put `text` in their place.
+    case textRevised(streamed: String, text: String)
+    /// The same for a thought, whose text ends with `streamed`.
+    case thoughtRevised(streamed: String, text: String)
     case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent], detail: String? = nil)
     /// `content`, when present, replaces the call's whole content.
     case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
@@ -577,7 +585,7 @@ public enum AgentEvent: Sendable, Equatable {
 }
 
 extension AgentEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message, detail }
+    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message, detail, streamed }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -586,6 +594,8 @@ extension AgentEvent: Decodable {
         case "text": self = .text(try c.decode(String.self, forKey: .text))
         case "thought": self = .thought(try c.decode(String.self, forKey: .text))
         case "notice": self = .notice(try c.decode(String.self, forKey: .text))
+        case "text_revised": self = .textRevised(streamed: try c.decode(String.self, forKey: .streamed), text: try c.decode(String.self, forKey: .text))
+        case "thought_revised": self = .thoughtRevised(streamed: try c.decode(String.self, forKey: .streamed), text: try c.decode(String.self, forKey: .text))
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
                              kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status),
@@ -1149,6 +1159,8 @@ public enum ServerMsg: Sendable {
     case clients(req: UInt64, clients: [ClientInfo])
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
+    /// The MCP server behind pane `pane` said a resource changed.
+    case mcpUpdated(pane: String)
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
     /// space directory of a `project` artifact, nil for a `machine` one.
     case artifactGone(scope: ArtifactScope, name: String, cwd: String?)
@@ -1310,6 +1322,7 @@ extension ServerMsg: Decodable {
         case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "clients": self = .clients(req: try c.decode(UInt64.self, forKey: .req), clients: try c.decode([ClientInfo].self, forKey: .clients))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
+        case "mcp_updated": self = .mcpUpdated(pane: try c.decode(String.self, forKey: .pane))
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
                                  cwd: try c.decodeIfPresent(String.self, forKey: .cwd))
@@ -1399,25 +1412,33 @@ public enum PaneMoveTarget: Sendable, Equatable {
 public struct ProcInfo: Codable, Equatable, Sendable, Identifiable {
     public let pid: UInt32
     public let ppid: UInt32
-    public let pane: String
+    /// None for a detached process whose pane is unknown or has closed.
+    public let pane: String?
     public let agent: String?
+    /// The command as run (for a Claude Code Bash-tool shell, the command inside it).
     public let name: String
     public let command: String
     public let cpu: Double
     public let memKb: UInt64
     public let ageSecs: UInt64
     public let cwd: String?
+    /// How it came to run: "typed in the terminal", "Bash tool", "LSP", "started by claude".
+    public let how: String?
+    /// For a process no pane holds any more, what ties it to the space.
+    public let detached: String?
     public var id: UInt32 { pid }
 
     enum CodingKeys: String, CodingKey {
-        case pid, ppid, pane, agent, name, command, cpu, cwd
+        case pid, ppid, pane, agent, name, command, cpu, cwd, how, detached
         case memKb = "mem_kb", ageSecs = "age_secs"
     }
 
-    public init(pid: UInt32, ppid: UInt32, pane: String, agent: String? = nil, name: String, command: String,
-                cpu: Double, memKb: UInt64, ageSecs: UInt64, cwd: String? = nil) {
+    public init(pid: UInt32, ppid: UInt32, pane: String?, agent: String? = nil, name: String, command: String,
+                cpu: Double, memKb: UInt64, ageSecs: UInt64, cwd: String? = nil, how: String? = nil,
+                detached: String? = nil) {
         self.pid = pid; self.ppid = ppid; self.pane = pane; self.agent = agent; self.name = name
         self.command = command; self.cpu = cpu; self.memKb = memKb; self.ageSecs = ageSecs; self.cwd = cwd
+        self.how = how; self.detached = detached
     }
 }
 

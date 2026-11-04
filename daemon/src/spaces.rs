@@ -595,6 +595,9 @@ pub(crate) const PANE_ROWS: u16 = 24;
 /// waiting here with it.
 const SAVE_COALESCE: Duration = Duration::from_millis(400);
 
+/// The most characters of a waiting agent's reason a pane keeps.
+const REASON_MAX: usize = 300;
+
 /// How often each terminal pane's directory and agent are sampled.
 const TERMINAL_SAMPLE: Duration = Duration::from_secs(2);
 
@@ -1897,7 +1900,13 @@ impl AppState {
         &self,
         pane: &str,
         status: wheel_proto::ReportedStatus,
+        reason: Option<String>,
     ) -> Result<(), String> {
+        // Only a waiting agent has a reason, and one line of it is what any client shows.
+        let reason = reason
+            .filter(|_| status == wheel_proto::ReportedStatus::NeedsYou)
+            .map(|r| crate::submit::one_line(r.trim(), REASON_MAX))
+            .filter(|r| !r.is_empty());
         let term = {
             let spaces = self.spaces.lock().unwrap();
             let kind = spaces
@@ -1918,9 +1927,13 @@ impl AppState {
             }
             term.clone()
         };
-        let old = self.reports.lock().unwrap().insert(term.clone(), status);
-        if old != Some(status) {
-            tracing::info!(%pane, %term, old = ?old, new = ?status, "terminal agent reported");
+        let new = crate::server::Report { status, reason };
+        let old = self.reports.lock().unwrap().insert(term.clone(), new.clone());
+        if old.as_ref() != Some(&new) {
+            // The reason can quote a command, token and all, so only its length goes in the info line.
+            let reason_chars = new.reason.as_ref().map(|r| r.chars().count());
+            tracing::info!(%pane, %term, old = ?old.as_ref().map(|r| r.status), new = ?status, ?reason_chars, "terminal agent reported");
+            tracing::debug!(%pane, reason = ?new.reason, "terminal agent's reason");
             self.refresh_statuses();
         }
         Ok(())
@@ -1930,19 +1943,26 @@ impl AppState {
     /// Enter while the agent waits on the person submits the prompt's choice, so the agent is
     /// working again: Claude Code has no hook for a granted permission, and the next one,
     /// PostToolUse, fires only when the tool call ends. A denial is followed by Stop, which
-    /// reports idle. Esc or Ctrl-C alone while the agent works interrupts its turn, and Claude Code runs
-    /// no Stop hook for an interrupt, so the agent is idle; if the key did not interrupt, the
-    /// next PostToolUse reports working again. Arrows, digits and the terminal's own replies
+    /// reports idle. Esc or Ctrl-C alone while the agent works, or while it waits on the person
+    /// (refusing the prompt), interrupts its turn, and Claude Code runs no Stop hook for an
+    /// interrupt, so the agent is idle; if the key did not interrupt, the next PostToolUse reports
+    /// working again. Arrows, digits and the terminal's own replies
     /// (focus, mouse, cursor position) contain neither, so they change nothing.
     pub fn term_input_answers_prompt(&self, term: &str, bytes: &[u8]) {
         use wheel_proto::ReportedStatus::{Idle, NeedsYou, Working};
         let mut reports = self.reports.lock().unwrap();
-        let next = match (reports.get(term), bytes) {
+        let next = match (reports.get(term).map(|r| r.status), bytes) {
             (Some(NeedsYou), b) if b.iter().any(|b| matches!(b, b'\r' | b'\n')) => Working,
-            (Some(Working), [0x1b | 0x03]) => Idle,
+            (Some(Working | NeedsYou), [0x1b | 0x03]) => Idle,
             _ => return,
         };
-        reports.insert(term.to_string(), next);
+        reports.insert(
+            term.to_string(),
+            crate::server::Report {
+                status: next,
+                reason: None,
+            },
+        );
         drop(reports);
         tracing::info!(%term, status = ?next, "terminal input changed what the agent reported");
         self.refresh_statuses();

@@ -92,7 +92,7 @@ pub fn process_name(pid: u32) -> Option<String> {
 }
 
 /// A process's arguments and its environment as name and value.
-type ProcessArgs = (Vec<String>, Vec<(String, String)>);
+pub(crate) type ProcessArgs = (Vec<String>, Vec<(String, String)>);
 
 /// What a sample of one terminal found.
 #[derive(Debug, Default, PartialEq)]
@@ -800,7 +800,7 @@ pub fn process_cwd(pid: u32) -> Option<String> {
 
 /// A process's arguments and environment.
 #[cfg(target_os = "macos")]
-fn process_args(pid: u32) -> Option<ProcessArgs> {
+pub(crate) fn process_args(pid: u32) -> Option<ProcessArgs> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
     let rc = unsafe {
@@ -835,7 +835,7 @@ fn process_args(pid: u32) -> Option<ProcessArgs> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn process_args(pid: u32) -> Option<ProcessArgs> {
+pub(crate) fn process_args(pid: u32) -> Option<ProcessArgs> {
     let args = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let args = args
         .split(|b| *b == 0)

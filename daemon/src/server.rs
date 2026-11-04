@@ -106,6 +106,13 @@ pub(crate) enum Caller {
     Device(String),
 }
 
+/// What a terminal's agent last said it is doing, and for `needs_you`, what it waits on.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Report {
+    pub status: wheel_proto::ReportedStatus,
+    pub reason: Option<String>,
+}
+
 pub struct AppState {
     started: Instant,
     /// The paired devices and the pairing tokens waiting to be used.
@@ -211,7 +218,7 @@ pub struct AppState {
     pub(crate) statuses: Mutex<crate::status::StatusBook>,
     /// What the agent in each terminal says it is doing, by terminal id: the last report, kept
     /// until the sampler sees the agent is no longer there.
-    pub(crate) reports: Mutex<std::collections::HashMap<String, wheel_proto::ReportedStatus>>,
+    pub(crate) reports: Mutex<std::collections::HashMap<String, Report>>,
     /// The context window each terminal's agent says it has, by terminal id; kept and dropped
     /// like `reports`.
     pub(crate) context_reports: Mutex<std::collections::HashMap<String, ContextUse>>,
@@ -1749,7 +1756,12 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
-        ClientMsg::PaneReport { req, pane, status } => match state.pane_report(&pane, status) {
+        ClientMsg::PaneReport {
+            req,
+            pane,
+            status,
+            reason,
+        } => match state.pane_report(&pane, status, reason) {
             Ok(()) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {
                 tracing::warn!(%peer, %pane, %message, "pane report failed");
@@ -2164,10 +2176,11 @@ async fn handle(
             name,
             scope,
             space,
+            pane,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
-                let reply = match state.mcp_tools(&name, scope, space.as_deref()).await {
+                let reply = match state.mcp_tools(&name, scope, space.as_deref(), pane.as_deref()).await {
                     Ok(tools) => req.map(|req| ServerMsg::Tools { req, tools }),
                     Err(message) => {
                         tracing::warn!(%name, %message, "artifact tools refused");
@@ -2185,11 +2198,12 @@ async fn handle(
             name,
             scope,
             space,
+            pane,
             uri,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
-                let reply = match state.mcp_resource(&name, scope, space.as_deref(), &uri).await {
+                let reply = match state.mcp_resource(&name, scope, space.as_deref(), pane.as_deref(), &uri).await {
                     Ok(contents) => req.map(|req| ServerMsg::Resource { req, contents }),
                     Err(message) => {
                         tracing::warn!(%name, %uri, %message, "artifact read refused");
@@ -2207,13 +2221,14 @@ async fn handle(
             name,
             scope,
             space,
+            pane,
             tool,
             arguments,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let called = state
-                    .mcp_call(&name, scope, space.as_deref(), &tool, arguments)
+                    .mcp_call(&name, scope, space.as_deref(), pane.as_deref(), &tool, arguments)
                     .await;
                 let reply = match called {
                     Ok(result) => req.map(|req| ServerMsg::ToolResult { req, result }),

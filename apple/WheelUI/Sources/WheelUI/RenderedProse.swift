@@ -1,4 +1,5 @@
 import Foundation
+import WheelKit
 
 /// The text a reply shows, with the Markdown syntax taken out: the characters a person sees and
 /// selects, in the order they see them. Selection offsets, the highlight and a copy all count in
@@ -19,13 +20,46 @@ public struct RenderedProse: Equatable, Sendable {
         public var face: Face
     }
 
+    /// A link's visible text, in UTF-16 units, and where it goes.
+    public struct Link: Equatable, Sendable {
+        public var range: Range<Int>
+        public var url: String
+    }
+
+    /// A stretch of the text that copies as other text than it shows: a file link as its full
+    /// path, an image as its Markdown source.
+    public struct Copy: Equatable, Sendable {
+        public var range: Range<Int>
+        public var text: String
+    }
+
     public let text: String
     public let runs: [Run]
+    public let links: [Link]
+    public let copies: [Copy]
     public var length: Int { text.utf16.count }
 
-    public init(text: String, runs: [Run] = []) {
+    public init(text: String, runs: [Run] = [], links: [Link] = [], copies: [Copy] = []) {
         self.text = text
         self.runs = runs
+        self.links = links
+        self.copies = copies
+    }
+
+    /// What a selection of `range` puts on the pasteboard: the drawn characters, with each
+    /// `copies` stretch the range covers whole written as its own text.
+    public func copied(_ range: Range<Int>) -> String {
+        let string = text as NSString
+        var out = ""
+        var at = max(range.lowerBound, 0)
+        let end = min(range.upperBound, string.length)
+        guard at < end else { return "" }
+        for copy in copies where copy.range.lowerBound >= at && copy.range.upperBound <= end {
+            out += string.substring(with: NSRange(location: at, length: copy.range.lowerBound - at))
+            out += copy.text
+            at = copy.range.upperBound
+        }
+        return out + string.substring(with: NSRange(location: at, length: end - at))
     }
 
     /// Text shown exactly as written, such as a person's message.
@@ -58,10 +92,18 @@ public struct RenderedProse: Equatable, Sendable {
         var text = ""
         var length = 0
         var runs: [Run] = []
+        var links: [Link] = []
+        var copies: [Copy] = []
+        var lastImage: URL?
         var previous: [PresentationIntent.IntentType] = []
         var started = false
         for run in parsed.runs {
-            let chunk = String(parsed[run.range].characters)
+            // An image is drawn as one attachment, whatever its alt text says.
+            let raw = String(parsed[run.range].characters)
+            // An image styled in its alt text arrives as several runs; it is one attachment.
+            let continuesImage = run.imageURL != nil && run.imageURL == lastImage
+            lastImage = run.imageURL
+            let chunk = run.imageURL == nil ? raw : continuesImage ? "" : "\u{FFFC}"
             let components = run.presentationIntent?.components ?? []
             // Outermost first, so the block this run sits in is last.
             let path = Array(components.reversed())
@@ -81,13 +123,41 @@ public struct RenderedProse: Equatable, Sendable {
             if units > 0 {
                 let face = face(of: run.inlinePresentationIntent, path: path)
                 if face != .plain { runs.append(Run(range: length..<(length + units), face: face)) }
+                if let copy = copyText(of: run, shown: raw) {
+                    // A link styled inside its label arrives as several runs; they copy as one.
+                    if let last = copies.last, last.text == copy, last.range.upperBound == length {
+                        copies[copies.count - 1].range = last.range.lowerBound..<(length + units)
+                    } else {
+                        copies.append(Copy(range: length..<(length + units), text: copy))
+                    }
+                }
+                if let url = run.link?.absoluteString {
+                    // Adjacent runs of one link (a bold word inside it) are one link.
+                    if let last = links.last, last.url == url, last.range.upperBound == length {
+                        links[links.count - 1].range = last.range.lowerBound..<(length + units)
+                    } else {
+                        links.append(Link(range: length..<(length + units), url: url))
+                    }
+                }
                 text += chunk
                 length += units
             }
             previous = path
             started = true
         }
-        return RenderedProse(text: text, runs: runs)
+        return RenderedProse(text: text, runs: runs, links: links, copies: copies)
+    }
+
+    /// The text a link or image run copies as, when it is not the characters it shows.
+    private static func copyText(of run: AttributedString.Runs.Run, shown: String) -> String? {
+        if let image = run.imageURL {
+            let alt = shown.replacingOccurrences(of: "\u{FFFC}", with: "")
+            return "![\(alt)](\(image.absoluteString))"
+        }
+        if let link = run.link, case let .file(path, line)? = ChatLinkAction(url: link) {
+            return line.map { "\(path):\($0)" } ?? path
+        }
+        return nil
     }
 
     /// Both blocks sit in one list, so their items follow on consecutive lines.

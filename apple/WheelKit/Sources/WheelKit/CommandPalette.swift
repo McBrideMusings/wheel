@@ -18,25 +18,34 @@ public struct PaletteAction: Sendable, Equatable {
     }
 }
 
-/// One thing a row can do. Return runs the row's first; ⌘K lists them all (Raycast's Action Panel).
-public enum PaletteSubAction: Sendable, Equatable, Identifiable {
-    case switchToSpace(id: String)
-    case newSpace(dir: String)
-    case closeSpace(id: String)
-
-    public var id: String {
-        switch self {
-        case let .switchToSpace(id): "switch:\(id)"
-        case let .newSpace(dir): "new:\(dir)"
-        case let .closeSpace(id): "close:\(id)"
-        }
-    }
+/// A thing to do, named before what it is done to. The desktop palette's first list is these;
+/// choosing one lists what it can act on.
+public enum PaletteVerb: String, Sendable, CaseIterable {
+    case switchSpace, closeSpace, goToPane, closePane, newPane, changePaneType, showArtifact, run
 
     public var title: String {
         switch self {
-        case .switchToSpace: "Switch to Space"
-        case .newSpace: "New Space in This Folder"
-        case .closeSpace: "Close Space"
+        case .switchSpace: "Switch to Space…"
+        case .closeSpace: "Close Space…"
+        case .goToPane: "Go to Pane…"
+        case .closePane: "Close Pane…"
+        case .newPane: "New Pane…"
+        case .changePaneType: "Change Pane Type…"
+        case .showArtifact: "Show Artifact…"
+        case .run: "Run…"
+        }
+    }
+
+    /// The search field's hint once the verb is chosen.
+    public var prompt: String { String(title.dropLast()) + " — pick one" }
+
+    /// Whether an action belongs to this verb's list rather than the root's own.
+    func claims(action id: String) -> Bool {
+        switch self {
+        case .newPane: id == "split-right" || id == "split-down"
+        case .changePaneType: id.hasPrefix("pane-") || id == "switch-view"
+        case .run: id.hasPrefix("run-")
+        default: false
         }
     }
 }
@@ -46,6 +55,12 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
     case action(id: String, title: String, shortcut: String?)
     /// A space that is open now.
     case space(id: String, name: String, dir: String)
+    /// A verb row: choosing it lists what it can act on.
+    case verb(PaletteVerb)
+    /// A close verb's target: `id` is the space or pane it closes.
+    case target(verb: PaletteVerb, id: String, title: String, detail: String)
+    /// Make another space in the folder of one that is open now; `name` is that space's.
+    case newSpaceHere(dir: String, name: String)
     /// A pane of an open space; `space` is the id of the space holding it.
     case pane(id: String, space: String, name: String, spaceName: String)
     /// An artifact a web pane can show, opened in a new pane split right of the focused one.
@@ -67,6 +82,9 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case let .action(id, _, _): "action:\(id)"
         case let .space(id, _, _): "space:\(id)"
+        case let .newSpaceHere(dir, _): "new-space-here:\(dir)"
+        case let .verb(verb): "verb:\(verb.rawValue)"
+        case let .target(verb, id, _, _): "target:\(verb.rawValue)/\(id)"
         case let .pane(id, _, _, _): "pane:\(id)"
         case let .artifact(scope, name, _): "artifact:\(scope.rawValue)/\(name)"
         case let .session(id, _): "session:\(id)"
@@ -83,6 +101,9 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case .action: "action"
         case .space: "space"
+        case .newSpaceHere: "new_space_here"
+        case .verb: "verb"
+        case .target: "target"
         case .pane: "pane"
         case .artifact: "artifact"
         case .session: "session"
@@ -97,27 +118,18 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
     public var title: String {
         switch self {
         case let .action(_, title, _): title
-        case let .space(_, name, _): name
+        case let .space(_, name, _): "Switch to \(name)"
+        case let .newSpaceHere(_, name): "New Space in \(name)"
+        case let .verb(verb): verb.title
+        case let .target(_, _, title, _): title
         case let .pane(_, _, name, _): name
         case let .artifact(_, name, title): title.isEmpty ? name : title
         case let .session(_, name): "Switch to \(name)"
-        case let .recent(dir): CommandPalette.lastComponent(of: dir)
+        case let .recent(dir): "New Space in \(CommandPalette.lastComponent(of: dir))"
         case .newSpaceMode: "New Space…"
         case let .folder(path, _): CommandPalette.lastComponent(of: path)
         case let .missing(path): "No folder at \(path)"
         case let .openFolder(chooseInFinder): chooseInFinder ? "Choose in Finder…" : "Open Folder…"
-        }
-    }
-
-    /// Everything the row can do, the primary action (Return) first. Empty for a row with no
-    /// action of its own to list.
-    public var subActions: [PaletteSubAction] {
-        switch self {
-        case let .space(id, _, dir): [.switchToSpace(id: id), .newSpace(dir: dir), .closeSpace(id: id)]
-        case let .recent(dir): [.newSpace(dir: dir)]
-        case let .folder(path, space):
-            [.newSpace(dir: path)] + (space.map { [.switchToSpace(id: $0)] } ?? [])
-        default: []
         }
     }
 
@@ -126,6 +138,9 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         switch self {
         case let .action(_, _, shortcut): shortcut ?? ""
         case let .space(_, _, dir): dir
+        case let .newSpaceHere(dir, _): dir
+        case .verb: ""
+        case let .target(_, _, _, detail): detail
         case let .pane(id, _, _, spaceName): "\(spaceName) · \(id)"
         case let .artifact(scope, name, _): "\(scope.rawValue) · \(name)"
         case .session: "session"
@@ -200,14 +215,14 @@ public struct CommandPalette: Sendable, Equatable {
     }
 
     public private(set) var mode: Mode
+    /// The verb whose targets the list shows, or nil for the root list.
+    public private(set) var verb: PaletteVerb?
+    /// Whether the root list is verbs first (the desktop's) rather than every space and pane.
+    public let verbs: Bool
     public private(set) var query = ""
     /// Index into `rows`; 0 when there are none.
     public private(set) var selected = 0
     public private(set) var rows: [Row] = []
-    /// The selected row's action list while ⌘K has it open, else nil.
-    public private(set) var panel: [PaletteSubAction]?
-    /// Index into `panel`.
-    public private(set) var panelSelected = 0
 
     private var spaces: [OpenSpace] = []
     private var panes: [OpenPane] = []
@@ -218,7 +233,28 @@ public struct CommandPalette: Sendable, Equatable {
     private var roots: [String] = []
     private var listings: [String: Listing] = [:]
 
-    public init(mode: Mode = .root) { self.mode = mode }
+    public init(mode: Mode = .root, verbs: Bool = false) {
+        self.mode = mode
+        self.verbs = verbs
+    }
+
+    /// Whether Esc or Backspace on an empty field steps back instead of closing.
+    public var isStaged: Bool { mode == .newSpace || verb != nil }
+
+    /// Choose a verb: the list becomes its targets, with an empty field.
+    public mutating func enter(_ verb: PaletteVerb) {
+        self.verb = verb
+        query = ""
+        refilter()
+    }
+
+    /// Step back to the root list.
+    public mutating func leaveStage() {
+        verb = nil
+        mode = .root
+        query = ""
+        refilter()
+    }
 
     public var selectedItem: PaletteItem? { rows.indices.contains(selected) ? rows[selected].item : nil }
 
@@ -236,17 +272,14 @@ public struct CommandPalette: Sendable, Equatable {
 
     /// Switch to New Space mode with an empty field.
     public mutating func enterNewSpace() {
+        verb = nil
         mode = .newSpace
         query = ""
         refilter()
     }
 
     /// Return to the root list with an empty field.
-    public mutating func leaveNewSpace() {
-        mode = .root
-        query = ""
-        refilter()
-    }
+    public mutating func leaveNewSpace() { leaveStage() }
 
     /// The browsing roots, as absolute paths.
     public mutating func setRoots(_ roots: [String]) {
@@ -282,49 +315,27 @@ public struct CommandPalette: Sendable, Equatable {
     public mutating func type(_ text: String) {
         guard text != query else { return }
         query = text
-        panel = nil
         refilter()
     }
 
-    /// ⌘K: open the selected row's action list, or close it. A row with one action has none to list.
-    public mutating func toggleActions() {
-        if panel != nil { panel = nil; return }
-        guard let item = selectedItem, item.subActions.count > 1 else { return }
-        panel = item.subActions
-        panelSelected = 0
-    }
-
-    /// Esc closes the action list first; true when it did.
-    public mutating func closeActions() -> Bool {
-        defer { panel = nil }
-        return panel != nil
-    }
-
-    /// The action Return runs: the list's selected one when it is open, else the row's primary.
-    public var selectedAction: PaletteSubAction? {
-        if let panel { return panel.indices.contains(panelSelected) ? panel[panelSelected] : nil }
-        return selectedItem?.subActions.first
-    }
-
-    /// ↑ and ↓ stop at the first and last row (or action, while the list is open).
+    /// ↑ and ↓ stop at the first and last row.
     public mutating func move(_ by: Int) {
-        if let panel { panelSelected = min(panel.count - 1, max(0, panelSelected + by)); return }
         guard !rows.isEmpty else { return }
         selected = min(rows.count - 1, max(0, selected + by))
     }
 
     public mutating func select(_ index: Int) {
-        if let panel { if panel.indices.contains(index) { panelSelected = index }; return }
         if rows.indices.contains(index) { selected = index }
     }
 
     private mutating func refilter() {
         switch mode {
+        case .root where verbs:
+            rows = Self.verbRows(verb: verb, spaces: spaces, panes: panes, artifacts: artifacts, recents: recents, actions: actions, query: query)
         case .root: rows = Self.filter(spaces: spaces, panes: panes, artifacts: artifacts, sessions: sessions, recents: recents, actions: actions, query: query)
         case .newSpace: rows = Self.newSpaceRows(spaces: spaces, recents: recents, roots: roots, listings: listings, query: query)
         }
         selected = 0
-        panel = nil
     }
 
     /// A path query split at its last `/`: the folder to list (as typed, with its slash) and the
@@ -382,6 +393,63 @@ public struct CommandPalette: Sendable, Equatable {
         return rows
     }
 
+    /// The desktop's root list. A verb chosen: its targets, searched by the query. No verb and no
+    /// query: the verbs that have something to act on, then the actions no verb claims. A query:
+    /// the verbs and every verb-and-target row together, so typing a folder finds what can be done
+    /// to it and typing a verb finds what it can be done to.
+    public static func verbRows(verb: PaletteVerb?, spaces: [OpenSpace], panes: [OpenPane], artifacts: [ArtifactInfo],
+                                recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
+        func actionItem(_ action: PaletteAction) -> PaletteItem {
+            action.id == PaletteAction.openFolderID
+                ? .openFolder() : .action(id: action.id, title: action.title, shortcut: action.shortcut)
+        }
+        func unclaimed(_ action: PaletteAction) -> Bool {
+            action.id != "new-space" && !PaletteVerb.allCases.contains { $0.claims(action: action.id) }
+        }
+        func targets(_ verb: PaletteVerb) -> [(item: PaletteItem, texts: [String])] {
+            switch verb {
+            case .switchSpace:
+                return spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), ["Switch to \($0.name)", $0.dir]) }
+            case .closeSpace:
+                return spaces.map {
+                    (.target(verb: .closeSpace, id: $0.id, title: "Close Space \($0.name)", detail: $0.dir), ["Close Space \($0.name)", $0.dir])
+                }
+            case .goToPane:
+                return panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), ["Go to \($0.name)", "\($0.spaceName) \($0.name)"]) }
+            case .closePane:
+                return panes.map {
+                    (.target(verb: .closePane, id: $0.id, title: "Close Pane \($0.name)", detail: "\($0.spaceName) · \($0.id)"),
+                     ["Close Pane \($0.name)", "\($0.spaceName) \($0.name)"])
+                }
+            case .showArtifact:
+                return artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), ["Show \($0.title)", $0.name]) }
+            case .newPane, .changePaneType, .run:
+                return actions.filter { verb.claims(action: $0.id) }.map { (actionItem($0), [$0.title]) }
+            }
+        }
+        let populated = PaletteVerb.allCases.filter { !targets($0).isEmpty }
+        if let verb { return rank(targets(verb), query: query) }
+        let needle = query.trimmingCharacters(in: .whitespaces)
+        if needle.isEmpty {
+            var rows = populated.map { Row(item: .verb($0), score: 0) }
+            rows.append(Row(item: .newSpaceMode, score: 0))
+            rows += actions.filter(unclaimed).map { Row(item: actionItem($0), score: 0) }
+            return rows
+        }
+        let open = Set(spaces.map(\.dir))
+        var items: [(item: PaletteItem, texts: [String])] = populated.map { (.verb($0), [$0.title]) }
+        items.append((.newSpaceMode, ["New Space…"]))
+        for verb in populated { items += targets(verb) }
+        for space in spaces {
+            items.append((.newSpaceHere(dir: space.dir, name: space.name), ["New Space in \(space.name)", space.dir]))
+        }
+        for recent in recents.sorted(by: { $0.openedMs > $1.openedMs }) where !open.contains(recent.dir) {
+            items.append((.recent(dir: recent.dir), ["New Space in \(lastComponent(of: recent.dir))", recent.dir]))
+        }
+        items += actions.filter(unclaimed).map { (actionItem($0), [$0.title]) }
+        return rank(items, query: needle)
+    }
+
     /// Every entry the query matches, best score first, ties in the entries' order; all of them
     /// in order when the query is empty.
     private static func rank(_ items: [(item: PaletteItem, texts: [String])], query: String) -> [Row] {
@@ -405,11 +473,14 @@ public struct CommandPalette: Sendable, Equatable {
         let open = Set(spaces.map(\.dir))
         let closed = recents.filter { !open.contains($0.dir) }.sorted { $0.openedMs > $1.openedMs }
         var items: [(item: PaletteItem, texts: [String])] = []
-        items += spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), [$0.name, $0.dir]) }
+        for space in spaces {
+            items.append((.space(id: space.id, name: space.name, dir: space.dir), ["Switch to \(space.name)", space.dir]))
+            items.append((.newSpaceHere(dir: space.dir, name: space.name), ["New Space in \(space.name)", space.dir]))
+        }
         items += panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), [$0.name, "\($0.spaceName) \($0.name)"]) }
         items += artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), [$0.title, $0.name]) }
         items += sessions.map { (.session(id: $0.id, name: $0.name), ["Switch to \($0.name)", $0.name]) }
-        items += closed.map { (.recent(dir: $0.dir), [$0.dir]) }
+        items += closed.map { (.recent(dir: $0.dir), ["New Space in \(lastComponent(of: $0.dir))", $0.dir]) }
         items.append((.newSpaceMode, ["New Space…"]))
         items += actions.map { action in
             let item: PaletteItem = action.id == PaletteAction.openFolderID

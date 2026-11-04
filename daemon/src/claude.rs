@@ -228,15 +228,16 @@ struct Streamed {
     seen: usize,
 }
 
-/// What a whole block holds beyond the stream events that carried it.
+/// How a whole block compares with what its stream events carried.
 #[derive(Debug, PartialEq)]
 enum Rest<'a> {
-    /// Nothing; the stream carried the block.
-    None,
-    /// The part of the block the stream events missed.
+    /// The stream carried all of it.
+    Nothing,
+    /// The stream carried the start; this is the end it left out.
     Missed(&'a str),
-    /// The stream's copy and the whole copy differ somewhere inside the block.
-    Differs,
+    /// The whole block is not the streamed text continued: it was rewritten after streaming.
+    /// `streamed` is what the stream carried for it, which the whole block replaces.
+    Revised { streamed: String },
 }
 
 impl Streamed {
@@ -255,11 +256,11 @@ impl Streamed {
         let have = self.blocks.get(self.seen).map_or("", String::as_str);
         self.seen += 1;
         if have.starts_with(whole) {
-            Rest::None
+            Rest::Nothing
         } else if let Some(rest) = whole.strip_prefix(have) {
             Rest::Missed(rest)
         } else {
-            Rest::Differs
+            Rest::Revised { streamed: have.to_string() }
         }
     }
 
@@ -519,8 +520,10 @@ impl Driver {
                     let whole = block[if thought { "thinking" } else { "text" }]
                         .as_str()
                         .unwrap_or_default();
-                    match streamed.take_rest(whole) {
-                        Rest::None => {}
+                    let event = match streamed.take_rest(whole) {
+                        Rest::Nothing => None,
+                        // The deltas that did arrive are the start of the block; what they
+                        // missed is sent from the whole copy.
                         Rest::Missed(rest) => {
                             tracing::warn!(
                                 pid = self.pid,
@@ -529,17 +532,30 @@ impl Driver {
                                 "agent's stream events left out part of a block; sent from the whole message"
                             );
                             let text = rest.to_string();
-                            self.emit(DriverEvent::Transcript(if thought {
+                            Some(if thought {
                                 AgentEvent::Thought { text }
                             } else {
                                 AgentEvent::Text { text }
-                            }));
+                            })
                         }
-                        Rest::Differs => tracing::warn!(
-                            pid = self.pid,
-                            id,
-                            "agent's stream events and whole block differ; kept what streamed"
-                        ),
+                        Rest::Revised { streamed } => {
+                            tracing::info!(
+                                pid = self.pid,
+                                id,
+                                streamed = streamed.len(),
+                                whole = whole.len(),
+                                "agent's whole block differs from its stream events; revised"
+                            );
+                            let text = whole.to_string();
+                            Some(if thought {
+                                AgentEvent::ThoughtRevised { streamed, text }
+                            } else {
+                                AgentEvent::TextRevised { streamed, text }
+                            })
+                        }
+                    };
+                    if let Some(event) = event {
+                        self.emit(DriverEvent::Transcript(event));
                     }
                     continue;
                 }
@@ -1372,8 +1388,8 @@ mod tests {
         s.push(0, "");
         s.push(1, "Tea is ");
         s.push(1, "old.");
-        assert_eq!(s.take_rest(""), Rest::None);
-        assert_eq!(s.take_rest("Tea is old."), Rest::None);
+        assert_eq!(s.take_rest(""), Rest::Nothing);
+        assert_eq!(s.take_rest("Tea is old."), Rest::Nothing);
     }
 
     #[test]
@@ -1381,9 +1397,9 @@ mod tests {
         let mut s = Streamed::default();
         s.push(0, "First.\n\n");
         s.push(2, "Second.");
-        assert_eq!(s.take_rest("First."), Rest::None);
+        assert_eq!(s.take_rest("First."), Rest::Nothing);
         s.skip();
-        assert_eq!(s.take_rest("Second."), Rest::None);
+        assert_eq!(s.take_rest("Second."), Rest::Nothing);
     }
 
     #[test]
@@ -1395,10 +1411,10 @@ mod tests {
     }
 
     #[test]
-    fn a_block_that_differs_is_left_as_streamed() {
+    fn a_block_that_differs_replaces_what_streamed() {
         let mut s = Streamed::default();
         s.push(0, "abc def");
-        assert_eq!(s.take_rest("abc xyz"), Rest::Differs);
+        assert_eq!(s.take_rest("abc xyz"), Rest::Revised { streamed: "abc def".into() });
     }
 
     #[test]

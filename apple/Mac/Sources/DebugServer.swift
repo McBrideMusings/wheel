@@ -51,7 +51,13 @@ final class DebugServer {
         self.model = model
     }
 
+    private static func controlJSON(_ entry: ChatControlRegistry.Entry) -> [String: Any] {
+        ["kind": entry.kind, "label": entry.label, "hover": entry.hover, "focus": entry.focus, "url": entry.url ?? NSNull(),
+         "frame": ["x": entry.frame.minX, "y": entry.frame.minY, "w": entry.frame.width, "h": entry.frame.height]]
+    }
+
     func start() {
+        ChatControlRegistry.shared.tracking = true
         port = UInt16(ProcessInfo.processInfo.environment["WHEEL_DEBUG_PORT"] ?? "") ?? 7421
         do {
             let params = NWParameters.tcp
@@ -427,6 +433,17 @@ final class DebugServer {
                 }
             }
             return ("", Data())
+        case ("POST", "/reply/copy"):
+            // Press the copy button of reply `row` (a row id from `transcript_items`) and answer
+            // with the pasteboard: the reply's Markdown.
+            guard let session = query["agent"], let row = query["row"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "agent and row are required")
+            }
+            NSPasteboard.general.clearContents()
+            guard ReplyCopyRegistry.shared.press(agent: session, row: row) else { return refuse("404 Not Found", "reply \(row) is not on screen") }
+            let copied = NSPasteboard.general.string(forType: .string) ?? ""
+            Log.info("debug: pressed copy on reply \(row) of \(session), \(copied.count) characters")
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["pasteboard": copied])) ?? Data("{}".utf8))
         case ("POST", "/code/copy"):
             // Press the copy button of the `index`-th code block on screen in an agent's
             // transcript (the order of `code_blocks` in the state) and answer with the pasteboard.
@@ -495,6 +512,123 @@ final class DebugServer {
                                         "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
                                         "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys])) ?? Data())
+        case ("POST", "/transcript/mouse"):
+            // A pointer in the transcript: a press at window point (`x`, `y`, SwiftUI's global space,
+            // top-left origin), then, with `to_x` and `to_y`, a drag to there in `steps` moves, then
+            // the release. Each event goes to the transcript's mouse monitor, as the application would
+            // hand it, and to the view under the press, which an application that is not active never
+            // hands a window's events to. `shift=1` holds Shift (extends the selection), `clicks` is
+            // the click count. The answer is the selection after the release, the copy ⌘C would make,
+            // and the file preview a click opened.
+            guard let session = query["agent"], let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "session, x and y are required")
+            }
+            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else {
+                return refuse("404 Not Found", "that transcript is not on screen")
+            }
+            let height = window.swiftUIHeight
+            guard height > 0 else {
+                return refuse("404 Not Found", "that transcript is not on screen")
+            }
+            let flags: NSEvent.ModifierFlags = query["shift"] == "1" ? [.shift] : []
+            let clicks = query["clicks"].flatMap(Int.init) ?? 1
+            let end = query["to_x"].flatMap(Double.init).flatMap { tx in query["to_y"].flatMap(Double.init).map { CGPoint(x: tx, y: $0) } }
+            var number = 0
+            var pressed: NSView?
+            func post(_ type: NSEvent.EventType, _ point: CGPoint) {
+                number += 1
+                guard let event = NSEvent.mouseEvent(
+                    with: type, location: NSPoint(x: point.x, y: height - point.y), modifierFlags: flags,
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: number, clickCount: clicks, pressure: type == .leftMouseUp ? 0 : 1) else { return }
+                chat.selection.debugHandle(event, in: chat)
+                // As for a pointer, the drag and the release go to the view the press went to.
+                if type == .leftMouseDown, let content = window.contentView {
+                    pressed = content.hitTest(content.superview?.convert(NSPoint(x: point.x, y: height - point.y), from: nil) ?? .zero)
+                    Log.info("debug: mouse press at (\(point.x),\(point.y)) goes to \(pressed.map { String(describing: Swift.type(of: $0)) } ?? "nothing")")
+                }
+                switch type {
+                case .leftMouseDown: pressed?.mouseDown(with: event)
+                case .leftMouseDragged: pressed?.mouseDragged(with: event)
+                default: pressed?.mouseUp(with: event)
+                }
+                Self.spin(0.06)
+            }
+            model.links.closePreview(session: session)
+            let start = CGPoint(x: x, y: y)
+            post(.leftMouseDown, start)
+            if let end {
+                let steps = max(query["steps"].flatMap(Int.init) ?? 6, 1)
+                for step in 1...steps {
+                    let t = Double(step) / Double(steps)
+                    post(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t))
+                }
+            }
+            post(.leftMouseUp, end ?? start)
+            Self.spin(0.3)
+            let selection = chat.selection
+            NSPasteboard.general.clearContents()
+            selection.copy(in: chat)
+            let copied = NSPasteboard.general.string(forType: .string) ?? ""
+            let preview = model.links.previews[session]?.path
+            Log.info("debug: mouse \(chat.name) (\(x),\(y))\(end.map { " -> (\($0.x),\($0.y))" } ?? "")\(flags.isEmpty ? "" : " shift"): copied \(String(reflecting: copied)), preview \(preview ?? "none")")
+            let answer: [String: Any] = ["pasteboard": copied, "preview": preview ?? NSNull(), "key_window": window.isKeyWindow, "app_active": NSApp.isActive,
+                                        "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
+                                        "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys])) ?? Data())
+        case ("POST", "/transcript/key"):
+            // A key press (`text=c`, `mods=cmd,shift,opt`) into the transcript's key handler, the one
+            // the app's key monitor runs, with the key-window test waived (an app launched in the
+            // background never is the key window). Answers whether the handler took the key, and
+            // the pasteboard after it.
+            guard let session = query["agent"], let text = query["text"], !text.isEmpty else {
+                return refuse("400 Bad Request", "session and text are required")
+            }
+            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            guard let window = NSApp.wheelWindow, chat.frameInWindow != .zero else { return refuse("404 Not Found", "that transcript is not on screen") }
+            var flags: NSEvent.ModifierFlags = []
+            for mod in (query["mods"] ?? "").split(separator: ",") {
+                switch mod {
+                case "cmd": flags.insert(.command)
+                case "shift": flags.insert(.shift)
+                case "opt": flags.insert(.option)
+                default: return refuse("400 Bad Request", "mods are cmd, shift, opt")
+                }
+            }
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text,
+                isARepeat: false, keyCode: 0) else { return refuse("500 Internal Server Error", "could not make a key event") }
+            NSPasteboard.general.clearContents()
+            let taken = chat.selection.debugKey(event, in: chat, window: window)
+            let copied = NSPasteboard.general.string(forType: .string) ?? ""
+            Log.info("debug: key \(text) to \(chat.name)'s transcript handler: taken \(taken), pasteboard \(String(reflecting: copied))")
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["taken": taken, "pasteboard": copied], options: [.sortedKeys])) ?? Data())
+        case ("GET", "/transcript/link"):
+            // The address of the link drawn under window point (`x`, `y`, SwiftUI's global space), or
+            // null: the lookup a tap on a reply makes, without the pointer.
+            guard let session = query["agent"], let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "session, x and y are required")
+            }
+            guard let chat = model.chats[session] else { return refuse("404 Not Found", "no agent pane shows that session") }
+            let point = CGPoint(x: x, y: y)
+            var found: String?
+            for (row, target) in chat.selection.targets where target.frame.contains(point) {
+                found = chat.selection.drawn[row]?.link(at: CGPoint(x: x - target.frame.minX, y: y - target.frame.minY))?.absoluteString
+            }
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["url": found.map { $0 as Any } ?? NSNull()] as [String: Any])) ?? Data())
+        case ("GET", "/transcript/drawn"):
+            // The lines SwiftUI drew for a built reply and the prose offsets each one spans.
+            guard let session = query["agent"], let row = query["row"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "agent and row are required")
+            }
+            guard let chat = model.chats[session], let drawn = chat.selection.drawn[row] else { return refuse("404 Not Found", "row \(row) has no drawn text") }
+            let item = chat.items.first { $0.id == row }
+            let prose = item.map { chat.selection.drawnProse(of: $0, in: chat) }
+            let body: [String: Any] = ["lines": drawn.described, "prose": prose?.text ?? "",
+                                      "copies": (prose?.copies ?? []).map { ["from": $0.range.lowerBound, "to": $0.range.upperBound, "text": $0.text] as [String: Any] }]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
         case ("GET", "/transcript/point"):
             // The window point (top-left origin) of a character offset in a built reply, from the
             // layout SwiftUI drew, for `/transcript/drag`.
@@ -626,15 +760,13 @@ final class DebugServer {
                 guard let text = query["text"] else { return refuse("400 Bad Request", "type takes text") }
                 model.commandPaletteTyped(text)
             case "select":
-                guard let index = query["index"].flatMap(Int.init), model.commandPalette?.rows.indices.contains(index) == true || model.commandPalette?.panel?.indices.contains(index) == true else {
+                guard let index = query["index"].flatMap(Int.init), model.commandPalette?.rows.indices.contains(index) == true else {
                     return refuse("400 Bad Request", "select takes index=<a row's number>")
                 }
                 model.commandPaletteSelect(index)
             case "run": model.commandPaletteRun()
-            case "actions": model.commandPaletteToggleActions()
-            case "escape": model.commandPaletteEscape()
             default:
-                return refuse("400 Bad Request", "action must be open, close, type, tab, select, run, actions or escape")
+                return refuse("400 Bad Request", "action must be open, close, type, tab, select or run")
             }
         case ("POST", "/palette"):
             // The artifact palette's controls, as the keys and clicks drive them: open (the
@@ -861,6 +993,37 @@ final class DebugServer {
                   let tree = model.spaces.lazy.flatMap(\.popped).first(where: { $0.panes.contains { $0.id == pane } })
             else { return refuse("404 Not Found", "no popped pane with that id") }
             model.backgroundWindow(tree)
+        case ("POST", "/window/key"):
+            // Make the main window the app's key window without activating the app, so key events
+            // and clicks sent through the application reach it as they would reach a focused one.
+            // Answers whether the window is key and whether the app is active.
+            guard let window = wheelWindow(query["window"]) else { return refuse("404 Not Found", "no such window") }
+            window.makeKeyAndOrderFront(nil)
+            Log.info("debug: window made key: key \(window.isKeyWindow), app active \(NSApp.isActive)")
+            let info: [String: Any] = ["key_window": window.isKeyWindow, "app_active": NSApp.isActive, "visible": window.occlusionState.contains(.visible)]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: info)) ?? Data())
+        case ("POST", "/app/activate"):
+            // Make the app active with the main window key, as a click on it would: a check that
+            // drives the real pointer needs the application to receive window events.
+            guard let window = wheelWindow(query["window"]) else { return refuse("404 Not Found", "no such window") }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            Self.spin(0.5)
+            Log.info("debug: app activated: key \(window.isKeyWindow), app active \(NSApp.isActive)")
+            let info: [String: Any] = ["key_window": window.isKeyWindow, "app_active": NSApp.isActive]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: info)) ?? Data())
+        case ("GET", "/window/screen"):
+            // Where SwiftUI window point (`x`, `y`, top-left origin including the title bar) is on the
+            // display, in the top-left-origin space CGEvent posts in, for a check that moves the real pointer.
+            guard let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "x and y are required")
+            }
+            guard let window = wheelWindow(query["window"]), window.swiftUIHeight > 0, let main = NSScreen.screens.first else {
+                return refuse("404 Not Found", "no such window")
+            }
+            let onScreen = window.convertPoint(toScreen: NSPoint(x: x, y: window.swiftUIHeight - y))
+            let body: [String: Any] = ["x": onScreen.x, "y": main.frame.height - onScreen.y, "app_active": NSApp.isActive]
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
         case ("POST", "/pane/drag"):
             // A header drag without a pointer: `action` is start (`pane`), hover (`target` and
             // `zone`: center, left, right, up or down; a target in another space takes a side), hover
@@ -1100,6 +1263,28 @@ final class DebugServer {
             default: return refuse("400 Bad Request", "action is start or stop")
             }
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: GridMetrics.shared.report(), options: [.sortedKeys])) ?? Data())
+        case ("POST", "/chat/hover"):
+            // Hold a pointer at a window point (`x`, `y`, top left origin, the window content's own
+            // coordinates) so the controls under it show their hover state as a real pointer
+            // causes it; no `x` and `y` lets it go.
+            if let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) {
+                Log.info("debug: chat pointer held at \(Int(x)),\(Int(y))")
+                ChatControlRegistry.shared.hold(at: CGPoint(x: x, y: y))
+            } else {
+                Log.info("debug: chat pointer released")
+                ChatControlRegistry.shared.hold(at: nil)
+            }
+            return ("200 OK", Data("{}".utf8))
+        case ("GET", "/chat/control"):
+            // The chat control under a window point (`x`, `y`; the held pointer when omitted) and
+            // whether its hover state is on, or `{}` when none is.
+            let registry = ChatControlRegistry.shared
+            let at = query["x"].flatMap(Double.init).flatMap { x in query["y"].flatMap(Double.init).map { CGPoint(x: x, y: $0) } } ?? registry.probe
+            let found = at.flatMap { registry.control(at: $0) }
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: found.map(Self.controlJSON) ?? [:], options: [.sortedKeys])) ?? Data())
+        case ("GET", "/chat/controls"):
+            let all = ChatControlRegistry.shared.all.filter { $0.frame != .zero }.sorted { ($0.frame.minY, $0.frame.minX) < ($1.frame.minY, $1.frame.minX) }
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: all.map(Self.controlJSON), options: [.sortedKeys])) ?? Data())
         case ("GET", "/geometry"):
             // Where each window, sidebar row and popover card is on screen (AppKit's coordinates,
             // origin bottom left): what a real drag is aimed at.
@@ -1391,7 +1576,7 @@ final class DebugServer {
             return fail("404 Not Found", "that transcript is not on screen")
         }
         func text(_ id: Int) -> RenderedProse? {
-            chat.items.first { $0.id == id }.map { $0.prose(expanded: chat.expanded) }.flatMap { $0.length == 0 ? nil : $0 }
+            chat.items.first { $0.id == id }.map { chat.selection.drawnProse(of: $0, in: chat) }.flatMap { $0.length == 0 ? nil : $0 }
         }
         guard let startText = text(from.row) else { return fail("404 Not Found", "row \(from.row) has no text in this transcript") }
         guard let endText = text(to.row) else { return fail("404 Not Found", "row \(to.row) has no text in this transcript") }
@@ -1435,6 +1620,13 @@ final class DebugServer {
                                     "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
                                     "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
         return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.prettyPrinted, .sortedKeys])) ?? Data())
+    }
+
+    /// Let the main run loop work for `seconds`: the views handle an event on a later turn, so one
+    /// event is given time to land before the next goes in.
+    private static func spin(_ seconds: TimeInterval) {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end { RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
     }
 
     struct Refusal: Error { let status: String; let message: String }
@@ -1549,7 +1741,10 @@ final class DebugServer {
     private func statusJSON(_ status: PaneStatus?) -> Any {
         guard let status else { return NSNull() }
         var o: [String: Any] = ["kind": status.rank.rawValue, "drawn": model.statusDots.contains(status.rank), "label": status.label]
-        if case let .needsYou(waiting) = status { o["waiting"] = waiting }
+        if case let .needsYou(waiting, reason) = status {
+            o["waiting"] = waiting
+            o["reason"] = reason ?? NSNull()
+        }
         return o
     }
 
@@ -1817,11 +2012,10 @@ final class DebugServer {
         return [
             "open": true,
             "mode": palette.mode.rawValue,
+            "verb": palette.verb?.rawValue ?? NSNull(),
             "query": palette.query,
             "rows": palette.rows.map { ["id": $0.item.id, "kind": $0.item.kind, "title": $0.item.title, "detail": $0.item.detail] },
             "selected": palette.rows.isEmpty ? NSNull() : palette.selected as Any,
-            "actions": (palette.panel ?? []).map { ["id": $0.id, "title": $0.title] },
-            "action_selected": palette.panel == nil ? NSNull() : palette.panelSelected as Any,
         ]
     }
 
@@ -1917,6 +2111,10 @@ final class DebugServer {
             },
             "status_dots": StatusRank.allCases.filter(model.statusDots.contains).map(\.rawValue),
             "active": model.active ?? NSNull(),
+            "last_switch": model.lastSwitch.map {
+                ["space": $0.space, "press_to_windows_ms": $0.windowsMs, "press_to_frame_ms": $0.frameMs ?? NSNull(),
+                 "press_to_grid_ms": $0.gridMs ?? NSNull()] as [String: Any]
+            } ?? NSNull(),
             "windows": model.layout.windows.map { window in
                 [
                     "id": window.id,

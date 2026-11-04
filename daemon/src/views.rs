@@ -130,7 +130,7 @@ impl AppState {
             .ok_or_else(|| format!("no home directory to find {title}'s conversations in"))?;
         // What the agent's own hooks last reported. An agent that reported nothing (started
         // outside Wheel's wrapper) is not known to be mid-turn, so the switch goes ahead.
-        let reported = self.reports.lock().unwrap().get(&term_id).copied();
+        let reported = self.reports.lock().unwrap().get(&term_id).map(|r| r.status);
         tracing::info!(%pane, term = %term_id, harness = kind.name(), conversation = %agent.conversation, status = ?reported, "turn check before the agent view");
         if matches!(
             reported,

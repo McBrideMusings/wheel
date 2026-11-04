@@ -20,7 +20,8 @@ row() { w space ps "$S" --json | jq -r --arg p "$P" '[.[] | select(.command=="sl
 poll 20 listed 1
 PID="$(row .pid)"
 check "space ps lists the sleep under its pane" test -n "$PID" -a "$PID" != null
-eq "the row names the program" "$(row .name)" "sleep"
+eq "the row shows the command as run" "$(row .name)" "sleep 4243"
+eq "the row says how it started" "$(row .how)" "typed in the terminal"
 check "the text form lists it too" sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space ps '$S' | grep -q 'sleep 4243'"
 check "space kill refuses a pid outside the space" sh -c "! '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' space kill '$S' 1"
 

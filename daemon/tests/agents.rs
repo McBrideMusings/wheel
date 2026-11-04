@@ -2545,6 +2545,7 @@ async fn report_status(ws: &mut Ws, req: u64, pane: &str, status: wheel_proto::R
             req: Some(req),
             pane: pane.into(),
             status,
+            reason: None,
         },
     )
     .await;
@@ -4275,8 +4276,9 @@ async fn status_until(
             ..
         } = recv(ws).await
         {
-            seen.push((changed.clone(), status, space_status));
-            if changed.as_deref() == Some(pane) && status == want {
+            let hit = changed.as_deref() == Some(pane) && status == want;
+            seen.push((changed, status, space_status));
+            if hit {
                 return;
             }
         }
@@ -4306,7 +4308,10 @@ async fn a_pane_and_its_space_follow_the_agent_through_a_permission_request() {
     status_until(
         &mut watcher,
         &pane,
-        Some(NeedsYou { waiting: 1 }),
+        Some(NeedsYou {
+            waiting: 1,
+            reason: None,
+        }),
         &mut seen,
     )
     .await;
@@ -4809,6 +4814,46 @@ async fn each_kind_of_tool_call_arrives_with_its_kind_and_a_described_command_ke
         events.iter().any(|e| matches!(e, AgentEvent::ToolUpdate { status: Some(s), .. } if s == "failed")),
         "the failed command reports failed: {events:?}"
     );
+}
+
+#[tokio::test]
+async fn a_text_block_rewritten_after_streaming_is_revised_once_not_appended() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "write rewritten").await;
+    let mut live = Vec::new();
+    loop {
+        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
+            let end = matches!(event.event, AgentEvent::TurnEnd { .. });
+            live.push(event.event);
+            if end {
+                break;
+            }
+        }
+    }
+    let revised: Vec<_> = live
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::TextRevised { .. }))
+        .collect();
+    assert_eq!(
+        revised,
+        [&AgentEvent::TextRevised {
+            streamed: "See a.rs, then go.".into(),
+            text: "See /w/a.rs , then go.".into(),
+        }],
+        "{live:?}"
+    );
+
+    let events = attach(&mut connect(&url).await, &agent, 3).await;
+    let texts: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["See /w/a.rs , then go."], "{events:?}");
 }
 
 #[tokio::test]

@@ -115,8 +115,8 @@ struct SpaceMenuItems: View {
 }
 
 extension View {
-    /// A space's tab or sidebar row: one gesture owns the press. A press that never moves 6 points
-    /// is a click that shows the space; one that does drags the space, released over a sidebar, a
+    /// A space's tab or sidebar row: one gesture owns the press. The mouse-down shows the space; a
+    /// press that then moves 6 points drags the space, released over a sidebar, a
     /// window, the popover or the desktop. Releasing ends the drag here or, when the row's view is
     /// gone by then, from the event monitor `beginSpaceDrag` installs.
     func spacePressTarget(_ model: AppModel, windowID: String, space: String) -> some View {
@@ -131,6 +131,8 @@ private struct SpacePress: ViewModifier {
     /// This press has started a drag: its release is never a click, and a drag Escape cancelled
     /// does not start again while the button is still held.
     @State private var dragged = false
+    /// This press has shown its space: a space switches on the mouse-down, as a sidebar selects.
+    @State private var pressed = false
 
     func body(content: Content) -> some View {
         content
@@ -138,7 +140,11 @@ private struct SpacePress: ViewModifier {
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
-                        if !dragged, model.spaceDrag == nil { model.notePress(space: space) }
+                        if !pressed, !dragged, model.spaceDrag == nil {
+                            pressed = true
+                            model.notePress(space: space)
+                            model.tapSpace(space, in: windowID)
+                        }
                         if !dragged, hypot(value.translation.width, value.translation.height) >= 6 {
                             dragged = true
                             model.beginSpaceDrag(space, byPointer: true)
@@ -146,11 +152,10 @@ private struct SpacePress: ViewModifier {
                         if dragged { model.moveSpaceDrag() }
                     }
                     .onEnded { _ in
+                        pressed = false
                         if dragged {
                             dragged = false
                             model.endSpaceDrag()
-                        } else {
-                            model.tapSpace(space, in: windowID)
                         }
                     },
                 // The rename field takes its own clicks.

@@ -23,8 +23,6 @@ struct CommandPaletteOverlay: View {
                 searchField
                 Divider()
                 rows
-                Divider()
-                footer
             }
             .frame(maxWidth: 560)
             .background(.background, in: RoundedRectangle(cornerRadius: 10))
@@ -32,7 +30,6 @@ struct CommandPaletteOverlay: View {
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5))
             .shadow(color: .black.opacity(inline ? 0 : 0.28), radius: 14, y: 4)
             .padding(.horizontal, inline ? 0 : 16)
-            .overlay(alignment: .bottomTrailing) { actionList.padding(.bottom, 24) }
             .padding(.top, inline ? 0 : 48)
             .onExitCommand { model.commandPaletteEscape() }
             .accessibilityElement(children: .contain)
@@ -44,7 +41,7 @@ struct CommandPaletteOverlay: View {
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(palette.mode == .newSpace ? "Folder name or path" : "Run an action, open a space or a folder",
+            TextField(palette.mode == .newSpace ? "Folder name or path" : palette.verb?.prompt ?? "Type an action, a space or a folder",
                       text: Binding(get: { palette.query }, set: { model.commandPaletteTyped($0) }))
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
@@ -57,7 +54,7 @@ struct CommandPaletteOverlay: View {
                     return .handled
                 }
                 .onKeyPress(.delete) {
-                    guard palette.mode == .newSpace, palette.query.isEmpty else { return .ignored }
+                    guard palette.isStaged, palette.query.isEmpty else { return .ignored }
                     model.commandPaletteBack()
                     return .handled
                 }
@@ -66,48 +63,6 @@ struct CommandPaletteOverlay: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 40)
-    }
-
-    /// Return's action for the selected row, and ⌘K when the row has more.
-    private var footer: some View {
-        HStack(spacing: 12) {
-            if let primary = palette.selectedItem?.subActions.first {
-                Text("↩ \(primary.title)")
-            }
-            Spacer()
-            if (palette.selectedItem?.subActions.count ?? 0) > 1 {
-                Text("⌘K Actions")
-            }
-            if palette.mode == .newSpace { Text("⎋ Back") }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .frame(height: 24)
-    }
-
-    @ViewBuilder private var actionList: some View {
-        if let panel = palette.panel {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(panel.enumerated()), id: \.element.id) { index, action in
-                    Text(action.title)
-                        .padding(.horizontal, 8)
-                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                        .background(index == palette.panelSelected ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
-                                    in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.commandPaletteSelect(index); model.commandPaletteRun() }
-                        .accessibilityAddTraits(index == palette.panelSelected ? .isSelected : [])
-                }
-            }
-            .padding(4)
-            .frame(width: 220)
-            .background(.background, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
-            .padding(8)
-            .accessibilityLabel("Actions")
-        }
     }
 
     @ViewBuilder private var rows: some View {
@@ -147,12 +102,15 @@ private struct PaletteRow: View {
         switch row.item {
         case .action: "command"
         case .space: "rectangle.3.group"
+        case .newSpaceHere: "plus.rectangle.on.folder"
         case .pane: "rectangle.split.2x1"
         case .artifact: "doc.richtext"
         case .session: "square.stack"
         case .recent: "clock.arrow.circlepath"
         case .openFolder: "folder.badge.plus"
         case .newSpaceMode: "plus.rectangle.on.folder"
+        case .verb: "chevron.right.circle"
+        case .target: "xmark.rectangle"
         case .folder: "folder"
         case .missing: "exclamationmark.triangle"
         }

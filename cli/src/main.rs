@@ -6,6 +6,7 @@
 //! 6 the daemon refused the request, 7 lost the connection after connecting (the request may
 //! already have taken effect), 1 anything else.
 
+mod hook;
 mod statusline;
 
 use std::io::Write as _;
@@ -880,6 +881,13 @@ enum PaneCommand {
     Report {
         #[arg(value_parser = wheel_proto::from_wire::<wheel_proto::ReportedStatus>)]
         status: wheel_proto::ReportedStatus,
+        /// What a needs_you agent waits on, in words ("Bash: make test").
+        #[arg(long, conflicts_with = "hook_input")]
+        reason: Option<String>,
+        /// Take the reason from Claude Code's hook input on stdin: a PermissionRequest's tool and
+        /// what it acts on, or a Notification's message.
+        #[arg(long)]
+        hook_input: bool,
         /// The terminal pane; with none, the one this shell runs in.
         #[arg(long, env = "WHEEL_PANE")]
         pane: Option<String>,
@@ -2876,11 +2884,18 @@ async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
 }
 
 /// A status as `space status` prints it: its name, and for `needs_you` how many requests wait.
-fn status_words(status: Option<wheel_proto::PaneStatus>) -> String {
+fn status_words(status: Option<&wheel_proto::PaneStatus>) -> String {
     use wheel_proto::PaneStatus;
     match status {
         None => "-".into(),
-        Some(PaneStatus::NeedsYou { waiting }) => format!("needs_you  waiting {waiting}"),
+        Some(PaneStatus::NeedsYou {
+            waiting,
+            reason: None,
+        }) => format!("needs_you  waiting {waiting}"),
+        Some(PaneStatus::NeedsYou {
+            waiting,
+            reason: Some(reason),
+        }) => format!("needs_you  waiting {waiting}  {reason}"),
         Some(PaneStatus::Stopped) => "stopped".into(),
         Some(PaneStatus::Working) => "working".into(),
         Some(PaneStatus::Idle) => "idle".into(),
@@ -2901,7 +2916,7 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind, *status));
+                out.push((id.clone(), kind, status.clone()));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -2916,7 +2931,7 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
         return Err(Fail::Other("unexpected reply to status".into()));
     };
     for space in &spaces {
-        println!("{}  {}", space.name, status_words(space.status));
+        println!("{}  {}", space.name, status_words(space.status.as_ref()));
         let mut panes = Vec::new();
         for tree in space.trees() {
             walk(tree, &mut panes);
@@ -2927,7 +2942,7 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
                 Some(wheel_proto::PaneSite::Backgrounded) => "  backgrounded",
                 _ => "",
             };
-            println!("  {pane}  {kind}  {}{site}", status_words(status));
+            println!("  {pane}  {kind}  {}{site}", status_words(status.as_ref()));
         }
     }
     Ok(())
@@ -3691,6 +3706,7 @@ async fn artifact_tools(
         req: Some(req),
         name,
         scope,
+        pane: None,
         space,
     };
     let ServerMsg::Tools { tools, .. } = conn.call(msg, req).await? else {
@@ -3725,6 +3741,7 @@ async fn artifact_read(
         req: Some(req),
         name,
         scope,
+        pane: None,
         space,
         uri,
     };
@@ -3755,6 +3772,7 @@ async fn artifact_call(
         req: Some(req),
         name,
         scope,
+        pane: None,
         space,
         tool,
         arguments,
@@ -4153,17 +4171,24 @@ async fn space(conn: &mut Conn, command: SpaceCommand) -> Result<(), Fail> {
                     serde_json::to_string_pretty(&procs).unwrap_or_default()
                 );
             } else {
-                println!("PID\tPANE\tAGENT\tCPU%\tMEM_MB\tAGE_S\tCOMMAND");
+                println!("PID\tPPID\tPANE\tAGENT\tCPU%\tMEM_MB\tAGE_S\tHOW\tCOMMAND");
                 for p in &procs {
+                    let how = match (&p.detached, &p.how) {
+                        (Some(why), _) => format!("detached: {why}"),
+                        (None, Some(how)) => how.clone(),
+                        (None, None) => "-".into(),
+                    };
                     println!(
-                        "{}\t{}\t{}\t{:.1}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}",
                         p.pid,
-                        p.pane,
+                        p.ppid,
+                        p.pane.as_deref().unwrap_or("-"),
                         p.agent.as_deref().unwrap_or("-"),
                         p.cpu,
                         p.mem_kb / 1024,
                         p.age_secs,
-                        p.command
+                        how,
+                        p.name
                     );
                 }
             }
@@ -5007,14 +5032,29 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
             }
         }
-        PaneCommand::Report { status, pane } => {
+        PaneCommand::Report {
+            status,
+            reason,
+            hook_input,
+            pane,
+        } => {
             let Some(pane) = pane else {
                 unreachable!("main exits before connecting when there is no pane")
+            };
+            // A person typing the command has no hook input to give, so a terminal is not read.
+            let reason = if hook_input && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                use std::io::Read as _;
+                let mut raw = Vec::new();
+                let _ = std::io::stdin().read_to_end(&mut raw);
+                hook::reason(&serde_json::from_slice(&raw).unwrap_or_default())
+            } else {
+                reason
             };
             simple(conn, |req| ClientMsg::PaneReport {
                 req: Some(req),
                 pane,
                 status,
+                reason,
             })
             .await
         }

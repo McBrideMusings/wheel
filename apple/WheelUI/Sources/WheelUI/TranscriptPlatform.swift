@@ -57,13 +57,15 @@ extension EnvironmentValues {
 extension View {
     /// Marks a view as a row's prose for the transcript selection: reports where it sits, and
     /// draws the selected characters behind it.
-    func selectableText(_ prose: RenderedProse, id: Int, chat: AgentChat, style: ProseStyle) -> some View {
-        modifier(SelectableText(prose: prose, id: id, chat: chat, style: style))
+    func selectableText(_ prose: RenderedProse, source: String, id: Int, chat: AgentChat, style: ProseStyle) -> some View {
+        modifier(SelectableText(prose: prose, source: source, id: id, chat: chat, style: style))
     }
 }
 
 private struct SelectableText: ViewModifier {
     let prose: RenderedProse
+    /// The row's own text, which `prose` was made from.
+    let source: String
     let id: Int
     let chat: AgentChat
     let style: ProseStyle
@@ -72,6 +74,7 @@ private struct SelectableText: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background { platform.proseHighlight(prose, id, style, chat) }
+            .onChange(of: prose, initial: true) { chat.selection.known[id] = .init(source: source, prose: prose) }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
                 chat.selection.targets[id] = TranscriptSelection.Target(frame: $0, style: style)
             }

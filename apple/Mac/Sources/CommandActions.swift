@@ -268,9 +268,8 @@ extension KeyChord {
 /// The command palette's operations: ⌘K, the title bar's button, the palette's own keys and the debug endpoint all call these.
 extension AppModel {
     func openCommandPalette(mode: CommandPalette.Mode = .root) {
-        // ⌘K again: the selected row's actions.
-        guard commandPalette == nil else { return commandPaletteToggleActions() }
-        commandPalette = CommandPalette(mode: mode)
+        guard commandPalette == nil else { return }
+        commandPalette = CommandPalette(mode: mode, verbs: true)
         Log.info("command palette: opened in \(mode.rawValue) mode")
         refreshCommandPalette()
         askRecentDirs()
@@ -335,9 +334,15 @@ extension AppModel {
 
     /// Backspace on an empty field: back to the root list.
     func commandPaletteBack() {
-        guard commandPalette?.mode == .newSpace else { return }
-        commandPalette?.leaveNewSpace()
+        guard commandPalette?.isStaged == true else { return }
+        commandPalette?.leaveStage()
         Log.info("command palette: root mode")
+    }
+
+    /// Esc: leave New Space mode, else close the palette.
+    func commandPaletteEscape() {
+        if commandPalette?.isStaged == true { return commandPaletteBack() }
+        closeCommandPalette()
     }
 
     /// Tab: complete the selected folder's path.
@@ -419,20 +424,27 @@ extension AppModel {
     /// Return: close the palette and run the selected row.
     func commandPaletteRun() {
         guard let item = commandPalette?.selectedItem else { return }
-        if let action = commandPalette?.selectedAction, commandPalette?.panel != nil || !item.subActions.isEmpty {
-            closeCommandPalette()
-            Log.info("command palette: run \(action.id) on \(item.id)")
-            return run(action)
-        }
         // These two keep the palette open: one changes its mode, the other only explains.
         if case .newSpaceMode = item { return enterNewSpaceMode() }
+        if case let .verb(verb) = item {
+            commandPalette?.enter(verb)
+            Log.info("command palette: verb \(verb.rawValue)")
+            return
+        }
         if case .missing = item { return }
         closeCommandPalette()
         Log.info("command palette: run \(item.kind) \(item.id)")
         switch item {
         case let .action(id, _, _): CommandActions.run(id, self)
         case .openFolder: CommandActions.run(PaletteAction.openFolderID, self)
-        case .space, .recent, .folder: break
+        case let .space(id, _, _):
+            // A window with no spaces brings the picked space to itself rather than jumping away.
+            if let window = layout.focusedWindow, window.spaces.isEmpty {
+                Log.info("command palette: space \(id) brought to the empty window \(window.id.prefix(8))")
+                show(space: id, in: window.id)
+            } else {
+                focus(space: id)
+            }
         case let .pane(id, space, _, _):
             focus(space: space)
             focus(pane: id)
@@ -442,37 +454,17 @@ extension AppModel {
             }
             openArtifactInNewPane(info)
         case .session: break
-        case .newSpaceMode: break
+        case let .recent(dir): createSpace(cwd: dir)
+        case let .newSpaceHere(dir, _): createSpace(cwd: dir)
+        case .newSpaceMode, .verb: break
+        case let .target(verb, id, _, _):
+            switch verb {
+            case .closeSpace: askCloseSpace(id)
+            case .closePane: askClosePane(id)
+            default: break
+            }
+        case let .folder(path, _): createSpace(cwd: path)
         case .missing: break
         }
-    }
-
-    /// Run one of a row's actions.
-    private func run(_ action: PaletteSubAction) {
-        switch action {
-        case let .switchToSpace(id):
-            // A window with no spaces brings the picked space to itself rather than jumping away.
-            if let window = layout.focusedWindow, window.spaces.isEmpty {
-                Log.info("command palette: space \(id) brought to the empty window \(window.id.prefix(8))")
-                show(space: id, in: window.id)
-            } else {
-                focus(space: id)
-            }
-        case let .newSpace(dir): createSpace(cwd: dir)
-        case let .closeSpace(id): askCloseSpace(id)
-        }
-    }
-
-    /// ⌘K inside the open palette: the selected row's action list, or back out of it.
-    func commandPaletteToggleActions() {
-        commandPalette?.toggleActions()
-        Log.info("command palette: actions \(commandPalette?.panel == nil ? "closed" : "open")")
-    }
-
-    /// Esc: close the action list, else leave New Space mode, else close the palette.
-    func commandPaletteEscape() {
-        if commandPalette?.closeActions() == true { return }
-        if commandPalette?.mode == .newSpace { return commandPaletteBack() }
-        closeCommandPalette()
     }
 }

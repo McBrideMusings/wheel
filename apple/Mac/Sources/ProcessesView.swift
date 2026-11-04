@@ -36,7 +36,7 @@ struct ProcessesCard: View {
         let all = model.procs[space] ?? []
         let rows = all.filter {
             filter.isEmpty || $0.command.localizedCaseInsensitiveContains(filter)
-                || $0.pane.localizedCaseInsensitiveContains(filter)
+                || ($0.pane ?? "").localizedCaseInsensitiveContains(filter)
         }
         VStack(alignment: .leading, spacing: 8) {
             TextField("Filter", text: $filter).textFieldStyle(.roundedBorder)
@@ -75,7 +75,7 @@ struct ProcessRow: View {
             Button(action: toggle) {
                 HStack {
                     Text(proc.name).fontWeight(.medium).lineLimit(1)
-                    Text(proc.pane).foregroundStyle(.secondary).lineLimit(1)
+                    Text(proc.pane ?? "detached").foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
                     Text(String(format: "%.1f%%", proc.cpu)).monospacedDigit().foregroundStyle(.secondary)
                 }

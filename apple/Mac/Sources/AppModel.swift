@@ -53,16 +53,23 @@ final class AppModel {
     /// whether to commit; the default always does.
     @discardableResult
     func editWindows<R>(commit: (R, _ changed: Bool) -> Bool = { _, _ in true }, _ change: (inout WindowLayout) -> R) -> R {
-        let before = layout
-        let result = change(&layout)
-        if commit(result, layout != before) { commitWindows() }
+        // Observation counts every write, so an edit that changes nothing leaves `layout` unwritten:
+        // a write would re-run every view that reads the windows.
+        var next = layout
+        let result = change(&next)
+        let changed = next != layout
+        if changed { layout = next }
+        if commit(result, changed) { commitWindows() }
         return result
     }
 
     /// Apply `change` and save the layout without touching the windows or surfaces: only the
     /// focused window or a sidebar moved.
     func editLayoutSilently(_ change: (inout WindowLayout) -> Void) {
-        change(&layout)
+        var next = layout
+        change(&next)
+        guard next != layout else { return }
+        layout = next
         layout.save()
     }
 
@@ -220,6 +227,10 @@ final class AppModel {
     /// The person closed the Full Disk Access screen; it comes back at the next launch.
     var diskAccessScreenDismissed = false
     @ObservationIgnored var diskAccessTask: Task<Void, Never>?
+    /// macOS recorded a change to the server's Full Disk Access after the server started, while it
+    /// still cannot open the folders: only a restart applies it (DiskAccess.swift).
+    var diskAccessChangedSinceStart = false
+    @ObservationIgnored var lastGrantLook: Date?
     @ObservationIgnored var diskAccessObserver: NSObjectProtocol?
     /// The connected server's program and source, from its last status.
     var serverHost: HostAccess?
@@ -253,6 +264,13 @@ final class AppModel {
     /// switch it started once the click lands, until the window layout that shows it is drawn.
     @ObservationIgnored var spacePressAt: TimeInterval?
     @ObservationIgnored var pendingSwitch: (space: String, pressAt: TimeInterval)?
+    /// The last switch a press made: the space, and ms from the mouse-down to the window layout
+    /// that shows it, to the first display frame after it (the selection and the title) and to the
+    /// frame after the grid shows the space. The debug state's `last_switch`.
+    @ObservationIgnored var lastSwitch: (space: String, windowsMs: Int, frameMs: Int?, gridMs: Int?)?
+    /// Whether each space is on screen, one observable flag per space (`shownFlag`), so a switch
+    /// re-runs the views of the two spaces it changes and no other.
+    @ObservationIgnored var shownFlags: [String: ShownFlag] = [:]
     @ObservationIgnored var cardFrames: [String: CGRect] = [:]
     /// Each popover row, by its card's key (a window id or `MenuBarWindow.backgroundKey`) and space id, in the popover's top-left space.
     @ObservationIgnored var popoverRowFrames: [String: [String: CGRect]] = [:]
@@ -333,44 +351,18 @@ final class AppModel {
     @ObservationIgnored private var terminalControllers: [String: TerminalController] = [:]
     /// How each space's terminals draw, from its `terminal.*` settings.
     @ObservationIgnored private(set) var terminalLooks: [String: TerminalAppearance] = [:]
-    /// Padding inside the terminal's own background, and the look's font, cursor and colours.
     /// Ghostty's default keybinds are cleared, so a ⌘ key Wheel's keymap leaves unbound reaches the
     /// program in the terminal; the keys the surface still handles itself (copy, paste, select
-    /// all, font size) are bound again below.
-    private static func terminalConfiguration(_ look: TerminalAppearance) -> TerminalConfiguration {
-        TerminalConfiguration(startingFrom: .default) {
-            $0.withWindowPaddingX(10)
-            $0.withWindowPaddingY(8)
-            $0.withCustom("keybind", "clear")
-            for bind in [
-                "super+c=copy_to_clipboard",
-                "super+v=paste_from_clipboard",
-                "super+a=select_all",
-                "super+equal=increase_font_size:1",
-                "super+plus=increase_font_size:1",
-                "super+minus=decrease_font_size:1",
-                "super+zero=reset_font_size",
-            ] {
-                $0.withCustom("keybind", bind)
-            }
-            for line in look.configLines { $0.withCustom(line.key, line.value) }
-        }
-    }
-
-    /// Ghostty's own light/dark pair for the default theme, else the named theme's two palettes.
-    private static func terminalTheme(_ look: TerminalAppearance) -> TerminalTheme {
-        func colours(_ palette: TerminalPalette) -> TerminalConfiguration {
-            TerminalConfiguration {
-                $0.withBackground(palette.background)
-                $0.withForeground(palette.foreground)
-                for (index, colour) in palette.ansi.enumerated() { $0.withPalette(index, color: colour) }
-            }
-        }
-        guard let light = TerminalPalette.of(look.theme, dark: false), let dark = TerminalPalette.of(look.theme, dark: true) else {
-            return .default
-        }
-        return TerminalTheme(light: colours(light), dark: colours(dark))
-    }
+    /// all, font size) are bound again.
+    private static let terminalKeybinds = [
+        "super+c=copy_to_clipboard",
+        "super+v=paste_from_clipboard",
+        "super+a=select_all",
+        "super+equal=increase_font_size:1",
+        "super+plus=increase_font_size:1",
+        "super+minus=decrease_font_size:1",
+        "super+zero=reset_font_size",
+    ]
 
     /// The controller for `space`, made on first use from the look held for it (the defaults until
     /// its settings arrive, then restyled live).
@@ -378,7 +370,7 @@ final class AppModel {
         let key = space ?? ""
         if let held = terminalControllers[key] { return held }
         let look = terminalLooks[key] ?? .standard
-        let made = TerminalController(configuration: Self.terminalConfiguration(look), theme: Self.terminalTheme(look))
+        let made = TerminalController(configuration: TerminalStyle.configuration(look, keybinds: Self.terminalKeybinds), theme: TerminalStyle.theme(look))
         terminalControllers[key] = made
         return made
     }
@@ -551,7 +543,10 @@ final class AppModel {
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
         // The first report after a connect has nothing to move from, so it applies without animation.
         let animated = !old.isEmpty && !(old.count == spaces.count && zip(old, spaces).allSatisfy { $0.root.sameShape(as: $1.root) })
-        if animated {
+        // A report that changes no space (a focus moved to another space, which this window
+        // layout already shows) writes nothing, so no view that reads the spaces runs again.
+        if spaces == old {
+        } else if animated {
             animateLayout { self.spaces = spaces }
         } else {
             self.spaces = spaces
@@ -573,7 +568,7 @@ final class AppModel {
         }
         refreshCommandPalette()
         let held = Set(spaces.flatMap { $0.allPanes.map { $0.id } })
-        rawContextPanes.formIntersection(held)
+        if !rawContextPanes.isSubset(of: held) { rawContextPanes.formIntersection(held) }
         paneFrames = paneFrames.filter { held.contains($0.key) }
         paneBodyFrames = paneBodyFrames.filter { held.contains($0.key) }
         // A palette is for the pane as it was when it opened: a pane that left, or that something
@@ -1888,8 +1883,8 @@ final class AppModel {
         terminalLooks[space] = look
         Log.info("terminal appearance for \(space): \(look.fontFamily.isEmpty ? "own font" : look.fontFamily) \(look.fontSize)pt, line \(look.lineHeight), \(look.theme.rawValue), cursor \(look.cursor.rawValue)\(look.cursorBlink ? " blinking" : "")")
         guard let controller = terminalControllers[space] else { return }
-        let a = controller.setTerminalConfiguration(Self.terminalConfiguration(look))
-        let b = controller.setTheme(Self.terminalTheme(look))
+        let a = controller.setTerminalConfiguration(TerminalStyle.configuration(look, keybinds: Self.terminalKeybinds))
+        let b = controller.setTheme(TerminalStyle.theme(look))
         Log.info("terminal controller for \(space) restyled (config \(a), theme \(b))")
     }
 

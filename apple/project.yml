@@ -25,6 +25,7 @@ targets:
     platform: macOS
     sources:
       - Mac/Sources
+      - Shared
       - Mac/Assets.xcassets
       - AgentLogos.xcassets
     dependencies:
@@ -60,6 +61,7 @@ targets:
     sources:
       - iOS/Sources
       - AgentLogos.xcassets
+      - Shared
     dependencies:
       - package: WheelKit
       - package: WheelUI

@@ -28,7 +28,10 @@ struct SpaceStatus {
 /// A pane's status from its agent's state and the permission requests waiting on it.
 pub(crate) fn pane_status(state: Option<&AgentState>, waiting: u32) -> Option<PaneStatus> {
     if waiting > 0 {
-        return Some(PaneStatus::NeedsYou { waiting });
+        return Some(PaneStatus::NeedsYou {
+            waiting,
+            reason: None,
+        });
     }
     Some(match state? {
         AgentState::Failed { .. } | AgentState::GaveUp { .. } => PaneStatus::Stopped,
@@ -61,21 +64,27 @@ impl AppState {
                     // A refresh command's request names the web pane, not an agent.
                     PaneKind::Web { .. } => Some(waiting(pane))
                         .filter(|n| *n > 0)
-                        .map(|waiting| PaneStatus::NeedsYou { waiting }),
+                        .map(|waiting| PaneStatus::NeedsYou {
+                            waiting,
+                            reason: None,
+                        }),
                     // A terminal's agent says for itself, through the hooks its wrapper added.
                     PaneKind::Terminal {
                         term,
                         agent: Some(_),
                         ..
-                    } => reports.get(term).map(|reported| match reported {
-                        ReportedStatus::NeedsYou => PaneStatus::NeedsYou { waiting: 1 },
+                    } => reports.get(term).map(|reported| match reported.status {
+                        ReportedStatus::NeedsYou => PaneStatus::NeedsYou {
+                            waiting: 1,
+                            reason: reported.reason.clone(),
+                        },
                         ReportedStatus::Working => PaneStatus::Working,
                         ReportedStatus::Idle => PaneStatus::Idle,
                     }),
                     _ => None,
                 };
                 if let Some(status) = status {
-                    by_pane.insert(pane.to_string(), status);
+                    by_pane.insert(pane.to_string(), status.clone());
                     found.push(status);
                 }
             }
@@ -112,10 +121,10 @@ impl AppState {
             status: space_status,
         } in &by_space
         {
-            let old_space = book.spaces.get(space).copied();
+            let old_space = book.spaces.get(space).cloned();
             let mut any = false;
             for pane in pane_ids {
-                let (old, new) = (book.panes.get(pane).copied(), by_pane.get(pane).copied());
+                let (old, new) = (book.panes.get(pane).cloned(), by_pane.get(pane).cloned());
                 if old == new {
                     continue;
                 }
@@ -125,7 +134,7 @@ impl AppState {
                     space: space.clone(),
                     pane: Some(pane.clone()),
                     status: new,
-                    space_status: *space_status,
+                    space_status: space_status.clone(),
                 });
             }
             if !any && old_space != *space_status {
@@ -135,7 +144,7 @@ impl AppState {
                     space: space.clone(),
                     pane: None,
                     status: None,
-                    space_status: *space_status,
+                    space_status: space_status.clone(),
                 });
             }
         }
@@ -153,7 +162,7 @@ impl AppState {
 
 fn set_pane_statuses(node: &mut Node, by_pane: &HashMap<String, PaneStatus>) {
     match node {
-        Node::Pane { id, status, .. } => *status = by_pane.get(id).copied(),
+        Node::Pane { id, status, .. } => *status = by_pane.get(id).cloned(),
         Node::Split { a, b, .. } => {
             set_pane_statuses(a, by_pane);
             set_pane_statuses(b, by_pane);

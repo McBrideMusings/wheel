@@ -8,6 +8,9 @@ import WheelUI
 /// folder nobody granted fails with "Operation not permitted" inside every terminal and agent.
 struct FolderAccessSettings: View {
     let host: HostAccess?
+    /// Access was changed after the server started: the one thing left is a restart.
+    var changedSinceStart = false
+    var restart: (() -> Void)?
 
     static func title(_ host: HostAccess) -> String {
         let denied = host.folders.filter { !$0.allowed }
@@ -35,7 +38,14 @@ struct FolderAccessSettings: View {
                             Spacer()
                         }
                     }
-                    if denied {
+                    if denied, changedSinceStart, let restart {
+                        Text("Full Disk Access was changed after the server started, and a running server keeps the access it started with. Restart the server to apply it. That ends every terminal and agent.")
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            Button("Restart Server", action: restart).buttonStyle(.borderedProminent)
+                            Button("Open Full Disk Access") { FullDiskAccess.openPane() }
+                        }
+                    } else if denied {
                         Text("Terminals and agents in Wheel get “Operation not permitted” there, because macOS charges their access to the server. Add this program under Privacy & Security › Full Disk Access, then restart the server so it picks the grant up:")
                             .foregroundStyle(.secondary)
                         Text(host.exe).font(.system(.callout, design: .monospaced)).textSelection(.enabled)

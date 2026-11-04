@@ -69,11 +69,15 @@ struct SidebarSpace: View {
                     .accessibilityAction(named: "Rename Space…") { model.beginRename(space: space.id) }
                 BackFromLittleButton(model: model, space: space.id, windowID: windowID)
                 if let status = space.status, model.statusDots.contains(status.rank), let caption = status.caption {
+                    // A count keeps its size; a waiting agent's reason takes what the name leaves.
                     Text(caption)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .fixedSize()
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: status.reason == nil, vertical: false)
+                        .frame(maxWidth: status.reason == nil ? nil : 160, alignment: .trailing)
+                        .help(status.label)
                 }
                 CloseSpaceButton(model: model, space: space)
             }

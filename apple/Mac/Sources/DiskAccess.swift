@@ -48,6 +48,46 @@ extension AppModel {
             appDiskAccess = granted
         }
         if diskAccessScreenShown { keepWatchingDiskAccess() }
+        await lookForGrantSinceStart()
+    }
+
+    /// While the server cannot open the folders, asks the system log whether macOS recorded a
+    /// change to the server's Full Disk Access after it started. The look takes about 5 s, so it
+    /// runs at most once every 10 s, and the answer clears when the server can open them.
+    private func lookForGrantSinceStart() async {
+        guard serverDiskAccess == false, let exe = serverHost?.exe, let started = serverStarted else {
+            if diskAccessChangedSinceStart { diskAccessChangedSinceStart = false }
+            return
+        }
+        if diskAccessChangedSinceStart { return }
+        if let last = lastGrantLook, Date().timeIntervalSince(last) < 10 { return }
+        lastGrantLook = Date()
+        let changed = await Task.detached { Self.accessChanged(path: exe, since: started) }.value
+        if changed != diskAccessChangedSinceStart {
+            Log.info("full disk access: \(exe) changed since the server started \(started): \(changed)")
+            diskAccessChangedSinceStart = changed
+        }
+    }
+
+    /// Whether tccd logged a Full Disk Access change for the program at `path` after `since`.
+    nonisolated static func accessChanged(path: String, since: Date) -> Bool {
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/log")
+        process.arguments = [
+            "show", "--start", format.string(from: since), "--style", "compact",
+            "--predicate",
+            "subsystem == \"com.apple.TCC\" AND eventMessage CONTAINS \"kTCCServiceSystemPolicyAllFiles\" AND eventMessage CONTAINS \"type=Modify\" AND eventMessage CONTAINS \"\(path)\"",
+        ]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).contains("type=Modify")
     }
 
     nonisolated static func appCanOpen(_ names: [String]) -> Bool {
@@ -138,13 +178,12 @@ struct DiskAccessScreen: View {
             } else if let exe = model.serverHost?.exe {
                 DiskAccessRow(
                     title: "Wheel server (wheeld)", path: exe, granted: model.serverDiskAccess,
-                    missingNote: "A running server keeps the access it started with, so after you add it, restart the server. That ends every terminal and agent.",
-                    offer: { model.offerDiskAccess(path: exe) }) {
-                        if model.serverControl?.unavailable == nil {
-                            Button("Restart Server") { model.restartServer() }
-                                .help("Restart the server; every terminal and agent ends")
-                        }
-                    }
+                    missingNote: model.diskAccessChangedSinceStart
+                        ? "Access was changed after the server started, and a running server keeps the access it started with. Restart the server to apply it. That ends every terminal and agent."
+                        : "A running server keeps the access it started with, so after you add it, restart the server. That ends every terminal and agent.",
+                    offer: { model.offerDiskAccess(path: exe) },
+                    restart: model.diskAccessChangedSinceStart && model.serverControl?.unavailable == nil
+                        ? { model.restartServer() } : nil)
             }
             HStack {
                 Spacer()
@@ -156,13 +195,13 @@ struct DiskAccessScreen: View {
     }
 }
 
-private struct DiskAccessRow<Extra: View>: View {
+private struct DiskAccessRow: View {
     let title: String
     let path: String
     let granted: Bool?
     let missingNote: String
     let offer: () -> Void
-    @ViewBuilder var extra: () -> Extra
+    var restart: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -177,9 +216,14 @@ private struct DiskAccessRow<Extra: View>: View {
             if granted == false {
                 Text(missingNote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button("Open Full Disk Access and Show in Finder", action: offer).buttonStyle(.borderedProminent)
+                    if let restart {
+                        Button("Restart Server", action: restart).buttonStyle(.borderedProminent)
+                            .help("Restart the server; every terminal and agent ends")
+                        Button("Open Full Disk Access and Show in Finder", action: offer)
+                    } else {
+                        Button("Open Full Disk Access and Show in Finder", action: offer).buttonStyle(.borderedProminent)
+                    }
                     Button("Copy Path") { FullDiskAccess.copyPath(path) }
-                    extra()
                 }
             }
         }
@@ -187,11 +231,5 @@ private struct DiskAccessRow<Extra: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
-    }
-}
-
-extension DiskAccessRow where Extra == EmptyView {
-    init(title: String, path: String, granted: Bool?, missingNote: String, offer: @escaping () -> Void) {
-        self.init(title: title, path: path, granted: granted, missingNote: missingNote, offer: offer) { EmptyView() }
     }
 }

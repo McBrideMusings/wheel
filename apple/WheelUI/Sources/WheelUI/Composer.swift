@@ -181,7 +181,7 @@ public struct Composer: View {
                         if !paths.isEmpty { insert(paths.joined(separator: " ") + " ") }
                     }
                     .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.chat("composer", "Attach a file"))
                     .help("Insert a file's path into the message")
                 }
                 if let skillPrefix, !skills.isEmpty { Menu {
@@ -197,6 +197,7 @@ public struct Composer: View {
                 #endif
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .chatControl("composer", "Run a skill")
                 .help("Run a skill")
                 }
                 if let error {
@@ -209,14 +210,14 @@ public struct Composer: View {
                     #endif
                     Button("Stop", systemImage: "stop.circle.fill", action: stop)
                         .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.chat("composer", "Stop the current turn"))
                         .font(.title2)
                         .help("Stop the current turn (Esc)")
                         .disabled(!enabled)
                 } else {
                     Button("Send", systemImage: "arrow.up.circle.fill", action: submit)
                         .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.chat("composer", "Send the message"))
                         .font(.title2)
                         .disabled(!canSend)
                         .help(busy ? "Queue: sends when this turn ends" : "Send")
@@ -298,6 +299,7 @@ private struct SkillList: View {
                         .background(index == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 5))
                         .contentShape(Rectangle())
                         .onTapGesture { pick(skill) }
+                        .chatControl("skill", "Insert this skill")
                         .id(skill.name)
                     }
                 }

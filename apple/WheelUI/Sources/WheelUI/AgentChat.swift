@@ -502,15 +502,42 @@ public enum ChatItem: Identifiable {
             case let .mode(mode): return .plain("Mode: \(mode)")
             }
         case let .tools(group), let .work(group):
-            return .plain(group.rows.compactMap { row in
-                if case let .tool(title, _, _, _, _) = row.row.kind { title } else { nil }
-            }.joined(separator: "\n"))
-        case .edits, .live:
+            // A collapsed line copies its label; opened, the calls under it follow.
+            var lines = [isWork ? group.turnLabel(summary: .time) : ToolWords.summary(of: group.rows.map(\.row))]
+            if expanded.contains(group.openKey) {
+                lines += group.rows.compactMap { row in
+                    if case let .tool(title, _, _, _, _) = row.row.kind { title } else { nil }
+                }
+            }
+            return .plain(lines.joined(separator: "\n"))
+        case let .edits(group):
+            // The card's title and a line per file it names.
+            var paths: [String] = []
+            for row in group.rows {
+                guard case let .tool(_, _, status, content, _) = row.row.kind, status != "failed" else { continue }
+                for case let .diff(path, old, new) in content where old != new && !paths.contains(path) { paths.append(path) }
+            }
+            return .plain(([Edits.title(count: paths.count)] + paths).joined(separator: "\n"))
+        case .live:
             return .plain("")
         }
     }
 
     @MainActor public func plainText(expanded: Set<Int>) -> String { prose(expanded: expanded).text }
+
+    /// The text a prose row's drawn prose is made from.
+    @MainActor var sourceText: String? {
+        guard case let .row(row) = self else { return nil }
+        switch row.row.kind.displayed {
+        case let .user(text, _), let .agent(text), let .thought(text): return text
+        default: return nil
+        }
+    }
+
+    private var isWork: Bool {
+        if case .work = self { return true }
+        return false
+    }
 
     /// Prose a row draws as text of its own, whose highlight follows the characters; any other
     /// row is highlighted whole.
