@@ -30,7 +30,7 @@ enum PhoneCommands {
         palette.list(
             spaces: spaces.map { .init(id: $0.id, name: $0.name, dir: $0.cwd) },
             panes: spaces.flatMap { space in
-                space.root.panes.compactMap { pane in
+                space.allPanes.compactMap { pane in
                     paneName(pane.kind, status: model.paneStatus(pane.id)).map {
                         CommandPalette.OpenPane(id: pane.id, space: space.id, spaceName: space.name, name: $0)
                     }

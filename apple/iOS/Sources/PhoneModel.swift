@@ -441,7 +441,7 @@ final class PhoneModel {
             case .space?: select(space: id)
             case .session?: selectSession(id)
             case .pane?:
-                if let space = spaces.first(where: { $0.root.panes.contains { $0.id == id } }) { focus(space: space.id, pane: id) } else { pendingPane = id }
+                if let space = spaces.first(where: { $0.allPanes.contains { $0.id == id } }) { focus(space: space.id, pane: id) } else { pendingPane = id }
             case nil: break
             }
         case let .error(req, _, message):
@@ -498,7 +498,7 @@ final class PhoneModel {
             webPanes[pane] = web
             web.load(url)
             if let client {
-                let space = spaces.first { $0.root.panes.contains { $0.id == pane } }?.id
+                let space = spaces.first { $0.allPanes.contains { $0.id == pane } }?.id
                 let a2ui = A2UIPane(pane: pane, artifact: shown.artifact, space: space, send: { client.send($0) }, nextReq: { client.req() })
                 a2uiPanes[pane] = a2ui
                 a2ui.start()
@@ -529,7 +529,7 @@ final class PhoneModel {
             pendingShow = (nil, nil)
             if let pane { focus(space: space, pane: pane) } else { select(space: space) }
         }
-        if let pane = pendingPane, let space = self.spaces.first(where: { $0.root.panes.contains { $0.id == pane } }) {
+        if let pane = pendingPane, let space = self.spaces.first(where: { $0.allPanes.contains { $0.id == pane } }) {
             pendingPane = nil
             focus(space: space.id, pane: pane)
         }
@@ -665,7 +665,7 @@ final class PhoneModel {
     /// Show `pane` of `space` on this phone. Nothing is sent but the `view` report.
     func focus(space: String, pane: String) {
         Log.info("focus pane \(pane) in \(space)")
-        guard let i = spaces.firstIndex(where: { $0.id == space && $0.root.panes.contains { $0.id == pane } }) else {
+        guard let i = spaces.firstIndex(where: { $0.id == space && $0.allPanes.contains { $0.id == pane } }) else {
             pendingShow = (space, pane)
             return
         }
@@ -704,7 +704,7 @@ final class PhoneModel {
         let saved = pairing.flatMap { UserDefaults.standard.dictionary(forKey: Self.viewKey($0)) as? [String: String] } ?? [:]
         let (restored, took) = SessionView.restored(session: saved["session"], space: saved["space"], in: sessions)
         view = restored
-        if let pane = saved["pane"], let i = spaces.firstIndex(where: { $0.id == restored.space }), spaces[i].root.panes.contains(where: { $0.id == pane }) {
+        if let pane = saved["pane"], let i = spaces.firstIndex(where: { $0.id == restored.space }), spaces[i].allPanes.contains(where: { $0.id == pane }) {
             spaces[i].focus = pane
         }
         Log.info("restored last view session=\(saved["session"] ?? "-") space=\(saved["space"] ?? "-") pane=\(saved["pane"] ?? "-"): took \(took), showing \(view.session ?? "none")/\(view.space ?? "none")/\(activeSpace?.focus ?? "none")")
@@ -815,7 +815,7 @@ final class PhoneModel {
     }
 
     private func showTerm() {
-        let term = activeSpace?.root.readingOrder.first { $0.id == shownPane }.flatMap { entry -> String? in
+        let term = activeSpace?.allPanes.first { $0.id == shownPane }.flatMap { entry -> String? in
             if case let .terminal(term, _) = entry.kind { term } else { nil }
         }
         guard term != shownTerm else { return }
@@ -854,7 +854,7 @@ final class PhoneModel {
     }
 
     private func dropGoneTerminals() {
-        let held = Set(spaces.flatMap { $0.root.panes.compactMap { pane -> String? in
+        let held = Set(spaces.flatMap { $0.allPanes.compactMap { pane -> String? in
             if case let .terminal(term, _) = pane.kind { term } else { nil }
         } })
         for term in terminals.keys where !held.contains(term) {
@@ -949,7 +949,7 @@ final class PhoneModel {
         }
         switch action {
         case let .focusPane(id):
-            if let space = spaces.first(where: { $0.root.panes.contains { $0.id == id } }) { focus(space: space.id, pane: id) }
+            if let space = spaces.first(where: { $0.allPanes.contains { $0.id == id } }) { focus(space: space.id, pane: id) }
         case let .openPage(url): beside(url: url)
         case let .openArtifact(name): beside(artifact: name)
         case let .openFile(path, line): beside(url: ChatLinks.fileURL(path: path, line: line))
