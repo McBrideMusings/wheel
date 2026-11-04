@@ -137,6 +137,8 @@ impl Server {
         let mut s = self.shared.lock().unwrap();
         let snap = s.project(&dir).snap.clone();
         let ui = s.panes.entry(pane).or_default();
+        ui.centre = false;
+        graph::Model::new(&snap, ui).trim(ui);
         f(&snap, ui);
         answer(&snap, ui)
     }
@@ -221,6 +223,7 @@ impl Server {
     fn select_bead(&self, meta: RequestMetaObject, Parameters(BeadId { id }): Parameters<BeadId>) -> CallToolResult {
         self.with(&meta, |_, ui| {
             ui.hist.clear();
+            ui.sel = Some(id.clone());
             ui.detail = Some(id);
         })
     }
@@ -249,6 +252,92 @@ impl Server {
         self.with(&meta, |_, ui| {
             ui.detail = None;
             ui.hist.clear();
+        })
+    }
+
+    #[tool(description = "Focus: how many hops to show on each side, 1 to 3", meta = ui_meta())]
+    fn set_depth(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if let Ok(d) = value.parse::<usize>() {
+                ui.depth = d.clamp(1, 3);
+                ui.more = None;
+            }
+        })
+    }
+
+    #[tool(description = "Focus: centre on a bead, keeping the one before in the history", meta = ui_meta())]
+    fn focus_on(&self, meta: RequestMetaObject, Parameters(BeadId { id }): Parameters<BeadId>) -> CallToolResult {
+        self.with(&meta, |snap, ui| {
+            let m = graph::Model::new(snap, ui);
+            if let (true, Some(cur)) = (m.has(&id), m.focus_idx(ui)) {
+                let cur = m.id_of(cur).to_string();
+                if cur != id {
+                    ui.fhist.push(cur);
+                }
+                ui.sel = Some(id);
+                ui.more = None;
+            }
+        })
+    }
+
+    #[tool(description = "Focus: back to the bead centred before", meta = ui_meta())]
+    fn focus_back(&self, meta: RequestMetaObject) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if let Some(id) = ui.fhist.pop() {
+                ui.sel = Some(id);
+                ui.more = None;
+            }
+        })
+    }
+
+    #[tool(description = "Graph: select a bead (the same one again, or an empty id, deselects)", meta = ui_meta())]
+    fn graph_select(&self, meta: RequestMetaObject, Parameters(BeadId { id }): Parameters<BeadId>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            ui.sel = if id.is_empty() || ui.sel.as_deref() == Some(&id) { None } else { Some(id) };
+        })
+    }
+
+    #[tool(description = "Show in graph from Focus, or Focus on selected from Graph", meta = ui_meta())]
+    fn graph_cross(&self, meta: RequestMetaObject) -> CallToolResult {
+        self.with(&meta, |snap, ui| {
+            if ui.view == "focus" {
+                let m = graph::Model::new(snap, ui);
+                if let Some(c) = m.focus_idx(ui) {
+                    ui.sel = Some(m.id_of(c).to_string());
+                }
+                ui.centre = true;
+                ui.view = "graph".into();
+            } else if ui.sel.is_some() {
+                ui.view = "focus".into();
+            }
+        })
+    }
+
+    #[tool(description = "Focus: open or close the list behind a + N more node", meta = ui_meta())]
+    fn graph_more(&self, meta: RequestMetaObject, Parameters(Key { key }): Parameters<Key>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            ui.more = if ui.more.as_deref() == Some(&key) { None } else { Some(key) };
+        })
+    }
+
+    #[tool(description = "Focus: the width of the canvas, in points", meta = ui_meta())]
+    fn set_width(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if let Ok(w) = value.parse::<f64>() {
+                ui.cw = w.clamp(300.0, 4000.0);
+            }
+        })
+    }
+
+    #[tool(description = "Escape in Focus or Graph: close the open list, go back, or deselect", meta = ui_meta())]
+    fn escape(&self, meta: RequestMetaObject) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if ui.more.take().is_some() {
+            } else if ui.view == "focus" && !ui.fhist.is_empty() {
+                ui.sel = ui.fhist.pop();
+            } else if ui.view == "graph" {
+                ui.sel = None;
+            }
         })
     }
 

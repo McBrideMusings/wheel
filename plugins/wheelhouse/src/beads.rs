@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 pub mod cli;
+pub mod graph;
 pub mod serve;
 
 const CATALOG: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
@@ -343,6 +344,18 @@ struct Ui {
     collapsed: HashSet<String>,
     detail: Option<String>,
     hist: Vec<String>,
+    /// The bead Focus centres on and Graph highlights.
+    sel: Option<String>,
+    /// How many hops Focus shows on each side.
+    depth: usize,
+    /// The beads Focus centred on before, most recent last.
+    fhist: Vec<String>,
+    /// The "+ N more" list that is open in Focus, by key.
+    more: Option<String>,
+    /// The width the client reported for the Focus canvas.
+    cw: f64,
+    /// Graph should centre on the selected bead when it is drawn.
+    centre: bool,
 }
 
 impl Default for Ui {
@@ -356,6 +369,12 @@ impl Default for Ui {
             collapsed: HashSet::new(),
             detail: None,
             hist: vec![],
+            sel: None,
+            depth: 2,
+            fhist: vec![],
+            more: None,
+            cw: 900.0,
+            centre: false,
         }
     }
 }
@@ -866,7 +885,10 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         page.push(p.boxed("tools2", "h", row2, json!({ "spacing": 8, "padding": [8, 0, 0, 0], "align": "center", "trailing": 1 })));
 
         if ui.custom() {
-            page.push(p.label("graph.todo", "The Focus and Graph views are not drawn natively yet.", json!({ "tone": "muted", "size": 13 })));
+            let mut g = graph::Model::new(snap, ui).component(ui);
+            g["id"] = json!("graph");
+            p.put(g);
+            page.push(p.boxed("graph.b", "v", vec!["graph".into()], json!({ "padding": [10, 0, 0, 0] })));
         } else {
             let mut t = tbl;
             t["id"] = json!("table");
