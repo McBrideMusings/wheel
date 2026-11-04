@@ -77,7 +77,7 @@ enum PhoneCommands {
         case .session: "Session"
         case let .action(id, _, _): id == renameID || id == closeID ? "Space" : "Action"
         case .newSpaceMode: "Action"
-        case .recent, .folder, .missing, .openFolder: ""
+        case .recent, .folder, .missing, .openFolder, .newSpaceHere, .verb, .target: ""
         }
     }
 
@@ -184,7 +184,7 @@ struct CommandPaletteSheet: View {
             default:
                 done(nil)
             }
-        case .recent, .folder, .missing, .openFolder:
+        case .recent, .folder, .missing, .openFolder, .newSpaceHere, .verb, .target:
             done(nil)
         }
     }

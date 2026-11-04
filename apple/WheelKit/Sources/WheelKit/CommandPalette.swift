@@ -18,11 +18,47 @@ public struct PaletteAction: Sendable, Equatable {
     }
 }
 
+/// A thing to do, named before what it is done to. The desktop palette's first list is these;
+/// choosing one lists what it can act on.
+public enum PaletteVerb: String, Sendable, CaseIterable {
+    case switchSpace, closeSpace, goToPane, closePane, newPane, changePaneType, showArtifact, run
+
+    public var title: String {
+        switch self {
+        case .switchSpace: "Switch to Space…"
+        case .closeSpace: "Close Space…"
+        case .goToPane: "Go to Pane…"
+        case .closePane: "Close Pane…"
+        case .newPane: "New Pane…"
+        case .changePaneType: "Change Pane Type…"
+        case .showArtifact: "Show Artifact…"
+        case .run: "Run…"
+        }
+    }
+
+    /// The search field's hint once the verb is chosen.
+    public var prompt: String { String(title.dropLast()) + " — pick one" }
+
+    /// Whether an action belongs to this verb's list rather than the root's own.
+    func claims(action id: String) -> Bool {
+        switch self {
+        case .newPane: id == "split-right" || id == "split-down"
+        case .changePaneType: id.hasPrefix("pane-") || id == "switch-view"
+        case .run: id.hasPrefix("run-")
+        default: false
+        }
+    }
+}
+
 /// What a palette row runs.
 public enum PaletteItem: Sendable, Equatable, Identifiable {
     case action(id: String, title: String, shortcut: String?)
     /// A space that is open now.
     case space(id: String, name: String, dir: String)
+    /// A verb row: choosing it lists what it can act on.
+    case verb(PaletteVerb)
+    /// A close verb's target: `id` is the space or pane it closes.
+    case target(verb: PaletteVerb, id: String, title: String, detail: String)
     /// Make another space in the folder of one that is open now; `name` is that space's.
     case newSpaceHere(dir: String, name: String)
     /// A pane of an open space; `space` is the id of the space holding it.
@@ -47,6 +83,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .action(id, _, _): "action:\(id)"
         case let .space(id, _, _): "space:\(id)"
         case let .newSpaceHere(dir, _): "new-space-here:\(dir)"
+        case let .verb(verb): "verb:\(verb.rawValue)"
+        case let .target(verb, id, _, _): "target:\(verb.rawValue)/\(id)"
         case let .pane(id, _, _, _): "pane:\(id)"
         case let .artifact(scope, name, _): "artifact:\(scope.rawValue)/\(name)"
         case let .session(id, _): "session:\(id)"
@@ -64,6 +102,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case .action: "action"
         case .space: "space"
         case .newSpaceHere: "new_space_here"
+        case .verb: "verb"
+        case .target: "target"
         case .pane: "pane"
         case .artifact: "artifact"
         case .session: "session"
@@ -80,6 +120,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .action(_, title, _): title
         case let .space(_, name, _): "Switch to \(name)"
         case let .newSpaceHere(_, name): "New Space in \(name)"
+        case let .verb(verb): verb.title
+        case let .target(_, _, title, _): title
         case let .pane(_, _, name, _): name
         case let .artifact(_, name, title): title.isEmpty ? name : title
         case let .session(_, name): "Switch to \(name)"
@@ -97,6 +139,8 @@ public enum PaletteItem: Sendable, Equatable, Identifiable {
         case let .action(_, _, shortcut): shortcut ?? ""
         case let .space(_, _, dir): dir
         case let .newSpaceHere(dir, _): dir
+        case .verb: ""
+        case let .target(_, _, _, detail): detail
         case let .pane(id, _, _, spaceName): "\(spaceName) · \(id)"
         case let .artifact(scope, name, _): "\(scope.rawValue) · \(name)"
         case .session: "session"
@@ -171,6 +215,10 @@ public struct CommandPalette: Sendable, Equatable {
     }
 
     public private(set) var mode: Mode
+    /// The verb whose targets the list shows, or nil for the root list.
+    public private(set) var verb: PaletteVerb?
+    /// Whether the root list is verbs first (the desktop's) rather than every space and pane.
+    public let verbs: Bool
     public private(set) var query = ""
     /// Index into `rows`; 0 when there are none.
     public private(set) var selected = 0
@@ -185,7 +233,28 @@ public struct CommandPalette: Sendable, Equatable {
     private var roots: [String] = []
     private var listings: [String: Listing] = [:]
 
-    public init(mode: Mode = .root) { self.mode = mode }
+    public init(mode: Mode = .root, verbs: Bool = false) {
+        self.mode = mode
+        self.verbs = verbs
+    }
+
+    /// Whether Esc or Backspace on an empty field steps back instead of closing.
+    public var isStaged: Bool { mode == .newSpace || verb != nil }
+
+    /// Choose a verb: the list becomes its targets, with an empty field.
+    public mutating func enter(_ verb: PaletteVerb) {
+        self.verb = verb
+        query = ""
+        refilter()
+    }
+
+    /// Step back to the root list.
+    public mutating func leaveStage() {
+        verb = nil
+        mode = .root
+        query = ""
+        refilter()
+    }
 
     public var selectedItem: PaletteItem? { rows.indices.contains(selected) ? rows[selected].item : nil }
 
@@ -209,11 +278,7 @@ public struct CommandPalette: Sendable, Equatable {
     }
 
     /// Return to the root list with an empty field.
-    public mutating func leaveNewSpace() {
-        mode = .root
-        query = ""
-        refilter()
-    }
+    public mutating func leaveNewSpace() { leaveStage() }
 
     /// The browsing roots, as absolute paths.
     public mutating func setRoots(_ roots: [String]) {
@@ -264,6 +329,8 @@ public struct CommandPalette: Sendable, Equatable {
 
     private mutating func refilter() {
         switch mode {
+        case .root where verbs:
+            rows = Self.verbRows(verb: verb, spaces: spaces, panes: panes, artifacts: artifacts, recents: recents, actions: actions, query: query)
         case .root: rows = Self.filter(spaces: spaces, panes: panes, artifacts: artifacts, sessions: sessions, recents: recents, actions: actions, query: query)
         case .newSpace: rows = Self.newSpaceRows(spaces: spaces, recents: recents, roots: roots, listings: listings, query: query)
         }
@@ -323,6 +390,63 @@ public struct CommandPalette: Sendable, Equatable {
         }
         rows.append(Row(item: .openFolder(chooseInFinder: true), score: 0))
         return rows
+    }
+
+    /// The desktop's root list. A verb chosen: its targets, searched by the query. No verb and no
+    /// query: the verbs that have something to act on, then the actions no verb claims. A query:
+    /// the verbs and every verb-and-target row together, so typing a folder finds what can be done
+    /// to it and typing a verb finds what it can be done to.
+    public static func verbRows(verb: PaletteVerb?, spaces: [OpenSpace], panes: [OpenPane], artifacts: [ArtifactInfo],
+                                recents: [RecentDir], actions: [PaletteAction], query: String) -> [Row] {
+        func actionItem(_ action: PaletteAction) -> PaletteItem {
+            action.id == PaletteAction.openFolderID
+                ? .openFolder() : .action(id: action.id, title: action.title, shortcut: action.shortcut)
+        }
+        func targets(_ verb: PaletteVerb) -> [(item: PaletteItem, texts: [String])] {
+            switch verb {
+            case .switchSpace:
+                spaces.map { (.space(id: $0.id, name: $0.name, dir: $0.dir), ["Switch to \($0.name)", $0.dir]) }
+            case .closeSpace:
+                spaces.map {
+                    (.target(verb: .closeSpace, id: $0.id, title: "Close Space \($0.name)", detail: $0.dir), ["Close Space \($0.name)", $0.dir])
+                }
+            case .goToPane:
+                panes.map { (.pane(id: $0.id, space: $0.space, name: $0.name, spaceName: $0.spaceName), ["Go to \($0.name)", "\($0.spaceName) \($0.name)"]) }
+            case .closePane:
+                panes.map {
+                    (.target(verb: .closePane, id: $0.id, title: "Close Pane \($0.name)", detail: "\($0.spaceName) · \($0.id)"),
+                     ["Close Pane \($0.name)", "\($0.spaceName) \($0.name)"])
+                }
+            case .showArtifact:
+                artifacts.map { (.artifact(scope: $0.scope, name: $0.name, title: $0.title), ["Show \($0.title)", $0.name]) }
+            case .newPane, .changePaneType, .run:
+                actions.filter { verb.claims(action: $0.id) }.map { (actionItem($0), [$0.title]) }
+            }
+        }
+        let populated = PaletteVerb.allCases.filter { !targets($0).isEmpty }
+        if let verb { return rank(targets(verb), query: query) }
+        let query = query.trimmingCharacters(in: .whitespaces)
+        if query.isEmpty {
+            var rows = populated.map { Row(item: .verb($0), score: 0) }
+            rows.append(Row(item: .newSpaceMode, score: 0))
+            for action in actions where !PaletteVerb.allCases.contains(where: { $0.claims(action: action.id) }) && action.id != "new-space" {
+                rows.append(Row(item: actionItem(action), score: 0))
+            }
+            return rows
+        }
+        let open = Set(spaces.map(\.dir))
+        var items: [(item: PaletteItem, texts: [String])] = populated.map { (.verb($0), [$0.title]) }
+        items.append((.newSpaceMode, ["New Space…"]))
+        for verb in populated { items += targets(verb) }
+        for space in spaces {
+            items.append((.newSpaceHere(dir: space.dir, name: space.name), ["New Space in \(space.name)", space.dir]))
+        }
+        for recent in recents.sorted(by: { $0.openedMs > $1.openedMs }) where !open.contains(recent.dir) {
+            items.append((.recent(dir: recent.dir), ["New Space in \(lastComponent(of: recent.dir))", recent.dir]))
+        }
+        let plain = actions.filter { a in !PaletteVerb.allCases.contains { $0.claims(action: a.id) } && a.id != "new-space" }
+        items += plain.map { (actionItem($0), [$0.title]) }
+        return rank(items, query: query)
     }
 
     /// Every entry the query matches, best score first, ties in the entries' order; all of them
