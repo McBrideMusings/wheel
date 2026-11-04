@@ -1504,8 +1504,11 @@ async fn handle(
             artifact,
             scope,
             focus,
+            site,
         } => {
-            let opened = state.pane_open(&pane, dir, url, artifact, scope).await;
+            let opened = state
+                .pane_open(&pane, dir, site, url, artifact, scope)
+                .await;
             if let (true, Ok(new)) = (focus, &opened) {
                 state.show_pane(new);
             }
@@ -1516,8 +1519,9 @@ async fn handle(
             pane,
             command,
             focus,
+            site,
         } => {
-            let ran = state.pane_run(&pane, &command).await;
+            let ran = state.pane_run(&pane, &command, site).await;
             if let (true, Ok(new)) = (focus, &ran) {
                 state.show_pane(new);
             }

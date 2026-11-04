@@ -671,9 +671,10 @@ enum WindowCommands {
 
 #[derive(Subcommand)]
 enum PaneCommand {
-    /// Print every pane, one per line: its space, id and kind.
+    /// Print every pane, one per line: its space, id, kind and site (grid, popped or
+    /// backgrounded).
     Ls {
-        /// Print the panes as a JSON array of {space, pane, kind}.
+        /// Print the panes as a JSON array of {space, pane, kind, site}.
         #[arg(long)]
         json: bool,
     },
@@ -702,14 +703,21 @@ enum PaneCommand {
         /// Ask every client to show the new pane. Without it no client's view changes.
         #[arg(long)]
         focus: bool,
+        /// Make the new pane popped out (its own floating window) instead of beside the pane.
+        #[arg(long, conflicts_with_all = ["background", "dir"])]
+        pop: bool,
+        /// Make the new pane backgrounded (running, shown nowhere) instead of beside the pane.
+        #[arg(long, conflicts_with_all = ["pop", "dir"])]
+        background: bool,
     },
     /// Split a pane and show a page (`--page`) or an artifact (`--artifact`) in the new pane;
     /// prints the new pane's id.
     Open {
         pane: String,
-        /// Side the new pane goes on: left, right, up or down.
+        /// Side the new pane goes on: left, right, up or down. With none, the `panes.placement`
+        /// setting chooses it.
         #[arg(value_parser = wheel_proto::from_wire::<Dir>)]
-        dir: Dir,
+        dir: Option<Dir>,
         /// A browser pane on this page. Not `--url`, which is the daemon's address.
         #[arg(long)]
         page: Option<String>,
@@ -722,6 +730,12 @@ enum PaneCommand {
         /// Give the new pane the focus and show its space.
         #[arg(long)]
         focus: bool,
+        /// Make the new pane popped out (its own floating window) instead of beside the pane.
+        #[arg(long, conflicts_with_all = ["background", "dir"])]
+        pop: bool,
+        /// Make the new pane backgrounded (running, shown nowhere) instead of beside the pane.
+        #[arg(long, conflicts_with_all = ["pop", "dir"])]
+        background: bool,
     },
     /// Run a shell command in a new terminal pane split right of a pane, in the space's
     /// directory; prints the new pane's id.
@@ -732,7 +746,23 @@ enum PaneCommand {
         /// Give the new pane the focus and show its space.
         #[arg(long)]
         focus: bool,
+        /// Make the new pane popped out (its own floating window) instead of right of the pane.
+        #[arg(long, conflicts_with = "background")]
+        pop: bool,
+        /// Make the new pane backgrounded (running, shown nowhere) instead of right of the pane.
+        #[arg(long, conflicts_with = "pop")]
+        background: bool,
     },
+    /// Toggle a pane between the grid and popped out (its own floating window over the grid). A
+    /// grid or backgrounded pane is popped out; a popped-out pane returns to the grid, where
+    /// `panes.placement` puts it. The pane keeps its id, process and scrollback. Prints where the
+    /// pane is now.
+    Pop { pane: String },
+    /// Toggle a pane between the grid and backgrounded (running, shown nowhere). A grid or
+    /// popped-out pane is backgrounded; a backgrounded pane returns to the grid, where
+    /// `panes.placement` puts it. The pane keeps its id, process and scrollback. Prints where the
+    /// pane is now.
+    Background { pane: String },
     /// Swap the places of two panes in one space.
     Swap { pane: String, with: String },
     /// Move a pane, keeping its id and its running process: beside a pane in any space, to the end
@@ -1475,9 +1505,43 @@ impl Conn {
     }
 }
 
+/// Add `site` (grid, popped or backgrounded) to every pane of a listing of spaces, so a reader
+/// need not know that `root`, `popped` and `backgrounded` are the three places.
+fn mark_sites(spaces: &mut serde_json::Value) {
+    fn mark(node: &mut serde_json::Value, site: &str) {
+        if node["node"] == "pane" {
+            node["site"] = site.into();
+        }
+        for child in ["a", "b"] {
+            if node.get(child).is_some() {
+                mark(&mut node[child], site);
+            }
+        }
+    }
+    let Some(spaces) = spaces.as_array_mut() else {
+        return;
+    };
+    for space in spaces {
+        if let Some(root) = space.get_mut("root") {
+            mark(root, "grid");
+        }
+        for (key, site) in [("popped", "popped"), ("backgrounded", "backgrounded")] {
+            if let Some(trees) = space.get_mut(key).and_then(|t| t.as_array_mut()) {
+                for tree in trees {
+                    mark(tree, site);
+                }
+            }
+        }
+    }
+}
+
 async fn status(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
     let reply = conn.call(ClientMsg::Status { req: Some(req) }, req).await?;
+    let mut reply = serde_json::to_value(&reply).map_err(other)?;
+    if let Some(spaces) = reply.get_mut("spaces") {
+        mark_sites(spaces);
+    }
     println!("{}", serde_json::to_string_pretty(&reply).map_err(other)?);
     Ok(())
 }
@@ -2786,9 +2850,17 @@ async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
                 for tree in space.trees() {
                     pane_ids(tree, &mut panes);
                 }
+                let ids = |trees: &[wheel_proto::Node]| {
+                    let mut ids = Vec::new();
+                    for tree in trees {
+                        pane_ids(tree, &mut ids);
+                    }
+                    ids
+                };
                 serde_json::json!({
                     "id": space.id, "name": space.name, "cwd": space.cwd,
                     "status": space.status, "panes": panes,
+                    "popped": ids(&space.popped), "backgrounded": ids(&space.backgrounded),
                 })
             })
             .collect();
@@ -2797,7 +2869,8 @@ async fn space_ls(conn: &mut Conn, flat: bool) -> Result<(), Fail> {
     }
     // Each web pane's node names only its artifact's scope and name; the daemon owns the roots, so
     // the folder it resolved comes back with the watch rather than being recomputed here.
-    let layout = serde_json::json!({ "spaces": spaces, "web_panes": watches });
+    let mut layout = serde_json::json!({ "spaces": spaces, "web_panes": watches });
+    mark_sites(&mut layout["spaces"]);
     println!("{}", serde_json::to_string_pretty(&layout).map_err(other)?);
     Ok(())
 }
@@ -2849,7 +2922,12 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
             walk(tree, &mut panes);
         }
         for (pane, kind, status) in panes {
-            println!("  {pane}  {kind}  {}", status_words(status));
+            let site = match space.site_of(&pane) {
+                Some(wheel_proto::PaneSite::Popped) => "  popped",
+                Some(wheel_proto::PaneSite::Backgrounded) => "  backgrounded",
+                _ => "",
+            };
+            println!("  {pane}  {kind}  {}{site}", status_words(status));
         }
     }
     Ok(())
@@ -4362,8 +4440,9 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
             walk(tree, &mut panes);
         }
         for (pane, kind) in panes {
+            let site = space.site_of(&pane).map_or("", wheel_proto::PaneSite::name);
             rows.push(serde_json::json!({
-                "space": space.id, "pane": pane, "kind": kind,
+                "space": space.id, "pane": pane, "kind": kind, "site": site,
             }));
         }
     }
@@ -4373,10 +4452,11 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     }
     for row in &rows {
         println!(
-            "{} {} {}",
+            "{} {} {} {}",
             row["space"].as_str().unwrap_or_default(),
             row["pane"].as_str().unwrap_or_default(),
             row["kind"].as_str().unwrap_or_default(),
+            row["site"].as_str().unwrap_or_default(),
         );
     }
     if rows.is_empty() {
@@ -4632,6 +4712,45 @@ async fn file_image(
     Ok(())
 }
 
+/// The site `--pop` or `--background` asks for; clap refuses both together.
+fn site_flag(pop: bool, background: bool) -> Option<wheel_proto::PaneSite> {
+    match (pop, background) {
+        (true, _) => Some(wheel_proto::PaneSite::Popped),
+        (_, true) => Some(wheel_proto::PaneSite::Backgrounded),
+        _ => None,
+    }
+}
+
+/// `pane pop` and `pane background`: a pane already at `site` goes back to the grid, any other
+/// goes to `site`. Prints where the pane is after.
+async fn pane_toggle(
+    conn: &mut Conn,
+    pane: String,
+    site: wheel_proto::PaneSite,
+) -> Result<(), Fail> {
+    use wheel_proto::PaneSite;
+    require_protocol(conn, 14, "`pane pop` and `pane background`").await?;
+    let req = conn.req();
+    let ServerMsg::Status { spaces, .. } =
+        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
+    else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    let now = spaces
+        .iter()
+        .find_map(|space| space.site_of(&pane))
+        .ok_or_else(|| Fail::Daemon(format!("no pane {pane}")))?;
+    let to = if now == site { PaneSite::Grid } else { site };
+    simple(conn, |req| ClientMsg::PaneSetSite {
+        req: Some(req),
+        pane,
+        site: to,
+    })
+    .await?;
+    println!("{}", to.name());
+    Ok(())
+}
+
 async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
     match command {
         PaneCommand::Open {
@@ -4641,7 +4760,13 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             artifact,
             scope,
             focus,
+            pop,
+            background,
         } => {
+            let site = site_flag(pop, background);
+            if site.is_some() || dir.is_none() {
+                require_protocol(conn, 14, "`pane open` without a side, `--pop` and `--background`").await?;
+            }
             create(conn, |req| ClientMsg::PaneOpen {
                 req: Some(req),
                 pane,
@@ -4650,6 +4775,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 artifact,
                 scope,
                 focus,
+                site,
             })
             .await
         }
@@ -4657,25 +4783,46 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             pane,
             command,
             focus,
+            pop,
+            background,
         } => {
+            let site = site_flag(pop, background);
+            if site.is_some() {
+                require_protocol(conn, 14, "`--pop` and `--background`").await?;
+            }
             create(conn, |req| ClientMsg::PaneRun {
                 req: Some(req),
                 pane,
                 command,
                 focus,
+                site,
             })
             .await
         }
+        PaneCommand::Pop { pane } => pane_toggle(conn, pane, wheel_proto::PaneSite::Popped).await,
+        PaneCommand::Background { pane } => {
+            pane_toggle(conn, pane, wheel_proto::PaneSite::Backgrounded).await
+        }
         PaneCommand::Near { pane, json } => pane_near(conn, &pane, json).await,
         PaneCommand::Ls { json } => pane_ls(conn, json).await,
-        PaneCommand::Split { pane, dir, focus } => {
+        PaneCommand::Split {
+            pane,
+            dir,
+            focus,
+            pop,
+            background,
+        } => {
+            let site = site_flag(pop, background);
+            if site.is_some() {
+                require_protocol(conn, 14, "`--pop` and `--background`").await?;
+            }
             let req = conn.req();
             let msg = ClientMsg::PaneSplit {
                 req: Some(req),
                 pane,
                 dir,
                 focus,
-                site: None,
+                site,
             };
             match conn.call(msg, req).await? {
                 ServerMsg::Created {

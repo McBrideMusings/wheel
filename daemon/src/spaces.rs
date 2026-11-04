@@ -1318,7 +1318,8 @@ impl AppState {
     pub async fn pane_open(
         &self,
         pane: &str,
-        dir: Dir,
+        dir: Option<Dir>,
+        site: Option<PaneSite>,
         url: Option<String>,
         artifact: Option<String>,
         scope: Option<ArtifactScope>,
@@ -1328,7 +1329,7 @@ impl AppState {
             (None, Some(_)) => NewPaneKind::Web,
             _ => return Err("pane_open needs a url or an artifact, and only one".into()),
         };
-        let new = self.pane_split(pane, Some(dir), None)?.0;
+        let new = self.pane_split(pane, dir, site)?.0;
         if let Err(e) = self.pane_set_kind(&new, kind, artifact, scope, url).await {
             let _ = self.pane_close(&new);
             return Err(e);
@@ -1608,11 +1609,19 @@ impl AppState {
     /// Run `command` in a new terminal pane split right of `pane`, in its space's directory, and
     /// return that pane. Typed into the pane's shell like a runner, so the shell stays open and
     /// shows the output; a pane that cannot start a terminal is closed again.
-    pub async fn pane_run(&self, pane: &str, command: &str) -> Result<String, String> {
+    pub async fn pane_run(
+        &self,
+        pane: &str,
+        command: &str,
+        site: Option<PaneSite>,
+    ) -> Result<String, String> {
         if command.trim().is_empty() {
             return Err("there is no command to run".into());
         }
-        let new = self.pane_split(pane, Some(Dir::Right), None)?.0;
+        let apart = matches!(site, Some(PaneSite::Popped | PaneSite::Backgrounded));
+        let new = self
+            .pane_split(pane, (!apart).then_some(Dir::Right), site)?
+            .0;
         let term = match self
             .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None)
             .await

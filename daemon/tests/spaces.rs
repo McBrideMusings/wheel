@@ -4976,11 +4976,12 @@ async fn file_peek_reads_lines_around_one_and_pane_open_shows_a_page_beside_a_pa
     let open = |url: Option<&str>, artifact: Option<&str>| ClientMsg::PaneOpen {
         req: Some(8),
         pane: first.clone(),
-        dir: Dir::Right,
+        dir: Some(Dir::Right),
         url: url.map(Into::into),
         artifact: artifact.map(Into::into),
         scope: None,
         focus: true,
+        site: None,
     };
     let beside = created(&mut ws, open(Some("https://example.com/"), None)).await;
     let (spaces, _) = layout(&mut ws).await;
@@ -5777,6 +5778,7 @@ async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane(
             pane: pane.clone(),
             command: "echo shown-$((40+2))".into(),
             focus: true,
+            site: None,
         },
     )
     .await
@@ -5796,6 +5798,7 @@ async fn link_patterns_resolve_per_layer_skip_a_bad_entry_and_run_beside_a_pane(
             pane,
             command: "  ".into(),
             focus: true,
+            site: None,
         },
     )
     .await;
@@ -6554,11 +6557,12 @@ async fn a_new_pane_or_space_is_shown_only_when_asked() {
         ClientMsg::PaneOpen {
             req: Some(13),
             pane: b_first.clone(),
-            dir: Dir::Down,
+            dir: Some(Dir::Down),
             url: Some("https://example.com/".into()),
             artifact: None,
             scope: None,
             focus: false,
+            site: None,
         },
     )
     .await;
@@ -6569,6 +6573,7 @@ async fn a_new_pane_or_space_is_shown_only_when_asked() {
             pane: b_first.clone(),
             command: "true".into(),
             focus: false,
+            site: None,
         },
     )
     .await;
@@ -7918,4 +7923,44 @@ async fn an_if_empty_close_leaves_a_space_that_has_a_backgrounded_pane() {
     assert!(matches!(refused, ServerMsg::Error { .. }), "{refused:?}");
     let (spaces, _) = layout(&mut ws).await;
     assert_eq!(spaces[0].site_of(&only), Some(Backgrounded));
+}
+
+/// `pane_open` and `pane_run` take a site: the new pane is made popped out or in the tray, not
+/// beside the pane they name, and a side with a site is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_open_and_pane_run_create_a_pane_popped_out_or_backgrounded() {
+    use wheel_proto::PaneSite::{Backgrounded, Popped};
+    let (url, _daemon) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let a = first_pane(&spaces[0].root);
+    let open = |req: u64, dir: Option<Dir>, site| ClientMsg::PaneOpen {
+        req: Some(req),
+        pane: a.clone(),
+        dir,
+        url: Some("https://example.com/".into()),
+        artifact: None,
+        scope: None,
+        focus: false,
+        site,
+    };
+    let popped = created(&mut ws, open(2, None, Some(Popped))).await;
+    let run = ClientMsg::PaneRun {
+        req: Some(3),
+        pane: a.clone(),
+        command: "true".into(),
+        focus: false,
+        site: Some(Backgrounded),
+    };
+    let tray = created(&mut ws, run).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let space = &spaces[0];
+    assert_eq!(pane_ids(&space.root), vec![a.clone()]);
+    assert_eq!(space.site_of(&popped), Some(Popped));
+    assert_eq!(space.site_of(&tray), Some(Backgrounded));
+    let refused = call(&mut ws, open(4, Some(Dir::Right), Some(Popped))).await;
+    assert!(matches!(refused, ServerMsg::Error { .. }), "{refused:?}");
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].popped.len(), 1, "a refused open leaves no pane");
 }
