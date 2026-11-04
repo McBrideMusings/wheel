@@ -35,8 +35,8 @@ struct CommandPaletteTests {
         let plain = try #require(CommandPalette.score("tmpa", in: "/tmp/a"))
         #expect(CommandPalette.score("tmpb", in: "/tmp/a") == nil)
         // Letters in order but scattered score below the same letters side by side.
-        let scattered = try #require(CommandPalette.score("wh", in: "/Users/ada/work/hold"))
-        let together = try #require(CommandPalette.score("wh", in: "/Users/ada/wheel"))
+        let scattered = try #require(CommandPalette.score("wh", in: "/Users/pierce/work/hold"))
+        let together = try #require(CommandPalette.score("wh", in: "/Users/pierce/wheel"))
         #expect(together > scattered)
         // A match in the path's last component beats the same letters in a parent directory.
         let parent = try #require(CommandPalette.score("wheel", in: "/Users/p/wheel/docs"))

@@ -294,11 +294,11 @@ mod tests {
         let dir = scratch("once");
         let devices = Devices::load(&dir);
         let (token, _) = devices.issue();
-        let (id, credential) = devices.redeem(&token, "Ada's iPhone").unwrap();
+        let (id, credential) = devices.redeem(&token, "Pierce's iPhone").unwrap();
         assert_eq!(devices.authenticate(&credential), Some(id.clone()));
         assert!(devices.redeem(&token, "Another phone").is_err());
         assert_eq!(devices.list().len(), 1);
-        assert_eq!(devices.name(&id).as_deref(), Some("Ada's iPhone"));
+        assert_eq!(devices.name(&id).as_deref(), Some("Pierce's iPhone"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

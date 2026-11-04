@@ -58,11 +58,11 @@ sleep 1
 eq "focusing another window leaves it visible" "$(st .pairing.window_visible)" "true"
 
 # A phone pairs: the window names it and closes within 3 seconds.
-CRED="$(phone "Ada's iPhone")"
+CRED="$(phone "Pierce's iPhone")"
 check "the phone paired and got a credential" test -n "$CRED"
-eq "the window's events name the device" "$(st '.pairing.events | map(select(contains("Ada"))) | length > 0')" "true"
+eq "the window's events name the device" "$(st '.pairing.events | map(select(contains("Pierce"))) | length > 0')" "true"
 check "the window closed itself within 3 seconds" wait_st '.pairing.window_open | not' 3
-eq "the Devices list has the phone" "$(w remote devices --json | jq -r '.[0].name')" "Ada's iPhone"
+eq "the Devices list has the phone" "$(w remote devices --json | jq -r '.[0].name')" "Pierce's iPhone"
 
 # With the switch off the window stays open after a phone connects.
 app_post "/pairing?action=show" >/dev/null

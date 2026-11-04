@@ -58,7 +58,7 @@ impl Agent {
     }
 
     /// The environment variable that moves the agent's data directory, and where that is by default.
-    fn home_var(self) -> &'static str {
+    pub(crate) fn home_var(self) -> &'static str {
         match self {
             Agent::Claude => "CLAUDE_CONFIG_DIR",
             Agent::Codex => "CODEX_HOME",

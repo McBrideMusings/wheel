@@ -1006,7 +1006,11 @@ impl AppState {
                 .clone()
         };
         let session = self.new_id('w');
-        self.spawn_agent(&session, (space, pane, agent), &cwd, None, None, None)
+        let home = self
+            .shell_agent_home(agent, &cwd)
+            .await
+            .map_err(|e| (e, false))?;
+        self.spawn_agent(&session, (space, pane, agent), &cwd, None, home.clone(), None)
             .map_err(|e| (e, false))?;
         let new = PaneKind::Agent {
             session: session.clone(),
@@ -1014,7 +1018,8 @@ impl AppState {
             conversation: None,
             state: None,
             context: None,
-            place: None,
+            // The pane keeps the account it started in, so a restart finds its conversation there.
+            place: wheel_proto::AgentPlace::boxed(None, home),
             extra: Extra::default(),
         };
         // A pane that closed while the agent spawned ends the session it was given.
