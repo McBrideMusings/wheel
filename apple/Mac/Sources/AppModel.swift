@@ -1068,10 +1068,46 @@ final class AppModel {
     /// Move `pane` to `site`; a pane already there goes back to the grid, so the header's button toggles.
     func toggleSite(_ pane: String, _ site: PaneSite) {
         guard let space = space(holding: pane) else { return }
+        setSite(pane, space.site(of: pane) == site ? .grid : site)
+    }
+
+    /// Puts `pane` at `site` outright (the tray list's rows), where `toggleSite` flips it.
+    func setSite(_ pane: String, _ site: PaneSite) {
+        guard let space = space(holding: pane), space.site(of: pane) != site else { return }
         zoomedPanes[space.id] = nil
-        let to: PaneSite = space.site(of: pane) == site ? .grid : site
-        Log.info("pane \(pane): \(space.site(of: pane)?.rawValue ?? "?") -> \(to.rawValue)")
-        sendLayoutOp { .paneSetSite(req: $0, pane: pane, site: to) }
+        Log.info("pane \(pane): \(space.site(of: pane)?.rawValue ?? "?") -> \(site.rawValue)")
+        sendLayoutOp { .paneSetSite(req: $0, pane: pane, site: site) }
+    }
+
+    /// The spaces whose tray list is open, and where each tray chip sits in its grid (client-only, never sent to wheeld).
+    private(set) var openTrays: Set<String> = []
+    @ObservationIgnored var trayChipFrames: [String: CGRect] = [:]
+
+    /// Where this client pins the tray chip: one place for every space, saved as it moves.
+    var trayPlace = TrayPlace.load() {
+        didSet { trayPlace.save() }
+    }
+
+    /// A list shows only while its space still holds a backgrounded pane; the chip clears the flag when it goes.
+    func trayOpen(_ space: String) -> Bool {
+        openTrays.contains(space) && spaces.first { $0.id == space }?.backgrounded.isEmpty == false
+    }
+
+    func setTrayOpen(_ space: String, _ open: Bool) {
+        if open { openTrays.insert(space) } else { openTrays.remove(space) }
+        Log.info("tray list \(space): \(open ? "opened" : "closed")")
+    }
+
+    /// The name a tray row shows for a pane: its agent or page, never a status.
+    func trayTitle(_ kind: PaneKind) -> String {
+        switch kind {
+        case .empty: "Empty pane"
+        case let .terminal(_, agent): agent.map { AgentInfo.title(of: $0.name) } ?? "Terminal"
+        case let .web(artifact): artifact.name
+        case let .browser(url): URL(string: url)?.host ?? url
+        case let .agent(_, harness, _): AgentInfo.title(of: harness)
+        case .unknown: "Pane"
+        }
     }
 
     /// Where each popped window sits in its space's grid, by the panes it holds. These belong to this
