@@ -53,6 +53,9 @@
 //! "write mid-turn" answers with a long text block whose stream events stop after the first few
 //! words (the whole message carries all of it), a tool call, and a closing text `closing words`.
 //!
+//! "write rewritten" streams `See a.rs, then go.` and sends a whole message reading
+//! `See /w/a.rs , then go.`, as a display hook leaves it.
+//!
 //! After the echo, "then a tool" ends the turn on tool call "call-6" reading `src/last.rs`.
 //!
 //! With `--replay <dump.json>` every prompt is answered instead by a recorded conversation: the
@@ -524,6 +527,15 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         turn.tool("call-7", "Read", json!({"file_path": "src/mid.rs"}));
         turn.tool_done("call-7", "fn mid() {}");
         turn.say("closing words");
+        return;
+    }
+    if text.contains("write rewritten") {
+        let id = turn.next_message();
+        turn.line(json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": id}}}));
+        for piece in ["See a.rs, ", "then go."] {
+            turn.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": piece}}}));
+        }
+        turn.assistant(id, vec![json!({"type": "text", "text": "See /w/a.rs , then go."})], None);
         return;
     }
     if text.contains("diff") {
