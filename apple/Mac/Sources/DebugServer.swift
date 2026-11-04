@@ -626,13 +626,15 @@ final class DebugServer {
                 guard let text = query["text"] else { return refuse("400 Bad Request", "type takes text") }
                 model.commandPaletteTyped(text)
             case "select":
-                guard let index = query["index"].flatMap(Int.init), model.commandPalette?.rows.indices.contains(index) == true else {
+                guard let index = query["index"].flatMap(Int.init), model.commandPalette?.rows.indices.contains(index) == true || model.commandPalette?.panel?.indices.contains(index) == true else {
                     return refuse("400 Bad Request", "select takes index=<a row's number>")
                 }
                 model.commandPaletteSelect(index)
             case "run": model.commandPaletteRun()
+            case "actions": model.commandPaletteToggleActions()
+            case "escape": model.commandPaletteEscape()
             default:
-                return refuse("400 Bad Request", "action must be open, close, type, tab, select or run")
+                return refuse("400 Bad Request", "action must be open, close, type, tab, select, run, actions or escape")
             }
         case ("POST", "/palette"):
             // The artifact palette's controls, as the keys and clicks drive them: open (the
@@ -1818,6 +1820,8 @@ final class DebugServer {
             "query": palette.query,
             "rows": palette.rows.map { ["id": $0.item.id, "kind": $0.item.kind, "title": $0.item.title, "detail": $0.item.detail] },
             "selected": palette.rows.isEmpty ? NSNull() : palette.selected as Any,
+            "actions": (palette.panel ?? []).map { ["id": $0.id, "title": $0.title] },
+            "action_selected": palette.panel == nil ? NSNull() : palette.panelSelected as Any,
         ]
     }
 

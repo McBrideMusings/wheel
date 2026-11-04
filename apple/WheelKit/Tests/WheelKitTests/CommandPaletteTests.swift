@@ -170,4 +170,30 @@ struct CommandPaletteTests {
         p.tab()
         #expect(p.query == "~/Projcts/wh")
     }
+
+    @Test func aFolderAlreadyOpenStillCreatesByDefaultAndOffersSwitching() {
+        let item = PaletteItem.folder(path: "/w", space: "s1")
+        #expect(item.subActions == [.newSpace(dir: "/w"), .switchToSpace(id: "s1")])
+        #expect(PaletteItem.folder(path: "/x", space: nil).subActions == [.newSpace(dir: "/x")])
+    }
+
+    @Test func commandKListsASpacesActionsAndEscapeClosesThem() {
+        var p = palette(spaces: [.init(id: "s1", name: "wheel", dir: "/w")])
+        #expect(p.selectedAction == .switchToSpace(id: "s1"))
+        p.toggleActions()
+        #expect(p.panel == [.switchToSpace(id: "s1"), .newSpace(dir: "/w"), .closeSpace(id: "s1")])
+        p.move(1)
+        #expect(p.selectedAction == .newSpace(dir: "/w"))
+        let closed = p.closeActions()
+        #expect(closed)
+        #expect(p.panel == nil)
+        let again = p.closeActions()
+        #expect(!again)
+    }
+
+    @Test func aRowWithOneActionOpensNoList() {
+        var p = palette(recents: [RecentDir(dir: "/old", openedMs: 1)])
+        p.toggleActions()
+        #expect(p.panel == nil)
+    }
 }
