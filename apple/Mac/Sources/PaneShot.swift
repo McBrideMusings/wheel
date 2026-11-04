@@ -12,8 +12,8 @@ extension AppModel {
     /// not shown: its views are mounted but drawn at zero opacity. A web or browser pane in such a
     /// space still has its WebKit view mounted, and WebKit renders the page itself, so it is drawn.
     func renderPane(id: UInt64, pane: String, full: Bool = false) {
-        guard let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
-              let kind = space.root.panes.first(where: { $0.id == pane })?.kind else {
+        guard let space = spaces.first(where: { $0.allPanes.contains { $0.id == pane } }),
+              let kind = space.allPanes.first(where: { $0.id == pane })?.kind else {
             Log.info("render \(id): pane \(pane) is not on screen")
             reply(.renderRefused(id: id, message: RenderRefusal.notShown))
             return

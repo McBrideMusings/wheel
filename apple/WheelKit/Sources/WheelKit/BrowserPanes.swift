@@ -8,7 +8,7 @@ public enum BrowserPanes {
     public static func urls(_ spaces: [SpaceInfo]) -> [String: String] {
         var out: [String: String] = [:]
         for space in spaces {
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 if case let .browser(url) = pane.kind { out[pane.id] = url }
             }
         }

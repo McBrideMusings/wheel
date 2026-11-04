@@ -6,7 +6,7 @@ public struct SurfacePlan: Equatable, Sendable {
     public let added: [String]
     /// Terms with a surface whose pane left the layout, sorted; the client detaches these.
     public let removed: [String]
-    /// Every term in the layout: true when its space is on screen. A hidden or background space's
+    /// Every term in the layout: true when its space is on screen and the pane is not backgrounded. A hidden or background space's
     /// surfaces stay alive so their screens survive; they only stop drawing.
     public let visible: [String: Bool]
     /// The focus key to remember for the next broadcast.
@@ -21,8 +21,10 @@ public struct SurfacePlan: Equatable, Sendable {
         let shown = shown ?? Set(active.map { [$0] } ?? [])
         var visible: [String: Bool] = [:]
         for space in spaces {
-            for pane in space.root.panes {
-                if case let .terminal(term, _) = pane.kind { visible[term] = shown.contains(space.id) }
+            for pane in space.allPanes {
+                if case let .terminal(term, _) = pane.kind {
+                    visible[term] = shown.contains(space.id) && space.site(of: pane.id) != .backgrounded
+                }
             }
         }
         self.visible = visible
@@ -49,7 +51,7 @@ extension [SpaceInfo] {
     /// The term id a pane shows, if it is a terminal.
     func term(of pane: String) -> String? {
         for space in self {
-            for p in space.root.panes where p.id == pane {
+            for p in space.allPanes where p.id == pane {
                 if case let .terminal(term, _) = p.kind { return term }
             }
         }

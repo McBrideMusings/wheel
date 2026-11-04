@@ -354,6 +354,8 @@ struct SpaceGrid: View {
     @ObservedObject var drag: GridDragState
     let space: SpaceInfo
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The edge of this space a popped window is being dragged to, which backgrounds it on release.
+    @State private var hotEdge: Dir?
 
     /// Where a pane sits while another is zoomed: pushed past the grid edge it is nearest to, so
     /// the zoomed pane appears to grow over it. Reduced motion keeps it in place and fades it.
@@ -412,10 +414,18 @@ struct SpaceGrid: View {
                             .offset(x: divider.frame.minX, y: divider.frame.minY)
                     }
                 }
+                ForEach(Array(space.popped.enumerated()), id: \.element.firstPaneId) { index, tree in
+                    PoppedWindow(model: model, drag: drag, space: space, tree: tree, index: index,
+                                 bounds: geo.size, hotEdge: $hotEdge)
+                }
+                if let edge = hotEdge {
+                    EdgeBar(edge: edge, size: geo.size)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .clipped()
             .coordinateSpace(name: "grid")
+            .coordinateSpace(name: "spaceGrid")
             .onChange(of: space.root, initial: true) { _, root in
                 model.baseLayouts[space.id] = WheelKit.GridLayout(root, in: rect)
             }
@@ -507,7 +517,7 @@ struct PaneView: View {
     }
 
     /// False for a pane shrinking out after a close: its frames must not re-enter the maps `apply` just pruned.
-    private var holdsPane: Bool { model.spaces.contains { $0.root.panes.contains { $0.id == paneId } } }
+    private var holdsPane: Bool { model.spaces.contains { $0.allPanes.contains { $0.id == paneId } } }
 
     /// The pane with its palette open is the one the palette is for, whichever pane has focus.
     private var ringed: Bool { focused || model.palettes[paneId] != nil }
@@ -559,6 +569,9 @@ struct PaneHeader: View {
 
     private func close() { model.askClosePane(paneId) }
 
+    /// Set inside a popped window, where the header moves the window instead of the pane.
+    @Environment(\.poppedWindow) private var window
+
     /// The other way this pane can show its conversation: a chat for a terminal running Claude
     /// Code, the Claude Code TUI for an agent pane.
     private var otherView: ConversationView? {
@@ -601,6 +614,15 @@ struct PaneHeader: View {
                 headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
                 headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
             }
+            let pop = model.popButton(for: paneId)
+            Button { model.toggleSite(paneId, .popped) } label: { Image(systemName: pop.symbol) }
+                .buttonStyle(.borderless)
+                .foregroundStyle(pop.on ? Color.accentColor : Color.primary)
+                .help(pop.title)
+                .accessibilityLabel(pop.title)
+                .accessibilityValue(pop.on ? "on" : "off")
+            let background = model.backgroundButton()
+            headerButton(background.symbol, background.title) { model.toggleSite(paneId, .backgrounded) }
             let zoom = model.zoomButton(for: paneId)
             Button { model.toggleZoom(paneId) } label: { Image(systemName: zoom.symbol) }
                 .buttonStyle(.borderless)
@@ -625,12 +647,16 @@ struct PaneHeader: View {
         // Dragging the header swaps this pane with another or docks it beside one; the grid
         // previews the result and the daemon changes the tree once the pointer is released.
         .gesture(
-            DragGesture(minimumDistance: 6, coordinateSpace: .named("grid"))
+            DragGesture(minimumDistance: 6, coordinateSpace: .named("spaceGrid"))
                 .onChanged {
+                    if let window { return window.moved($0.translation, $0.location) }
                     model.beginPaneDrag(paneId, grabbedAt: $0.startLocation)
                     model.dragPane(to: $0.location)
                 }
-                .onEnded { _ in model.endPaneDrag() }
+                .onEnded {
+                    if let window { return window.ended($0.location) }
+                    model.endPaneDrag()
+                }
         )
     }
 
@@ -1090,5 +1116,133 @@ extension EnvironmentValues {
     var spaceShown: Bool {
         get { self[SpaceShownKey.self] }
         set { self[SpaceShownKey.self] = newValue }
+    }
+}
+
+extension Node {
+    /// The first pane in reading order: what names a popped window while it keeps that pane.
+    fileprivate var firstPaneId: String { panes.first?.id ?? "" }
+}
+
+/// What a header inside a popped window does with a drag: it moves the window.
+struct PoppedWindowDrag: @unchecked Sendable {
+    let moved: (CGSize, CGPoint) -> Void
+    let ended: (CGPoint) -> Void
+}
+
+private struct PoppedWindowKey: EnvironmentKey {
+    static let defaultValue: PoppedWindowDrag? = nil
+}
+
+extension EnvironmentValues {
+    var poppedWindow: PoppedWindowDrag? {
+        get { self[PoppedWindowKey.self] }
+        set { self[PoppedWindowKey.self] = newValue }
+    }
+}
+
+/// One popped tree: a floating window over the grid whose panes split like the grid's. Its place
+/// and size are this client's own and are never sent to wheeld.
+struct PoppedWindow: View {
+    var model: AppModel
+    @ObservedObject var drag: GridDragState
+    let space: SpaceInfo
+    let tree: Node
+    let index: Int
+    let bounds: CGSize
+    @Binding var hotEdge: Dir?
+    @State private var move: CGSize = .zero
+    @State private var grow: CGSize = .zero
+
+    private static let minSize = CGSize(width: 280, height: 180)
+    private static let edgeReach: CGFloat = 14
+
+    private var base: CGRect { model.poppedFrame(of: tree, index: index, in: bounds) }
+    private var size: CGSize {
+        CGSize(width: min(max(base.width + grow.width, Self.minSize.width), max(bounds.width - base.minX, Self.minSize.width)),
+               height: min(max(base.height + grow.height, Self.minSize.height), max(bounds.height - base.minY, Self.minSize.height)))
+    }
+
+    private func edge(of point: CGPoint) -> Dir? {
+        if point.x < Self.edgeReach { return .left }
+        if point.x > bounds.width - Self.edgeReach { return .right }
+        if point.y < Self.edgeReach { return .up }
+        if point.y > bounds.height - Self.edgeReach { return .down }
+        return nil
+    }
+
+    var body: some View {
+        let layout = WheelKit.GridLayout(tree, in: CGRect(origin: .zero, size: size), ratios: drag.ratios)
+        ZStack(alignment: .topLeading) {
+            ForEach(layout.panes) { pane in
+                PaneView(model: model, paneId: pane.id, kind: pane.kind, focused: pane.id == space.focus)
+                    .frame(width: pane.frame.width, height: pane.frame.height)
+                    .offset(x: pane.frame.minX, y: pane.frame.minY)
+            }
+            ForEach(layout.dividers) { divider in
+                DividerHandle(model: model, divider: divider)
+                    .frame(width: divider.frame.width, height: divider.frame.height)
+                    .offset(x: divider.frame.minX, y: divider.frame.minY)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .coordinateSpace(name: "grid")
+        .overlay(alignment: .bottomTrailing) { resizeHandle }
+        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+        .offset(x: base.minX + move.width, y: base.minY + move.height)
+        .opacity(move != .zero && hotEdge != nil ? 0.7 : 1)
+        .environment(\.poppedWindow, PoppedWindowDrag(
+            moved: { translation, pointer in
+                move = translation
+                hotEdge = edge(of: pointer)
+            },
+            ended: { pointer in
+                if edge(of: pointer) != nil {
+                    hotEdge = nil
+                    move = .zero
+                    model.backgroundWindow(tree)
+                    return
+                }
+                hotEdge = nil
+                model.setPoppedFrame(CGRect(x: base.minX + move.width, y: base.minY + move.height,
+                                            width: size.width, height: size.height), of: tree)
+                move = .zero
+            }
+        ))
+        .zIndex(tree.panes.contains { $0.id == space.focus } ? 3 : 2)
+    }
+
+    private var resizeHandle: some View {
+        Rectangle()
+            .fill(.clear)
+            .frame(width: 16, height: 16)
+            .contentShape(Rectangle())
+            .onHover { inside in (inside ? NSCursor.crosshair : NSCursor.arrow).set() }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named("spaceGrid"))
+                    .onChanged { grow = CGSize(width: $0.translation.width, height: $0.translation.height) }
+                    .onEnded { _ in
+                        model.setPoppedFrame(CGRect(origin: base.origin, size: size), of: tree)
+                        grow = .zero
+                    }
+            )
+            .accessibilityLabel("Resize window")
+    }
+}
+
+/// A strip along the edge of a space that a popped window is being dragged to.
+struct EdgeBar: View {
+    let edge: Dir
+    let size: CGSize
+
+    var body: some View {
+        let thickness: CGFloat = 8
+        let horizontal = edge == .left || edge == .right
+        Rectangle()
+            .fill(Color.accentColor.opacity(0.6))
+            .frame(width: horizontal ? thickness : size.width, height: horizontal ? size.height : thickness)
+            .offset(x: edge == .right ? size.width - thickness : 0, y: edge == .down ? size.height - thickness : 0)
+            .allowsHitTesting(false)
+            .zIndex(3)
     }
 }

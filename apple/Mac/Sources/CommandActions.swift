@@ -39,7 +39,7 @@ enum CommandActions {
 
     private static func focusedKind(_ model: AppModel) -> PaneKind? {
         guard let space = model.activeSpace else { return nil }
-        return space.root.panes.first { $0.id == space.focus }?.kind
+        return space.allPanes.first { $0.id == space.focus }?.kind
     }
 
     /// The conversation view the focused pane could switch to, or nil when it has only one.
@@ -390,7 +390,7 @@ extension AppModel {
         commandPalette?.list(
             spaces: spaces.map { .init(id: $0.id, name: $0.name, dir: $0.cwd) },
             panes: spaces.flatMap { space in
-                space.root.panes.map { .init(id: $0.id, space: space.id, spaceName: space.name, name: Self.paletteName(of: $0.kind)) }
+                space.allPanes.map { .init(id: $0.id, space: space.id, spaceName: space.name, name: Self.paletteName(of: $0.kind)) }
             },
             artifacts: paletteArtifacts,
             recents: recentDirs,

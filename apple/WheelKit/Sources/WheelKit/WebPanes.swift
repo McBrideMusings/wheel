@@ -9,7 +9,7 @@ public enum WebPanes {
     public static func panes(_ spaces: [SpaceInfo]) -> [String: (artifact: ArtifactRef, store: UUID)] {
         var out: [String: (artifact: ArtifactRef, store: UUID)] = [:]
         for space in spaces {
-            for pane in space.root.panes {
+            for pane in space.allPanes {
                 if case let .web(artifact) = pane.kind {
                     out[pane.id] = (artifact, store(cwd: space.cwd, artifact: artifact))
                 }

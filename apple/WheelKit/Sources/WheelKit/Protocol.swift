@@ -75,6 +75,8 @@ public enum ClientMsg: Sendable, Equatable {
     case paneSplit(req: UInt64?, pane: String, dir: Dir?, focus: Bool)
     /// Swap the places of two panes in one space.
     case paneSwap(req: UInt64?, pane: String, with: String)
+    /// Put `pane` in the grid, in a popped tree of its own, or in the tray; it keeps its id and process.
+    case paneSetSite(req: UInt64?, pane: String, site: PaneSite)
     /// Move a pane, keeping its id and process: beside a pane in any space, to the end of a space,
     /// or into a new space.
     case paneMove(req: UInt64?, pane: String, to: PaneMoveTarget)
@@ -279,6 +281,8 @@ public enum ClientMsg: Sendable, Equatable {
             if focus { o["focus"] = true }
         case let .paneSwap(req, pane, with):
             o = ["op": "pane_swap", "pane": pane, "with": with]; put(req)
+        case let .paneSetSite(req, pane, site):
+            o = ["op": "pane_set_site", "pane": pane, "site": site.rawValue]; put(req)
         case let .paneMove(req, pane, to):
             o = ["op": "pane_move", "pane": pane, "to": to.object]; put(req)
         case let .paneClose(req, pane):

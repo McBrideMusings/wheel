@@ -23,8 +23,8 @@ final class PanePalette: ObservableObject {
 extension AppModel {
     /// "Artifact…": open the palette inside `pane` and list the artifacts its space offers.
     func openPalette(_ pane: String) {
-        guard palettes[pane] == nil, let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }),
-              let kind = space.root.panes.first(where: { $0.id == pane })?.kind else { return }
+        guard palettes[pane] == nil, let space = spaces.first(where: { $0.allPanes.contains { $0.id == pane } }),
+              let kind = space.allPanes.first(where: { $0.id == pane })?.kind else { return }
         Log.info("palette \(pane): opened (space \(space.id))")
         palettes[pane] = PanePalette(openedOver: kind.name)
         focus(pane: pane)
@@ -35,7 +35,7 @@ extension AppModel {
     func askArtifacts(_ pane: String) {
         guard let palette = palettes[pane] else { return }
         palette.state.relisting()
-        guard connection == .connected, let space = spaces.first(where: { $0.root.panes.contains { $0.id == pane } }) else {
+        guard connection == .connected, let space = spaces.first(where: { $0.allPanes.contains { $0.id == pane } }) else {
             palette.state.failed("wheeld is not connected.")
             return
         }
@@ -90,7 +90,7 @@ extension AppModel {
     func paletteChose(_ pane: String, _ info: ArtifactInfo) {
         guard let palette = palettes[pane] else { return }
         palette.state.select(info.id)
-        let kind = spaces.lazy.flatMap { $0.root.panes }.first { $0.id == pane }?.kind
+        let kind = spaces.lazy.flatMap { $0.allPanes }.first { $0.id == pane }?.kind
         if kind?.endsAnAgent == true {
             Log.info("palette \(pane): \(info.id) chosen; asking before it ends the pane's agent")
             palette.confirming = info
