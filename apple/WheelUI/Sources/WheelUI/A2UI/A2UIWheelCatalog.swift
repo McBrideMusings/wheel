@@ -3,7 +3,7 @@ import A2UISwiftUI
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
-let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Unsupported"]
+let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Pill", "Unsupported"]
 
 // The palette Wheel's pages use, light and dark.
 struct WheelPalette {
@@ -66,7 +66,7 @@ struct A2UILabelView: View {
             }
             let s = (try? node.typedProperties(TextProperties.self)).map { dc.resolve($0.text) } ?? ""
             let (f, c) = fmt(p, pal, base: [:])
-            return Text(s).font(f).foregroundColor(c).tracking(tracking)
+            return Text(s).font(f).fontWeight(weightOf(p["weight"]?.stringValue)).foregroundColor(c).tracking(tracking)
         }()
         let tone = pal.tone(p["tone"]?.stringValue) ?? pal.fg
         let align: Alignment = p["align"]?.stringValue == "end" ? .trailing : .leading
@@ -227,13 +227,19 @@ struct A2UISearchFieldView: View {
         let pal = WheelPalette(dark: cs == .dark)
         let p = node.instance.properties
         let bad = p["error"]?.boolValue == true
-        TextField("", text: $text, prompt: Text(p["placeholder"]?.stringValue ?? "").foregroundColor(pal.muted))
+        TextField("", text: $text)
             .textFieldStyle(.plain)
             .font(.system(size: 13, design: .monospaced))
             .autocorrectionDisabled()
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 8).fill(pal.card))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(bad ? pal.bad : pal.line, lineWidth: 1))
+            .overlay(alignment: .leading) {
+                if text.isEmpty {
+                    Text(p["placeholder"]?.stringValue ?? "").font(.system(size: 13, design: .monospaced))
+                        .foregroundColor(pal.muted).padding(.horizontal, 10).allowsHitTesting(false)
+                }
+            }
             .accessibilityIdentifier("a2ui.search")
             .onChange(of: text) { _, new in
                 pending?.cancel()
@@ -244,6 +250,37 @@ struct A2UISearchFieldView: View {
                     surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: ["q": .string(new)])
                 }
             }
+    }
+}
+
+// MARK: Pill — the page's button: a bordered pill raising its action; `selected` fills it (a pressed tab); `src` is the small tag after the text
+struct A2UIPillView: View {
+    let node: ComponentNode
+    let surface: SurfaceModel
+    @Environment(\.colorScheme) private var cs
+    var body: some View {
+        let pal = WheelPalette(dark: cs == .dark)
+        let p = node.instance.properties
+        let selected = p["selected"]?.boolValue == true
+        let shape = RoundedRectangle(cornerRadius: 6)
+        Button {
+            guard let name = p["name"]?.stringValue else { return }
+            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: p["context"]?.dictionaryValue ?? [:])
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(p["text"]?.stringValue ?? "").font(.system(size: 12))
+                    .foregroundColor(selected ? pal.bg : pal.fg)
+                if let src = p["src"]?.stringValue {
+                    Text(src).font(.system(size: 10)).foregroundColor(pal.muted)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 3)
+            .background(shape.fill(selected ? pal.fg : pal.soft))
+            .overlay(shape.strokeBorder(selected ? pal.fg : pal.line, lineWidth: 1))
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("a2ui.pill.\(node.instance.id)")
     }
 }
 
@@ -258,6 +295,7 @@ struct WheelA2UICatalog: CustomComponentCatalog {
         case "Label": A2UILabelView(node: node, surface: surface)
         case "Box": A2UIBoxView(node: node, surface: surface)
         case "SearchField": A2UISearchFieldView(node: node, surface: surface)
+        case "Pill": A2UIPillView(node: node, surface: surface)
         case "Unsupported": A2UIUnsupportedView(node: node)
         default: EmptyView()
         }

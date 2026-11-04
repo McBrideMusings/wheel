@@ -87,15 +87,15 @@ fn bd(path: &str, args: &[&str]) -> Result<Vec<Value>, String> {
 fn scripts(path: &str) -> (Vec<Script>, Vec<String>) {
     let file = PathBuf::from(path).join("wheel.toml");
     let Ok(text) = std::fs::read_to_string(&file) else { return (vec![], vec![]) };
-    let table: toml::Table = match text.parse() {
+    let doc: toml_edit::DocumentMut = match text.parse() {
         Ok(t) => t,
         Err(e) => return (vec![], vec![format!("{}: {e}", file.display())]),
     };
     let mut out = vec![];
-    if let Some(buttons) = table.get("beads").and_then(|b| b.get("buttons")).and_then(|b| b.as_table()) {
-        for (name, s) in buttons {
+    if let Some(buttons) = doc.get("beads").and_then(|b| b.get("buttons")).and_then(|b| b.as_table_like()) {
+        for (name, s) in buttons.iter() {
             out.push(Script {
-                name: name.clone(),
+                name: name.to_string(),
                 label: s.get("label").and_then(|v| v.as_str()).map(String::from),
                 on: s
                     .get("on")
@@ -499,7 +499,7 @@ fn summary(text: &str) -> String {
             t.to_string()
         })
         .collect();
-    let plain = plain.join("\n").replace("**", "").replace("__", "").replace('`', "");
+    let plain = plain.join(" ").replace("**", "").replace("__", "").replace('`', "");
     if plain.chars().count() > 240 {
         let cut: String = plain.chars().take(240).collect();
         let at = cut.rfind(' ').unwrap_or(cut.len());
@@ -625,19 +625,10 @@ impl Page {
         self.put(v);
         id.to_string()
     }
-    fn button(&mut self, id: &str, label: &str, src: Option<&str>, name: &str, context: Value, primary: bool) -> String {
-        let inner = match src {
-            Some(src) => {
-                let a = self.label(&format!("{id}.l"), label, json!({ "size": 12 }));
-                let b = self.label(&format!("{id}.s"), src, json!({ "size": 10, "tone": "muted" }));
-                self.boxed(&format!("{id}.c"), "h", vec![a, b], json!({ "spacing": 4, "align": "firstTextBaseline" }))
-            }
-            None => self.label(&format!("{id}.l"), label, json!({ "size": 12 })),
-        };
-        let mut v = json!({ "id": id, "component": "Button", "child": inner,
-            "action": { "event": { "name": name, "context": context } } });
-        if primary {
-            v["variant"] = json!("primary");
+    fn button(&mut self, id: &str, label: &str, src: Option<&str>, name: &str, context: Value, selected: bool) -> String {
+        let mut v = json!({ "id": id, "component": "Pill", "text": label, "name": name, "context": context, "selected": selected });
+        if let Some(src) = src {
+            v["src"] = json!(src);
         }
         self.put(v);
         id.to_string()
@@ -775,12 +766,11 @@ impl Ctx<'_> {
         );
         let mut head = vec![row];
         if let Some(a) = acts {
-            head.push(p.boxed(&format!("{id}.acts"), "v", vec![a], json!({ "padding": [0, 0, 0, 14] })));
+            head.push(a);
         }
         if !desc.is_empty() {
-            head.push(p.label(&format!("{id}.d"), desc, json!({ "size": 12, "tone": "muted" })));
-            let d = head.pop().unwrap();
-            head.push(p.boxed(&format!("{id}.db"), "v", vec![d], json!({ "padding": [0, 0, 0, 14] })));
+            let d = p.label(&format!("{id}.d"), desc, json!({ "size": 12, "tone": "muted" }));
+            head.push(p.boxed(&format!("{id}.db"), "h", vec![d], json!({ "widths": ["flex"] })));
         }
         let head = p.boxed(&format!("{id}.head"), "v", head, json!({ "spacing": 6, "padding": [10, 14] }));
         let rows = self.rows(p, key, beads);
@@ -848,7 +838,7 @@ fn page_components(snap: &Snapshot, view: &View) -> Vec<Value> {
     );
 
     let mut page: Vec<String> = vec![];
-    page.push(p.label("title", "Beads", json!({ "size": 20, "weight": "bold" })));
+    page.push(p.runs("title", json!([{ "text": "Beads", "size": 20, "weight": "bold" }]), json!({})));
     page.push(p.label("sub", &sub, json!({ "size": 12, "tone": "muted" })));
     p.put(json!({ "id": "search", "component": "SearchField", "value": view.q, "action": "set_query",
         "placeholder": "type=bug AND NOT status=closed", "error": !err.is_empty() }));
@@ -877,7 +867,7 @@ fn page_components(snap: &Snapshot, view: &View) -> Vec<Value> {
         .enumerate()
         .map(|(i, (l, v, hot))| {
             let hot = *hot && *v > 0;
-            let num = p.label(&format!("kpi{i}.n"), &v.to_string(), json!({ "size": 24, "weight": "bold", "tone": if hot { "ok" } else { "fg" } }));
+            let num = p.runs(&format!("kpi{i}.n"), json!([{ "text": v.to_string(), "size": 24, "weight": "bold", "tone": if hot { "ok" } else { "fg" } }]), json!({}));
             let lab = p.label(&format!("kpi{i}.l"), l, json!({ "size": 12, "tone": "muted" }));
             p.boxed(&format!("kpi{i}"), "v", vec![num, lab], json!({ "padding": [10, 14], "border": if hot { "ok" } else { "line" }, "fill": "card", "radius": 10 }))
         })
@@ -969,7 +959,7 @@ fn page_components(snap: &Snapshot, view: &View) -> Vec<Value> {
             }
         }
     }
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [20, 16, 48, 16], "children": page }));
+    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [0, 0, 48, 0], "children": page }));
     p.out
 }
 

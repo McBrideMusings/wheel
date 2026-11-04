@@ -21,7 +21,6 @@ public struct A2UIPaneView: View {
             if let surface = pane.surface {
                 ScrollView {
                     A2UISurfaceView(viewModel: styled(surface, palette), catalog: WheelA2UICatalog())
-                        .padding(16)
                         .frame(maxWidth: .infinity, alignment: .top)
                 }
             } else if case .failed = pane.state {
