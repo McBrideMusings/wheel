@@ -751,7 +751,7 @@ impl Ctx<'_> {
         }
         runs.push(json!({ "text": format!("  {tag}"), "size": 11, "mono": true, "tone": "muted", "weight": "regular" }));
         let t = p.runs(&format!("{id}.t0"), Value::Array(runs), json!({}));
-        let t = p.boxed(&format!("{id}.t"), "v", vec![t], json!({ "padding": [0, 0, 0, 14] }));
+        let t = p.boxed(&format!("{id}.t"), "v", vec![t], json!({}));
         p.put(json!({ "id": format!("{id}.bar"), "component": "ProgressBar",
             "closed": c.closed, "wip": c.wip, "total": c.total }));
         let pc = p.label(&format!("{id}.pc"), &format!("{}%", pct(c)), json!({ "weight": "semibold", "align": "end", "size": 14 }));
@@ -850,11 +850,11 @@ fn page_components(snap: &Snapshot, view: &View) -> Vec<Value> {
     let l = p.label("qhelp", "fields: status priority type label title assignee owner · = != > >= < <= · AND OR NOT ( )", json!({ "size": 11, "tone": "muted" }));
     page.push(p.boxed("qhelp.b", "v", vec![l], json!({ "padding": [4, 2, 0, 2] })));
 
-    let tabs: Vec<String> = [("features", "Features"), ("labels", "Labels"), ("types", "Types"), ("status", "Status")]
-        .iter()
-        .map(|(k, l)| p.button(&format!("tab.{k}"), l, None, "set_tab", json!({ "tab": k }), view.tab == *k))
-        .collect();
-    page.push(p.boxed("tabs", "h", tabs, json!({ "spacing": 6, "controlSize": "small", "padding": [14, 0, 0, 0] })));
+    p.put(json!({ "id": "tabs.seg", "component": "Segmented", "selected": view.tab, "action": "set_tab",
+        "options": [
+            { "value": "features", "text": "Features" }, { "value": "labels", "text": "Labels" },
+            { "value": "types", "text": "Types" }, { "value": "status", "text": "Status" }] }));
+    page.push(p.boxed("tabs", "h", vec!["tabs.seg".into()], json!({ "padding": [14, 0, 0, 0] })));
 
     let kpis = [
         ("Ready to start", n(&|b| b.ready && b.status == "open"), true),

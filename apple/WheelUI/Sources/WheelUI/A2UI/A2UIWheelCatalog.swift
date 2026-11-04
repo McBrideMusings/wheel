@@ -3,20 +3,22 @@ import A2UISwiftUI
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
-let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Pill", "Unsupported"]
+let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Segmented", "Pill", "Unsupported"]
 
-// The palette Wheel's pages use, light and dark.
+// The palette is the system's own semantic colours, so a page follows light and dark and the
+// person's accent colour like any native window.
 struct WheelPalette {
     let fg, muted, bg, card, soft, line, ok, warn, bad, todo, focus: Color
-    init(dark: Bool) {
-        func h(_ v: UInt32) -> Color { Color(red: Double((v >> 16) & 255) / 255, green: Double((v >> 8) & 255) / 255, blue: Double(v & 255) / 255) }
-        if dark {
-            fg = h(0xe6e8eb); muted = h(0x9aa0aa); bg = h(0x15171b); card = h(0x1c1f24); soft = h(0x23272e); line = h(0x2c3038)
-            todo = h(0x3a3f48); ok = h(0x4cbf7f); warn = h(0xe0a63a); bad = h(0xee6b61); focus = h(0x6d97ef)
-        } else {
-            fg = h(0x1b1d21); muted = h(0x6b7079); bg = h(0xfafbfc); card = h(0xffffff); soft = h(0xf2f3f5); line = h(0xe3e5ea)
-            todo = h(0xd5d8de); ok = h(0x2f8f5b); warn = h(0xb87a0e); bad = h(0xc4382f); focus = h(0x3b6fd8)
-        }
+    init(dark _: Bool) {
+        #if os(macOS)
+        bg = Color(nsColor: .windowBackgroundColor); card = Color(nsColor: .controlBackgroundColor)
+        line = Color(nsColor: .separatorColor)
+        #else
+        bg = Color(uiColor: .systemBackground); card = Color(uiColor: .secondarySystemBackground)
+        line = Color(uiColor: .separator)
+        #endif
+        fg = .primary; muted = .secondary; soft = Color.secondary.opacity(0.12); todo = Color.secondary.opacity(0.25)
+        ok = .green; warn = .orange; bad = .red; focus = .accentColor
     }
     func tone(_ n: String?) -> Color? {
         switch n {
@@ -180,66 +182,40 @@ struct A2UIProgressBarView: View {
     }
 }
 
-// MARK: Disclosure — children[0] header, children[1] body; chevron inline (left of header) or overlaid on the header's first line
+// MARK: Disclosure — the system's DisclosureGroup: children[0] is the label, children[1] the content
 struct A2UIDisclosureView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @State private var open: Bool
-    @Environment(\.colorScheme) private var cs
     init(node: ComponentNode, surface: SurfaceModel) {
         self.node = node; self.surface = surface
         _open = State(initialValue: node.instance.properties["expanded"]?.boolValue ?? false)
     }
     var body: some View {
-        let pal = WheelPalette(dark: cs == .dark)
-        let overlay = node.instance.properties["chevron"]?.stringValue == "overlay"
-        let chevron = Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
-            .rotationEffect(.degrees(open ? 90 : 0)).foregroundStyle(pal.muted)
-        VStack(alignment: .leading, spacing: 0) {
-            Group {
-                if overlay {
-                    if let h = node.children.first { A2UIChildView(node: h, surface: surface).overlay(alignment: .topLeading) { chevron.padding(.leading, 14).padding(.top, 15) } }
-                } else {
-                    HStack(alignment: .top, spacing: 6) {
-                        chevron.padding(.top, 5)
-                        if let h = node.children.first { A2UIChildView(node: h, surface: surface) }
-                    }
-                }
-            }
-            .contentShape(Rectangle()).onTapGesture { open.toggle() }
-            if open, node.children.count > 1 { if !overlay { Divider() }; A2UIChildView(node: node.children[1], surface: surface) }
+        DisclosureGroup(isExpanded: $open) {
+            if node.children.count > 1 { A2UIChildView(node: node.children[1], surface: surface) }
+        } label: {
+            if let h = node.children.first { A2UIChildView(node: h, surface: surface) }
         }
+        .padding(.horizontal, 10).padding(.vertical, 6)
     }
 }
 
-// MARK: SearchField — a one-line monospaced field that raises its action, text as `q`, as the person types
+// MARK: SearchField — the system's rounded text field; it raises its action, text as `q`, as the person types
 struct A2UISearchFieldView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @State private var text: String
     @State private var pending: Task<Void, Never>?
-    @Environment(\.colorScheme) private var cs
     init(node: ComponentNode, surface: SurfaceModel) {
         self.node = node; self.surface = surface
         _text = State(initialValue: node.instance.properties["value"]?.stringValue ?? "")
     }
     var body: some View {
-        let pal = WheelPalette(dark: cs == .dark)
         let p = node.instance.properties
-        let bad = p["error"]?.boolValue == true
-        TextField("", text: $text)
-            .textFieldStyle(.plain)
-            .font(.system(size: 13, design: .monospaced))
+        TextField(p["placeholder"]?.stringValue ?? "", text: $text)
+            .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(pal.card))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(bad ? pal.bad : pal.line, lineWidth: 1))
-            .overlay(alignment: .leading) {
-                if text.isEmpty {
-                    Text(p["placeholder"]?.stringValue ?? "").font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(pal.muted).padding(.horizontal, 10).allowsHitTesting(false)
-                }
-            }
             .accessibilityIdentifier("a2ui.search")
             .onChange(of: text) { _, new in
                 pending?.cancel()
@@ -253,33 +229,53 @@ struct A2UISearchFieldView: View {
     }
 }
 
-// MARK: Pill — the page's button: a bordered pill raising its action; `selected` fills it (a pressed tab); `src` is the small tag after the text
+// MARK: Segmented — the system's segmented control: `options` [{value, text}], `selected`, `action` raised with the value as `value`
+struct A2UISegmentedView: View {
+    let node: ComponentNode
+    let surface: SurfaceModel
+    @State private var selection: String
+    init(node: ComponentNode, surface: SurfaceModel) {
+        self.node = node; self.surface = surface
+        _selection = State(initialValue: node.instance.properties["selected"]?.stringValue ?? "")
+    }
+    var body: some View {
+        let p = node.instance.properties
+        let options = (p["options"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+        Picker("", selection: $selection) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, o in
+                Text(o["text"]?.stringValue ?? "").tag(o["value"]?.stringValue ?? "")
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .accessibilityIdentifier("a2ui.segmented")
+        .onChange(of: selection) { _, new in
+            guard let name = p["action"]?.stringValue else { return }
+            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: ["tab": .string(new)])
+        }
+    }
+}
+
+// MARK: Pill — the system's small bordered button raising its action; `src` is a small tag after the text
 struct A2UIPillView: View {
     let node: ComponentNode
     let surface: SurfaceModel
-    @Environment(\.colorScheme) private var cs
     var body: some View {
-        let pal = WheelPalette(dark: cs == .dark)
         let p = node.instance.properties
-        let selected = p["selected"]?.boolValue == true
-        let shape = RoundedRectangle(cornerRadius: 6)
         Button {
             guard let name = p["name"]?.stringValue else { return }
             surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: p["context"]?.dictionaryValue ?? [:])
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(p["text"]?.stringValue ?? "").font(.system(size: 12))
-                    .foregroundColor(selected ? pal.bg : pal.fg)
+                Text(p["text"]?.stringValue ?? "")
                 if let src = p["src"]?.stringValue {
-                    Text(src).font(.system(size: 10)).foregroundColor(pal.muted)
+                    Text(src).font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 3)
-            .background(shape.fill(selected ? pal.fg : pal.soft))
-            .overlay(shape.strokeBorder(selected ? pal.fg : pal.line, lineWidth: 1))
-            .contentShape(shape)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
         .accessibilityIdentifier("a2ui.pill.\(node.instance.id)")
     }
 }
@@ -295,6 +291,7 @@ struct WheelA2UICatalog: CustomComponentCatalog {
         case "Label": A2UILabelView(node: node, surface: surface)
         case "Box": A2UIBoxView(node: node, surface: surface)
         case "SearchField": A2UISearchFieldView(node: node, surface: surface)
+        case "Segmented": A2UISegmentedView(node: node, surface: surface)
         case "Pill": A2UIPillView(node: node, surface: surface)
         case "Unsupported": A2UIUnsupportedView(node: node)
         default: EmptyView()
