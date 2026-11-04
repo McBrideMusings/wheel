@@ -28,7 +28,7 @@ timings() {
     app_post "/spacetap?space=$target" >/dev/null
     wait_st ".windows[0].active == \"$target\"" 3
     poll 20 sh -c "[ \"\$(grep -c '\\[tab\\] switch' '$MLOG')\" -gt $before ]"
-    ms="$(grep '\[tab\] switch' "$MLOG" | tail -1 | sed -E 's/.*windows: ([0-9]+) ms.*/\1/')"
+    ms="$(grep '\[tab\] switch.*to windows:' "$MLOG" | tail -1 | sed -E 's/.*windows: ([0-9]+) ms.*/\1/')"
     all+=("$ms")
     eq "$mode: switch $i shows the clicked space" "$(st '.windows[0].active')" "$target"
   done

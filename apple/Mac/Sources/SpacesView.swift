@@ -11,49 +11,51 @@ import WheelUI
 struct SpacesView: View {
     var model: AppModel
     let windowID: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            SidebarIfOpen(model: model, windowID: windowID)
+            SpacesGrid(model: model, windowID: windowID)
+        }
+    }
+}
+
+/// The sidebar, while the window shows it.
+private struct SidebarIfOpen: View {
+    var model: AppModel
+    let windowID: String
+
+    var body: some View {
+        // A window with no spaces has nothing to list beside the palette it shows.
+        if model.sidebarOpen(in: windowID), !model.spaces(in: windowID).isEmpty {
+            SpacesSidebar(model: model, windowID: windowID)
+                .frame(width: 230)
+        }
+    }
+}
+
+/// Every space the window holds, stacked, the active one on top. Which one is active is read by
+/// each space's own slot, so a switch re-runs the two slots that change and nothing above them.
+private struct SpacesGrid: View {
+    var model: AppModel
+    let windowID: String
     /// The grid's size when each space was last on screen, by space id.
     @State private var sizes: [String: CGSize] = [:]
     /// The grid's size now.
     @State private var gridSize: CGSize = .zero
 
     var body: some View {
-        // A window with no spaces has nothing to list beside the palette it shows.
-        let sidebar = model.sidebarOpen(in: windowID) && !model.spaces(in: windowID).isEmpty
-        HStack(alignment: .top, spacing: 10) {
-            if sidebar {
-                SpacesSidebar(model: model, windowID: windowID)
-                    .frame(width: 230)
-            }
-            grid(sidebar: sidebar)
-        }
-    }
-
-    private func grid(sidebar _: Bool) -> some View {
         let held = model.spaces(in: windowID)
-        let active = model.active(in: windowID)
-        return VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
             if let error = model.layoutError {
                 LayoutErrorLabel(error: error)
             }
             ZStack(alignment: .topLeading) {
                 // A space in a little window is drawn there: one terminal surface has one place.
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
-                    let shown = space.id == active
-                    let kept = shown ? nil : sizes[space.id]
-                    // A hidden space draws at its kept size from a zero-size frame, so it never
-                    // makes the grid wider or taller than the window gives it.
-                    SpaceGrid(model: model, drag: model.gridDrag, space: space)
-                        .environment(\.spaceShown, shown)
-                        .frame(width: kept?.width, height: kept?.height)
-                        .frame(width: kept == nil ? nil : 0, height: kept == nil ? nil : 0, alignment: .topLeading)
-                        .transaction { if !shown { $0.disablesAnimations = true } }
-                        .opacity(shown ? 1 : 0)
-                        .allowsHitTesting(shown)
-                        .accessibilityHidden(!shown)
+                    SpaceSlot(model: model, space: space, kept: sizes[space.id])
                 }
-                if let space = held.first(where: { $0.id == active && model.layout.little(showing: $0.id) != nil }) {
-                    LittlePlaceholder(model: model, space: space)
-                }
+                ActiveLittlePlaceholder(model: model, windowID: windowID)
                 if held.isEmpty {
                     NoSpaces(model: model, windowID: windowID)
                 }
@@ -63,14 +65,49 @@ struct SpacesView: View {
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
                 gridSize = size
                 // The active space follows the grid; one never shown yet takes the size it would have had.
-                if let active { sizes[active] = size }
-                for space in held where sizes[space.id] == nil { sizes[space.id] = size }
+                if let active = model.active(in: windowID) { sizes[active] = size }
+                for space in model.spaces(in: windowID) where sizes[space.id] == nil { sizes[space.id] = size }
             }
             .onChange(of: held.map(\.id)) { _, ids in
                 sizes = sizes.filter { ids.contains($0.key) }
                 guard gridSize != .zero else { return }
                 for id in ids where sizes[id] == nil { sizes[id] = gridSize }
             }
+        }
+    }
+}
+
+/// One space in the stack. Shown, it fills the grid; hidden, it draws nothing and keeps the size
+/// it last had on screen (`kept`) from a zero-size frame, so it never makes the grid wider or
+/// taller than the window gives it, and a resize lays out the active space's panes alone.
+private struct SpaceSlot: View {
+    var model: AppModel
+    let space: SpaceInfo
+    let kept: CGSize?
+
+    var body: some View {
+        let shown = model.shownFlag(space.id).shown
+        let kept = shown ? nil : kept
+        SpaceGrid(model: model, drag: model.gridDrag, space: space)
+            .environment(\.spaceShown, shown)
+            .frame(width: kept?.width, height: kept?.height)
+            .frame(width: kept == nil ? nil : 0, height: kept == nil ? nil : 0, alignment: .topLeading)
+            .transaction { if !shown { $0.disablesAnimations = true } }
+            .opacity(shown ? 1 : 0)
+            .allowsHitTesting(shown)
+            .accessibilityHidden(!shown)
+    }
+}
+
+/// Where the active space would be when a little window draws it.
+private struct ActiveLittlePlaceholder: View {
+    var model: AppModel
+    let windowID: String
+
+    var body: some View {
+        if let active = model.active(in: windowID), model.layout.little(showing: active) != nil,
+           let space = model.spaces.first(where: { $0.id == active }) {
+            LittlePlaceholder(model: model, space: space)
         }
     }
 }
@@ -564,6 +601,45 @@ struct PaneView: View {
     }
 }
 
+/// The pane menu, shared by the header's right-click and its ⋯ button so the two never differ. A
+/// view of its own, so what it reads (the windows and spaces a pane can move to, which change on
+/// every space switch) re-runs this menu and never the header around it.
+struct PaneMenuItems: View {
+    var model: AppModel
+    let paneId: String
+    let kind: PaneKind
+
+    @ViewBuilder var body: some View {
+        let items = model.headerMenu(for: paneId, kind: kind)
+        ForEach(items.filter { !$0.id.hasPrefix("move-space:") && !$0.id.hasPrefix("kind:") }, id: \.id) { item in
+            if item.id == "close" { Divider() }
+            if item.id == "move-new-space" {
+                changeTypeMenu(items)
+                Divider()
+                MovePaneMenu(model: model, pane: paneId)
+            }
+            Button(item.title, role: item.id == "close" ? .destructive : nil) {
+                if item.id == "close" { model.askClosePane(paneId) } else { model.runHeaderMenu(item.id, pane: paneId) }
+            }
+            .disabled(!item.enabled)
+        }
+    }
+
+    @ViewBuilder private func changeTypeMenu(_ items: [AppModel.HeaderMenuItem]) -> some View {
+        let kinds = items.filter { $0.id.hasPrefix("kind:") }
+        if !kinds.isEmpty {
+            Menu("Change Type") {
+                ForEach(kinds, id: \.id) { item in
+                    Button(item.title.replacingOccurrences(of: "Change Type ▸ ", with: "")) {
+                        model.runHeaderMenu(item.id, pane: paneId)
+                    }
+                    .disabled(!item.enabled)
+                }
+            }
+        }
+    }
+}
+
 struct PaneHeader: View {
     var model: AppModel
     let paneId: String
@@ -633,7 +709,7 @@ struct PaneHeader: View {
                 .disabled(!zoom.enabled)
                 .help(zoom.title)
                 .accessibilityLabel(zoom.title)
-            Menu { menuContent } label: { Image(systemName: "ellipsis") }
+            Menu { PaneMenuItems(model: model, paneId: paneId, kind: kind) } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
@@ -646,7 +722,7 @@ struct PaneHeader: View {
         .frame(height: 28)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.toggleZoom(paneId) }
-        .contextMenu { menuContent }
+        .contextMenu { PaneMenuItems(model: model, paneId: paneId, kind: kind) }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
         // previews the result and the daemon changes the tree once the pointer is released.
         .gesture(
@@ -661,37 +737,6 @@ struct PaneHeader: View {
                     model.endPaneDrag()
                 }
         )
-    }
-
-    /// The pane menu, shared by the header's right-click and its ⋯ button so the two never differ.
-    @ViewBuilder private var menuContent: some View {
-        let items = model.headerMenu(for: paneId, kind: kind)
-        ForEach(items.filter { !$0.id.hasPrefix("move-space:") && !$0.id.hasPrefix("kind:") }, id: \.id) { item in
-            if item.id == "close" { Divider() }
-            if item.id == "move-new-space" {
-                changeTypeMenu(items)
-                Divider()
-                MovePaneMenu(model: model, pane: paneId)
-            }
-            Button(item.title, role: item.id == "close" ? .destructive : nil) {
-                if item.id == "close" { close() } else { model.runHeaderMenu(item.id, pane: paneId) }
-            }
-            .disabled(!item.enabled)
-        }
-    }
-
-    @ViewBuilder private func changeTypeMenu(_ items: [AppModel.HeaderMenuItem]) -> some View {
-        let kinds = items.filter { $0.id.hasPrefix("kind:") }
-        if !kinds.isEmpty {
-            Menu("Change Type") {
-                ForEach(kinds, id: \.id) { item in
-                    Button(item.title.replacingOccurrences(of: "Change Type ▸ ", with: "")) {
-                        model.runHeaderMenu(item.id, pane: paneId)
-                    }
-                    .disabled(!item.enabled)
-                }
-            }
-        }
     }
 
     private func headerButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {

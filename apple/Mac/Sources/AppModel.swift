@@ -53,16 +53,23 @@ final class AppModel {
     /// whether to commit; the default always does.
     @discardableResult
     func editWindows<R>(commit: (R, _ changed: Bool) -> Bool = { _, _ in true }, _ change: (inout WindowLayout) -> R) -> R {
-        let before = layout
-        let result = change(&layout)
-        if commit(result, layout != before) { commitWindows() }
+        // Observation counts every write, so an edit that changes nothing leaves `layout` unwritten:
+        // a write would re-run every view that reads the windows.
+        var next = layout
+        let result = change(&next)
+        let changed = next != layout
+        if changed { layout = next }
+        if commit(result, changed) { commitWindows() }
         return result
     }
 
     /// Apply `change` and save the layout without touching the windows or surfaces: only the
     /// focused window or a sidebar moved.
     func editLayoutSilently(_ change: (inout WindowLayout) -> Void) {
-        change(&layout)
+        var next = layout
+        change(&next)
+        guard next != layout else { return }
+        layout = next
         layout.save()
     }
 
@@ -257,6 +264,13 @@ final class AppModel {
     /// switch it started once the click lands, until the window layout that shows it is drawn.
     @ObservationIgnored var spacePressAt: TimeInterval?
     @ObservationIgnored var pendingSwitch: (space: String, pressAt: TimeInterval)?
+    /// The last switch a press made: the space, and ms from the mouse-down to the window layout
+    /// that shows it, to the first display frame after it (the selection and the title) and to the
+    /// frame after the grid shows the space. The debug state's `last_switch`.
+    @ObservationIgnored var lastSwitch: (space: String, windowsMs: Int, frameMs: Int?, gridMs: Int?)?
+    /// Whether each space is on screen, one observable flag per space (`shownFlag`), so a switch
+    /// re-runs the views of the two spaces it changes and no other.
+    @ObservationIgnored var shownFlags: [String: ShownFlag] = [:]
     @ObservationIgnored var cardFrames: [String: CGRect] = [:]
     /// Each popover row, by its card's key (a window id or `MenuBarWindow.backgroundKey`) and space id, in the popover's top-left space.
     @ObservationIgnored var popoverRowFrames: [String: [String: CGRect]] = [:]
@@ -529,7 +543,10 @@ final class AppModel {
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.
         // The first report after a connect has nothing to move from, so it applies without animation.
         let animated = !old.isEmpty && !(old.count == spaces.count && zip(old, spaces).allSatisfy { $0.root.sameShape(as: $1.root) })
-        if animated {
+        // A report that changes no space (a focus moved to another space, which this window
+        // layout already shows) writes nothing, so no view that reads the spaces runs again.
+        if spaces == old {
+        } else if animated {
             animateLayout { self.spaces = spaces }
         } else {
             self.spaces = spaces
@@ -551,7 +568,7 @@ final class AppModel {
         }
         refreshCommandPalette()
         let held = Set(spaces.flatMap { $0.allPanes.map { $0.id } })
-        rawContextPanes.formIntersection(held)
+        if !rawContextPanes.isSubset(of: held) { rawContextPanes.formIntersection(held) }
         paneFrames = paneFrames.filter { held.contains($0.key) }
         paneBodyFrames = paneBodyFrames.filter { held.contains($0.key) }
         // A palette is for the pane as it was when it opened: a pane that left, or that something

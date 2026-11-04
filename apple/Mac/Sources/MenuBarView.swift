@@ -26,6 +26,19 @@ struct MenuBarLabel: View {
     }
 }
 
+/// The status item's image. A view of its own on two counts, so a window layout change that
+/// leaves both the same (every space switch) neither makes a new image nor redraws the status item,
+/// which costs a round trip to the window server.
+private struct MenuBarGlyph: View {
+    let background: Int
+    let waiting: Int
+
+    var body: some View {
+        Image(nsImage: MenuBarIcon.image(background: background))
+            .accessibilityLabel(MenuBarLabel.accessibility(background: background, waiting: waiting))
+    }
+}
+
 /// What the menu bar item opens: the server, the pairing code and settings, a card per window
 /// listing its spaces, a Background card for the spaces no window shows, and New Window.
 struct MenuBarPopover: View {
