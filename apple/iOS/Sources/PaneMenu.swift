@@ -35,8 +35,10 @@ struct PaneMenu: View {
                 Button("Empty", systemImage: "square.dashed") { changeKind { model.setKind(pane, .empty) } }
                 Button("Terminal", systemImage: "terminal") { changeKind { model.setKind(pane, .terminal) } }
                 ForEach(AgentInfo.pickable(model.agents), id: \.name) { agent in
-                    Button(agent.name.capitalized, systemImage: "bubble.left.and.text.bubble.right") {
+                    Button {
                         changeKind { model.startPane(pane, .agent, agent: agent.name) }
+                    } label: {
+                        AgentLogo.label(agent.name.capitalized, agent: agent.name)
                     }
                 }
                 Button("Artifact…", systemImage: "doc.text") {
