@@ -13,6 +13,19 @@ struct PaneStatusTests {
         #expect(spaces[0].root.panes.map(\.id) == ["p1", "p2"])
     }
 
+    @Test func aWaitingStatusCarriesItsReason() throws {
+        guard case let .statusChanged(_, _, status, spaceStatus) = try ServerMsg.decode(
+            #"{"ev":"status_changed","space":"s1","pane":"p2","status":{"kind":"needs_you","waiting":1,"reason":"Bash: make test"},"space_status":{"kind":"needs_you","waiting":1,"reason":"Bash: make test"}}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(status == .needsYou(waiting: 1, reason: "Bash: make test"))
+        #expect(status?.reason == "Bash: make test")
+        #expect(status?.label == "Needs you: Bash: make test")
+        #expect(status?.caption == "Bash: make test")
+        #expect(PaneStatus.needsYou(waiting: 1).caption == "1 waiting")
+        #expect(spaceStatus?.reason == "Bash: make test")
+        #expect(PaneStatus.needsYou(waiting: 2).label == "Needs you, 2 waiting")
+    }
+
     @Test func aLayoutWithoutStatusesHasNone() throws {
         let text = #"{"ev":"spaces","spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","focus":"p1","root":{"node":"pane","id":"p1","kind":"empty"}}]}"#
         guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }

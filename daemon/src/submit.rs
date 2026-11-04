@@ -28,8 +28,9 @@ const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 /// The gap between the text and Enter, so a TUI with bracketed paste reads them as two reads.
 const ENTER_DELAY: Duration = Duration::from_millis(100);
 
-/// The text typed into an agent: one line, no control characters, cut to [`MAX_MESSAGE`].
-fn one_line(summary: &str) -> String {
+/// `summary` as one line with no control characters, cut to `max` characters: the text typed into
+/// an agent ([`MAX_MESSAGE`]), or a waiting agent's reason.
+pub(crate) fn one_line(summary: &str, max: usize) -> String {
     let line: String = summary
         .chars()
         .map(|c| {
@@ -41,7 +42,7 @@ fn one_line(summary: &str) -> String {
         })
         .filter(|c| !c.is_control())
         .collect();
-    line.chars().take(MAX_MESSAGE).collect()
+    line.chars().take(max).collect()
 }
 
 impl AppState {
@@ -93,7 +94,10 @@ impl AppState {
             let text = format!(
                 "[{}] {}",
                 artifact.name(),
-                one_line(value["summary"].as_str().unwrap_or("answers sent"))
+                one_line(
+                    value["summary"].as_str().unwrap_or("answers sent"),
+                    MAX_MESSAGE,
+                )
             );
             let result = self.type_into(target, &text).await;
             tracing::info!(%pane, post = artifact.name(), %target, ok = result.is_ok(), chars = text.len(), "page send typed into the agent");

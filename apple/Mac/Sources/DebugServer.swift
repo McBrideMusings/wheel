@@ -1741,7 +1741,10 @@ final class DebugServer {
     private func statusJSON(_ status: PaneStatus?) -> Any {
         guard let status else { return NSNull() }
         var o: [String: Any] = ["kind": status.rank.rawValue, "drawn": model.statusDots.contains(status.rank), "label": status.label]
-        if case let .needsYou(waiting) = status { o["waiting"] = waiting }
+        if case let .needsYou(waiting, reason) = status {
+            o["waiting"] = waiting
+            o["reason"] = reason ?? NSNull()
+        }
         return o
     }
 

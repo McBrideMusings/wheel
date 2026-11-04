@@ -1,5 +1,4 @@
 {
-  "statusLine": { "type": "command", "command": "wheel pane statusline" },
   "hooks": {
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "wheel pane report-conversation >/dev/null 2>&1 || true" }] }
@@ -7,10 +6,13 @@
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "wheel pane report working >/dev/null 2>&1 || true" }] }
     ],
+    "PermissionRequest": [
+      { "hooks": [{ "type": "command", "command": "wheel pane report needs_you --hook-input >/dev/null 2>&1 || true" }] }
+    ],
     "Notification": [
       {
-        "matcher": "permission_prompt",
-        "hooks": [{ "type": "command", "command": "wheel pane report needs_you >/dev/null 2>&1 || true" }]
+        "matcher": "elicitation_dialog",
+        "hooks": [{ "type": "command", "command": "wheel pane report needs_you --hook-input >/dev/null 2>&1 || true" }]
       }
     ],
     "PostToolUse": [

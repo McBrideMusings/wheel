@@ -3,18 +3,22 @@ import Foundation
 /// What a pane or space asks of the person (proto/src/lib.rs PaneStatus): the daemon computes it,
 /// so every client draws the same thing.
 public enum PaneStatus: Sendable, Equatable, Decodable {
-    /// `waiting` permission requests wait on a person; a space adds up its panes'.
-    case needsYou(waiting: Int)
+    /// `waiting` permission requests wait on a person; a space adds up its panes'. `reason` is what
+    /// the agent waits on, in words, when it said ("Bash: make test"); a space carries its first
+    /// pane's.
+    case needsYou(waiting: Int, reason: String? = nil)
     case stopped
     case working
     case idle
 
-    private enum K: String, CodingKey { case kind, waiting }
+    private enum K: String, CodingKey { case kind, waiting, reason }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
-        case "needs_you": self = .needsYou(waiting: try c.decodeIfPresent(Int.self, forKey: .waiting) ?? 1)
+        case "needs_you":
+            self = .needsYou(waiting: try c.decodeIfPresent(Int.self, forKey: .waiting) ?? 1,
+                             reason: try c.decodeIfPresent(String.self, forKey: .reason))
         case "stopped": self = .stopped
         case "working": self = .working
         case "idle": self = .idle
@@ -33,20 +37,28 @@ public enum PaneStatus: Sendable, Equatable, Decodable {
         }
     }
 
-    /// What VoiceOver reads for the dot: "Needs you, 2 waiting", "Stopped", "Working", "Idle".
+    /// What VoiceOver reads for the dot, and its tooltip: "Needs you, 2 waiting", "Needs you: Bash:
+    /// make test", "Stopped", "Working", "Idle".
     public var label: String {
         switch self {
-        case let .needsYou(waiting): "Needs you, \(waiting) waiting"
+        case let .needsYou(_, reason?): "Needs you: \(reason)"
+        case let .needsYou(waiting, nil): "Needs you, \(waiting) waiting"
         case .stopped: "Stopped"
         case .working: "Working"
         case .idle: "Idle"
         }
     }
 
+    /// What a waiting agent waits on, when it said.
+    public var reason: String? {
+        if case let .needsYou(_, reason) = self { reason } else { nil }
+    }
+
     /// The words a sidebar row carries beside its name, for the two ranks that have any.
     public var caption: String? {
         switch self {
-        case let .needsYou(waiting): "\(waiting) waiting"
+        case let .needsYou(_, reason?): reason
+        case let .needsYou(waiting, nil): "\(waiting) waiting"
         case .stopped: "stopped"
         case .working, .idle: nil
         }

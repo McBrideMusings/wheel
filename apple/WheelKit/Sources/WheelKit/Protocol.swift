@@ -1412,25 +1412,33 @@ public enum PaneMoveTarget: Sendable, Equatable {
 public struct ProcInfo: Codable, Equatable, Sendable, Identifiable {
     public let pid: UInt32
     public let ppid: UInt32
-    public let pane: String
+    /// None for a detached process whose pane is unknown or has closed.
+    public let pane: String?
     public let agent: String?
+    /// The command as run (for a Claude Code Bash-tool shell, the command inside it).
     public let name: String
     public let command: String
     public let cpu: Double
     public let memKb: UInt64
     public let ageSecs: UInt64
     public let cwd: String?
+    /// How it came to run: "typed in the terminal", "Bash tool", "LSP", "started by claude".
+    public let how: String?
+    /// For a process no pane holds any more, what ties it to the space.
+    public let detached: String?
     public var id: UInt32 { pid }
 
     enum CodingKeys: String, CodingKey {
-        case pid, ppid, pane, agent, name, command, cpu, cwd
+        case pid, ppid, pane, agent, name, command, cpu, cwd, how, detached
         case memKb = "mem_kb", ageSecs = "age_secs"
     }
 
-    public init(pid: UInt32, ppid: UInt32, pane: String, agent: String? = nil, name: String, command: String,
-                cpu: Double, memKb: UInt64, ageSecs: UInt64, cwd: String? = nil) {
+    public init(pid: UInt32, ppid: UInt32, pane: String?, agent: String? = nil, name: String, command: String,
+                cpu: Double, memKb: UInt64, ageSecs: UInt64, cwd: String? = nil, how: String? = nil,
+                detached: String? = nil) {
         self.pid = pid; self.ppid = ppid; self.pane = pane; self.agent = agent; self.name = name
         self.command = command; self.cpu = cpu; self.memKb = memKb; self.ageSecs = ageSecs; self.cwd = cwd
+        self.how = how; self.detached = detached
     }
 }
 

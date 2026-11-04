@@ -241,6 +241,7 @@ async fn actions_and_app_lines_reach_the_store_once_with_their_labels() {
             req: Some(5),
             pane: "no-such-pane".into(),
             status: wheel_proto::ReportedStatus::Working,
+            reason: None,
         },
     )
     .await;

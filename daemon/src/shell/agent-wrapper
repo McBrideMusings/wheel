@@ -10,7 +10,8 @@ IFS=:
 for dir in $PATH; do
   [ "$dir" = "$self_dir" ] && continue
   [ -x "$dir/@NAME@" ] && [ ! -d "$dir/@NAME@" ] || continue
-  grep -q '^# wheel-agent-wrapper$' "$dir/@NAME@" 2>/dev/null && continue
+  # Only the head: the real program can be a binary of hundreds of megabytes.
+  head -c 512 "$dir/@NAME@" 2>/dev/null | grep -q '^# wheel-agent-wrapper$' && continue
   real="$dir/@NAME@"; break
 done
 IFS=$old_ifs
