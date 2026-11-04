@@ -119,15 +119,21 @@ fn main() {
 /// On macOS, puts an Info.plist in the binary's `__TEXT,__info_plist` section, so the system
 /// names wheeld (bundle id, "Wheel Server") in Privacy & Security and `tccutil reset <service>
 /// <bundle id>` finds it; without one wheeld is signed by its file name alone. The id comes from
-/// `WHEELD_BUNDLE_ID` (the app's embed script sets the dev daemon's), default
-/// `com.piercemakes.wheel.daemon`.
+/// `WHEELD_BUNDLE_ID` when set; otherwise the dev daemon's `com.piercemakes.wheel.dev.daemon` for
+/// a debug build and `com.piercemakes.wheel.daemon` for a release build, the two ids the app's
+/// embed script gives them. The default follows the profile, so a plain `cargo build` and the
+/// Xcode build phase make the same binary and share one cargo cache.
 fn embed_bundle_identity(manifest: &Path) {
     println!("cargo:rerun-if-env-changed=WHEELD_BUNDLE_ID");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
-    let id = std::env::var("WHEELD_BUNDLE_ID")
-        .unwrap_or_else(|_| "com.piercemakes.wheel.daemon".to_string());
+    let default = if std::env::var("PROFILE").as_deref() == Ok("release") {
+        "com.piercemakes.wheel.daemon"
+    } else {
+        "com.piercemakes.wheel.dev.daemon"
+    };
+    let id = std::env::var("WHEELD_BUNDLE_ID").unwrap_or_else(|_| default.to_string());
     let name = if id.contains(".dev.") {
         "Wheel Dev Server"
     } else {

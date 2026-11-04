@@ -555,7 +555,6 @@ final class DebugServer {
                 }
                 Self.spin(0.06)
             }
-            model.links.closePreview(session: session)
             let start = CGPoint(x: x, y: y)
             post(.leftMouseDown, start)
             if let end {
@@ -571,9 +570,8 @@ final class DebugServer {
             NSPasteboard.general.clearContents()
             selection.copy(in: chat)
             let copied = NSPasteboard.general.string(forType: .string) ?? ""
-            let preview = model.links.previews[session]?.path
-            Log.info("debug: mouse \(chat.name) (\(x),\(y))\(end.map { " -> (\($0.x),\($0.y))" } ?? "")\(flags.isEmpty ? "" : " shift"): copied \(String(reflecting: copied)), preview \(preview ?? "none")")
-            let answer: [String: Any] = ["pasteboard": copied, "preview": preview ?? NSNull(), "key_window": window.isKeyWindow, "app_active": NSApp.isActive,
+            Log.info("debug: mouse \(chat.name) (\(x),\(y))\(end.map { " -> (\($0.x),\($0.y))" } ?? "")\(flags.isEmpty ? "" : " shift"): copied \(String(reflecting: copied))")
+            let answer: [String: Any] = ["pasteboard": copied, "key_window": window.isKeyWindow, "app_active": NSApp.isActive,
                                         "anchor": selection.anchor.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull(),
                                         "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys])) ?? Data())
