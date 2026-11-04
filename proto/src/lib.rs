@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -757,7 +757,10 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
-        dir: Dir,
+        /// The side of `pane` the new pane goes on. With none and no `site`, `panes.placement`
+        /// chooses it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<Dir>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -767,6 +770,10 @@ pub enum ClientMsg {
         /// Ask every client to show the new pane (`space_focused`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
+        /// Create the pane popped out or backgrounded instead of beside `pane`, as `pane_split`'s
+        /// `site` does. Incompatible with `dir`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<PaneSite>,
     },
     /// Run `command` in a new terminal pane split right of `pane`, in the space's directory. Replies
     /// `created` with the new pane's id.
@@ -778,6 +785,10 @@ pub enum ClientMsg {
         /// Ask every client to show the new pane (`space_focused`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
+        /// Create the pane popped out or backgrounded instead of right of `pane`, as
+        /// `pane_split`'s `site` does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<PaneSite>,
     },
     /// The folders `agent` ("claude", "codex" or "pi") could run with as its home on the daemon's
     /// machine, each with what is in it, and with `path` what that one folder is (an empty `path`
