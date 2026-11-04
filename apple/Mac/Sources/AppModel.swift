@@ -337,44 +337,18 @@ final class AppModel {
     @ObservationIgnored private var terminalControllers: [String: TerminalController] = [:]
     /// How each space's terminals draw, from its `terminal.*` settings.
     @ObservationIgnored private(set) var terminalLooks: [String: TerminalAppearance] = [:]
-    /// Padding inside the terminal's own background, and the look's font, cursor and colours.
     /// Ghostty's default keybinds are cleared, so a ⌘ key Wheel's keymap leaves unbound reaches the
     /// program in the terminal; the keys the surface still handles itself (copy, paste, select
-    /// all, font size) are bound again below.
-    private static func terminalConfiguration(_ look: TerminalAppearance) -> TerminalConfiguration {
-        TerminalConfiguration(startingFrom: .default) {
-            $0.withWindowPaddingX(10)
-            $0.withWindowPaddingY(8)
-            $0.withCustom("keybind", "clear")
-            for bind in [
-                "super+c=copy_to_clipboard",
-                "super+v=paste_from_clipboard",
-                "super+a=select_all",
-                "super+equal=increase_font_size:1",
-                "super+plus=increase_font_size:1",
-                "super+minus=decrease_font_size:1",
-                "super+zero=reset_font_size",
-            ] {
-                $0.withCustom("keybind", bind)
-            }
-            for line in look.configLines { $0.withCustom(line.key, line.value) }
-        }
-    }
-
-    /// Ghostty's own light/dark pair for the default theme, else the named theme's two palettes.
-    private static func terminalTheme(_ look: TerminalAppearance) -> TerminalTheme {
-        func colours(_ palette: TerminalPalette) -> TerminalConfiguration {
-            TerminalConfiguration {
-                $0.withBackground(palette.background)
-                $0.withForeground(palette.foreground)
-                for (index, colour) in palette.ansi.enumerated() { $0.withPalette(index, color: colour) }
-            }
-        }
-        guard let light = TerminalPalette.of(look.theme, dark: false), let dark = TerminalPalette.of(look.theme, dark: true) else {
-            return .default
-        }
-        return TerminalTheme(light: colours(light), dark: colours(dark))
-    }
+    /// all, font size) are bound again.
+    private static let terminalKeybinds = [
+        "super+c=copy_to_clipboard",
+        "super+v=paste_from_clipboard",
+        "super+a=select_all",
+        "super+equal=increase_font_size:1",
+        "super+plus=increase_font_size:1",
+        "super+minus=decrease_font_size:1",
+        "super+zero=reset_font_size",
+    ]
 
     /// The controller for `space`, made on first use from the look held for it (the defaults until
     /// its settings arrive, then restyled live).
@@ -382,7 +356,7 @@ final class AppModel {
         let key = space ?? ""
         if let held = terminalControllers[key] { return held }
         let look = terminalLooks[key] ?? .standard
-        let made = TerminalController(configuration: Self.terminalConfiguration(look), theme: Self.terminalTheme(look))
+        let made = TerminalController(configuration: TerminalStyle.configuration(look, keybinds: Self.terminalKeybinds), theme: TerminalStyle.theme(look))
         terminalControllers[key] = made
         return made
     }
@@ -1892,8 +1866,8 @@ final class AppModel {
         terminalLooks[space] = look
         Log.info("terminal appearance for \(space): \(look.fontFamily.isEmpty ? "own font" : look.fontFamily) \(look.fontSize)pt, line \(look.lineHeight), \(look.theme.rawValue), cursor \(look.cursor.rawValue)\(look.cursorBlink ? " blinking" : "")")
         guard let controller = terminalControllers[space] else { return }
-        let a = controller.setTerminalConfiguration(Self.terminalConfiguration(look))
-        let b = controller.setTheme(Self.terminalTheme(look))
+        let a = controller.setTerminalConfiguration(TerminalStyle.configuration(look, keybinds: Self.terminalKeybinds))
+        let b = controller.setTheme(TerminalStyle.theme(look))
         Log.info("terminal controller for \(space) restyled (config \(a), theme \(b))")
     }
 
