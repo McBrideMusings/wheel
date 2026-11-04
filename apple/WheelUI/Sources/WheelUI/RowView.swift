@@ -204,7 +204,7 @@ struct UserMessage: View {
         let body = Text(text)
             .font(look.body)
             .lineSpacing(look.lineSpacing(for: look.size))
-            .selectableText(.plain(text), id: row.id, chat: chat, style: look.bodyProse)
+            .selectableText(.plain(text), source: text, id: row.id, chat: chat, style: look.bodyProse)
         switch look.messageStyle {
         case .bubble:
             body
@@ -295,6 +295,24 @@ enum PreparedReply {
     }
 }
 
+/// What each reply's copy button copies, by session and row, so the debug server can press it.
+@MainActor
+public final class ReplyCopyRegistry {
+    public static let shared = ReplyCopyRegistry()
+    private var markdown: [String: [Int: String]] = [:]
+
+    func set(_ text: String, agent: String, row: Int) { markdown[agent, default: [:]][row] = text }
+    func forget(agent: String, row: Int) { markdown[agent]?[row] = nil }
+
+    /// Press the copy button of reply `row`: its Markdown goes to the pasteboard. False when that
+    /// reply is not on screen.
+    public func press(agent: String, row: Int) -> Bool {
+        guard let text = markdown[agent]?[row] else { return false }
+        copyToPasteboard(text)
+        return true
+    }
+}
+
 /// A reply: the agent's Markdown at body size, with headings kept close to it so a `#` does not
 /// shout over the conversation. The copy button sits under the last reply of a finished turn,
 /// and under any other reply while the pointer is over it.
@@ -358,6 +376,7 @@ struct AgentText: View {
                 .textual.emojiAttachmentLoader(SwatchLoader(side: (look.size * 0.85).rounded()))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.openURL, OpenURLAction { url in
+                    UILog.info("reply \(id) of \(chat.name): link tapped \(url.absoluteString)")
                     if let iso = ChatRich.timestamp(of: url) {
                         timeShown = iso
                         return .handled
@@ -367,7 +386,7 @@ struct AgentText: View {
                     return .handled
                 })
                 .modifier(InlineCodeBoxes(prose: look.inlineCode == .box ? reply.prose : .plain("")))
-                .selectableText(reply.prose, id: id, chat: chat, style: look.bodyProse)
+                .selectableText(reply.prose, source: text, id: id, chat: chat, style: look.bodyProse)
                 .drawnText(reply.prose, id: id, chat: chat)
                 .chatLinkHover(reply.prose, id: id, chat: chat)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
@@ -378,6 +397,9 @@ struct AgentText: View {
             if hovering && !copyable { copy.offset(y: -2) }
         }
         .onHover { hovering = $0 }
+        .onAppear { ReplyCopyRegistry.shared.set(text, agent: chat.name, row: id) }
+        .onChange(of: text) { ReplyCopyRegistry.shared.set(text, agent: chat.name, row: id) }
+        .onDisappear { ReplyCopyRegistry.shared.forget(agent: chat.name, row: id) }
         .task(id: drawn.pending) { ChatImageRegistry.shared.waiting(drawn.pending, agent: agent, row: row) }
         .popover(item: Binding(get: { timeShown.map(TimeStamp.init) }, set: { timeShown = $0?.iso })) { stamp in
             Text(ChatRich.localTime(stamp.iso) ?? stamp.iso)

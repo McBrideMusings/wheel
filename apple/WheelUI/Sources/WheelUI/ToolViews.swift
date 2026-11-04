@@ -506,7 +506,7 @@ struct ReasoningLine: View {
                 Text(shown)
                     .font(look.line)
                     .foregroundStyle(.secondary)
-                    .selectableText(.plain(expanded ? text : ""), id: row.id, chat: chat, style: look.lineProse)
+                    .selectableText(.plain(expanded ? text : ""), source: text, id: row.id, chat: chat, style: look.lineProse)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 20)
             }

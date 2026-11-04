@@ -172,7 +172,7 @@ extension View {
 struct ChatLinkHover: ViewModifier {
     let prose: RenderedProse
     let id: Int
-    let chat: SessionChat
+    let chat: AgentChat
 
     @ObservedObject private var registry = ChatControlRegistry.shared
     @State private var pointer: Int?
@@ -240,7 +240,7 @@ struct ChatLinkHover: ViewModifier {
 }
 
 extension View {
-    func chatLinkHover(_ prose: RenderedProse, id: Int, chat: SessionChat) -> some View {
+    func chatLinkHover(_ prose: RenderedProse, id: Int, chat: AgentChat) -> some View {
         modifier(ChatLinkHover(prose: prose, id: id, chat: chat))
     }
 }
