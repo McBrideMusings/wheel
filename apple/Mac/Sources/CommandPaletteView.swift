@@ -41,7 +41,7 @@ struct CommandPaletteOverlay: View {
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(palette.mode == .newSpace ? "Folder name or path" : "Run an action, open a space or a folder",
+            TextField(palette.mode == .newSpace ? "Folder name or path" : palette.verb?.prompt ?? "Type an action, a space or a folder",
                       text: Binding(get: { palette.query }, set: { model.commandPaletteTyped($0) }))
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
@@ -54,7 +54,7 @@ struct CommandPaletteOverlay: View {
                     return .handled
                 }
                 .onKeyPress(.delete) {
-                    guard palette.mode == .newSpace, palette.query.isEmpty else { return .ignored }
+                    guard palette.isStaged, palette.query.isEmpty else { return .ignored }
                     model.commandPaletteBack()
                     return .handled
                 }
@@ -109,6 +109,8 @@ private struct PaletteRow: View {
         case .recent: "clock.arrow.circlepath"
         case .openFolder: "folder.badge.plus"
         case .newSpaceMode: "plus.rectangle.on.folder"
+        case .verb: "chevron.right.circle"
+        case .target: "xmark.rectangle"
         case .folder: "folder"
         case .missing: "exclamationmark.triangle"
         }

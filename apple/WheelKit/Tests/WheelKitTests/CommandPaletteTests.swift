@@ -178,4 +178,45 @@ struct CommandPaletteTests {
         q.type("new space reddit")
         #expect(q.rows.first?.item == .newSpaceHere(dir: "/Work/reddit-protos", name: "reddit-protos"))
     }
+
+    private func verbPalette() -> CommandPalette {
+        var p = CommandPalette(verbs: true)
+        p.list(
+            spaces: [.init(id: "s1", name: "wheel", dir: "/w"), .init(id: "s2", name: "etv", dir: "/e")],
+            panes: [.init(id: "p1", space: "s1", spaceName: "wheel", name: "Terminal")],
+            recents: [RecentDir(dir: "/old", openedMs: 1)],
+            actions: Self.actions + [PaletteAction(id: "split-right", title: "Split Right"),
+                                     PaletteAction(id: "pane-browser", title: "Show a Browser in This Pane")]
+        )
+        return p
+    }
+
+    @Test func theFirstListIsTheVerbsThenTheActionsNoVerbClaims() {
+        let ids = verbPalette().rows.map(\.id)
+        #expect(ids.prefix(7) == ["verb:switchSpace", "verb:closeSpace", "verb:goToPane", "verb:closePane",
+                                  "verb:newPane", "verb:changePaneType", "action:new-space"])
+        #expect(!ids.contains("space:s1") && !ids.contains("action:split-right"))
+    }
+
+    @Test func aVerbListsWhatItActsOnAndBackingOutReturnsToTheVerbs() {
+        var p = verbPalette()
+        p.enter(.switchSpace)
+        #expect(p.rows.map(\.id) == ["space:s1", "space:s2"])
+        p.type("etv")
+        #expect(p.rows.map(\.id) == ["space:s2"])
+        #expect(p.isStaged)
+        p.leaveStage()
+        #expect(p.verb == nil && p.rows.first?.id == "verb:switchSpace")
+    }
+
+    @Test func aFolderNameFindsWhatCanBeDoneToItAndAVerbNameFindsWhatItActsOn() {
+        var p = verbPalette()
+        p.type("etv")
+        #expect(p.rows.map(\.id).contains("new-space-here:/e"))
+        #expect(p.rows.map(\.id).contains("space:s2"))
+        p.type("close space")
+        let ids = p.rows.map(\.id)
+        #expect(ids.contains("verb:closeSpace"))
+        #expect(ids.contains("target:closeSpace/s1") && ids.contains("target:closeSpace/s2"))
+    }
 }

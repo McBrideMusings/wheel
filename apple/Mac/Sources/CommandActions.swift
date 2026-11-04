@@ -269,7 +269,7 @@ extension KeyChord {
 extension AppModel {
     func openCommandPalette(mode: CommandPalette.Mode = .root) {
         guard commandPalette == nil else { return }
-        commandPalette = CommandPalette(mode: mode)
+        commandPalette = CommandPalette(mode: mode, verbs: true)
         Log.info("command palette: opened in \(mode.rawValue) mode")
         refreshCommandPalette()
         askRecentDirs()
@@ -334,14 +334,14 @@ extension AppModel {
 
     /// Backspace on an empty field: back to the root list.
     func commandPaletteBack() {
-        guard commandPalette?.mode == .newSpace else { return }
-        commandPalette?.leaveNewSpace()
+        guard commandPalette?.isStaged == true else { return }
+        commandPalette?.leaveStage()
         Log.info("command palette: root mode")
     }
 
     /// Esc: leave New Space mode, else close the palette.
     func commandPaletteEscape() {
-        if commandPalette?.mode == .newSpace { return commandPaletteBack() }
+        if commandPalette?.isStaged == true { return commandPaletteBack() }
         closeCommandPalette()
     }
 
@@ -426,6 +426,11 @@ extension AppModel {
         guard let item = commandPalette?.selectedItem else { return }
         // These two keep the palette open: one changes its mode, the other only explains.
         if case .newSpaceMode = item { return enterNewSpaceMode() }
+        if case let .verb(verb) = item {
+            commandPalette?.enter(verb)
+            Log.info("command palette: verb \(verb.rawValue)")
+            return
+        }
         if case .missing = item { return }
         closeCommandPalette()
         Log.info("command palette: run \(item.kind) \(item.id)")
@@ -451,7 +456,13 @@ extension AppModel {
         case .session: break
         case let .recent(dir): createSpace(cwd: dir)
         case let .newSpaceHere(dir, _): createSpace(cwd: dir)
-        case .newSpaceMode: break
+        case .newSpaceMode, .verb: break
+        case let .target(verb, id, _, _):
+            switch verb {
+            case .closeSpace: askCloseSpace(id)
+            case .closePane: askClosePane(id)
+            default: break
+            }
         case let .folder(path, _): createSpace(cwd: path)
         case .missing: break
         }

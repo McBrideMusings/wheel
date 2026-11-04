@@ -1815,6 +1815,7 @@ final class DebugServer {
         return [
             "open": true,
             "mode": palette.mode.rawValue,
+            "verb": palette.verb?.rawValue ?? NSNull(),
             "query": palette.query,
             "rows": palette.rows.map { ["id": $0.item.id, "kind": $0.item.kind, "title": $0.item.title, "detail": $0.item.detail] },
             "selected": palette.rows.isEmpty ? NSNull() : palette.selected as Any,
