@@ -2149,6 +2149,19 @@ pub enum SessionEvent {
     Thought {
         text: String,
     },
+    /// The agent's finished reply block reads `text`, which differs from the chunks it streamed
+    /// for it (something such as a display hook rewrote the finished copy). `streamed` is those
+    /// chunks joined, and is where the reply text ends: put `text` in its place. Never stored; the
+    /// stored transcript already holds `text`.
+    TextRevised {
+        streamed: String,
+        text: String,
+    },
+    /// The same for a block of the agent's reasoning, whose text ends with `streamed`.
+    ThoughtRevised {
+        streamed: String,
+        text: String,
+    },
     ToolCall {
         id: String,
         title: String,

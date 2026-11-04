@@ -142,11 +142,11 @@ public struct Transcript: Sendable, Equatable {
         switch event {
         case .text, .toolCall, .plan, .mode, .turnEnd, .error:
             if let last = lastSettled, case .thought = rows[last].kind, rows[last].open { close(last, at: at) }
-        case .user, .turnStart, .retract, .thought, .toolUpdate, .other:
+        case .user, .turnStart, .retract, .thought, .textRevised, .thoughtRevised, .toolUpdate, .other:
             break
         }
         switch event {
-        case .user, .turnStart, .retract, .other:
+        case .user, .turnStart, .retract, .textRevised, .thoughtRevised, .other:
             break
         default:
             unansweredTurn = nil
@@ -189,6 +189,16 @@ public struct Transcript: Sendable, Equatable {
             } else {
                 let index = append(.thought(chunk), at: at)
                 rows[index].open = true
+            }
+        case let .textRevised(streamed, text):
+            if let last = lastSettled, case let .agent(old) = rows[last].kind,
+               let kept = Self.replacingEnd(of: old, streamed, with: text) {
+                rows[last].kind = .agent(kept)
+            }
+        case let .thoughtRevised(streamed, text):
+            if let last = lastSettled, case let .thought(old) = rows[last].kind,
+               let kept = Self.replacingEnd(of: old, streamed, with: text) {
+                rows[last].kind = .thought(kept)
             }
         case let .toolCall(id, title, kind, status, content):
             // A second call with the same id takes over the id; the earlier row gets no more updates.
@@ -293,6 +303,14 @@ public struct Transcript: Sendable, Equatable {
     private var settledCount: Int { rows.count - queuedTurns.count }
 
     private var lastSettled: Int? { settledCount > 0 ? settledCount - 1 : nil }
+
+    /// `text` with its trailing `end` swapped for `replacement`, compared as UTF-8 bytes the way
+    /// the daemon cut them; nil when `text` does not end with `end`.
+    static func replacingEnd(of text: String, _ end: String, with replacement: String) -> String? {
+        let bytes = Array(text.utf8), tail = Array(end.utf8)
+        guard bytes.count >= tail.count, bytes.suffix(tail.count).elementsEqual(tail) else { return nil }
+        return String(decoding: bytes.dropLast(tail.count), as: UTF8.self) + replacement
+    }
 
     private mutating func close(_ index: Int, at: Date?) {
         rows[index].open = false

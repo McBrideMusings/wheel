@@ -1069,6 +1069,22 @@ impl Session {
                 last.push_str(text);
                 inner.event_bytes += text.len();
             }
+            // A revision rewrites the end of the reply or thought it follows; it is not kept.
+            (
+                Some(SessionEvent::Text { text: last }),
+                SessionEvent::TextRevised { streamed, text },
+            )
+            | (
+                Some(SessionEvent::Thought { text: last }),
+                SessionEvent::ThoughtRevised { streamed, text },
+            ) => {
+                if last.ends_with(streamed.as_str()) {
+                    last.truncate(last.len() - streamed.len());
+                    last.push_str(text);
+                    inner.event_bytes = inner.event_bytes - streamed.len() + text.len();
+                }
+            }
+            (_, SessionEvent::TextRevised { .. } | SessionEvent::ThoughtRevised { .. }) => {}
             _ => {
                 inner.event_bytes += event_bytes(&event.event);
                 inner.events.push_back(event);
@@ -1707,6 +1723,8 @@ fn event_bytes(event: &SessionEvent) -> usize {
         SessionEvent::TurnStart { .. }
         | SessionEvent::TurnEnd { .. }
         | SessionEvent::Retract { .. }
+        | SessionEvent::TextRevised { .. }
+        | SessionEvent::ThoughtRevised { .. }
         | SessionEvent::Mode { .. } => 0,
     }
 }

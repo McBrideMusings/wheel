@@ -21,6 +21,35 @@ struct TranscriptTests {
         ])
     }
 
+    @Test func aRevisionReplacesTheStreamedEndOfTheReplyOnce() {
+        var t = Transcript()
+        t.apply(.text("Before. "))
+        t.apply(.text("See `a.rs`, "))
+        t.apply(.text("then go."))
+        t.apply(.textRevised(streamed: "See `a.rs`, then go.", text: "See `/w/a.rs` , then go."))
+        #expect(t.rows.map(\.kind) == [.agent("Before. See `/w/a.rs` , then go.")])
+    }
+
+    @Test func aRevisionWhoseStreamedTextIsNotTheReplysEndChangesNothing() {
+        var t = Transcript()
+        t.apply(.text("Hello."))
+        t.apply(.textRevised(streamed: "Bye.", text: "Bye!"))
+        #expect(t.rows.map(\.kind) == [.agent("Hello.")])
+    }
+
+    @Test func aThoughtRevisionReplacesTheStreamedEndOfTheThought() {
+        var t = Transcript()
+        t.apply(.thought("pondering `~/x`."))
+        t.apply(.thoughtRevised(streamed: "pondering `~/x`.", text: "pondering `/u/x` ."))
+        #expect(t.rows.map(\.kind) == [.thought("pondering `/u/x` .")])
+    }
+
+    @Test func decodesARevision() throws {
+        let json = #"{"kind":"text_revised","streamed":"a,","text":"a ,"}"#
+        let event = try JSONDecoder().decode(SessionEvent.self, from: Data(json.utf8))
+        #expect(event == .textRevised(streamed: "a,", text: "a ,"))
+    }
+
     @Test func mergesThoughtChunks() {
         var t = Transcript()
         t.apply(.thought("pondering "))

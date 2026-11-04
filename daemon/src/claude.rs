@@ -229,24 +229,40 @@ struct Streamed {
     thought_used: usize,
 }
 
+/// How a whole block compares with what its stream events carried.
+#[derive(Debug, PartialEq)]
+enum Rest<'a> {
+    /// The stream carried all of it.
+    Nothing,
+    /// The stream carried the start; this is the end it left out.
+    Missed(&'a str),
+    /// The whole block is not the streamed text continued: it was rewritten after streaming.
+    /// `streamed` is what the stream carried for it, which the whole block replaces.
+    Revised { streamed: String },
+}
+
 impl Streamed {
-    /// What of a whole block the stream events did not carry. The block follows the blocks of its
-    /// kind already taken from the stream, so its streamed part starts at the used offset.
-    fn take_rest<'a>(&mut self, whole: &'a str, thought: bool) -> &'a str {
+    /// How a whole block differs from what the stream carried for it. The block follows the
+    /// blocks of its kind already taken from the stream, so its streamed part starts at the used
+    /// offset.
+    fn take_rest<'a>(&mut self, whole: &'a str, thought: bool) -> Rest<'a> {
         let (streamed, used) = if thought {
             (&self.thought, &mut self.thought_used)
         } else {
             (&self.text, &mut self.text_used)
         };
         let have = streamed.get(*used..).unwrap_or_default();
-        let n = whole
-            .char_indices()
-            .zip(have.chars())
-            .take_while(|((_, a), b)| a == b)
-            .count();
-        let end = whole.char_indices().nth(n).map_or(whole.len(), |(i, _)| i);
-        *used = (*used + whole.len()).min(streamed.len());
-        &whole[end..]
+        if have.starts_with(whole) {
+            *used += whole.len();
+            Rest::Nothing
+        } else if let Some(rest) = whole.strip_prefix(have) {
+            *used = streamed.len();
+            Rest::Missed(rest)
+        } else {
+            let have = have.to_string();
+            *used = streamed.len();
+            Rest::Revised { streamed: have }
+        }
     }
 }
 
@@ -486,22 +502,42 @@ impl Driver {
                     let whole = block[if thought { "thinking" } else { "text" }]
                         .as_str()
                         .unwrap_or_default();
-                    // The deltas that did arrive are the start of the block; what they missed
-                    // is sent from the whole copy.
-                    let rest = streamed.take_rest(whole, thought);
-                    if !rest.is_empty() {
-                        tracing::warn!(
-                            pid = self.pid,
-                            id,
-                            missed = rest.len(),
-                            "agent's stream events left out part of a block; sent from the whole message"
-                        );
-                        let text = rest.to_string();
-                        self.emit(AgentEvent::Transcript(if thought {
-                            SessionEvent::Thought { text }
-                        } else {
-                            SessionEvent::Text { text }
-                        }));
+                    let event = match streamed.take_rest(whole, thought) {
+                        Rest::Nothing => None,
+                        // The deltas that did arrive are the start of the block; what they
+                        // missed is sent from the whole copy.
+                        Rest::Missed(rest) => {
+                            tracing::warn!(
+                                pid = self.pid,
+                                id,
+                                missed = rest.len(),
+                                "agent's stream events left out part of a block; sent from the whole message"
+                            );
+                            let text = rest.to_string();
+                            Some(if thought {
+                                SessionEvent::Thought { text }
+                            } else {
+                                SessionEvent::Text { text }
+                            })
+                        }
+                        Rest::Revised { streamed } => {
+                            tracing::info!(
+                                pid = self.pid,
+                                id,
+                                streamed = streamed.len(),
+                                whole = whole.len(),
+                                "agent's whole block differs from its stream events; revised"
+                            );
+                            let text = whole.to_string();
+                            Some(if thought {
+                                SessionEvent::ThoughtRevised { streamed, text }
+                            } else {
+                                SessionEvent::TextRevised { streamed, text }
+                            })
+                        }
+                    };
+                    if let Some(event) = event {
+                        self.emit(AgentEvent::Transcript(event));
                     }
                     continue;
                 }
@@ -1187,7 +1223,51 @@ fn iso8601(at: std::time::SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::words;
+    use super::{words, Rest, Streamed};
+
+    fn streamed(text: &str) -> Streamed {
+        Streamed {
+            text: text.into(),
+            ..Streamed::default()
+        }
+    }
+
+    #[test]
+    fn a_whole_block_the_stream_carried_adds_nothing() {
+        let mut s = streamed("Hello there.");
+        assert_eq!(s.take_rest("Hello there.", false), Rest::Nothing);
+    }
+
+    #[test]
+    fn a_whole_block_longer_than_the_stream_sends_only_the_missing_end() {
+        let mut s = streamed("Hello ");
+        assert_eq!(s.take_rest("Hello there.", false), Rest::Missed("there."));
+    }
+
+    #[test]
+    fn a_whole_block_rewritten_after_streaming_replaces_the_streamed_text() {
+        let text = "loads `.envrc`, which sets `~/.claude`. Answer 1A.";
+        let whole = "loads `/w/.envrc` , which sets `/Users/p/.claude` . Answer 1A.";
+        let mut s = streamed(text);
+        assert_eq!(
+            s.take_rest(whole, false),
+            Rest::Revised {
+                streamed: text.into()
+            }
+        );
+    }
+
+    #[test]
+    fn the_second_block_of_a_message_compares_from_where_the_first_ended() {
+        let mut s = streamed("First.Second, edited");
+        assert_eq!(s.take_rest("First.", false), Rest::Nothing);
+        assert_eq!(
+            s.take_rest("Second , edited", false),
+            Rest::Revised {
+                streamed: "Second, edited".into()
+            }
+        );
+    }
 
     #[test]
     fn a_command_splits_into_words_as_a_shell_would() {

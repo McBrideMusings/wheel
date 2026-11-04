@@ -509,6 +509,11 @@ public enum SessionEvent: Sendable, Equatable {
     case turnStart(turn: UInt64)
     case text(String)
     case thought(String)
+    /// The finished reply block reads `text`, not the `streamed` chunks the reply text ends with:
+    /// put `text` in their place.
+    case textRevised(streamed: String, text: String)
+    /// The same for a thought, whose text ends with `streamed`.
+    case thoughtRevised(streamed: String, text: String)
     case toolCall(id: String, title: String, kind: String, status: String, content: [ToolContent])
     /// `content`, when present, replaces the call's whole content.
     case toolUpdate(id: String, title: String?, status: String?, content: [ToolContent]?)
@@ -523,7 +528,7 @@ public enum SessionEvent: Sendable, Equatable {
 }
 
 extension SessionEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message }
+    private enum K: String, CodingKey { case kind, turn, text, streamed, mode, id, title, tool_kind, status, content, entries, stop_reason, message }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -531,6 +536,8 @@ extension SessionEvent: Decodable {
         case "turn_start": self = .turnStart(turn: try c.decode(UInt64.self, forKey: .turn))
         case "text": self = .text(try c.decode(String.self, forKey: .text))
         case "thought": self = .thought(try c.decode(String.self, forKey: .text))
+        case "text_revised": self = .textRevised(streamed: try c.decode(String.self, forKey: .streamed), text: try c.decode(String.self, forKey: .text))
+        case "thought_revised": self = .thoughtRevised(streamed: try c.decode(String.self, forKey: .streamed), text: try c.decode(String.self, forKey: .text))
         case "tool_call":
             self = .toolCall(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
                              kind: try c.decode(String.self, forKey: .tool_kind), status: try c.decode(String.self, forKey: .status),
