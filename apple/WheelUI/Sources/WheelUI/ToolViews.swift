@@ -90,7 +90,7 @@ struct ToolLine: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.chat("disclosure", expanded ? "Hide what this call sent" : "Show what this call sent"))
             .help(detail ?? title)
             if expanded {
                 ToolDetail(title: detail ?? title, content: content)
@@ -157,7 +157,8 @@ struct ToolGroupView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.chat("disclosure", open ? "Hide these steps" : "Show these steps"))
+            .help(open ? "Hide these steps" : "Show these steps")
             if open {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(WorkRuns.entries(current).enumerated()), id: \.offset) { _, entry in
@@ -496,7 +497,8 @@ struct ReasoningLine: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.chat("disclosure", expanded ? "Hide the thought" : "Show the thought"))
+            .help(expanded ? "Hide the thought" : "Show the thought")
             if expanded || streaming {
                 // While it streams and is not opened, the newest of it: the last 400 characters,
                 // cut at a word, so the line under "Thinking" follows the thought as it grows.
@@ -594,7 +596,7 @@ struct EditsCard: View {
                 Spacer(minLength: 8)
                 if anyOpen {
                     Button("Collapse all") { chat.collapseDiffs(card: group.id) }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.chat("edits-toggle", "Collapse all the diffs"))
                         .font(look.line)
                         .foregroundStyle(Color.accentColor)
                 }

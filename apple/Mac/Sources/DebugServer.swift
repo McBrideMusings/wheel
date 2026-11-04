@@ -51,7 +51,13 @@ final class DebugServer {
         self.model = model
     }
 
+    private static func controlJSON(_ entry: ChatControlRegistry.Entry) -> [String: Any] {
+        ["kind": entry.kind, "label": entry.label, "hover": entry.hover, "focus": entry.focus, "url": entry.url ?? NSNull(),
+         "frame": ["x": entry.frame.minX, "y": entry.frame.minY, "w": entry.frame.width, "h": entry.frame.height]]
+    }
+
     func start() {
+        ChatControlRegistry.shared.tracking = true
         port = UInt16(ProcessInfo.processInfo.environment["WHEEL_DEBUG_PORT"] ?? "") ?? 7421
         do {
             let params = NWParameters.tcp
@@ -1098,6 +1104,28 @@ final class DebugServer {
             default: return refuse("400 Bad Request", "action is start or stop")
             }
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: GridMetrics.shared.report(), options: [.sortedKeys])) ?? Data())
+        case ("POST", "/chat/hover"):
+            // Hold a pointer at a window point (`x`, `y`, top left origin, the window content's own
+            // coordinates) so the controls under it show their hover state as a real pointer
+            // causes it; no `x` and `y` lets it go.
+            if let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) {
+                Log.info("debug: chat pointer held at \(Int(x)),\(Int(y))")
+                ChatControlRegistry.shared.hold(at: CGPoint(x: x, y: y))
+            } else {
+                Log.info("debug: chat pointer released")
+                ChatControlRegistry.shared.hold(at: nil)
+            }
+            return ("200 OK", Data("{}".utf8))
+        case ("GET", "/chat/control"):
+            // The chat control under a window point (`x`, `y`; the held pointer when omitted) and
+            // whether its hover state is on, or `{}` when none is.
+            let registry = ChatControlRegistry.shared
+            let at = query["x"].flatMap(Double.init).flatMap { x in query["y"].flatMap(Double.init).map { CGPoint(x: x, y: $0) } } ?? registry.probe
+            let found = at.flatMap { registry.control(at: $0) }
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: found.map(Self.controlJSON) ?? [:], options: [.sortedKeys])) ?? Data())
+        case ("GET", "/chat/controls"):
+            let all = ChatControlRegistry.shared.all.filter { $0.frame != .zero }.sorted { ($0.frame.minY, $0.frame.minX) < ($1.frame.minY, $1.frame.minX) }
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: all.map(Self.controlJSON), options: [.sortedKeys])) ?? Data())
         case ("GET", "/geometry"):
             // Where each window, sidebar row and popover card is on screen (AppKit's coordinates,
             // origin bottom left): what a real drag is aimed at.

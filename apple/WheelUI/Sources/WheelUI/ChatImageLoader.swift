@@ -139,6 +139,7 @@ struct ChatImageAttachment: Attachment {
                     .scaledToFit()
                     .frame(maxHeight: maxHeight)
                     .onTapGesture { open.run() }
+                    .chatControl("image", "Open this image")
                     .accessibilityIdentifier("chat-image")
             }
         case let .failed(message):

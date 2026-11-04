@@ -172,21 +172,25 @@ struct UserMessage: View {
                     Text("Queued").foregroundStyle(.secondary)
                     if queue.takeBackAvailable, let turn = row.turn {
                         Button("Edit") { chat.edit(turn: turn, text: text) }
+                            .buttonStyle(.chat("queue", "Edit this queued message"))
                             .help("Take this message out of the queue and edit it in the composer")
                         Button("Remove") { chat.remove(turn: turn) }
+                            .buttonStyle(.chat("queue", "Remove this queued message"))
                             .help("Take this message out of the queue")
                         if queue.queued.count >= 2, queue.queued.first?.turn == turn {
                             Button("Clear queue") { chat.clearQueue() }
+                                .buttonStyle(.chat("queue", "Clear the queue"))
                                 .help("Take all \(queue.queued.count) queued messages out of the queue")
                         }
                     }
                 }
                 .font(look.meta)
-                .buttonStyle(.borderless)
+                .foregroundStyle(Color.accentColor)
             } else if let turn = row.turn, queue.unansweredTurn == turn, queue.takeBackAvailable {
                 Button("Edit") { chat.edit(turn: turn, text: text) }
                     .font(look.meta)
-                    .buttonStyle(.borderless)
+                    .foregroundStyle(Color.accentColor)
+                    .buttonStyle(.chat("unsend", "Take this message back and edit it"))
                     .help("Take this message back, before the agent answers, and edit it in the composer")
             } else if look.timestamps, let started = row.started {
                 Text(started.formatted(date: .omitted, time: .shortened)).font(look.meta).foregroundStyle(.tertiary)
@@ -365,6 +369,7 @@ struct AgentText: View {
                 .modifier(InlineCodeBoxes(prose: look.inlineCode == .box ? reply.prose : .plain("")))
                 .selectableText(reply.prose, id: id, chat: chat, style: look.bodyProse)
                 .drawnText(reply.prose, id: id, chat: chat)
+                .chatLinkHover(reply.prose, id: id, chat: chat)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
             if copyable { copy }
@@ -398,7 +403,7 @@ struct AgentText: View {
         } label: {
             Image(systemName: "doc.on.doc").font(look.meta)
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.chat("copy", "Copy this reply"))
         .foregroundStyle(.secondary)
         .help("Copy this reply")
     }

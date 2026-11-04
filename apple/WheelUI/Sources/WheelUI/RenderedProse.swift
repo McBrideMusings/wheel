@@ -19,13 +19,21 @@ public struct RenderedProse: Equatable, Sendable {
         public var face: Face
     }
 
+    /// A link's visible text, in UTF-16 units, and where it goes.
+    public struct Link: Equatable, Sendable {
+        public var range: Range<Int>
+        public var url: String
+    }
+
     public let text: String
     public let runs: [Run]
+    public let links: [Link]
     public var length: Int { text.utf16.count }
 
-    public init(text: String, runs: [Run] = []) {
+    public init(text: String, runs: [Run] = [], links: [Link] = []) {
         self.text = text
         self.runs = runs
+        self.links = links
     }
 
     /// Text shown exactly as written, such as a person's message.
@@ -58,6 +66,7 @@ public struct RenderedProse: Equatable, Sendable {
         var text = ""
         var length = 0
         var runs: [Run] = []
+        var links: [Link] = []
         var previous: [PresentationIntent.IntentType] = []
         var started = false
         for run in parsed.runs {
@@ -81,13 +90,21 @@ public struct RenderedProse: Equatable, Sendable {
             if units > 0 {
                 let face = face(of: run.inlinePresentationIntent, path: path)
                 if face != .plain { runs.append(Run(range: length..<(length + units), face: face)) }
+                if let url = run.link?.absoluteString {
+                    // Adjacent runs of one link (a bold word inside it) are one link.
+                    if let last = links.last, last.url == url, last.range.upperBound == length {
+                        links[links.count - 1].range = last.range.lowerBound..<(length + units)
+                    } else {
+                        links.append(Link(range: length..<(length + units), url: url))
+                    }
+                }
                 text += chunk
                 length += units
             }
             previous = path
             started = true
         }
-        return RenderedProse(text: text, runs: runs)
+        return RenderedProse(text: text, runs: runs, links: links)
     }
 
     /// Both blocks sit in one list, so their items follow on consecutive lines.
