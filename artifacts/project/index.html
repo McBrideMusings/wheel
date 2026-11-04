@@ -21,35 +21,34 @@
 <title>Project</title>
 <link rel="stylesheet" href=".wheel/wheel.css">
 <style>
-.page { max-width: 1680px; }
 .vision { max-width: 100ch; margin: 0 2px 14px; }
 .counts { --cells: 3; }
 button.link { all: unset; cursor: pointer; color: var(--accent); }
 button.link:hover { text-decoration: underline; }
+button.link:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; border-radius: 3px; }
 
-/* The roadmap strip: one box per open epic, in work order, scrolling sideways; its scrollbar is
-   thin and shows only while the pointer is over it. */
-.road { display: flex; align-items: stretch; gap: 6px; overflow-x: auto; padding-bottom: 6px;
-  scrollbar-width: thin; scrollbar-color: transparent transparent; }
-.road:hover { scrollbar-color: var(--separator-strong) transparent; }
-.road::-webkit-scrollbar { height: 6px; }
-.road::-webkit-scrollbar-track { background: transparent; }
-.road::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
-.road:hover::-webkit-scrollbar-thumb { background: var(--separator-strong); }
-.road .arr { align-self: center; color: var(--tertiary); flex: 0 0 auto; }
-.road .stop { flex: 1 0 190px; box-shadow: none; color: var(--label); text-align: left; cursor: pointer; max-width: 340px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px;
-  align-items: baseline; padding: 8px 12px 9px; background: var(--group); border: 1px solid var(--separator);
-  border-radius: var(--radius); }
-.road .stop:hover { border-color: var(--separator-strong); }
-.road .stop[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-fill); }
-.stop .n { font-weight: 700; color: var(--secondary); font-variant-numeric: tabular-nums; grid-row: 1 / 3; }
-.stop[aria-pressed="true"] .n { color: var(--accent); }
-.stop .t { font-weight: 600; }
-.stop .s { font-size: var(--callout); color: var(--secondary); }
+/* The roadmap: one row per open epic in work order. */
+.road .row { grid-template-columns: 34px minmax(0, 1fr) minmax(0, min(38%, 300px)); cursor: pointer; }
+.road .row .n { font-weight: 700; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.road .row .t { font-weight: 600; }
+.road .row .s { font-size: var(--callout); color: var(--secondary); text-align: right; }
+.road .row.sel, .road .row.sel:hover { background: var(--accent-fill); }
+.road .row.sel .n { color: var(--accent); }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 8px; }
+.tools input[type=search] { flex: 1 1 160px; min-width: 0; height: 26px; padding-top: 0; padding-bottom: 0; -webkit-appearance: none; appearance: none; }
+.tools .seg { flex: none; }
+.tools .seg button { height: 24px; padding-top: 0; padding-bottom: 0; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; }
+/* data-t repeats the label in bold and invisible, so a button is as wide pressed as not and the control never resizes. */
+.tools .seg button::after { content: attr(data-t); font-weight: 600; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.top .sub { font-variant-numeric: tabular-nums; }
+/* A notice that arrives with a snapshot floats over the corner, so it never pushes the page down. */
+.notice.float { position: fixed; right: 14px; bottom: 14px; z-index: 60; max-width: min(520px, calc(100% - 28px)); background: color-mix(in srgb, var(--red) 14%, var(--group)); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.tools .shown { margin-left: auto; color: var(--secondary); font-size: var(--caption); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Bead rows: state word, id, title, type word, priority */
 .beads .row { grid-template-columns: 86px 128px minmax(0, 1fr) 64px 24px; cursor: pointer; }
 .beads .row:hover, .items .row:hover { background: var(--fill); }
+.beads .row .one:not(.id), .t { unicode-bidi: plaintext; }
 .row .id { font: var(--callout) var(--mono); color: var(--secondary); }
 .row .ty, .row .pr { font-size: var(--callout); color: var(--secondary); text-align: right; }
 .st { font-size: var(--callout); font-weight: 600; }
@@ -66,7 +65,8 @@ button.link:hover { text-decoration: underline; }
 .items .feat .t { font-weight: 600; }
 .items .feat .c { font-size: var(--callout); color: var(--secondary); font-variant-numeric: tabular-nums; }
 .items .bead { grid-template-columns: 86px minmax(0, 1fr) 40px; }
-details.done > summary { list-style: none; cursor: pointer; }
+details.done > summary { list-style: none; cursor: pointer; border-radius: 6px; }
+details.done > summary:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
 details.done > summary::-webkit-details-marker { display: none; }
 details.done > summary .heading::before { content: "›"; display: inline-block; width: 10px; color: var(--secondary); transition: transform .12s; }
 details.done[open] > summary .heading::before { transform: rotate(90deg); }
@@ -80,7 +80,6 @@ details.done[open] > summary .heading::before { transform: rotate(90deg); }
 .detail .kicker, .panel .kicker { display: flex; gap: 8px; align-items: baseline; font-size: var(--callout); color: var(--secondary); }
 .detail h2.t, .panel h2.t { font-size: 17px; line-height: 1.3; margin: 4px 0 4px; }
 .detail .meta { font-size: var(--callout); color: var(--secondary); margin-bottom: 10px; }
-.sect { font-size: var(--caption); font-weight: 600; color: var(--secondary); text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
 .detail .group, .panel .group { margin-top: 2px; }
 
 /* Markdown */
@@ -97,17 +96,14 @@ details.done[open] > summary .heading::before { transform: rotate(90deg); }
 .mdbody th, .mdbody td { border: 1px solid var(--separator); padding: 3px 7px; text-align: left; vertical-align: top; }
 .mdbody th { background: var(--fill); }
 
-/* The side panel: one bead's whole record */
-.panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(600px, 100%); background: var(--group); border-left: 1px solid var(--separator);
-  box-shadow: -10px 0 30px light-dark(rgba(0, 0, 0, .12), rgba(0, 0, 0, .45)); padding: 14px 20px 32px; overflow: auto; z-index: 10; }
-.panel .x { position: absolute; top: 10px; right: 12px; }
-.panel dl { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 3px 12px; margin: 10px 0 0; font-size: var(--callout); }
-.panel dt { color: var(--secondary); }
-.panel dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.panel .deps .row { grid-template-columns: 86px 86px minmax(0, 1fr); cursor: pointer; }
-.panel .deps .row .k { font-size: var(--callout); color: var(--secondary); }
-.panel .cmt + .cmt { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--separator); }
-.panel .cmt .who { font-size: var(--callout); color: var(--secondary); margin-bottom: 4px; }
+/* The bead's whole record is a sheet (vlist.js); these style what it holds. */
+.sheet-body .kicker { display: flex; gap: 8px; align-items: baseline; font-size: var(--callout); color: var(--secondary); }
+.sheet-body .deps .row, .detail .deps .row { grid-template-columns: 86px 86px minmax(0, 1fr); cursor: pointer; }
+.row .k { font-size: var(--callout); color: var(--secondary); }
+.cmt + .cmt { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--separator); }
+.cmt .who { font-size: var(--callout); color: var(--secondary); margin-bottom: 4px; }
+.sheet-body .group { margin-top: 2px; }
+.sheet-body h2.t { font-size: 17px; line-height: 1.3; margin: 4px 0 4px; overflow-wrap: anywhere; }
 
 @media (max-width: 760px) {
   .md { grid-template-columns: minmax(0, 1fr); }
@@ -117,13 +113,17 @@ details.done[open] > summary .heading::before { transform: rotate(90deg); }
 }
 </style>
 <script src=".wheel/client.js"></script>
+<script src="vlist.js"></script>
+<style>
+/* Dense pages use the whole pane. */
+.page { max-width: none; }
+</style>
 </head>
 <body>
 <main class="page">
   <div class="top"><h1 id="name">Project</h1><span class="sub one" id="sub">Loading…</span></div>
-  <div id="app"><div class="notice">Waiting for the first snapshot…</div></div>
+  <div id="app"><div class="blank"><b>Loading the project</b><span>Waiting for the first snapshot.</span></div></div>
 </main>
-<aside class="panel" id="panel" hidden></aside>
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const when = s => s ? new Date(s).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short', hour12: true }) : '';
@@ -137,7 +137,9 @@ function ago(ms) {
 
 let data = null, got = 0;
 let by = {}, kids = {}, ready = new Set(), blocksOf = {};
-const view = { epic: null, item: null, panel: null };
+const F = VList.fmt;
+const view = { epic: null, item: null, panel: null, q: '', pri: 'hi', done: new Set(), cm: 40 };
+const rep = { stops: [], bugs: [], list: [], counts: {} };   // what report() says the page shows
 const full = {};      // bead id -> {state: 'loading'|'loaded'|'error', record, error}
 const ORDER = { in_progress: 0, open: 1, blocked: 2, deferred: 3, closed: 4 };
 
@@ -261,10 +263,14 @@ function md(src) {
   return out.join('');
 }
 
-// Rows
-const beadRow = b => `<div class="row" data-bead="${esc(b.id)}" title="${esc(b.id + ' · ' + b.title)}">${stWord(b)}<span class="id one">${esc(b.id)}</span>`
-  + `<span class="one">${esc(b.title)}</span>${tyWord(b.type)}<span class="pr p${b.priority}">P${esc(b.priority)}</span></div>`;
-const beadGroup = list => `<div class="group beads">${list.map(beadRow).join('')}</div>`;
+// Rows. A list is a host div that the VList helper fills with only the rows in view; mountLists() runs after the HTML is in place.
+const prLabel = b => b.priority == null ? '' : 'P' + esc(b.priority);
+const beadRow = b => `<div class="row" title="${esc(b.id + ' · ' + b.title)}">${stWord(b)}<span class="id one">${esc(b.id)}</span>`
+  + `<span class="one" dir="auto">${esc(b.title)}</span>${tyWord(b.type)}<span class="pr p${esc(b.priority)}">${prLabel(b)}</span></div>`;
+const listHost = VList.host, mountLists = VList.mountAll, more = VList.more, hint = VList.hint, vls = VList.lists;
+const emptyBox = t => `<div class="group"><div class="empty-row">${t}</div></div>`;
+const openBead = b => openPanel(b.id);
+const beadList = (id, list) => `<div class="group beads">${listHost(id, list, beadRow, openBead, 8)}</div>`;
 
 function stopSub(e) {
   const c = tally(e.id), bits = [];
@@ -291,24 +297,27 @@ function itemRow(b) {
   const sel = view.item === b.id ? ' sel' : '';
   if (isEpic(b)) {
     const c = tally(b.id);
-    return `<div class="row feat${sel}" data-item="${esc(b.id)}" title="${esc(b.id + ' · ' + b.title)}"><span class="t one">${esc(b.title)}</span>`
-      + `<span class="c">${b.status === 'closed' ? '<span class="st done">✓ done</span>' : c.ready ? `<span class="c-green">${c.ready} ready</span> · ` : ''}${b.status === 'closed' ? '' : `${c.done}/${c.all}`}</span></div>`;
+    return `<div class="row feat${sel}" title="${esc(b.id + ' · ' + b.title)}"><span class="t one" dir="auto">${esc(b.title)}</span>`
+      + `<span class="c">${b.status === 'closed' ? '<span class="st done">✓ done</span>' : c.ready ? `<span class="c-green">${F(c.ready)} ready</span> · ` : ''}${b.status === 'closed' ? '' : `${F(c.done)}/${F(c.all)}`}</span></div>`;
   }
-  return `<div class="row bead${sel}" data-item="${esc(b.id)}" title="${esc(b.id + ' · ' + b.title)}">${stWord(b)}<span class="one">${esc(b.title)}</span><span class="ty ${esc(b.type)}">${b.type === 'bug' ? 'bug' : ''}</span></div>`;
+  return `<div class="row bead${sel}" title="${esc(b.id + ' · ' + b.title)}">${stWord(b)}<span class="one" dir="auto">${esc(b.title)}</span><span class="ty ${esc(b.type)}">${b.type === 'bug' ? 'bug' : ''}</span></div>`;
 }
+const openItem = b => { view.item = view.item === b.id ? null : b.id; draw(); };
+const doneBlock = (id, list, row, onOpen) => `<details class="done" data-done="${esc(id)}"${view.done.has(id) ? ' open' : ''}><summary><div class="heading">Done <span class="n">${F(list.length)}</span></div></summary><div class="group items">${listHost(id, list, row, onOpen, 10)}</div></details>`;
 
 function itemsBlock(epic) {
   const { feats, work } = listOf(epic);
   let h = '';
-  const part = (label, list, hint) => {
-    const open = list.filter(isOpen), done = list.filter(b => !isOpen(b));
-    let s = `<div class="heading">${label} <span class="n">${open.length}</span>${hint ? `<span class="hint">${hint}</span>` : ''}</div>`;
-    s += open.length ? `<div class="group items">${open.map(itemRow).join('')}</div>` : `<div class="notice">Nothing open.</div>`;
-    if (done.length) s += `<details class="done"><summary><div class="heading">Done <span class="n">${done.length}</span></div></summary><div class="group items">${done.map(itemRow).join('')}</div></details>`;
+  const part = (label, list, hintText, base) => {
+    const open = list.filter(isOpen), done = list.filter(b => !isOpen(b)), id = base + ':' + epic.id;
+    rep.list.push(...open.slice(0, 60).map(b => b.id));
+    let s = `<div class="heading">${label} <span class="n">${F(open.length)}</span>${hint(hintText, id, open.length, 10)}</div>`;
+    s += open.length ? `<div class="group items">${listHost(id, open, itemRow, openItem, 10)}</div>` : emptyBox('Nothing open.');
+    if (done.length) s += doneBlock(id + ':done', done, itemRow, openItem);
     return s;
   };
-  if (feats.length) h += part('Features', feats, 'child epics');
-  if (work.length || !feats.length) h += part(feats.length ? 'Other beads' : 'Beads', work, feats.length ? 'directly under the epic' : '');
+  if (feats.length) h += part('Features', feats, 'child epics', 'feat');
+  if (work.length || !feats.length) h += part(feats.length ? 'Other beads' : 'Beads', work, feats.length ? 'directly under the epic' : '', 'work');
   return h;
 }
 
@@ -328,55 +337,74 @@ function depsBlock(b) {
   const blockers = (b.deps || []).filter(d => d.type === 'blocks').map(d => by[d.id]).filter(Boolean);
   const blocks = (blocksOf[b.id] || []).map(i => by[i]).filter(Boolean);
   let h = '';
-  if (blockers.length) h += `<div class="sect">Blocked by</div>${beadGroup(sortBeads(blockers))}`;
-  if (blocks.length) h += `<div class="sect">Blocks</div>${beadGroup(sortBeads(blocks))}`;
+  if (blockers.length) h += `<div class="sect">Blocked by <span class="n">${F(blockers.length)}</span></div>${beadList('dep:' + b.id, sortBeads(blockers))}`;
+  if (blocks.length) h += `<div class="sect">Blocks <span class="n">${F(blocks.length)}</span></div>${beadList('blk:' + b.id, sortBeads(blocks))}`;
   return h;
 }
 function detailBlock(b) {
   const r = (full[b.id] || {}).record;
-  let h = `<div class="group detail"><div class="kicker">${tyWord(b.type)}<button class="link mono" data-bead="${esc(b.id)}" title="Open the full record">${esc(b.id)}</button>${stWord(b)}<span>P${esc(b.priority)}</span></div>`;
-  h += `<h2 class="t">${esc(b.title)}</h2>`;
-  const meta = [b.labels.length && b.labels.join(', '), b.assignee, b.updated && 'updated ' + day(b.updated), b.comments && `${b.comments} comment${b.comments > 1 ? 's' : ''}`].filter(Boolean);
+  let h = `<div class="group detail"><div class="kicker">${tyWord(b.type)}<button class="link mono" data-bead="${esc(b.id)}" title="Open the full record">${esc(b.id)}</button>${stWord(b)}<span>${prLabel(b)}</span></div>`;
+  h += `<h2 class="t" dir="auto">${esc(b.title)}</h2>`;
+  const meta = [b.labels.length && b.labels.join(', '), b.assignee, b.updated && 'updated ' + day(b.updated), b.comments && `${F(b.comments)} comment${b.comments > 1 ? 's' : ''}`].filter(Boolean);
   h += `<div class="meta">${esc(meta.join(' · '))}${meta.length ? ' · ' : ''}<button class="link" data-bead="${esc(b.id)}">Full record</button></div>`;
   h += recordBody(b, r) + depsBlock(b);
   if (isEpic(b)) {
     const w = sortBeads(workUnder(b.id)), open = w.filter(isOpen), c = tally(b.id);
-    h += `<div class="sect">Beads · ${open.length} open · ${c.done} done</div>`;
-    h += open.length ? beadGroup(open) : '<p class="tertiary">None open.</p>';
+    h += `<div class="sect">Beads · ${F(open.length)} open · ${F(c.done)} done</div>`;
+    h += open.length ? beadList('eb:' + b.id, open) : '<p class="tertiary">None open.</p>';
     const done = w.filter(x => !isOpen(x));
-    if (done.length) h += `<details class="done"><summary><div class="heading">Done <span class="n">${done.length}</span></div></summary>${beadGroup(done)}</details>`;
+    if (done.length) h += doneBlock('ebd:' + b.id, done, beadRow, openBead);
   }
   return h + '</div>';
 }
+
+const blank = (t, text, cls) => `<div class="blank"><b class="${cls || ''}">${esc(t)}</b><span>${text}</span></div>`;
+const defects = () => {
+  const q = view.q.trim().toLowerCase();
+  return DEF.filter(b => (view.pri === 'hi' ? (b.priority ?? 9) <= 1 : view.pri === 'lo' ? (b.priority ?? 9) >= 2 : true) && (!q || (b.id + ' ' + b.title).toLowerCase().includes(q)));
+};
+let DEF = [];
+const defCount = list => list.length === DEF.length ? F(DEF.length) : `${F(list.length)} of ${F(DEF.length)}`;
 
 function draw() {
   if (!data) return;
   const app = document.getElementById('app'), sub = document.getElementById('sub');
   document.getElementById('name').textContent = data.name || 'Project';
   sub.textContent = [data.repo, 'refreshed ' + ago(Date.now() - got) + ' ago'].filter(Boolean).join(' · ');
-  const notice = (t, bad) => `<div class="notice${bad ? ' bad' : ''}">${t}</div>`;
-  if (data.state === 'error') { app.innerHTML = notice(`The refresh failed: <span class="mono">${esc(data.error)}</span>`, true); report(); return; }
-  if (data.state === 'no-beads') { app.innerHTML = notice(`${esc(data.repo)} has no beads tracker (no <span class="mono">.beads</span> directory), so it has no roadmap. This page shows beads repos only.`); report(); return; }
-
-  const roadScroll = (document.querySelector('.road') || {}).scrollLeft || 0;
+  const stop = html => { VList.preserve(() => { app.innerHTML = html; }); drawPanel(); report(); };
+  if (data.state === 'error') return stop(blank('The refresh failed', esc(data.error), 'c-red'));
+  if (data.state === 'no-beads') return stop(blank('No roadmap', `${esc(data.repo)} has no beads tracker (no <span class="mono">.beads</span> directory). This page shows beads repos only.`));
   const all = Object.values(by);
+  if (!all.length) return stop(blank('No beads yet', `${esc(data.repo || 'This repository')} has a tracker with nothing in it.`));
+
+  VList.drop(); rep.list = [];
   const live = all.filter(b => isOpen(b) && b.status !== 'deferred');
-  const cell = (n, label, cls) => `<div class="${n ? '' : 'zero'}"><b class="${n ? cls : ''}">${n}</b><span>${label}</span></div>`;
-  let h = data.vision ? `<p class="vision">${inline(data.vision)}</p>` : `<p class="vision tertiary">No vision: the repo has no <span class="mono">docs/CONTEXT.md</span>.</p>`;
-  h += `<div class="counts">${cell(live.filter(b => stateOf(b)[0] === 'ready').length, 'ready', 'c-green')}${cell(live.filter(b => (b.labels || []).includes('human')).length, 'need you', 'c-purple')}${cell(live.length, 'open', '')}</div>`;
-  if (data.ready_error) h += notice(`Ready counts are missing: <span class="mono">${esc(data.ready_error)}</span>`, true);
+  const cell = (n, label, cls) => `<div class="${n ? '' : 'zero'}"><b class="${n ? cls : ''}">${F(n)}</b><span>${label}</span></div>`;
+  const nReady = live.filter(b => stateOf(b)[0] === 'ready').length, nHuman = live.filter(b => (b.labels || []).includes('human')).length;
+  rep.counts = { ready: nReady, 'need you': nHuman, open: live.length };
+  let h = data.vision ? `<p class="vision">${inline(data.vision)}</p>` : '';
+  h += `<div class="counts">${cell(nReady, 'ready', 'c-green')}${cell(nHuman, 'need you', 'c-purple')}${cell(live.length, 'open', '')}</div>`;
+  if (data.ready_error) h += `<div class="notice bad float">Ready counts are missing: <span class="mono">${esc(data.ready_error)}</span></div>`;
+
+  DEF = sortBeads(all.filter(b => isOpen(b) && b.status !== 'deferred' && (b.type === 'bug' || b.type === 'chore')));
+  const def = defects();
+  rep.bugs = def.slice(0, 60).map(b => b.id);
+  h += `<div class="heading">Defects <span class="n" id="def-n">${defCount(def)}</span>${hint('open bugs and chores', 'defects', def.length, 10)}</div>`;
+  if (!DEF.length) h += emptyBox('No open defects.');
+  else {
+    h += `<div class="tools"><input type="search" id="def-q" data-keep="def-q" placeholder="Search defects" aria-label="Search defects" value="${esc(view.q)}">`
+      + `<span class="seg" role="group" aria-label="Priority">${[['hi', 'P0 and P1'], ['lo', 'P2 and below'], ['all', 'All']].map(([k, l]) => `<button data-pri="${k}" data-t="${l}" data-keep="pri:${k}" aria-pressed="${view.pri === k}">${l}</button>`).join('')}</span></div>`;
+    h += `<div class="group beads">${listHost('defects', def, beadRow, openBead, 10)}<div class="empty-row" id="def-empty"${def.length ? ' hidden' : ''}>No defects match.</div></div>`;
+  }
 
   const es = epics();
   if (view.epic && !(by[view.epic] && es.includes(by[view.epic]))) view.epic = null;
   if (!view.epic && es.length) view.epic = es[0].id;
-  h += `<div class="heading">Roadmap <span class="n">${es.length}</span><span class="hint">open epics in priority order · work order, left to right</span></div>`;
-  h += es.length ? `<div class="road">${es.map((e, i) => `${i ? '<span class="arr">→</span>' : ''}<button class="stop" data-epic="${esc(e.id)}" aria-pressed="${e.id === view.epic}" title="${esc(e.id + ' · ' + e.title)}">`
-    + `<span class="n">${i + 1}</span><span class="t one">${esc(e.title)}</span><span class="s one">${stopSub(e)}</span></button>`).join('')}</div>`
-    : notice('No open epic, so there is no roadmap yet.');
-
-  const bugs = sortBeads(all.filter(b => isOpen(b) && b.status !== 'deferred' && b.priority === 1 && (b.type === 'bug' || b.type === 'chore')));
-  h += `<div class="heading">Bugs and issues <span class="n">${bugs.length}</span><span class="hint">open priority 1 bugs and chores</span></div>`;
-  h += bugs.length ? beadGroup(bugs) : notice('No open priority 1 bug or chore.');
+  rep.stops = es.slice(0, 60).map(e => e.id);
+  const num = new Map(es.map((e, i) => [e.id, i + 1]));
+  h += `<div class="heading">Roadmap <span class="n">${F(es.length)}</span>${hint('open epics in work order', 'road', es.length, 8)}</div>`;
+  h += es.length ? `<div class="group road">${listHost('road', es, e => `<div class="row${e.id === view.epic ? ' sel' : ''}" title="${esc(e.id + ' · ' + e.title)}"><span class="n">${num.get(e.id)}</span><span class="t one" dir="auto">${esc(e.title)}</span><span class="s one">${stopSub(e)}</span></div>`,
+    e => { view.epic = e.id; view.item = null; draw(); }, 8)}</div>` : emptyBox('No open epic, so there is no roadmap yet.');
 
   const epic = by[view.epic];
   if (epic) {
@@ -385,54 +413,55 @@ function draw() {
     h += `<div class="md"><nav>${itemsBlock(epic)}</nav><div><div class="heading">${shown === epic ? 'Epic' : isEpic(shown) ? 'Feature' : 'Bead'}<span class="hint one">${esc(epic.title)}</span></div>${detailBlock(shown)}</div></div>`;
     if (shown.status === 'closed' && !full[shown.id]) load(shown.id);
   }
-  app.innerHTML = h;
-  const road = document.querySelector('.road');
-  if (road) road.scrollLeft = roadScroll;
+  VList.preserve(() => { app.innerHTML = h; mountLists(app); });
   drawPanel();
   report();
 }
 
-// The side panel: the bead from the snapshot at once, then its full record from bd.
+const sheet = VList.sheet({ onClose: () => { view.panel = null; report(); } });
+let panelShown = null;
+// The record sheet: the bead from the snapshot at once, then its full record from bd.
 function drawPanel() {
-  const p = document.getElementById('panel');
+  if (!view.panel) { panelShown = null; if (sheet.isOpen()) sheet.close(true); return; }
+  VList.drop();
   const b = by[view.panel];
-  if (!view.panel) { p.hidden = true; return; }
   const f = full[view.panel] || {}, r = f.record || {};
-  if (!b && !f.record) { p.innerHTML = `<button class="x" data-close>Close</button><p class="tertiary">${esc(view.panel)} is not in this repo.</p>`; p.hidden = false; return; }
+  if (!b && !f.record) { sheet.set({ head: '', body: `<p class="tertiary">${esc(view.panel)} is not in this repo.</p>` }); return; }
   const s = Object.assign({}, b ? { id: b.id, title: b.title, status: b.status, issue_type: b.type, priority: b.priority, parent: b.parent, labels: b.labels,
     assignee: b.assignee, created_at: b.created, updated_at: b.updated, closed_at: b.closed, close_reason: b.close_reason,
     description: b.description, design: b.design, acceptance_criteria: b.acceptance_criteria, notes: b.notes } : {}, r);
   const bead = b || { id: s.id, title: s.title, status: s.status, type: s.issue_type, priority: s.priority, labels: s.labels || [], deps: [] };
   const link = id => by[id] ? `<button class="link" data-bead="${esc(id)}">${esc(id)}</button> ${esc(by[id].title)}` : esc(id);
-  const meta = [['Status', stWord(bead)], ['Type', tyWord(s.issue_type)], ['Priority', 'P' + esc(s.priority)],
+  const meta = [['Status', stWord(bead)], ['Type', tyWord(s.issue_type)], ['Priority', s.priority == null ? '' : 'P' + esc(s.priority)],
     ['Parent', s.parent && link(s.parent)], ['Labels', esc((s.labels || []).join(', '))], ['Assignee', esc(s.assignee || '')], ['Created', esc(when(s.created_at))],
     ['Updated', esc(when(s.updated_at))], ['Closed', esc(when(s.closed_at))], ['Close reason', s.close_reason && inline(s.close_reason)]].filter(m => m[1]);
-  let h = `<button class="x" data-close aria-label="Close">Close</button><div class="kicker">${tyWord(s.issue_type)}<span class="mono">${esc(s.id)}</span></div><h2 class="t">${esc(s.title)}</h2>`;
-  h += `<dl>${meta.map(m => `<dt>${m[0]}</dt><dd>${m[1]}</dd>`).join('')}</dl>`;
+  let h = `<h2 class="t" dir="auto">${esc(s.title)}</h2><dl>${meta.map(m => `<dt>${m[0]}</dt><dd>${m[1]}</dd>`).join('')}</dl>`;
   const deps = (r.dependencies || []).filter(d => (d.dependency_type || d.type) !== 'parent-child');
   const depRows = f.record ? deps.map(d => ({ id: d.id || d.depends_on_id, kind: d.dependency_type || d.type, title: d.title, status: d.status }))
     : (bead.deps || []).map(d => ({ id: d.id, kind: d.type }));
   const rev = (blocksOf[s.id] || []).map(id => ({ id, kind: 'blocks it' }));
   const rows = depRows.concat(rev);
-  if (rows.length) h += `<div class="sect">Dependencies</div><div class="group deps">${rows.map(d => {
+  if (rows.length) h += `<div class="sect">Dependencies <span class="n">${F(rows.length)}</span></div><div class="group deps">${listHost('pdeps:' + s.id, rows, d => {
     const x = by[d.id] || { id: d.id, title: d.title || '', status: d.status, labels: [], deps: [] };
-    return `<div class="row" data-bead="${esc(d.id)}" title="${esc(d.id + ' · ' + (x.title || ''))}"><span class="k">${esc(d.kind === 'blocks it' ? 'blocks' : d.kind === 'blocks' ? 'blocked by' : d.kind)}</span>${stWord(x)}<span class="one">${esc(x.title || d.id)}</span></div>`;
-  }).join('')}</div>`;
+    return `<div class="row" title="${esc(d.id + ' · ' + (x.title || ''))}"><span class="k">${esc(d.kind === 'blocks it' ? 'blocks' : d.kind === 'blocks' ? 'blocked by' : d.kind)}</span>${stWord(x)}<span class="one" dir="auto">${esc(x.title || d.id)}</span></div>`;
+  }, d => openPanel(d.id), 6)}</div>`;
   const kidsOf = sortBeads(kids[s.id] || []);
-  if (kidsOf.length) h += `<div class="sect">Children · ${kidsOf.length}</div>${beadGroup(kidsOf)}`;
+  if (kidsOf.length) h += `<div class="sect">Children <span class="n">${F(kidsOf.length)}</span></div>${beadList('pkids:' + s.id, kidsOf)}`;
   h += `<div class="sect">Description</div><div class="mdbody">${md(s.description) || `<p class="tertiary">${f.state === 'loading' && !s.description ? 'Loading…' : 'Empty.'}</p>`}</div>`;
   for (const [k, label] of [['design', 'Design'], ['acceptance_criteria', 'Acceptance'], ['notes', 'Notes']])
     if (s[k]) h += `<div class="sect">${label}</div><div class="mdbody">${md(s[k])}</div>`;
   const cm = r.comments || [];
-  h += `<div class="sect">Comments${f.record ? ' · ' + cm.length : ''}</div>`;
+  h += `<div class="sect">Comments${f.record ? ` <span class="n">${F(cm.length)}</span>` : ''}</div>`;
   if (f.state === 'loading') h += `<p class="tertiary">${f.record ? 'Fetching again from bd…' : 'Loading from bd…'}</p>`;
   if (f.state === 'error') h += `<div class="notice bad">${esc(f.error)}</div>`;
-  else if (f.record) h += cm.length ? cm.map(c => `<div class="cmt"><div class="who">${esc(c.author || '')} · ${esc(when(c.created_at))}</div><div class="mdbody">${md(c.text || c.body || '')}</div></div>`).join('') : '<p class="tertiary">None.</p>';
-  const top = p.hidden || p.dataset.bead !== view.panel ? 0 : p.scrollTop;
-  p.innerHTML = h;
-  p.dataset.bead = view.panel;
-  p.hidden = false;
-  p.scrollTop = top;
+  else if (f.record) {
+    if (cm.length > view.cm) h += `<p><button class="linkbtn" style="margin:0" data-morecm>Show ${F(Math.min(40, cm.length - view.cm))} earlier (${F(cm.length - view.cm)} not shown)</button></p>`;
+    h += cm.length ? cm.slice(-view.cm).map(c => `<div class="cmt"><div class="who">${esc(c.author || '')} · ${esc(when(c.created_at))}</div><div class="mdbody">${md(c.text || c.body || '')}</div></div>`).join('') : '<p class="tertiary">None.</p>';
+  }
+  const fresh = panelShown !== view.panel;
+  panelShown = view.panel;
+  sheet.set({ head: `${tyWord(s.issue_type)}<span class="mono one" dir="ltr">${esc(s.id)}</span>`, body: h, reset: fresh, mount: root => mountLists(root) });
+  VList.drop();
 }
 
 // One bead's full record: `collect.py --bead <id>` through wheel.run, read from the run's log.
@@ -473,6 +502,7 @@ async function load(id, force) {
 }
 
 function openPanel(id) {
+  if (view.panel !== id) view.cm = 40;
   view.panel = id;
   load(id);
   drawPanel();
@@ -482,29 +512,35 @@ function openPanel(id) {
 // What the page shows, for `wheel artifact state <pane> view`.
 let reported = '';
 function report() {
-  const doc = document;
   const s = {
     state: data && data.state, repo: data && data.repo, digest: data && data.digest,
     epic: view.epic, item: view.item, panel: view.panel, panel_state: view.panel ? (full[view.panel] || {}).state || 'snapshot' : null,
-    stops: [...doc.querySelectorAll('.stop')].map(e => e.dataset.epic),
-    bugs: [...doc.querySelectorAll('#app > .beads .row')].map(e => e.dataset.bead),
-    list: [...doc.querySelectorAll('.items .row')].map(e => e.dataset.item),
-    counts: Object.fromEntries([...doc.querySelectorAll('.counts > div')].map(e => [e.querySelector('span').textContent, +e.querySelector('b').textContent])),
+    stops: rep.stops, bugs: rep.bugs, list: rep.list, counts: rep.counts,
   };
   const j = JSON.stringify(s);
   if (j !== reported) { reported = j; wheel.set('view', s).catch(() => {}); }
 }
 
+VList.bindExpand(() => draw());
 document.addEventListener('click', e => {
-  if (e.target.closest('[data-close]')) { view.panel = null; drawPanel(); report(); return; }
-  const bead = e.target.closest('[data-bead]');
-  if (bead) { openPanel(bead.dataset.bead); return; }
-  const stop = e.target.closest('[data-epic]');
-  if (stop) { view.epic = stop.dataset.epic; view.item = null; draw(); return; }
-  const item = e.target.closest('[data-item]');
-  if (item) { view.item = view.item === item.dataset.item ? null : item.dataset.item; draw(); }
+  if (e.target.closest('[data-morecm]')) { view.cm += 40; drawPanel(); return; }
+  const pri = e.target.closest('[data-pri]');
+  if (pri) { view.pri = pri.dataset.pri; draw(); return; }
+  const link = e.target.closest('button.link[data-bead]');
+  if (link) openPanel(link.dataset.bead);
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && view.panel) { view.panel = null; drawPanel(); report(); } });
+document.addEventListener('input', e => {
+  if (e.target.id !== 'def-q') return;
+  view.q = e.target.value;
+  const list = defects(), vl = vls.defects;
+  rep.bugs = list.slice(0, 60).map(b => b.id);
+  document.getElementById('def-n').textContent = defCount(list);
+  document.getElementById('def-empty').hidden = list.length > 0;
+  if (vl) vl.update({ count: list.length, maxRows: Math.min(list.length, VList.expanded.defects ? VList.TALL : 10), key: i => list[i].id, row: i => beadRow(list[i]), onOpen: i => openBead(list[i]) });
+  report();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && e.target.id === 'def-q' && view.q) { e.target.value = ''; e.target.dispatchEvent(new Event('input', { bubbles: true })); } });
+document.addEventListener('toggle', e => { const d = e.target.closest && e.target.closest('details.done'); if (d) d.open ? view.done.add(d.dataset.done) : view.done.delete(d.dataset.done); }, true);
 
 wheel.onData(v => {
   got = Date.now();

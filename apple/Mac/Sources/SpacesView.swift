@@ -421,6 +421,9 @@ struct SpaceGrid: View {
                 if let edge = hotEdge {
                     EdgeBar(edge: edge, size: geo.size)
                 }
+                if !space.backgrounded.isEmpty {
+                    TrayChip(model: model, space: space, bounds: geo.size)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .clipped()
@@ -1197,7 +1200,7 @@ struct PoppedWindow: View {
                 hotEdge = edge(of: pointer)
             },
             ended: { pointer in
-                if edge(of: pointer) != nil {
+                if edge(of: pointer) != nil || model.trayChipFrames[space.id]?.contains(pointer) == true {
                     hotEdge = nil
                     move = .zero
                     model.backgroundWindow(tree)

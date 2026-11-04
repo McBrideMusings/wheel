@@ -1260,6 +1260,11 @@ final class DebugServer {
             switch button {
             case "pop": model.toggleSite(pane, .popped)
             case "background": model.toggleSite(pane, .backgrounded)
+            case "tray-open":
+                guard let space = model.space(holding: pane) else { return refuse("404 Not Found", "no pane \(pane)") }
+                model.setTrayOpen(space.id, true)
+            case "tray-row": model.setSite(pane, .grid)
+            case "tray-pop": model.setSite(pane, .popped)
             case "zoom" where model.zoomButton(for: pane).enabled: model.toggleZoom(pane)
             default: return refuse("409 Conflict", "no enabled header button \(button)")
             }
@@ -1899,6 +1904,11 @@ final class DebugServer {
                           .map { [$0.minX, $0.minY, $0.width, $0.height] as [Double] } ?? NSNull()] as [String: Any]
                  },
                  "backgrounded": space.backgrounded.flatMap(\.panes).map(\.id),
+                 "tray": ["chip": !space.backgrounded.isEmpty,
+                          "badge": space.backgrounded.flatMap(\.panes).contains { if case .needsYou? = self.model.paneStatus($0.id) { true } else { false } },
+                          "open": self.model.trayOpen(space.id),
+                          "place": self.model.trayPlace.edge.rawValue,
+                          "rows": space.backgrounded.flatMap(\.panes).map { ["pane": $0.id, "icon": $0.kind.icon, "title": self.model.trayTitle($0.kind)] }] as [String: Any],
                  "stack": ["layers": space.stackLayers, "glyph": space.firstPaneKind.icon] as [String: Any]] as [String: Any]
             },
             "status_dots": StatusRank.allCases.filter(model.statusDots.contains).map(\.rawValue),
