@@ -220,6 +220,10 @@ final class AppModel {
     /// The person closed the Full Disk Access screen; it comes back at the next launch.
     var diskAccessScreenDismissed = false
     @ObservationIgnored var diskAccessTask: Task<Void, Never>?
+    /// macOS recorded a change to the server's Full Disk Access after the server started, while it
+    /// still cannot open the folders: only a restart applies it (DiskAccess.swift).
+    var diskAccessChangedSinceStart = false
+    @ObservationIgnored var lastGrantLook: Date?
     @ObservationIgnored var diskAccessObserver: NSObjectProtocol?
     /// The connected server's program and source, from its last status.
     var serverHost: HostAccess?

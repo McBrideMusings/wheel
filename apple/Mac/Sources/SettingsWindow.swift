@@ -438,7 +438,9 @@ private struct SettingsForm: View {
                 case .general:
                     ServerSourceSettings(model: model)
                     CommandLineSettings(commandLine: settings.commandLine)
-                    FolderAccessSettings(host: settings.hostAccess)
+                    FolderAccessSettings(
+                        host: settings.hostAccess, changedSinceStart: model.diskAccessChangedSinceStart,
+                        restart: model.serverControl?.unavailable == nil ? { model.restartServer() } : nil)
                     StatusDotsSettings(model: model)
                 case .agents: AgentsSettings(agents: model.agents)
                 case .usage: UsageAgentsSettings(model: model, usage: model.usage)
