@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1409,6 +1409,9 @@ pub enum ClientMsg {
         scope: Option<ArtifactScope>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
+        /// The pane asking, so a server shared by many panes can keep each one's state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
     },
     /// Call `tool` of the MCP server artifact `name` names, with `arguments` (a JSON object, none
     /// for a tool that takes nothing). Replies `tool_result`; a tool that fails is a result with
@@ -1421,6 +1424,9 @@ pub enum ClientMsg {
         scope: Option<ArtifactScope>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
+        /// The pane asking, so a server shared by many panes can keep each one's state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
         tool: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arguments: Option<serde_json::Value>,
@@ -1434,6 +1440,9 @@ pub enum ClientMsg {
         scope: Option<ArtifactScope>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
+        /// The pane asking, so a server shared by many panes can keep each one's state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
         uri: String,
     },
     /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run and
@@ -1970,6 +1979,12 @@ pub enum ServerMsg {
     PaneReload {
         pane: String,
     },
+    /// Sent to every connection: the MCP server behind web pane `pane` announced that a resource
+    /// changed (`notifications/resources/updated`), so a client drawing the server's A2UI layout
+    /// asks for its data again.
+    McpUpdated {
+        pane: String,
+    },
     /// Sent to every connection when an artifact's entry is deleted (`artifact_remove`, or the
     /// sweep of an artifact whose lifetime is over). `cwd` is the directory of the space whose
     /// `wheel.toml` held a `project` entry, and absent for a `machine` one: with `scope` and
@@ -2329,6 +2344,7 @@ impl ServerMsg {
             | ServerMsg::Spaces { .. }
             | ServerMsg::SpaceFocused { .. }
             | ServerMsg::PaneReload { .. }
+            | ServerMsg::McpUpdated { .. }
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }
             | ServerMsg::InspectPane { .. }

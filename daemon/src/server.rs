@@ -2164,10 +2164,11 @@ async fn handle(
             name,
             scope,
             space,
+            pane,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
-                let reply = match state.mcp_tools(&name, scope, space.as_deref()).await {
+                let reply = match state.mcp_tools(&name, scope, space.as_deref(), pane.as_deref()).await {
                     Ok(tools) => req.map(|req| ServerMsg::Tools { req, tools }),
                     Err(message) => {
                         tracing::warn!(%name, %message, "artifact tools refused");
@@ -2185,11 +2186,12 @@ async fn handle(
             name,
             scope,
             space,
+            pane,
             uri,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
-                let reply = match state.mcp_resource(&name, scope, space.as_deref(), &uri).await {
+                let reply = match state.mcp_resource(&name, scope, space.as_deref(), pane.as_deref(), &uri).await {
                     Ok(contents) => req.map(|req| ServerMsg::Resource { req, contents }),
                     Err(message) => {
                         tracing::warn!(%name, %uri, %message, "artifact read refused");
@@ -2207,13 +2209,14 @@ async fn handle(
             name,
             scope,
             space,
+            pane,
             tool,
             arguments,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let called = state
-                    .mcp_call(&name, scope, space.as_deref(), &tool, arguments)
+                    .mcp_call(&name, scope, space.as_deref(), pane.as_deref(), &tool, arguments)
                     .await;
                 let reply = match called {
                     Ok(result) => req.map(|req| ServerMsg::ToolResult { req, result }),

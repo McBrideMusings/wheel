@@ -19,10 +19,12 @@ public struct A2UIPaneView: View {
                 Banner(text: notice, tone: palette.warn, id: "a2ui.notice")
             }
             if let surface = pane.surface {
-                ScrollView {
-                    A2UISurfaceView(viewModel: styled(surface, palette), catalog: WheelA2UICatalog())
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .top)
+                GeometryReader { geo in
+                    ScrollView {
+                        A2UISurfaceView(viewModel: styled(surface, palette), catalog: WheelA2UICatalog())
+                            .frame(maxWidth: .infinity, alignment: .top)
+                    }
+                    .environment(\.a2uiViewport, geo.size.height)
                 }
             } else if case .failed = pane.state {
                 Spacer()

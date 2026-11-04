@@ -191,11 +191,11 @@ struct ProtocolTests {
     /// MCP artifact requests and their replies: the tool list carries each tool's `meta`, a call's
     /// arguments go out as a JSON object, and a resource's contents come back whole.
     @Test func encodesMcpRequestsAndDecodesTheirReplies() throws {
-        #expect(try ClientMsg.artifactTools(req: 1, name: "notes", scope: .project, space: "s1").json()
+        #expect(try ClientMsg.artifactTools(req: 1, name: "notes", scope: .project, space: "s1", pane: nil).json()
             == #"{"name":"notes","op":"artifact_tools","req":1,"scope":"project","space":"s1"}"#)
-        #expect(try ClientMsg.artifactRead(req: 2, name: "notes", scope: nil, space: nil, uri: "a2ui://notes").json()
+        #expect(try ClientMsg.artifactRead(req: 2, name: "notes", scope: nil, space: nil, pane: nil, uri: "a2ui://notes").json()
             == #"{"name":"notes","op":"artifact_read","req":2,"uri":"a2ui:\/\/notes"}"#)
-        let call = try ClientMsg.artifactCall(req: 3, name: "notes", scope: nil, space: nil, tool: "save_note", arguments: #"{"text":"hi"}"#).json()
+        let call = try ClientMsg.artifactCall(req: 3, name: "notes", scope: nil, space: nil, pane: nil, tool: "save_note", arguments: #"{"text":"hi"}"#).json()
         #expect(call == #"{"arguments":{"text":"hi"},"name":"notes","op":"artifact_call","req":3,"tool":"save_note"}"#)
 
         guard case let .tools(_, tools) = try ServerMsg.decode(#"{"ev":"tools","req":1,"tools":[{"name":"t","input_schema":{},"meta":{"ui":{"resourceUri":"a2ui://notes"}}}]}"#),

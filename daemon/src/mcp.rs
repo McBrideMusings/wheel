@@ -3,8 +3,14 @@
 //! shared by every caller of `artifact tools` and `artifact call`.
 //!
 //! A session is made on the first call that needs it and replaced when the entry's definition
-//! changes or the server's end of the connection closes. A stdio server runs in the space's
-//! directory with the login PATH; its process dies with its session.
+//! changes or the server's end of the connection closes. A project artifact's stdio server runs
+//! in the space's directory with the login PATH; its process dies with its session.
+//!
+//! An entry that says `shared = true` is one process for every space (ADR-0028). The daemon names
+//! the asking pane and its project in `_meta` on every call and read (`wheel/pane`, `wheel/dir`),
+//! reads a resource as `<uri>?dir=<project>`, and subscribes to that URI while a pane shows the
+//! project (`resources/subscribe`, `resources/unsubscribe`). The server answers a change with
+//! `notifications/resources/updated` for the URI, which reaches the panes showing that project.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -34,11 +40,54 @@ enum Def {
 
 struct Session {
     def: Def,
-    service: RunningService<RoleClient, ()>,
+    service: RunningService<RoleClient, Watch>,
+    /// The resources subscribed to, by project directory.
+    subscribed: HashMap<String, String>,
 }
 
-/// The sessions of every artifact, keyed by scope, name and the space's directory. Each key has a
-/// lock of its own, so one server connecting never holds up another's calls.
+/// What a caller holds of a session: the peer, the project directory it asks for, and the key the
+/// session is held under, so a dead one can be dropped.
+pub(crate) struct Conn {
+    pub peer: Peer<RoleClient>,
+    pub dir: String,
+    key: String,
+    shared: bool,
+}
+
+impl Conn {
+    /// `_meta` for a request to a shared server: the asking pane and its project.
+    fn meta(&self, pane: Option<&str>) -> Option<rmcp::model::RequestMetaObject> {
+        if !self.shared {
+            return None;
+        }
+        let mut map = serde_json::Map::new();
+        map.insert("wheel/dir".into(), self.dir.clone().into());
+        if let Some(pane) = pane {
+            map.insert("wheel/pane".into(), pane.into());
+        }
+        Some(rmcp::model::RequestMetaObject(rmcp::model::MetaObject(map)))
+    }
+}
+
+/// `uri` read for project `dir`: the same resource with `?dir=<dir>` added.
+fn project_uri(uri: &str, dir: &str) -> String {
+    match url::Url::parse(uri) {
+        Ok(mut u) => {
+            u.query_pairs_mut().append_pair("dir", dir);
+            u.to_string()
+        }
+        Err(_) => uri.to_string(),
+    }
+}
+
+/// Whether a request failed because the server's end is gone.
+fn is_closed(e: &rmcp::ServiceError) -> bool {
+    matches!(e, rmcp::ServiceError::TransportClosed)
+}
+
+/// The sessions of every artifact, keyed by scope and name, and for a project artifact the
+/// space's directory too. Each key has a lock of its own, so one server connecting never holds up
+/// another's calls.
 #[derive(Default)]
 pub(crate) struct Sessions {
     by_key: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Session>>>>>,
@@ -52,6 +101,35 @@ impl Sessions {
             .entry(key.to_string())
             .or_default()
             .clone()
+    }
+}
+
+/// The client side of a session: its `notifications/resources/updated`, which reach every connection as `mcp_updated` for each pane
+/// showing the artifact: the panes of the project a `?dir=` names, or of this session's own
+/// directory.
+#[derive(Clone)]
+struct Watch {
+    state: std::sync::Weak<AppState>,
+    scope: ArtifactScope,
+    name: String,
+    shared: bool,
+    cwd: String,
+}
+
+impl rmcp::ClientHandler for Watch {
+    async fn on_resource_updated(
+        &self,
+        params: rmcp::model::ResourceUpdatedNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleClient>,
+    ) {
+        let Some(state) = self.state.upgrade() else { return };
+        let dir = url::Url::parse(&params.uri)
+            .ok()
+            .and_then(|u| u.query_pairs().find(|(k, _)| k == "dir").map(|(_, v)| v.into_owned()));
+        let dir = if self.shared { dir } else { Some(self.cwd.clone()) };
+        for pane in state.mcp_panes(self.scope, &self.name, dir.as_deref()) {
+            let _ = state.global.send(wheel_proto::ServerMsg::McpUpdated { pane });
+        }
     }
 }
 
@@ -69,13 +147,13 @@ impl Def {
 }
 
 impl AppState {
-    /// The peer of artifact `name`'s MCP session, connecting first when there is none.
+    /// A connection to artifact `name`'s MCP session, connecting first when there is none.
     async fn mcp_peer(
         &self,
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
-    ) -> Result<Peer<RoleClient>, String> {
+    ) -> Result<Conn, String> {
         let cwd = self.artifact_space(space)?;
         let artifact = self.artifact_ref(scope, name, &cwd)?;
         let entry = self.artifact_entry(&artifact, &cwd)?.ok_or_else(|| {
@@ -89,17 +167,37 @@ impl AppState {
             return Err(format!("the entry for {name} is invalid: {problem}"));
         }
         let def = Def::of(&entry)?;
-        let key = format!("{}\0{}\0{}", artifact.scope().name(), artifact.name(), cwd);
+        // One process for every space only where the entry declares its server serves them all
+        // (`shared = true`, machine scope); every other server is one process per space.
+        if entry.shared && artifact.scope() != ArtifactScope::Machine {
+            return Err(format!("the entry for {name} is shared, which only a machine artifact can be"));
+        }
+        let shared = entry.shared;
+        let key = if shared {
+            format!("{}\0{}", artifact.scope().name(), artifact.name())
+        } else {
+            format!("{}\0{}\0{}", artifact.scope().name(), artifact.name(), cwd)
+        };
         let slot = self.mcp.slot(&key);
         let mut held = slot.lock().await;
-        if let Some(session) = held.as_ref() {
+        if let Some(session) = held.as_mut() {
             if session.def == def && !session.service.is_closed() {
-                return Ok(session.service.peer().clone());
+                if shared {
+                    self.mcp_unsubscribe_closed(session, artifact.scope(), artifact.name()).await;
+                }
+                return Ok(Conn { peer: session.service.peer().clone(), dir: cwd, key, shared });
             }
         }
         // Dropping the old session ends its process, or its HTTP session, before the new one starts.
         *held = None;
-        let service = tokio::time::timeout(CONNECT, self.mcp_connect(&def, &cwd, name))
+        let watch = Watch {
+            state: self.me.clone(),
+            scope: artifact.scope(),
+            name: name.to_string(),
+            shared,
+            cwd: cwd.clone(),
+        };
+        let service = tokio::time::timeout(CONNECT, self.mcp_connect(&def, &cwd, name, watch, shared))
             .await
             .map_err(|_| {
                 format!(
@@ -107,10 +205,46 @@ impl AppState {
                     CONNECT.as_secs()
                 )
             })??;
-        tracing::info!(scope = artifact.scope().name(), %name, ?def, "MCP session open");
+        tracing::info!(scope = artifact.scope().name(), %name, ?def, shared, "MCP session open");
         let peer = service.peer().clone();
-        *held = Some(Session { def, service });
-        Ok(peer)
+        *held = Some(Session { def, service, subscribed: HashMap::new() });
+        Ok(Conn { peer, dir: cwd, key, shared })
+    }
+
+    /// Unsubscribe from the projects no pane shows any more.
+    async fn mcp_unsubscribe_closed(&self, session: &mut Session, scope: ArtifactScope, name: &str) {
+        let open = self.mcp_roots(scope, name);
+        let closed: Vec<String> = session.subscribed.keys().filter(|d| !open.contains(d)).cloned().collect();
+        for dir in closed {
+            if let Some(uri) = session.subscribed.remove(&dir) {
+                let _ = session.service.peer().unsubscribe(rmcp::model::UnsubscribeRequestParams::new(uri)).await;
+            }
+        }
+    }
+
+    /// Subscribe to `uri` for project `dir`, once, for a shared server.
+    async fn mcp_subscribe(&self, conn: &Conn, uri: &str) {
+        let (key, dir) = (conn.key.clone(), conn.dir.clone());
+        let slot = self.mcp.slot(&key);
+        let mut held = slot.lock().await;
+        if let Some(session) = held.as_mut() {
+            if session.subscribed.get(&dir).map(String::as_str) != Some(uri) {
+                if session
+                    .service
+                    .peer()
+                    .subscribe(rmcp::model::SubscribeRequestParams::new(uri.to_string()))
+                    .await
+                    .is_ok()
+                {
+                    session.subscribed.insert(dir, uri.to_string());
+                }
+            }
+        }
+    }
+
+    /// Drop the session under `key`: its process ends, and the next call starts a new one.
+    async fn mcp_evict(&self, key: &str) {
+        *self.mcp.slot(key).lock().await = None;
     }
 
     async fn mcp_connect(
@@ -118,19 +252,26 @@ impl AppState {
         def: &Def,
         cwd: &str,
         name: &str,
-    ) -> Result<RunningService<RoleClient, ()>, String> {
+        watch: Watch,
+        shared: bool,
+    ) -> Result<RunningService<RoleClient, Watch>, String> {
         match def {
             Def::Stdio(command) => {
                 let mut cmd = tokio::process::Command::new("/bin/sh");
+                // A shared server belongs to no project, so it starts in the home directory
+                // and is told the projects as roots.
+                let dir = if shared { std::env::var("HOME").unwrap_or_else(|_| cwd.to_string()) } else { cwd.to_string() };
                 cmd.arg("-c")
                     .arg(command)
-                    .current_dir(cwd)
+                    .current_dir(dir)
                     .envs(crate::shell::command_env(
                         self.control.lock().unwrap().as_ref(),
                         &self.instance_dir,
                         &self.login_path.lock().unwrap().path,
-                    ))
-                    .env("WHEEL_SPACE_DIR", cwd);
+                    ));
+                if !shared {
+                    cmd.env("WHEEL_SPACE_DIR", cwd);
+                }
                 let (transport, stderr) = TokioChildProcess::builder(cmd)
                     .stderr(Stdio::piped())
                     .spawn()
@@ -144,14 +285,14 @@ impl AppState {
                         }
                     });
                 }
-                ().serve(transport)
+                watch.serve(transport)
                     .await
                     .map_err(|e| format!("{name}: {command:?} did not start an MCP session: {e}"))
             }
             Def::Http(url) => {
                 // A https URL needs the process's TLS provider, which nothing else may have set.
                 let _ = rustls::crypto::ring::default_provider().install_default();
-                ().serve(StreamableHttpClientTransport::from_uri(url.as_str()))
+                watch.serve(StreamableHttpClientTransport::from_uri(url.as_str()))
                     .await
                     .map_err(|e| format!("{name}: cannot open an MCP session with {url}: {e}"))
             }
@@ -164,12 +305,18 @@ impl AppState {
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
+        _pane: Option<&str>,
     ) -> Result<Vec<McpTool>, String> {
-        let peer = self.mcp_peer(name, scope, space).await?;
-        let tools = peer
-            .list_all_tools()
-            .await
-            .map_err(|e| format!("{name}: list tools: {e}"))?;
+        let conn = self.mcp_peer(name, scope, space).await?;
+        let tools = match conn.peer.list_all_tools().await {
+            Ok(t) => t,
+            Err(e) => {
+                if is_closed(&e) {
+                    self.mcp_evict(&conn.key).await;
+                }
+                return Err(format!("{name}: list tools: {e}"));
+            }
+        };
         Ok(tools
             .into_iter()
             .map(|t| McpTool {
@@ -187,6 +334,7 @@ impl AppState {
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
+        pane: Option<&str>,
         tool: &str,
         arguments: Option<serde_json::Value>,
     ) -> Result<McpToolResult, String> {
@@ -199,13 +347,21 @@ impl AppState {
                 ))
             }
         };
-        let peer = self.mcp_peer(name, scope, space).await?;
+        let conn = self.mcp_peer(name, scope, space).await?;
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = arguments;
-        let result = peer
-            .call_tool(params)
-            .await
-            .map_err(|e| format!("{name}: call {tool}: {e}"))?;
+        params.meta = conn.meta(pane);
+        // A call may have run before the server's end went away, so a dead session is dropped
+        // and the error returned: the next call starts a new one.
+        let result = match conn.peer.call_tool(params).await {
+            Ok(r) => r,
+            Err(e) => {
+                if is_closed(&e) {
+                    self.mcp_evict(&conn.key).await;
+                }
+                return Err(format!("{name}: call {tool}: {e}"));
+            }
+        };
         let content = result
             .content
             .iter()
@@ -227,9 +383,10 @@ impl AppState {
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
+        pane: Option<&str>,
         uri: &str,
     ) -> Result<Vec<serde_json::Value>, String> {
-        let read = self.mcp_read(name, scope, space, uri).await?;
+        let read = self.mcp_read(name, scope, space, pane, uri).await?;
         Ok(read
             .get("contents")
             .and_then(|c| c.as_array())
@@ -285,7 +442,8 @@ impl AppState {
         scope: Option<ArtifactScope>,
         space: Option<&str>,
     ) -> Result<serde_json::Value, String> {
-        let peer = self.mcp_peer(name, scope, space).await?;
+        let conn = self.mcp_peer(name, scope, space).await?;
+        let peer = conn.peer.clone();
         let tools = peer
             .list_all_tools()
             .await
@@ -310,7 +468,7 @@ impl AppState {
         };
         let mut view = serde_json::Value::Null;
         if let Some((tool, uri)) = linked {
-            let read = self.mcp_read(name, scope, space, &uri).await?;
+            let read = self.mcp_read(name, scope, space, None, &uri).await?;
             let html = read
                 .get("contents")
                 .and_then(|c| c.as_array())
@@ -333,13 +491,25 @@ impl AppState {
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
+        pane: Option<&str>,
         uri: &str,
     ) -> Result<serde_json::Value, String> {
-        let peer = self.mcp_peer(name, scope, space).await?;
-        let read = peer
-            .read_resource(rmcp::model::ReadResourceRequestParams::new(uri.to_string()))
-            .await
-            .map_err(|e| format!("{name}: read {uri}: {e}"))?;
+        let conn = self.mcp_peer(name, scope, space).await?;
+        let uri = &if conn.shared { project_uri(uri, &conn.dir) } else { uri.to_string() };
+        if conn.shared {
+            self.mcp_subscribe(&conn, uri).await;
+        }
+        let mut params = rmcp::model::ReadResourceRequestParams::new(uri.to_string());
+        params.meta = conn.meta(pane);
+        let read = match conn.peer.read_resource(params).await {
+            Ok(r) => r,
+            Err(e) => {
+                if is_closed(&e) {
+                    self.mcp_evict(&conn.key).await;
+                }
+                return Err(format!("{name}: read {uri}: {e}"));
+            }
+        };
         serde_json::to_value(read).map_err(|e| format!("{name}: {uri}: {e}"))
     }
 
@@ -352,13 +522,13 @@ impl AppState {
         uri: &str,
     ) -> Result<serde_json::Value, String> {
         if !uri.starts_with("ui://") {
-            let peer = self.mcp_peer(name, scope, space).await?;
-            let listed = peer.list_all_resources().await.unwrap_or_default();
+            let conn = self.mcp_peer(name, scope, space).await?;
+            let listed = conn.peer.list_all_resources().await.unwrap_or_default();
             if !listed.iter().any(|r| r.uri == uri) {
                 return Err(format!("{uri} is not a resource the server lists"));
             }
         }
-        self.mcp_read(name, scope, space, uri).await
+        self.mcp_read(name, scope, space, None, uri).await
     }
 
     /// A tool call from the pane: refused for a tool the server does not list, and, when a page
@@ -376,8 +546,9 @@ impl AppState {
         initial: bool,
         person: bool,
     ) -> Result<McpToolResult, String> {
-        let peer = self.mcp_peer(name, scope, space).await?;
-        let tools = peer
+        let conn = self.mcp_peer(name, scope, space).await?;
+        let tools = conn
+            .peer
             .list_all_tools()
             .await
             .map_err(|e| format!("{name}: list tools: {e}"))?;
@@ -396,7 +567,47 @@ impl AppState {
         if !allowed {
             return Err(format!("{tool} is not visible to an app"));
         }
-        self.mcp_call(name, scope, space, tool, arguments).await
+        self.mcp_call(name, scope, space, None, tool, arguments).await
+    }
+
+    /// The web panes showing artifact `name` of `scope`, in the spaces whose directory is `cwd`
+    /// (every space when `cwd` is none).
+    fn mcp_panes(&self, scope: ArtifactScope, name: &str, cwd: Option<&str>) -> Vec<String> {
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .filter(|s| cwd.map_or(true, |c| s.cwd == c))
+            .flat_map(crate::spaces::space_panes)
+            .filter_map(|(pane, kind)| match kind {
+                wheel_proto::PaneKind::Web { artifact, .. }
+                    if artifact.scope() == scope && artifact.name() == name =>
+                {
+                    Some(pane.to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The directories of the spaces showing artifact `name` of `scope`, sorted: the projects a
+    /// shared server is subscribed to.
+    fn mcp_roots(&self, scope: ArtifactScope, name: &str) -> Vec<String> {
+        let spaces = self.spaces.lock().unwrap();
+        let mut dirs: Vec<String> = spaces
+            .spaces
+            .iter()
+            .filter(|s| {
+                crate::spaces::space_panes(s).iter().any(|(_, kind)| {
+                    matches!(kind, wheel_proto::PaneKind::Web { artifact, .. }
+                        if artifact.scope() == scope && artifact.name() == name)
+                })
+            })
+            .map(|s| s.cwd.clone())
+            .collect();
+        dirs.sort();
+        dirs.dedup();
+        dirs
     }
 
     /// The MCP server artifact pane `pane` shows: its name, scope and the id of its space. None

@@ -141,11 +141,11 @@ public enum ClientMsg: Sendable, Equatable {
     /// Replies `artifacts`.
     case artifactLs(req: UInt64?, space: String?, paneOnly: Bool)
     /// The tools of the MCP server artifact `name` names, as the server listed them; replies `tools`.
-    case artifactTools(req: UInt64?, name: String, scope: ArtifactScope?, space: String?)
+    case artifactTools(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?)
     /// Call `tool` of that server with `arguments` (the text of a JSON object); replies `toolResult`.
-    case artifactCall(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, tool: String, arguments: String?)
+    case artifactCall(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, tool: String, arguments: String?)
     /// `resources/read` of `uri` on that server; replies `resource`.
-    case artifactRead(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, uri: String)
+    case artifactRead(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, uri: String)
     /// Every built-in artifact wheeld carries; replies `builtins`.
     case builtinLs(req: UInt64?)
     /// Install a built-in at machine scope; replies `builtins`.
@@ -337,20 +337,23 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
             if paneOnly { o["pane"] = true }
-        case let .artifactTools(req, name, scope, space):
+        case let .artifactTools(req, name, scope, space, pane):
             o = ["op": "artifact_tools", "name": name]; put(req)
             if let scope { o["scope"] = scope.rawValue }
             if let space { o["space"] = space }
-        case let .artifactCall(req, name, scope, space, tool, arguments):
+            if let pane { o["pane"] = pane }
+        case let .artifactCall(req, name, scope, space, pane, tool, arguments):
             o = ["op": "artifact_call", "name": name, "tool": tool]; put(req)
             if let scope { o["scope"] = scope.rawValue }
             if let space { o["space"] = space }
+            if let pane { o["pane"] = pane }
             if let arguments, let data = arguments.data(using: .utf8),
                let object = try? JSONSerialization.jsonObject(with: data) { o["arguments"] = object }
-        case let .artifactRead(req, name, scope, space, uri):
+        case let .artifactRead(req, name, scope, space, pane, uri):
             o = ["op": "artifact_read", "name": name, "uri": uri]; put(req)
             if let scope { o["scope"] = scope.rawValue }
             if let space { o["space"] = space }
+            if let pane { o["pane"] = pane }
         case let .builtinLs(req):
             o = ["op": "builtin_ls"]; put(req)
         case let .builtinInstall(req, name):
@@ -1149,6 +1152,8 @@ public enum ServerMsg: Sendable {
     case clients(req: UInt64, clients: [ClientInfo])
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
+    /// The MCP server behind pane `pane` said a resource changed.
+    case mcpUpdated(pane: String)
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
     /// space directory of a `project` artifact, nil for a `machine` one.
     case artifactGone(scope: ArtifactScope, name: String, cwd: String?)
@@ -1310,6 +1315,7 @@ extension ServerMsg: Decodable {
         case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "clients": self = .clients(req: try c.decode(UInt64.self, forKey: .req), clients: try c.decode([ClientInfo].self, forKey: .clients))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
+        case "mcp_updated": self = .mcpUpdated(pane: try c.decode(String.self, forKey: .pane))
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
                                  cwd: try c.decodeIfPresent(String.self, forKey: .cwd))
