@@ -1103,15 +1103,30 @@ pub fn parse_profile(body: &str) -> Profile {
 pub fn parse_usage(body: &str) -> Result<RawUsage, String> {
     let value: Value =
         serde_json::from_str(body).map_err(|e| format!("the usage answer is not JSON: {e}"))?;
-    let window = |name: &str| -> Result<(f64, Option<String>), String> {
+    // The account-wide windows come from `five_hour` / `seven_day`; when those carry no number the
+    // unscoped `limits` entry of the same group (`session`, `weekly`) holds it.
+    let window = |name: &str, group: &str| -> Result<(f64, Option<String>), String> {
         let w = &value[name];
-        let pct = w["utilization"]
-            .as_f64()
-            .ok_or_else(|| format!("the usage answer has no {name}.utilization number"))?;
-        Ok((pct, w["resets_at"].as_str().map(String::from)))
+        if let Some(pct) = w["utilization"].as_f64() {
+            return Ok((pct, w["resets_at"].as_str().map(String::from)));
+        }
+        value["limits"]
+            .as_array()
+            .and_then(|limits| {
+                limits
+                    .iter()
+                    .find(|l| l["group"].as_str() == Some(group) && l["scope"].is_null())
+            })
+            .and_then(|l| {
+                Some((
+                    l["percent"].as_f64()?,
+                    l["resets_at"].as_str().map(String::from),
+                ))
+            })
+            .ok_or_else(|| format!("the usage answer has no {name}.utilization number"))
     };
-    let (session_pct, session_resets_at) = window("five_hour")?;
-    let (weekly_pct, weekly_resets_at) = window("seven_day")?;
+    let (session_pct, session_resets_at) = window("five_hour", "session")?;
+    let (weekly_pct, weekly_resets_at) = window("seven_day", "weekly")?;
     let model_limits = value["limits"]
         .as_array()
         .map(|limits| {
@@ -1198,6 +1213,22 @@ mod tests {
             }]
         );
         assert!(parse_usage(r#"{"five_hour":{}}"#).is_err());
+    }
+
+    #[test]
+    fn the_limits_list_stands_in_when_the_windows_carry_no_number() {
+        let raw = parse_usage(
+            r#"{"five_hour":null,"seven_day":{"resets_at":null},
+                "limits":[{"kind":"session","group":"session","percent":31,"resets_at":"2026-11-05T20:00:00Z","scope":null},
+                          {"kind":"weekly","group":"weekly","percent":9,"scope":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(raw.session_pct, 31.0);
+        assert_eq!(raw.weekly_pct, 9.0);
+        assert_eq!(
+            raw.session_resets_at.as_deref(),
+            Some("2026-11-05T20:00:00Z")
+        );
     }
 
     #[test]
