@@ -2,13 +2,12 @@ import A2UISwiftCore
 import A2UISwiftUI
 import SwiftUI
 
-// MARK: BeadTable — grouped boxes of one-line rows, as the Beads web page draws them
+// MARK: Table — the system's List of sections of one-line rows (ADR-0029: it knows nothing of what the rows are)
 // column {key, label, width|null, tree, wide}; section {title, count, rows}; row {id, path, depth, kids, collapsed, dim, sel,
-// cells [{text, tone, mono, chip}], buttons [{label, script}]}. A `wide` column shows only when the pane is 640 pt across.
-// Raises select_bead {id} (or the tool `rowAction` names), toggle_path {path}, run_script {bead, script}.
-// A titled section is a heading over a box of at most 10 rows, and Show more makes the box taller; an untitled one
-// is one box that fills the pane.
-struct A2UIBeadTableView: View {
+// cells [{key, text, tone, mono, chip}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
+// Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
+// menu item's own `action` with its `context`.
+struct A2UITableView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @Environment(\.a2uiPane) private var pane
@@ -25,7 +24,7 @@ struct A2UIBeadTableView: View {
         let narrow = pane.width < 640
         let cols = (p["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.filter { !(narrow && $0["wide"]?.boolValue == true) }
         let sections = (p["sections"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let rowAction = p["rowAction"]?.stringValue ?? "select_bead"
+        let rowAction = p["rowAction"]?.stringValue ?? ""
         let selected = Binding<String?>(
             get: { nil },
             set: { path in
@@ -63,7 +62,8 @@ struct A2UIBeadTableView: View {
     }
 
     private func line(_ r: [String: AnyCodable], _ cols: [[String: AnyCodable]], _ narrow: Bool) -> some View {
-        RowView(row: r, cols: cols, narrow: narrow, first: true, fire: fire, rowAction: "").tag(r["path"]?.stringValue)
+        let foldAction = node.instance.properties["foldAction"]?.stringValue ?? ""
+        return RowView(row: r, cols: cols, narrow: narrow, first: true, fire: fire, rowAction: "", foldAction: foldAction).tag(r["path"]?.stringValue)
     }
 
     private struct RowView: View {
@@ -73,10 +73,11 @@ struct A2UIBeadTableView: View {
         let first: Bool
         let fire: (String, [String: AnyCodable]) -> Void
         let rowAction: String
+        let foldAction: String
 
         var body: some View {
             let cells = (row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-            let buttons = (row["buttons"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+            let menu = (row["menu"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
             let id = row["id"]?.stringValue ?? ""
             let dim = row["dim"]?.boolValue == true
             let depth = row["depth"]?.numberValue ?? 0
@@ -88,9 +89,9 @@ struct A2UIBeadTableView: View {
             .frame(height: WebTheme.rowHeight)
             .contentShape(Rectangle())
             .contextMenu {
-                ForEach(Array(buttons.enumerated()), id: \.offset) { _, b in
-                    Button(b["label"]?.stringValue ?? "") {
-                        fire("run_script", ["bead": .string(id), "script": .string(b["script"]?.stringValue ?? "")])
+                ForEach(Array(menu.enumerated()), id: \.offset) { _, item in
+                    Button(item["label"]?.stringValue ?? "") {
+                        fire(item["action"]?.stringValue ?? "", item["context"]?.dictionaryValue ?? [:])
                     }
                 }
             }
@@ -111,7 +112,7 @@ struct A2UIBeadTableView: View {
                         .frame(width: 16)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            if row["kids"]?.boolValue == true { fire("toggle_path", ["path": .string(row["path"]?.stringValue ?? "")]) }
+                            if row["kids"]?.boolValue == true { fire(foldAction, ["path": .string(row["path"]?.stringValue ?? "")]) }
                         }
                 }
                 cellView(cell, key: key, dim: dim)
