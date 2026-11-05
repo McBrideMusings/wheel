@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the Mac app and install it in /Applications while the running copy keeps running.
 #   install-app.sh release   Release build, installed as /Applications/Wheel.app
-#   install-app.sh dev       Debug build with the .dev bundle id and a DEV banner on its icon,
+#   install-app.sh dev       Debug build with the .dev bundle id and the AppIconDev icon,
 #                            installed as /Applications/Wheel Dev.app
 # The running app is stopped only for the two renames that swap the bundles, then relaunched.
 # wheeld is left running: its process is `wheeld`, not a path inside the bundle, so the stop
@@ -14,7 +14,7 @@ VARIANT="${1:-}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 case "$VARIANT" in
   release) CONFIG=Release DEST=/Applications/Wheel.app SETTINGS=() ;;
-  dev) CONFIG=Debug DEST="/Applications/Wheel Dev.app" SETTINGS=(DEV_BUNDLE_SUFFIX=.dev) ;;
+  dev) CONFIG=Debug DEST="/Applications/Wheel Dev.app" SETTINGS=(DEV_BUNDLE_SUFFIX=.dev ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev) ;;
   *) echo "usage: install-app.sh release|dev" >&2; exit 2 ;;
 esac
 
@@ -40,41 +40,8 @@ SETTINGS+=(CODE_SIGN_IDENTITY="$IDENTITY" CODE_SIGN_STYLE=Manual PROVISIONING_PR
 
 # Each variant has its own derived data, so a deploy never replaces the Debug app `make
 # build-client` leaves for the checks.
-DERIVED="$ROOT/DerivedData-deploy-$VARIANT"
-ICONS="$ROOT/apple/Mac/Assets.xcassets/AppIcon.appiconset"
-BACKUP="$ROOT/tmp/icon-backup"
-
-restore_icons() {
-  if [ -d "$BACKUP" ]; then
-    cp "$BACKUP"/*.png "$ICONS"/
-    rm -rf "$BACKUP"
-  fi
-}
-
-# The dev app wears a red DEV band across its icon's lower-right corner. The committed icons are
-# swapped for the length of the build and put back whatever the build does.
-banner_icons() {
-  restore_icons
-  mkdir -p "$BACKUP"
-  cp "$ICONS"/*.png "$BACKUP"/
-  local svg="$BACKUP/banner.svg"
-  cat >"$svg" <<'EOF'
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <g transform="translate(72 72) rotate(-35)">
-    <rect x="-100" y="-11" width="200" height="22" fill="rgb(220,40,40)" fill-opacity="0.94"/>
-    <text x="0" y="5" font-family="Helvetica" font-weight="bold" font-size="14" fill="white" text-anchor="middle">DEV</text>
-  </g>
-</svg>
-EOF
-  local png size
-  for png in "$ICONS"/*.png; do
-    size="$(basename "$png" .png)"
-    resvg -w "$size" -h "$size" "$svg" "$BACKUP/banner-$size.png"
-    magick "$png" "$BACKUP/banner-$size.png" -composite -alpha off "$png"
-  done
-  rm -f "$svg" "$BACKUP"/banner-*.png
-}
-
+# `.noindex` keeps Spotlight from importing the build products.
+DERIVED="$ROOT/DerivedData-deploy-$VARIANT.noindex"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 WORK="$(dirname "$DEST")/.$(basename "$DEST").installing.noindex"
 STAGED="$WORK/new/$(basename "$DEST")"
@@ -84,18 +51,21 @@ cleanup_work() {
   "$LSREGISTER" -u "$STAGED" 2>/dev/null || true
   "$LSREGISTER" -u "$PREVIOUS" 2>/dev/null || true
 }
-# One exit handler for every run: it puts the committed icons back if a dev build stopped
-# half-way, and removes the staging folder.
-trap 'restore_icons; cleanup_work' EXIT
+# One exit handler for every run: it removes the staging folder.
+trap cleanup_work EXIT
 
 ( cd "$ROOT" && xcodegen generate --spec apple/project.yml --project apple )
-[ "$VARIANT" = dev ] && banner_icons
 BUILD_LOG="$LOG_DIR/deploy-$VARIANT-xcodebuild.log"
 say "building Wheel ($CONFIG); xcodebuild's output is in $BUILD_LOG"
+# The generated workspace records the package versions once resolved; reading them back skips a
+# network round trip per build. A project that was never resolved resolves on its first build.
+RESOLVE=()
+[ -f "$ROOT/apple/Wheel.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved" ] \
+  && RESOLVE=(-disableAutomaticPackageResolution)
 status=0
 xcodebuild -project "$ROOT/apple/Wheel.xcodeproj" -scheme Wheel -configuration "$CONFIG" \
-  -destination platform=macOS -derivedDataPath "$DERIVED" build "${SETTINGS[@]}" >"$BUILD_LOG" 2>&1 || status=$?
-[ "$VARIANT" = dev ] && restore_icons
+  -destination platform=macOS -derivedDataPath "$DERIVED" ${RESOLVE[@]+"${RESOLVE[@]}"} -showBuildTimingSummary build "${SETTINGS[@]}" >"$BUILD_LOG" 2>&1 || status=$?
+say "xcodebuild finished (exit $status)"
 grep -E '(: error:|^error:|^\*\* |^embedded wheeld)' "$BUILD_LOG" || true
 if [ "$status" -ne 0 ]; then
   say "build failed (xcodebuild exited $status); nothing was installed"
@@ -112,6 +82,7 @@ if [ "$VARIANT" = dev ]; then
   plutil -replace CFBundleDisplayName -string "Wheel Dev" "$APP/Contents/Info.plist"
   plutil -replace CFBundleName -string "Wheel Dev" "$APP/Contents/Info.plist"
   codesign --force --sign "$IDENTITY" "$APP"
+  say "renamed and signed"
 fi
 
 # Staged with ditto (a signed bundle depends on its exact symlinks) in a hidden .noindex folder

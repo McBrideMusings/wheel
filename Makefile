@@ -76,3 +76,4 @@ icon-render: ## Render apple/Mac/AppIcon.svg into the app icon's PNGs
 		png=apple/Mac/Assets.xcassets/AppIcon.appiconset/$$s.png; \
 		resvg -w $$s -h $$s apple/Mac/AppIcon.svg $$png && magick $$png -alpha off $$png || exit 1; \
 	done
+	bash $(ROOT)/tools/render-dev-icon.sh

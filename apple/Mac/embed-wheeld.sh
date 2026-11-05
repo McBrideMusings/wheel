@@ -20,7 +20,9 @@ CONTENTS="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH"
 
 # Xcode's environment (SDKROOT, deployment targets, its own PATH) leaks into cargo's C and Zig
 # builds; build from a clean one.
-env -i HOME="$HOME" USER="$USER" WHEELD_BUNDLE_ID="$BUNDLE_ID" \
+# WHEELD_BUNDLE_ID stays unset: daemon/build.rs picks the id from the profile, so this build is
+# the same one a plain `cargo build` makes and neither rebuilds the other's wheeld.
+env -i HOME="$HOME" USER="$USER" \
   PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
   cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel $CARGO_FLAGS
 

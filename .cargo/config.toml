@@ -1,3 +1,10 @@
+# Cargo picks a crate's features from the packages a build selects, so `-p wheelhouse` builds
+# clap without its `env` feature and `-p wheel-cli` builds it with, and each gets its own compiled
+# copy of clap and of everything that depends on it. Unifying over the whole workspace gives every
+# build, whichever packages it names, the same features and so one set of artifacts.
+[resolver]
+feature-unification = "workspace"
+
 [env]
 # ghostty-vt-sys builds libghostty-vt with Zig 0.16; tools/zig runs it through mise.
 ZIG = { value = "tools/zig", relative = true }
