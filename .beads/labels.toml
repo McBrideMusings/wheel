@@ -39,3 +39,6 @@ about = "Visual design beyond stock macOS styling."
 
 [labels.human]
 about = "Needs a person: a decision, hardware, an account, a manual check. Autonomous passes skip it."
+
+[labels.wheelhouse]
+about = "Wheelhouse, the plugin binaries (plugins/): project-work views served over MCP as A2UI, and the runner process."

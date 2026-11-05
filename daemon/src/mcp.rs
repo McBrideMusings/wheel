@@ -6,13 +6,15 @@
 //! changes or the server's end of the connection closes. A project artifact's stdio server runs
 //! in the space's directory with the login PATH; its process dies with its session.
 //!
-//! An entry that says `shared = true` is one process for every space (ADR-0028). The daemon names
-//! the asking pane and its project in `_meta` on every call and read (`wheel/pane`, `wheel/dir`),
+//! An entry that says `shared = true` is one process for every space, and entries that name the
+//! same server share it (ADR-0028). The daemon names
+//! the asking pane, its project and its artifact in `_meta` on every call and read (`wheel/pane`,
+//! `wheel/dir`, `wheel/artifact`),
 //! reads a resource as `<uri>?dir=<project>`, and subscribes to that URI while a pane shows the
 //! project (`resources/subscribe`, `resources/unsubscribe`). The server answers a change with
 //! `notifications/resources/updated` for the URI, which reaches the panes showing that project.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,9 +43,18 @@ enum Def {
 struct Session {
     def: Def,
     service: RunningService<RoleClient, Watch>,
-    /// The resources subscribed to, by project directory.
-    subscribed: HashMap<String, String>,
+    subs: Subs,
 }
+
+/// One subscribed resource: the project it is read for and the artifacts whose panes read it.
+struct Sub {
+    dir: String,
+    names: HashSet<String>,
+}
+
+/// The resources a shared session is subscribed to, by URI (with its `?dir=`). The session's
+/// notification handler reads it to find the panes a change reaches.
+type Subs = Arc<Mutex<HashMap<String, Sub>>>;
 
 /// What a caller holds of a session: the peer, the project directory it asks for, and the key the
 /// session is held under, so a dead one can be dropped.
@@ -51,17 +62,20 @@ pub(crate) struct Conn {
     pub peer: Peer<RoleClient>,
     pub dir: String,
     key: String,
+    name: String,
     shared: bool,
 }
 
 impl Conn {
-    /// `_meta` for a request to a shared server: the asking pane and its project.
+    /// `_meta` for a request to a shared server: the asking pane, its project and the artifact it
+    /// shows, which is how one server tells its views apart.
     fn meta(&self, pane: Option<&str>) -> Option<rmcp::model::RequestMetaObject> {
         if !self.shared {
             return None;
         }
         let mut map = serde_json::Map::new();
         map.insert("wheel/dir".into(), self.dir.clone().into());
+        map.insert("wheel/artifact".into(), self.name.clone().into());
         if let Some(pane) = pane {
             map.insert("wheel/pane".into(), pane.into());
         }
@@ -85,12 +99,16 @@ fn is_closed(e: &rmcp::ServiceError) -> bool {
     matches!(e, rmcp::ServiceError::TransportClosed)
 }
 
-/// The sessions of every artifact, keyed by scope and name, and for a project artifact the
-/// space's directory too. Each key has a lock of its own, so one server connecting never holds up
-/// another's calls.
+/// The sessions of every artifact. A shared server is keyed by its scope and what runs it, so
+/// entries naming the same command share one; any other is keyed by scope and name and the space's
+/// directory. Each key has a lock of its own, so one server connecting never holds up another's
+/// calls.
 #[derive(Default)]
 pub(crate) struct Sessions {
     by_key: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Session>>>>>,
+    /// The shared session each shared artifact (`scope\0name`) last used, so a session no entry
+    /// names any more can end.
+    owners: Mutex<HashMap<String, String>>,
 }
 
 impl Sessions {
@@ -101,6 +119,22 @@ impl Sessions {
             .entry(key.to_string())
             .or_default()
             .clone()
+    }
+
+    /// Record that the shared artifact `owner` now uses the session under `key`. Returns the
+    /// key it used before when it moved off it.
+    fn claim(&self, owner: &str, key: &str) -> Option<String> {
+        let before = self.owners.lock().unwrap().insert(owner.to_string(), key.to_string())?;
+        (before != key).then_some(before)
+    }
+
+    /// Record that `owner` uses no shared session. Returns the key it used.
+    fn release(&self, owner: &str) -> Option<String> {
+        self.owners.lock().unwrap().remove(owner)
+    }
+
+    fn in_use(&self, key: &str) -> bool {
+        self.owners.lock().unwrap().values().any(|k| k == key)
     }
 }
 
@@ -114,6 +148,7 @@ struct Watch {
     name: String,
     shared: bool,
     cwd: String,
+    subs: Subs,
 }
 
 impl rmcp::ClientHandler for Watch {
@@ -123,17 +158,32 @@ impl rmcp::ClientHandler for Watch {
         _context: rmcp::service::NotificationContext<RoleClient>,
     ) {
         let Some(state) = self.state.upgrade() else { return };
-        let dir = url::Url::parse(&params.uri)
-            .ok()
-            .and_then(|u| u.query_pairs().find(|(k, _)| k == "dir").map(|(_, v)| v.into_owned()));
-        let dir = if self.shared { dir } else { Some(self.cwd.clone()) };
-        for pane in state.mcp_panes(self.scope, &self.name, dir.as_deref()) {
+        // A shared session serves several artifacts: the change reaches the panes of the
+        // artifacts that read this resource, in the project it was read for.
+        let panes: Vec<String> = if self.shared {
+            let subs = self.subs.lock().unwrap();
+            match subs.get(&params.uri) {
+                Some(sub) => sub.names.iter().flat_map(|n| state.mcp_panes(self.scope, n, Some(&sub.dir))).collect(),
+                None => Vec::new(),
+            }
+        } else {
+            state.mcp_panes(self.scope, &self.name, Some(&self.cwd))
+        };
+        for pane in panes {
             let _ = state.global.send(wheel_proto::ServerMsg::McpUpdated { pane });
         }
     }
 }
 
 impl Def {
+    /// What names this server in a session key: two entries with the same one run the same server.
+    fn key(&self) -> String {
+        match self {
+            Def::Stdio(command) => format!("sh\0{command}"),
+            Def::Http(url) => format!("http\0{url}"),
+        }
+    }
+
     fn of(entry: &Entry) -> Result<Def, String> {
         match (&entry.mcp, &entry.mcp_url) {
             (Some(command), None) => Ok(Def::Stdio(command.clone())),
@@ -156,13 +206,15 @@ impl AppState {
     ) -> Result<Conn, String> {
         let cwd = self.artifact_space(space)?;
         let artifact = self.artifact_ref(scope, name, &cwd)?;
-        let entry = self.artifact_entry(&artifact, &cwd)?.ok_or_else(|| {
-            format!(
+        let owner = format!("{}\0{}", artifact.scope().name(), artifact.name());
+        let Some(entry) = self.artifact_entry(&artifact, &cwd)? else {
+            self.mcp_release(&owner).await;
+            return Err(format!(
                 "no {} artifact {name}: {} has no entry for it",
                 artifact.scope().name(),
                 self.artifact_registry(artifact.scope(), &cwd).display()
-            )
-        })?;
+            ));
+        };
         if let Some(problem) = entry.problems().first() {
             return Err(format!("the entry for {name} is invalid: {problem}"));
         }
@@ -174,28 +226,36 @@ impl AppState {
         }
         let shared = entry.shared;
         let key = if shared {
-            format!("{}\0{}", artifact.scope().name(), artifact.name())
+            format!("shared\0{}\0{}", artifact.scope().name(), def.key())
         } else {
-            format!("{}\0{}\0{}", artifact.scope().name(), artifact.name(), cwd)
+            format!("space\0{}\0{}\0{}", artifact.scope().name(), artifact.name(), cwd)
         };
+        // An entry that moved off a shared server, or is not shared, leaves it for the entries
+        // still naming it; with none left it ends.
+        let left = if shared { self.mcp.claim(&owner, &key) } else { self.mcp.release(&owner) };
+        if let Some(left) = left {
+            self.mcp_end_unused(&left, name).await;
+        }
         let slot = self.mcp.slot(&key);
         let mut held = slot.lock().await;
         if let Some(session) = held.as_mut() {
             if session.def == def && !session.service.is_closed() {
                 if shared {
-                    self.mcp_unsubscribe_closed(session, artifact.scope(), artifact.name()).await;
+                    self.mcp_unsubscribe_closed(session, artifact.scope()).await;
                 }
-                return Ok(Conn { peer: session.service.peer().clone(), dir: cwd, key, shared });
+                return Ok(Conn { peer: session.service.peer().clone(), dir: cwd, key, name: name.to_string(), shared });
             }
         }
         // Dropping the old session ends its process, or its HTTP session, before the new one starts.
         *held = None;
+        let subs = Subs::default();
         let watch = Watch {
             state: self.me.clone(),
             scope: artifact.scope(),
             name: name.to_string(),
             shared,
             cwd: cwd.clone(),
+            subs: subs.clone(),
         };
         let service = tokio::time::timeout(CONNECT, self.mcp_connect(&def, &cwd, name, watch, shared))
             .await
@@ -207,38 +267,76 @@ impl AppState {
             })??;
         tracing::info!(scope = artifact.scope().name(), %name, ?def, shared, "MCP session open");
         let peer = service.peer().clone();
-        *held = Some(Session { def, service, subscribed: HashMap::new() });
-        Ok(Conn { peer, dir: cwd, key, shared })
+        *held = Some(Session { def, service, subs });
+        Ok(Conn { peer, dir: cwd, key, name: name.to_string(), shared })
     }
 
-    /// Unsubscribe from the projects no pane shows any more.
-    async fn mcp_unsubscribe_closed(&self, session: &mut Session, scope: ArtifactScope, name: &str) {
-        let open = self.mcp_roots(scope, name);
-        let closed: Vec<String> = session.subscribed.keys().filter(|d| !open.contains(d)).cloned().collect();
-        for dir in closed {
-            if let Some(uri) = session.subscribed.remove(&dir) {
-                let _ = session.service.peer().unsubscribe(rmcp::model::UnsubscribeRequestParams::new(uri)).await;
-            }
+    /// Unsubscribe from the resources no pane reads any more: a resource stays while a pane of
+    /// an artifact that read it still shows its project.
+    async fn mcp_unsubscribe_closed(&self, session: &mut Session, scope: ArtifactScope) {
+        let closed: Vec<String> = {
+            let mut subs = session.subs.lock().unwrap();
+            let mut closed = Vec::new();
+            subs.retain(|uri, sub| {
+                sub.names.retain(|name| self.mcp_roots(scope, name).contains(&sub.dir));
+                if sub.names.is_empty() {
+                    closed.push(uri.clone());
+                }
+                !sub.names.is_empty()
+            });
+            closed
+        };
+        for uri in closed {
+            let _ = session.service.peer().unsubscribe(rmcp::model::UnsubscribeRequestParams::new(uri)).await;
         }
     }
 
-    /// Subscribe to `uri` for project `dir`, once, for a shared server.
+    /// Subscribe to `uri` for project `dir`, once per resource, for a shared server, and note
+    /// that this artifact's panes read it.
     async fn mcp_subscribe(&self, conn: &Conn, uri: &str) {
-        let (key, dir) = (conn.key.clone(), conn.dir.clone());
-        let slot = self.mcp.slot(&key);
-        let mut held = slot.lock().await;
-        if let Some(session) = held.as_mut() {
-            if session.subscribed.get(&dir).map(String::as_str) != Some(uri) {
-                if session
-                    .service
-                    .peer()
-                    .subscribe(rmcp::model::SubscribeRequestParams::new(uri.to_string()))
-                    .await
-                    .is_ok()
-                {
-                    session.subscribed.insert(dir, uri.to_string());
+        let slot = self.mcp.slot(&conn.key);
+        let held = slot.lock().await;
+        let Some(session) = held.as_ref() else { return };
+        let first = {
+            let mut subs = session.subs.lock().unwrap();
+            match subs.get_mut(uri) {
+                Some(sub) => {
+                    sub.names.insert(conn.name.clone());
+                    false
+                }
+                None => {
+                    let names = HashSet::from([conn.name.clone()]);
+                    subs.insert(uri.to_string(), Sub { dir: conn.dir.clone(), names });
+                    true
                 }
             }
+        };
+        if first
+            && session
+                .service
+                .peer()
+                .subscribe(rmcp::model::SubscribeRequestParams::new(uri.to_string()))
+                .await
+                .is_err()
+        {
+            session.subs.lock().unwrap().remove(uri);
+        }
+    }
+
+    /// Forget that `owner` uses a shared session, ending it when no entry uses it.
+    pub(crate) async fn mcp_release(&self, owner: &str) {
+        if let Some(left) = self.mcp.release(owner) {
+            self.mcp_end_unused(&left, owner).await;
+        }
+    }
+
+    /// End the shared session under `key` unless an entry uses it. Checked under the session's
+    /// lock, so an entry that connects to it meanwhile keeps it.
+    async fn mcp_end_unused(&self, key: &str, name: &str) {
+        let slot = self.mcp.slot(key);
+        let mut held = slot.lock().await;
+        if !self.mcp.in_use(key) && held.take().is_some() {
+            tracing::info!(%name, "MCP session no entry names any more; ended it");
         }
     }
 

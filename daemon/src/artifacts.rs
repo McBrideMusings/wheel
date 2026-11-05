@@ -1253,6 +1253,12 @@ impl AppState {
     /// Tell every connection that artifact `name` has no entry any more, so a client can drop the
     /// browser storage its page kept. Only a `project` entry belongs to a space's directory.
     pub(crate) fn announce_gone(&self, scope: ArtifactScope, cwd: &str, name: &str) {
+        if scope == ArtifactScope::Machine {
+            if let (Some(me), Ok(runtime)) = (self.me.upgrade(), tokio::runtime::Handle::try_current()) {
+                let owner = format!("{}\0{name}", scope.name());
+                runtime.spawn(async move { me.mcp_release(&owner).await });
+            }
+        }
         let cwd = (scope == ArtifactScope::Project).then(|| cwd.to_string());
         tracing::info!(scope = scope.name(), %name, ?cwd, "artifact gone announced");
         let _ = self.global.send(wheel_proto::ServerMsg::ArtifactGone {
