@@ -104,6 +104,8 @@ public final class AgentChat: ObservableObject {
     /// Where the transcript's scroll view sits in its window, top-left origin, so the debug
     /// endpoint can find that scroll view and move it the way a person's scroll does.
     public var frameInWindow: CGRect = .zero
+    /// Its space is not the one shown: the transcript stays mounted, with a frame, but takes no clicks.
+    public var hiddenBySpace = false
     /// The selection that spans this transcript's rows.
     public let selection = TranscriptSelection()
     /// Tool lines, tool groups and thoughts the person opened, by row id (a group by its first

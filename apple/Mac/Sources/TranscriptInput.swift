@@ -160,6 +160,7 @@ struct AgentTranscript: View {
         .environment(\.transcriptPlatform, TranscriptInput.platform)
         .environment(\.chatLinks, model.links)
         .background(HiddenTable(hidden: !spaceShown))
+        .onChange(of: spaceShown, initial: true) { _, shown in chat.hiddenBySpace = !shown }
     }
 }
 

@@ -270,7 +270,7 @@ extension TranscriptSelection {
     }
 
     private func handle(_ event: NSEvent, chat: AgentChat) -> NSEvent? {
-        guard let window = event.window, window.isWheelWindow, let point = event.topLeftLocation else { return event }
+        guard !chat.hiddenBySpace, let window = event.window, window.isWheelWindow, let point = event.topLeftLocation else { return event }
         switch event.type {
         case .leftMouseDown:
             if chat.frameInWindow.contains(point) {
