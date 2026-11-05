@@ -149,12 +149,15 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         window.delegate = self
         window.setContentSize(NSSize(width: 1200, height: 800))
         let restored = window.setFrameAutosaveName("WheelWindow-\(record.id)")
-        if !restored || windows.isEmpty == false {
+        // A frame the system saved for this window is kept as it was: same screen, same place, same size.
+        // Only a window with no saved frame is centred, and cascaded below another visible one.
+        if !restored {
             window.center()
             if let last = windows.values.first(where: { $0.isVisible }) {
                 window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY))
             }
         }
+        Log.info("window \(record.id.prefix(8)) opened \(restored ? "at its saved frame" : "with no saved frame") \(NSStringFromRect(window.frame)) on \(window.screen?.localizedName ?? "no screen")")
         windows[record.id] = window
         Self.apply(pinned: record.pinned, to: window)
         // `-g` launches and debug runs must not take the keyboard from whatever the person is using.
