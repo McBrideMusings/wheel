@@ -14,20 +14,19 @@ struct SpaceMenuItem: Equatable {
 
 extension AppModel {
     /// What right-clicking `space` in `window` offers; the views draw it and the debug state reports it.
-    /// `window:<id>` items are the Move to Window submenu, one per other window.
-    /// `window` is nil for a space in the background (a popover row), where the menu has no
-    /// neighbours to move among and no window to leave.
+    /// `session:<id>` items are the Move to Session submenu, one per other session.
+    /// `window` is nil for a space in a background session (a popover row), where the menu has no
+    /// neighbours to move among.
     func spaceMenu(for space: String, in window: String?) -> [SpaceMenuItem] {
-        let held = window.flatMap { layout.window($0)?.spaces } ?? []
+        let held = window.flatMap { layout.window($0).map(layout.spaces(of:)) } ?? []
         let index = held.firstIndex(of: space)
-        let little = layout.little(showing: space) != nil
-        var items = [SpaceMenuItem(id: "new-window", title: "Move to New Window", enabled: window == nil || held.count > 1, section: 0)]
-        for other in layout.windows where other.id != window {
-            items.append(SpaceMenuItem(id: "window:\(other.id)", title: title(of: other), enabled: true, section: 0))
+        let home = layout.sessions.session(of: space)?.id
+        var items = [SpaceMenuItem(id: "new-window", title: "Open in New Window", enabled: true, section: 0)]
+        for other in layout.sessions where other.id != home {
+            items.append(SpaceMenuItem(id: "session:\(other.id)", title: other.name, enabled: true, section: 0))
         }
         items += [
             SpaceMenuItem(id: "little", title: layout.little(showing: space) == nil ? "Open in Little Window" : "Go to Little Window", enabled: true, section: 0),
-            SpaceMenuItem(id: "background", title: "Send to Background", enabled: window != nil || little, section: 0),
             SpaceMenuItem(id: "left", title: "Move Left", enabled: index.map { $0 > 0 } ?? false, section: 1),
             SpaceMenuItem(id: "right", title: "Move Right", enabled: index.map { $0 < held.count - 1 } ?? false, section: 1),
             SpaceMenuItem(id: "rename", title: "Rename Space…", enabled: true, section: 2),
@@ -44,20 +43,16 @@ extension AppModel {
     func runSpaceMenu(_ id: String, space: String, in window: String?) {
         guard let info = spaces.first(where: { $0.id == space }) else { return }
         Log.info("space menu \(space): \(id) in \(window.map { "window \($0.prefix(8))" } ?? "the background")")
-        let held = window.flatMap { layout.window($0)?.spaces } ?? []
+        let held = window.flatMap { layout.window($0).map(layout.spaces(of:)) } ?? []
         switch id {
         case "new-window": tearOff(space)
-        case "background": place(space, in: nil)
         case "little": openLittle(for: space)
         case "left", "right":
-            // `place` counts the slot before the space leaves its own, so one to the right is two on.
-            guard let window, let i = held.firstIndex(of: space), id == "left" ? i > 0 : i < held.count - 1 else { return }
-            // A reorder leaves the window showing what it showed.
-            let shown = layout.window(window)?.active
-            editWindows {
-                $0.place(space, in: window, at: id == "left" ? i - 1 : i + 2)
-                if let shown { $0.show(shown, in: window) }
-            }
+            // A reorder is wheeld's; every window showing the session lists the new order and
+            // each keeps showing the space it showed.
+            guard let window, let session = layout.window(window)?.session, let i = held.firstIndex(of: space),
+                  id == "left" ? i > 0 : i < held.count - 1 else { return }
+            moveSpace(space, toSession: session, at: id == "left" ? i - 1 : i + 1)
         case "rename": beginRename(space: space)
         case "copy-path":
             NSPasteboard.general.clearContents()
@@ -68,13 +63,13 @@ extension AppModel {
             if let window { askCloseOtherSpaces(keeping: space, in: window) }
         case "close": askCloseSpace(space)
         default:
-            if id.hasPrefix("window:") { place(space, in: String(id.dropFirst("window:".count))) }
+            if id.hasPrefix("session:") { moveSpace(space, toSession: String(id.dropFirst("session:".count))) }
         }
     }
 
     /// Close every space `window` holds but `space`, after asking.
     func askCloseOtherSpaces(keeping space: String, in window: String) {
-        let others = (layout.window(window)?.spaces ?? []).filter { $0 != space }
+        let others = (layout.window(window).map(layout.spaces(of:)) ?? []).filter { $0 != space }
         guard !others.isEmpty else { return }
         let names = others.compactMap(spaceName).map { "“\($0)”" }.joined(separator: ", ")
         let count = others.count == 1 ? "1 other space" : "\(others.count) other spaces"
@@ -92,14 +87,14 @@ struct SpaceMenuItems: View {
 
     var body: some View {
         let items = model.spaceMenu(for: space, in: window)
-        let windows = items.filter { $0.id.hasPrefix("window:") }
+        let sessions = items.filter { $0.id.hasPrefix("session:") }
         ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
             if offset > 0, items[offset - 1].section != item.section { Divider() }
-            if item.id.hasPrefix("window:") {
-                // The submenu is drawn once, where its first window is.
-                if item.id == windows.first?.id {
-                    Menu("Move to Window") {
-                        ForEach(windows, id: \.id) { entry in
+            if item.id.hasPrefix("session:") {
+                // The submenu is drawn once, where its first session is.
+                if item.id == sessions.first?.id {
+                    Menu("Move to Session") {
+                        ForEach(sessions, id: \.id) { entry in
                             Button(entry.title) { model.runSpaceMenu(entry.id, space: space, in: window) }
                         }
                     }

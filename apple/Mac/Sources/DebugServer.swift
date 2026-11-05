@@ -1144,9 +1144,25 @@ final class DebugServer {
             }
             switch query["action"] {
             case "new":
-                let spaces = (query["spaces"] ?? "").split(separator: ",").map(String.init)
-                let id = model.newWindow(name: query["name"], spaces: spaces)
+                let id = model.newWindow(name: query["name"], session: query["session"], space: query["space"])
                 return ("200 OK", Data(#"{"window":"\#(id)"}"#.utf8))
+            case "session":
+                // A window shows another session (`window`, `session`); the title bar's session menu runs the same.
+                guard let id = windowID() ?? model.layout.focusedWindow?.id else { return refuse("404 Not Found", "no such window") }
+                guard let session = query["session"], model.layout.session(session) != nil else { return refuse("404 Not Found", "no such session") }
+                model.show(session: session, in: id)
+            case "newsession":
+                guard let name = query["name"] else { return refuse("400 Bad Request", "name is required") }
+                model.newSession(named: name)
+            case "renamesession":
+                guard let session = query["session"], let name = query["name"] else { return refuse("400 Bad Request", "session and name are required") }
+                model.renameSession(session, to: name)
+            case "closesession":
+                guard let session = query["session"] else { return refuse("400 Bad Request", "session is required") }
+                model.closeSession(session)
+            case "movespace":
+                guard let space = query["space"], let session = query["session"] else { return refuse("400 Bad Request", "space and session are required") }
+                model.moveSpace(space, toSession: session, at: query["at"].flatMap(Int.init))
             case "close":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.askCloseWindow(id)
@@ -1315,7 +1331,7 @@ final class DebugServer {
             // that holds it, timed as a click is. The tab's hit area is the view's own and is checked by eye.
             Log.info("debug: space tap \(query)")
             guard case let .success(id) = model.spaceID(named: query["space"] ?? "") else { return refuse("404 Not Found", "no such space") }
-            guard let record = model.layout.windows.first(where: { $0.spaces.contains(id) }) else { return refuse("409 Conflict", "that space is not shown in a window") }
+            guard let record = model.layout.window(holding: id) else { return refuse("409 Conflict", "that space is not shown in a window") }
             model.tapSpace(id, in: record.id)
         case ("GET", "/metrics"), ("POST", "/metrics"):
             // What a layout change costs (`GridMetrics`): `POST /metrics?action=start` begins a
@@ -1440,8 +1456,6 @@ final class DebugServer {
                     guard let text = query["window"], case let .success(id) = model.windowID(named: text) else { return refuse("404 Not Found", "no such window") }
                     guard model.place(space, in: id) else { return refuse("404 Not Found", "no such space") }
                 }
-            case "send_background":
-                guard let space = query["space"], model.place(space, in: nil) else { return refuse("404 Not Found", "no such space") }
             case "show":
                 guard let space = query["space"] else { return refuse("400 Bad Request", "space is required") }
                 model.focus(space: space)
@@ -2114,6 +2128,23 @@ final class DebugServer {
         return NSApp.windows.first { $0.identifier?.rawValue.hasPrefix(WindowManager.idPrefix + prefix) == true }
     }
 
+    /// Each space's context menu as its tab or sidebar row draws it, or its popover row when no
+    /// window shows its session.
+    private func spaceMenus() -> [String: [[String: Any]]] {
+        var holders: [String: String?] = [:]
+        for window in model.layout.windows {
+            for space in model.layout.spaces(of: window) where holders[space] == nil { holders[space] = window.id }
+        }
+        for row in model.backgroundRows where holders[row.id] == nil { holders[row.id] = .some(nil) }
+        var menus: [String: [[String: Any]]] = [:]
+        for (space, window) in holders {
+            menus[space] = model.spaceMenu(for: space, in: window).map {
+                ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
+            }
+        }
+        return menus
+    }
+
     /// The pairing row and window as the state query reports them.
     private func pairingState() -> [String: Any] {
         var out: [String: Any] = [:]
@@ -2188,7 +2219,8 @@ final class DebugServer {
                     "id": window.id,
                     "name": window.name ?? NSNull(),
                     "title": model.title(of: window),
-                    "spaces": window.spaces,
+                    "session": window.session ?? NSNull(),
+                    "spaces": model.layout.spaces(of: window),
                     "active": window.active ?? NSNull(),
                     "sidebar": window.sidebar,
                     "pinned": window.pinned,
@@ -2199,7 +2231,9 @@ final class DebugServer {
                     "open": (model.windowHost as? WindowManager)?.window(window.id) != nil,
                 ] as [String: Any]
             },
+            "sessions": model.layout.sessions.map { ["id": $0.id, "name": $0.name, "spaces": $0.spaces] as [String: Any] },
             "background": model.layout.background,
+            "background_sessions": model.layout.backgroundSessions.map(\.id),
             // Each windowed space's context menu, as its tab and sidebar row draw it.
             "little_windows": model.layout.littles.map { little in
                 let nswindow = (model.windowHost as? WindowManager)?.littleWindow(little.id)
@@ -2207,15 +2241,7 @@ final class DebugServer {
                         "pinned": little.pinned, "level": nswindow?.level.rawValue ?? NSNull(),
                         "frame": nswindow.map { [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height] } ?? NSNull()] as [String: Any]
             },
-            "space_menus": Dictionary(
-                model.layout.windows.flatMap { window in window.spaces.map { (space: $0, window: Optional(window.id)) } }
-                    + model.backgroundRows.map { (space: $0.id, window: nil) },
-                uniquingKeysWith: { first, _ in first }
-            ).reduce(into: [String: [[String: Any]]]()) { menus, entry in
-                menus[entry.key] = model.spaceMenu(for: entry.key, in: entry.value).map {
-                    ["id": $0.id, "title": $0.title, "enabled": $0.enabled, "destructive": $0.destructive] as [String: Any]
-                }
-            },
+            "space_menus": spaceMenus(),
             "space_drag": model.spaceDrag.map { ["space": $0.space, "hint": model.spaceDragHint ?? NSNull(), "insertion": model.spaceDragInsertion.map { ["window": $0.window, "index": $0.index] as [String: Any] } ?? NSNull(), "preview_card": model.desktopOverlay?.isShown ?? false, "chip": model.dragChip?.text ?? NSNull()] as [String: Any] } ?? NSNull(),
             "renaming": ["space": model.renamingSpace ?? NSNull(), "window": model.renamingWindow ?? NSNull(), "errors": model.spaceRenameError] as [String: Any],
             "pairing": pairingState(),

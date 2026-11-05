@@ -177,7 +177,7 @@ extension AppModel {
             let sidebar = record.sidebar ? (frozenSidebarFrames ?? sidebarFrames)[id].map { screenRect($0, in: nswindow) } : nil
             let strip = record.sidebar ? nil : (frozenTabStripFrames ?? tabStripFrames)[id].map { screenRect($0, in: nswindow) }
             let measured = record.sidebar ? (frozenRowFrames ?? rowFrames) : (frozenTabFrames ?? tabFrames)
-            let frames = record.spaces.compactMap { measured[id]?[$0] }.map { screenRect($0, in: nswindow) }
+            let frames = layout.spaces(of: record).compactMap { measured[id]?[$0] }.map { screenRect($0, in: nswindow) }
             windows.append(DropWindow(id: id, frame: nswindow.frame, sidebar: sidebar, rows: record.sidebar ? frames : [], tabStrip: strip, tabs: record.sidebar ? [] : frames))
         }
         var popover: DropPopover?

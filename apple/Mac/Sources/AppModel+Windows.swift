@@ -64,8 +64,14 @@ extension AppModel {
     var backgroundSpaces: [SpaceInfo] { layout.background.compactMap { id in spaces.first { $0.id == id } } }
 
     func spaces(in window: String) -> [SpaceInfo] {
-        (layout.window(window)?.spaces ?? []).compactMap { id in spaces.first { $0.id == id } }
+        (layout.window(window).map(layout.spaces(of:)) ?? []).compactMap { id in spaces.first { $0.id == id } }
     }
+
+    /// The sessions wheeld holds, in order.
+    var sessions: [SessionInfo] { layout.sessions }
+
+    /// The session `window` shows.
+    func session(of window: String) -> SessionInfo? { layout.window(window).flatMap(layout.session(of:)) }
 
     func active(in window: String) -> String? { layout.window(window)?.active }
 
@@ -98,42 +104,65 @@ extension AppModel {
 
     // MARK: Reconciling with the daemon
 
-    /// Match the windows to the spaces wheeld reports.
-    func reconcileWindows(_ spaces: [SpaceInfo]) {
-        let ids = spaces.map(\.id)
+    /// Match the windows to the sessions wheeld reports. A new space joins its session's tabs in
+    /// every window showing it, shown in none; only a show request (`space_focused`) or this app's
+    /// own switch shows it. A report with no session (wheeld still loading) changes nothing.
+    func reconcileWindows(_ spaces: [SpaceInfo], sessions: [SessionInfo]) {
+        guard !sessions.isEmpty else { return }
         let firstReport = !reconciled
         reconciled = true
         let restores = restoresWindows
-        // A space wheeld made to run with no window (`wheel space new --background`) stays in none,
-        // including one made while this app was quit. Any other new space joins the focused window
-        // as a tab; only a show request (`space_focused`) or this app's own switch shows it.
-        let unshown = Set(spaces.filter(\.background).map(\.id))
         var littleAfter: (String, CGRect?)?
+        var moveAfter: (space: String, session: String, position: Int?)?
         editWindows(commit: { _, changed in changed }) { layout in
+            // A session this app asked wheeld to close and the report no longer lists takes its windows with it.
+            closingSessions = closingSessions.filter { Date().timeIntervalSince($0.value) < 10 }
+            for id in closingSessions.keys where !sessions.contains(where: { $0.id == id }) {
+                for window in layout.windows(showing: id) { layout.close(window: window.id) }
+                closingSessions[id] = nil
+            }
+            let fresh = layout.reconcile(sessions)
             if firstReport {
-                // With nothing saved (a first launch) every space goes to one window.
-                let saved = layout.windows.contains { !$0.spaces.isEmpty } || !layout.background.isEmpty
-                if restores { layout.reconcile(ids, background: saved ? unshown : []) } else { layout.collapse(ids) }
+                if !restores { layout.collapse() }
                 Log.info("windows \(restores ? "restored" : "collapsed into one"): \(describe(layout))")
-            } else {
-                let fresh = layout.reconcile(ids, background: unshown)
-                // The space a `pane_move` made goes where the drop or the menu said.
-                if let pending = pendingNewSpace, Date().timeIntervalSince(pending.at) >= 10 {
-                    pendingNewSpace = nil
-                } else if let pending = pendingNewSpace,
-                          let space = fresh.first(where: { id in spaces.first { $0.id == id }?.allPanes.contains { $0.id == pending.pane } == true }) {
-                    pendingNewSpace = nil
-                    do {
-                        layout.place(space, in: pending.window, at: pending.position)
-                        if pending.little { littleAfter = (space, pending.card) }
+            }
+            // The space a `pane_move` made goes where the drop or the menu said: into the session
+            // the target window shows, which is wheeld's to move, and shown in that window.
+            if let pending = pendingNewSpace, Date().timeIntervalSince(pending.at) >= 10 {
+                pendingNewSpace = nil
+            } else if let pending = pendingNewSpace,
+                      let space = fresh.first(where: { id in spaces.first { $0.id == id }?.allPanes.contains { $0.id == pending.pane } == true }) {
+                pendingNewSpace = nil
+                if let target = pending.window.flatMap({ layout.window($0) })?.session {
+                    if layout.session(target)?.spaces.contains(space) == true {
+                        layout.show(space, in: pending.window ?? "")
+                    } else {
+                        moveAfter = (space, target, pending.position)
+                        pendingActive[space] = (pending.window ?? "", Date())
                     }
                 }
-                for space in fresh {
-                    let window = layout.window(holding: space)
-                    Log.info("new space \(space) opened in \(window.map { "window \($0.id)" } ?? "the background")")
-                }
+                if pending.little { littleAfter = (space, pending.card) }
+            }
+            // A space moved into a window's session by `place` shows in that window once the layout holds it.
+            for (space, pending) in pendingActive where layout.window(pending.window).map({ layout.spaces(of: $0).contains(space) }) == true {
+                layout.show(space, in: pending.window)
+                pendingActive[space] = nil
+            }
+            pendingActive = pendingActive.filter { space, pending in
+                Date().timeIntervalSince(pending.at) < 10 && sessions.contains { $0.spaces.contains(space) }
+            }
+            if let made = pendingSession, Date().timeIntervalSince(made.at) >= 10 {
+                pendingSession = nil
+            } else if let made = pendingSession, layout.session(made.id) != nil, let target = layout.focusedWindow?.id {
+                pendingSession = nil
+                layout.show(session: made.id, in: target)
+            }
+            for space in fresh {
+                let shown = layout.windows(showing: sessions.session(of: space)?.id ?? "")
+                Log.info("new space \(space) in session \(sessions.session(of: space)?.id ?? "?"), tab in \(shown.count) window(s)")
             }
         }
+        if let (space, session, position) = moveAfter { moveSpace(space, toSession: session, at: position) }
         if let (space, card) = littleAfter { openLittle(for: space, from: card) }
     }
 
@@ -155,28 +184,28 @@ extension AppModel {
     }
 
     private func describe(_ layout: WindowLayout) -> String {
-        let windows = layout.windows.map { "\($0.id.prefix(8)):\($0.spaces.joined(separator: ","))" }.joined(separator: " ")
-        return "\(windows) background=\(layout.background.joined(separator: ","))"
+        let windows = layout.windows.map { "\($0.id.prefix(8)):\($0.session ?? "-")/\($0.active ?? "-")" }.joined(separator: " ")
+        return "\(windows) background sessions=\(layout.backgroundSessions.map(\.id).joined(separator: ","))"
     }
 
     /// At launch, before wheeld has said anything: open the windows as they were saved. A first
-    /// launch, or one after every window was closed, opens one (empty, or holding the background
-    /// spaces), which wheeld's first report fills. With "Restore windows at launch" off, one
-    /// window holds every space.
+    /// launch, or one after every window was closed, opens one with no session yet, which wheeld's
+    /// first report points at the first session. With "Restore windows at launch" off, one window
+    /// shows the session the focused one did.
     func openLaunchWindows() {
         let restores = restoresWindows
         editWindows { layout in
             if !restores {
-                layout.collapse(layout.windows.flatMap(\.spaces) + layout.background)
+                layout.collapse()
             } else if layout.windows.isEmpty {
-                layout.newWindow(spaces: layout.background)
+                layout.newWindow()
             }
         }
     }
 
-    /// The Dock icon with no window open: one window holding the spaces that run in the background.
+    /// The Dock icon with no window open: one window showing the first background session.
     func openWindowForBackground() {
-        newWindow(spaces: layout.background)
+        newWindow(session: layout.backgroundSessions.first?.id)
     }
 
     // MARK: Changing the windows — the menus, the popover, drags, the debug endpoint and `wheel window` all call these.
@@ -256,9 +285,9 @@ extension AppModel {
     }
 
     @discardableResult
-    func newWindow(name: String? = nil, spaces: [String] = []) -> String {
+    func newWindow(name: String? = nil, session: String? = nil, space: String? = nil) -> String {
         let sidebar = layout.focusedWindow?.sidebar ?? true
-        let id = editWindows { $0.newWindow(name: name, spaces: spaces, sidebar: sidebar) }
+        let id = editWindows { $0.newWindow(name: name, session: session ?? $0.focusedWindow?.session, space: space, sidebar: sidebar) }
         windowHost?.bringFront(id)
         return id
     }
@@ -266,22 +295,29 @@ extension AppModel {
     /// What the person chose in a main window's close sheet.
     enum WindowCloseAnswer { case background, stop, cancel }
 
-    /// The red light, ⇧⌘W and `wheel window close`: a window holding spaces asks what to do with
-    /// them in a sheet on that window; one with none closes.
+    /// The red light, ⇧⌘W and `wheel window close`: the last window showing a session that holds
+    /// spaces asks what to do with the session in a sheet on that window; any other closes.
     func askCloseWindow(_ id: String) {
         guard let record = layout.window(id) else { return }
-        guard !record.spaces.isEmpty else { return closeWindow(id) }
+        guard windowCloseNeedsAnswer(id) else { return closeWindow(id) }
         closingWindow = id
         windowHost?.bringFront(id)
         Log.info("close window \(id.prefix(8)) asked: \(closeSummary(of: record))")
+    }
+
+    /// Closing `id` ends what its session shows: no other window shows the session, and it holds spaces.
+    func windowCloseNeedsAnswer(_ id: String) -> Bool {
+        guard let record = layout.window(id), let session = record.session else { return false }
+        return layout.windows(showing: session).count == 1 && !layout.spaces(of: record).isEmpty
     }
 
     /// "It holds 3 spaces with 6 panes. 1 of them is in a little window."
     func closeSummary(of window: WindowRecord) -> String {
         let held = spaces(in: window.id)
         let panes = held.reduce(0) { $0 + $1.allPanes.count }
-        let little = window.spaces.filter { layout.little(showing: $0) != nil }.count
-        var text = "It holds \(held.count) \(held.count == 1 ? "space" : "spaces") with \(panes) \(panes == 1 ? "pane" : "panes")."
+        let little = layout.spaces(of: window).filter { layout.little(showing: $0) != nil }.count
+        let name = session(of: window.id)?.name ?? "This"
+        var text = "The “\(name)” session holds \(held.count) \(held.count == 1 ? "space" : "spaces") with \(panes) \(panes == 1 ? "pane" : "panes")."
         if little > 0 { text += " \(little) of them \(little == 1 ? "is" : "are") in a little window." }
         return text
     }
@@ -297,27 +333,35 @@ extension AppModel {
         }
     }
 
-    /// Close window `id` with no question: its spaces go to the background, or with `stopping`
-    /// every process in them stops and the spaces close.
+    /// Close window `id` with no question: its session keeps running, in the other windows that
+    /// show it or in the background. With `stopping` the session closes too: every window
+    /// showing it, and every process in its spaces.
     func closeWindow(_ id: String, stopping: Bool = false) {
-        guard layout.window(id) != nil else { return }
+        guard let record = layout.window(id) else { return }
         if closingWindow == id { closingWindow = nil }
-        let stopped = editWindows { $0.close(window: id, stopping: stopping) }
-        for space in stopped { closeSpace(space) }
+        if stopping, let session = record.session { closeSession(session) } else { editWindows { $0.close(window: id) } }
     }
 
-    /// Move `space` into `window` (nil: the background) at `position`.
+    /// Move `space` into the session `window` shows, at `position` among its spaces (the end by
+    /// default), and show it there once wheeld's layout holds it there. A space is always in a
+    /// session, so a drop on the background (nil) places nothing.
     @discardableResult
     func place(_ space: String, in window: String?, at position: Int? = nil) -> Bool {
-        guard spaces.contains(where: { $0.id == space }) else { return false }
-        guard editWindows(commit: { placed, _ in placed }, { $0.place(space, in: window, at: position) }) else { return false }
+        guard spaces.contains(where: { $0.id == space }), let window, let session = session(of: window) else { return false }
+        var position = position
+        // Inserting past the space's own slot shifts the others up by one once it is taken out.
+        if let was = session.spaces.firstIndex(of: space), let p = position, was < p { position = p - 1 }
+        pendingActive[space] = (window, Date())
+        editLayoutSilently { $0.focused = window }
+        moveSpace(space, toSession: session.id, at: position)
         return true
     }
 
+    /// Open a window showing the session that holds `space`, at `space`.
     @discardableResult
     func tearOff(_ space: String) -> String? {
         guard spaces.contains(where: { $0.id == space }) else { return nil }
-        let id = editWindows { $0.tearOff(space) }
+        guard let id = editWindows({ $0.tearOff(space) }) else { return nil }
         windowHost?.bringFront(id)
         return id
     }
@@ -368,15 +412,26 @@ extension AppModel {
         closeLittle(id)
     }
 
-    /// Show `space` in window `window`: a click on its row or tab. A space from another window or
-    /// the background moves here first.
+    /// Show `space` in window `window`: a click on its row or tab. A space of another session
+    /// makes the window show that session first.
     func show(space: String, in window: String) {
-        guard spaces.contains(where: { $0.id == space }), layout.window(window) != nil else { return }
-        let held = layout.window(window)?.spaces.contains(space) == true
+        guard let holder = layout.sessions.session(of: space), layout.window(window) != nil else { return }
         editWindows {
-            if held { $0.show(space, in: window) } else { $0.place(space, in: window) }
+            if $0.window(window)?.session != holder.id { $0.show(session: holder.id, in: window) }
+            $0.show(space, in: window)
             $0.focused = window
         }
+    }
+
+    /// Show `session` in window `window` (the focused one by default): the space it last showed
+    /// there, else the session's first.
+    func show(session: String, in window: String? = nil) {
+        guard let id = window ?? layout.focusedWindow?.id, layout.window(id) != nil, layout.session(session) != nil else { return }
+        editWindows {
+            $0.show(session: session, in: id)
+            $0.focused = id
+        }
+        windowHost?.bringFront(id)
     }
 
     /// Show `space` in the window that holds it, putting it in the focused window first when it
@@ -395,11 +450,13 @@ extension AppModel {
             if let holder = layout.window(holding: space) {
                 window = holder.id
                 layout.show(space, in: window)
-            } else if let target = layout.focusedWindow?.id {
+            } else if let target = layout.focusedWindow?.id, let session = layout.sessions.session(of: space)?.id {
+                // The space is in a background session: the focused window shows that session.
                 window = target
-                layout.place(space, in: target)
+                layout.show(session: session, in: target)
+                layout.show(space, in: target)
             } else {
-                window = layout.newWindow(spaces: [space])
+                window = layout.newWindow(session: layout.sessions.session(of: space)?.id, space: space)
             }
             layout.focused = window
             return window
@@ -483,6 +540,35 @@ struct WindowFailure: Error, Equatable {
     init(_ message: String) { self.message = message }
 }
 
+// MARK: Sessions — wheeld holds them; this app asks and shows the answer.
+
+extension AppModel {
+    /// Make an empty session named `name` and show it in the focused window once it exists.
+    func newSession(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        sendLayoutOp(showing: .session) { .sessionNew(req: $0, name: trimmed) }
+    }
+
+    func renameSession(_ id: String, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, layout.session(id)?.name != trimmed else { return }
+        sendLayoutOp { .sessionRename(req: $0, session: id, name: trimmed) }
+    }
+
+    /// Move `space` into `session`, at `index` among its spaces (the end when nil).
+    func moveSpace(_ space: String, toSession session: String, at index: Int? = nil) {
+        sendLayoutOp { .sessionMove(req: $0, space: space, session: session, index: index) }
+    }
+
+    /// Close a session: wheeld closes its spaces and their panes, and every window showing it
+    /// closes when the layout stops listing it. A refusal leaves the windows as they are.
+    func closeSession(_ id: String) {
+        closingSessions[id] = Date()
+        sendLayoutOp { .sessionClose(req: $0, session: id) }
+    }
+}
+
 // MARK: Renaming — a space's name is wheeld's, a window's is this app's.
 
 extension AppModel {
@@ -563,6 +649,7 @@ extension AppModel {
                         "id": window.id,
                         "name": window.name ?? NSNull(),
                         "title": title(of: window),
+                        "session": window.session ?? NSNull(),
                         "spaces": spaces(in: window.id).map(named),
                         "active": window.active ?? NSNull(),
                         "sidebar": window.sidebar,
@@ -576,14 +663,14 @@ extension AppModel {
                 },
             ])
         case let .new(name, space):
-            var held: [String] = []
+            var held: String?
             if let space {
                 switch spaceID(named: space) {
-                case let .success(id): held = [id]
+                case let .success(id): held = id
                 case let .failure(failure): return .failure(failure)
                 }
             }
-            return .success(["window": newWindow(name: name, spaces: held)])
+            return .success(["window": newWindow(name: name, session: held.flatMap { layout.sessions.session(of: $0)?.id }, space: held)])
         case let .rename(window, name):
             switch windowID(named: window) {
             case let .success(id):
@@ -605,8 +692,7 @@ extension AppModel {
             case let .failure(failure): return .failure(failure)
             }
             if to == "background" {
-                place(spaceID, in: nil)
-                return .success(["space": spaceID, "to": "background"])
+                return .failure(.init("a space is always in a session; `wheel session move` puts it in one, and a session no window shows is the background"))
             }
             switch windowID(named: to) {
             case let .success(id):

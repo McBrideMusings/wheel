@@ -75,7 +75,7 @@ extension AppModel {
         guard let home = space(holding: pane) else { return }
         let source = layout.window(holding: home.id)
         let window = requested ?? source?.id
-        let position = window == source?.id ? source?.spaces.firstIndex(of: home.id).map { $0 + 1 } : nil
+        let position = window == source?.id ? source.flatMap { layout.spaces(of: $0).firstIndex(of: home.id) }.map { $0 + 1 } : nil
         pendingNewSpace = PendingNewSpace(window: window, position: position, little: little, card: card, pane: pane, at: Date())
         Log.info("pane \(pane): move to a new space in \(window.map { "window \($0.prefix(8))" } ?? "the background")\(little ? ", in a little window" : "")")
         sendLayoutOp { .paneMove(req: $0, pane: pane, to: .newSpace()) }
@@ -98,7 +98,7 @@ extension AppModel {
             guard let raw = nswindow.identifier?.rawValue, raw.hasPrefix(WindowManager.idPrefix) else { return nil }
             let id = String(raw.dropFirst(WindowManager.idPrefix.count))
             guard let record = layout.window(id) else { return nil }
-            for space in record.spaces {
+            for space in layout.spaces(of: record) {
                 guard let frame = (record.sidebar ? rowFrames : tabFrames)[id]?[space], screenRect(frame, in: nswindow).contains(point) else { continue }
                 return space == home ? nil : (.end(space: space), (id, space))
             }
@@ -172,7 +172,7 @@ extension AppModel {
         let shown = paneDragShown
         paneDragShown = [:]
         // A window that shows the space the pane landed in keeps it; every other goes back.
-        for (window, was) in shown where layout.window(window)?.spaces.contains(was) == true && layout.window(window)?.active != landed {
+        for (window, was) in shown where layout.window(window).map({ layout.spaces(of: $0).contains(was) }) == true && layout.window(window)?.active != landed {
             editWindows { $0.show(was, in: window) }
         }
     }

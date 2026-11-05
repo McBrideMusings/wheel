@@ -2,18 +2,17 @@ import AppKit
 import SwiftUI
 import WheelKit
 
-/// Where a space can go from the menu bar popover: a main window, a new window, a little window or
-/// the background.
+/// Where a space can go from the menu bar popover: the session a main window shows, a new window
+/// or a little window.
 enum PlaceKind: Equatable {
     case window(String)
     case newWindow
     case little
-    case background
 }
 
 /// One of the icon buttons a popover row shows, and whether it names where the space is now.
 struct PlaceButton: Equatable, Identifiable {
-    /// `window:<id>`, `new-window`, `little` or `background`.
+    /// `window:<id>`, `new-window` or `little`.
     let id: String
     let kind: PlaceKind
     /// The window's number, for a `window:` button.
@@ -34,22 +33,19 @@ extension AppModel {
     /// The Background group's rows: the spaces in no window, then those in an ownerless little window.
     var backgroundRows: [SpaceInfo] { backgroundSpaces + ownerlessLittleSpaces }
 
-    /// The buttons a row shows, in order: one per main window, New Window, Little Window, Background.
+    /// The buttons a row shows, in order: one per main window (moving the space into the session it shows), New Window, Little Window.
     func placeButtons(for space: String) -> [PlaceButton] {
         let little = layout.little(showing: space)
         let home = layout.window(holding: space)
         var buttons = layout.windows.enumerated().map { offset, window -> PlaceButton in
-            let here = home?.id == window.id && little == nil
+            let here = layout.spaces(of: window).contains(space) && home?.id == window.id && little == nil
             let name = title(of: window)
             return PlaceButton(id: "window:\(window.id)", kind: .window(window.id), number: offset + 1,
-                               help: here ? "In the \(name) window" : "Move into the \(name) window", lit: here)
+                               help: here ? "In the \(name) window" : "Move into the session the \(name) window shows", lit: here)
         }
-        buttons.append(PlaceButton(id: "new-window", kind: .newWindow, number: nil, help: "Move to a new window", lit: false))
+        buttons.append(PlaceButton(id: "new-window", kind: .newWindow, number: nil, help: "Open in a new window", lit: false))
         buttons.append(PlaceButton(id: "little", kind: .little, number: nil,
                                    help: little == nil ? "Open in a little window" : "Go to its little window", lit: little != nil))
-        let inBackground = layout.background.contains(space)
-        buttons.append(PlaceButton(id: "background", kind: .background, number: nil,
-                                   help: inBackground ? "In the background" : "Send to the background", lit: inBackground))
         return buttons
     }
 
@@ -69,7 +65,6 @@ extension AppModel {
             }
         case .newWindow: tearOff(space)
         case .little: openLittle(for: space)
-        case .background: if !button.lit { place(space, in: nil) }
         }
         return true
     }
@@ -162,7 +157,6 @@ struct PlaceButtons: View {
         case .window: .window(button.number ?? 0)
         case .newWindow: .newWindow
         case .little: .little
-        case .background: .background
         }
     }
 }

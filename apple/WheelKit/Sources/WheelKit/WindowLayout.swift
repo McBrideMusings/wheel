@@ -1,35 +1,42 @@
 import Foundation
 
-/// One Mac window: an ordered list of space ids, an optional name and a sidebar flag (ADR-0014).
-/// wheeld stores none of it.
+/// One Mac window: the session it shows, the space of that session it shows, an optional name and a
+/// sidebar flag (ADR-0014). Its tabs and sidebar list the session's spaces, which wheeld holds, so
+/// the record holds none. Two windows may show the same session, each its own space of it.
 public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     /// What a person called the window; nil titles it by its active space.
     public var name: String?
-    public var spaces: [String]
-    /// The space the window shows: one of `spaces`, nil only while it holds none.
+    /// The session shown; nil only before wheeld has reported any session, when the window takes the first.
+    public var session: String?
+    /// The space the window shows: one of the session's, nil only while the session holds none.
     public var active: String?
+    /// The space the window last showed in each session, so switching back returns to it.
+    public var lastSpace: [String: String]
     public var sidebar: Bool
     /// The window stacks above every unpinned window of any app, on every desktop.
     public var pinned: Bool
 
-    public init(id: String = UUID().uuidString, name: String? = nil, spaces: [String] = [], active: String? = nil, sidebar: Bool = true, pinned: Bool = false) {
+    public init(id: String = UUID().uuidString, name: String? = nil, session: String? = nil, active: String? = nil,
+                lastSpace: [String: String] = [:], sidebar: Bool = true, pinned: Bool = false) {
         self.id = id
         self.name = name
-        self.spaces = spaces
-        self.active = active ?? spaces.first
+        self.session = session
+        self.active = active
+        self.lastSpace = lastSpace
         self.sidebar = sidebar
         self.pinned = pinned
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, spaces, active, sidebar, pinned }
+    private enum CodingKeys: String, CodingKey { case id, name, session, active, lastSpace, sidebar, pinned }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name)
-        spaces = try c.decode([String].self, forKey: .spaces)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
         active = try c.decodeIfPresent(String.self, forKey: .active)
+        lastSpace = try c.decodeIfPresent([String: String].self, forKey: .lastSpace) ?? [:]
         sidebar = try c.decode(Bool.self, forKey: .sidebar)
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
     }
@@ -63,84 +70,109 @@ public struct LittleWindow: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// Which window holds each space. A space is in one window or in the background, where it keeps
-/// running with no window; the Mac app keeps this in its preferences and reconciles it against the
-/// spaces wheeld reports.
+/// Which session each main window shows. wheeld holds the sessions and their spaces; the Mac app
+/// keeps the windows in its preferences and mirrors the sessions it was last sent, so a window's
+/// spaces are always its session's. A session no window shows is a background session: its spaces
+/// keep running with no window.
 public struct WindowLayout: Codable, Equatable, Sendable {
     public private(set) var windows: [WindowRecord] = []
-    /// Spaces in no window, in the order they went there.
-    public private(set) var background: [String] = []
-    /// The window the person used last: the one a new space opens in.
+    /// The window the person used last: the one a new session or space opens in.
     public var focused: String?
-    /// The little windows. A space in an owned one stays in its owner's `spaces`, which keeps its tab;
-    /// a space in an ownerless one is in no window and not in `background`.
+    /// The little windows. A space in an owned one stays in its owner's session, which keeps its
+    /// tab; a space in an ownerless one is in no window and not in `background`.
     public private(set) var littles: [LittleWindow] = []
+    /// The sessions wheeld last reported, in order. Not saved: wheeld is where they live.
+    public private(set) var sessions: [SessionInfo] = []
 
-    private enum CodingKeys: String, CodingKey { case windows, background, focused, littles }
+    private enum CodingKeys: String, CodingKey { case windows, focused, littles }
 
     public init() {}
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         windows = try c.decode([WindowRecord].self, forKey: .windows)
-        background = try c.decode([String].self, forKey: .background)
         focused = try c.decodeIfPresent(String.self, forKey: .focused)
         littles = try c.decodeIfPresent([LittleWindow].self, forKey: .littles) ?? []
     }
 
-    public init(windows: [WindowRecord], background: [String] = [], focused: String? = nil) {
+    public init(windows: [WindowRecord], sessions: [SessionInfo] = [], focused: String? = nil) {
         self.windows = windows
-        self.background = background
+        self.sessions = sessions
         self.focused = focused ?? windows.first?.id
         normalize()
     }
 
     public func window(_ id: String) -> WindowRecord? { windows.first { $0.id == id } }
-    public func window(holding space: String) -> WindowRecord? { windows.first { $0.spaces.contains(space) } }
     public func little(_ id: String) -> LittleWindow? { littles.first { $0.id == id } }
     /// The little window showing `space`, if one is open.
     public func little(showing space: String) -> LittleWindow? { littles.first { $0.space == space } }
     public var focusedWindow: WindowRecord? { focused.flatMap { id in windows.first { $0.id == id } } ?? windows.first }
 
-    /// Every space the layout places anywhere.
-    public var placed: Set<String> { Set(windows.flatMap(\.spaces)).union(background).union(littles.map(\.space)) }
+    public func session(_ id: String) -> SessionInfo? { sessions.first { $0.id == id } }
+    /// The session `window` shows.
+    public func session(of window: WindowRecord) -> SessionInfo? { window.session.flatMap(session) }
+
+    /// The spaces `window`'s tabs and sidebar list, in the session's order.
+    public func spaces(of window: WindowRecord) -> [String] { session(of: window)?.spaces ?? [] }
+
+    /// The windows showing `session`, the focused one first.
+    public func windows(showing session: String) -> [WindowRecord] {
+        let shown = windows.filter { $0.session == session }
+        return shown.filter { $0.id == focusedWindow?.id } + shown.filter { $0.id != focusedWindow?.id }
+    }
+
+    /// A window whose session holds `space`: the focused window when it does, else the first.
+    public func window(holding space: String) -> WindowRecord? {
+        windows.first { $0.id == focusedWindow?.id && spaces(of: $0).contains(space) }
+            ?? windows.first { spaces(of: $0).contains(space) }
+    }
+
+    /// The sessions no main window shows, in the sessions' order.
+    public var backgroundSessions: [SessionInfo] {
+        let shown = Set(windows.compactMap(\.session))
+        return sessions.filter { !shown.contains($0.id) }
+    }
+
+    /// The spaces of the background sessions, in order, less those a little window shows.
+    public var background: [String] {
+        backgroundSessions.flatMap(\.spaces).filter { little(showing: $0) == nil }
+    }
 
     private func index(of id: String) -> Int? { windows.firstIndex { $0.id == id } }
 
-    /// Each window's active space is one of its spaces; the focused window exists.
+    /// Each window shows a session that exists and one of its spaces; the focused window exists; a
+    /// little window's owner is a window showing its space, else none.
     private mutating func normalize() {
         for i in windows.indices {
-            if windows[i].active.map(windows[i].spaces.contains) != true { windows[i].active = windows[i].spaces.first }
+            guard !sessions.isEmpty else { continue }
+            if windows[i].session.flatMap(session) == nil { windows[i].session = sessions[0].id }
+            guard let held = session(of: windows[i])?.spaces else { continue }
+            if windows[i].active.map(held.contains) != true { windows[i].active = windows[i].lastSpace[windows[i].session ?? ""].flatMap { held.contains($0) ? $0 : nil } ?? held.first }
+            if let active = windows[i].active, let session = windows[i].session { windows[i].lastSpace[session] = active }
+            windows[i].lastSpace = windows[i].lastSpace.filter { held in sessions.contains { $0.id == held.key && $0.spaces.contains(held.value) } }
         }
         if focused.map({ id in windows.contains { $0.id == id } }) != true { focused = windows.first?.id }
+        for j in littles.indices {
+            let space = littles[j].space
+            if !(littles[j].owner.flatMap { self.window($0) }.map { spaces(of: $0).contains(space) } ?? false) {
+                littles[j].owner = window(holding: space)?.id
+            }
+        }
     }
 
-    /// Match the spaces wheeld reports. A space that no longer exists leaves every window and the
-    /// background; one the layout has never placed goes to the background when `background` names
-    /// it, and otherwise joins the focused window as a tab without being shown, or the background
-    /// when no window is open.
-    /// The first time there is nothing saved at all, one window holds every space. Returns the
-    /// spaces that appeared.
+    /// Match the sessions wheeld reports. A window whose session is gone shows the first session;
+    /// a window with none yet takes it. A little window whose space is gone closes. No window is
+    /// opened: a person who closed every window keeps none. Returns the spaces that appeared since
+    /// the last report, none on the first.
     @discardableResult
-    public mutating func reconcile(_ spaces: [String], background unshown: Set<String> = []) -> [String] {
-        let existing = Set(spaces)
-        for i in windows.indices { windows[i].spaces.removeAll { !existing.contains($0) } }
-        background.removeAll { !existing.contains($0) }
+    public mutating func reconcile(_ now: [SessionInfo]) -> [String] {
+        let before = Set(sessions.flatMap(\.spaces))
+        let first = sessions.isEmpty
+        sessions = now
+        let existing = Set(now.flatMap(\.spaces))
         littles.removeAll { !existing.contains($0.space) }
-        let appeared = spaces.filter { !placed.contains($0) }
-        let fresh = appeared.filter { !unshown.contains($0) }
-        if windows.isEmpty, background.isEmpty, !fresh.isEmpty {
-            // Nothing was ever saved: every space goes to one window rather than the background.
-            windows = [WindowRecord(spaces: fresh)]
-            focused = windows[0].id
-        } else if let target = focusedWindow.map(\.id).flatMap(index) {
-            windows[target].spaces += fresh
-        } else {
-            background += fresh
-        }
-        background += appeared.filter(unshown.contains)
         normalize()
-        return appeared
+        return first ? [] : now.flatMap(\.spaces).filter { !before.contains($0) }
     }
 
     /// The background spaces whose last pane closed between two reports: each was in `old`, and
@@ -148,139 +180,88 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     /// its last pane closes. A space that just appeared, or whose one pane became empty, is not one.
     public func emptied(from old: [SpaceInfo], to new: [SpaceInfo]) -> [String] {
         let before = Dictionary(old.map { ($0.id, Set($0.root.panes.map(\.id))) }) { a, _ in a }
+        let shown = background
         return new.compactMap { space in
-            guard background.contains(space.id), let had = before[space.id],
+            guard shown.contains(space.id), let had = before[space.id],
                   case let .pane(id, .empty) = space.root, !had.contains(id) else { return nil }
             return space.id
         }
     }
 
-    /// One window holding every space, with the sidebar flag and name of the focused one: what a
-    /// launch with "Restore windows at launch" off opens.
-    public mutating func collapse(_ spaces: [String]) {
+    /// One window showing the focused window's session, with its sidebar flag and name: what a launch
+    /// with "Restore windows at launch" off opens. The little windows close.
+    public mutating func collapse() {
         let keep = focusedWindow
-        windows = [WindowRecord(id: keep?.id ?? UUID().uuidString, name: keep?.name, spaces: spaces, active: keep?.active, sidebar: keep?.sidebar ?? true, pinned: keep?.pinned ?? false)]
-        background = []
+        windows = [WindowRecord(id: keep?.id ?? UUID().uuidString, name: keep?.name, session: keep?.session, active: keep?.active,
+                                lastSpace: keep?.lastSpace ?? [:], sidebar: keep?.sidebar ?? true, pinned: keep?.pinned ?? false)]
         littles = []
         focused = windows[0].id
         normalize()
     }
 
-    /// Open a window holding `spaces`, taking them from wherever they are; a window whose last space
-    /// that was closes. Returns its id.
+    /// Open a window showing `session` (the first when nil), at `space` when it is one of the
+    /// session's. Returns its id.
     @discardableResult
-    public mutating func newWindow(name: String? = nil, spaces: [String] = [], sidebar: Bool = true) -> String {
-        let emptied = spaces.reduce(into: Set<String>()) { $0.formUnion(remove($1)) }
-        let record = WindowRecord(name: name, spaces: spaces, sidebar: sidebar)
+    public mutating func newWindow(name: String? = nil, session: String? = nil, space: String? = nil, sidebar: Bool = true) -> String {
+        var record = WindowRecord(name: name, session: session ?? sessions.first?.id, sidebar: sidebar)
+        if let space, let held = record.session.flatMap(self.session)?.spaces, held.contains(space) { record.active = space }
         windows.append(record)
         focused = record.id
-        drop(emptied)
         normalize()
         return record.id
     }
 
-    /// Close a window: its spaces go to the background and keep running, except those in its little
-    /// windows, which stay open and belong to none.
+    /// Close a window. Its session keeps running, shown by the other windows that show it or in
+    /// the background; a little window it owned stays open and belongs to none, or to another
+    /// window showing its space.
     public mutating func close(window id: String) {
         guard let i = index(of: id) else { return }
-        background += windows[i].spaces.filter { space in !littles.contains { $0.space == space } }
         windows.remove(at: i)
         for j in littles.indices where littles[j].owner == id { littles[j].owner = nil }
         normalize()
     }
 
-    /// Close a window and stop what runs in it: its spaces and their little windows leave the layout,
-    /// for the caller to close in wheeld. Returns the spaces that were in it.
-    @discardableResult
-    public mutating func close(window id: String, stopping: Bool) -> [String] {
-        guard stopping, let held = window(id)?.spaces else {
-            close(window: id)
-            return []
-        }
-        littles.removeAll { held.contains($0.space) }
-        guard let i = index(of: id) else { return held }
-        windows.remove(at: i)
-        normalize()
-        return held
-    }
-
-    /// Take `space` out of wherever it is, closing its little window. Returns the windows it left
-    /// with no space.
-    @discardableResult
-    private mutating func remove(_ space: String) -> Set<String> {
-        var emptied: Set<String> = []
-        for i in windows.indices where windows[i].spaces.contains(space) {
-            windows[i].spaces.removeAll { $0 == space }
-            if windows[i].spaces.isEmpty { emptied.insert(windows[i].id) }
-        }
-        background.removeAll { $0 == space }
-        littles.removeAll { $0.space == space }
-        return emptied
-    }
-
-    /// Close the windows a move left with no space, unless something put one back.
-    private mutating func drop(_ ids: Set<String>) {
-        windows.removeAll { ids.contains($0.id) && $0.spaces.isEmpty }
-    }
-
-    /// Open a little window showing `space`. The main window that holds the space owns it; a space
-    /// in the background leaves the background and gets one that belongs to none. Returns the little
-    /// window's id, the open one's when `space` already has one, or nil when the layout places
-    /// `space` nowhere.
+    /// Open a little window showing `space`. A main window showing the space's session owns it;
+    /// a space in a background session gets one that belongs to none. Returns the little window's
+    /// id, the open one's when `space` already has one, or nil when no session holds `space`.
     @discardableResult
     public mutating func openLittle(_ space: String) -> String? {
         if let open = little(showing: space) { return open.id }
-        let owner = window(holding: space)?.id
-        guard owner != nil || background.contains(space) else { return nil }
-        background.removeAll { $0 == space }
-        let little = LittleWindow(space: space, owner: owner)
+        guard sessions.contains(where: { $0.spaces.contains(space) }) else { return nil }
+        let little = LittleWindow(space: space, owner: window(holding: space)?.id)
         littles.append(little)
         return little.id
     }
 
     /// Close a little window: its owner's tab shows the grid again, and an ownerless one's space
-    /// returns to the background.
+    /// is in the background again.
     public mutating func closeLittle(_ id: String) {
-        guard let i = littles.firstIndex(where: { $0.id == id }) else { return }
-        let little = littles.remove(at: i)
-        if little.owner == nil { background.append(little.space) }
+        littles.removeAll { $0.id == id }
     }
 
-    /// Put `space` in `window` at `position` (the end by default), or in the background (at `position` there too) when
-    /// `window` is nil. The window shows it. Returns false when `window` does not exist.
+    /// Open a new window showing the session that holds `space`, at `space`. Returns its id.
     @discardableResult
-    public mutating func place(_ space: String, in window: String?, at position: Int? = nil) -> Bool {
-        if let window, index(of: window) == nil { return false }
-        // A reorder inside the owner keeps the space's little window.
-        let kept = window.flatMap { window in little(showing: space).flatMap { $0.owner == window ? $0 : nil } }
-        // Moving within a window shifts the others past the removed slot.
-        var position = position
-        if let window, let i = index(of: window) {
-            if let was = windows[i].spaces.firstIndex(of: space), let p = position, was < p { position = p - 1 }
-        } else if let was = background.firstIndex(of: space), let p = position, was < p {
-            position = p - 1
-        }
-        let emptied = remove(space)
-        if let kept { littles.append(kept) }
-        if let window, let i = index(of: window) {
-            let at = min(max(position ?? windows[i].spaces.count, 0), windows[i].spaces.count)
-            windows[i].spaces.insert(space, at: at)
-            windows[i].active = space
-        } else {
-            background.insert(space, at: min(max(position ?? background.count, 0), background.count))
-        }
-        drop(emptied)
+    public mutating func tearOff(_ space: String) -> String? {
+        guard let holder = sessions.session(of: space) else { return nil }
+        return newWindow(session: holder.id, space: space)
+    }
+
+    /// Show `space` in `window`, one of its session's spaces.
+    public mutating func show(_ space: String, in window: String) {
+        guard let i = index(of: window), spaces(of: windows[i]).contains(space) else { return }
+        windows[i].active = space
+        normalize()
+    }
+
+    /// Show `session` in `window`: the space the window last showed in it while that is still
+    /// there, else its first. Returns false when no such window or session exists.
+    @discardableResult
+    public mutating func show(session id: String, in window: String) -> Bool {
+        guard let i = index(of: window), session(id) != nil else { return false }
+        windows[i].session = id
+        windows[i].active = nil
         normalize()
         return true
-    }
-
-    /// Open a new window holding only `space`. Returns its id.
-    @discardableResult
-    public mutating func tearOff(_ space: String) -> String { newWindow(spaces: [space]) }
-
-    public mutating func show(_ space: String, in window: String) {
-        guard let i = index(of: window), windows[i].spaces.contains(space) else { return }
-        windows[i].active = space
     }
 
     public mutating func rename(window id: String, to name: String?) {

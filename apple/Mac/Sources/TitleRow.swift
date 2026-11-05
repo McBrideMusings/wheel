@@ -2,7 +2,7 @@ import SwiftUI
 import WheelKit
 
 /// A main window's title row, drawn under its transparent title bar: the sidebar button beside the
-/// traffic lights, the space tabs while the sidebar is closed (the window's title while it is open),
+/// traffic lights, the session menu, the space tabs while the sidebar is closed (the window's title while it is open),
 /// and the processes, command palette, pin and new-space buttons at the right end. The tabs take
 /// only the width left between the two button groups, so the buttons never leave the row.
 struct TitleRow: View {
@@ -24,6 +24,7 @@ struct TitleRow: View {
             .help(open ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
             .accessibilityLabel(open ? "Hide sidebar" : "Show sidebar")
             .titleButtonFrame(model, window: windowID, id: "sidebar")
+            SessionMenu(model: model, windowID: windowID)
             if open || model.renamingWindow == windowID {
                 WindowTitle(model: model, windowID: windowID)
                     .padding(.leading, 4)

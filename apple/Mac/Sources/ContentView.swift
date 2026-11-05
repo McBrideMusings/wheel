@@ -83,7 +83,8 @@ struct ContentView: View {
     @Environment(\.openSettings) private var openSettings
 }
 
-/// The sheet a main window's red light opens when the window holds spaces.
+/// The sheet the red light of the last window showing a session opens: the session runs on in the
+/// background, or closes with everything in it.
 struct WindowCloseSheet: View {
     var model: AppModel
     let windowID: String
@@ -97,10 +98,10 @@ struct WindowCloseSheet: View {
                 .font(.subheadline).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             VStack(spacing: 8) {
-                Button { model.answerWindowClose(.background) } label: { Text("Background Spaces and Close").frame(maxWidth: .infinity) }
+                Button { model.answerWindowClose(.background) } label: { Text("Background Session and Close").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                Button(role: .destructive) { model.answerWindowClose(.stop) } label: { Text("Close All Processes").foregroundStyle(.red).frame(maxWidth: .infinity) }
+                Button(role: .destructive) { model.answerWindowClose(.stop) } label: { Text("Close Session and All Processes").foregroundStyle(.red).frame(maxWidth: .infinity) }
                 Button { model.answerWindowClose(.cancel) } label: { Text("Cancel").frame(maxWidth: .infinity) }
                     .keyboardShortcut(.cancelAction)
             }
