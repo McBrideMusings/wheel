@@ -17,8 +17,36 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
     /// Windows this manager is closing because their record went; the person did not close them.
     private var closing: Set<String> = []
 
+    /// The frame the system saved for a window that opened somewhere else: AppKit moves and shrinks a
+    /// restored frame onto the screens it can see at that moment, and a monitor that attaches a moment
+    /// after launch is not among them. The saved frame goes back when the screens change.
+    private var displaced: [String: NSRect] = [:]
+
     init(model: AppModel) {
         self.model = model
+        super.init()
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.putDisplacedBack() }
+        }
+    }
+
+    private static func savedFrame(_ name: String) -> NSRect? {
+        guard let text = UserDefaults.standard.string(forKey: "NSWindow Frame \(name)") else { return nil }
+        let numbers = text.split(separator: " ").compactMap { Double($0) }
+        guard numbers.count >= 4 else { return nil }
+        return NSRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3])
+    }
+
+    private func putDisplacedBack() {
+        let screens = NSScreen.screens.map { "\($0.localizedName) \(NSStringFromRect($0.frame))" }.joined(separator: "; ")
+        Log.info("screens changed: \(screens)")
+        for (id, wanted) in displaced {
+            guard let window = windows[id],
+                  NSScreen.screens.contains(where: { $0.frame.contains(CGPoint(x: wanted.midX, y: wanted.midY)) }) else { continue }
+            window.setFrame(wanted, display: true)
+            displaced[id] = nil
+            Log.info("window \(id.prefix(8)) put back at its saved frame \(NSStringFromRect(window.frame)) on \(window.screen?.localizedName ?? "no screen")")
+        }
     }
 
     /// The `NSWindow` that shows record `id`, if it is open.
@@ -157,6 +185,10 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
                 window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY))
             }
         }
+        if restored, let wanted = Self.savedFrame("WheelWindow-\(record.id)"), abs(wanted.minX - window.frame.minX) > 1 || abs(wanted.width - window.frame.width) > 1 {
+            displaced[record.id] = wanted
+        }
+        Log.info("screens at open: \(NSScreen.screens.map { "\($0.localizedName) \(NSStringFromRect($0.frame))" }.joined(separator: "; "))")
         Log.info("window \(record.id.prefix(8)) opened \(restored ? "at its saved frame" : "with no saved frame") \(NSStringFromRect(window.frame)) on \(window.screen?.localizedName ?? "no screen")")
         windows[record.id] = window
         Self.apply(pinned: record.pinned, to: window)
