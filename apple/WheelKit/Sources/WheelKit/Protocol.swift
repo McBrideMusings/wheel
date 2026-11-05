@@ -1137,6 +1137,11 @@ public enum ServerMsg: Sendable {
     /// (`notice` set) or has come down (nil). The daemon keeps it in memory only: it is never a
     /// transcript line, and a client attaching while it is up is sent it again.
     case agentNotice(agent: String, notice: String?)
+    /// A toast every attached client shows (`wheel notify`): `level` is `notice`, `warning` or
+    /// `error`; `pane` names the pane it is about, when one. The daemon keeps nothing of it.
+    case toast(id: String, level: String, text: String, pane: String?)
+    /// The toast `id` is taken down.
+    case toastClear(id: String)
     /// What `agent`'s conversation is called — its first
     /// message cut to one line — or nil once it has none. The daemon holds it, and a client
     /// attaching while one is set is sent it again.
@@ -1250,7 +1255,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1303,6 +1308,11 @@ extension ServerMsg: Decodable {
             self = .agentCommands(agent: try c.decode(String.self, forKey: .agent), commands: try c.decode([String].self, forKey: .commands))
         case "agent_notice":
             self = .agentNotice(agent: try c.decode(String.self, forKey: .agent), notice: try c.decodeIfPresent(String.self, forKey: .notice))
+        case "toast":
+            self = .toast(id: try c.decode(String.self, forKey: .id), level: try c.decode(String.self, forKey: .level),
+                          text: try c.decode(String.self, forKey: .text), pane: try c.decodeIfPresent(String.self, forKey: .pane))
+        case "toast_clear":
+            self = .toastClear(id: try c.decode(String.self, forKey: .id))
         case "agent_title":
             self = .agentTitle(agent: try c.decode(String.self, forKey: .agent), title: try c.decodeIfPresent(String.self, forKey: .title))
         case "procs":

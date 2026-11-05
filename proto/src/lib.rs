@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -542,6 +542,25 @@ pub enum ClientMsg {
     },
     /// Stop streaming an agent to this connection. The agent keeps running.
     AgentDetach { agent: String },
+    /// Show a toast on every client attached now (`toast`): a message the person can read, copy and
+    /// close, in the colour of its level. The daemon keeps nothing: a client that attaches later
+    /// does not see it. `id` names it, and a second `notify` with the same id replaces the first.
+    /// `pane` adds Focus pane and Close pane buttons to clients that hold that pane.
+    Notify {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+        level: NoticeLevel,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// Take the toast `id` down on every attached client (`toast_clear`); an unknown id is not an error.
+    NotifyClear {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        id: String,
+    },
     /// Take down the notice shown over an agent (`agent_notice`); every client sees it go.
     AgentNoticeDismiss {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1954,6 +1973,16 @@ pub enum ServerMsg {
         agent: String,
         commands: Vec<String>,
     },
+    /// Sent to every connection when a client sent `notify`. Not repeated to a later connection. The Mac app shows it; the iOS app does not.
+    Toast {
+        id: String,
+        level: NoticeLevel,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// Sent to every connection when a client sent `notify_clear`.
+    ToastClear { id: String },
     /// Sent to every connection when an agent's notice goes up (`notice` set) or comes down
     /// (unset), and to a connection right after it attaches while one is up. A notice is a
     /// status for the person — a conversation that would not reopen — held in the daemon's
@@ -2365,6 +2394,8 @@ impl ServerMsg {
             | ServerMsg::AgentContext { .. }
             | ServerMsg::AgentCommands { .. }
             | ServerMsg::AgentNotice { .. }
+            | ServerMsg::Toast { .. }
+            | ServerMsg::ToastClear { .. }
             | ServerMsg::AgentTitle { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::PermResolved { .. }
@@ -2378,6 +2409,15 @@ impl ServerMsg {
             | ServerMsg::RenderPane { .. } => None,
         }
     }
+}
+
+/// How a toast reads: green news, an orange warning, a red error.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeLevel {
+    Notice,
+    Warning,
+    Error,
 }
 
 /// One line a browser pane's page wrote to its console, or an uncaught error or unhandled
@@ -3767,6 +3807,33 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_notify_and_its_toast_carry_the_level_text_and_pane_by_name() {
+        use super::*;
+        let sent = ClientMsg::Notify {
+            req: Some(3),
+            id: "n1".into(),
+            level: NoticeLevel::Warning,
+            text: "disk low".into(),
+            pane: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&sent).unwrap(),
+            r#"{"op":"notify","req":3,"id":"n1","level":"warning","text":"disk low"}"#
+        );
+        let heard: ServerMsg =
+            serde_json::from_str(r#"{"ev":"toast","id":"n1","level":"error","text":"x","pane":"p4"}"#).unwrap();
+        assert_eq!(
+            heard,
+            ServerMsg::Toast {
+                id: "n1".into(),
+                level: NoticeLevel::Error,
+                text: "x".into(),
+                pane: Some("p4".into())
+            }
+        );
+    }
+
     #[test]
     fn a_status_from_a_server_that_predates_the_protocol_version_reads_as_version_1() {
         use super::*;

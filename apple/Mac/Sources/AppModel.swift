@@ -928,6 +928,10 @@ final class AppModel {
         case let .paneInfo(_, pane, kind, fields, _):
             paneInfo[pane] = fields
             Log.info("pane \(pane) info (\(kind)): \(fields.map { "\($0.label)=\($0.value)" }.joined(separator: " "))")
+        case let .toast(id, level, text, pane):
+            post(Toast(id: "notify:\(id)", level: ToastLevel(rawValue: level) ?? .notice, text: text, pane: pane, dismiss: nil))
+        case let .toastClear(id):
+            removeToast("notify:\(id)")
         case let .agentNotice(agent, notice):
             guard let chat = chats[agent] else { return }
             chat.notice = notice

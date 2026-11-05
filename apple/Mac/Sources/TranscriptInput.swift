@@ -25,8 +25,7 @@ enum TranscriptInput {
         },
         itemHighlight: { item, chat in
             AnyView(ItemHighlight(selection: chat.selection, chat: chat, item: item))
-        },
-        rowMarker: { AnyView(HiddenTable()) }
+        }
     )
 
     /// The keys that scroll a transcript: Page Up/Down, Home, End and the arrows.
@@ -160,30 +159,36 @@ struct AgentTranscript: View {
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
         .environment(\.chatLinks, model.links)
+        .background(HiddenTable(hidden: !spaceShown))
         .onChange(of: spaceShown, initial: true) { _, shown in chat.hiddenBySpace = !shown }
     }
 }
 
-/// Drawn behind each transcript row: hides the list's scroll view, the one the row sits in, while
-/// the space is not on screen. The transcript stays built, so showing the space draws what is
-/// already there; a hidden table view is skipped by AppKit's layout and drawing while the grid
-/// resizes. The scroll view is the marker's own enclosing one, never one found by searching: the
-/// sidebar, the tab strip and every other pane's views share ancestors with the transcript.
+/// Drawn behind the whole transcript: hides the list's scroll view while the space is not on
+/// screen. The transcript stays built, so showing the space draws what is already there; a hidden
+/// table view is skipped by AppKit's layout and drawing while the grid resizes. The marker sits
+/// outside the list, so it is updated whether or not the list has built a row; the scroll view is
+/// the list's table among the window's, the one that overlaps the marker most.
 private struct HiddenTable: NSViewRepresentable {
+    var hidden: Bool
+
     func makeNSView(context: Context) -> NSView { NSView() }
 
-    /// A marker placed behind the whole list rather than in a row: the list's scroll view is in the
-    /// view it was placed in, so a table with no rows built can still be shown again.
-    private static func listScroll(beside marker: NSView) -> NSScrollView? {
-        guard let parent = marker.superview else { return nil }
-        return parent.subviews.lazy.compactMap { $0 as? NSScrollView ?? $0.subviews.lazy.compactMap { $0 as? NSScrollView }.first }.first
-    }
-
     func updateNSView(_ marker: NSView, context: Context) {
-        let hidden = !context.environment.spaceShown
-        // The marker joins its row's view after this update; its scroll view is there next turn.
+        let hidden = hidden
         DispatchQueue.main.async {
-            guard let scroll = marker.enclosingScrollView ?? Self.listScroll(beside: marker), scroll.isHidden != hidden else { return }
+            guard let window = marker.window, let root = window.contentView else { return }
+            let area = marker.convert(marker.bounds, to: nil)
+            var best: (NSScrollView, CGFloat)?
+            var queue = [root]
+            while let view = queue.popLast() {
+                queue.append(contentsOf: view.subviews)
+                guard let scroll = view as? NSScrollView, scroll.documentView is NSTableView else { continue }
+                let overlap = scroll.convert(scroll.bounds, to: nil).intersection(area)
+                let size = overlap.isNull ? 0 : overlap.width * overlap.height
+                if size > (best?.1 ?? 0) { best = (scroll, size) }
+            }
+            guard let scroll = best?.0, scroll.isHidden != hidden else { return }
             scroll.isHidden = hidden
             Log.info("transcript table \(hidden ? "hidden" : "shown"): scroll view at \(scroll.convert(scroll.bounds, to: nil)) in window")
         }
