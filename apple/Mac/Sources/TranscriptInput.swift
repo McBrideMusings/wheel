@@ -172,11 +172,18 @@ struct AgentTranscript: View {
 private struct HiddenTable: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { NSView() }
 
+    /// A marker placed behind the whole list rather than in a row: the list's scroll view is in the
+    /// view it was placed in, so a table with no rows built can still be shown again.
+    private static func listScroll(beside marker: NSView) -> NSScrollView? {
+        guard let parent = marker.superview else { return nil }
+        return parent.subviews.lazy.compactMap { $0 as? NSScrollView ?? $0.subviews.lazy.compactMap { $0 as? NSScrollView }.first }.first
+    }
+
     func updateNSView(_ marker: NSView, context: Context) {
         let hidden = !context.environment.spaceShown
         // The marker joins its row's view after this update; its scroll view is there next turn.
         DispatchQueue.main.async {
-            guard let scroll = marker.enclosingScrollView, scroll.isHidden != hidden else { return }
+            guard let scroll = marker.enclosingScrollView ?? Self.listScroll(beside: marker), scroll.isHidden != hidden else { return }
             scroll.isHidden = hidden
             Log.info("transcript table \(hidden ? "hidden" : "shown"): scroll view at \(scroll.convert(scroll.bounds, to: nil)) in window")
         }
