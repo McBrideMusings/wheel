@@ -83,6 +83,25 @@ impl Conn {
     }
 }
 
+impl Conn {
+    /// Every tool of the server, listed with the same `_meta` a call carries, so a shared server
+    /// lists the tools of the artifact asking, not of every artifact it serves.
+    async fn list_tools(&self) -> Result<Vec<rmcp::model::Tool>, rmcp::ServiceError> {
+        let mut tools = Vec::new();
+        let mut cursor = None;
+        loop {
+            let mut params = rmcp::model::PaginatedRequestParams::default().with_cursor(cursor);
+            params.meta = self.meta(None);
+            let result = self.peer.list_tools(Some(params)).await?;
+            tools.extend(result.tools);
+            cursor = result.next_cursor;
+            if cursor.is_none() {
+                return Ok(tools);
+            }
+        }
+    }
+}
+
 /// `uri` read for project `dir`: the same resource with `?dir=<dir>` added.
 fn project_uri(uri: &str, dir: &str) -> String {
     match url::Url::parse(uri) {
@@ -406,7 +425,7 @@ impl AppState {
         _pane: Option<&str>,
     ) -> Result<Vec<McpTool>, String> {
         let conn = self.mcp_peer(name, scope, space).await?;
-        let tools = match conn.peer.list_all_tools().await {
+        let tools = match conn.list_tools().await {
             Ok(t) => t,
             Err(e) => {
                 if is_closed(&e) {
@@ -542,8 +561,8 @@ impl AppState {
     ) -> Result<serde_json::Value, String> {
         let conn = self.mcp_peer(name, scope, space).await?;
         let peer = conn.peer.clone();
-        let tools = peer
-            .list_all_tools()
+        let tools = conn
+            .list_tools()
             .await
             .map_err(|e| format!("{name}: list tools: {e}"))?;
         let tools = tools
@@ -646,8 +665,7 @@ impl AppState {
     ) -> Result<McpToolResult, String> {
         let conn = self.mcp_peer(name, scope, space).await?;
         let tools = conn
-            .peer
-            .list_all_tools()
+            .list_tools()
             .await
             .map_err(|e| format!("{name}: list tools: {e}"))?;
         let listed = tools

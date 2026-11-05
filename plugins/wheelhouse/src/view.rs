@@ -1,0 +1,87 @@
+//! A view: one artifact's page, its tools and the files that make it stale. `wheelhouse serve`
+//! holds a registry of views and answers each request from the view the host names in
+//! `_meta` `wheel/artifact`, so one process serves every artifact (ADR-0028).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use rmcp::model::{CallToolRequestParams, CallToolResponse, Tool};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer};
+use serde_json::Value;
+
+/// MIME type of the A2UI messages a page is drawn from.
+pub const MIME: &str = "application/a2ui+json";
+
+#[async_trait]
+pub trait View: Send + Sync {
+    /// The artifact name the host sends in `wheel/artifact`; also the host of the page's URI,
+    /// `a2ui://<name>`.
+    fn name(&self) -> &str;
+
+    /// The tools the page calls.
+    fn tools(&self) -> Vec<Tool>;
+
+    /// Run one of this view's tools; the asking pane and project are in `context.meta`.
+    async fn call(
+        &self,
+        params: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData>;
+
+    /// The A2UI messages a read of the page answers with before the first call draws it.
+    fn skeleton(&self) -> Value;
+
+    /// The files in project `dir` whose change makes the page stale.
+    fn watches(&self, dir: &str) -> Vec<PathBuf>;
+
+    /// The most seconds the page goes without a check for changes.
+    fn every(&self) -> u64 {
+        60
+    }
+
+    /// A host subscribed to the page for project `dir`: load what it needs.
+    fn open(&self, dir: &str);
+
+    /// The last subscription to the page for `dir` ended: drop what was loaded.
+    fn close(&self, dir: &str);
+
+    /// Re-read project `dir`; true when the page now differs.
+    fn refresh(&self, dir: &str) -> bool;
+}
+
+/// The views a process serves, by name.
+#[derive(Clone, Default)]
+pub struct Registry {
+    views: Vec<Arc<dyn View>>,
+}
+
+impl Registry {
+    pub fn with(mut self, view: impl View + 'static) -> Self {
+        assert!(self.get(view.name()).is_none(), "two views named {}", view.name());
+        self.views.push(Arc::new(view));
+        self
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn View>> {
+        self.views.iter().find(|v| v.name() == name).cloned()
+    }
+
+    pub fn all(&self) -> &[Arc<dyn View>] {
+        &self.views
+    }
+
+    /// The view a request is for: the one `artifact` names. A host that names none is asking a
+    /// process that serves a single view, which is then the answer.
+    pub fn of(&self, artifact: Option<&str>) -> Result<Arc<dyn View>, String> {
+        match artifact {
+            Some(name) => self.get(name).ok_or_else(|| {
+                let names: Vec<&str> = self.views.iter().map(|v| v.name()).collect();
+                format!("no view named {name}; views: {}", names.join(", "))
+            }),
+            None if self.views.len() == 1 => Ok(self.views[0].clone()),
+            None => Err("the request names no artifact (_meta wheel/artifact)".into()),
+        }
+    }
+}

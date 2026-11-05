@@ -3,6 +3,9 @@
 //! every page is also a command.
 
 mod beads;
+mod core;
+mod serve;
+mod view;
 
 use clap::{Parser, Subcommand};
 
@@ -15,17 +18,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve the pages over MCP on standard input and output, for a host. One process serves every
-    /// project the host has open.
+    /// Serve every view over MCP on standard input and output, for a host. One process serves
+    /// every artifact and every project the host has open; the host names the artifact, and so
+    /// the view, in each request.
     Serve,
     /// A project's beads.
     Beads(beads::cli::Args),
 }
 
+/// Every view `serve` offers.
+fn registry() -> view::Registry {
+    view::Registry::default().with(beads::serve::BeadsView::new())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
-        Command::Serve => beads::serve::run().await,
+        Command::Serve => serve::run(registry()).await,
         Command::Beads(args) => beads::cli::run(args),
     }
 }

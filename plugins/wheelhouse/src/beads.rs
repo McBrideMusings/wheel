@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::core::table;
+
 pub mod cli;
 pub mod graph;
 pub mod serve;
@@ -55,20 +57,7 @@ struct Snapshot {
 }
 
 fn bd(path: &str, args: &[&str]) -> Result<Vec<Value>, String> {
-    let out = Command::new("bd")
-        .args(args)
-        .args(["--json", "--limit", "0"])
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("bd: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).chars().take(300).collect());
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    if text.trim().is_empty() {
-        return Ok(vec![]);
-    }
-    serde_json::from_str(&text).map_err(|e| format!("bd {}: not JSON: {e}", args.join(" ")))
+    crate::core::run::bd(path, args)
 }
 
 fn scripts(path: &str) -> (Vec<Script>, Vec<String>) {
@@ -100,7 +89,7 @@ fn scripts(path: &str) -> (Vec<Script>, Vec<String>) {
 /// project writes in its wheel.toml.
 fn collect(path: &str) -> Snapshot {
     let path = path.to_string();
-    let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
+    let name = crate::core::project::name_of(&path);
     let mut snap = Snapshot { name, path: path.clone(), ..Default::default() };
     if !PathBuf::from(&path).join(".beads").is_dir() {
         return snap;
@@ -664,21 +653,24 @@ fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
             .filter_map(|(k, title)| {
                 let mine: Vec<Value> =
                     rows.iter().filter(|r| kind_of(r.b) == *k).map(|r| row_json(ix, ui, r, &cols)).collect();
-                (!mine.is_empty()).then(|| json!({ "title": title, "count": mine.len(), "rows": mine }))
+                (!mine.is_empty()).then(|| table::section(title, mine))
             })
             .collect()
     } else {
-        vec![json!({ "title": "", "count": rows.len(),
-            "rows": rows.iter().map(|r| row_json(ix, ui, r, &cols)).collect::<Vec<_>>() })]
+        vec![table::section("", rows.iter().map(|r| row_json(ix, ui, r, &cols)).collect())]
     };
     let columns: Vec<Value> = cols
         .iter()
-        .map(|c| json!({ "key": c.key, "label": c.label, "width": c.width, "tree": c.tree && !grouped,
-            "wide": c.wide }))
+        .map(|c| table::column(c.key, c.label, json!(c.width), c.tree && !grouped, c.wide))
         .collect();
-    let v = json!({ "component": "Table", "rowAction": "select_bead", "foldAction": "toggle_path", "columns": columns,
-        "sort": { "key": ui.sort.0, "asc": ui.sort.1 }, "sections": sections,
-        "empty": if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." } });
+    let v = table::component(
+        columns,
+        sections,
+        "select_bead",
+        "toggle_path",
+        (&ui.sort.0, ui.sort.1),
+        if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." },
+    );
     (v, shown, total)
 }
 

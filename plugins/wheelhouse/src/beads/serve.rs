@@ -1,55 +1,37 @@
-//! `wheelhouse serve`: the Beads page over MCP, one process for every project the host has open.
+//! The Beads view: the Beads page's tools over MCP, as a view `wheelhouse serve` registers.
 //!
-//! The host names the asking pane and project in `_meta` (`wheel/pane`, `wheel/dir`) on each call
-//! and read; a process run with neither serves the project in its own directory. Each pane keeps
-//! its own view, search and filters. The host subscribes to `a2ui://beads?dir=<project>` while a
-//! pane shows the project, and a change to its beads is announced with
-//! `notifications/resources/updated` for that URI; a project nobody subscribes to is not watched.
+//! Each pane keeps its own view, search and filters; each subscribed project keeps one snapshot
+//! of its beads, re-read when `.beads/last-touched` moves or a minute passes.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{
-    CallToolResult, ContentBlock, MetaObject, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    RequestMetaObject, ResourceContents, ServerCapabilities, ServerConfig,
-};
-use rmcp::{
-    schemars, service::RequestContext, tool, tool_handler, tool_router, ErrorData,
-    RoleServer, ServerHandler, ServiceExt,
-};
+use async_trait::async_trait;
+use rmcp::handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, MetaObject, RequestMetaObject, ResourceContents, Tool};
+use rmcp::{schemars, service::RequestContext, tool, tool_router, ErrorData, RoleServer};
 
 use super::*;
+use crate::core::project::Origin;
+use crate::view::{View, MIME};
 
-const MIME: &str = "application/a2ui+json";
-const URI: &str = "a2ui://beads";
+/// The artifact name this view answers to, and so the host of its page's URI.
+pub const NAME: &str = "beads-native";
+const URI: &str = "a2ui://beads-native";
 
 struct Project {
     snap: Snapshot,
-    seen: Option<SystemTime>,
-    since: u64,
 }
 
 #[derive(Default)]
 struct Shared {
     projects: HashMap<String, Project>,
     panes: HashMap<String, Ui>,
-    /// The subscribed resource URIs, by project directory.
-    watched: HashMap<String, String>,
 }
 
 impl Shared {
     fn project(&mut self, dir: &str) -> &mut Project {
-        self.projects.entry(dir.to_string()).or_insert_with(|| Project {
-            snap: collect(dir),
-            seen: touched(dir),
-            since: 0,
-        })
+        self.projects.entry(dir.to_string()).or_insert_with(|| Project { snap: collect(dir) })
     }
-}
-
-fn touched(dir: &str) -> Option<SystemTime> {
-    std::fs::metadata(PathBuf::from(dir).join(".beads/last-touched")).and_then(|m| m.modified()).ok()
 }
 
 fn ui_meta() -> MetaObject {
@@ -59,12 +41,8 @@ fn ui_meta() -> MetaObject {
 
 /// The project and pane a request is for.
 fn origin(meta: &RequestMetaObject) -> (String, String) {
-    let get = |k: &str| meta.0.get(k).and_then(|v| v.as_str()).map(String::from);
-    let dir = get("wheel/dir")
-        .or_else(|| std::env::var("WHEEL_SPACE_DIR").ok())
-        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
-        .unwrap_or_default();
-    (dir, get("wheel/pane").unwrap_or_else(|| "default".into()))
+    let o = Origin::of(meta);
+    (o.dir, o.pane)
 }
 
 fn answer(snap: &Snapshot, ui: &Ui) -> CallToolResult {
@@ -381,110 +359,63 @@ impl Server {
     }
 }
 
-/// The project a resource URI names: its `dir` query.
-fn dir_of(uri: &str) -> Option<String> {
-    url::Url::parse(uri).ok()?.query_pairs().find(|(k, _)| k == "dir").map(|(_, v)| v.into_owned())
+/// The Beads view.
+pub struct BeadsView {
+    server: Server,
 }
 
-#[tool_handler(router = self.tool_router)]
-impl ServerHandler for Server {
-    fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(
-            ServerCapabilities::builder().enable_tools().enable_resources().enable_resources_subscribe().build(),
-        )
-    }
-
-    async fn subscribe(
-        &self,
-        request: rmcp::model::SubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        if let Some(dir) = dir_of(&request.uri) {
-            let mut s = self.shared.lock().unwrap();
-            s.project(&dir);
-            s.watched.insert(dir, request.uri);
-        }
-        Ok(())
-    }
-
-    async fn unsubscribe(
-        &self,
-        request: rmcp::model::UnsubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        if let Some(dir) = dir_of(&request.uri) {
-            let mut s = self.shared.lock().unwrap();
-            s.watched.remove(&dir);
-            s.projects.remove(&dir);
-        }
-        Ok(())
-    }
-
-    async fn read_resource(
-        &self,
-        request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResponse, ErrorData> {
-        if !request.uri.starts_with(URI) {
-            return Err(ErrorData::resource_not_found(format!("no resource {}", request.uri), None));
-        }
-        Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
-            uri: request.uri,
-            mime_type: Some(MIME.into()),
-            text: skeleton().to_string(),
-            meta: None,
-        }])
-        .into())
+impl BeadsView {
+    pub fn new() -> Self {
+        BeadsView { server: Server::new(Arc::new(Mutex::new(Shared::default()))) }
     }
 }
 
-pub async fn run() -> anyhow::Result<()> {
-    let shared = Arc::new(Mutex::new(Shared::default()));
-    let running = Server::new(shared.clone()).serve(rmcp::transport::stdio()).await?;
-    let peer = running.peer().clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            // Which projects are due: their `.beads/last-touched` moved, or a minute passed.
-            let due: Vec<String> = {
-                let mut s = shared.lock().unwrap();
-                let watched: Vec<String> = s.watched.keys().cloned().collect();
-                s.projects
-                    .iter_mut()
-                    .filter(|(dir, _)| watched.contains(dir))
-                    .filter_map(|(dir, p)| {
-                        p.since += 1;
-                        let now = touched(dir);
-                        (now != p.seen || p.since >= 60).then(|| {
-                            p.seen = now;
-                            p.since = 0;
-                            dir.clone()
-                        })
-                    })
-                    .collect()
-            };
-            for dir in due {
-                let d = dir.clone();
-                let fresh = tokio::task::spawn_blocking(move || collect(&d)).await.unwrap_or_default();
-                let changed = {
-                    let mut s = shared.lock().unwrap();
-                    match s.projects.get_mut(&dir) {
-                        Some(p) if p.snap != fresh => {
-                            p.snap = fresh;
-                            true
-                        }
-                        _ => false,
-                    }
-                };
-                let uri = shared.lock().unwrap().watched.get(&dir).cloned();
-                if let (true, Some(uri)) = (changed, uri) {
-                    if peer.notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(uri)).await.is_err() {
-                        return;
-                    }
-                }
+#[async_trait]
+impl View for BeadsView {
+    fn name(&self) -> &str {
+        NAME
+    }
+
+    fn tools(&self) -> Vec<Tool> {
+        self.server.tool_router.list_all()
+    }
+
+    async fn call(
+        &self,
+        params: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.server.tool_router.call(ToolCallContext::new(&self.server, params, context)).await
+    }
+
+    fn skeleton(&self) -> Value {
+        skeleton()
+    }
+
+    fn watches(&self, dir: &str) -> Vec<PathBuf> {
+        vec![PathBuf::from(dir).join(".beads/last-touched")]
+    }
+
+    fn open(&self, dir: &str) {
+        self.server.shared.lock().unwrap().project(dir);
+    }
+
+    fn close(&self, dir: &str) {
+        self.server.shared.lock().unwrap().projects.remove(dir);
+    }
+
+    fn refresh(&self, dir: &str) -> bool {
+        if !self.server.shared.lock().unwrap().projects.contains_key(dir) {
+            return false;
+        }
+        let fresh = collect(dir);
+        let mut s = self.server.shared.lock().unwrap();
+        match s.projects.get_mut(dir) {
+            Some(p) if p.snap != fresh => {
+                p.snap = fresh;
+                true
             }
+            _ => false,
         }
-    });
-    running.waiting().await?;
-    Ok(())
+    }
 }
