@@ -814,6 +814,9 @@ fn web_panes_in(node: &Node) -> Vec<(&str, &ArtifactRef)> {
 /// The page-side half of the two-way channel (`page.rs`), served at `.wheel/client.js`.
 const CLIENT_JS: &str = include_str!("page_client.js");
 
+/// The lightbox a page asks for with `<script src=".wheel/lightbox.js">`, served at `.wheel/lightbox.js`.
+const LIGHTBOX_JS: &str = include_str!("page_lightbox.js");
+
 /// Wheel's default design system for artifact pages, served at `.wheel/wheel.css`.
 const WHEEL_CSS: &str = include_str!("wheel.css");
 
@@ -840,6 +843,15 @@ async fn page_client(
     headers: HeaderMap,
 ) -> Response {
     page_asset(&state, listener, &pane, &headers, "client.js", "text/javascript", CLIENT_JS)
+}
+
+async fn page_lightbox(
+    State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
+    UrlPath(pane): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    page_asset(&state, listener, &pane, &headers, "lightbox.js", "text/javascript", LIGHTBOX_JS)
 }
 
 async fn page_css(
@@ -1213,6 +1225,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/artifacts/{pane}/.wheel/client.js", get(page_client))
         .route("/artifacts/{pane}/.wheel/wheel.css", get(page_css))
+        .route("/artifacts/{pane}/.wheel/lightbox.js", get(page_lightbox))
         .route("/artifacts/{pane}/.wheel/events", get(page_events))
         .route("/artifacts/{pane}/.wheel/state/{key}", put(page_state))
         .route("/artifacts/{pane}/.wheel/submit", post(page_submit))

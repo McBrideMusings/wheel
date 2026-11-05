@@ -4838,6 +4838,16 @@ async fn a_page_stores_state_and_receives_pushed_data() {
     .await;
     assert_eq!(status, 200);
     assert!(css.contains(".counts"), "the design system's stylesheet is served: {css}");
+    let (status, lightbox) = http_get(
+        &addr,
+        &format!("/artifacts/{pane}/.wheel/lightbox.js"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(lightbox.contains("window.wheelLightbox"), "the lightbox is served: {lightbox}");
+    let (status, _) = http_get(&addr, &format!("/artifacts/{pane}/.wheel/lightbox.js"), "").await;
+    assert_ne!(status, 200, "the lightbox needs the token like the rest of .wheel/");
     let (status, _) = http_get(&addr, &format!("/artifacts/{pane}/.wheel/wheel.css"), "").await;
     assert_ne!(status, 200, "the stylesheet needs the token like the rest of .wheel/");
     let _ = std::fs::remove_dir_all(&dir);
