@@ -104,7 +104,6 @@ public struct TranscriptView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(platform.rowMarker())
             .defaultScrollAnchor(.bottom)
             #if os(iOS)
             // A hardware keyboard's printable key typed over the transcript goes to the composer;
