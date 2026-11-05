@@ -189,38 +189,6 @@ struct AgentTranscript: View {
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
         .environment(\.chatLinks, model.links)
-        .background(HiddenTable(hidden: !spaceShown))
         .onChange(of: spaceShown, initial: true) { _, shown in chat.hiddenBySpace = !shown }
-    }
-}
-
-/// Drawn behind the whole transcript: hides the list's scroll view while the space is not on
-/// screen. The transcript stays built, so showing the space draws what is already there; a hidden
-/// table view is skipped by AppKit's layout and drawing while the grid resizes. The marker sits
-/// outside the list, so it is updated whether or not the list has built a row; the scroll view is
-/// the list's table among the window's, the one that overlaps the marker most.
-private struct HiddenTable: NSViewRepresentable {
-    var hidden: Bool
-
-    func makeNSView(context: Context) -> NSView { NSView() }
-
-    func updateNSView(_ marker: NSView, context: Context) {
-        let hidden = hidden
-        DispatchQueue.main.async {
-            guard let window = marker.window, let root = window.contentView else { return }
-            let area = marker.convert(marker.bounds, to: nil)
-            var best: (NSScrollView, CGFloat)?
-            var queue = [root]
-            while let view = queue.popLast() {
-                queue.append(contentsOf: view.subviews)
-                guard let scroll = view as? NSScrollView, scroll.documentView is NSTableView else { continue }
-                let overlap = scroll.convert(scroll.bounds, to: nil).intersection(area)
-                let size = overlap.isNull ? 0 : overlap.width * overlap.height
-                if size > (best?.1 ?? 0) { best = (scroll, size) }
-            }
-            guard let scroll = best?.0, scroll.isHidden != hidden else { return }
-            scroll.isHidden = hidden
-            Log.info("transcript table \(hidden ? "hidden" : "shown"): scroll view at \(scroll.convert(scroll.bounds, to: nil)) in window")
-        }
     }
 }
