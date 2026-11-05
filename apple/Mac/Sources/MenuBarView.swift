@@ -176,35 +176,8 @@ struct ServerDetails: View {
     }
 }
 
-/// The window's banner while a newer server waits for a restart: what it brings, Restart Server…
-/// and a close button. Closing it hides it until a different server is installed; the menu bar
-/// item keeps its dot and its header keeps the notice.
-struct ServerUpdateBanner: View {
-    var model: AppModel
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
-            Text(AppModel.serverUpdatedText)
-                .font(.callout)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }
-            Button { model.dismissServerBanner() } label: {
-                Image(systemName: "xmark").frame(width: 16, height: 16)
-            }
-            .buttonStyle(.borderless)
-            .help("Hide this until a different server is installed")
-            .accessibilityLabel("Dismiss")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange.opacity(0.35)))
-    }
-}
-
-/// Restart Server: one click restarts the server from the bundle. In the window's banner, the menu
-/// bar header and Settings › General while a restart waits.
+/// Restart Server: one click restarts the server from the bundle. In the menu bar header and
+/// Settings › General while a restart waits; the window's notice carries the same button.
 struct ServerRestartControl: View {
     var model: AppModel
 

@@ -35,30 +35,6 @@ enum ScrollKey: String, CaseIterable {
     }
 }
 
-/// A dismissible status over a conversation: what the daemon says about it, not something the
-/// conversation said.
-struct NoticeBanner: View {
-    let text: String
-    let dismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-            Text(text)
-                .font(ChatFont.meta)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Dismiss", systemImage: "xmark") { dismiss() }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.chat("notice", "Dismiss this notice"))
-                .help("Dismiss")
-        }
-        .padding(8)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
 /// The controls the agent offers over its own agent — model, effort level, permission mode —
 /// as a status line under the composer. Each is its value as plain text: a row of bordered
 /// pickers costs four lines of the card and reads as a form, when what a person wants is to see

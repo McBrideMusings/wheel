@@ -47,9 +47,6 @@ private struct SpacesGrid: View {
     var body: some View {
         let held = model.spaces(in: windowID)
         VStack(alignment: .leading, spacing: 6) {
-            if let error = model.layoutError {
-                LayoutErrorLabel(error: error)
-            }
             ZStack(alignment: .topLeading) {
                 // A space in a little window is drawn there: one terminal surface has one place.
                 ForEach(held.filter { model.layout.little(showing: $0.id) == nil }) { space in
@@ -205,15 +202,6 @@ struct TabInsertionBar: View {
             .fill(Color.accentColor)
             .frame(width: 3, height: 20)
             .accessibilityLabel("Drop here")
-    }
-}
-
-struct LayoutErrorLabel: View {
-    let error: String
-
-    var body: some View {
-        Label(error, systemImage: "exclamationmark.triangle")
-            .font(.caption).foregroundStyle(.orange).lineLimit(1)
     }
 }
 
@@ -984,12 +972,6 @@ struct AgentBody: View {
     var body: some View {
         VStack(spacing: 0) {
             AgentTranscript(model: model, chat: chat, empty: "Give this agent a task.", agent: agent)
-            // Above the composer: a status about this conversation, such as one that would not
-            // reopen. The person closes it; it is never a line of the transcript.
-            if let notice = chat.notice {
-                NoticeBanner(text: notice) { model.dismissNotice(chat) }
-                    .padding([.horizontal, .top], 10)
-            }
             // Directly above the composer, where a person answering has their hands: this agent's
             // oldest waiting request.
             if let perm = model.perms.first(where: { $0.agent == chat.name }) {

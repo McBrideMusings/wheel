@@ -19,7 +19,6 @@ struct ContentView: View {
                     // A full-screen window may report no title bar; the row keeps its own height.
                     .frame(height: max(outer.safeAreaInsets.top, TitleRow.minHeight))
                 VStack(spacing: 6) {
-                    if model.serverBannerShown { ServerUpdateBanner(model: model) }
                     if model.serverStoppedByMenu {
                         ServerStoppedNotice()
                     } else {
@@ -39,6 +38,7 @@ struct ContentView: View {
         .frame(minWidth: 900, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay { SpaceDropOutline(model: model, windowID: windowID) }
+        .overlay { if model.layout.focused == windowID { ToastStack(model: model) } }
         .overlay {
             // A window with no spaces shows the palette in place (`NoSpaces`).
             if let palette = model.commandPalette, model.layout.focused == windowID, !model.spaces(in: windowID).isEmpty {
@@ -123,9 +123,9 @@ struct ConnectionBadge: View {
         case .connecting:
             Label("Connecting to wheeld…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption).foregroundStyle(.secondary)
-        case let .unreachable(reason):
-            Label("wheeld unreachable: \(reason). Retrying every 2 seconds.", systemImage: "exclamationmark.triangle")
-                .font(.caption).foregroundStyle(.orange)
+        case .unreachable:
+            Label("Not connected to wheeld", systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

@@ -640,6 +640,31 @@ final class DebugServer {
             let inside = chat.selection.layout(of: item, target: target, in: chat).point(of: offset)
             let body: [String: Any] = ["x": target.frame.minX + inside.x, "y": target.frame.minY + inside.y]
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
+        case ("POST", "/toast"):
+            // level=notice|warning|error, text, optional id, pane, reply=<placeholder>; the reply is echoed to the log.
+            guard let text = query["text"] else { return refuse("400 Bad Request", "text is required") }
+            let id = query["id"] ?? "debug"
+            let reply = query["reply"].map { placeholder in
+                ToastReply(placeholder: placeholder) { Log.info("debug toast \(id): reply of \($0.count) characters") }
+            }
+            model.post(Toast(id: id, level: ToastLevel(rawValue: query["level"] ?? "") ?? .notice, text: text, reply: reply,
+                             pane: query["pane"], dismiss: nil))
+        case ("POST", "/toast/press"):
+            // The button titled `button` (Copy and Dismiss included) on toast `id`: the same closures the buttons run.
+            guard let id = query["id"], let button = query["button"], let toast = model.toasts.first(where: { $0.id == id }) else {
+                return refuse("404 Not Found", "no such toast")
+            }
+            switch button {
+            case "Copy": ToastView.copy(toast.text)
+            case "Dismiss": model.dismiss(toast)
+            default:
+                guard let action = toast.actions.first(where: { $0.title == button }) else { return refuse("404 Not Found", "no such button") }
+                action.run()
+            }
+        case ("POST", "/toast/clear"):
+            model.removeToast(query["id"] ?? "debug")
+        case ("POST", "/client/check"):
+            model.checkClientUpdate()
         case ("POST", "/space"):
             guard let cwd = query["cwd"] else { return refuse("400 Bad Request", "cwd is required") }
             model.createSpace(cwd: cwd)
@@ -2233,6 +2258,11 @@ final class DebugServer {
             "panes": panes(),
             "agents": model.agents.map { ["name": $0.name, "command": $0.command, "home": $0.home ?? NSNull(), "found": $0.found, "path": $0.path ?? NSNull(), "why": $0.why ?? NSNull(), "install": $0.installLine ?? NSNull()] as [String: Any] },
             "layout_error": model.layoutError ?? NSNull(),
+            "toasts": model.toasts.map {
+                ["id": $0.id, "level": $0.level.rawValue, "text": $0.text, "actions": $0.actions.map(\.title), "reply": $0.reply != nil,
+                 "pane": $0.pane ?? NSNull(), "closable": $0.closable] as [String: Any]
+            },
+            "client_update": ["launched": model.launchStamp?.description ?? NSNull(), "installed": model.clientInstalled?.description ?? NSNull()] as [String: Any],
             "drag_ratios": model.dragRatios,
             "pane_drag": model.paneDrag.map { drag in
                 ["pane": drag.pane, "target": drag.drop?.target ?? NSNull(), "zone": drag.drop.map { $0.zone.label } ?? NSNull(), "committed": drag.committed,

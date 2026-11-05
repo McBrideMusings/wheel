@@ -42,9 +42,16 @@ final class AppModel {
     /// A space or pane to show whose layout has not arrived: the daemon's answer to the op that made
     /// it can come ahead of the `spaces` broadcast, so it is shown when the layout names it.
     @ObservationIgnored var pendingShow: (space: String?, pane: String?) = (nil, nil)
-    /// The last layout op the daemon refused, shown above the grid until the next op that
-    /// changes the layout (a focus click leaves it up).
-    private(set) var layoutError: String?
+    /// The last layout op the daemon refused, shown as a notice until the person closes it or the
+    /// next op that changes the layout (a focus click leaves it up).
+    var layoutError: String?
+    /// The notices posted from outside the model's own state (an agent's notice, the debug server).
+    var posted: [Toast] = []
+    /// When this app's executable was written as it started, and the newer time on disk once an
+    /// install replaced it; `clientUpdateDismissed` is the install the person closed the notice for.
+    let launchStamp = AppModel.executableStamp()
+    var clientInstalled: Date?
+    var clientUpdateDismissed: Date?
     /// Which window holds each space, and which spaces run with none (ADR-0014). Kept in this
     /// app's preferences; the daemon holds no part of it. Written only by `editWindows` and `editLayoutSilently`.
     private(set) var layout = WindowLayout.saved()
@@ -925,6 +932,13 @@ final class AppModel {
             guard let chat = chats[agent] else { return }
             chat.notice = notice
             Log.info("agent \(agent) notice: \(notice ?? "down")")
+            if let notice {
+                post(Toast(id: "chat:\(agent)", level: .warning, text: "\(agent): \(notice)",
+                           pane: AgentPanes.agents(spaces).first { $0.value == agent }?.key,
+                           dismiss: { [weak self] in self?.dismissNotice(chat) }))
+            } else {
+                removeToast("chat:\(agent)")
+            }
         case let .agent(agent, event):
             chats[agent]?.apply(event)
         case let .permRequested(perm):
