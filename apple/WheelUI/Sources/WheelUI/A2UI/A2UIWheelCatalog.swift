@@ -3,23 +3,23 @@ import A2UISwiftUI
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
-let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Segmented", "Select", "Check", "Sheet", "Table", "Graph", "Canvas", "Stat", "Pill", "Unsupported"]
+let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Segmented", "Select", "Check", "Sheet", "Table", "Canvas", "Stat", "Pill", "Unsupported"]
 
 // The palette is the system's own semantic colours, so a page follows light and dark and the
 // person's accent colour like any native window.
 struct WheelPalette {
-    let fg, muted, bg, card, soft, line, ok, warn, bad, todo, focus: Color
+    let fg, muted, bg, card, soft, line, ok, warn, bad, todo, focus, accent, purple: Color
     init(dark _: Bool) {
         let t = WebTheme.shared
         bg = t.bg; card = t.group; line = t.separator
         fg = t.label; muted = t.secondary; soft = t.fill; todo = t.tertiary
-        ok = t.green; warn = t.orange; bad = t.red; focus = t.blue
+        ok = t.green; warn = t.orange; bad = t.red; focus = t.blue; accent = t.blue; purple = t.purple
     }
     func tone(_ n: String?) -> Color? {
         switch n {
         case "fg": return fg; case "muted": return muted; case "ok": return ok; case "warn": return warn
         case "bad": return bad; case "line": return line; case "card": return card; case "soft": return soft
-        case "bg": return bg; case "todo": return todo; case "focus": return focus; case "faint": return todo; default: return nil
+        case "accent": return accent; case "purple": return purple; case "bg": return bg; case "todo": return todo; case "focus": return focus; case "faint": return todo; default: return nil
         }
     }
 }
@@ -227,7 +227,6 @@ struct WheelA2UICatalog: CustomComponentCatalog {
         case "Check": A2UICheckView(node: node, surface: surface)
         case "Sheet": A2UISheetView(node: node, surface: surface)
         case "Table": A2UITableView(node: node, surface: surface)
-        case "Graph": A2UIGraphView(node: node, surface: surface)
         case "Canvas": A2UICanvasView(node: node, surface: surface)
         case "Stat": A2UIStatView(node: node)
         case "Pill": A2UIPillView(node: node, surface: surface)

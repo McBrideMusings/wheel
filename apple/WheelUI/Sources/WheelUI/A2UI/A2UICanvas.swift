@@ -20,7 +20,8 @@ import AppKit
 //   controls true draws Fit, + and −.   emptyAction raised with {} when a tap hits nothing.
 // Screen-space sizes: `rpx` [min, max] on a circle op or a circle hit draws the scene radius clamped to that many screen points;
 //   `hpx` / `wpx` [min, max] on a rect op clamp its height (kept centred on the rect) or width (kept at its left edge);
-//   `sizepx` [min, max] on a text op clamps `size`. `maxw` on a text op cuts the label with "…" to fit that many scene units.
+//   `sizepx` [min, max] on a text op clamps `size`. `maxw` on a text op cuts the label with "…" to fit that many scene units; `minx` keeps its left edge at least that many screen points
+//   from the view's left (a label that stays in view while its row scrolls past).
 // A shape outside the view is not drawn. A hit may also carry `tip` (lines shown beside the pointer; a line is a string or
 // [{t, tone?, mono?, bold?}] runs), `doubleAction` / `doubleContext` (a double tap), and `fit` [x,y,w,h] (a tap moves the camera
 // to that rect instead of raising an action). A hit with no `action` only hovers, labels and shows its tip.
@@ -43,7 +44,7 @@ struct CanvasStyle {
     var weight = "regular", anchor = "start"
     var minZoom = 0.0, maxZoom = Double.infinity
     var rpx: [Double]?, hpx: [Double]?, wpx: [Double]?, sizepx: [Double]?
-    var maxw: Double?
+    var maxw: Double?, minx: Double?
 }
 
 struct CanvasOp {
@@ -95,7 +96,7 @@ struct CanvasScene {
             st.weight = d["weight"]?.stringValue ?? "regular"; st.anchor = d["anchor"]?.stringValue ?? "start"
             st.minZoom = d["minZoom"]?.numberValue ?? 0; st.maxZoom = d["maxZoom"]?.numberValue ?? .infinity
             st.rpx = range(d["rpx"]); st.hpx = range(d["hpx"]); st.wpx = range(d["wpx"]); st.sizepx = range(d["sizepx"])
-            st.maxw = d["maxw"]?.numberValue
+            st.maxw = d["maxw"]?.numberValue; st.minx = d["minx"]?.numberValue
             var op = CanvasOp(kind: d["op"]?.stringValue ?? "", style: st)
             switch op.kind {
             case "rect": op.nums = (d["r"]?.arrayValue ?? []).map { nums($0) }
@@ -144,6 +145,16 @@ struct CanvasScene {
         enterAction = p["enterAction"]?.stringValue ?? ""; enterContext = p["enterContext"]?.dictionaryValue ?? [:]
         wheelPans = p["wheel"]?.stringValue == "pan"
     }
+}
+
+/// The camera at `zoom` with `rect` centred in `size`, never showing more empty space than `bounds` has: a scene smaller than
+/// the view starts at its own edge, a larger one stops at its edges.
+func canvasFocusCamera(_ rect: CGRect, zoom z: Double, bounds: CGRect, in size: CGSize) -> CanvasCamera {
+    func axis(_ mid: Double, _ view: Double, _ lo: Double, _ hi: Double) -> Double {
+        if (hi - lo) * z <= view { return -lo * z }
+        return min(-lo * z, max(view - hi * z, view / 2 - mid * z))
+    }
+    return CanvasCamera(x: axis(rect.midX, size.width, bounds.minX, bounds.maxX), y: axis(rect.midY, size.height, bounds.minY, bounds.maxY), s: z, auto: false)
 }
 
 /// A screen size clamped to [min, max] points, or itself with no range.
@@ -321,13 +332,13 @@ private struct CanvasStage: View {
                 let anchor: UnitPoint = st.anchor == "middle" ? .center : st.anchor == "end" ? .trailing : .leading
                 let reach = (st.maxw ?? 400) + 8
                 for (x, y, s) in op.texts {
-                    guard CGRect(x: x - reach, y: y - 20 / c.s, width: reach * 2, height: 40 / c.s).intersects(seen) else { continue }
+                    guard CGRect(x: st.minx == nil ? x - reach : seen.minX, y: y - 20 / c.s, width: st.minx == nil ? reach * 2 : seen.width, height: 40 / c.s).intersects(seen) else { continue }
                     func text(_ s: String) -> Text { Text(s).font(.system(size: size, weight: weight, design: st.mono ? .monospaced : .default)).foregroundColor(color.opacity(st.opacity)) }
                     var shown = s
                     if let maxw = st.maxw {
                         shown = canvasCut(s, limit: maxw * c.s) { ctx.resolve(text($0)).measure(in: CGSize(width: 10_000, height: 100)).width }
                     }
-                    ctx.draw(text(shown), at: CGPoint(x: x * c.s + c.x, y: y * c.s + c.y), anchor: anchor)
+                    ctx.draw(text(shown), at: CGPoint(x: max(x * c.s + c.x, st.minx ?? -.infinity), y: y * c.s + c.y), anchor: anchor)
                 }
             default: break
             }
@@ -469,7 +480,7 @@ private struct CanvasStage: View {
         guard let f = scene.focus, scene.focusKey != lastFocus else { return }
         lastFocus = scene.focusKey
         if let z = scene.focusZoom {
-            cam = CanvasCamera(x: size.width / 2 - f.midX * z, y: size.height / 2 - f.midY * z, s: z, auto: false)
+            cam = canvasFocusCamera(f, zoom: z, bounds: scene.bounds, in: size)
         } else {
             cam = fitted(f, in: size)
         }
