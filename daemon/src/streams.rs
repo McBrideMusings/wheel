@@ -22,6 +22,7 @@ use wheel_proto::{
 
 use crate::server::AppState;
 use crate::settings::FILE;
+use crate::stream_time;
 
 /// How long wheeld holds a line after it arrives before emitting it, so a line stated earlier
 /// but delivered later can still be placed before it.
@@ -338,12 +339,14 @@ async fn merge(
     }
 }
 
-/// Read `pipe` as lines into `tx`, each stamped with its arrival.
+/// Read `pipe` as lines into `tx`, each stamped with its arrival and the time it states.
 async fn read_lines(
     pipe: impl AsyncRead + Unpin,
     source: String,
+    tz: Option<String>,
     tx: mpsc::UnboundedSender<StreamLine>,
 ) {
+    let local = stream_time::local_zone();
     let mut reader = BufReader::new(pipe);
     let mut buf = Vec::new();
     loop {
@@ -353,9 +356,10 @@ async fn read_lines(
             Ok(_) => {
                 let text = String::from_utf8_lossy(&buf);
                 let text = text.trim_end_matches(['\n', '\r']).to_string();
+                let arrived = unix_ms_now();
                 let line = StreamLine {
-                    arrived: unix_ms_now(),
-                    occurred: None,
+                    arrived,
+                    occurred: stream_time::stated_time(&text, tz.as_deref(), arrived, &local),
                     source: source.clone(),
                     text,
                 };
@@ -611,13 +615,13 @@ impl AppState {
             run.groups.lock().unwrap().push((s.name.clone(), pid));
             tracing::info!(space = %space_id, %group, source = %s.name, command = %s.command, tz = ?s.tz, pid, file = %file_path.display(), "stream source started");
             let (out, err) = (child.stdout.take(), child.stderr.take());
-            let (name, tx) = (s.name.clone(), tx.clone());
+            let (name, tz, tx) = (s.name.clone(), s.tz.clone(), tx.clone());
             let (space_log, group_log) = (space_id.clone(), group.to_string());
             let run_exit = run.clone();
             tasks.push(tokio::spawn(async move {
                 let readers = [
-                    out.map(|p| tokio::spawn(read_lines(p, name.clone(), tx.clone()))),
-                    err.map(|p| tokio::spawn(read_lines(p, name.clone(), tx.clone()))),
+                    out.map(|p| tokio::spawn(read_lines(p, name.clone(), tz.clone(), tx.clone()))),
+                    err.map(|p| tokio::spawn(read_lines(p, name.clone(), tz.clone(), tx.clone()))),
                 ];
                 let status = child.wait().await;
                 for reader in readers.into_iter().flatten() {
@@ -727,6 +731,15 @@ mod tests {
         m.push(line(1500, Some(900), "stated-earlier"));
         let out: Vec<_> = m.due(3500).into_iter().map(|l| l.source).collect();
         assert_eq!(out, ["stated-earlier", "late-arrival-first"]);
+    }
+
+    #[test]
+    fn a_line_stated_one_second_earlier_arriving_one_and_a_half_later_goes_first() {
+        let mut m = Merger::default();
+        m.push(line(10_000, Some(10_000), "early"));
+        m.push(line(11_500, Some(9_000), "stated-earlier"));
+        let out: Vec<_> = m.due(13_500).into_iter().map(|l| l.source).collect();
+        assert_eq!(out, ["stated-earlier", "early"]);
     }
 
     #[test]

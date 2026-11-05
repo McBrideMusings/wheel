@@ -52,6 +52,7 @@ mod shell;
 mod sites;
 pub mod spaces;
 mod status;
+mod stream_time;
 mod streams;
 mod uploads;
 mod web;
