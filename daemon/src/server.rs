@@ -193,6 +193,8 @@ pub struct AppState {
     pub(crate) mcp: crate::mcp::Sessions,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
+    /// The merged streams started since this daemon began, by space and group (ADR-0030).
+    pub(crate) streams: crate::streams::Streams,
     /// This state, for callbacks an agent runs later and for a task that saves the layout after
     /// the caller has let go of its lock.
     pub(crate) me: Weak<AppState>,
@@ -309,6 +311,7 @@ impl AppState {
             apps: Mutex::new(crate::app::Apps::new()),
             mcp: Default::default(),
             runner_feeds: Mutex::new(HashMap::new()),
+            streams: Default::default(),
             me: me.clone(),
             renderers: Default::default(),
             term_sizes: Mutex::new(HashMap::new()),
@@ -810,6 +813,7 @@ impl AppState {
             login_path: self.login_path.lock().unwrap().clone(),
             logs: Box::new(self.logship.status(&self.push_url())),
             host: Box::new(host),
+            streams: self.streams.statuses(),
         }
     }
 
@@ -2266,6 +2270,72 @@ async fn handle(
         }
         ClientMsg::RunnerLs { req, space } => match state.runner_ls(space.as_deref()) {
             Ok(runners) => req.map(|req| ServerMsg::Runners { req, runners }),
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::StreamLs { req, space } => match state.stream_ls(space.as_deref()) {
+            Ok(groups) => req.map(|req| ServerMsg::Streams { req, groups }),
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::StreamStart { req, group, space } => {
+            match state.stream_start(&group, space.as_deref()).await {
+                Ok(stream) => req.map(|req| ServerMsg::StreamStarted { req, stream }),
+                Err(message) => Some(failed(req, message)),
+            }
+        }
+        ClientMsg::StreamStop { req, group, space } => {
+            done(req, state.stream_stop(&group, space.as_deref()))
+        }
+        ClientMsg::StreamTail {
+            req,
+            group,
+            space,
+            since_ms,
+            follow,
+        } => match state.stream_find(&group, space.as_deref()) {
+            Ok(run) => {
+                let since = since_ms.map(|ms| wheel_proto::unix_ms_now().saturating_sub(ms));
+                let (lines, rx) = run.tail(since, follow);
+                let ended = !follow || rx.is_none();
+                let Some(req) = req else { return None };
+                let key = format!("stream:{req}");
+                let first = ServerMsg::StreamLines { req, lines, ended };
+                if let Some(mut rx) = rx {
+                    let out = out.clone();
+                    let group = group.clone();
+                    let task = tokio::spawn(async move {
+                        if out.send(first).await.is_err() {
+                            return;
+                        }
+                        loop {
+                            let (lines, ended) = match rx.recv().await {
+                                Ok(crate::streams::Event::Line(line)) => (vec![line], false),
+                                Ok(crate::streams::Event::Ended) | Err(broadcast::error::RecvError::Closed) => {
+                                    (Vec::new(), true)
+                                }
+                                Err(broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!(%group, skipped = n, "a following tail fell behind and skipped lines");
+                                    let note = wheel_proto::StreamLine {
+                                        arrived: wheel_proto::unix_ms_now(),
+                                        occurred: None,
+                                        source: "wheeld".into(),
+                                        text: format!("skipped {n} lines: this tail fell behind"),
+                                    };
+                                    (vec![note], false)
+                                }
+                            };
+                            if out.send(ServerMsg::StreamLines { req, lines, ended }).await.is_err() || ended {
+                                return;
+                            }
+                        }
+                    });
+                    if let Some(old) = forwards.insert(key, task) {
+                        old.abort();
+                    }
+                    None
+                } else {
+                    Some(first)
+                }
+            }
             Err(message) => Some(failed(req, message)),
         },
         ClientMsg::Run {

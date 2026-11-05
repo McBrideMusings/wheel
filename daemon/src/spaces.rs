@@ -1004,6 +1004,7 @@ impl AppState {
     /// announces the change.
     fn close_locked(&self, spaces: &mut Spaces, index: usize) {
         let space = spaces.remove(index);
+        self.streams.close_space(&space.id);
         for (pane, kind) in space_panes(&space) {
             self.drop_content(pane, kind);
         }

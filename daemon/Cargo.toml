@@ -47,6 +47,7 @@ ureq = "3"
 rmcp = { version = "3.8", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider"] }
 wheel-proto = { path = "../proto" }
 similar = "3.2.0"
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 
 [build-dependencies]
 sha2 = "0.10"

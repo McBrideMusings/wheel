@@ -206,6 +206,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         _ = sigterm.recv() => Stopped::Signal("SIGTERM"),
         _ = sigint.recv() => Stopped::Signal("SIGINT"),
     };
+    stopping.stop_streams();
     stopping.save_layout_now();
     match stopped {
         Stopped::Served(served) => served,
