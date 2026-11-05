@@ -81,7 +81,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   each as `Run <name>`.
 - `wheel work set [--item <bead|issue|pr>:<id>]... [--stage plan|edit|build|verify|review|gate] [--note T] [--pane P]` declares what the agent in a pane is working on (`--pane` defaults to `$WHEEL_PANE`); each call replaces the last. `wheel work clear` drops it. `wheel status --json` reports it as `work` on the pane, and it goes when the pane closes or changes kind.
 - `wheel usage`: Claude account usage.
-- `wheel notify "text" [--level notice|warning|error] [--id <id>] [--pane <pane>]`: show a toast (green, orange or red) on every client attached now, and print its id. The text can be selected and copied; `--pane` adds Focus pane and Close pane buttons. The same `--id` replaces the toast; `wheel notify --clear <id>` takes it down. The daemon keeps nothing, so a client that attaches later does not see it. Use it for what the person should read now, not for progress.
+- `wheel notify "text" [--level notice|warning|error] [--id <id>] [--pane <pane>]`: show a toast (green, orange or red) on every Mac client attached now (the phone shows none), and print its id. The text can be selected and copied; `--pane` adds Focus pane and Close pane buttons. The same `--id` replaces the toast; `wheel notify --clear <id>` takes it down. The daemon keeps nothing, so a client that attaches later does not see it. Use it for what the person should read now, not for progress.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 
 ## Asking the person a question, or showing a result with pictures: the `markdown` built-in

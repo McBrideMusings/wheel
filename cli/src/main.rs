@@ -68,14 +68,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show a toast on every attached client, and print its id. Exits 0 when the daemon sent it;
-    /// the daemon keeps nothing, so a client attached later does not see it.
+    /// Show a toast on every attached Mac client, and print its id. Exits 0 when the daemon sent it;
+    /// the daemon keeps nothing, so a client attached later does not see it, and the phone shows none.
     Notify {
         /// What the toast says.
         text: Option<String>,
         /// The colour and weight: `notice` (green), `warning` (orange) or `error` (red).
-        #[arg(long, value_parser = ["notice", "warning", "error"], default_value = "notice")]
-        level: String,
+        #[arg(long, value_enum, default_value_t = NotifyLevel::Notice)]
+        level: NotifyLevel,
         /// A name for the toast; sending the same id again replaces it. Default: `notify-<unix ms>`.
         #[arg(long)]
         id: Option<String>,
@@ -1785,11 +1785,18 @@ fn print_strip(board: &wheel_proto::UsageBoard) {
     }
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum NotifyLevel {
+    Notice,
+    Warning,
+    Error,
+}
+
 /// `wheel notify`: send a toast to every attached client, or take one down.
 async fn notify(
     conn: &mut Conn,
     text: Option<String>,
-    level: String,
+    level: NotifyLevel,
     id: Option<String>,
     pane: Option<String>,
     clear: Option<String>,
@@ -1804,10 +1811,10 @@ async fn notify(
     let Some(text) = text else {
         return Err(Fail::Usage("notify needs the text to show, or --clear <id>".into()));
     };
-    let level = match level.as_str() {
-        "warning" => wheel_proto::NoticeLevel::Warning,
-        "error" => wheel_proto::NoticeLevel::Error,
-        _ => wheel_proto::NoticeLevel::Notice,
+    let level = match level {
+        NotifyLevel::Notice => wheel_proto::NoticeLevel::Notice,
+        NotifyLevel::Warning => wheel_proto::NoticeLevel::Warning,
+        NotifyLevel::Error => wheel_proto::NoticeLevel::Error,
     };
     let id = id.unwrap_or_else(|| {
         let ms = std::time::SystemTime::now()

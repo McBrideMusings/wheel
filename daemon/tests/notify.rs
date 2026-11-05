@@ -72,6 +72,21 @@ async fn a_notify_reaches_every_attached_connection_and_a_clear_follows() {
         ServerMsg::ToastClear { id: "n1".into() }
     );
 
+    // An empty text is refused under its req, and nothing is broadcast.
+    sender
+        .send(Message::Text(r#"{"op":"notify","req":3,"id":"n2","level":"notice","text":"  "}"#.into()))
+        .await
+        .unwrap();
+    let refusal = loop {
+        let frame = tokio::time::timeout(Duration::from_secs(2), sender.next()).await.unwrap().unwrap().unwrap();
+        let Message::Text(text) = frame else { continue };
+        if let ServerMsg::Error { req, message, .. } = serde_json::from_str(&text).unwrap() {
+            break (req, message);
+        }
+    };
+    assert_eq!(refusal.0, Some(3));
+    assert!(refusal.1.contains("1 to 4000 bytes"), "{}", refusal.1);
+
     // A connection made afterwards is told nothing: the daemon holds no toast.
     let (mut late, _) = tokio_tungstenite::connect_async(url).await.unwrap();
     let heard = tokio::time::timeout(Duration::from_millis(500), async {

@@ -1973,7 +1973,7 @@ pub enum ServerMsg {
         agent: String,
         commands: Vec<String>,
     },
-    /// Sent to every connection when a client sent `notify`. Not repeated to a later connection.
+    /// Sent to every connection when a client sent `notify`. Not repeated to a later connection. The Mac app shows it; the iOS app does not.
     Toast {
         id: String,
         level: NoticeLevel,

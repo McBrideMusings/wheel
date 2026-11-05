@@ -1261,15 +1261,22 @@ async fn handle(
             text,
             pane,
         } => {
-            // Sized, never the text: a notice can quote anything.
-            tracing::info!(%peer, %id, ?level, chars = text.len(), ?pane, "toast sent");
-            let _ = state.global.send(ServerMsg::Toast {
-                id,
-                level,
-                text,
-                pane,
-            });
-            req.map(|req| ServerMsg::Ok { req })
+            if text.trim().is_empty() || text.len() > 4000 || id.is_empty() || id.len() > 200 {
+                Some(failed(
+                    req,
+                    "notify needs a text of 1 to 4000 bytes and an id of 1 to 200 bytes".into(),
+                ))
+            } else {
+                // Sized, never the text: a notice can quote anything.
+                tracing::info!(%peer, %id, ?level, bytes = text.len(), ?pane, "toast sent");
+                let _ = state.global.send(ServerMsg::Toast {
+                    id,
+                    level,
+                    text,
+                    pane,
+                });
+                req.map(|req| ServerMsg::Ok { req })
+            }
         }
         ClientMsg::NotifyClear { req, id } => {
             tracing::info!(%peer, %id, "toast cleared");
