@@ -7,6 +7,8 @@ mod beads;
 mod core;
 mod prs;
 mod diff;
+mod issues;
+mod status;
 mod repo;
 mod serve;
 mod view;
@@ -36,6 +38,10 @@ enum Command {
     Diff(diff::cli::Args),
     /// A project's open pull requests.
     Prs(prs::cli::Args),
+    /// A project's tracker: list, create, update and close items.
+    Issues(issues::cli::Args),
+    /// A project's status against its vision.
+    Project(status::cli::Args),
 }
 
 /// Every view `serve` offers.
@@ -44,6 +50,8 @@ fn registry(_agents: &core::agents::Agents) -> view::Registry {
         .with(repo::serve::RepoView::new())
         .with(diff::serve::DiffView::new())
         .with(prs::serve::PrsView::new())
+        .with(issues::serve::IssuesView::new())
+        .with(status::serve::ProjectView::new())
 }
 
 #[tokio::main]
@@ -58,5 +66,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Repo(args) => repo::cli::run(args),
         Command::Diff(args) => diff::cli::run(args),
         Command::Prs(args) => prs::cli::run(args),
+        Command::Issues(args) => issues::cli::run(args),
+        Command::Project(args) => status::cli::run(args),
     }
 }

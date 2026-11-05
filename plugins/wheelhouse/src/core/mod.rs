@@ -11,4 +11,5 @@ pub mod page;
 pub mod project;
 pub mod run;
 pub mod table;
+pub mod tracker;
 pub mod watch;
