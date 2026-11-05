@@ -32,6 +32,8 @@
     background: var(--group); cursor: zoom-in; overflow: hidden; font: inherit; color: inherit; box-shadow: none;
   }
   .thumb img { display: block; width: 100%; height: auto; }
+  .thumb.inline { display: inline-block; width: auto; max-width: 100%; vertical-align: middle; margin: 2px 0; }
+  .thumb.inline img { width: auto; max-width: 100%; max-height: 240px; }
   figcaption { color: var(--secondary); font-size: 12px; margin-top: 4px; }
   .question { margin: 28px 0 0; }
   .question > h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 8px; }
@@ -87,26 +89,6 @@
   #bar .status { margin: 0; font-size: 12px; color: var(--secondary); min-height: 1.4em; }
   #bar .status .good { color: var(--green); font-weight: 600; }
   #bar .status .bad { color: var(--red); font-weight: 600; }
-
-  #spot { position: fixed; inset: 0; z-index: 10; overflow: hidden; touch-action: none; }
-  #spot[hidden] { display: none; }
-  #spot .dim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.82); opacity: 0; transition: opacity 200ms ease; }
-  #spot.on .dim { opacity: 1; }
-  #spot img {
-    position: absolute; max-width: none; user-select: none; -webkit-user-select: none; -webkit-user-drag: none;
-    cursor: zoom-in; transition: left 200ms ease, top 200ms ease, width 200ms ease, height 200ms ease;
-    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5); background: var(--group);
-  }
-  #spot.zoomed img { cursor: grab; }
-  #spot.dragging img { cursor: grabbing; transition: none; }
-  #spot .cap {
-    position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; color: #f5f5f7; font-size: 12px;
-    opacity: 0; transition: opacity 200ms ease; pointer-events: none; text-shadow: 0 1px 3px #000;
-  }
-  #spot.on .cap { opacity: 1; }
-  @media (prefers-reduced-motion: reduce) {
-    #spot .dim, #spot img, #spot .cap { transition: none; }
-  }
 </style>
 <main id="root"><div class="notice plain">Waiting for the post…</div></main>
 <footer id="bar" hidden>
@@ -119,19 +101,11 @@
     <p class="status" id="status" aria-live="polite"></p>
   </div>
 </footer>
-<div id="spot" hidden role="dialog" aria-modal="true" aria-label="Image">
-  <div class="dim"></div>
-  <img alt="">
-  <div class="cap"></div>
-</div>
 <script src=".wheel/client.js"></script>
+<script src=".wheel/lightbox.js"></script>
 <script>
 (() => {
   const root = document.getElementById("root");
-  const spot = document.getElementById("spot");
-  const spotImg = spot.querySelector("img");
-  const spotCap = spot.querySelector(".cap");
-  const MARGIN = 32;
 
   let card = null;
   let cardText = null;
@@ -149,8 +123,42 @@
 
   // ---- text -------------------------------------------------------------
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  // Inline: **bold** and `code`; blocks() adds fenced code and lists.
-  const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  // Where a link or image target goes: an http(s) address stays as written, a path with no scheme is
+  // a file in the post's folder (served under data/), a #fragment stays on the page, and any other
+  // scheme (javascript:, file:, data:) is refused.
+  function target(raw) {
+    const t = String(raw).trim().replace(/\s+(".*"|'.*')$/, ""); // less a quoted title
+    if (/^https?:\/\//i.test(t)) return { url: t, remote: true };
+    if (t.startsWith("#")) return { url: t, anchor: true };
+    if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith("//") || t.split(/[?#]/)[0].split("/").includes("..")) return null;
+    const m = t.match(/^([^?#]*)(.*)$/);
+    let path = m[1];
+    while (path.startsWith("./")) path = path.slice(2);
+    return path ? { url: dataUrl(path) + m[2] } : null;
+  }
+  // Inline: `code`, **bold**, ![alt](image), [text](link) and bare http(s) addresses. An image opens the
+  // lightbox like a thumbnail does; blocks() adds fenced code and lists.
+  const INLINE = /`([^`]+)`|!\[([^\]]*)\]\(([^)]+)\)|\[((?:[^\[\]]|!\[[^\]]*\]\([^)]*\))+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|(https?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]'*])/g;
+  const link = (href, body, remote) => `<a href="${esc(href)}"${remote ? ' rel="noopener"' : ""}>${body}</a>`;
+  // `plain` draws no image, link or address: text that sits inside a button or another link.
+  function inline(s, plain) {
+    const text = String(s);
+    let out = "", last = 0;
+    for (const m of text.matchAll(INLINE)) { // matchAll copies the regex, so the recursive calls below keep their own position
+      out += esc(text.slice(last, m.index));
+      last = m.index + m[0].length;
+      const [whole, code, alt, img, label, href, bold, bare] = m;
+      const t = img !== undefined ? target(img) : href !== undefined ? target(href) : null;
+      if (code !== undefined) out += `<code>${esc(code)}</code>`;
+      else if (bold !== undefined) out += `<b>${inline(bold, plain)}</b>`;
+      else if (bare !== undefined) out += plain ? esc(bare) : link(bare, esc(bare), true);
+      else if (img !== undefined) out += plain ? esc(alt) : t && !t.anchor
+        ? `<button type="button" class="thumb inline" data-lightbox data-src="${esc(t.url)}" data-cap="${esc(alt)}"><img src="${esc(t.url)}" alt="${esc(alt || img)}"></button>`
+        : esc(whole);
+      else out += t && !plain ? link(t.url, inline(label, true), t.remote) : inline(label, true);
+    }
+    return out + esc(text.slice(last));
+  }
   // Block text: fenced code, bullet and numbered lists, paragraphs split on blank lines.
   function blocks(text) {
     const out = [];
@@ -188,7 +196,7 @@
 
   // ---- render -----------------------------------------------------------
   function thumb(src, caption, alt) {
-    return `<figure class="opt-image"><button type="button" class="thumb" data-src="${esc(dataUrl(src))}" data-cap="${esc(caption)}">` +
+    return `<figure class="opt-image"><button type="button" class="thumb" data-lightbox data-src="${esc(dataUrl(src))}" data-cap="${esc(caption)}">` +
       `<img src="${esc(dataUrl(src))}" alt="${esc(alt || caption || src)}"></button>` +
       (caption ? `<figcaption>${inline(caption)}</figcaption>` : "") + `</figure>`;
   }
@@ -213,7 +221,7 @@
         const imgs = list(o.images).filter(Boolean);
         out.push(`<div class="opt${on ? " selected" : ""}" data-q="${esc(qid)}" data-o="${esc(oid)}">` +
           `<button type="button" class="choose" aria-pressed="${on}"><span class="check" aria-hidden="true">✓</span>` +
-          `<span class="letter">${esc(qid)}${esc(oid)}.</span><span class="title">${inline(o.title)}</span>` +
+          `<span class="letter">${esc(qid)}${esc(oid)}.</span><span class="title">${inline(o.title, true)}</span>` +
           (o.pick ? `<span class="pick">my pick</span>` : "") + `</button>` +
           list(o.notes).map((t) => `<p>${inline(t)}</p>`).join("") +
           (cases.length ? `<ul>${cases.map((t) => `<li>${inline(t)}</li>`).join("")}</ul>` : "") +
@@ -235,7 +243,7 @@
 
   function notice(message) {
     root.innerHTML = `<div class="notice" role="alert">${esc(message)}</div>`;
-    if (spotOpen) closeSpot(true);
+    if (window.wheelLightbox) wheelLightbox.close(true);
   }
 
   // ---- loading ----------------------------------------------------------
@@ -331,13 +339,10 @@
       });
     }
     answers = kept;
-    const reopen = spotOpen ? spotKey() : null;
+    const reopen = window.wheelLightbox ? wheelLightbox.key() : null;
     render();
     saveDraft();
-    if (reopen) {
-      const i = items().findIndex((b) => b.dataset.src === reopen);
-      if (i >= 0) { cur = i; showStill(); } else closeSpot(true);
-    }
+    if (reopen && !wheelLightbox.show(reopen)) wheelLightbox.close(true);
   }
 
   fetch("data/index.md", { cache: "no-store" })
@@ -445,8 +450,7 @@
   });
 
   root.addEventListener("click", (e) => {
-    const t = e.target.closest(".thumb");
-    if (t) { openSpot(items().indexOf(t), e.target); return; }
+    if (e.target.closest(".thumb, a")) return; // an image opens in the lightbox and a link opens; neither picks the option
     const opt = e.target.closest(".opt");
     if (!opt || isLocked()) return;
     answers[opt.dataset.q] = opt.dataset.o;
@@ -467,205 +471,5 @@
     }
   });
   loadDraft();
-
-  // ---- spotlight --------------------------------------------------------
-  const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const items = () => Array.from(root.querySelectorAll(".thumb"));
-  let spotOpen = false;
-  let cur = 0;
-  let zoomed = false;
-  let box = { w: 0, h: 0, cx: 0, cy: 0 }; // image size and centre, in window px
-  let nat = { w: 1, h: 1 };
-  let pan = { x: 0, y: 0 }; // offset of the centre from the window centre while zoomed
-  let closeTimer = 0;
-
-  const spotKey = () => (items()[cur] || {}).dataset && items()[cur].dataset.src;
-  const vw = () => document.documentElement.clientWidth || window.innerWidth;
-  const vh = () => window.innerHeight;
-
-  function fitted() {
-    const aw = Math.max(vw() - 2 * MARGIN, 50), ah = Math.max(vh() - 2 * MARGIN, 50);
-    const s = Math.min(aw / nat.w, ah / nat.h);
-    return { w: nat.w * s, h: nat.h * s };
-  }
-  function zoomSize() {
-    const f = fitted();
-    const k = Math.max(1, nat.w / f.w); // natural size as a multiple of fitted
-    const m = k < 2 ? 2 : k;
-    return { w: f.w * m, h: f.h * m };
-  }
-  function clampPan() {
-    const lim = (size, view) => Math.max(0, (size - view) / 2);
-    pan.x = Math.min(Math.max(pan.x, -lim(box.w, vw())), lim(box.w, vw()));
-    pan.y = Math.min(Math.max(pan.y, -lim(box.h, vh())), lim(box.h, vh()));
-  }
-  function place() {
-    const cx = vw() / 2 + (zoomed ? pan.x : 0), cy = vh() / 2 + (zoomed ? pan.y : 0);
-    box.cx = cx; box.cy = cy;
-    spotImg.style.width = box.w + "px";
-    spotImg.style.height = box.h + "px";
-    spotImg.style.left = cx - box.w / 2 + "px";
-    spotImg.style.top = cy - box.h / 2 + "px";
-  }
-  function layout() {
-    const s = zoomed ? zoomSize() : fitted();
-    box.w = s.w; box.h = s.h;
-    if (zoomed) clampPan();
-    place();
-  }
-
-  function setImage(btn, thenFit) {
-    const img = btn.querySelector("img");
-    spotImg.alt = img.alt;
-    spotImg.src = img.currentSrc || img.src;
-    spotCap.textContent = btn.dataset.cap || "";
-    nat = { w: img.naturalWidth || 1, h: img.naturalHeight || 1 };
-    if (!img.naturalWidth) {
-      // Not decoded yet: take the size when it is.
-      img.addEventListener("load", () => {
-        if (spotOpen && items()[cur] === btn) { nat = { w: img.naturalWidth, h: img.naturalHeight }; layout(); }
-      }, { once: true });
-    }
-    if (thenFit) layout();
-  }
-
-  function thumbRect(btn) {
-    const r = btn.getBoundingClientRect();
-    return { w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
-  }
-
-  function openSpot(i, from) {
-    if (i < 0) return;
-    clearTimeout(closeTimer);
-    cur = i;
-    const btn = items()[cur];
-    zoomed = false; pan = { x: 0, y: 0 };
-    spot.hidden = false;
-    spotOpen = true;
-    spot.classList.remove("zoomed", "dragging", "on");
-    // Start where the thumbnail is, then grow to the fitted size.
-    const tb = thumbRect(btn);
-    setImage(btn, false);
-    spotImg.style.transition = "none";
-    spotImg.style.width = tb.w + "px"; spotImg.style.height = tb.h + "px";
-    spotImg.style.left = tb.cx - tb.w / 2 + "px"; spotImg.style.top = tb.cy - tb.h / 2 + "px";
-    void spotImg.offsetWidth;
-    spotImg.style.transition = "";
-    spot.classList.add("on");
-    layout();
-    document.body.style.overflow = "hidden";
-    spot.focus && spot.setAttribute("tabindex", "-1");
-    spot.focus({ preventScroll: true });
-  }
-
-  function showStill() { // the card changed under an open spotlight, or arrows stepped
-    const btn = items()[cur];
-    if (!btn) return;
-    setImage(btn, true);
-  }
-
-  function step(d) {
-    const all = items();
-    if (all.length < 2) return;
-    cur = (cur + d + all.length) % all.length;
-    zoomed = false; pan = { x: 0, y: 0 };
-    spot.classList.remove("zoomed");
-    const prev = spotImg.style.transition;
-    spotImg.style.transition = "none";
-    showStill();
-    void spotImg.offsetWidth;
-    spotImg.style.transition = prev;
-    all[cur].scrollIntoView({ block: "nearest" });
-  }
-
-  function closeSpot(immediate) {
-    if (!spotOpen) return;
-    spotOpen = false;
-    const btn = items()[cur];
-    const finish = () => {
-      spot.hidden = true;
-      spot.classList.remove("on", "zoomed", "dragging");
-      spotImg.removeAttribute("src");
-      document.body.style.overflow = "";
-    };
-    if (btn) btn.focus({ preventScroll: true });
-    if (immediate || reduced() || !btn) { finish(); return; }
-    spot.classList.remove("on", "zoomed");
-    const tb = thumbRect(btn);
-    spotImg.style.width = tb.w + "px"; spotImg.style.height = tb.h + "px";
-    spotImg.style.left = tb.cx - tb.w / 2 + "px"; spotImg.style.top = tb.cy - tb.h / 2 + "px";
-    closeTimer = setTimeout(finish, 210);
-  }
-
-  function toggleZoom(px, py) {
-    if (!zoomed) {
-      const before = { w: box.w, cx: box.cx, cy: box.cy };
-      zoomed = true;
-      const z = zoomSize();
-      const r = z.w / before.w;
-      // Keep the point under the pointer where it is.
-      pan = { x: (before.cx - px) * r + px - vw() / 2, y: (before.cy - py) * r + py - vh() / 2 };
-      spot.classList.add("zoomed");
-    } else {
-      zoomed = false; pan = { x: 0, y: 0 };
-      spot.classList.remove("zoomed");
-    }
-    layout();
-  }
-
-  // Pointer: a press that moves more than a few pixels is a drag, never a click.
-  let down = null;
-  spotImg.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    down = { id: e.pointerId, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y, moved: false };
-    try { spotImg.setPointerCapture(e.pointerId); } catch (_) {}
-    e.preventDefault();
-  });
-  spotImg.addEventListener("pointermove", (e) => {
-    if (!down || e.pointerId !== down.id) return;
-    const dx = e.clientX - down.x, dy = e.clientY - down.y;
-    if (!down.moved && Math.hypot(dx, dy) < 4) return;
-    down.moved = true;
-    if (!zoomed) return;
-    spot.classList.add("dragging");
-    pan.x = down.px + dx; pan.y = down.py + dy;
-    clampPan();
-    place();
-  });
-  const release = (e) => {
-    if (!down || e.pointerId !== down.id) return;
-    const d = down;
-    down = null;
-    spot.classList.remove("dragging");
-    try { spotImg.releasePointerCapture(e.pointerId); } catch (_) {}
-    if (e.type === "pointerup" && !d.moved) toggleZoom(e.clientX, e.clientY);
-  };
-  spotImg.addEventListener("pointerup", release);
-  spotImg.addEventListener("pointercancel", release);
-  spotImg.addEventListener("click", (e) => e.stopPropagation());
-  spotImg.addEventListener("dragstart", (e) => e.preventDefault());
-
-  // A click on the dark background closes; the image handles its own.
-  spot.addEventListener("click", (e) => { if (e.target !== spotImg) closeSpot(false); });
-
-  spot.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    if (!zoomed) return;
-    pan.x -= e.deltaX; pan.y -= e.deltaY;
-    clampPan();
-    spotImg.style.transition = "none";
-    place();
-    void spotImg.offsetWidth;
-    spotImg.style.transition = "";
-  }, { passive: false });
-
-  document.addEventListener("keydown", (e) => {
-    if (!spotOpen) return;
-    if (e.key === "Escape") { e.preventDefault(); closeSpot(false); }
-    else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
-    else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
-    else if (e.key === "Tab") { e.preventDefault(); }
-  });
-  window.addEventListener("resize", () => { if (spotOpen) { spotImg.style.transition = "none"; layout(); void spotImg.offsetWidth; spotImg.style.transition = ""; } });
 })();
 </script>

@@ -26,6 +26,9 @@ public struct Composer: View {
     var attachments: [ComposerAttachment] = []
     var removeAttachment: (ComposerAttachment.ID) -> Void = { _ in }
     var retryAttachment: (ComposerAttachment.ID) -> Void = { _ in }
+    /// Takes what the person drops on the composer or pastes into it, and the files the paperclip
+    /// picked. Nil leaves drops and pastes to the text box.
+    var attach: (([ComposerDrop]) -> Void)?
     /// Called when the text box takes keyboard focus, however it got it (a click, Tab).
     var onFocus: () -> Void = {}
     /// Changes when the caller wants the keyboard in the text box.
@@ -55,6 +58,7 @@ public struct Composer: View {
         attachments: [ComposerAttachment] = [],
         removeAttachment: @escaping (ComposerAttachment.ID) -> Void = { _ in },
         retryAttachment: @escaping (ComposerAttachment.ID) -> Void = { _ in },
+        attach: (([ComposerDrop]) -> Void)? = nil,
         onFocus: @escaping () -> Void = {},
         focusRequest: Int = 0,
         skills: [SkillInfo] = [],
@@ -80,6 +84,7 @@ public struct Composer: View {
         self.attachments = attachments
         self.removeAttachment = removeAttachment
         self.retryAttachment = retryAttachment
+        self.attach = attach
         self.onFocus = onFocus
         self.focusRequest = focusRequest
     }
@@ -125,6 +130,7 @@ public struct Composer: View {
                     .frame(minHeight: 20, maxHeight: 120)
                     .fixedSize(horizontal: false, vertical: true)
                     .focused($focused)
+                    .modifier(TextTakesNoDrops(off: attach != nil, focused: focused))
                     .onChange(of: focused) { _, now in
                         if now { onFocus() }
                     }
@@ -178,11 +184,16 @@ public struct Composer: View {
                 } else if let pickFiles {
                     Button("Attach a file", systemImage: "paperclip") {
                         let paths = pickFiles()
-                        if !paths.isEmpty { insert(paths.joined(separator: " ") + " ") }
+                        guard !paths.isEmpty else { return }
+                        if let attach {
+                            attach(paths.map { .file(URL(fileURLWithPath: $0)) })
+                        } else {
+                            insert(paths.joined(separator: " ") + " ")
+                        }
                     }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.chat("composer", "Attach a file"))
-                    .help("Insert a file's path into the message")
+                    .help(attach == nil ? "Insert a file's path into the message" : "Attach files")
                 }
                 if let skillPrefix, !skills.isEmpty { Menu {
                     ForEach(skills, id: \.name) { skill in
@@ -233,6 +244,7 @@ public struct Composer: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { focused = true }
+        .modifier(AttachDrops(attach: attach))
     }
 
     private var draftIsEmpty: Bool {
@@ -312,6 +324,87 @@ private struct SkillList: View {
         }
     }
 }
+
+/// Something the person gave the composer to attach: a file where it is, or the bytes of an image
+/// that has no file (a screenshot on the clipboard).
+public enum ComposerDrop: Sendable {
+    case file(URL)
+    case image(Data)
+}
+
+/// The message a draft and its attachments' paths make: the text, then each path in backticks on
+/// its own line, since a path may hold a space and the backticks keep it one path.
+public func composerMessage(typed: String, paths: [String]) -> String {
+    let listed = paths.map { "`\($0)`" }.joined(separator: "\n")
+    return [typed.trimmingCharacters(in: .whitespacesAndNewlines), listed].filter { !$0.isEmpty }.joined(separator: "\n\n")
+}
+
+#if os(macOS)
+/// Files dropped on the composer, handed to `attach`. The text box would take a dropped file as its
+/// path in text, so its own drag registration goes and the drop reaches the composer.
+private struct AttachDrops: ViewModifier {
+    let attach: (([ComposerDrop]) -> Void)?
+
+    func body(content: Content) -> some View {
+        if let attach {
+            content
+                .dropDestination(for: URL.self) { urls, _ in
+                    let files = urls.filter(\.isFileURL)
+                    guard !files.isEmpty else { return false }
+                    attach(files.map { .file($0) })
+                    return true
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private struct TextTakesNoDrops: ViewModifier {
+    let off: Bool
+    /// The text view registers for drags again when it takes the keyboard, so a change here makes
+    /// the view below run again.
+    let focused: Bool
+
+    func body(content: Content) -> some View {
+        if off { content.background(TextDropsOff(focused: focused)) } else { content }
+    }
+}
+
+/// Takes the drag types off the text view that sits under this view, so a drop on the box goes to
+/// the composer's `dropDestination` and not into the text.
+private struct TextDropsOff: NSViewRepresentable {
+    let focused: Bool
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        // Once now and once after the text view has finished registering for its own drags.
+        for delay in [0.0, 0.3] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak view] in
+                guard let view, let root = view.window?.contentView else { return }
+                let spot = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+                Self.textViews(in: root).filter { $0.convert($0.bounds, to: nil).contains(spot) }.forEach { $0.unregisterDraggedTypes() }
+            }
+        }
+    }
+
+    private static func textViews(in view: NSView) -> [NSTextView] {
+        (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(textViews(in:))
+    }
+}
+#else
+private struct AttachDrops: ViewModifier {
+    let attach: (([ComposerDrop]) -> Void)?
+    func body(content: Content) -> some View { content }
+}
+
+private struct TextTakesNoDrops: ViewModifier {
+    let off: Bool
+    let focused: Bool
+    func body(content: Content) -> some View { content }
+}
+#endif
 
 /// One file a composer holds for its next message: what the chip shows and where its upload is.
 public struct ComposerAttachment: Identifiable, Equatable, Sendable {

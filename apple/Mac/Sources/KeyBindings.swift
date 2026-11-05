@@ -101,7 +101,7 @@ extension AppModel {
     /// further; a printable key then goes to the focused chat's composer (`typeIntoFocusedComposer`); any other key goes on to the menus and the pane holding the keyboard.
     func installKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            let ran = MainActor.assumeIsolated { self?.runKey(event) == true || self?.typeIntoFocusedComposer(event) == true }
+            let ran = MainActor.assumeIsolated { self?.runKey(event) == true || self?.typeIntoFocusedComposer(event) == true || self?.pasteAttachments(event) == true }
             return ran ? nil : event
         }
     }
