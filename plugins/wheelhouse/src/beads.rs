@@ -900,10 +900,8 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         page.push(p.boxed("tools", "h", row, json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": widths, "trailing": 1 })));
 
         if ui.custom() {
-            let mut g = graph::Model::new(snap, ui).component(ui);
-            g["id"] = json!("graph");
-            p.put(g);
-            page.push(p.boxed("graph.b", "v", vec!["graph".into()], json!({ "padding": [0, 0, 0, 0] })));
+            let parts = graph::Model::new(snap, ui).components(&mut p, ui);
+            page.push(p.boxed("graph.b", "v", parts, json!({ "padding": [0, 0, 0, 0] })));
         } else {
             let mut t = tbl;
             t["id"] = json!("table");
