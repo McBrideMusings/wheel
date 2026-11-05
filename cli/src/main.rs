@@ -1168,6 +1168,11 @@ enum AgentCommand {
         #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// Print every agent pane as one JSON line, then the whole list again each time an agent's
+    /// state or the layout changes and the list differs. Each row is `{space, cwd, pane, agent,
+    /// harness, model, status}`, `status` being `idle`, `working`, `needs_you` or `stopped`. It
+    /// ends when the daemon goes away.
+    Watch,
     /// Print the conversations an agent holds for its directory, newest first, marking the one
     /// its pane is in.
     Conversations {
@@ -2434,6 +2439,62 @@ async fn agent_wait(conn: &mut Conn, agent: String, timeout: f64) -> Result<(), 
     }
     println!("{} {agent} {state}", pane.as_deref().unwrap_or("-"));
     Ok(())
+}
+
+/// One row of `agent watch` for every agent pane in `node`, which `space` holds.
+fn agent_rows(node: &wheel_proto::Node, space: &wheel_proto::SpaceInfo, out: &mut Vec<serde_json::Value>) {
+    match node {
+        wheel_proto::Node::Pane {
+            id,
+            status,
+            kind: wheel_proto::PaneKind::Agent { agent, harness, model, .. },
+            ..
+        } => out.push(serde_json::json!({
+            "space": space.name,
+            "cwd": space.cwd,
+            "pane": id,
+            "agent": agent,
+            "harness": harness,
+            "model": model,
+            "status": status.as_ref().and_then(|s| serde_json::to_value(s).ok()).and_then(|v| v["kind"].as_str().map(String::from)),
+        })),
+        wheel_proto::Node::Pane { .. } => {}
+        wheel_proto::Node::Split { a, b, .. } => {
+            agent_rows(a, space, out);
+            agent_rows(b, space, out);
+        }
+    }
+}
+
+/// `agent watch`: the agent list now and after every change a daemon event announces.
+async fn agent_watch(conn: &mut Conn) -> Result<(), Fail> {
+    let mut last = String::new();
+    loop {
+        let req = conn.req();
+        let ServerMsg::Status { spaces, .. } = conn.call(ClientMsg::Status { req: Some(req) }, req).await? else {
+            return Err(Fail::Other("unexpected reply to status".into()));
+        };
+        let mut rows = vec![];
+        for space in &spaces {
+            for root in std::iter::once(&space.root).chain(&space.popped).chain(&space.backgrounded) {
+                agent_rows(root, space, &mut rows);
+            }
+        }
+        let line = serde_json::to_string(&rows).map_err(other)?;
+        if line != last {
+            println!("{line}");
+            last = line;
+        }
+        // Block until an event that can change a row, then let a burst of them settle.
+        loop {
+            if let Some(ServerMsg::StatusChanged { .. } | ServerMsg::AgentStateChanged { .. } | ServerMsg::Spaces { .. } | ServerMsg::Status { .. }) =
+                conn.recv(Duration::from_secs(3600)).await?
+            {
+                break;
+            }
+        }
+        while conn.recv(Duration::from_millis(100)).await?.is_some() {}
+    }
 }
 
 /// Every agent pane's agent name in a layout, in pane order.
@@ -5745,6 +5806,7 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Wait { agent, timeout }) => {
                 agent_wait(&mut conn, agent, timeout).await
             }
+            Command::Agent(AgentCommand::Watch) => agent_watch(&mut conn).await,
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice }) => {
                 let id = perm_id(&mut conn, id).await?;

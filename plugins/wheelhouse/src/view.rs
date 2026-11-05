@@ -11,6 +11,8 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer};
 use serde_json::Value;
 
+use crate::core::agents::Agent;
+
 /// MIME type of the A2UI messages a page is drawn from.
 pub const MIME: &str = "application/a2ui+json";
 
@@ -46,6 +48,16 @@ pub trait View: Send + Sync {
 
     /// The last subscription to the page for `dir` ended: drop what was loaded.
     fn close(&self, dir: &str);
+
+    /// Whether the page shows the agents Wheel runs, and so is told when they change.
+    fn follows_agents(&self) -> bool {
+        false
+    }
+
+    /// The agents of project `dir` changed to `agents`; true when the page now differs.
+    fn agents_changed(&self, _dir: &str, _agents: &[Agent]) -> bool {
+        false
+    }
 
     /// Re-read project `dir`; true when the page now differs.
     fn refresh(&self, dir: &str) -> bool;

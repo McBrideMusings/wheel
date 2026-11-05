@@ -18,6 +18,16 @@ pub fn text(program: &str, dir: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Run `program args` in `dir`; `Ok` when it exits with 0 or with a code in `also_ok`.
+pub fn text_or_exit(program: &str, dir: &str, args: &[&str], also_ok: &[i32]) -> Result<(), String> {
+    let out = Command::new(program).args(args).current_dir(dir).output().map_err(|e| format!("{program}: {e}"))?;
+    match out.status.code() {
+        Some(0) => Ok(()),
+        Some(c) if also_ok.contains(&c) => Ok(()),
+        _ => Err(String::from_utf8_lossy(&out.stderr).chars().take(300).collect()),
+    }
+}
+
 /// Run `program args` in `dir` and parse its standard output as JSON; an empty output is `null`.
 pub fn json(program: &str, dir: &str, args: &[&str]) -> Result<Value, String> {
     let out = text(program, dir, args)?;

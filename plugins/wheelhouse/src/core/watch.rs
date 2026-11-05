@@ -46,6 +46,14 @@ impl Watcher {
         self.subs.remove(&(view.to_string(), dir.to_string()));
     }
 
+    /// Every subscription, as it is announced.
+    pub fn subscriptions(&self) -> Vec<Due> {
+        self.subs
+            .iter()
+            .map(|((view, dir), s)| Due { view: view.clone(), dir: dir.clone(), uri: s.uri.clone() })
+            .collect()
+    }
+
     pub fn watching(&self, view: &str, dir: &str) -> bool {
         self.subs.contains_key(&(view.to_string(), dir.to_string()))
     }
