@@ -14,6 +14,7 @@ public struct TranscriptView: View {
     /// A line that opens the conversation, such as where the agent runs; nil for none.
     let intro: String?
     @Environment(\.transcriptPlatform) private var platform
+    @Environment(\.spaceShown) private var spaceShown
 
     public init(chat: AgentChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, intro: String? = nil) {
         self.chat = chat
@@ -53,8 +54,13 @@ public struct TranscriptView: View {
                             .padding(EdgeInsets(top: 12, leading: 14, bottom: 0, trailing: 14))
                     }
                 }
-        } else {
+        } else if spaceShown {
             transcript
+        } else {
+            // A hidden space stays mounted, and a table in it is laid out and drawn on every grid
+            // resize. The list is taken out of the tree instead; showing the space builds it again
+            // and its onAppear returns it to the end or to the row it left from.
+            Color.clear
         }
     }
 
@@ -97,7 +103,7 @@ public struct TranscriptView: View {
                             bottom: index == items.count - 1 ? 12 : 0,
                             trailing: 14))
                         .listRowSeparator(.hidden)
-                        .listRowBackground(platform.rowMarker())
+                        .listRowBackground(Color.clear)
                         .onAppear { chat.shownItems.insert(item.id) }
                         .onDisappear { chat.shownItems.remove(item.id) }
                 }
