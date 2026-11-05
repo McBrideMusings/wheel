@@ -187,10 +187,12 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         }
         if restored, let wanted = Self.savedFrame("WheelWindow-\(record.id)"), abs(wanted.minX - window.frame.minX) > 1 || abs(wanted.width - window.frame.width) > 1 {
             displaced[record.id] = wanted
+            Log.info("window \(record.id.prefix(8)) restored to \(NSStringFromRect(window.frame)), saved \(NSStringFromRect(wanted))")
         }
         Log.info("screens at open: \(NSScreen.screens.map { "\($0.localizedName) \(NSStringFromRect($0.frame))" }.joined(separator: "; "))")
         Log.info("window \(record.id.prefix(8)) opened \(restored ? "at its saved frame" : "with no saved frame") \(NSStringFromRect(window.frame)) on \(window.screen?.localizedName ?? "no screen")")
         windows[record.id] = window
+        putDisplacedBack()
         Self.apply(pinned: record.pinned, to: window)
         // `-g` launches and debug runs must not take the keyboard from whatever the person is using.
         if NSApp.isActive { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
