@@ -44,5 +44,14 @@ sed -i '' "/^\[artifacts.a\]/,/^title/ s|exec $SRV stdio|VIEW=a exec $SRV stdio|
 check "a, with a new command, calls" call a
 eq "the server no entry names ends: c, b and a's new one remain" "$(servers)" 3
 
+# An entry deleted from the file: asking for it ends the server it used.
+sed -i '' '/^\[artifacts.a\]/,/^title/d' "$INST/wheel.toml"
+call a || true
+eq "a deleted entry's server ends: c and b's remain" "$(servers)" 2
+# An entry no longer shared leaves its server to the entries still naming it, then ends it.
+sed -i '' '/^\[artifacts.c\]/,/^title/ s|shared = true|shared = false|' "$INST/wheel.toml"
+call c
+eq "c, no longer shared, runs per space: b's server stays, c's own starts" "$(servers)" 2
+
 has_log "MCP session no entry names any more" "the log says an unused session ended"
 finish

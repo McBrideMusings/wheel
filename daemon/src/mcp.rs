@@ -122,11 +122,19 @@ impl Sessions {
     }
 
     /// Record that the shared artifact `owner` now uses the session under `key`. Returns the
-    /// key it used before when no artifact uses that one any more.
+    /// key it used before when it moved off it.
     fn claim(&self, owner: &str, key: &str) -> Option<String> {
-        let mut owners = self.owners.lock().unwrap();
-        let before = owners.insert(owner.to_string(), key.to_string())?;
-        (before != key && !owners.values().any(|k| *k == before)).then_some(before)
+        let before = self.owners.lock().unwrap().insert(owner.to_string(), key.to_string())?;
+        (before != key).then_some(before)
+    }
+
+    /// Record that `owner` uses no shared session. Returns the key it used.
+    fn release(&self, owner: &str) -> Option<String> {
+        self.owners.lock().unwrap().remove(owner)
+    }
+
+    fn in_use(&self, key: &str) -> bool {
+        self.owners.lock().unwrap().values().any(|k| k == key)
     }
 }
 
@@ -198,13 +206,15 @@ impl AppState {
     ) -> Result<Conn, String> {
         let cwd = self.artifact_space(space)?;
         let artifact = self.artifact_ref(scope, name, &cwd)?;
-        let entry = self.artifact_entry(&artifact, &cwd)?.ok_or_else(|| {
-            format!(
+        let owner = format!("{}\0{}", artifact.scope().name(), artifact.name());
+        let Some(entry) = self.artifact_entry(&artifact, &cwd)? else {
+            self.mcp_release(&owner).await;
+            return Err(format!(
                 "no {} artifact {name}: {} has no entry for it",
                 artifact.scope().name(),
                 self.artifact_registry(artifact.scope(), &cwd).display()
-            )
-        })?;
+            ));
+        };
         if let Some(problem) = entry.problems().first() {
             return Err(format!("the entry for {name} is invalid: {problem}"));
         }
@@ -216,17 +226,15 @@ impl AppState {
         }
         let shared = entry.shared;
         let key = if shared {
-            format!("{}\0{}", artifact.scope().name(), def.key())
+            format!("shared\0{}\0{}", artifact.scope().name(), def.key())
         } else {
-            format!("{}\0{}\0{}", artifact.scope().name(), artifact.name(), cwd)
+            format!("space\0{}\0{}\0{}", artifact.scope().name(), artifact.name(), cwd)
         };
-        if shared {
-            // An entry whose command changed leaves the old server with no entry: it ends.
-            let owner = format!("{}\0{}", artifact.scope().name(), artifact.name());
-            if let Some(unused) = self.mcp.claim(&owner, &key) {
-                tracing::info!(scope = artifact.scope().name(), %name, "MCP session no entry names any more; ending it");
-                self.mcp_evict(&unused).await;
-            }
+        // An entry that moved off a shared server, or is not shared, leaves it for the entries
+        // still naming it; with none left it ends.
+        let left = if shared { self.mcp.claim(&owner, &key) } else { self.mcp.release(&owner) };
+        if let Some(left) = left {
+            self.mcp_end_unused(&left, name).await;
         }
         let slot = self.mcp.slot(&key);
         let mut held = slot.lock().await;
@@ -312,6 +320,23 @@ impl AppState {
                 .is_err()
         {
             session.subs.lock().unwrap().remove(uri);
+        }
+    }
+
+    /// Forget that `owner` uses a shared session, ending it when no entry uses it.
+    pub(crate) async fn mcp_release(&self, owner: &str) {
+        if let Some(left) = self.mcp.release(owner) {
+            self.mcp_end_unused(&left, owner).await;
+        }
+    }
+
+    /// End the shared session under `key` unless an entry uses it. Checked under the session's
+    /// lock, so an entry that connects to it meanwhile keeps it.
+    async fn mcp_end_unused(&self, key: &str, name: &str) {
+        let slot = self.mcp.slot(key);
+        let mut held = slot.lock().await;
+        if !self.mcp.in_use(key) && held.take().is_some() {
+            tracing::info!(%name, "MCP session no entry names any more; ended it");
         }
     }
 
