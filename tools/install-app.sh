@@ -35,7 +35,9 @@ if [ "$IDENTITY" = - ]; then
   say "warning: no Apple Development certificate in the keychain; signing ad hoc"
   IDENTITY=-
 fi
-SETTINGS+=(CODE_SIGN_IDENTITY="$IDENTITY" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER=)
+# Swift compilation caching is keyed by file content, so a fresh DerivedData (a new worktree, a cleared
+# build) reuses every module compiled before.
+SETTINGS+=(COMPILATION_CACHING=YES CODE_SIGN_IDENTITY="$IDENTITY" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER=)
 [ -n "${IOS_DEVELOPMENT_TEAM:-}" ] && SETTINGS+=(DEVELOPMENT_TEAM="$IOS_DEVELOPMENT_TEAM")
 
 # Each variant has its own derived data, so a deploy never replaces the Debug app `make
