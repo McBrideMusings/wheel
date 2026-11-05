@@ -131,6 +131,10 @@ enum Command {
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Merged streams: a `[streams.<group>]` table in wheel.toml names commands whose output
+    /// wheeld merges into one stream, held 2 seconds and ordered by arrival, and writes to a file.
+    #[command(subcommand)]
+    Stream(StreamCommand),
     /// Run a command the `[runner]` table of wheel.toml names, in a new terminal pane in the
     /// space's directory, and print the pane. Without a name, list the commands. The table maps
     /// any name you choose to a shell command, e.g. `build = "make -j8"`; a project's table
@@ -148,6 +152,67 @@ enum Command {
         #[arg(long)]
         focus: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum StreamCommand {
+    /// List the groups of the space's `[streams]` (a project's over this machine's): each source,
+    /// its problems and whether the group runs.
+    Ls {
+        /// The space; the space of the calling pane, else required.
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start a group and print the file its lines are written to. A group already running is
+    /// left running and its file printed.
+    Start {
+        group: String,
+        #[arg(long)]
+        space: Option<String>,
+    },
+    /// Stop a group, killing every source's process group.
+    Stop {
+        group: String,
+        #[arg(long)]
+        space: Option<String>,
+    },
+    /// Print a group's merged lines: `<time> [<source>] <text>`, oldest first.
+    Tail {
+        group: String,
+        /// Only lines emitted in the last this long: `2s`, `2m`, `1h`, or milliseconds as
+        /// `500ms`.
+        #[arg(long, value_parser = parse_since)]
+        since: Option<u64>,
+        /// Keep printing new lines until interrupted or the group stops.
+        #[arg(long)]
+        follow: bool,
+        /// Print each line as JSON: occurred, arrived, source, text, time.
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        space: Option<String>,
+    },
+}
+
+/// `2s`, `2m`, `1h` or `500ms` as milliseconds.
+fn parse_since(text: &str) -> Result<u64, String> {
+    let (number, unit) = text.split_at(text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len()));
+    let number: u64 = number
+        .parse()
+        .map_err(|_| format!("{text:?} is not a duration like 2s, 2m or 1h"))?;
+    let per = match unit {
+        "ms" => 1,
+        "s" => 1000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        _ => return Err(format!("{text:?} is not a duration like 2s, 2m or 1h")),
+    };
+    number
+        .checked_mul(per)
+        .ok_or_else(|| format!("{text:?} is too long a duration"))
 }
 
 #[derive(Subcommand)]
@@ -1573,6 +1638,96 @@ async fn status(conn: &mut Conn) -> Result<(), Fail> {
     }
     println!("{}", serde_json::to_string_pretty(&reply).map_err(other)?);
     Ok(())
+}
+
+/// `wheel stream`: list, start, stop and tail merged streams.
+async fn stream(conn: &mut Conn, command: StreamCommand) -> Result<(), Fail> {
+    match command {
+        StreamCommand::Ls { space, json } => {
+            let space = default_space(conn, space).await?;
+            let req = conn.req();
+            let ServerMsg::Streams { groups, .. } = conn
+                .call(ClientMsg::StreamLs { req: Some(req), space }, req)
+                .await?
+            else {
+                return Err(Fail::Other("unexpected reply to stream ls".into()));
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&groups).map_err(other)?);
+                return Ok(());
+            }
+            for g in &groups {
+                let state = if g.running { "running" } else { "stopped" };
+                println!("{} ({state})", g.group);
+                for s in &g.sources {
+                    let tz = s.tz.as_deref().map(|z| format!(" tz={z}")).unwrap_or_default();
+                    println!("  {} [{}]{tz}\t{}", s.name, s.kind, s.command);
+                    if let Some(problem) = &s.problem {
+                        println!("    problem: {problem}");
+                    }
+                }
+                if let Some(file) = &g.file {
+                    println!("  file: {file}");
+                }
+            }
+            Ok(())
+        }
+        StreamCommand::Start { group, space } => {
+            let space = default_space(conn, space).await?;
+            let req = conn.req();
+            let ServerMsg::StreamStarted { stream, .. } = conn
+                .call(ClientMsg::StreamStart { req: Some(req), group, space }, req)
+                .await?
+            else {
+                return Err(Fail::Other("unexpected reply to stream start".into()));
+            };
+            println!("{}", stream.file);
+            Ok(())
+        }
+        StreamCommand::Stop { group, space } => {
+            let space = default_space(conn, space).await?;
+            simple(conn, |req| ClientMsg::StreamStop { req: Some(req), group, space }).await
+        }
+        StreamCommand::Tail { group, since, follow, json, space } => {
+            let space = default_space(conn, space).await?;
+            let req = conn.req();
+            conn.send(&ClientMsg::StreamTail {
+                req: Some(req),
+                group,
+                space,
+                since_ms: since,
+                follow,
+            })
+            .await?;
+            let show = |lines: &[wheel_proto::StreamLine]| {
+                for line in lines {
+                    if json {
+                        println!("{}", line.json());
+                    } else {
+                        println!("{}", line.plain());
+                    }
+                }
+            };
+            loop {
+                // A followed stream can be quiet for as long as its sources are.
+                let Some(msg) = conn.recv(Duration::from_secs(3600)).await? else {
+                    continue;
+                };
+                match msg {
+                    ServerMsg::StreamLines { req: r, lines, ended } if r == req => {
+                        show(&lines);
+                        if ended {
+                            return Ok(());
+                        }
+                    }
+                    ServerMsg::Error { req: Some(r), message, .. } if r == req => {
+                        return Err(Fail::Daemon(message));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 /// Print the daemon's remote listener as `key: value` lines, or say it is off.
@@ -5640,6 +5795,7 @@ async fn main() -> ExitCode {
                 let space = default_space(&mut conn, space).await?;
                 artifact_ls(&mut conn, space, pane, json).await
             }
+            Command::Stream(command) => stream(&mut conn, command).await,
             Command::Run { name: None, space, json, .. } => {
                 let space = default_space(&mut conn, space).await?;
                 let req = conn.req();

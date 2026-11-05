@@ -52,6 +52,7 @@ mod shell;
 mod sites;
 pub mod spaces;
 mod status;
+mod streams;
 mod uploads;
 mod web;
 // perf 1793567506

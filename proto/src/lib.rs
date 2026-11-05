@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1271,6 +1271,46 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// The groups a `[streams]` table names for `space`, project over machine, with each source,
+    /// its problems and whether the group runs. Replies `streams`.
+    StreamLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Start group `group` of `space`'s `[streams]`, or return the one already running. Replies
+    /// `stream_started`.
+    StreamStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        group: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Stop group `group` of `space`, killing every source's process group. Replies `ok`.
+    StreamStop {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        group: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// The merged lines of group `group`, newest last: those emitted in the last `since_ms`, or
+    /// every one held when it is unset. Replies `stream_lines`; with `follow`
+    /// the daemon then sends a `stream_lines` under the same `req` for every line it emits, the
+    /// last with `ended`.
+    StreamTail {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        group: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        follow: bool,
+    },
     /// Run the `[runner]` command `name` in a new terminal pane split right of `space`'s last
     /// pane, in the space's directory. Replies `started` with the pane; refused when no runner has
     /// that name.
@@ -1785,6 +1825,10 @@ pub enum ServerMsg {
         /// guards.
         #[serde(default)]
         host: Box<HostAccess>,
+        /// Every stream group started since this daemon began, running or stopped, by space then
+        /// group.
+        #[serde(default)]
+        streams: Vec<StreamStatus>,
     },
     TermOpened {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2209,6 +2253,24 @@ pub enum ServerMsg {
         req: u64,
         runners: Vec<RunnerInfo>,
     },
+    /// The groups `StreamLs` asked for, in group name order.
+    Streams {
+        req: u64,
+        groups: Vec<StreamGroupInfo>,
+    },
+    /// The group `StreamStart` started or found running.
+    StreamStarted {
+        req: u64,
+        stream: StreamStatus,
+    },
+    /// Merged lines of a group: the answer to `StreamTail` and, under a following tail's `req`,
+    /// each batch after it. `ended` is set on the last, when the group stopped.
+    StreamLines {
+        req: u64,
+        lines: Vec<StreamLine>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ended: bool,
+    },
     /// The processes `space_procs` found, in pane order, each pane's processes in pid order.
     Procs {
         req: u64,
@@ -2340,7 +2402,10 @@ impl ServerMsg {
             | ServerMsg::AgentAttached { req, .. }
             | ServerMsg::Settings { req, .. }
             | ServerMsg::Error { req, .. } => *req,
-            ServerMsg::Usage { req, .. }
+            ServerMsg::Streams { req, .. }
+            | ServerMsg::StreamStarted { req, .. }
+            | ServerMsg::StreamLines { req, .. }
+            | ServerMsg::Usage { req, .. }
             | ServerMsg::Remote { req, .. }
             | ServerMsg::Pairing { req, .. }
             | ServerMsg::WindowReply { req, .. }
@@ -3330,6 +3395,94 @@ pub struct RunnerInfo {
     pub confirm: Option<String>,
     /// The file that set it: the project's, or this machine's when the project does not.
     pub origin: SettingOrigin,
+}
+
+/// One line of a merged stream. `arrived` is when wheeld read it and `occurred` the time the line
+/// states, when it states one; both are Unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamLine {
+    pub arrived: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred: Option<u64>,
+    pub source: String,
+    pub text: String,
+}
+
+impl StreamLine {
+    /// The time the line is ordered and shown by: the stated one, else the arrival.
+    pub fn time(&self) -> u64 {
+        self.occurred.unwrap_or(self.arrived)
+    }
+
+    /// `<time, RFC 3339 UTC with ms> [<source>] <text>`.
+    pub fn plain(&self) -> String {
+        format!("{} [{}] {}", rfc3339_ms(self.time()), self.source, self.text)
+    }
+
+    /// `{occurred, arrived, source, text, time}`, both times RFC 3339 UTC with ms; `occurred` is
+    /// the arrival when the line states no time, and `time` says which it is: `stated` or
+    /// `arrived`.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "occurred": rfc3339_ms(self.time()),
+            "arrived": rfc3339_ms(self.arrived),
+            "source": self.source,
+            "text": self.text,
+            "time": if self.occurred.is_some() { "stated" } else { "arrived" },
+        })
+    }
+}
+
+/// Unix milliseconds as RFC 3339 in UTC with milliseconds, `2026-10-29T15:04:05.123Z`.
+pub fn rfc3339_ms(ms: u64) -> String {
+    let stamp = i64::try_from(ms)
+        .ok()
+        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    stamp.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+/// One source of a `[streams]` group as a listing shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamSourceInfo {
+    pub name: String,
+    /// `command` or `run`.
+    pub kind: String,
+    /// The shell command; empty when the entry has a problem that left it unread.
+    #[serde(default)]
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz: Option<String>,
+    /// Why the source cannot run, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// One `[streams]` group as `wheel stream ls` lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamGroupInfo {
+    pub group: String,
+    /// The file that set it: the project's, or this machine's when the project does not.
+    pub origin: SettingOrigin,
+    pub sources: Vec<StreamSourceInfo>,
+    pub running: bool,
+    /// The running instance's output file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+/// One started stream group, running or since stopped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamStatus {
+    pub space: String,
+    pub group: String,
+    pub running: bool,
+    /// Unix milliseconds.
+    pub started_at: u64,
+    pub sources: Vec<String>,
+    /// How many lines the stream has emitted, including any no longer held in memory.
+    pub lines: u64,
+    pub file: String,
 }
 
 /// One skill an agent can run: the folder name under its `skills` directory and the one-line
