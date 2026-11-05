@@ -260,7 +260,15 @@ struct A2UISegmentedView: View {
 struct A2UIPillStyle: ViewModifier {
     let link: Bool
     func body(content: Content) -> some View {
-        if link { content.buttonStyle(.link) } else { content.buttonStyle(.bordered).controlSize(.small) }
+        if link {
+            #if os(macOS)
+            content.buttonStyle(.link)
+            #else
+            content.buttonStyle(.borderless)
+            #endif
+        } else {
+            content.buttonStyle(.bordered).controlSize(.small)
+        }
     }
 }
 
