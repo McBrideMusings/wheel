@@ -415,7 +415,7 @@ struct SpaceGrid: View {
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
                     let slide = zoomed != nil && zoomed != pane.id && !reduceMotion ? slidOut(pane.frame, in: rect) : .zero
-                    PaneView(model: model, paneId: pane.id, kind: pane.kind, focused: pane.id == space.focus)
+                    PaneView(model: model, paneId: pane.id, space: space.id, kind: pane.kind, focused: pane.id == space.focus)
                         .frame(width: zoomed == pane.id ? rect.width : pane.frame.width,
                                height: zoomed == pane.id ? rect.height : pane.frame.height)
                         .offset(x: zoomed == pane.id ? 0 : pane.frame.minX + slide.width,
@@ -530,6 +530,9 @@ struct DividerHandle: View {
 struct PaneView: View {
     var model: AppModel
     let paneId: String
+    /// The space whose grid draws this view. A pane moved to another space is still drawn here while it
+    /// shrinks out, with the kind it had; it must not show or measure what now belongs to the new space.
+    let space: String
     let kind: PaneKind
     let focused: Bool
 
@@ -556,8 +559,9 @@ struct PaneView: View {
         )
     }
 
-    /// False for a pane shrinking out after a close: its frames must not re-enter the maps `apply` just pruned.
-    private var holdsPane: Bool { model.spaces.contains { $0.allPanes.contains { $0.id == paneId } } }
+    /// False for a pane shrinking out after a close or a move to another space: its frames must not
+    /// re-enter the maps `apply` just pruned, or replace the frames the pane has in its new space.
+    private var holdsPane: Bool { model.space(holding: paneId)?.id == space }
 
     /// The pane with its palette open is the one the palette is for, whichever pane has focus.
     private var ringed: Bool { focused || model.palettes[paneId] != nil }
@@ -565,8 +569,13 @@ struct PaneView: View {
     @ViewBuilder private var content: some View {
         switch kind {
         case let .terminal(term, _):
-            if let terminal = model.terminals[term] {
+            let _ = model.terminalSurfaceRevision
+            if holdsPane, let terminal = model.terminals[term] {
+                // makeNSView runs once per view identity, so a terminal made again (its pane moved to
+                // another space, which has its own Ghostty controller) must be a new identity or the
+                // window keeps drawing the old surface, which nothing feeds any more.
                 TerminalBody(model: model, paneId: paneId, terminal: terminal, termState: terminal.view)
+                    .id(ObjectIdentifier(terminal))
             } else {
                 ProgressView()
             }
@@ -1211,7 +1220,7 @@ struct PoppedWindow: View {
         let layout = WheelKit.GridLayout(tree, in: CGRect(origin: .zero, size: size), ratios: drag.ratios)
         ZStack(alignment: .topLeading) {
             ForEach(layout.panes) { pane in
-                PaneView(model: model, paneId: pane.id, kind: pane.kind, focused: pane.id == space.focus)
+                PaneView(model: model, paneId: pane.id, space: space.id, kind: pane.kind, focused: pane.id == space.focus)
                     .frame(width: pane.frame.width, height: pane.frame.height)
                     .offset(x: pane.frame.minX, y: pane.frame.minY)
             }

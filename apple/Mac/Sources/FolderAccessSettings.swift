@@ -3,7 +3,7 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-/// The Folder access box of the General tab: whether wheeld can list Downloads, Desktop and
+/// The Folder access box of the General tab: whether Wheel Server can list Downloads, Desktop and
 /// Documents. macOS charges a background daemon's access to Wheel and cannot ask the person, so a
 /// folder nobody granted fails with "Operation not permitted" inside every terminal and agent.
 struct FolderAccessSettings: View {
@@ -14,9 +14,9 @@ struct FolderAccessSettings: View {
 
     static func title(_ host: HostAccess) -> String {
         let denied = host.folders.filter { !$0.allowed }
-        if denied.isEmpty { return "wheeld can open Downloads, Desktop and Documents." }
+        if denied.isEmpty { return "Wheel Server can open Downloads, Desktop and Documents." }
         let names = denied.map { URL(filePath: $0.path).lastPathComponent }.joined(separator: ", ")
-        return "wheeld cannot open \(names)."
+        return "Wheel Server cannot open \(names)."
     }
 
     private var denied: Bool { host?.folders.contains { !$0.allowed } ?? false }
@@ -39,25 +39,25 @@ struct FolderAccessSettings: View {
                         }
                     }
                     if denied, changedSinceStart, let restart {
-                        Text("Full Disk Access was changed after the server started, and a running server keeps the access it started with. Restart the server to apply it. That ends every terminal and agent.")
+                        Text("Folder access was changed after the server started, and a running server keeps the access it started with. Restart the server to apply it. That ends every terminal and agent.")
                             .foregroundStyle(.secondary)
                         HStack {
                             Button("Restart Server", action: restart).buttonStyle(.borderedProminent)
-                            Button("Open Full Disk Access") { FullDiskAccess.openPane() }
+                            Button("Open Files & Folders") { FullDiskAccess.openFolders() }
                         }
                     } else if denied {
-                        Text("Terminals and agents in Wheel get “Operation not permitted” there, because macOS charges their access to the server. Add this program under Privacy & Security › Full Disk Access, then restart the server so it picks the grant up:")
+                        Text("Terminals and agents in Wheel get “Operation not permitted” there, because macOS charges their access to the server. Switch Wheel Server on under Privacy & Security › Files & Folders, then restart the server so it picks the grant up:")
                             .foregroundStyle(.secondary)
                         Text(host.exe).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
                         Text(restartCommand).foregroundStyle(.secondary).textSelection(.enabled)
                         HStack {
-                            Button("Open Full Disk Access") { FullDiskAccess.openPane() }
+                            Button("Open Files & Folders") { FullDiskAccess.openFolders() }
                             Button("Copy Path") { FullDiskAccess.copyPath(host.exe) }
                             Button("Show in Finder") { FullDiskAccess.reveal(host.exe) }
                         }
                     }
                 } else {
-                    Text("wheeld has not said yet.").foregroundStyle(.secondary)
+                    Text("Wheel Server has not said yet.").foregroundStyle(.secondary)
                 }
             }
             .font(ChatFont.line)

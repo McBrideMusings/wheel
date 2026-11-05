@@ -376,12 +376,13 @@ impl AppState {
         });
     }
 
-    /// The `wheel` command an app bundle ships: `Helpers/wheel`, beside the `MacOS` directory that
-    /// holds wheeld. It is never looked for in `MacOS` itself: the app executable there is `Wheel`,
-    /// and on a volume that ignores case the name `wheel` matches it.
+    /// The `wheel` command an app bundle ships: `Contents/Helpers/wheel`, beside the
+    /// `Wheel Server.app` bundle that holds wheeld (`Wheel Server.app/Contents/MacOS/wheeld`). It is
+    /// never looked for in the app's own `MacOS`: the executable there is `Wheel`, and on a volume
+    /// that ignores case the name `wheel` matches it.
     pub fn bundled_cli() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
-        let cli = exe.parent()?.join("../Helpers/wheel");
+        let cli = exe.parent()?.join("../../../wheel");
         cli.is_file().then_some(cli)
     }
 
@@ -2294,6 +2295,17 @@ async fn handle(
             let written = state.setting_set(&key, &value, space.as_deref(), machine);
             settings_changed(state, req, written, &key, &format!("setting set {key}"))
         }
+        ClientMsg::SettingsFileEnsure {
+            req,
+            space,
+            machine,
+        } => match state.settings_file_ensure(space.as_deref(), machine) {
+            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+            Err(message) => {
+                tracing::warn!(%message, "settings file ensure failed");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::SettingUnset {
             req,
             key,

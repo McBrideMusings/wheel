@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1282,6 +1282,17 @@ pub enum ClientMsg {
         req: Option<u64>,
         key: String,
         value: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        machine: bool,
+    },
+    /// Make sure the `wheel.toml` a client is about to open for editing exists: this machine's with
+    /// `machine`, else the one in `space`'s directory, created empty when absent. The server makes
+    /// it because the client holds no files (ADR-0020). Replies `ok`.
+    SettingsFileEnsure {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

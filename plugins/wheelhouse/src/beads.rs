@@ -599,12 +599,13 @@ fn cell(text: impl Into<String>, extra: Value) -> Value {
     v
 }
 
-fn buttons(ix: &Ix, b: &Bead) -> Vec<Value> {
+fn menu(ix: &Ix, b: &Bead) -> Vec<Value> {
     ix.snap
         .scripts
         .iter()
         .filter(|s| wants(s, b))
-        .map(|s| json!({ "label": s.label.as_deref().unwrap_or(&s.name), "script": s.name }))
+        .map(|s| json!({ "label": s.label.as_deref().unwrap_or(&s.name), "action": "run_script",
+            "context": { "bead": b.id, "script": s.name } }))
         .collect()
 }
 
@@ -640,7 +641,7 @@ fn row_json(ix: &Ix, ui: &Ui, r: &RowOut, cols: &[&Col]) -> Value {
     json!({ "id": b.id, "path": r.path, "depth": r.depth, "kids": r.kids,
         "collapsed": ui.collapsed.contains(&r.path), "dim": k == "done",
         "sel": ui.detail.as_deref() == Some(b.id.as_str()),
-        "cells": cells, "buttons": buttons(ix, b) })
+        "cells": cells, "menu": menu(ix, b) })
 }
 
 fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
@@ -675,7 +676,7 @@ fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
         .map(|c| json!({ "key": c.key, "label": c.label, "width": c.width, "tree": c.tree && !grouped,
             "wide": c.wide }))
         .collect();
-    let v = json!({ "component": "BeadTable", "columns": columns,
+    let v = json!({ "component": "Table", "rowAction": "select_bead", "foldAction": "toggle_path", "columns": columns,
         "sort": { "key": ui.sort.0, "asc": ui.sort.1 }, "sections": sections,
         "empty": if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." } });
     (v, shown, total)
@@ -899,10 +900,8 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         page.push(p.boxed("tools", "h", row, json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": widths, "trailing": 1 })));
 
         if ui.custom() {
-            let mut g = graph::Model::new(snap, ui).component(ui);
-            g["id"] = json!("graph");
-            p.put(g);
-            page.push(p.boxed("graph.b", "v", vec!["graph".into()], json!({ "padding": [0, 0, 0, 0] })));
+            let parts = graph::Model::new(snap, ui).components(&mut p, ui);
+            page.push(p.boxed("graph.b", "v", parts, json!({ "padding": [0, 0, 0, 0] })));
         } else {
             let mut t = tbl;
             t["id"] = json!("table");

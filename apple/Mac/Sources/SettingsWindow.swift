@@ -72,18 +72,14 @@ final class SettingsModel: ObservableObject {
     }
 
     /// Opens a layer's `wheel.toml` for editing in the Mac's default app for the file (Wheel has
-    /// no editor pane yet), creating it empty first when it does not exist, and logs which way
-    /// it opened. `launch: false` records the press and starts no editor, for a check.
+    /// no editor pane yet) and logs which way it opened. The file exists: the server made it
+    /// (`AppModel.openSettingsFile`). `launch: false` records the press and starts no editor, for a check.
     func openFile(_ layer: SettingLayer, launch: Bool = true) {
         guard let path = file(layer) else { return }
         guard launch else {
             openedFile = (path, "not launched")
             Log.info("settings: open \(path) for editing (not launched)")
             return
-        }
-        if !FileManager.default.fileExists(atPath: path),
-           !FileManager.default.createFile(atPath: path, contents: Data()) {
-            Log.info("settings: could not create \(path)")
         }
         let url = URL(fileURLWithPath: path)
         var how = "default app (NSWorkspace)"
@@ -368,7 +364,7 @@ struct SettingsView: View {
                             .font(ChatFont.meta).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle)
                             .textSelection(.enabled)
-                        Button("Open") { settings.openFile(layer) }
+                        Button("Open") { model.openSettingsFile(layer) }
                             .controlSize(.small)
                             .help("Open \(SettingsView.tilde(file)) for editing")
                     }

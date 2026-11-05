@@ -222,9 +222,8 @@ final class AppModel {
     var serverConfirming = false
     /// The server the window's restart banner was closed for (`serverBannerKey`); nil when never.
     var serverBannerDismissed = Prefs.store.string(forKey: "serverBannerDismissed")
-    /// Whether this app can open the folders macOS guards; nil until the first look (DiskAccess.swift).
-    var appDiskAccess: Bool?
-    /// The person closed the Full Disk Access screen; it comes back at the next launch.
+    @ObservationIgnored var settingsFileReqs: [UInt64: SettingLayer] = [:]
+    /// The person closed the folder access screen; it comes back at the next launch.
     var diskAccessScreenDismissed = false
     @ObservationIgnored var diskAccessTask: Task<Void, Never>?
     /// macOS recorded a change to the server's Full Disk Access after the server started, while it
@@ -329,6 +328,10 @@ final class AppModel {
     }
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     @ObservationIgnored private(set) var terminals: [String: PaneTerminal] = [:]
+    /// Counts the times `terminals` gained a surface. `terminals` itself is not observed, so a pane
+    /// reads this to draw again when the surface it shows was made again (a pane moved to another
+    /// space) after the layout that moved it had already been drawn.
+    private(set) var terminalSurfaceRevision = 0
     /// One page per web pane, keyed by pane id.
     @ObservationIgnored private(set) var webPanes: [String: WebPane] = [:]
     /// The A2UI model of each web pane: it asks the artifact's MCP server for an A2UI layout and,
@@ -605,6 +608,7 @@ final class AppModel {
             terminals[term] = terminal
             return terminal
         }
+        if !added.isEmpty { terminalSurfaceRevision += 1 }
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
@@ -935,12 +939,16 @@ final class AppModel {
             if openReqs.removeValue(forKey: req) != nil { browserPanes[pane]?.opened(url) }
         case let .ok(req):
             layoutReqs.remove(req)
+            if let layer = settingsFileReqs.removeValue(forKey: req) { settings.openFile(layer) }
             if let space = renameReqs.removeValue(forKey: req) {
                 spaceRenameError[space] = nil
                 if renamingSpace == space { renamingSpace = nil }
                 Log.info("space \(space) renamed")
             }
         case let .error(req, term, message):
+            if let req, let layer = settingsFileReqs.removeValue(forKey: req) {
+                Log.info("settings: the server could not make the \(layer) file: \(message)")
+            }
             if let req, let space = renameReqs.removeValue(forKey: req) {
                 spaceRenameError[space] = message
                 Log.info("space \(space) rename refused: \(message)")
@@ -1780,6 +1788,15 @@ final class AppModel {
         settings.asking(for: settings.project)
         Log.info("settings ls for \(settings.project ?? "no space")")
         client.send(.settingsLs(req: req, space: settings.project))
+    }
+
+    /// The Open button: the server makes the layer's `wheel.toml` when it is absent, then the
+    /// editor opens it. The client holds no files (ADR-0020).
+    func openSettingsFile(_ layer: SettingLayer) {
+        guard connection == .connected else { return }
+        let req = client.req()
+        settingsFileReqs[req] = layer
+        client.send(.settingsFileEnsure(req: req, space: layer == .project ? settings.project : nil, machine: layer == .global))
     }
 
     /// Return in a field: write what was typed into that layer's file, or remove the key from it

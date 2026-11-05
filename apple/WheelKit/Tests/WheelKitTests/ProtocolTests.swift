@@ -70,8 +70,8 @@ struct ProtocolTests {
         #expect(login == LoginPath(path: "/usr/bin", how: "started with", problem: "zsh hung"))
         guard case let .status(_, _, _, _, _, _, _, _, _, _, logs, _, _, _) = try ServerMsg.decode(base + #","logs":{"url":"http://l/push","state":"failing","last_ok_ms":7,"waiting_bytes":512,"error":"refused"}}"#) else { Issue.record("wrong case"); return }
         #expect(logs == LogShipping(url: "http://l/push", state: "failing", lastOkMs: 7, waitingBytes: 512, error: "refused"))
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, host, _, _) = try ServerMsg.decode(base + #","host":{"exe":"/Applications/Wheel.app/Contents/MacOS/wheeld","folders":[{"path":"/Users/p/Downloads","allowed":false,"error":"Operation not permitted (os error 1)"},{"path":"/Users/p/Desktop","allowed":true}]}}"#) else { Issue.record("wrong case"); return }
-        #expect(host == HostAccess(exe: "/Applications/Wheel.app/Contents/MacOS/wheeld", folders: [FolderAccess(path: "/Users/p/Downloads", allowed: false, error: "Operation not permitted (os error 1)"), FolderAccess(path: "/Users/p/Desktop", allowed: true)]))
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, host, _, _) = try ServerMsg.decode(base + #","host":{"exe":"/Applications/Wheel.app/Contents/Helpers/Wheel Server.app/Contents/MacOS/wheeld","folders":[{"path":"/Users/p/Downloads","allowed":false,"error":"Operation not permitted (os error 1)"},{"path":"/Users/p/Desktop","allowed":true}]}}"#) else { Issue.record("wrong case"); return }
+        #expect(host == HostAccess(exe: "/Applications/Wheel.app/Contents/Helpers/Wheel Server.app/Contents/MacOS/wheeld", folders: [FolderAccess(path: "/Users/p/Downloads", allowed: false, error: "Operation not permitted (os error 1)"), FolderAccess(path: "/Users/p/Desktop", allowed: true)]))
     }
 
     /// A server that predates the version reports none and is version 1.

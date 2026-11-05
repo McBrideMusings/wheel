@@ -10,6 +10,8 @@
 	<string>@NAME@</string>
 	<key>CFBundleExecutable</key>
 	<string>wheeld</string>
+	<key>CFBundleIconFile</key>
+	<string>ServerIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleVersion</key>
