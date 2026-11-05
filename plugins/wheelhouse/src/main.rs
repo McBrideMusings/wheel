@@ -5,6 +5,9 @@
 mod agents_cli;
 mod beads;
 mod core;
+mod prs;
+mod diff;
+mod repo;
 mod serve;
 mod view;
 
@@ -27,11 +30,20 @@ enum Command {
     Agents(agents_cli::Args),
     /// A project's beads.
     Beads(beads::cli::Args),
+    /// A project's branches and worktrees.
+    Repo(repo::cli::Args),
+    /// A project's uncommitted and branch diffs.
+    Diff(diff::cli::Args),
+    /// A project's open pull requests.
+    Prs(prs::cli::Args),
 }
 
 /// Every view `serve` offers.
 fn registry(_agents: &core::agents::Agents) -> view::Registry {
     view::Registry::default().with(beads::serve::BeadsView::new())
+        .with(repo::serve::RepoView::new())
+        .with(diff::serve::DiffView::new())
+        .with(prs::serve::PrsView::new())
 }
 
 #[tokio::main]
@@ -43,5 +55,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Agents(args) => agents_cli::run(args, core::agents::Agents::new("wheel")).await,
         Command::Beads(args) => beads::cli::run(args),
+        Command::Repo(args) => repo::cli::run(args),
+        Command::Diff(args) => diff::cli::run(args),
+        Command::Prs(args) => prs::cli::run(args),
     }
 }

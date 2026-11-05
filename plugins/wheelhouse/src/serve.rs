@@ -52,6 +52,8 @@ impl Hub {
         for d in due {
             if let Some(view) = self.registry.get(&d.view) {
                 if view.refresh(&d.dir) {
+                    // The files the page depends on may have changed with it.
+                    self.watcher.lock().unwrap().rewatch(&d.view, &d.dir, view.watches(&d.dir));
                     changed.push(d.uri);
                 }
             }

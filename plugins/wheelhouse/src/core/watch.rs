@@ -42,6 +42,14 @@ impl Watcher {
         );
     }
 
+    /// Replace the files watched for `view` in `dir` with `files`; the interval and URI stay.
+    pub fn rewatch(&mut self, view: &str, dir: &str, files: Vec<PathBuf>) {
+        if let Some(s) = self.subs.get_mut(&(view.to_string(), dir.to_string())) {
+            s.seen = touched(&files);
+            s.files = files;
+        }
+    }
+
     pub fn unwatch(&mut self, view: &str, dir: &str) {
         self.subs.remove(&(view.to_string(), dir.to_string()));
     }

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::core::page::{cell, Page};
 use crate::core::table;
 
 pub mod cli;
@@ -239,7 +240,7 @@ fn wants(s: &Script, b: &Bead) -> bool {
 }
 
 /// Seconds since the Unix epoch of an RFC 3339 UTC time such as `2026-10-30T01:07:41Z`.
-fn epoch(iso: &str) -> i64 {
+pub fn epoch(iso: &str) -> i64 {
     let n = |a: usize, b: usize| iso.get(a..b).and_then(|s| s.parse::<i64>().ok());
     let (Some(y), Some(mo), Some(d), Some(h), Some(mi), Some(s)) =
         (n(0, 4), n(5, 7), n(8, 10), n(11, 13), n(14, 16), n(17, 19))
@@ -544,48 +545,8 @@ fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
 
 // ───────────────────────────── A2UI ─────────────────────────────
 
-struct Page {
-    out: Vec<Value>,
-}
-
-impl Page {
-    fn put(&mut self, v: Value) {
-        self.out.push(v);
-    }
-    fn label(&mut self, id: &str, text: &str, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Label", "text": text });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
-    }
-    fn runs(&mut self, id: &str, runs: Value, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Label", "text": "", "runs": runs });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
-    }
-    fn boxed(&mut self, id: &str, axis: &str, children: Vec<String>, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Box", "axis": axis, "children": children });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
-    }
-    fn pill(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Pill", "text": text, "name": name, "context": context });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
-    }
-}
-
 fn sane(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
-}
-
-fn cell(text: impl Into<String>, extra: Value) -> Value {
-    let mut v = json!({ "text": text.into() });
-    v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-    v
 }
 
 fn menu(ix: &Ix, b: &Bead) -> Vec<Value> {
