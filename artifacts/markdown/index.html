@@ -32,6 +32,8 @@
     background: var(--group); cursor: zoom-in; overflow: hidden; font: inherit; color: inherit; box-shadow: none;
   }
   .thumb img { display: block; width: 100%; height: auto; }
+  .thumb.inline { display: inline-block; width: auto; max-width: 100%; vertical-align: middle; margin: 2px 0; }
+  .thumb.inline img { width: auto; max-width: 100%; max-height: 240px; }
   figcaption { color: var(--secondary); font-size: 12px; margin-top: 4px; }
   .question { margin: 28px 0 0; }
   .question > h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 8px; }
@@ -149,8 +151,42 @@
 
   // ---- text -------------------------------------------------------------
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  // Inline: **bold** and `code`; blocks() adds fenced code and lists.
-  const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  // Where a link or image target goes: an http(s) address stays as written, a path with no scheme is
+  // a file in the post's folder (served under data/), a #fragment stays on the page, and any other
+  // scheme (javascript:, file:, data:) is refused.
+  function target(raw) {
+    const t = String(raw).trim().replace(/\s+(".*"|'.*')$/, ""); // less a quoted title
+    if (/^https?:\/\//i.test(t)) return { url: t, remote: true };
+    if (t.startsWith("#")) return { url: t, anchor: true };
+    if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith("//") || t.split(/[?#]/)[0].split("/").includes("..")) return null;
+    const m = t.match(/^([^?#]*)(.*)$/);
+    let path = m[1];
+    while (path.startsWith("./")) path = path.slice(2);
+    return path ? { url: dataUrl(path) + m[2] } : null;
+  }
+  // Inline: `code`, **bold**, ![alt](image), [text](link) and bare http(s) addresses. An image opens the
+  // lightbox like a thumbnail does; blocks() adds fenced code and lists.
+  const INLINE = /`([^`]+)`|!\[([^\]]*)\]\(([^)]+)\)|\[((?:[^\[\]]|!\[[^\]]*\]\([^)]*\))+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|(https?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]'*])/g;
+  const link = (href, body, remote) => `<a href="${esc(href)}"${remote ? ' rel="noopener"' : ""}>${body}</a>`;
+  // `plain` draws no image, link or address: text that sits inside a button or another link.
+  function inline(s, plain) {
+    const text = String(s);
+    let out = "", last = 0;
+    for (const m of text.matchAll(INLINE)) { // matchAll copies the regex, so the recursive calls below keep their own position
+      out += esc(text.slice(last, m.index));
+      last = m.index + m[0].length;
+      const [whole, code, alt, img, label, href, bold, bare] = m;
+      const t = img !== undefined ? target(img) : href !== undefined ? target(href) : null;
+      if (code !== undefined) out += `<code>${esc(code)}</code>`;
+      else if (bold !== undefined) out += `<b>${inline(bold, plain)}</b>`;
+      else if (bare !== undefined) out += plain ? esc(bare) : link(bare, esc(bare), true);
+      else if (img !== undefined) out += plain ? esc(alt) : t && !t.anchor
+        ? `<button type="button" class="thumb inline" data-src="${esc(t.url)}" data-cap="${esc(alt)}"><img src="${esc(t.url)}" alt="${esc(alt || img)}"></button>`
+        : esc(whole);
+      else out += t && !plain ? link(t.url, inline(label, true), t.remote) : inline(label, true);
+    }
+    return out + esc(text.slice(last));
+  }
   // Block text: fenced code, bullet and numbered lists, paragraphs split on blank lines.
   function blocks(text) {
     const out = [];
@@ -213,7 +249,7 @@
         const imgs = list(o.images).filter(Boolean);
         out.push(`<div class="opt${on ? " selected" : ""}" data-q="${esc(qid)}" data-o="${esc(oid)}">` +
           `<button type="button" class="choose" aria-pressed="${on}"><span class="check" aria-hidden="true">✓</span>` +
-          `<span class="letter">${esc(qid)}${esc(oid)}.</span><span class="title">${inline(o.title)}</span>` +
+          `<span class="letter">${esc(qid)}${esc(oid)}.</span><span class="title">${inline(o.title, true)}</span>` +
           (o.pick ? `<span class="pick">my pick</span>` : "") + `</button>` +
           list(o.notes).map((t) => `<p>${inline(t)}</p>`).join("") +
           (cases.length ? `<ul>${cases.map((t) => `<li>${inline(t)}</li>`).join("")}</ul>` : "") +
@@ -447,6 +483,7 @@
   root.addEventListener("click", (e) => {
     const t = e.target.closest(".thumb");
     if (t) { openSpot(items().indexOf(t), e.target); return; }
+    if (e.target.closest("a")) return; // a link in an option's text opens; it does not pick the option
     const opt = e.target.closest(".opt");
     if (!opt || isLocked()) return;
     answers[opt.dataset.q] = opt.dataset.o;
