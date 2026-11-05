@@ -1581,14 +1581,20 @@ impl Conn {
 
     /// The next frame off the socket, skipping the queue `recv` drains first.
     async fn recv_frame(&mut self, wait: Duration) -> Result<Option<ServerMsg>, Fail> {
+        match self.recv_text(wait).await? {
+            Some(text) => serde_json::from_str(&text).map(Some).map_err(other),
+            None => Ok(None),
+        }
+    }
+
+    /// The next text frame, undecoded.
+    async fn recv_text(&mut self, wait: Duration) -> Result<Option<String>, Fail> {
         loop {
             match tokio::time::timeout(wait, self.ws.next()).await {
                 Err(_) => return Ok(None),
                 Ok(None) => return Err(lost("it closed the socket")),
                 Ok(Some(frame)) => match frame.map_err(lost)? {
-                    Message::Text(text) => {
-                        return serde_json::from_str(&text).map(Some).map_err(other)
-                    }
+                    Message::Text(text) => return Ok(Some(text.to_string())),
                     Message::Close(Some(close)) => {
                         return Err(lost(format!("it closed the socket ({})", close.reason)))
                     }
@@ -1596,6 +1602,39 @@ impl Conn {
                 },
             }
         }
+    }
+
+    /// Refuse to go on when the running server speaks an older protocol than this command: its
+    /// replies may lack fields this command decodes, which would otherwise surface as a serde
+    /// error. The status reply is read as JSON, not as a `ServerMsg`, because an older server's
+    /// status is itself one this command may not decode.
+    async fn require_current_server(&mut self) -> Result<(), Fail> {
+        let req = self.req();
+        self.send(&ClientMsg::Status { req: Some(req) }).await?;
+        let wait = Duration::from_secs(10);
+        let protocol = loop {
+            let Some(text) = self.recv_text(wait).await? else {
+                return Err(Fail::Timeout("no reply from daemon within 10s".into()));
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if value["req"] == req {
+                if value["ev"] == "error" {
+                    return Err(Fail::Daemon(
+                        value["message"].as_str().unwrap_or("error").to_string(),
+                    ));
+                }
+                break value["protocol"].as_u64().unwrap_or(1);
+            }
+        };
+        if protocol < u64::from(wheel_proto::PROTOCOL_VERSION) {
+            return Err(Fail::Daemon(format!(
+                "the running wheeld speaks protocol {protocol}, older than this command's {}; restart the server (Restart Server in the app)",
+                wheel_proto::PROTOCOL_VERSION
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -2788,25 +2827,7 @@ async fn agent_cancel(conn: &mut Conn, agent: String) -> Result<(), Fail> {
     .await
 }
 
-/// Refuse `what` before sending it when the running server speaks an older protocol than the one
-/// that added it: this command ships with the app, and the server it reaches may predate it.
-async fn require_protocol(conn: &mut Conn, version: u32, what: &str) -> Result<(), Fail> {
-    let req = conn.req();
-    let ServerMsg::Status { protocol, .. } =
-        conn.call(ClientMsg::Status { req: Some(req) }, req).await?
-    else {
-        return Err(Fail::Other("unexpected reply to status".into()));
-    };
-    if protocol < version {
-        return Err(Fail::Daemon(format!(
-            "the running wheeld is older than {what}; restart the server (Restart Server in the app)"
-        )));
-    }
-    Ok(())
-}
-
 async fn agent_unsend(conn: &mut Conn, agent: String, turn: u64) -> Result<(), Fail> {
-    require_protocol(conn, 2, "`agent unsend`").await?;
     simple(conn, |req| ClientMsg::AgentUnsend {
         req: Some(req),
         agent,
@@ -2816,7 +2837,6 @@ async fn agent_unsend(conn: &mut Conn, agent: String, turn: u64) -> Result<(), F
 }
 
 async fn agent_clear_queue(conn: &mut Conn, agent: String) -> Result<(), Fail> {
-    require_protocol(conn, 2, "`agent clear-queue`").await?;
     simple(conn, |req| ClientMsg::AgentClearQueue {
         req: Some(req),
         agent,
@@ -5022,7 +5042,6 @@ async fn pane_toggle(
     site: wheel_proto::PaneSite,
 ) -> Result<(), Fail> {
     use wheel_proto::PaneSite;
-    require_protocol(conn, 14, "`pane pop` and `pane background`").await?;
     let req = conn.req();
     let ServerMsg::Status { spaces, .. } =
         conn.call(ClientMsg::Status { req: Some(req) }, req).await?
@@ -5058,7 +5077,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         } => {
             let site = site_flag(pop, background);
             if site.is_some() || dir.is_none() {
-                require_protocol(conn, 14, "`pane open` without a side, `--pop` and `--background`").await?;
             }
             create(conn, |req| ClientMsg::PaneOpen {
                 req: Some(req),
@@ -5081,7 +5099,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         } => {
             let site = site_flag(pop, background);
             if site.is_some() {
-                require_protocol(conn, 14, "`--pop` and `--background`").await?;
             }
             create(conn, |req| ClientMsg::PaneRun {
                 req: Some(req),
@@ -5107,7 +5124,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         } => {
             let site = site_flag(pop, background);
             if site.is_some() {
-                require_protocol(conn, 14, "`--pop` and `--background`").await?;
             }
             let req = conn.req();
             let msg = ClientMsg::PaneSplit {
@@ -5606,6 +5622,19 @@ async fn main() -> ExitCode {
     }
     let result = async {
         let mut conn = Conn::open(&cli.url, cli.token_file).await?;
+        // `status` is how a person finds out what the server is; the reports are hooks that
+        // decode only an acknowledgement.
+        if !matches!(
+            command,
+            Command::Status { .. }
+                | Command::Pane(
+                    PaneCommand::Report { .. }
+                        | PaneCommand::ReportContext { .. }
+                        | PaneCommand::ReportConversation { .. }
+                )
+        ) {
+            conn.require_current_server().await?;
+        }
         match command {
             Command::Install { .. } => unreachable!("handled before connecting"),
             Command::Status { .. } => status(&mut conn).await,
@@ -5966,5 +5995,41 @@ mod markdown_reference_tests {
     fn an_image_and_a_link_to_one_file_count_as_an_image() {
         let text = "[big](p.png) then ![small](p.png)";
         assert_eq!(markdown_references(text), vec![("p.png".to_string(), true)]);
+    }
+}
+
+#[cfg(test)]
+mod older_server_tests {
+    use super::*;
+
+    /// A server that answers `status` with protocol 3 and a body this command could not decode.
+    async fn old_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let request = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+            let reply = serde_json::json!({
+                "ev": "status", "req": request["req"], "protocol": 3,
+                "spaces": [{"id": "s1", "panes": [{"kind": "agent"}]}],
+            });
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn an_older_server_is_refused_with_restart_the_server_not_a_decode_error() {
+        let url = old_server().await;
+        let dir = std::env::temp_dir().join(format!("wheel-c4xq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("token");
+        std::fs::write(&token, "t").unwrap();
+        let mut conn = Conn::open(&url, Some(token)).await.unwrap();
+        let err = conn.require_current_server().await.unwrap_err().to_string();
+        assert!(err.contains("restart the server"), "{err}");
+        assert!(err.contains("protocol 3"), "{err}");
     }
 }
