@@ -22,71 +22,48 @@ struct A2UIBeadTableView: View {
 
     var body: some View {
         let p = node.instance.properties
-        let t = WebTheme.shared
         let narrow = pane.width < 640
         let cols = (p["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.filter { !(narrow && $0["wide"]?.boolValue == true) }
         let sections = (p["sections"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let empty = sections.allSatisfy { ($0["rows"]?.arrayValue ?? []).isEmpty }
         let rowAction = p["rowAction"]?.stringValue ?? "select_bead"
-        let treeRows = max(8, min(40, Int((pane.height - 230) / WebTheme.rowHeight)))
-        VStack(alignment: .leading, spacing: 0) {
-            if empty {
-                Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.")
-                    .font(.system(size: WebTheme.body)).foregroundStyle(t.secondary)
-                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(t.group, in: RoundedRectangle(cornerRadius: WebTheme.radius))
-                    .overlay(RoundedRectangle(cornerRadius: WebTheme.radius).strokeBorder(t.separator, lineWidth: 1))
-                    .padding(.top, 24)
-            }
+        let selected = Binding<String?>(
+            get: { nil },
+            set: { path in
+                guard let path else { return }
+                for sec in sections { for r in (sec["rows"]?.arrayValue ?? []).compactMap({ $0.dictionaryValue }) where r["path"]?.stringValue == path {
+                    fire(rowAction, ["id": .string(r["id"]?.stringValue ?? "")])
+                } }
+            })
+        List(selection: selected) {
             ForEach(Array(sections.enumerated()), id: \.offset) { _, sec in
                 let rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
                 let title = sec["title"]?.stringValue ?? ""
-                let open = expanded.contains(title)
-                let maxRows = title.isEmpty ? treeRows : (open ? Self.tall : Self.cap)
-                if !rows.isEmpty {
-                    if !title.isEmpty {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(title).font(.system(size: WebTheme.body, weight: .bold)).foregroundStyle(t.label)
-                            Text("\(Int(sec["count"]?.numberValue ?? 0))")
-                                .font(.system(size: WebTheme.body, weight: .medium).monospacedDigit()).foregroundStyle(t.secondary)
-                            Spacer(minLength: 0)
-                            if rows.count > Self.cap {
-                                Button(open ? "Show fewer" : "Show more") {
-                                    if open { expanded.remove(title) } else { expanded.insert(title) }
-                                }
-                                .buttonStyle(.plain)
-                                .font(.system(size: WebTheme.callout)).foregroundStyle(t.blue)
-                                .frame(minWidth: 70, alignment: .trailing)
-                            }
-                        }
-                        .padding(.horizontal, 2).padding(.top, 24).padding(.bottom, 8)
+                if title.isEmpty {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, r in line(r, cols, narrow) }
+                } else {
+                    Section {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { _, r in line(r, cols, narrow) }
+                    } header: {
+                        Text("\(title)  \(Int(sec["count"]?.numberValue ?? 0))")
                     }
-                    box(rows: rows, cols: cols, maxRows: maxRows, narrow: narrow, rowAction: rowAction)
-                        .padding(.top, title.isEmpty ? 24 : 0)
                 }
             }
         }
+        #if os(macOS)
+        .listStyle(.inset(alternatesRowBackgrounds: true))
+        #else
+        .listStyle(.plain)
+        #endif
+        .overlay {
+            if sections.allSatisfy({ ($0["rows"]?.arrayValue ?? []).isEmpty }) {
+                Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary)
+            }
+        }
+        .frame(height: max(320, pane.height - 250))
     }
 
-    @ViewBuilder
-    private func box(rows: [[String: AnyCodable]], cols: [[String: AnyCodable]], maxRows: Int, narrow: Bool, rowAction: String) -> some View {
-        let t = WebTheme.shared
-        let height = CGFloat(min(rows.count, maxRows)) * WebTheme.rowHeight
-        let content = LazyVStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
-                RowView(row: r, cols: cols, narrow: narrow, first: i == 0, fire: fire, rowAction: rowAction)
-            }
-        }
-        Group {
-            if rows.count > maxRows {
-                ScrollView { content }.scrollIndicators(.hidden).frame(height: height)
-            } else {
-                content
-            }
-        }
-        .background(t.group)
-        .clipShape(RoundedRectangle(cornerRadius: WebTheme.radius))
-        .overlay(RoundedRectangle(cornerRadius: WebTheme.radius).strokeBorder(t.separator, lineWidth: 1))
+    private func line(_ r: [String: AnyCodable], _ cols: [[String: AnyCodable]], _ narrow: Bool) -> some View {
+        RowView(row: r, cols: cols, narrow: narrow, first: true, fire: fire, rowAction: "").tag(r["path"]?.stringValue)
     }
 
     private struct RowView: View {
@@ -119,15 +96,11 @@ struct A2UIBeadTableView: View {
                 }
                 if !buttons.isEmpty { buttonsView(buttons, id: id, shown: showButtons) }
             }
-            .padding(.horizontal, 12)
             .frame(height: WebTheme.rowHeight)
-            .background(sel || hover ? t.fill : Color.clear)
             .contentShape(Rectangle())
-            .onTapGesture { fire(rowAction, ["id": .string(id)]) }
             #if os(macOS)
             .onHover { hover = $0 }
             #endif
-            .overlay(alignment: .top) { if !first { Rectangle().fill(t.separator).frame(height: 1) } }
         }
 
         @ViewBuilder

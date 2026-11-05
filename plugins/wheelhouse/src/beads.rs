@@ -847,8 +847,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
             format!("kpi{i}")
         })
         .collect();
-    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 0, "dividers": true, "border": "line", "fill": "card", "radius": 10,
-        "widths": ["flex", "flex", "flex", "flex"] })));
+    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));
 
     for (i, pr) in snap.problems.iter().chain(snap.error.iter()).enumerate() {
         let l = p.label(&format!("problem{i}.t"), pr, json!({ "tone": "bad" }));

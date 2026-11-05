@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The look of Wheel's web artifacts (`daemon/src/wheel.css`), as colours and sizes, so a native
-/// page draws what the same page draws in a web pane.
+/// The page's style tokens: colours and sizes the components read. They default to the system's own
+/// semantic colours, so a page follows light and dark and the person's accent colour like any native
+/// window; a theme is another set of these values.
 struct WebTheme {
     let bg, group, fill, separator, separatorStrong, label, secondary, tertiary: Color
     let red, orange, green, blue, purple, accentFill: Color
@@ -13,42 +14,22 @@ struct WebTheme {
     static let shared = WebTheme()
 
     private init() {
-        bg = Self.adaptive(light: (0xf5, 0xf5, 0xf7, 1), dark: (0x1c, 0x1c, 0x1e, 1))
-        group = Self.adaptive(light: (0xff, 0xff, 0xff, 1), dark: (0x2a, 0x2a, 0x2c, 1))
-        fill = Self.adaptive(light: (0, 0, 0, 0.05), dark: (255, 255, 255, 0.06))
-        separator = Self.adaptive(light: (0, 0, 0, 0.1), dark: (255, 255, 255, 0.1))
-        separatorStrong = Self.adaptive(light: (0, 0, 0, 0.25), dark: (255, 255, 255, 0.25))
-        label = Self.adaptive(light: (0, 0, 0, 0.85), dark: (255, 255, 255, 0.88))
-        secondary = Self.adaptive(light: (0, 0, 0, 0.55), dark: (255, 255, 255, 0.56))
-        tertiary = Self.adaptive(light: (0, 0, 0, 0.3), dark: (255, 255, 255, 0.28))
-        red = Self.adaptive(light: (0xe0, 0x35, 0x2b, 1), dark: (0xff, 0x45, 0x3a, 1))
-        orange = Self.adaptive(light: (0xe6, 0x7e, 0x00, 1), dark: (0xff, 0x9f, 0x0a, 1))
-        green = Self.adaptive(light: (0x24, 0x8a, 0x3d, 1), dark: (0x30, 0xd1, 0x58, 1))
-        blue = Self.adaptive(light: (0x00, 0x7a, 0xff, 1), dark: (0x0a, 0x84, 0xff, 1))
-        purple = Self.adaptive(light: (0xa5, 0x50, 0xd6, 1), dark: (0xbf, 0x5a, 0xf2, 1))
-        accentFill = Self.adaptive(light: (0x00, 0x7a, 0xff, 0.12), dark: (0x0a, 0x84, 0xff, 0.2))
-    }
-
-    typealias RGBA = (Double, Double, Double, Double)
-
-    private static func adaptive(light: RGBA, dark: RGBA) -> Color {
-        func color(_ v: RGBA) -> (Double, Double, Double, Double) { (v.0 / 255, v.1 / 255, v.2 / 255, v.3) }
-        let l = color(light), d = color(dark)
         #if os(macOS)
-        return Color(nsColor: NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            let c = isDark ? d : l
-            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: c.3)
-        })
+        bg = Color(nsColor: .windowBackgroundColor); group = Color(nsColor: .controlBackgroundColor)
+        separator = Color(nsColor: .separatorColor); separatorStrong = Color(nsColor: .gridColor)
+        tertiary = Color(nsColor: .tertiaryLabelColor)
         #else
-        return Color(uiColor: UIColor { traits in
-            let c = traits.userInterfaceStyle == .dark ? d : l
-            return UIColor(red: c.0, green: c.1, blue: c.2, alpha: c.3)
-        })
+        bg = Color(uiColor: .systemBackground); group = Color(uiColor: .secondarySystemBackground)
+        separator = Color(uiColor: .separator); separatorStrong = Color(uiColor: .opaqueSeparator)
+        tertiary = Color(uiColor: .tertiaryLabel)
         #endif
+        fill = Color.secondary.opacity(0.12)
+        label = .primary; secondary = .secondary
+        red = .red; orange = .orange; green = .green; blue = .accentColor; purple = .purple
+        accentFill = Color.accentColor.opacity(0.2)
     }
 
-    /// The colour a status word or tone name stands for (`ok`, `warn`, `bad`, `muted`); nil is the label colour.
+/// The colour a status word or tone name stands for (`ok`, `warn`, `bad`, `muted`); nil is the label colour.
     func tone(_ name: String?) -> Color? {
         switch name {
         case "ok": green
