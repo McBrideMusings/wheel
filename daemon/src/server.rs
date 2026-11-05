@@ -1254,6 +1254,28 @@ async fn handle(
             }
             None
         }
+        ClientMsg::Notify {
+            req,
+            id,
+            level,
+            text,
+            pane,
+        } => {
+            // Sized, never the text: a notice can quote anything.
+            tracing::info!(%peer, %id, ?level, chars = text.len(), ?pane, "toast sent");
+            let _ = state.global.send(ServerMsg::Toast {
+                id,
+                level,
+                text,
+                pane,
+            });
+            req.map(|req| ServerMsg::Ok { req })
+        }
+        ClientMsg::NotifyClear { req, id } => {
+            tracing::info!(%peer, %id, "toast cleared");
+            let _ = state.global.send(ServerMsg::ToastClear { id });
+            req.map(|req| ServerMsg::Ok { req })
+        }
         ClientMsg::AgentNoticeDismiss { req, agent } => {
             match state.resolve_agent(&agent).map(|a| a.agent) {
                 Ok(found) => {

@@ -68,6 +68,24 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show a toast on every attached client, and print its id. Exits 0 when the daemon sent it;
+    /// the daemon keeps nothing, so a client attached later does not see it.
+    Notify {
+        /// What the toast says.
+        text: Option<String>,
+        /// The colour and weight: `notice` (green), `warning` (orange) or `error` (red).
+        #[arg(long, value_parser = ["notice", "warning", "error"], default_value = "notice")]
+        level: String,
+        /// A name for the toast; sending the same id again replaces it. Default: `notify-<unix ms>`.
+        #[arg(long)]
+        id: Option<String>,
+        /// A pane the toast is about: clients that hold it add Focus pane and Close pane.
+        #[arg(long)]
+        pane: Option<String>,
+        /// Take the toast with this id down instead of showing one.
+        #[arg(long, conflicts_with_all = ["text", "id", "pane"])]
+        clear: Option<String>,
+    },
     /// Every Claude account's usage: 5-hour and weekly percentages, reset times, source and age,
     /// then the rows the usage strip shows. Exits 3 when any account's reading is stale or missing.
     Usage,
@@ -1765,6 +1783,48 @@ fn print_strip(board: &wheel_proto::UsageBoard) {
     for agent in board.agents.iter().filter(|a| !a.shown) {
         println!("agent: {} not shown", agent.id);
     }
+}
+
+/// `wheel notify`: send a toast to every attached client, or take one down.
+async fn notify(
+    conn: &mut Conn,
+    text: Option<String>,
+    level: String,
+    id: Option<String>,
+    pane: Option<String>,
+    clear: Option<String>,
+) -> Result<(), Fail> {
+    if let Some(id) = clear {
+        return simple(conn, |req| ClientMsg::NotifyClear {
+            req: Some(req),
+            id,
+        })
+        .await;
+    }
+    let Some(text) = text else {
+        return Err(Fail::Usage("notify needs the text to show, or --clear <id>".into()));
+    };
+    let level = match level.as_str() {
+        "warning" => wheel_proto::NoticeLevel::Warning,
+        "error" => wheel_proto::NoticeLevel::Error,
+        _ => wheel_proto::NoticeLevel::Notice,
+    };
+    let id = id.unwrap_or_else(|| {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        format!("notify-{ms}")
+    });
+    simple(conn, |req| ClientMsg::Notify {
+        req: Some(req),
+        id: id.clone(),
+        level,
+        text,
+        pane,
+    })
+    .await?;
+    println!("{id}");
+    Ok(())
 }
 
 /// Print each Claude account's usage as lines, then the strip, and fail with exit 3 when any
@@ -5346,6 +5406,13 @@ async fn main() -> ExitCode {
             Command::Install { .. } => unreachable!("handled before connecting"),
             Command::Status { .. } => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
+            Command::Notify {
+                text,
+                level,
+                id,
+                pane,
+                clear,
+            } => notify(&mut conn, text, level, id, pane, clear).await,
             Command::Work(WorkCommand::Set {
                 items,
                 stage,

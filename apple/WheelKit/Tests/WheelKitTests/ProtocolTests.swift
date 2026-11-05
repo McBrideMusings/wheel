@@ -427,6 +427,15 @@ struct ProtocolTests {
         #expect(down == nil)
     }
 
+    @Test func decodesAToastAndItsClearing() throws {
+        guard case let .toast(id, level, text, pane) = try ServerMsg.decode(#"{"ev":"toast","id":"n1","level":"error","text":"it broke","pane":"p4"}"#) else { Issue.record("wrong case"); return }
+        #expect(id == "n1" && level == "error" && text == "it broke" && pane == "p4")
+        guard case let .toast(_, _, _, bare) = try ServerMsg.decode(#"{"ev":"toast","id":"n2","level":"notice","text":"hi"}"#) else { Issue.record("wrong case"); return }
+        #expect(bare == nil)
+        guard case let .toastClear(gone) = try ServerMsg.decode(#"{"ev":"toast_clear","id":"n1"}"#) else { Issue.record("wrong case"); return }
+        #expect(gone == "n1")
+    }
+
     @Test func aTerminalPanesAgentCarriesItsContextUse() throws {
         let with = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","conversation":"s","context":{"used":74100,"size":200000}}}"#
         guard case let .pane(_, .terminal(_, agent)) = try JSONDecoder().decode(Node.self, from: Data(with.utf8)) else { Issue.record("wrong case"); return }

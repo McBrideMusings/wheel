@@ -377,6 +377,10 @@ final class PhoneModel {
             paneInfo[pane] = fields
             logins[pane] = PaneHeaderInfo(folder: fields.first { $0.label == "Directory" }?.value, login: login)
             Log.info("pane \(pane) info (\(kind)): \(fields.count) fields")
+        case let .toast(id, level, _, _):
+            Log.info("toast \(id) (\(level)) not shown: the phone has no toast surface")
+        case .toastClear:
+            break
         case let .agentNotice(agent, notice):
             chats[agent]?.notice = notice
         case let .agent(agent, event):
