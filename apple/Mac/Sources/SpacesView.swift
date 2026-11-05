@@ -1083,6 +1083,7 @@ struct EmptyPane: View {
                 VStack { choices }
             }
             .controlSize(.large)
+            .disabled(model.isStarting(paneId))
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1103,6 +1104,8 @@ struct EmptyPane: View {
     /// Run the choice `key` names; false when it names none.
     private func choose(_ key: String) -> Bool {
         Log.info("empty pane \(paneId): key \(key)")
+        // The buttons are disabled while an agent starts; the keys take no choice either.
+        if model.isStarting(paneId) { return true }
         switch key {
         case "t": model.setKind(paneId, .terminal)
         case "b": model.setKind(paneId, .browser)

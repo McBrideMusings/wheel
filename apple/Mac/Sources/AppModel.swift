@@ -411,6 +411,10 @@ final class AppModel {
     @ObservationIgnored private var refusedAttach: Set<String> = []
     /// Layout ops, so only their failures show above the grid.
     @ObservationIgnored private var layoutReqs: Set<UInt64> = []
+    /// The pane each unanswered `paneStart` was sent for, by request. A pane in it takes no second
+    /// start: until the daemon answers the first, a second start would replace its agent.
+    private(set) var startingPanes: [UInt64: String] = [:]
+    func isStarting(_ pane: String) -> Bool { startingPanes.values.contains(pane) }
     /// Typed address-field text the daemon is reading, by request: the pane and the text, so the
     /// answer reaches that pane and a refusal shows over it.
     @ObservationIgnored private var openReqs: [UInt64: (pane: String, text: String)] = [:]
@@ -441,6 +445,8 @@ final class AppModel {
             self?.connection = state
             if state != .connected { self?.usage.disconnected() }
             if state != .connected { self?.links.forget() }
+            // A start sent to a daemon this app lost gets no answer, so its pane is free again.
+            if state != .connected { self?.startingPanes = [:] }
             if state != .connected { self?.terminals.values.forEach { $0.attached = false } }
             // A shipping state from a daemon this app no longer reaches says nothing about now.
             if state != .connected { self?.settings.logShipping = nil }
@@ -858,6 +864,7 @@ final class AppModel {
                 setKind(id, .web, artifact: info.name, scope: info.scope)
             }
         case let .started(req, pane, agent):
+            startingPanes[req] = nil
             if layoutReqs.remove(req) != nil { Log.info("started \(pane) agent \(agent ?? "-")") }
             if showWhenMade.removeValue(forKey: req) == .pane { show(pane: pane) }
         case let .paneView(req, pane, view, conversation):
@@ -988,7 +995,7 @@ final class AppModel {
                 if attachReqs.remove(req) != nil { refusedAttach.insert(agent) }
             }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
-            if let req { splitArtifacts[req] = nil }
+            if let req { splitArtifacts[req] = nil; startingPanes[req] = nil }
             if let req, layoutReqs.remove(req) != nil {
                 layoutError = message
                 settle()
@@ -1322,7 +1329,14 @@ final class AppModel {
         sendLayoutOp { .paneView(req: $0, pane: pane, to: view) }
     }
     func startPane(_ pane: String, _ kind: StartKind, message: String? = nil, agent: String? = nil) {
-        sendLayoutOp { .paneStart(req: $0, pane: pane, kind: kind, message: message, agent: agent) }
+        guard !isStarting(pane) else {
+            Log.info("start \(pane) ignored: its first start has no answer yet")
+            return
+        }
+        sendLayoutOp {
+            startingPanes[$0] = pane
+            return .paneStart(req: $0, pane: pane, kind: kind, message: message, agent: agent)
+        }
     }
     /// Whether the daemon found the program of agent `name`.
     func agentFound(_ name: String) -> Bool { agents.contains { $0.name == name && $0.found } }

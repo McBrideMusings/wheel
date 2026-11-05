@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -138,6 +138,9 @@ pub struct AppState {
     /// Every running agent by name: the ones agent panes own.
     pub(crate) agents: Mutex<HashMap<String, Arc<Agent>>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
+    /// Panes whose `start_agent` is still running, so a second agent start on one of them is
+    /// refused instead of replacing the agent that is coming up. Other kind changes are not held.
+    pub(crate) agent_starts: Mutex<HashSet<String>>,
     /// What an agent pane had when it became a terminal, by pane, so the agent view the switch
     /// back starts takes it again. Kept in memory only.
     pub(crate) view_options: Mutex<HashMap<String, CarriedView>>,
@@ -286,6 +289,7 @@ impl AppState {
             global,
             agents: Mutex::new(HashMap::new()),
             agent_timing: Mutex::new(AgentTiming::default()),
+            agent_starts: Mutex::new(HashSet::new()),
             view_options: Mutex::new(HashMap::new()),
             spaces: Mutex::new(Spaces::default()),
             saved_extra: Mutex::new(Default::default()),

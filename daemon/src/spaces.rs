@@ -3,10 +3,10 @@
 //! Every caller — a client op or the CLI — changes it through the `AppState`
 //! methods here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,33 @@ use crate::pty::Term;
 use crate::resume::Harness;
 use crate::server::{AgentStart, AppState, Owner};
 use crate::settings::{page, HOMEPAGE, PLACEMENT};
+
+/// A pane's place in `AppState::agent_starts` while its agent starts; dropping it frees the pane.
+struct StartClaim<'a> {
+    starts: &'a Mutex<HashSet<String>>,
+    pane: String,
+}
+
+impl<'a> StartClaim<'a> {
+    fn take(
+        starts: &'a Mutex<HashSet<String>>,
+        pane: &str,
+    ) -> Result<Self, String> {
+        if !starts.lock().unwrap().insert(pane.to_string()) {
+            return Err(format!("pane {pane} is already starting an agent"));
+        }
+        Ok(Self {
+            starts,
+            pane: pane.to_string(),
+        })
+    }
+}
+
+impl Drop for StartClaim<'_> {
+    fn drop(&mut self) {
+        self.starts.lock().unwrap().remove(&self.pane);
+    }
+}
 
 /// Every space, in tab order, and which one is showing. Also the saved file's format.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -1740,6 +1767,10 @@ impl AppState {
         model: Option<String>,
         permissions: AgentPermissions,
     ) -> Result<(String, AgentState), (String, bool)> {
+        // A second start on a pane whose first has not heard back from its agent would `install`
+        // over that agent and end it, so it is refused; the claim is held through the wait for
+        // the agent to be ready, because the second start of a double click lands in that wait.
+        let _starting = StartClaim::take(&self.agent_starts, pane).map_err(|e| (e, false))?;
         let cwd = {
             let spaces = self.spaces.lock().unwrap();
             spaces.spaces[spaces.holding(pane).map_err(|e| (e, false))?]
