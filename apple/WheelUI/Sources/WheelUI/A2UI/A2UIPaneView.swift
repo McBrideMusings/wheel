@@ -14,7 +14,10 @@ public struct A2UIPaneView: View {
         let palette = WheelPalette(dark: scheme == .dark)
         VStack(spacing: 0) {
             if case let .failed(message) = pane.state {
-                Banner(text: message, tone: palette.bad, id: "a2ui.backend-down")
+                VStack(alignment: .leading, spacing: 0) {
+                    Banner(text: message, tone: palette.bad, id: "a2ui.backend-down")
+                    Button("Try again") { pane.start() }.padding(8).accessibilityIdentifier("a2ui.retry")
+                }
             } else if let notice = pane.notice {
                 Banner(text: notice, tone: palette.warn, id: "a2ui.notice")
             }

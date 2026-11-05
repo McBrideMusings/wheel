@@ -128,6 +128,14 @@ import WheelKit
         #expect(other.state == .web)
     }
 
+    @Test func aServerThatDoesNotAnswerTheProbeShowsItsErrorInsteadOfTheWebPage() throws {
+        let (pane, _) = pane()
+        pane.start()
+        _ = pane.handle(try frame(#"{"ev":"error","req":1,"message":"the server did not start: no such file"}"#))
+        #expect(pane.state == .failed("the server did not start: no such file"))
+        #expect(pane.isNative)
+    }
+
     @Test func theLinkOfAToolIsRecognisedByItsMimeTypeOrItsScheme() throws {
         let ui = try ServerMsg.decode(#"{"ev":"tools","req":1,"tools":[{"name":"app","input_schema":{},"meta":{"ui":{"resourceUri":"ui://x/view"}}},{"name":"a","input_schema":{},"meta":{"ui":{"resourceUri":"a2ui://x","mimeType":"application/json+a2ui"}}}]}"#)
         guard case let .tools(_, list) = ui else { Issue.record("not tools"); return }

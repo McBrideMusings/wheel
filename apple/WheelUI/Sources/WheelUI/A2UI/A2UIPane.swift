@@ -118,7 +118,9 @@ public final class A2UIPane {
         case let .error(req, _, message):
             guard let req, let step = pending.removeValue(forKey: req) else { return false }
             switch step {
-            case .tools: state = .web
+            case .tools:
+                // An artifact with no MCP server is a plain web page; any other refusal is the server failing to answer.
+                state = message.contains("no MCP server") ? .web : .failed(message)
             case .layout, .data: state = .failed(message)
             case let .action(name): notice = "\(name): \(message)"
             }
