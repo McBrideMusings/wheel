@@ -1,8 +1,10 @@
 // Wheel's lightbox for an artifact page: a click on an <img> opens it full window; a second click
 // zooms, a drag pans, Esc closes, the arrow keys step between the page's images.
 // A page asks for it: <script src=".wheel/lightbox.js"></script>. Once loaded it opens every <img>
-// except one marked data-no-lightbox or one inside a link. The caption is the nearest data-cap, else
-// the image's alt. window.wheelLightbox lets a page that redraws its images keep it open.
+// that is shown and at least 48px wide and tall, except one marked data-no-lightbox, one inside a
+// link, a button or an element with an onclick or role="button" of its own. A <button data-lightbox>
+// holding one image opens it too. The caption is the data-cap of the image's nearest ancestor that
+// has one, else the image's alt. window.wheelLightbox lets a page that redraws its images keep it open.
 (() => {
   if (window.wheelLightbox) return;
   const MARGIN = 32;
@@ -27,6 +29,7 @@
 
   let spot = null, spotImg = null, spotCap = null;
   let spotOpen = false, cur = 0, zoomed = false, closeTimer = 0;
+  let locked = null; // the page's own overflow values while the lightbox is open
   let box = { w: 0, h: 0, cx: 0, cy: 0 }; // image size and centre, in window px
   let nat = { w: 1, h: 1 };
   let pan = { x: 0, y: 0 }; // offset of the centre from the window centre while zoomed
@@ -35,10 +38,18 @@
   const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const vw = () => document.documentElement.clientWidth || window.innerWidth;
   const vh = () => window.innerHeight;
-  const eligible = (img) =>
-    !!(img.currentSrc || img.src) && !img.hasAttribute("data-no-lightbox") && !img.closest("#wheel-lightbox, a[href]");
+  const eligible = (img) => {
+    if (!(img.currentSrc || img.src) || img.hasAttribute("data-no-lightbox")) return false;
+    if (img.closest('#wheel-lightbox, a[href], button:not([data-lightbox]), [role="button"], [onclick]')) return false;
+    if (img.getClientRects().length === 0) return false; // not shown
+    return !(img.naturalWidth && (img.naturalWidth < 48 || img.naturalHeight < 48));
+  };
   const items = () => Array.from(document.querySelectorAll("img")).filter(eligible);
-  const keyOf = (img) => img.currentSrc || img.src;
+  // An image's source and which of the images with that source it is, so a repeated one is told apart.
+  const keyAt = (all, i) => {
+    const src = all[i].currentSrc || all[i].src;
+    return src + "#" + all.slice(0, i).filter((o) => (o.currentSrc || o.src) === src).length;
+  };
   const capOf = (img) => {
     const holder = img.closest("[data-cap]");
     return holder ? holder.dataset.cap : img.alt || "";
@@ -98,7 +109,7 @@
   };
   function setImage(img, thenFit) {
     spotImg.alt = img.alt;
-    spotImg.src = keyOf(img);
+    spotImg.src = img.currentSrc || img.src;
     spotCap.textContent = capOf(img);
     nat = { w: img.naturalWidth || 1, h: img.naturalHeight || 1 };
     if (!img.naturalWidth) {
@@ -130,7 +141,9 @@
     spotImg.style.transition = "";
     spot.classList.add("on");
     layout();
+    if (!locked) locked = { body: document.body.style.overflow, root: document.documentElement.style.overflow };
     document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
     spot.setAttribute("tabindex", "-1");
     spot.focus({ preventScroll: true });
     return true;
@@ -158,7 +171,7 @@
       spot.hidden = true;
       spot.classList.remove("on", "zoomed", "dragging");
       spotImg.removeAttribute("src");
-      document.body.style.overflow = "";
+      if (locked) { document.body.style.overflow = locked.body; document.documentElement.style.overflow = locked.root; locked = null; }
     };
     const back = img && (img.closest("button, [tabindex]") || img);
     if (back && back.focus) back.focus({ preventScroll: true });
@@ -242,15 +255,14 @@
     });
   }
 
-  // A click on an image opens it. A keyboard press on a button that holds one image arrives as a
-  // click on the button, so that opens it too.
+  // A click on an image opens it. A keyboard press on a <button data-lightbox> holding one image
+  // arrives as a click on the button, so that opens it too.
   document.addEventListener("click", (e) => {
     const t = e.target;
     if (!(t instanceof Element) || t.closest("#wheel-lightbox")) return;
     let img = t.closest("img");
     if (!img) {
-      const btn = t.closest("button");
-      const own = btn && btn.querySelectorAll("img");
+      const own = t.closest("button[data-lightbox]")?.querySelectorAll("img");
       img = own && own.length === 1 ? own[0] : null;
     }
     if (img && eligible(img) && open(img)) e.preventDefault();
@@ -259,15 +271,15 @@
   window.wheelLightbox = {
     open,
     close,
-    isOpen: () => spotOpen,
     // The key of the open image, to hand to show() after the page redraws its images.
-    key: () => (spotOpen && items()[cur] ? keyOf(items()[cur]) : null),
+    key: () => { const all = items(); return spotOpen && all[cur] ? keyAt(all, cur) : null; },
     // Keep the lightbox open on the image with `key` after a redraw; false when it is gone.
     show: (key) => {
-      const i = items().findIndex((img) => keyOf(img) === key);
+      const all = items();
+      const i = all.findIndex((_, at) => keyAt(all, at) === key);
       if (!spotOpen || i < 0) return false;
       cur = i;
-      setImage(items()[cur], true);
+      setImage(all[cur], true);
       return true;
     },
   };
