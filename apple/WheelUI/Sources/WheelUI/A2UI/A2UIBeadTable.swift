@@ -73,34 +73,27 @@ struct A2UIBeadTableView: View {
         let first: Bool
         let fire: (String, [String: AnyCodable]) -> Void
         let rowAction: String
-        @State private var hover = false
 
         var body: some View {
-            let t = WebTheme.shared
             let cells = (row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-            let buttons = narrow ? [] : (row["buttons"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+            let buttons = (row["buttons"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
             let id = row["id"]?.stringValue ?? ""
             let dim = row["dim"]?.boolValue == true
-            let sel = row["sel"]?.boolValue == true
             let depth = row["depth"]?.numberValue ?? 0
-            let showButtons: Bool = {
-                #if os(macOS)
-                return hover || sel
-                #else
-                return true
-                #endif
-            }()
             HStack(spacing: 10) {
                 ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                     column(c, cells: cells, depth: depth, dim: dim)
                 }
-                if !buttons.isEmpty { buttonsView(buttons, id: id, shown: showButtons) }
             }
             .frame(height: WebTheme.rowHeight)
             .contentShape(Rectangle())
-            #if os(macOS)
-            .onHover { hover = $0 }
-            #endif
+            .contextMenu {
+                ForEach(Array(buttons.enumerated()), id: \.offset) { _, b in
+                    Button(b["label"]?.stringValue ?? "") {
+                        fire("run_script", ["bead": .string(id), "script": .string(b["script"]?.stringValue ?? "")])
+                    }
+                }
+            }
         }
 
         @ViewBuilder
@@ -125,25 +118,6 @@ struct A2UIBeadTableView: View {
             }
             .frame(width: width, alignment: .leading)
             .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
-        }
-
-        @ViewBuilder
-        private func buttonsView(_ buttons: [[String: AnyCodable]], id: String, shown: Bool) -> some View {
-            let t = WebTheme.shared
-            HStack(spacing: 4) {
-                ForEach(Array(buttons.enumerated()), id: \.offset) { _, b in
-                    Button {
-                        fire("run_script", ["bead": .string(id), "script": .string(b["script"]?.stringValue ?? "")])
-                    } label: {
-                        Text(b["label"]?.stringValue ?? "").font(.system(size: WebTheme.caption)).foregroundStyle(t.label)
-                            .padding(.horizontal, 9).frame(height: 20)
-                            .background(t.group, in: RoundedRectangle(cornerRadius: 5))
-                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(t.separatorStrong, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                    .opacity(shown ? 1 : 0)
-                }
-            }
         }
 
         @ViewBuilder
