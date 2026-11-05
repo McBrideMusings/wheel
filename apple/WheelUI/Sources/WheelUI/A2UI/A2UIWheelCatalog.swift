@@ -10,21 +10,16 @@ let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "B
 struct WheelPalette {
     let fg, muted, bg, card, soft, line, ok, warn, bad, todo, focus: Color
     init(dark _: Bool) {
-        #if os(macOS)
-        bg = Color(nsColor: .windowBackgroundColor); card = Color(nsColor: .controlBackgroundColor)
-        line = Color(nsColor: .separatorColor)
-        #else
-        bg = Color(uiColor: .systemBackground); card = Color(uiColor: .secondarySystemBackground)
-        line = Color(uiColor: .separator)
-        #endif
-        fg = .primary; muted = .secondary; soft = Color.secondary.opacity(0.12); todo = Color.secondary.opacity(0.25)
-        ok = .green; warn = .orange; bad = .red; focus = .accentColor
+        let t = WebTheme.shared
+        bg = t.bg; card = t.group; line = t.separator
+        fg = t.label; muted = t.secondary; soft = t.fill; todo = t.tertiary
+        ok = t.green; warn = t.orange; bad = t.red; focus = t.blue
     }
     func tone(_ n: String?) -> Color? {
         switch n {
         case "fg": return fg; case "muted": return muted; case "ok": return ok; case "warn": return warn
         case "bad": return bad; case "line": return line; case "card": return card; case "soft": return soft
-        case "bg": return bg; case "todo": return todo; case "focus": return focus; default: return nil
+        case "bg": return bg; case "todo": return todo; case "focus": return focus; case "faint": return todo; default: return nil
         }
     }
 }
@@ -68,7 +63,8 @@ struct A2UILabelView: View {
             }
             let s = (try? node.typedProperties(TextProperties.self)).map { dc.resolve($0.text) } ?? ""
             let (f, c) = fmt(p, pal, base: [:])
-            return Text(s).font(f).fontWeight(weightOf(p["weight"]?.stringValue)).foregroundColor(c).tracking(tracking)
+            let text = Text(s).font(f).fontWeight(weightOf(p["weight"]?.stringValue)).foregroundColor(c).tracking(tracking)
+            return p["tabular"]?.boolValue == true ? text.monospacedDigit() : text
         }()
         let tone = pal.tone(p["tone"]?.stringValue) ?? pal.fg
         let align: Alignment = p["align"]?.stringValue == "end" ? .trailing : .leading
@@ -115,12 +111,25 @@ struct A2UIBoxView: View {
         let size: ControlSize = p["controlSize"]?.stringValue == "small" ? .small : .regular
 
         Group {
-            if horizontal {
+            if horizontal, p["wrap"]?.boolValue == true {
+                FlowLayout(spacing: spacing, rowSpacing: p["rowSpacing"]?.numberValue ?? spacing, between: p["justify"]?.stringValue == "between") {
+                    ForEach(kids, id: \.offset) { i, k in
+                        let w: AnyCodable? = i < widths.count ? widths[i] : nil
+                        let child = A2UIChildView(node: k, surface: surface)
+                        Group {
+                            if let n = w?.numberValue { child.frame(width: n, alignment: .leading) } else { child }
+                        }
+                        .layoutValue(key: FlowGrow.self, value: w?.stringValue == "flex")
+                        .layoutValue(key: FlowTrail.self, value: trailing > 0 && i >= kids.count - trailing)
+                    }
+                }
+            } else if horizontal {
                 let va: VerticalAlignment = alignName == "firstTextBaseline" ? .firstTextBaseline : alignName == "top" ? .top : .center
                 HStack(alignment: va, spacing: spacing) {
                     ForEach(kids, id: \.offset) { i, k in
                         if trailing > 0 && i == kids.count - trailing { Spacer(minLength: 0) }
                         let w: AnyCodable? = i < widths.count ? widths[i] : nil
+                        if i > 0, p["dividers"]?.boolValue == true { Rectangle().fill(pal.line).frame(width: 1) }
                         if let n = w?.numberValue {
                             A2UIChildView(node: k, surface: surface).frame(width: n, alignment: .leading)
                         } else if w?.stringValue == "flex" {
@@ -201,355 +210,6 @@ struct A2UIDisclosureView: View {
     }
 }
 
-// MARK: SearchField — the system's rounded text field; it raises its action, text as `q`, as the person types
-struct A2UISearchFieldView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    @State private var text: String
-    @State private var pending: Task<Void, Never>?
-    init(node: ComponentNode, surface: SurfaceModel) {
-        self.node = node; self.surface = surface
-        _text = State(initialValue: node.instance.properties["value"]?.stringValue ?? "")
-    }
-    var body: some View {
-        let p = node.instance.properties
-        TextField(p["placeholder"]?.stringValue ?? "", text: $text)
-            .textFieldStyle(.roundedBorder)
-            .autocorrectionDisabled()
-            .accessibilityIdentifier("a2ui.search")
-            .onChange(of: text) { _, new in
-                pending?.cancel()
-                guard let name = p["action"]?.stringValue else { return }
-                pending = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                    if Task.isCancelled { return }
-                    surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: ["q": .string(new)])
-                }
-            }
-    }
-}
-
-// MARK: Segmented — the system's segmented control: `options` [{value, text}], `selected`, `action` raised with the value as `value`
-struct A2UISegmentedView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    @State private var selection: String
-    init(node: ComponentNode, surface: SurfaceModel) {
-        self.node = node; self.surface = surface
-        _selection = State(initialValue: node.instance.properties["selected"]?.stringValue ?? "")
-    }
-    var body: some View {
-        let p = node.instance.properties
-        let options = (p["options"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        Picker("", selection: $selection) {
-            ForEach(Array(options.enumerated()), id: \.offset) { _, o in
-                Text(o["text"]?.stringValue ?? "").tag(o["value"]?.stringValue ?? "")
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .accessibilityIdentifier("a2ui.segmented")
-        .onChange(of: selection) { _, new in
-            guard let name = p["action"]?.stringValue else { return }
-            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: ["value": .string(new)])
-        }
-    }
-}
-
-struct A2UIPillStyle: ViewModifier {
-    let link: Bool
-    func body(content: Content) -> some View {
-        if link {
-            #if os(macOS)
-            content.buttonStyle(.link)
-            #else
-            content.buttonStyle(.borderless)
-            #endif
-        } else {
-            content.buttonStyle(.bordered).controlSize(.small)
-        }
-    }
-}
-
-// MARK: Pill — the system's small bordered button raising its action; `src` is a small tag after the text
-struct A2UIPillView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    var body: some View {
-        let p = node.instance.properties
-        Button {
-            guard let name = p["name"]?.stringValue else { return }
-            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: p["context"]?.dictionaryValue ?? [:])
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(p["text"]?.stringValue ?? "")
-                if let src = p["src"]?.stringValue {
-                    Text(src).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .modifier(A2UIPillStyle(link: p["style"]?.stringValue == "link"))
-        .disabled(p["disabled"]?.boolValue == true)
-        .accessibilityIdentifier("a2ui.pill.\(node.instance.id)")
-    }
-}
-
-// MARK: Select — the system's pop-up menu: `options` [{value, text}], `selected`; raises its action with `key` and `value`
-struct A2UISelectView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    var body: some View {
-        let p = node.instance.properties
-        let options = (p["options"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let binding = Binding<String>(
-            get: { p["selected"]?.stringValue ?? "" },
-            set: { new in
-                guard let name = p["action"]?.stringValue else { return }
-                surface.dispatchAction(name: name, sourceComponentId: node.instance.id,
-                                       context: ["key": .string(p["key"]?.stringValue ?? ""), "value": .string(new)])
-            })
-        Picker("", selection: binding) {
-            ForEach(Array(options.enumerated()), id: \.offset) { _, o in
-                Text(o["text"]?.stringValue ?? "").tag(o["value"]?.stringValue ?? "")
-            }
-        }
-        .labelsHidden()
-        .pickerStyle(.menu)
-        .fixedSize()
-        .disabled(p["disabled"]?.boolValue == true)
-        .accessibilityIdentifier("a2ui.select.\(p["key"]?.stringValue ?? "")")
-    }
-}
-
-// MARK: Check — the system's checkbox: `text`, `value`; raises its action with `value` "true" or "false"
-struct A2UICheckView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    var body: some View {
-        let p = node.instance.properties
-        let binding = Binding<Bool>(
-            get: { p["value"]?.boolValue ?? false },
-            set: { new in
-                guard let name = p["action"]?.stringValue else { return }
-                surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: ["value": .string(new ? "true" : "false")])
-            })
-        Toggle(p["text"]?.stringValue ?? "", isOn: binding)
-            #if os(macOS)
-            .toggleStyle(.checkbox)
-            #endif
-            .accessibilityIdentifier("a2ui.check")
-    }
-}
-
-// MARK: Sheet — the system's sheet over the page while `presented`; its one child is the content; closing raises `action`
-struct A2UISheetView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    var body: some View {
-        let p = node.instance.properties
-        let binding = Binding<Bool>(
-            get: { p["presented"]?.boolValue ?? false },
-            set: { open in
-                if !open, let name = p["action"]?.stringValue {
-                    surface.dispatchAction(name: name, sourceComponentId: node.instance.id)
-                }
-            })
-        Color.clear.frame(width: 0, height: 0)
-            .sheet(isPresented: binding) {
-                VStack(spacing: 0) {
-                    HStack {
-                        Spacer()
-                        Button("Done") { binding.wrappedValue = false }.keyboardShortcut(.cancelAction)
-                    }.padding(10)
-                    Divider()
-                    ScrollView {
-                        if let c = node.children.first { A2UIChildView(node: c, surface: surface).padding(16) }
-                    }
-                }
-                .frame(minWidth: 520, idealWidth: 600, minHeight: 520, idealHeight: 640)
-            }
-    }
-}
-
-// MARK: BeadTable — the system's List: sections of rows under a sortable header, selection drawn by the system
-// column {key, label, width|null, tree, sortable}; row {id, path, depth, kids, collapsed, dim, sel, cells [{text, tone, dot, mono}],
-// buttons [{label, script}]}. Raises sort_by {key}, select_bead {id}, toggle_path {path}, run_script {bead, script}.
-private struct A2UIViewportKey: EnvironmentKey { static let defaultValue: CGFloat = 640 }
-extension EnvironmentValues {
-    var a2uiViewport: CGFloat {
-        get { self[A2UIViewportKey.self] }
-        set { self[A2UIViewportKey.self] = newValue }
-    }
-}
-
-struct A2UIBeadTableView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    @Environment(\.a2uiViewport) private var viewport
-
-    private func fire(_ name: String, _ context: [String: AnyCodable]) {
-        surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
-    }
-
-    var body: some View {
-        let p = node.instance.properties
-        let cols = (p["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let sort = p["sort"]?.dictionaryValue
-        let sections = (p["sections"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let selected = Binding<String?>(
-            get: {
-                for sec in sections { for r in (sec["rows"]?.arrayValue ?? []).compactMap({ $0.dictionaryValue }) where r["sel"]?.boolValue == true { return r["path"]?.stringValue } }
-                return nil
-            },
-            set: { path in
-                guard let path else { return }
-                for sec in sections { for r in (sec["rows"]?.arrayValue ?? []).compactMap({ $0.dictionaryValue }) where r["path"]?.stringValue == path {
-                    fire("select_bead", ["id": .string(r["id"]?.stringValue ?? "")])
-                } }
-            })
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
-                    let key = c["key"]?.stringValue ?? ""
-                    let active = sort?["key"]?.stringValue == key
-                    Button {
-                        fire("sort_by", ["key": .string(key)])
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(c["label"]?.stringValue ?? "")
-                            if active {
-                                Image(systemName: sort?["asc"]?.boolValue == true ? "chevron.up" : "chevron.down").font(.caption2.weight(.bold))
-                            }
-                        }
-                        .font(.subheadline.weight(active ? .semibold : .regular))
-                        .foregroundStyle(active ? .primary : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(c["sortable"]?.boolValue != true)
-                    .modifier(A2UIColWidth(width: c["width"]?.numberValue))
-                }
-            }
-            .padding(.horizontal, 20).padding(.vertical, 6)
-            Divider()
-            List(selection: selected) {
-                ForEach(Array(sections.enumerated()), id: \.offset) { _, sec in
-                    let rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-                    let title = sec["title"]?.stringValue ?? ""
-                    if title.isEmpty {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { _, r in rowView(r, cols).tag(r["path"]?.stringValue) }
-                    } else {
-                        Section {
-                            ForEach(Array(rows.enumerated()), id: \.offset) { _, r in rowView(r, cols).tag(r["path"]?.stringValue) }
-                        } header: {
-                            Text("\(title)  \(Int(sec["count"]?.numberValue ?? 0))")
-                        }
-                    }
-                }
-            }
-            #if os(macOS)
-            .listStyle(.inset(alternatesRowBackgrounds: true))
-            #else
-            .listStyle(.plain)
-            #endif
-            .overlay {
-                if sections.allSatisfy({ ($0["rows"]?.arrayValue ?? []).isEmpty }) {
-                    Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary)
-                }
-            }
-        }
-        .frame(height: max(320, viewport - 250))
-    }
-
-    @ViewBuilder
-    private func rowView(_ row: [String: AnyCodable], _ cols: [[String: AnyCodable]]) -> some View {
-        let cells = (row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let depth = row["depth"]?.numberValue ?? 0
-        let buttons = (row["buttons"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let id = row["id"]?.stringValue ?? ""
-        let dim = row["dim"]?.boolValue == true
-        HStack(spacing: 8) {
-            ForEach(Array(cols.enumerated()), id: \.offset) { i, c in
-                let cell = i < cells.count ? cells[i] : [:]
-                HStack(spacing: 4) {
-                    if c["tree"]?.boolValue == true {
-                        Color.clear.frame(width: CGFloat(depth) * 16, height: 1)
-                        if row["kids"]?.boolValue == true {
-                            Button {
-                                fire("toggle_path", ["path": .string(row["path"]?.stringValue ?? "")])
-                            } label: {
-                                Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
-                                    .rotationEffect(.degrees(row["collapsed"]?.boolValue == true ? 0 : 90))
-                                    .foregroundStyle(.secondary).frame(width: 12)
-                            }.buttonStyle(.plain)
-                        } else {
-                            Color.clear.frame(width: 12, height: 1)
-                        }
-                    }
-                    cellView(cell, dim: dim)
-                }
-                .modifier(A2UIColWidth(width: c["width"]?.numberValue))
-            }
-            if !buttons.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(Array(buttons.enumerated()), id: \.offset) { _, b in
-                        Button(b["label"]?.stringValue ?? "") {
-                            fire("run_script", ["bead": .string(id), "script": .string(b["script"]?.stringValue ?? "")])
-                        }.buttonStyle(.bordered).controlSize(.mini)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func cellView(_ cell: [String: AnyCodable], dim: Bool) -> some View {
-        let text = cell["text"]?.stringValue ?? ""
-        let tone = nativeTone(cell["tone"]?.stringValue)
-        HStack(spacing: 5) {
-            if cell["dot"]?.boolValue == true { Circle().fill(tone ?? .secondary).frame(width: 7, height: 7) }
-            Text(text)
-                .font(cell["mono"]?.boolValue == true ? .system(.callout, design: .monospaced) : .body)
-                .foregroundStyle(tone ?? (dim ? .secondary : .primary))
-                .lineLimit(1).truncationMode(.tail)
-        }
-    }
-}
-
-/// The system colour a tone name stands for; nil for the default text colour.
-func nativeTone(_ n: String?) -> Color? {
-    switch n {
-    case "ok": .green
-    case "warn": .orange
-    case "bad": .red
-    case "muted": .secondary
-    default: nil
-    }
-}
-
-// MARK: Stat — a number over its caption in the system's GroupBox
-struct A2UIStatView: View {
-    let node: ComponentNode
-    var body: some View {
-        let p = node.instance.properties
-        GroupBox {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(p["value"]?.stringValue ?? "").font(.title.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(nativeTone(p["tone"]?.stringValue) ?? .primary)
-                Text(p["label"]?.stringValue ?? "").font(.callout).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-struct A2UIColWidth: ViewModifier {
-    let width: Double?
-    func body(content: Content) -> some View {
-        if let width { content.frame(width: width, alignment: .leading) }
-        else { content.frame(maxWidth: .infinity, alignment: .leading) }
-    }
-}
 
 /// Wheel's additions to the basic catalog, drawn natively: styled text, a box, a progress bar, a
 /// disclosure and the placeholder for a component the catalog does not hold.

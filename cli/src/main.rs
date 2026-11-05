@@ -450,6 +450,9 @@ enum ArtifactCommand {
         scope: Option<ArtifactScope>,
         #[arg(long)]
         space: Option<String>,
+        /// The pane the call is for, so a server that keeps each pane's own state changes that pane's.
+        #[arg(long)]
+        pane: Option<String>,
         /// Print the result as JSON.
         #[arg(long)]
         json: bool,
@@ -3759,6 +3762,7 @@ async fn artifact_call(
     arguments: Option<String>,
     scope: Option<ArtifactScope>,
     space: Option<String>,
+    pane: Option<String>,
     json: bool,
 ) -> Result<(), Fail> {
     let arguments = arguments
@@ -3772,7 +3776,7 @@ async fn artifact_call(
         req: Some(req),
         name,
         scope,
-        pane: None,
+        pane,
         space,
         tool,
         arguments,
@@ -5631,10 +5635,11 @@ async fn main() -> ExitCode {
                 arguments,
                 scope,
                 space,
+                pane,
                 json,
             }) => {
                 let space = default_space(&mut conn, space).await?;
-                artifact_call(&mut conn, name, tool, arguments, scope, space, json).await
+                artifact_call(&mut conn, name, tool, arguments, scope, space, pane, json).await
             }
             Command::Artifact(ArtifactCommand::Show {
                 name,

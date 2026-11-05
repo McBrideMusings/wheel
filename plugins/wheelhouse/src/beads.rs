@@ -323,16 +323,18 @@ struct Col {
     tree: bool,
     desc_first: bool,
     ungrouped: bool,
+    /// Shown only when the pane is wide.
+    wide: bool,
 }
 
 const COLS: [Col; 7] = [
-    Col { key: "id", label: "ID", width: Some(64.0), tree: false, desc_first: false, ungrouped: false },
-    Col { key: "title", label: "Title", width: None, tree: true, desc_first: false, ungrouped: false },
-    Col { key: "type", label: "Type", width: Some(64.0), tree: false, desc_first: false, ungrouped: false },
-    Col { key: "unlocks", label: "Unlocks", width: Some(60.0), tree: false, desc_first: true, ungrouped: false },
-    Col { key: "status", label: "Status", width: Some(96.0), tree: false, desc_first: false, ungrouped: true },
-    Col { key: "pri", label: "Priority", width: Some(56.0), tree: false, desc_first: false, ungrouped: false },
-    Col { key: "updated", label: "Updated", width: Some(64.0), tree: false, desc_first: true, ungrouped: false },
+    Col { key: "id", label: "ID", width: Some(56.0), tree: false, desc_first: false, ungrouped: false, wide: true },
+    Col { key: "title", label: "Title", width: None, tree: true, desc_first: false, ungrouped: false, wide: false },
+    Col { key: "type", label: "Type", width: Some(56.0), tree: false, desc_first: false, ungrouped: false, wide: true },
+    Col { key: "unlocks", label: "Unlocks", width: Some(28.0), tree: false, desc_first: true, ungrouped: false, wide: true },
+    Col { key: "status", label: "Status", width: Some(84.0), tree: false, desc_first: false, ungrouped: true, wide: false },
+    Col { key: "pri", label: "Priority", width: Some(24.0), tree: false, desc_first: false, ungrouped: false, wide: false },
+    Col { key: "updated", label: "Updated", width: Some(30.0), tree: false, desc_first: true, ungrouped: false, wide: true },
 ];
 
 struct Ui {
@@ -611,20 +613,28 @@ fn row_json(ix: &Ix, ui: &Ui, r: &RowOut, cols: &[&Col]) -> Value {
     let k = kind_of(b);
     let cells: Vec<Value> = cols
         .iter()
-        .map(|c| match c.key {
-            "id" => cell(ix.short(&b.id), json!({ "mono": true, "tone": "muted" })),
-            "title" => cell(&b.title, json!({})),
-            "type" => cell(&b.kind, json!({ "tone": "muted" })),
-            "unlocks" => {
-                let n = ix.unlocked(b).iter().filter(|u| is_open(u)).count();
-                cell(if n > 0 { n.to_string() } else { String::new() }, json!({ "tone": "muted" }))
-            }
-            "status" => cell(k, json!({ "dot": true, "tone": tone_of(k) })),
-            "pri" => cell(
-                b.priority.map(|p| format!("P{p}")).unwrap_or_default(),
-                json!({ "tone": if b.priority.is_some_and(|p| p <= 1) { "bad" } else { "muted" } }),
-            ),
-            _ => cell(ago(&b.updated), json!({ "tone": "muted" })),
+        .map(|c| {
+            let mut v = match c.key {
+                "id" => cell(ix.short(&b.id), json!({ "mono": true, "tone": "muted" })),
+                "title" => cell(&b.title, json!({})),
+                "type" => cell(&b.kind, json!({ "tone": "muted" })),
+                "unlocks" => {
+                    let n = ix.unlocked(b).iter().filter(|u| is_open(u)).count();
+                    cell(if n > 0 { n.to_string() } else { String::new() }, json!({ "tone": "muted" }))
+                }
+                "status" => cell(k, json!({ "chip": true, "tone": tone_of(k) })),
+                "pri" => cell(
+                    b.priority.map(|p| format!("P{p}")).unwrap_or_default(),
+                    match b.priority {
+                        Some(p) if p <= 1 => json!({ "mono": true, "tone": "bad" }),
+                        Some(p) if p >= 3 => json!({ "mono": true, "tone": "muted" }),
+                        _ => json!({ "mono": true }),
+                    },
+                ),
+                _ => cell(ago(&b.updated), json!({ "tone": "muted" })),
+            };
+            v["key"] = json!(c.key);
+            v
         })
         .collect();
     json!({ "id": b.id, "path": r.path, "depth": r.depth, "kids": r.kids,
@@ -663,7 +673,7 @@ fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
     let columns: Vec<Value> = cols
         .iter()
         .map(|c| json!({ "key": c.key, "label": c.label, "width": c.width, "tree": c.tree && !grouped,
-            "sortable": !ui.custom() }))
+            "wide": c.wide }))
         .collect();
     let v = json!({ "component": "BeadTable", "columns": columns,
         "sort": { "key": ui.sort.0, "asc": ui.sort.1 }, "sections": sections,
@@ -801,11 +811,12 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
         .filter(|s| wants(s, b))
         .map(|s| p.pill(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({})))
         .collect();
+    let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
+    let mut parts = vec![body];
     if !acts.is_empty() {
-        c.push(p.boxed("d.acts", "h", acts, json!({ "spacing": 6, "padding": [12, 0, 0, 0] })));
+        parts.push(p.boxed("d.acts", "h", acts, json!({ "wrap": true, "spacing": 8, "rowSpacing": 6 })));
     }
-    let body = p.boxed("d.body", "v", c, json!({ "spacing": 8, "align": "start" }));
-    p.put(json!({ "id": "detail", "component": "Sheet", "presented": true, "action": "close_detail", "children": [body] }));
+    p.put(json!({ "id": "detail", "component": "Sheet", "presented": true, "action": "close_detail", "children": parts }));
     Some("detail".into())
 }
 
@@ -818,7 +829,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
     let name = if snap.has_repo { format!("Beads · {}", snap.name) } else { "Beads".into() };
     let t = p.runs("title", json!([{ "text": name, "size": 20, "weight": "bold" }]), json!({}));
     let sub = p.label("sub", &format!("{} beads, not counting epics and milestones", all.len()), json!({ "size": 12, "tone": "muted" }));
-    page.push(p.boxed("head", "v", vec![t, sub], json!({ "spacing": 2 })));
+    page.push(p.boxed("head", "h", vec![t, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 12, 0] })));
 
     let n = |f: &dyn Fn(&Bead) -> bool| all.iter().filter(|b| f(b)).count();
     let kpis = [
@@ -836,7 +847,8 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
             format!("kpi{i}")
         })
         .collect();
-    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "padding": [14, 0, 0, 0], "widths": ["flex", "flex", "flex", "flex"] })));
+    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 0, "dividers": true, "border": "line", "fill": "card", "radius": 10,
+        "widths": ["flex", "flex", "flex", "flex"] })));
 
     for (i, pr) in snap.problems.iter().chain(snap.error.iter()).enumerate() {
         let l = p.label(&format!("problem{i}.t"), pr, json!({ "tone": "bad" }));
@@ -846,54 +858,57 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
     if !snap.has_repo {
         page.push(p.label("none", "This space has no .beads directory, so there is nothing to list.", json!({ "tone": "muted" })));
     } else {
-        // toolbar: search and views, then the filters, Hide done, sort, Clear and the count
+        // toolbar: one wrapping row. Search takes what its line has left, the menus keep one width, Clear and the count keep their room.
         p.put(json!({ "id": "search", "component": "SearchField", "value": ui.q, "action": "set_query", "placeholder": "Search" }));
         p.put(json!({ "id": "views", "component": "Segmented", "selected": ui.view, "action": "set_view",
             "options": [
                 { "value": "list", "text": "List" }, { "value": "epics", "text": "Epics" },
                 { "value": "deps", "text": "Depends on" }, { "value": "unlocks", "text": "Unlocks" },
                 { "value": "focus", "text": "Focus" }, { "value": "graph", "text": "Graph" }] }));
-        page.push(p.boxed("tools1", "h", vec!["search".into(), "views".into()], json!({ "spacing": 10, "padding": [14, 0, 0, 0], "widths": ["flex", Value::Null], "align": "center" })));
-
         let uniq = |f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<(String, String)> {
             let s: BTreeSet<String> = snap.beads.iter().flat_map(f).collect();
             s.into_iter().map(|v| (v.clone(), v)).collect()
         };
         let sel = |p: &mut Page, key: &str, first: &str, values: Vec<(String, String)>| -> String {
-            p.put(json!({ "id": format!("f.{key}"), "component": "Select", "key": key, "action": "set_filter",
+            p.put(json!({ "id": format!("f.{key}"), "component": "Select", "key": key, "action": "set_filter", "width": 140,
                 "options": opts(first, values), "selected": ui.filter(key) }));
             format!("f.{key}")
         };
-        let mut row2 = vec![
+        let mut row = vec![
+            "search".to_string(),
+            "views".to_string(),
             sel(&mut p, "status", "Any status", KINDS.iter().map(|k| (k.to_string(), k.to_string())).collect()),
             sel(&mut p, "type", "Any type", uniq(&|b| vec![b.kind.clone()])),
             sel(&mut p, "label", "Any label", uniq(&|b| b.labels.clone())),
             sel(&mut p, "pri", "Any priority", (0..5).map(|i| (i.to_string(), format!("P{i}"))).collect()),
         ];
         p.put(json!({ "id": "hide", "component": "Check", "text": "Hide done", "value": ui.hide, "action": "set_hide" }));
-        row2.push("hide".into());
+        row.push("hide".into());
         let sorts: Vec<Value> =
             COLS.iter().map(|c| json!({ "value": c.key, "text": format!("Sort: {}", c.label) })).collect();
-        p.put(json!({ "id": "sort", "component": "Select", "key": "sort", "action": "set_sort", "options": sorts,
+        p.put(json!({ "id": "sort", "component": "Select", "key": "sort", "action": "set_sort", "options": sorts, "width": 136,
             "selected": ui.sort.0, "disabled": ui.custom() }));
-        row2.push("sort".into());
+        row.push("sort".into());
         let dirty = !ui.q.is_empty() || ui.f.values().any(|v| !v.is_empty());
-        row2.push(p.pill("clear", "Clear", "clear", json!({}), json!({ "disabled": !dirty })));
+        row.push(p.pill("clear", "Clear", "clear", json!({}), json!({ "disabled": !dirty, "hideOff": true })));
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
-        row2.push(p.label("count", &count, json!({ "tone": "muted", "size": 12 })));
-        page.push(p.boxed("tools2", "h", row2, json!({ "spacing": 8, "padding": [8, 0, 0, 0], "align": "center", "trailing": 1 })));
+        row.push(p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" })));
+        let mut widths: Vec<Value> = vec![json!("flex")];
+        widths.extend((1..row.len() - 1).map(|_| Value::Null));
+        widths.push(json!(96));
+        page.push(p.boxed("tools", "h", row, json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": widths, "trailing": 1 })));
 
         if ui.custom() {
             let mut g = graph::Model::new(snap, ui).component(ui);
             g["id"] = json!("graph");
             p.put(g);
-            page.push(p.boxed("graph.b", "v", vec!["graph".into()], json!({ "padding": [10, 0, 0, 0] })));
+            page.push(p.boxed("graph.b", "v", vec!["graph".into()], json!({ "padding": [0, 0, 0, 0] })));
         } else {
             let mut t = tbl;
             t["id"] = json!("table");
             p.put(t);
-            page.push(p.boxed("table.b", "v", vec!["table".into()], json!({ "padding": [10, 0, 0, 0] })));
+            page.push(p.boxed("table.b", "v", vec!["table".into()], json!({})));
         }
         if let Some(d) = ui.detail.as_deref() {
             if let Some(id) = detail(&mut p, &ix, ui, d) {
@@ -901,7 +916,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
             }
         }
     }
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [0, 0, 48, 0], "children": page }));
+    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
     p.out
 }
 
@@ -984,5 +999,20 @@ mod tests {
             let c = page_components(&s, &ui);
             assert!(c.iter().any(|x| x["id"] == "page"), "{v}");
         }
+    }
+
+    #[test]
+    fn the_toolbar_is_one_wrapping_row_and_a_row_names_its_columns() {
+        let s = snap(vec![bead("a", |_| {})]);
+        let c = page_components(&s, &Ui::default());
+        let tools = c.iter().find(|x| x["id"] == "tools").expect("one toolbar");
+        assert_eq!(tools["wrap"], true);
+        assert_eq!(tools["children"].as_array().unwrap().len(), 10);
+        let table = c.iter().find(|x| x["id"] == "table").expect("the table");
+        let first = &table["sections"][0]["rows"][0];
+        let keys: Vec<&str> = first["cells"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap()).collect();
+        assert_eq!(keys, ["id", "title", "type", "unlocks", "pri", "updated"]);
+        let wide: Vec<&str> = table["columns"].as_array().unwrap().iter().filter(|x| x["wide"] == true).map(|x| x["key"].as_str().unwrap()).collect();
+        assert_eq!(wide, ["id", "type", "unlocks", "updated"]);
     }
 }
