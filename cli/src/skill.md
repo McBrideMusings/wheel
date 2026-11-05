@@ -115,7 +115,7 @@ made with `--ends-with-agent` or `--expires 2h` deletes itself; without them it 
 ```markdown
 # Per-agent status dots
 
-Plain paragraphs. **bold** and `code` only.
+Plain paragraphs. **bold**, `code`, [links](https://example.com), [a file in the post](notes.pdf) and ![an image](shot.png) mid-sentence.
 
 ![A, six agents, dark](dots-a.png)
 
@@ -132,8 +132,11 @@ Cost: what it costs
 Answer 1A, or type go to take every pick.
 ```
 
-An image path is a file beside `index.md` (or below it); `wheel artifact new` copies each one into
-the post and stops with the file name if one is missing. A markdown file with no `##` question
+An image path is a file beside `index.md` (or below it), on its own line or in the middle of a
+sentence; `wheel artifact new` copies each one into the post and stops with the file name if one is
+missing. A link to a file beside `index.md` is copied too and opens from the post; an `http(s)`
+link, or a bare `http(s)` address, opens in the default browser. Other schemes and paths outside
+the folder are not links. A markdown file with no `##` question
 headings is a plain information page. A click on any image opens a spotlight (click again to zoom,
 drag to pan, Esc to close, arrow keys step between images).
 

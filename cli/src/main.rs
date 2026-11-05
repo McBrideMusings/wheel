@@ -3078,8 +3078,8 @@ async fn artifact_new(
 }
 
 /// What a post holds: each file given, under its own name, and for a markdown file every local
-/// image it points at (`![alt](path)`), under the path the markdown writes it with, so the
-/// copied post reads as the original did.
+/// image it shows (`![alt](path)`) and every file it links (`[text](path)`), under the path the
+/// markdown writes it with, so the copied post reads as the original did.
 fn post_files(files: Vec<PathBuf>) -> Result<Vec<wheel_proto::PostFile>, Fail> {
     let mut out: Vec<wheel_proto::PostFile> = Vec::new();
     let mut add = |name: String, from: PathBuf| -> Result<(), Fail> {
@@ -3115,9 +3115,14 @@ fn post_files(files: Vec<PathBuf>) -> Result<Vec<wheel_proto::PostFile>, Fail> {
             let text = std::fs::read_to_string(&file)
                 .map_err(|e| Fail::Other(format!("{}: {e}", file.display())))?;
             let dir = file.parent().map(PathBuf::from).unwrap_or_default();
-            for reference in markdown_images(&text) {
+            for (reference, image) in markdown_references(&text) {
                 let from = dir.join(&reference);
                 if !from.is_file() {
+                    // A missing image is a broken page; a link to something that is not a file
+                    // here (a page elsewhere, a folder) is left as written.
+                    if !image {
+                        continue;
+                    }
                     return Err(Fail::Other(format!(
                         "{} points at {reference}, which is not a file ({})",
                         file.display(),
@@ -3132,12 +3137,12 @@ fn post_files(files: Vec<PathBuf>) -> Result<Vec<wheel_proto::PostFile>, Fail> {
     Ok(out)
 }
 
-/// The local files a markdown text shows as images: the target of each line that is only
-/// `![alt](target)` (the page draws no other image), outside a fenced code block, less a quoted
-/// title, a `?query` and a `#fragment` and a leading `./`; a URL, an absolute path and anything
-/// with `..` is skipped.
-fn markdown_images(text: &str) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
+/// The local files a markdown text points at, each with whether it is shown as an image
+/// (`![alt](target)`) or linked (`[text](target)`), anywhere in a line outside a fenced code block
+/// or an inline code span. A target is less a quoted title, a `?query`, a `#fragment` and a leading
+/// `./`; a URL, a `mailto:`-style address, an absolute path and anything with `..` is skipped.
+fn markdown_references(text: &str) -> Vec<(String, bool)> {
+    let mut found: Vec<(String, bool)> = Vec::new();
     let mut fenced = false;
     for line in text.lines() {
         let line = line.trim();
@@ -3145,39 +3150,76 @@ fn markdown_images(text: &str) -> Vec<String> {
             fenced = !fenced;
             continue;
         }
-        let Some(inner) = line
-            .strip_prefix("![")
-            .and_then(|rest| rest.split_once("]("))
-            .and_then(|(alt, rest)| (!alt.contains(']')).then_some(rest))
-            .and_then(|rest| rest.strip_suffix(')'))
-        else {
-            continue;
-        };
         if fenced {
             continue;
         }
-        let mut target = inner.trim();
-        for quote in ['"', '\''] {
-            if let Some(at) = target.find(&format!(" {quote}")) {
-                if target.ends_with(quote) {
-                    target = target[..at].trim_end();
+        let prose = line
+            .split('`')
+            .step_by(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut from = 0;
+        while let Some(at) = prose[from..].find("](") {
+            let close = from + at;
+            let rest = &prose[close + 2..];
+            let Some(end) = rest.find(')') else { break };
+            from = close + 2 + end + 1;
+            let Some(open) = label_start(&prose[..close]) else { continue };
+            let image = prose[..open].ends_with('!');
+            let Some(target) = local_target(&rest[..end]) else { continue };
+            if !found.iter().any(|(f, _)| *f == target) {
+                found.push((target, image));
+            } else if image {
+                for entry in found.iter_mut().filter(|(f, _)| *f == target) {
+                    entry.1 = true;
                 }
             }
         }
-        let mut target = target.split(['?', '#']).next().unwrap_or("");
-        while let Some(rest) = target.strip_prefix("./") {
-            target = rest;
-        }
-        let local = !target.is_empty()
-            && !target.contains("://")
-            && !target.starts_with('/')
-            && !target.starts_with("data:")
-            && !target.split('/').any(|part| part == "..");
-        if local && !found.iter().any(|f| f == target) {
-            found.push(target.to_string());
-        }
     }
     found
+}
+
+/// Where the `[` that opens the label ending at the end of `before` is, skipping any `[...]` pair
+/// inside the label (an image used as the link's text).
+fn label_start(before: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (at, c) in before.char_indices().rev() {
+        match c {
+            ']' => depth += 1,
+            '[' if depth == 0 => return Some(at),
+            '[' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The file a markdown target names in the post's folder, or None for a URL, an address with a
+/// scheme, an absolute path, a `..` path or a bare `#fragment`.
+fn local_target(inner: &str) -> Option<String> {
+    let mut target = inner.trim();
+    for quote in ['"', '\''] {
+        if let Some(at) = target.find(&format!(" {quote}")) {
+            if target.ends_with(quote) {
+                target = target[..at].trim_end();
+            }
+        }
+    }
+    let mut target = target.split(['?', '#']).next().unwrap_or("");
+    while let Some(rest) = target.strip_prefix("./") {
+        target = rest;
+    }
+    let scheme = target.split_once(':').is_some_and(|(head, _)| {
+        head.starts_with(|c: char| c.is_ascii_alphabetic())
+            && head
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    });
+    let local = !target.is_empty()
+        && !scheme
+        && !target.starts_with('/')
+        && !target.split('/').any(|part| part == "..");
+    local.then(|| target.to_string())
 }
 
 /// A path to send the daemon as it was written, made absolute — a relative one means this
@@ -5659,5 +5701,40 @@ async fn main() -> ExitCode {
             eprintln!("wheel: {fail}");
             ExitCode::from(fail.code())
         }
+    }
+}
+
+#[cfg(test)]
+mod markdown_reference_tests {
+    use super::markdown_references;
+
+    #[test]
+    fn finds_images_and_links_anywhere_in_a_line() {
+        let text = "Plain ![a](one.png) mid-line and [doc](notes/r.pdf?x=1#p) too.\n\
+                    ![](./two.png \"title\")\n\
+                    [site](https://e.com/x.png) [mail](mailto:a@b.c) [up](../x.md) [abs](/etc/p) [top](#top)\n\
+                    `![code](skip.png)` is code\n```\n![fenced](skip2.png)\n```\n";
+        assert_eq!(
+            markdown_references(text),
+            vec![
+                ("one.png".to_string(), true),
+                ("notes/r.pdf".to_string(), false),
+                ("two.png".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_image_inside_a_link_is_an_image_and_the_link_target_is_a_link() {
+        assert_eq!(
+            markdown_references("[![a](b.png)](c.pdf)"),
+            vec![("b.png".to_string(), true), ("c.pdf".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn an_image_and_a_link_to_one_file_count_as_an_image() {
+        let text = "[big](p.png) then ![small](p.png)";
+        assert_eq!(markdown_references(text), vec![("p.png".to_string(), true)]);
     }
 }
