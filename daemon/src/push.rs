@@ -436,8 +436,8 @@ pub(crate) fn follow(state: Arc<AppState>) {
                     status,
                     ..
                 }) => {
-                    let old = match status {
-                        Some(new) => statuses.insert(pane.clone(), new),
+                    let old = match &status {
+                        Some(new) => statuses.insert(pane.clone(), new.clone()),
                         None => statuses.remove(&pane),
                     };
                     let Some(new) = status else { continue };
