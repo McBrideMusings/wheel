@@ -49,7 +49,8 @@ plutil -create xml1 "$AGENT"
 plutil -insert Label -string "$LABEL" "$AGENT"
 plutil -insert BundleProgram -string "Contents/Helpers/$SERVER_NAME.app/Contents/MacOS/wheeld" "$AGENT"
 plutil -insert ProgramArguments -json "[\"wheeld\",\"--instance\",\"$INSTANCE\",\"--listen\",\"$LISTEN\",\"--path-from-login-shell\"]" "$AGENT"
-plutil -insert AssociatedBundleIdentifiers -json "[\"$PRODUCT_BUNDLE_IDENTIFIER\"]" "$AGENT"
+# No AssociatedBundleIdentifiers: that key makes macOS file the server's folder access under the Wheel app, so a prompt
+# and the Privacy & Security row would name Wheel; the server is its own bundle and answers for itself.
 plutil -insert RunAtLoad -bool true "$AGENT"
 plutil -insert KeepAlive -bool true "$AGENT"
 
