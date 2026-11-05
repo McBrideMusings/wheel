@@ -157,6 +157,19 @@ func canvasFocusCamera(_ rect: CGRect, zoom z: Double, bounds: CGRect, in size: 
     return CanvasCamera(x: axis(rect.midX, size.width, bounds.minX, bounds.maxX), y: axis(rect.midY, size.height, bounds.minY, bounds.maxY), s: z, auto: false)
 }
 
+/// Cut labels by (text, limit, size, weight): a pan changes no label's limit, so a frame re-measures nothing it has cut before.
+final class CanvasCutCache {
+    private var store: [String: String] = [:]
+    func cut(_ text: String, limit: Double, size: Double, weight: String, mono: Bool, _ make: (Double) -> String) -> String {
+        let key = "\(text)|\(Int(limit.rounded()))|\(size)|\(weight)|\(mono)"
+        if let hit = store[key] { return hit }
+        if store.count > 20_000 { store.removeAll() }
+        let out = make(limit)
+        store[key] = out
+        return out
+    }
+}
+
 /// A screen size clamped to [min, max] points, or itself with no range.
 func canvasClamp(_ v: Double, _ range: [Double]?) -> Double {
     guard let range, range.count == 2 else { return v }
@@ -254,6 +267,8 @@ private struct CanvasStage: View {
     @State private var lastFit = ""
     @State private var lastMagnify = 1.0
     @State private var reported: Double?
+    @State private var lastTap: CanvasHit?
+    @State private var cuts = CanvasCutCache()
 
     private func fitted(_ rect: CGRect, in size: CGSize) -> CanvasCamera {
         guard size.width > 0, size.height > 0, rect.width > 0, rect.height > 0 else { return CanvasCamera() }
@@ -336,7 +351,7 @@ private struct CanvasStage: View {
                     func text(_ s: String) -> Text { Text(s).font(.system(size: size, weight: weight, design: st.mono ? .monospaced : .default)).foregroundColor(color.opacity(st.opacity)) }
                     var shown = s
                     if let maxw = st.maxw {
-                        shown = canvasCut(s, limit: maxw * c.s) { ctx.resolve(text($0)).measure(in: CGSize(width: 10_000, height: 100)).width }
+                        shown = cuts.cut(s, limit: maxw * c.s, size: size, weight: st.weight, mono: st.mono) { limit in canvasCut(s, limit: limit) { ctx.resolve(text($0)).measure(in: CGSize(width: 10_000, height: 100)).width } }
                     }
                     ctx.draw(text(shown), at: CGPoint(x: max(x * c.s + c.x, st.minx ?? -.infinity), y: y * c.s + c.y), anchor: anchor)
                 }
@@ -367,7 +382,7 @@ private struct CanvasStage: View {
         return out
     }
 
-    private func activate(_ h: CanvasHit, _ start: CanvasCamera, in size: CGSize) {
+    private func activate(_ h: CanvasHit, in size: CGSize) {
         if let f = h.fit { cam = fitted(f, in: size); return }
         guard !h.action.isEmpty else { return }
         var ctxt = h.context
@@ -397,14 +412,14 @@ private struct CanvasStage: View {
                                 defer { dragFrom = nil }
                                 guard !dragMoved, let start = dragFrom else { return }
                                 if let h = hit(at: v.location, start) {
-                                    activate(h, start, in: geo.size)
+                                    activate(h, in: geo.size); lastTap = h
                                 } else if !scene.emptyAction.isEmpty {
                                     fire(scene.emptyAction, scene.emptyContext)
                                 }
                             }
                     )
                     .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { v in
-                        if let h = hit(at: v.location, c), !h.doubleAction.isEmpty {
+                        if let h = lastTap, !h.doubleAction.isEmpty {
                             var ctxt = h.doubleContext
                             ctxt["id"] = .string(h.id)
                             fire(h.doubleAction, ctxt)
@@ -432,7 +447,7 @@ private struct CanvasStage: View {
                     .accessibilityChildren {
                         ForEach(Array(labelled(c).enumerated()), id: \.offset) { _, h in
                             Rectangle().accessibilityLabel(h.label).accessibilityAddTraits(.isButton)
-                                .accessibilityAction { activate(h, c, in: geo.size) }
+                                .accessibilityAction { activate(h, in: geo.size) }
                         }
                     }
                 if let p = hover, dragFrom == nil, let h = hit(at: p, c), !h.tip.isEmpty { tooltip(h, p, geo.size) }

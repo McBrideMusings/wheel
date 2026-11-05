@@ -758,6 +758,7 @@ impl<'a> Model<'a> {
                     )
                 }
             }
+            None if ea.len() > 3500 => format!("{base} Dependency lines are hidden above 3500; select a bead to see its own."),
             None => base,
         };
         let filtered = self.ok.iter().any(|o| !o);
