@@ -1,6 +1,6 @@
 # Deploy — wheel
 
-Two layers run separately (ADR-0020): the **client** (`/Applications/Wheel.app`, with the `wheel` command in `Contents/Helpers`) and the **server** (the running `wheeld`, which ships as the nested bundle `Contents/Helpers/Wheel Server.app`; macOS lists it in Privacy & Security as Wheel Server with its Desktop, Documents, Downloads and network-volume switches). A client deploy installs a new `wheeld` binary but never runs it; a server restart ends every terminal and agent session, so it waits for the person's yes. Never `pkill` Wheel, and never start a deploy before the change has landed on origin/main.
+Two layers run separately (ADR-0020): the **client** (`/Applications/Wheel.app`, with the `wheel` command in `Contents/Helpers`) and the **server** (the running `wheeld`, which ships as `Contents/Helpers/Wheel Server.wheelserver`, is copied by the app at launch to `~/Library/Application Support/Wheel/Server/Versions/<source hash>/Wheel Server.app` and runs from there as its own launch agent; macOS lists it in Privacy & Security as Wheel Server with its Desktop, Documents, Downloads and network-volume switches). A client deploy copies the new `wheeld` there but never runs it; a server restart ends every terminal and agent session, so it waits for the person's yes. Never `pkill` Wheel, and never start a deploy before the change has landed on origin/main.
 
 ## What a landed change needs
 
@@ -17,7 +17,7 @@ Two layers run separately (ADR-0020): the **client** (`/Applications/Wheel.app`,
 ## The order
 
 1. **Client:** `make deploy-client` (runner: `wheel: deploy`). Builds the Release app and swaps `/Applications/Wheel.app`; the running app, its terminals and the agent that ran it stay up until the swap. The new app compares the running `wheeld`'s source hash with the bundled one and offers Restart Server when they differ. Confirm: `pgrep -x Wheel` shows a process started after the install, the `wheeld` pid is unchanged, and `~/Library/Logs/wheel/WheelMac.log` ends `different; restart offered` (or `same; nothing to offer`).
-2. **Server, only when step 1 left it `different` and the person said yes:** `make restart-server`. It ends every terminal and agent; the person decides when. Confirm `~/Library/Logs/wheel/restart-server.log` shows an old and a new pid, and the app log says `same`.
+2. **Server, only when step 1 left it `different` and the person said yes:** `make restart-server` (it runs the installed app's `Resources/wheel-server.sh restart`: Current moves to the new version, the agent restarts). It ends every terminal and agent; the person decides when. Confirm `~/Library/Logs/wheel/restart-server.log` shows an old and a new pid, and the app log says `same`.
 3. **Built-in artifacts, after step 2:** `wheel artifact builtin update <name>` for each changed `artifacts/<built-in>/`, since built-ins are compiled into `wheeld` and installed as copies in `~/.wheel/artifacts/`.
 4. **Phone, last:** `make deploy-phone` (needs `WHEEL_IOS_DEVICE`).
 

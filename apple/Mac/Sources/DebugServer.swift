@@ -2417,7 +2417,7 @@ final class DebugServer {
             "folder_access": s.hostAccess.map { host in
                 [
                     "exe": host.exe,
-                    "folders": host.folders.map { ["path": $0.path, "allowed": $0.allowed, "error": $0.error ?? NSNull()] as [String: Any] },
+                    "folders": host.folders.map { ["path": $0.path, "allowed": $0.allowed, "waiting": $0.waiting, "error": $0.error ?? NSNull()] as [String: Any] },
                     "title": FolderAccessSettings.title(host),
                 ] as [String: Any]
             } ?? NSNull(),

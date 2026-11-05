@@ -2,8 +2,9 @@ import Foundation
 import ServiceManagement
 
 /// The wheeld this app carries (`Mac/embed-wheeld.sh` puts it in the bundle): which daemon instance
-/// it is, where it listens, and the launch agent that runs it. The app registers that agent with
-/// SMAppService, so installing the app installs its daemon and deleting the app removes it.
+/// it is, where it listens, and the launch agent that runs it. The app copies the server out of
+/// its bundle and loads that agent itself (`Mac/wheel-server.sh`), so macOS sees Wheel Server as
+/// its own program and not as part of Wheel.
 @MainActor
 final class DaemonService {
     let label: String
@@ -46,87 +47,71 @@ final class DaemonService {
             .appending(path: "Library/Application Support/\(instance)/token")
     }
 
-    var agent: SMAppService { .agent(plistName: "\(label).plist") }
+    /// The script that copies the bundled server out of the app and runs it as its own launch
+    /// agent (`Mac/wheel-server.sh`). The same script serves `tools/restart-server.sh`.
+    private var script: URL? { Bundle.main.url(forResource: "wheel-server", withExtension: "sh") }
 
-    /// The bundled launch agent's bytes, as registered last. launchd keeps the definition it was
-    /// given at registration, so a deploy that changes the agent (its port, its arguments) must
-    /// register it again. One that only rebuilds wheeld leaves the running daemon alone: the app
-    /// offers a restart when the bundled source differs (ADR-0020).
-    private var agentPlist: Data? {
-        try? Data(contentsOf: Bundle.main.bundleURL.appending(path: "Contents/Library/LaunchAgents/\(label).plist"))
-    }
-    private var registeredKey: String { "registeredAgent.\(label)" }
-
-    /// Whether launchd holds a job for the agent now (`launchctl print` exits 0).
-    private var loaded: Bool {
-        let print = Process()
-        print.executableURL = URL(filePath: "/bin/launchctl")
-        print.arguments = ["print", "gui/\(getuid())/\(label)"]
-        print.standardOutput = FileHandle.nullDevice
-        print.standardError = FileHandle.nullDevice
-        guard (try? print.run()) != nil else { return true }
-        print.waitUntilExit()
-        return print.terminationStatus == 0
-    }
-
-    /// Register the agent unless macOS already runs this definition of it. A person who switched
-    /// it off in Login Items is sent there, since only they can switch it back on.
-    func register() {
-        let current = agentPlist
-        // `launchctl bootout` leaves the agent enabled in Login Items with no job in launchd, so
-        // nothing starts the daemon until the agent is registered again.
-        let why = current != UserDefaults.standard.data(forKey: registeredKey) ? "its launch agent changed"
-            : !loaded ? "launchd has no job for it" : nil
-        if agent.status == .enabled, let why {
-            do {
-                try agent.unregister()
-                Log.info("daemon \(label): \(why); registering it again")
-            } catch {
-                Log.info("daemon \(label): unregister failed: \(error.localizedDescription)")
-            }
-        }
-        defer {
-            if agent.status == .enabled { UserDefaults.standard.set(current, forKey: registeredKey) }
-        }
-        switch agent.status {
-        case .enabled:
-            status = "enabled"
-        case .requiresApproval:
-            status = "waiting for approval in System Settings > General > Login Items"
-            SMAppService.openSystemSettingsLoginItems()
-        case .notRegistered, .notFound:
-            do {
-                try agent.register()
-                status = agent.status == .enabled ? "registered" : "registered; status \(agent.status.rawValue)"
-            } catch {
-                status = "register failed: \(error.localizedDescription)"
-            }
-        @unknown default:
-            status = "unknown status \(agent.status.rawValue)"
-        }
-        Log.info("daemon \(label) (\(instance) on \(listen)): \(status)")
-    }
-
-    /// Restart the daemon from this bundle: launchd ends the running wheeld and starts the program
-    /// the agent names. It ends every terminal and agent, so only the person asks for it.
-    func restart() async -> String? {
-        let label = label
-        let failure: String? = await withCheckedContinuation { continuation in
+    /// Runs one verb of the script off the main thread; returns its output, or the failure.
+    private func run(_ verb: String) async -> (ok: Bool, line: String) {
+        guard let script else { return (false, "wheel-server.sh is not in this app") }
+        return await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
-                let restart = Process()
-                restart.executableURL = URL(filePath: "/bin/launchctl")
-                restart.arguments = ["kickstart", "-k", "gui/\(getuid())/\(label)"]
+                let process = Process()
+                process.executableURL = URL(filePath: "/bin/bash")
+                process.arguments = [script.path, verb]
+                let out = Pipe()
+                process.standardOutput = out
+                process.standardError = out
                 do {
-                    try restart.run()
-                    restart.waitUntilExit()
-                    continuation.resume(returning: restart.terminationStatus == 0 ? nil : "launchctl kickstart exited \(restart.terminationStatus)")
+                    try process.run()
+                    let data = out.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                    continuation.resume(returning: (process.terminationStatus == 0, text))
                 } catch {
-                    continuation.resume(returning: error.localizedDescription)
+                    continuation.resume(returning: (false, error.localizedDescription))
                 }
             }
         }
-        status = failure.map { "restart failed: \($0)" } ?? "restarted from the app"
-        Log.info("daemon \(label): \(status)")
-        return failure
+    }
+
+    /// Copy this app's server into Application Support and load its launch agent unless launchd
+    /// already runs one. A running server is never touched: a newer one waits for the owner's
+    /// restart (ADR-0020).
+    func register() async {
+        let result = await run("start")
+        status = result.ok ? result.line.split(separator: "\n").last.map(String.init) ?? "started" : "start failed: \(result.line)"
+        Log.info("daemon \(label) (\(instance) on \(listen)): \(result.line)")
+    }
+
+    /// Run this app's server now: it ends the running wheeld and every terminal and agent, so only
+    /// the person asks for it. A server that an earlier app registered through SMAppService from
+    /// inside its bundle is unregistered first, so its login item does not outlive it.
+    func restart() async -> String? {
+        let legacy = SMAppService.agent(plistName: "\(label).plist")
+        do {
+            try await legacy.unregister()
+            Log.info("daemon \(label): unregistered the login item an earlier app made")
+        } catch {
+            Log.info("daemon \(label): no earlier login item to unregister: \(error.localizedDescription)")
+        }
+        let result = await run("restart")
+        status = result.ok ? "restarted from the app" : "restart failed: \(result.line)"
+        Log.info("daemon \(label): \(result.line)")
+        return result.ok ? nil : result.line
+    }
+
+    /// End the server and keep launchd from loading it again.
+    func stop() async -> String? {
+        let result = await run("stop")
+        status = result.ok ? "stopped from the menu" : "stop failed: \(result.line)"
+        Log.info("daemon \(label): \(result.line)")
+        return result.ok ? nil : result.line
+    }
+
+    /// Load the agent again, which starts the server.
+    func start() async -> String? {
+        await register()
+        return status.hasPrefix("start failed") ? status : nil
     }
 }

@@ -892,12 +892,25 @@ public enum RenderRefusal {
 public struct FolderAccess: Sendable, Equatable, Decodable {
     public var path: String
     public var allowed: Bool
+    /// macOS has not answered yet: a permission prompt for the folder is open.
+    public var waiting: Bool
     public var error: String?
 
-    public init(path: String, allowed: Bool, error: String? = nil) {
+    public init(path: String, allowed: Bool, waiting: Bool = false, error: String? = nil) {
         self.path = path
         self.allowed = allowed
+        self.waiting = waiting
         self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey { case path, allowed, waiting, error }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        allowed = try c.decode(Bool.self, forKey: .allowed)
+        waiting = try c.decodeIfPresent(Bool.self, forKey: .waiting) ?? false
+        error = try c.decodeIfPresent(String.self, forKey: .error)
     }
 }
 

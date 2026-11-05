@@ -4,7 +4,7 @@
 #   install-app.sh dev       Debug build with the .dev bundle id and the AppIconDev icon,
 #                            installed as /Applications/Wheel Dev.app
 # The running app is stopped only for the two renames that swap the bundles, then relaunched.
-# wheeld is left running: its process is `wheeld`, not a path inside the bundle, so the stop
+# wheeld is left running: it runs from a copy in Application Support, outside the bundle, so the stop
 # never reaches it, and the app offers a server restart itself when the bundled one differs
 # (ADR-0020). Output also goes to ~/Library/Logs/wheel/deploy-<variant>.log, which keeps the
 # record when the pane that ran this goes away with the app.

@@ -3245,7 +3245,12 @@ pub struct HostAccess {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FolderAccess {
     pub path: String,
+    /// True only once a look at the folder ended with no denial.
     pub allowed: bool,
+    /// macOS has not answered yet: a permission prompt for the folder is open. `allowed` is false
+    /// and `error` is None meanwhile.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting: bool,
     /// The error when it cannot; None when it can.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

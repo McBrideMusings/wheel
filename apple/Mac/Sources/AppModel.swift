@@ -449,7 +449,7 @@ final class AppModel {
         if let marks = ProcessInfo.processInfo.environment["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
         #endif
         // A server stopped from the menu stays stopped until it is started from there.
-        if serverStoppedByMenu { Log.info("server was stopped from the menu; not starting it") } else { service?.register() }
+        if serverStoppedByMenu { Log.info("server was stopped from the menu; not starting it") } else { Task { await service?.register() } }
         client.start()
         // The daemon reads at most once per its interval however often this asks.
         usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in

@@ -2,7 +2,7 @@
 # § 4 Server header: the status word and dot, the details, Stop Server (asks first), Start Server.
 # The app stops and starts a server it did not install with the commands in WHEEL_SERVER_STOP and
 # WHEEL_SERVER_START; this script gives it commands that signal and start its own wheeld. The
-# launch-agent path (SMAppService unregister and register) is for the server the app carries and
+# launch-agent path (`wheel-server.sh stop` and `start`) is for the server the app carries and
 # is not run here: it would stop the person's own daemon.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"

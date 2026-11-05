@@ -1,11 +1,10 @@
 import Foundation
-import ServiceManagement
 import SwiftUI
 import WheelKit
 
 /// How the app stops and starts the server it talks to. The server the app carries runs as a
-/// launch agent registered through SMAppService: unregistering it stops the process and keeps
-/// launchd from starting it again, registering it brings it back. A server the app did not
+/// launch agent the app loads (`wheel-server.sh`): stopping unloads and disables it, starting
+/// loads it again. A server the app did not
 /// install (`WHEEL_URL` names another one) is stopped and started by the commands in
 /// `WHEEL_SERVER_STOP` and `WHEEL_SERVER_START`, or not at all.
 @MainActor
@@ -23,7 +22,7 @@ struct LaunchAgentControl: ServerControl {
     var unavailable: String? { nil }
 
     func stop() async -> String? { await service.stop() }
-    func start() async -> String? { service.start() }
+    func start() async -> String? { await service.start() }
     func restart() async -> String? { await service.restart() }
 }
 
@@ -59,27 +58,6 @@ struct CommandControl: ServerControl {
     func restart() async -> String? {
         if let failure = await stop() { return failure }
         return await start()
-    }
-}
-
-extension DaemonService {
-    /// End the server and stop launchd restarting it: the agent is unregistered, not killed.
-    func stop() async -> String? {
-        do {
-            try await agent.unregister()
-            status = "stopped from the menu"
-            Log.info("daemon \(label): unregistered; launchd no longer keeps it running")
-            return nil
-        } catch {
-            Log.info("daemon \(label): stop failed: \(error.localizedDescription)")
-            return error.localizedDescription
-        }
-    }
-
-    /// Register the agent again, which starts the server.
-    func start() -> String? {
-        register()
-        return status.hasPrefix("register failed") || status.hasPrefix("waiting for approval") ? status : nil
     }
 }
 

@@ -13,16 +13,21 @@ struct FolderAccessSettings: View {
     var restart: (() -> Void)?
 
     static func title(_ host: HostAccess) -> String {
-        let denied = host.folders.filter { !$0.allowed }
+        let denied = host.folders.filter { !$0.allowed && !$0.waiting }
+        let waiting = host.folders.filter(\.waiting)
+        if denied.isEmpty, !waiting.isEmpty {
+            let names = waiting.map { URL(filePath: $0.path).lastPathComponent }.joined(separator: ", ")
+            return "Wheel Server is waiting for your answer to the macOS prompt for \(names)."
+        }
         if denied.isEmpty { return "Wheel Server can open Downloads, Desktop and Documents." }
         let names = denied.map { URL(filePath: $0.path).lastPathComponent }.joined(separator: ", ")
         return "Wheel Server cannot open \(names)."
     }
 
-    private var denied: Bool { host?.folders.contains { !$0.allowed } ?? false }
+    private var denied: Bool { host?.folders.contains { !$0.allowed && !$0.waiting } ?? false }
 
     private var restartCommand: String {
-        "launchctl kickstart -k gui/\(getuid())/\(DaemonService.bundled()?.label ?? "<daemon label>")"
+        "\(Bundle.main.bundlePath)/Contents/Resources/wheel-server.sh restart"
     }
 
     var body: some View {
@@ -33,7 +38,7 @@ struct FolderAccessSettings: View {
                     ForEach(host.folders, id: \.path) { folder in
                         HStack(spacing: 12) {
                             Text(URL(filePath: folder.path).lastPathComponent).font(ChatFont.body).frame(width: 96, alignment: .leading)
-                            Text(folder.allowed ? "allowed" : "denied").font(ChatFont.body)
+                            Text(folder.allowed ? "allowed" : folder.waiting ? "waiting for permission" : "denied").font(ChatFont.body)
                                 .foregroundStyle(folder.allowed ? Color.green : Color.orange)
                             Spacer()
                         }

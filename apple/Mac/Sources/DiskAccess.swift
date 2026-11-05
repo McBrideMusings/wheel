@@ -15,10 +15,17 @@ extension AppModel {
         return host.folders.allSatisfy(\.allowed)
     }
 
+    /// A permission prompt for a guarded folder is open: the server is waiting for the person's
+    /// answer, which is not a denial.
+    var serverWaitingForPermission: Bool {
+        guard connection == .connected, let host = serverHost else { return false }
+        return host.folders.contains(where: \.waiting)
+    }
+
     /// The screen shows while the server lacks access, until the person closes it; it leaves by
     /// itself when the server can open the folders. A server not connected yet counts as unknown.
     var diskAccessScreenShown: Bool {
-        !diskAccessScreenDismissed && serverDiskAccess == false
+        !diskAccessScreenDismissed && serverDiskAccess == false && !serverWaitingForPermission
     }
 
     func dismissDiskAccessScreen() {

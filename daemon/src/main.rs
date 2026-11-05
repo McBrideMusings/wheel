@@ -36,8 +36,9 @@ struct Args {
     /// Defaults to `spaces.json` in the support directory.
     #[arg(long)]
     state_file: Option<PathBuf>,
-    /// The `wheel` program to link into terminals and agents. Defaults to `Helpers/wheel` in the
-    /// app bundle wheeld sits in; a build run from cargo's target directory names its own.
+    /// The `wheel` program to link into terminals and agents. The app's launch agent names
+    /// `Helpers/wheel` in the app that installed this wheeld; a build run from cargo's target
+    /// directory names its own.
     #[arg(long)]
     cli: Option<PathBuf>,
     /// Read Claude usage from this JSON file instead of the usage endpoint, for checks that need a
@@ -179,7 +180,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     state.set_control(
         format!("ws://{}/ws", listener_addr),
         std::path::absolute(&token_path)?,
-        args.cli.or_else(wheeld::AppState::bundled_cli),
+        args.cli,
     );
     state.log_agents();
     if let Some(listen) = state.remote_listen() {

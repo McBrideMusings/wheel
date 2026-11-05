@@ -376,16 +376,6 @@ impl AppState {
         });
     }
 
-    /// The `wheel` command an app bundle ships: `Contents/Helpers/wheel`, beside the
-    /// `Wheel Server.app` bundle that holds wheeld (`Wheel Server.app/Contents/MacOS/wheeld`). It is
-    /// never looked for in the app's own `MacOS`: the executable there is `Wheel`, and on a volume
-    /// that ignores case the name `wheel` matches it.
-    pub fn bundled_cli() -> Option<PathBuf> {
-        let exe = std::env::current_exe().ok()?;
-        let cli = exe.parent()?.join("../../../wheel");
-        cli.is_file().then_some(cli)
-    }
-
     /// Tell every terminal and agent started from here where to reach this daemon with the `wheel`
     /// command at `cli`, and write the shell integration they start with. Call before restoring a
     /// layout.
@@ -398,10 +388,10 @@ impl AppState {
             }
             Ok(()) if cli.is_none() => {
                 tracing::warn!(
-                    "no wheel command in the app bundle's Helpers and none given with --cli; terminals and agents cannot run it"
+                    "no wheel command given with --cli; terminals and agents cannot run it"
                 );
                 Some(
-                    "no wheel command in the app bundle's Helpers and none given with --cli, so terminals and agents cannot run it"
+                    "no wheel command given with --cli, so terminals and agents cannot run it"
                         .to_string(),
                 )
             }
@@ -794,7 +784,8 @@ impl AppState {
         let agents = tokio::task::spawn_blocking(move || scanner.agent_status(&dirs))
             .await
             .unwrap_or_default();
-        // opendir on a guarded or synced folder can stall; keep it off the async threads.
+        // The reply waits at most 300 ms for a guarded folder that has not answered (host.rs); keep
+        // even that off the async threads.
         let host = tokio::task::spawn_blocking(crate::host::access)
             .await
             .unwrap_or_default();

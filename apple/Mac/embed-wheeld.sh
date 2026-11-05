@@ -1,6 +1,6 @@
 #!/bin/bash
-# Xcode build phase: build wheeld for this configuration and put it inside the app, with the launch
-# agent the app registers through SMAppService and the settings the app reads to reach it.
+# Xcode build phase: build wheeld for this configuration and put it inside the app, with the script
+# that installs and runs it and the settings the app reads to reach it.
 # Release runs the `wheel` instance on 7420; Debug (the dev build) runs `wheel-dev` on 7422 (7421 is the dev app's debug endpoint), so the
 # two apps never share a daemon, a token or a layout. This script is the one place those live.
 set -euo pipefail
@@ -24,12 +24,15 @@ env -i HOME="$HOME" USER="$USER" \
   PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
   cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel $CARGO_FLAGS
 
-# wheeld ships as its own bundle, Wheel Server.app: macOS names that bundle (its Info.plist name,
+# wheeld ships as its own bundle, Wheel Server: macOS names that bundle (its Info.plist name,
 # icon and folder usage strings) in Privacy & Security, and a grant to it is what terminals and
 # agents started by wheeld use. The inner executable is signed first, then the bundle.
-SERVER="$CONTENTS/Helpers/$SERVER_NAME.app"
-rm -rf "$SERVER" "$CONTENTS/MacOS/wheeld"
-mkdir -p "$SERVER/Contents/MacOS" "$SERVER/Contents/Resources" "$CONTENTS/Library/LaunchAgents" "$CONTENTS/Resources"
+# The bundle is called .wheelserver here, not .app, and `Resources/wheel-server.sh` copies it out of
+# Wheel.app to Application Support as Wheel Server.app before it runs: macOS charges a program that
+# runs from inside Wheel.app to Wheel, whatever its own bundle id says.
+SERVER="$CONTENTS/Helpers/$SERVER_NAME.wheelserver"
+rm -rf "$SERVER" "$CONTENTS/Helpers/$SERVER_NAME.app" "$CONTENTS/MacOS/wheeld" "$CONTENTS/Library/LaunchAgents"
+mkdir -p "$SERVER/Contents/MacOS" "$SERVER/Contents/Resources" "$CONTENTS/Resources"
 cp "$REPO/target/$PROFILE/wheeld" "$SERVER/Contents/MacOS/wheeld"
 cp "$SRCROOT/Mac/ServerIcon/ServerIcon.icns" "$SERVER/Contents/Resources/ServerIcon.icns"
 sed -e "s|@BUNDLE_ID@|$BUNDLE_ID|g" -e "s|@NAME@|$SERVER_NAME|g" "$REPO/daemon/Info.plist.in" > "$SERVER/Contents/Info.plist"
@@ -43,16 +46,7 @@ mkdir -p "$CONTENTS/Helpers"
 cp -p "$REPO/target/$PROFILE/wheel" "$CONTENTS/Helpers/wheel"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/Helpers/wheel"
 
-AGENT="$CONTENTS/Library/LaunchAgents/$LABEL.plist"
-rm -f "$AGENT"
-plutil -create xml1 "$AGENT"
-plutil -insert Label -string "$LABEL" "$AGENT"
-plutil -insert BundleProgram -string "Contents/Helpers/$SERVER_NAME.app/Contents/MacOS/wheeld" "$AGENT"
-plutil -insert ProgramArguments -json "[\"wheeld\",\"--instance\",\"$INSTANCE\",\"--listen\",\"$LISTEN\",\"--path-from-login-shell\"]" "$AGENT"
-# No AssociatedBundleIdentifiers: that key makes macOS file the server's folder access under the Wheel app, so a prompt
-# and the Privacy & Security row would name Wheel; the server is its own bundle and answers for itself.
-plutil -insert RunAtLoad -bool true "$AGENT"
-plutil -insert KeepAlive -bool true "$AGENT"
+cp -p "$SRCROOT/Mac/wheel-server.sh" "$CONTENTS/Resources/wheel-server.sh"
 
 INFO="$CONTENTS/Resources/WheelDaemon.plist"
 rm -f "$INFO"
@@ -60,6 +54,7 @@ plutil -create xml1 "$INFO"
 plutil -insert Label -string "$LABEL" "$INFO"
 plutil -insert Instance -string "$INSTANCE" "$INFO"
 plutil -insert Listen -string "$LISTEN" "$INFO"
+plutil -insert ServerName -string "$SERVER_NAME" "$INFO"
 # The source the bundled wheeld was built from: the app compares it with the running wheeld's and
 # offers a restart when they differ; it never restarts the daemon itself (ADR-0020).
 SOURCE="$("$SERVER/Contents/MacOS/wheeld" --source-hash)"

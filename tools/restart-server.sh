@@ -1,15 +1,17 @@
 #!/bin/bash
-# Restart the installed app's wheeld from the bundle its launch agent names. This ends every
-# terminal and agent, the pane that ran this one included, so the restart runs detached
-# and writes what happened to ~/Library/Logs/wheel/restart-server.log.
+# Restart the installed app's wheeld on the version that app carries. The installed app's
+# Resources/wheel-server.sh (the script the app runs itself) copies that version to Application
+# Support, makes it Current and restarts the launch agent. This ends every terminal and agent, the
+# pane that ran this one included, so the restart runs detached and writes what happened to
+# ~/Library/Logs/wheel/restart-server.log.
 #   restart-server.sh release   com.piercemakes.wheel.daemon (Wheel.app)
 #   restart-server.sh dev       com.piercemakes.wheel.dev.daemon (Wheel Dev.app)
 set -euo pipefail
 
 case "${1:-}" in
-  release) LABEL=com.piercemakes.wheel.daemon ;;
-  dev) LABEL=com.piercemakes.wheel.dev.daemon ;;
-  --detached) LABEL="$2" ;;
+  release) LABEL=com.piercemakes.wheel.daemon APP=/Applications/Wheel.app ;;
+  dev) LABEL=com.piercemakes.wheel.dev.daemon APP="/Applications/Wheel Dev.app" ;;
+  --detached) LABEL="$2" APP="$3" ;;
   *) echo "usage: restart-server.sh release|dev" >&2; exit 2 ;;
 esac
 SERVICE="gui/$(id -u)/$LABEL"
@@ -19,9 +21,9 @@ say() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 pid_of() { launchctl print "$SERVICE" 2>/dev/null | awk '$1 == "pid" { print $3; exit }'; }
 
 if [ "${1:-}" != --detached ]; then
-  launchctl print "$SERVICE" >/dev/null 2>&1 || { echo "$LABEL is not loaded; open the app that runs it first" >&2; exit 1; }
+  [ -x "$APP/Contents/Resources/wheel-server.sh" ] || { echo "$APP has no wheel-server.sh; deploy the app first" >&2; exit 1; }
   mkdir -p "$LOG_DIR"
-  nohup bash "$0" --detached "$LABEL" >>"$LOG" 2>&1 </dev/null &
+  nohup bash "$0" --detached "$LABEL" "$APP" >>"$LOG" 2>&1 </dev/null &
   echo "restarting $LABEL (pid $(pid_of)); every terminal and agent ends. Log: $LOG"
   exit 0
 fi
@@ -30,7 +32,7 @@ fi
 sleep 1
 before="$(pid_of)"
 say "restarting $SERVICE (pid ${before:-none})"
-launchctl kickstart -k "$SERVICE"
+"$APP/Contents/Resources/wheel-server.sh" restart
 for _ in $(seq 50); do
   after="$(pid_of)"
   if [ -n "$after" ] && [ "$after" != "$before" ]; then
