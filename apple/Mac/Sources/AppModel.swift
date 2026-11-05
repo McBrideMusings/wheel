@@ -222,9 +222,8 @@ final class AppModel {
     var serverConfirming = false
     /// The server the window's restart banner was closed for (`serverBannerKey`); nil when never.
     var serverBannerDismissed = Prefs.store.string(forKey: "serverBannerDismissed")
-    /// Whether this app can open the folders macOS guards; nil until the first look (DiskAccess.swift).
-    var appDiskAccess: Bool?
-    /// The person closed the Full Disk Access screen; it comes back at the next launch.
+    @ObservationIgnored var settingsFileReqs: [UInt64: SettingLayer] = [:]
+    /// The person closed the folder access screen; it comes back at the next launch.
     var diskAccessScreenDismissed = false
     @ObservationIgnored var diskAccessTask: Task<Void, Never>?
     /// macOS recorded a change to the server's Full Disk Access after the server started, while it
@@ -940,12 +939,16 @@ final class AppModel {
             if openReqs.removeValue(forKey: req) != nil { browserPanes[pane]?.opened(url) }
         case let .ok(req):
             layoutReqs.remove(req)
+            if let layer = settingsFileReqs.removeValue(forKey: req) { settings.openFile(layer) }
             if let space = renameReqs.removeValue(forKey: req) {
                 spaceRenameError[space] = nil
                 if renamingSpace == space { renamingSpace = nil }
                 Log.info("space \(space) renamed")
             }
         case let .error(req, term, message):
+            if let req, let layer = settingsFileReqs.removeValue(forKey: req) {
+                Log.info("settings: the server could not make the \(layer) file: \(message)")
+            }
             if let req, let space = renameReqs.removeValue(forKey: req) {
                 spaceRenameError[space] = message
                 Log.info("space \(space) rename refused: \(message)")
@@ -1785,6 +1788,15 @@ final class AppModel {
         settings.asking(for: settings.project)
         Log.info("settings ls for \(settings.project ?? "no space")")
         client.send(.settingsLs(req: req, space: settings.project))
+    }
+
+    /// The Open button: the server makes the layer's `wheel.toml` when it is absent, then the
+    /// editor opens it. The client holds no files (ADR-0020).
+    func openSettingsFile(_ layer: SettingLayer) {
+        guard connection == .connected else { return }
+        let req = client.req()
+        settingsFileReqs[req] = layer
+        client.send(.settingsFileEnsure(req: req, space: layer == .project ? settings.project : nil, machine: layer == .global))
     }
 
     /// Return in a field: write what was typed into that layer's file, or remove the key from it

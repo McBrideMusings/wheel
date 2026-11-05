@@ -2158,8 +2158,6 @@ final class DebugServer {
                 "banner": model.serverBannerShown,
                 "disk_access": [
                     "screen": model.diskAccessScreenShown,
-                    "app": model.appDiskAccess.map { $0 as Any } ?? NSNull(),
-                    "app_path": AppModel.appPath,
                     "server": model.serverDiskAccess.map { $0 as Any } ?? NSNull(),
                     "server_path": model.serverHost?.exe ?? NSNull(),
                 ] as [String: Any],

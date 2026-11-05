@@ -161,6 +161,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// Write one setting: into this machine's `wheel.toml` with `machine`, else into `space`'s.
     /// Replies `settings` and tells every connection; refused with the daemon's reason as `error`.
     case settingSet(req: UInt64?, key: String, value: String, space: String?, machine: Bool)
+    /// Create the `wheel.toml` about to be opened for editing when it is absent: this machine's with
+    /// `machine`, else `space`'s. The server makes it; the client holds no files. Replies `ok`.
+    case settingsFileEnsure(req: UInt64?, space: String?, machine: Bool)
     /// Remove one setting from this machine's `wheel.toml` with `machine`, else from `space`'s, so
     /// the layer below is in force. Replies and tells every connection as `settingSet` does.
     case settingUnset(req: UInt64?, key: String, space: String?, machine: Bool)
@@ -367,6 +370,10 @@ public enum ClientMsg: Sendable, Equatable {
             if let space { o["space"] = space }
         case let .settingSet(req, key, value, space, machine):
             o = ["op": "setting_set", "key": key, "value": value]; put(req)
+            if let space { o["space"] = space }
+            if machine { o["machine"] = true }
+        case let .settingsFileEnsure(req, space, machine):
+            o = ["op": "settings_file_ensure"]; put(req)
             if let space { o["space"] = space }
             if machine { o["machine"] = true }
         case let .settingUnset(req, key, space, machine):

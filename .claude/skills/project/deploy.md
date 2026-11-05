@@ -1,6 +1,6 @@
 # Deploy — wheel
 
-Two layers run separately (ADR-0020): the **client** (`/Applications/Wheel.app`, with the `wheel` command in `Contents/Helpers`) and the **server** (the running `wheeld`). A client deploy installs a new `wheeld` binary but never runs it; a server restart ends every terminal and agent session, so it waits for the person's yes. Never `pkill` Wheel, and never start a deploy before the change has landed on origin/main.
+Two layers run separately (ADR-0020): the **client** (`/Applications/Wheel.app`, with the `wheel` command in `Contents/Helpers`) and the **server** (the running `wheeld`, which ships as the nested bundle `Contents/Helpers/Wheel Server.app`; macOS lists it in Privacy & Security as Wheel Server with its Desktop, Documents, Downloads and network-volume switches). A client deploy installs a new `wheeld` binary but never runs it; a server restart ends every terminal and agent session, so it waits for the person's yes. Never `pkill` Wheel, and never start a deploy before the change has landed on origin/main.
 
 ## What a landed change needs
 

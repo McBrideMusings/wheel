@@ -3,13 +3,11 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-/// The Full Disk Access check. macOS charges what a terminal or agent reads to the program that
-/// started it: Wheel.app for itself, and wheeld, which launchd starts as its own program, for
-/// everything it spawns. So both need the grant, and a grant to one covers neither the other nor
-/// a process that is already running (a running wheeld keeps the access it started with).
+/// The folder access check. macOS charges what a terminal or agent reads to the program that
+/// started it: Wheel Server, which launchd starts as its own program, for everything it spawns.
+/// The app opens no guarded folder itself (ADR-0020), so only the server needs a grant, and a
+/// grant does not reach a process that is already running a denied folder's listing.
 extension AppModel {
-    /// The app bundle this app runs from.
-    static var appPath: String { Bundle.main.bundlePath }
 
     /// Whether the running server can open every guarded folder, as it reported; nil while not connected.
     var serverDiskAccess: Bool? {
@@ -17,36 +15,23 @@ extension AppModel {
         return host.folders.allSatisfy(\.allowed)
     }
 
-    /// The screen shows while this app or the server lacks access, until the person closes it; it
-    /// leaves by itself when both can open the folders. A server not connected yet counts as
-    /// unknown, not as denied, so the app's own state alone can show it.
+    /// The screen shows while the server lacks access, until the person closes it; it leaves by
+    /// itself when the server can open the folders. A server not connected yet counts as unknown.
     var diskAccessScreenShown: Bool {
-        guard !diskAccessScreenDismissed, let app = appDiskAccess else { return false }
-        return !app || serverDiskAccess == false
+        !diskAccessScreenDismissed && serverDiskAccess == false
     }
 
     func dismissDiskAccessScreen() {
         diskAccessScreenDismissed = true
-        Log.info("full disk access screen closed; app \(describe(appDiskAccess)), server \(describe(serverDiskAccess))")
+        Log.info("folder access screen closed; server \(describe(serverDiskAccess))")
     }
 
     private func describe(_ access: Bool?) -> String {
         access.map { $0 ? "granted" : "not granted" } ?? "unknown"
     }
 
-    /// The folders to look at: the ones the server reports, else the ones it checks by default.
-    private var guardedNames: [String] {
-        serverHost?.folders.map { URL(filePath: $0.path).lastPathComponent } ?? ["Downloads", "Desktop", "Documents"]
-    }
-
-    /// Looks at the guarded folders from this app. A folder that is not there is not a denial.
+    /// Looks at what the server reported and keeps watching while the screen is up.
     func checkDiskAccess() async {
-        let names = guardedNames
-        let granted = await Task.detached { Self.appCanOpen(names) }.value
-        if granted != appDiskAccess {
-            Log.info("full disk access: app \(describe(granted)) at \(Self.appPath)")
-            appDiskAccess = granted
-        }
         if diskAccessScreenShown { keepWatchingDiskAccess() }
         await lookForGrantSinceStart()
     }
@@ -90,17 +75,6 @@ extension AppModel {
         return String(decoding: data, as: UTF8.self).contains("type=Modify")
     }
 
-    nonisolated static func appCanOpen(_ names: [String]) -> Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return names.allSatisfy { name in
-            guard let dir = opendir(home.appending(path: name).path) else {
-                return !(errno == EPERM || errno == EACCES)
-            }
-            closedir(dir)
-            return true
-        }
-    }
-
     /// Looks once at launch, and again whenever the app becomes active (a grant is made in another
     /// app). The model owns this, not a window, so closing a window never ends it.
     func startDiskAccessCheck() {
@@ -126,17 +100,23 @@ extension AppModel {
         }
     }
 
-    /// Opens System Settings at Full Disk Access and selects the file in Finder, to drag into the
-    /// list. macOS lets no program grant or request this itself.
+    /// Opens System Settings at Files & Folders, where Wheel Server's four folder switches are.
+    /// macOS lets no program grant these itself.
     func offerDiskAccess(path: String) {
-        Log.info("full disk access: opening the pane and revealing \(path)")
-        FullDiskAccess.openPane()
-        FullDiskAccess.reveal(path)
+        Log.info("folder access: opening Files & Folders for \(path)")
+        FullDiskAccess.openFolders()
     }
 }
 
-/// What the buttons do; macOS lets no program grant or request Full Disk Access itself.
+/// What the buttons do; macOS lets no program grant or request folder access itself.
 enum FullDiskAccess {
+    /// The Files & Folders pane of System Settings.
+    static func openFolders() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     /// The Full Disk Access pane of System Settings.
     static func openPane() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
@@ -156,31 +136,27 @@ enum FullDiskAccess {
     }
 }
 
-/// The sheet that says which of Wheel.app and wheeld can open the folders macOS guards, each with
-/// its exact path, and offers the missing ones.
+/// The sheet that says whether Wheel Server can open the folders macOS guards, with its exact
+/// path, and offers the pane that grants them.
 struct DiskAccessScreen: View {
     var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Wheel needs Full Disk Access").font(.title3).fontWeight(.semibold)
-            Text("Terminals and agents in Wheel get “Operation not permitted” in the folders macOS guards until both programs below have it. macOS lets no program grant it itself: the button opens System Settings at Privacy & Security › Full Disk Access and shows the program in Finder. Drag it into the list, or press + and paste its path.")
+            Text("Wheel Server needs access to your folders").font(.title3).fontWeight(.semibold)
+            Text("Terminals and agents in Wheel get “Operation not permitted” in the folders macOS guards until Wheel Server may open them. macOS asks the first time a folder is used; the button opens System Settings at Privacy & Security › Files & Folders, where Wheel Server has switches for Desktop, Documents, Downloads and network volumes.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            DiskAccessRow(
-                title: "Wheel app", path: AppModel.appPath, granted: model.appDiskAccess,
-                missingNote: "If this stays not granted after you add it, quit Wheel and open it again.",
-                offer: { model.offerDiskAccess(path: AppModel.appPath) })
             if model.serverHost == nil || model.connection != .connected {
                 DiskAccessRow(
-                    title: "Wheel server (wheeld)", path: "Waiting for the server to connect", granted: nil,
+                    title: "Wheel Server", path: "Waiting for the server to connect", granted: nil,
                     missingNote: "", offer: {})
             } else if let exe = model.serverHost?.exe {
                 DiskAccessRow(
-                    title: "Wheel server (wheeld)", path: exe, granted: model.serverDiskAccess,
+                    title: "Wheel Server", path: exe, granted: model.serverDiskAccess,
                     missingNote: model.diskAccessChangedSinceStart
                         ? "Access was changed after the server started, and a running server keeps the access it started with. Restart the server to apply it. That ends every terminal and agent."
-                        : "A running server keeps the access it started with, so after you add it, restart the server. That ends every terminal and agent.",
+                        : "A running server keeps the access it started with, so after you switch a folder on, restart the server. That ends every terminal and agent.",
                     offer: { model.offerDiskAccess(path: exe) },
                     restart: model.diskAccessChangedSinceStart && model.serverControl?.unavailable == nil
                         ? { model.restartServer() } : nil)
@@ -219,9 +195,9 @@ private struct DiskAccessRow: View {
                     if let restart {
                         Button("Restart Server", action: restart).buttonStyle(.borderedProminent)
                             .help("Restart the server; every terminal and agent ends")
-                        Button("Open Full Disk Access and Show in Finder", action: offer)
+                        Button("Open Files & Folders", action: offer)
                     } else {
-                        Button("Open Full Disk Access and Show in Finder", action: offer).buttonStyle(.borderedProminent)
+                        Button("Open Files & Folders", action: offer).buttonStyle(.borderedProminent)
                     }
                     Button("Copy Path") { FullDiskAccess.copyPath(path) }
                 }

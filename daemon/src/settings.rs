@@ -1356,6 +1356,20 @@ impl AppState {
         self.settings_ls(space)
     }
 
+    /// Creates the layer's `wheel.toml` empty when it is absent, so a client can open it for editing.
+    pub fn settings_file_ensure(&self, space: Option<&str>, machine: bool) -> Result<(), String> {
+        let (path, _) = self.settings_file(space, machine)?;
+        let _one = self.settings_write.lock().unwrap();
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            std::fs::write(&path, "").map_err(|e| format!("{}: {e}", path.display()))?;
+            tracing::info!(path = %path.display(), machine, "settings file created");
+        }
+        Ok(())
+    }
+
     /// The file a write or a removal changes: this machine's, or the `wheel.toml` of the space
     /// named. With no space named only this machine's can be.
     ///
@@ -1544,6 +1558,28 @@ mod tests {
     }
 
     use super::*;
+
+    /// The server makes the empty file a client is about to open, and leaves an existing one alone.
+    #[test]
+    fn settings_file_ensure_creates_an_absent_file_and_keeps_a_present_one() {
+        let dir = std::env::temp_dir().join(format!("wheel-ensure-{}", std::process::id()));
+        let machine = dir.join("home/.wheel").join(FILE);
+        let state = crate::AppState::with_machine_file(
+            "/dev/null".into(),
+            "t".into(),
+            dir.join("inst"),
+            machine.clone(),
+            "/bin/false".into(),
+        );
+        assert!(!machine.exists());
+        state.settings_file_ensure(None, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&machine).unwrap(), "");
+        std::fs::write(&machine, "[runner]\nship = \"make\"\n").unwrap();
+        state.settings_file_ensure(None, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&machine).unwrap(), "[runner]\nship = \"make\"\n");
+        assert!(state.settings_file_ensure(None, false).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A dotted key reaches into nested tables, and writing one leaves everything else in place.
     #[test]
