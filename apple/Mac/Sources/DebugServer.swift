@@ -155,7 +155,8 @@ final class DebugServer {
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
-             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"), ("POST", "/agent/message"):
+             ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"), ("POST", "/agent/message"),
+             ("POST", "/agent/attach"), ("POST", "/agent/pasteboard"), ("POST", "/agent/paste"):
             guard let agent = query["agent"], let chat = model.chats[agent] else {
                 return refuse("404 Not Found", "no agent pane shows that agent")
             }
@@ -179,6 +180,46 @@ final class DebugServer {
                 }
                 key(0)
                 return ("200 OK", Data("{}".utf8))
+            case "/agent/attach":
+                // A file dropped on the composer: `path=` is where it is, `remove=<name>` takes its chip out.
+                let files = model.attachments(for: chat)
+                if let name = query["remove"] {
+                    guard let id = files.chips.first(where: { $0.name == name })?.id else { return refuse("404 Not Found", "no chip named \(name)") }
+                    files.remove(id)
+                } else if let path = query["path"] {
+                    files.add([.file(URL(fileURLWithPath: path))])
+                } else {
+                    return refuse("400 Bad Request", "path or remove is required")
+                }
+            case "/agent/pasteboard":
+                // Put `kind=image` (a 40x30 PNG), `kind=file` (`path=`) or `kind=text` (`text=`) on the
+                // pasteboard and the keyboard in the composer, so a following ⌘V from `/agent/type` is a paste.
+                let board = NSPasteboard.general
+                board.clearContents()
+                switch query["kind"] {
+                case "image":
+                    let image = NSImage(size: NSSize(width: 40, height: 30), flipped: false) { rect in
+                        NSColor.systemOrange.setFill()
+                        rect.fill()
+                        return true
+                    }
+                    board.writeObjects([image])
+                case "file":
+                    guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
+                    board.writeObjects([URL(fileURLWithPath: path) as NSURL])
+                case "text":
+                    board.setString(query["text"] ?? "", forType: .string)
+                default:
+                    return refuse("400 Bad Request", "kind is image, file or text")
+                }
+                chat.composerFocusRequest += 1
+            case "/agent/paste":
+                // The Paste command, sent to whatever holds the keyboard as the Edit menu sends it.
+                NSApp.wheelWindow?.makeKey()
+                // ⌘V as the key monitor reads it; a paste it leaves goes to the text box.
+                let sent = model.pasteAttachments(nil)
+                    || NSApp.wheelWindow?.firstResponder?.tryToPerform(#selector(NSText.paste(_:)), with: nil) == true
+                Log.info("debug: paste into \(NSApp.wheelWindow?.firstResponder.map { "\(type(of: $0))" } ?? "nothing"): \(sent ? "taken" : "nobody took it")")
             case "/agent/draft":
                 // Text in the composer, not sent: what a person typing sees.
                 Log.info("debug: draft for \(agent), \(text.count) chars")
@@ -1928,6 +1969,10 @@ final class DebugServer {
                         }
                     } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
+                    o["composer_drag_types"] = (NSApp.wheelWindow?.firstResponder as? NSTextView)?.registeredDraggedTypes.count ?? NSNull()
+                    o["attachments"] = chat.map { chat in
+                        model.attachments(for: chat).chips.map { ["name": $0.name, "detail": $0.detail, "thumbnail": $0.thumbnail != nil] as [String: Any] }
+                    } ?? NSNull()
                     o["queued"] = chat?.queued.map { ["turn": $0.turn, "text": $0.text] } ?? NSNull()
                     o["unanswered_turn"] = chat?.unansweredTurn.map { $0 as Any } ?? NSNull()
                     o["take_back"] = chat?.queue.takeBackAvailable ?? NSNull()

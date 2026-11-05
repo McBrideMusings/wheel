@@ -613,10 +613,7 @@ final class PhoneModel {
             chat.error = "A file is still uploading or failed; your message is still in the box."
             return
         }
-        // Each path in backticks on its own line: every one contains `Application Support`, and
-        // the quotes keep the space from reading as the end of the path.
-        let listed = paths.map { "`\($0)`" }.joined(separator: "\n")
-        let text = [typed, listed].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let text = composerMessage(typed: typed, paths: paths)
         guard !text.isEmpty else { return }
         guard case .connected = connection, let client else {
             chat.error = "Not connected to the Mac; your message is still in the box."
