@@ -14,6 +14,8 @@ public struct GridLayout: Sendable {
         public let axis: Axis
         /// The share of the split its first side takes, as drawn.
         public let ratio: Double
+        /// The ratios a drag may reach: neither side drops below the minimum pane size.
+        public let range: ClosedRange<Double>
         /// The whole split's area, which a drag position is measured against.
         public let area: CGRect
         /// The gap between the two sides, which is what the person grabs.
@@ -23,13 +25,47 @@ public struct GridLayout: Sendable {
     public static let gap: CGFloat = 8
     /// The ratios the daemon accepts.
     public static let ratios: ClosedRange<Double> = 0.1 ... 0.9
+    /// The smallest a pane is drawn while the area has room for it: below this its header and
+    /// body no longer fit, so a divider stops here. An area too small for every pane's minimum
+    /// shares its size among them in proportion to what each needs.
+    public static let minimumPane = CGSize(width: 240, height: 160)
 
     public private(set) var panes: [Pane] = []
     public private(set) var dividers: [Divider] = []
 
-    /// `ratios` overrides the tree's ratio for a split being dragged.
-    public init(_ root: Node, in rect: CGRect, ratios: [String: Double] = [:]) {
+    private let minimum: CGSize
+
+    /// `ratios` overrides the tree's ratio for a split being dragged. `minimum` is the least a
+    /// pane may get; a preview that draws the tree small leaves it zero.
+    public init(_ root: Node, in rect: CGRect, ratios: [String: Double] = [:], minimum: CGSize = .zero) {
+        self.minimum = minimum
         place(root, rect, ratios)
+    }
+
+    /// The size a subtree needs for every pane in it to get the minimum.
+    private func need(_ node: Node) -> CGSize {
+        switch node {
+        case .pane: return minimum
+        case let .split(_, axis, _, a, b):
+            let na = need(a), nb = need(b)
+            return switch axis {
+            case .horizontal: CGSize(width: na.width + Self.gap + nb.width, height: max(na.height, nb.height))
+            case .vertical: CGSize(width: max(na.width, nb.width), height: na.height + Self.gap + nb.height)
+            }
+        }
+    }
+
+    /// The ratios that leave each side its need out of `total`, or the single ratio that shares
+    /// `total` in proportion to the needs when they do not both fit.
+    private static func bounds(total: CGFloat, needA: CGFloat, needB: CGFloat) -> ClosedRange<Double> {
+        guard total > 0, needA + needB > 0 else { return ratios }
+        guard needA + needB <= total else {
+            let shared = Double(needA / (needA + needB))
+            return shared ... shared
+        }
+        let lo = Double(needA / total), hi = Double(1 - needB / total)
+        let (lo2, hi2) = (max(lo, ratios.lowerBound), min(hi, ratios.upperBound))
+        return lo2 <= hi2 ? lo2 ... hi2 : lo ... hi
     }
 
     private mutating func place(_ node: Node, _ rect: CGRect, _ ratios: [String: Double]) {
@@ -37,8 +73,11 @@ public struct GridLayout: Sendable {
         case let .pane(id, kind):
             panes.append(Pane(id: id, kind: kind, frame: rect))
         case let .split(id, axis, ratio, a, b):
-            let ratio = ratios[id] ?? ratio
             let gap = Self.gap
+            let range = Self.bounds(total: max(axis == .horizontal ? rect.width - gap : rect.height - gap, 0),
+                                    needA: axis == .horizontal ? need(a).width : need(a).height,
+                                    needB: axis == .horizontal ? need(b).width : need(b).height)
+            let ratio = min(max(ratios[id] ?? ratio, range.lowerBound), range.upperBound)
             let (ra, gapRect, rb): (CGRect, CGRect, CGRect)
             switch axis {
             case .horizontal:
@@ -54,7 +93,7 @@ public struct GridLayout: Sendable {
             }
             place(a, ra, ratios)
             place(b, rb, ratios)
-            dividers.append(Divider(id: id, axis: axis, ratio: ratio, area: rect, frame: gapRect))
+            dividers.append(Divider(id: id, axis: axis, ratio: ratio, range: range, area: rect, frame: gapRect))
         }
     }
 
@@ -64,6 +103,6 @@ public struct GridLayout: Sendable {
         case .horizontal: (point.x - divider.area.minX - gap / 2) / max(divider.area.width - gap, 1)
         case .vertical: (point.y - divider.area.minY - gap / 2) / max(divider.area.height - gap, 1)
         }
-        return min(max(Double(r), ratios.lowerBound), ratios.upperBound)
+        return min(max(Double(r), divider.range.lowerBound), divider.range.upperBound)
     }
 }

@@ -398,7 +398,7 @@ struct SpaceGrid: View {
     var body: some View {
         GeometryReader { geo in
             let rect = CGRect(origin: .zero, size: geo.size)
-            let layout = WheelKit.GridLayout(space.root, in: rect, ratios: drag.ratios)
+            let layout = WheelKit.GridLayout(space.root, in: rect, ratios: drag.ratios, minimum: WheelKit.GridLayout.minimumPane)
             let zoomed = model.zoomedPane(in: space)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
@@ -455,10 +455,10 @@ struct SpaceGrid: View {
             .coordinateSpace(name: "grid")
             .coordinateSpace(name: "spaceGrid")
             .onChange(of: space.root, initial: true) { _, root in
-                model.baseLayouts[space.id] = WheelKit.GridLayout(root, in: rect)
+                model.baseLayouts[space.id] = WheelKit.GridLayout(root, in: rect, minimum: WheelKit.GridLayout.minimumPane)
             }
             .onChange(of: geo.size) { _, size in
-                model.baseLayouts[space.id] = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: size))
+                model.baseLayouts[space.id] = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: size), minimum: WheelKit.GridLayout.minimumPane)
             }
         }
     }
@@ -605,9 +605,28 @@ struct PaneMenuItems: View {
     var model: AppModel
     let paneId: String
     let kind: PaneKind
+    /// The header's level (`PaneHeader.levels`): what the header dropped is offered here instead.
+    var level = 0
+    var otherView: ConversationView?
 
     @ViewBuilder var body: some View {
         let items = model.headerMenu(for: paneId, kind: kind)
+        if level >= 1 {
+            if let browser = model.browserPanes[paneId], case .browser = kind {
+                Menu("Browser") { BrowserMenu(model: model, paneId: paneId, browser: browser) }
+            }
+            let pop = model.popButton(for: paneId)
+            Button(pop.title) { model.toggleSite(paneId, .popped) }
+            Button(model.backgroundButton().title) { model.toggleSite(paneId, .backgrounded) }
+        }
+        if level >= 2, let view = otherView {
+            Button(view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
+        }
+        if level >= 4 {
+            let zoom = model.zoomButton(for: paneId)
+            Button(zoom.title) { model.toggleZoom(paneId) }.disabled(!zoom.enabled)
+        }
+        if level >= 1 { Divider() }
         ForEach(items.filter { !$0.id.hasPrefix("move-space:") && !$0.id.hasPrefix("kind:") }, id: \.id) { item in
             if item.id == "close" { Divider() }
             if item.id == "move-new-space" {
@@ -658,61 +677,21 @@ struct PaneHeader: View {
         }
     }
 
+    /// How many controls the header has given up for lack of width. Each level drops the next
+    /// group, and the pane menu offers whatever is dropped, so a narrow pane never draws controls
+    /// over its title or its neighbour.
+    ///
+    /// 0 every control; 1 no browser controls, info, Pop Out or Background; 2 also no chat/terminal
+    /// switch; 3 also no split buttons; 4 also no Zoom (the icon, title, menu and Close stay).
+    static let levels = 0 ... 4
+
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: kind.icon).foregroundStyle(.secondary)
-            // An agent pane's dot follows its title, where AgentTitle draws it.
-            if case .agent = kind {} else {
-                StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
-            }
-            title
-                .fontWeight(focused ? .semibold : .regular)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            if let browser = model.browserPanes[paneId], case .browser = kind {
-                Menu {
-                    BrowserMenu(model: model, paneId: paneId, browser: browser)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Back, forward, reload and home")
-                .accessibilityLabel("Browser controls")
-            }
-            if let view = otherView {
-                headerButton(view == .agent ? "bubble.left.and.text.bubble.right" : "terminal",
-                             view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
-            }
-            if case .unknown = kind {} else {
-                PaneInfoButton(model: model, paneId: paneId)
-                headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
-                headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
-            }
-            let pop = model.popButton(for: paneId)
-            Button { model.toggleSite(paneId, .popped) } label: { Image(systemName: pop.symbol) }
-                .buttonStyle(.borderless)
-                .foregroundStyle(pop.on ? Color.accentColor : Color.primary)
-                .help(pop.title)
-                .accessibilityLabel(pop.title)
-                .accessibilityValue(pop.on ? "on" : "off")
-            let background = model.backgroundButton()
-            headerButton(background.symbol, background.title) { model.toggleSite(paneId, .backgrounded) }
-            let zoom = model.zoomButton(for: paneId)
-            Button { model.toggleZoom(paneId) } label: { Image(systemName: zoom.symbol) }
-                .buttonStyle(.borderless)
-                .foregroundStyle(zoom.on ? Color.accentColor : Color.primary)
-                .disabled(!zoom.enabled)
-                .help(zoom.title)
-                .accessibilityLabel(zoom.title)
-            Menu { PaneMenuItems(model: model, paneId: paneId, kind: kind) } label: { Image(systemName: "ellipsis") }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Pane menu")
-                .accessibilityLabel("Pane menu")
-            headerButton("xmark", "Close Pane", action: close)
+        ViewThatFits(in: .horizontal) {
+            row(0)
+            row(1)
+            row(2)
+            row(3)
+            row(4)
         }
         .font(.callout)
         .padding(.horizontal, 10)
@@ -734,6 +713,71 @@ struct PaneHeader: View {
                     model.endPaneDrag()
                 }
         )
+    }
+
+    private func row(_ level: Int) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: kind.icon).foregroundStyle(.secondary)
+            // An agent pane's dot follows its title, where AgentTitle draws it.
+            if case .agent = kind {} else {
+                StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
+            }
+            // Its ideal width is short, so a row that would squeeze the title drops controls instead.
+            title
+                .fontWeight(focused ? .semibold : .regular)
+                .lineLimit(1)
+                .frame(minWidth: 0, idealWidth: 64, maxWidth: .infinity, alignment: .leading)
+            if level == 0, let browser = model.browserPanes[paneId], case .browser = kind {
+                Menu {
+                    BrowserMenu(model: model, paneId: paneId, browser: browser)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Back, forward, reload and home")
+                .accessibilityLabel("Browser controls")
+            }
+            if level <= 1, let view = otherView {
+                headerButton(view == .agent ? "bubble.left.and.text.bubble.right" : "terminal",
+                             view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
+            }
+            if case .unknown = kind {} else {
+                if level == 0 { PaneInfoButton(model: model, paneId: paneId) }
+                if level <= 2 {
+                    headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
+                    headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
+                }
+            }
+            if level == 0 {
+                let pop = model.popButton(for: paneId)
+                Button { model.toggleSite(paneId, .popped) } label: { Image(systemName: pop.symbol) }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(pop.on ? Color.accentColor : Color.primary)
+                    .help(pop.title)
+                    .accessibilityLabel(pop.title)
+                    .accessibilityValue(pop.on ? "on" : "off")
+                let background = model.backgroundButton()
+                headerButton(background.symbol, background.title) { model.toggleSite(paneId, .backgrounded) }
+            }
+            if level <= 3 {
+                let zoom = model.zoomButton(for: paneId)
+                Button { model.toggleZoom(paneId) } label: { Image(systemName: zoom.symbol) }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(zoom.on ? Color.accentColor : Color.primary)
+                    .disabled(!zoom.enabled)
+                    .help(zoom.title)
+                    .accessibilityLabel(zoom.title)
+            }
+            Menu { PaneMenuItems(model: model, paneId: paneId, kind: kind, level: level, otherView: otherView) } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Pane menu")
+                .accessibilityLabel("Pane menu")
+            headerButton("xmark", "Close Pane", action: close)
+        }
     }
 
     private func headerButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
@@ -1199,7 +1243,7 @@ struct PoppedWindow: View {
     }
 
     var body: some View {
-        let layout = WheelKit.GridLayout(tree, in: CGRect(origin: .zero, size: size), ratios: drag.ratios)
+        let layout = WheelKit.GridLayout(tree, in: CGRect(origin: .zero, size: size), ratios: drag.ratios, minimum: WheelKit.GridLayout.minimumPane)
         ZStack(alignment: .topLeading) {
             ForEach(layout.panes) { pane in
                 PaneView(model: model, paneId: pane.id, space: space.id, kind: pane.kind, focused: pane.id == space.focus)
