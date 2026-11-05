@@ -130,6 +130,36 @@ extension AppModel {
     }
 }
 
+extension AppModel {
+    /// ⌘V in the focused agent pane's composer with files or an image on the pasteboard and no
+    /// text: they become chips instead of text. False leaves the paste to the text box.
+    func pasteAttachments(_ event: NSEvent?) -> Bool {
+        if let event {
+            guard event.window?.isWheelWindow == true,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers == "v"
+            else { return false }
+        }
+        guard let window = NSApp.wheelWindow, window.attachedSheet == nil, commandPalette == nil,
+              let pane = activeSpace?.focus, case let .agent(agent, _, _)? = kind(of: pane),
+              let chat = chats[agent], chat.composerShown,
+              let text = window.firstResponder as? NSTextView, text.isEditable
+        else { return false }
+        let board = NSPasteboard.general
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        var drops: [ComposerDrop] = []
+        if let urls = board.readObjects(forClasses: [NSURL.self], options: options) as? [URL], !urls.isEmpty {
+            drops = urls.map { .file($0) }
+        } else if board.string(forType: .string) == nil,
+                  let data = board.data(forType: .png) ?? board.data(forType: .tiff) {
+            drops = [.image(data)]
+        }
+        guard !drops.isEmpty else { return false }
+        attachments(for: chat).add(drops)
+        return true
+    }
+}
+
 /// An agent's transcript on the Mac: `TranscriptView` with the Mac's input handling, fed the
 /// permission requests the model holds.
 struct AgentTranscript: View {

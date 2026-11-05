@@ -148,6 +148,8 @@ final class AppModel {
     @ObservationIgnored var dragCancelled = false
     /// Every attached agent by name: one per agent pane in the layout.
     private(set) var chats: [String: AgentChat] = [:]
+    /// The files each agent's composer holds for its next message, by agent name.
+    private var composerFiles: [String: ComposerAttachments] = [:]
     /// Permission requests waiting on a person, from every agent.
     private(set) var perms: [PermInfo] = []
     /// Every agent the daemon knows, with whether its program was found.
@@ -1499,10 +1501,24 @@ final class AppModel {
         client.send(.agentNoticeDismiss(req: nil, agent: chat.name))
     }
 
-    /// Send an agent's draft, the text in its composer. The draft clears once the message goes
-    /// out; when it can't go out now, nothing is sent and the draft stays in the box.
+    /// The files `chat`'s composer holds for its next message.
+    func attachments(for chat: AgentChat) -> ComposerAttachments {
+        if let held = composerFiles[chat.name] { return held }
+        let held = ComposerAttachments()
+        composerFiles[chat.name] = held
+        return held
+    }
+
+    /// Send an agent's draft, the text in its composer, with the paths of its attached files after
+    /// it. The draft and the chips clear once the message goes out; when it can't go out now (or a
+    /// chip failed), nothing is sent and both stay in the box.
     func send(_ chat: AgentChat) {
-        let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let files = attachments(for: chat)
+        guard files.ready else {
+            chat.error = "A file could not be attached; remove it to send."
+            return
+        }
+        let text = composerMessage(typed: chat.draft, paths: files.paths)
         guard !text.isEmpty else { return }
         guard connection == .connected else {
             chat.error = "Not connected to wheeld; your message is still in the box."
@@ -1515,9 +1531,10 @@ final class AppModel {
         let req = client.req()
         agentReqs[req] = chat.name
         // Sized, never the text, as the daemon logs it.
-        Log.info("send to \(chat.name), \(text.count) chars")
+        Log.info("send to \(chat.name), \(text.count) chars, \(files.paths.count) attachments")
         client.send(.agentSend(req: req, agent: chat.name, text: text))
         chat.draft = ""
+        files.sent()
     }
 
     func cancel(_ chat: AgentChat) {

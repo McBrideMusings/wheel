@@ -979,6 +979,7 @@ struct AgentBody: View {
                                shortcut: model.paneIsFocused(paneId))
                     .padding([.horizontal, .top], 10)
             }
+            let files = model.attachments(for: chat)
             Composer(
                 placeholder: "Message \(AgentInfo.title(of: agent))",
                 draft: $chat.draft,
@@ -986,6 +987,9 @@ struct AgentBody: View {
                 enabled: model.connection == .connected,
                 send: { model.send(chat) },
                 pickFiles: pickFiles,
+                attachments: files.chips,
+                removeAttachment: { files.remove($0) },
+                attach: { files.add($0) },
                 onFocus: { model.paneFocused(pane: paneId) },
                 focusRequest: chat.composerFocusRequest,
                 skills: chat.accepted(model.agents.first { $0.name == agent }?.skills ?? [], agent: agent),
