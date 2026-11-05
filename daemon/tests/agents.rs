@@ -4824,7 +4824,7 @@ async fn a_text_block_rewritten_after_streaming_is_revised_once_not_appended() {
     attach_and_send(&mut ws, &agent, "write rewritten").await;
     let mut live = Vec::new();
     loop {
-        if let ServerMsg::Session { event, .. } = recv(&mut ws).await {
+        if let ServerMsg::Agent { event, .. } = recv(&mut ws).await {
             let end = matches!(event.event, AgentEvent::TurnEnd { .. });
             live.push(event.event);
             if end {
