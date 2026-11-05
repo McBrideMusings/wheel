@@ -329,6 +329,10 @@ final class AppModel {
     }
     /// One Ghostty surface per terminal pane, keyed by the term id the tree names.
     @ObservationIgnored private(set) var terminals: [String: PaneTerminal] = [:]
+    /// Counts the times `terminals` gained a surface. `terminals` itself is not observed, so a pane
+    /// reads this to draw again when the surface it shows was made again (a pane moved to another
+    /// space) after the layout that moved it had already been drawn.
+    private(set) var terminalSurfaceRevision = 0
     /// One page per web pane, keyed by pane id.
     @ObservationIgnored private(set) var webPanes: [String: WebPane] = [:]
     /// The A2UI model of each web pane: it asks the artifact's MCP server for an A2UI layout and,
@@ -605,6 +609,7 @@ final class AppModel {
             terminals[term] = terminal
             return terminal
         }
+        if !added.isEmpty { terminalSurfaceRevision += 1 }
         for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
