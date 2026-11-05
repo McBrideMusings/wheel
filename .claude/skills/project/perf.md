@@ -15,6 +15,7 @@ keeps each table.
 | chat | `bash .claude/skills/project/tools/perf-chat.sh` | anything under `apple/`; a daemon change to agents, files, links or artifacts |
 | live | `bash .claude/skills/project/tools/perf-chat.sh --live` | every client deploy, against the installed app and running wheeld |
 | spaces | `bash .claude/skills/project/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
+| hidden turns | `bash .claude/skills/project/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
 | layout | `bash .claude/skills/project/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 | project | `bash .claude/skills/project/tools/project-artifact.sh` | anything under `artifacts/project/` |
 | build | `bash .claude/skills/project/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
@@ -57,6 +58,25 @@ A hidden space draws no chat transcript (`AgentTranscript` reads `spaceShown`), 
 none of its table rows while the grid moves; a transcript left scrolled back through history comes
 back at the same rows. Frames: 91-98 for the toggles and 119-125 for the resize, against 62 and
 98-105 with hidden transcripts mounted and 141 for the toggles with only the active space mounted.
+
+## hidden turns
+
+Six spaces, each an agent pane; five hidden ones hold a turn whose tool runs for 300 s, the
+sixth is on screen and idle. A hidden space stays mounted, so whatever animates in it redraws
+the whole window every frame unless it stops: the live line's sweep (`Shimmer`), the second
+timers (`Ticking`) and the working arc all read `spaceShown`, and the arc turns as a Core
+Animation animation in the render server, so the tabs' and sidebar rows' arcs for the hidden
+spaces cost the main thread nothing either. A hidden transcript's table is hidden by a marker
+inside its own rows (`HiddenTable`, the row's `enclosingScrollView`): the script switches with
+the tabs and with the sidebar showing and requires every scroll view the app logs as hidden to
+be grid-sized, never the 230 pt sidebar list or the 34 pt tab strip, which a search from a
+shared ancestor found first and hid.
+
+| Measure | Limit | Now | Broken |
+| --- | --- | --- | --- |
+| idle 4 s main-thread CPU, working arcs turning | 400 ms | 57-248 ms | 1145-1199 ms (SwiftUI arcs and sweeps) |
+| idle 4 s main-thread CPU, working marks off | 250 ms | 53-152 ms | 1331-1711 ms (hidden sweeps) |
+| hidden scroll views that are the tab strip or sidebar list | 0 | 0 | the sidebar list and the tab strip, on a switch |
 
 ## layout
 

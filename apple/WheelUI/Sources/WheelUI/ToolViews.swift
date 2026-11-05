@@ -275,8 +275,8 @@ struct LiveTurnView: View {
                 .truncationMode(.middle)
                 .shimmer(context.waitingCount == 0)
             if let start = live.started {
-                TimelineView(.periodic(from: .now, by: 1)) { tick in
-                    Text(formatClock(tick.date.timeIntervalSince(start)))
+                Ticking(while: true) { now in
+                    Text(formatClock(now.timeIntervalSince(start)))
                         .font(look.meta)
                         .monospacedDigit()
                         .foregroundStyle(.tertiary)
@@ -314,8 +314,8 @@ struct Elapsed: View {
 
     var body: some View {
         if row.started != nil {
-            TimelineView(.periodic(from: .now, by: row.open ? 1 : 3600)) { context in
-                if let seconds = row.elapsed(now: context.date) {
+            Ticking(while: row.open) { now in
+                if let seconds = row.elapsed(now: now) {
                     Text(formatElapsed(seconds))
                         .font(look.meta)
                         .monospacedDigit()
@@ -334,8 +334,8 @@ struct GroupElapsed: View {
     var body: some View {
         let open = rows.contains { $0.open }
         if let start = rows.compactMap(\.started).min() {
-            TimelineView(.periodic(from: .now, by: open ? 1 : 3600)) { context in
-                let end = open ? context.date : rows.compactMap(\.ended).max()
+            Ticking(while: open) { now in
+                let end = open ? now : rows.compactMap(\.ended).max()
                 if let end {
                     Text(formatElapsed(max(0, end.timeIntervalSince(start))))
                         .font(look.meta)
@@ -343,6 +343,29 @@ struct GroupElapsed: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+        }
+    }
+}
+
+/// Content drawn at the current time, redrawn each second while `running` and its space is shown.
+/// Stopped or hidden, it draws once at the time it was last laid out: a hidden space stays
+/// mounted, and each tick would redraw the whole window for nobody. Showing the space again
+/// starts a fresh timeline, so the time is current from the first frame.
+struct Ticking<Content: View>: View {
+    @Environment(\.spaceShown) private var spaceShown
+    let running: Bool
+    @ViewBuilder let content: (Date) -> Content
+
+    init(while running: Bool, @ViewBuilder content: @escaping (Date) -> Content) {
+        self.running = running
+        self.content = content
+    }
+
+    var body: some View {
+        if running && spaceShown {
+            TimelineView(.periodic(from: .now, by: 1)) { context in content(context.date) }
+        } else {
+            content(.now)
         }
     }
 }
@@ -530,7 +553,8 @@ struct ReasoningLine: View {
 extension View {
     /// A highlight sweeping across the view's own shape while `active`: the sign that a tool or a
     /// thought is still going. Still under Reduce Motion, and paused while the line is scrolled out
-    /// of view, because each frame of the sweep redraws the window even when nobody sees it.
+    /// of view or its space is hidden, because each frame of the sweep redraws the window even
+    /// when nobody sees it.
     func shimmer(_ active: Bool) -> some View {
         modifier(Shimmer(active: active))
     }
@@ -539,6 +563,7 @@ extension View {
 private struct Shimmer: ViewModifier {
     let active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.spaceShown) private var spaceShown
     /// Whether any of the line shows in its scroll view; true outside one.
     @State private var inView = true
 
@@ -549,7 +574,7 @@ private struct Shimmer: ViewModifier {
 
     @ViewBuilder
     private func sweep(_ content: Content) -> some View {
-        if active && inView && !reduceMotion {
+        if active && inView && spaceShown && !reduceMotion {
             content.overlay {
                 TimelineView(.animation) { context in
                     // One sweep every 1.6 s: 1.2 s crossing, 0.4 s still.

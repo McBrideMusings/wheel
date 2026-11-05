@@ -97,7 +97,7 @@ public struct TranscriptView: View {
                             bottom: index == items.count - 1 ? 12 : 0,
                             trailing: 14))
                         .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
+                        .listRowBackground(platform.rowMarker())
                         .onAppear { chat.shownItems.insert(item.id) }
                         .onDisappear { chat.shownItems.remove(item.id) }
                 }

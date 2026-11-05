@@ -22,17 +22,23 @@ public struct TranscriptPlatform: Sendable {
     public var proseHighlight: @MainActor @Sendable (_ prose: RenderedProse, _ id: Int, _ style: ProseStyle, _ chat: AgentChat) -> AnyView
     /// The selection drawn behind a row that is not prose.
     public var itemHighlight: @MainActor @Sendable (_ item: ChatItem, _ chat: AgentChat) -> AnyView
+    /// Drawn behind each row: a view inside the list, so the platform can reach the list's own
+    /// scroll view from it and hide that while `spaceShown` is false. It reads the flag itself, so
+    /// a space shown or hidden re-runs the markers and not the transcript.
+    public var rowMarker: @MainActor @Sendable () -> AnyView
 
     public init(
         appear: @escaping @MainActor @Sendable (AgentChat) -> Void,
         disappear: @escaping @MainActor @Sendable (AgentChat) -> Void,
         proseHighlight: @escaping @MainActor @Sendable (RenderedProse, Int, ProseStyle, AgentChat) -> AnyView,
-        itemHighlight: @escaping @MainActor @Sendable (ChatItem, AgentChat) -> AnyView
+        itemHighlight: @escaping @MainActor @Sendable (ChatItem, AgentChat) -> AnyView,
+        rowMarker: @escaping @MainActor @Sendable () -> AnyView = { AnyView(Color.clear) }
     ) {
         self.appear = appear
         self.disappear = disappear
         self.proseHighlight = proseHighlight
         self.itemHighlight = itemHighlight
+        self.rowMarker = rowMarker
     }
 
     public static let none = TranscriptPlatform(
@@ -51,6 +57,20 @@ extension EnvironmentValues {
     public var transcriptPlatform: TranscriptPlatform {
         get { self[TranscriptPlatformKey.self] }
         set { self[TranscriptPlatformKey.self] = newValue }
+    }
+}
+
+private struct SpaceShownKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether the space this view belongs to is the one its window shows. A hidden space stays
+    /// mounted, so anything that animates or ticks reads this and stops while it is false: each
+    /// tick redraws the whole window, which nobody sees. True wherever no client sets it.
+    public var spaceShown: Bool {
+        get { self[SpaceShownKey.self] }
+        set { self[SpaceShownKey.self] = newValue }
     }
 }
 

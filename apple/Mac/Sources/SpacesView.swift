@@ -1155,18 +1155,6 @@ extension PaneKind {
     }
 }
 
-private struct SpaceShownKey: EnvironmentKey {
-    static let defaultValue = true
-}
-
-extension EnvironmentValues {
-    /// Whether the space this view belongs to is the one its window shows.
-    var spaceShown: Bool {
-        get { self[SpaceShownKey.self] }
-        set { self[SpaceShownKey.self] = newValue }
-    }
-}
-
 extension Node {
     /// The first pane in reading order: what names a popped window while it keeps that pane.
     fileprivate var firstPaneId: String { panes.first?.id ?? "" }

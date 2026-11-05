@@ -25,7 +25,8 @@ enum TranscriptInput {
         },
         itemHighlight: { item, chat in
             AnyView(ItemHighlight(selection: chat.selection, chat: chat, item: item))
-        }
+        },
+        rowMarker: { AnyView(HiddenTable()) }
     )
 
     /// The keys that scroll a transcript: Page Up/Down, Home, End and the arrows.
@@ -159,39 +160,25 @@ struct AgentTranscript: View {
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
         .environment(\.chatLinks, model.links)
-        .background(HiddenTable(hidden: !spaceShown))
         .onChange(of: spaceShown, initial: true) { _, shown in chat.hiddenBySpace = !shown }
     }
 }
 
-/// Hides the transcript's scroll view beside it while its space is not on screen. The transcript
-/// stays built, so showing the space draws what is already there; a hidden table view is skipped
-/// by AppKit's layout and drawing while the grid resizes.
+/// Drawn behind each transcript row: hides the list's scroll view, the one the row sits in, while
+/// the space is not on screen. The transcript stays built, so showing the space draws what is
+/// already there; a hidden table view is skipped by AppKit's layout and drawing while the grid
+/// resizes. The scroll view is the marker's own enclosing one, never one found by searching: the
+/// sidebar, the tab strip and every other pane's views share ancestors with the transcript.
 private struct HiddenTable: NSViewRepresentable {
-    let hidden: Bool
-
     func makeNSView(context: Context) -> NSView { NSView() }
 
     func updateNSView(_ marker: NSView, context: Context) {
-        let hidden = hidden
+        let hidden = !context.environment.spaceShown
+        // The marker joins its row's view after this update; its scroll view is there next turn.
         DispatchQueue.main.async {
-            var ancestor = marker.superview
-            while let view = ancestor {
-                if let scroll = view.firstDescendant(ofType: NSScrollView.self) {
-                    if scroll.isHidden != hidden { scroll.isHidden = hidden }
-                    return
-                }
-                ancestor = view.superview
-            }
+            guard let scroll = marker.enclosingScrollView, scroll.isHidden != hidden else { return }
+            scroll.isHidden = hidden
+            Log.info("transcript table \(hidden ? "hidden" : "shown"): scroll view at \(scroll.convert(scroll.bounds, to: nil)) in window")
         }
-    }
-}
-
-private extension NSView {
-    func firstDescendant<T: NSView>(ofType: T.Type) -> T? {
-        for sub in subviews {
-            if let found = sub as? T ?? sub.firstDescendant(ofType: T.self) { return found }
-        }
-        return nil
     }
 }
