@@ -22,6 +22,8 @@ struct A2UISearchFieldView: View {
     let surface: SurfaceModel
     @State private var text: String
     @State private var pending: Task<Void, Never>?
+    /// Queries sent and not yet echoed back; an echo of one of them says nothing about what the field should hold.
+    @State private var inFlight: [String] = []
     init(node: ComponentNode, surface: SurfaceModel) {
         self.node = node; self.surface = surface
         _text = State(initialValue: node.instance.properties["value"]?.stringValue ?? "")
@@ -33,8 +35,23 @@ struct A2UISearchFieldView: View {
             .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()
             .frame(minWidth: 160, idealWidth: 160)
+            .overlay(alignment: .trailing) {
+                // Spins from the keystroke until the page answers, so a slow answer reads as work in progress.
+                if pending != nil || !inFlight.isEmpty {
+                    ProgressView().controlSize(.small).padding(.trailing, 8).accessibilityIdentifier("a2ui.search.busy")
+                }
+            }
             .accessibilityIdentifier("a2ui.search")
-            .onChange(of: served) { _, new in if new != text { text = new } }
+            .onChange(of: served) { _, new in
+                // The page echoes each query back. An echo of a query the person has typed past must not
+                // rewrite the field; only a change the person did not make (Clear) does.
+                if let i = inFlight.firstIndex(of: new) {
+                    inFlight.removeFirst(i + 1)
+                } else if new != text {
+                    inFlight.removeAll()
+                    text = new
+                }
+            }
             .onChange(of: text) { _, new in
                 if new == served { return }
                 pending?.cancel()
@@ -42,6 +59,13 @@ struct A2UISearchFieldView: View {
                 pending = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 200_000_000)
                     if Task.isCancelled { return }
+                    pending = nil
+                    inFlight.append(new)
+                    Task { @MainActor in
+                        // An answer that never changes the field (same text back) would leave the spinner on.
+                        try? await Task.sleep(nanoseconds: 5_000_000_000)
+                        if let i = inFlight.firstIndex(of: new) { inFlight.remove(at: i) }
+                    }
                     surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: ["q": .string(new)])
                 }
             }
