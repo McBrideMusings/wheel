@@ -35,13 +35,20 @@ final class AppModel {
     /// What each window last reported to the daemon (`view`), by window key, so a report goes out
     /// only when a window's space or pane changed (ADR-0022).
     @ObservationIgnored private var reportedViews: [String: ReportedView] = [:]
-    private struct ReportedView: Equatable { let space: String?; let pane: String? }
+    private struct ReportedView: Equatable { let session: String?; let space: String?; let pane: String? }
     /// What to show when the daemon's answer to a layout op names what it made: the new space or pane.
-    enum ShowWhenMade { case space, pane }
+    enum ShowWhenMade { case space, pane, session }
     @ObservationIgnored var showWhenMade: [UInt64: ShowWhenMade] = [:]
     /// A space or pane to show whose layout has not arrived: the daemon's answer to the op that made
     /// it can come ahead of the `spaces` broadcast, so it is shown when the layout names it.
     @ObservationIgnored var pendingShow: (space: String?, pane: String?) = (nil, nil)
+    /// A session this app made, shown in the focused window once a layout names it.
+    @ObservationIgnored var pendingSession: (id: String, at: Date)?
+    /// A space moved into a window's session, shown in that window once the layout holds it there;
+    /// an entry the layout never satisfies (wheeld refused the move) expires after ten seconds.
+    @ObservationIgnored var pendingActive: [String: (window: String, at: Date)] = [:]
+    /// Sessions this app asked wheeld to close: their windows close once the layout no longer lists them.
+    @ObservationIgnored var closingSessions: [String: Date] = [:]
     /// The last layout op the daemon refused, shown as a notice until the person closes it or the
     /// next op that changes the layout (a focus click leaves it up).
     var layoutError: String?
@@ -505,7 +512,7 @@ final class AppModel {
         if commandPalette != nil { askRecentDirs(); askRunners() }
         if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, protocolVersion, _) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, protocolVersion, sessions) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
@@ -517,7 +524,7 @@ final class AppModel {
             logServerSource()
             self.perms = perms
             reportedViews = [:]
-            apply(spaces)
+            apply(spaces, sessions: sessions)
         }
         // A palette open across a reconnect lists again, against the layout the new daemon sent.
         for pane in palettes.keys { askArtifacts(pane) }
@@ -549,7 +556,7 @@ final class AppModel {
     /// whose pane went, and move keyboard focus when the daemon moved it. Returns the new
     /// surfaces, which the caller attaches.
     @discardableResult
-    private func apply(_ spaces: [SpaceInfo]) -> [PaneTerminal] {
+    private func apply(_ spaces: [SpaceInfo], sessions: [SessionInfo]) -> [PaneTerminal] {
         let old = self.spaces
         // The daemon keeps no focused pane: each space keeps the one this client had focused while
         // that pane is there, else the first.
@@ -569,7 +576,7 @@ final class AppModel {
         } else {
             self.spaces = spaces
         }
-        reconcileWindows(spaces)
+        reconcileWindows(spaces, sessions: sessions)
         if let pane = pendingShow.pane, spaces.contains(where: { $0.allPanes.contains { $0.id == pane } }) {
             pendingShow.pane = nil
             focus(pane: pane)
@@ -771,7 +778,7 @@ final class AppModel {
             showLogShipping(logs)
             settings.hostAccess = host
             serverHost = host
-        case let .status(_, _, _, _, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, _, _):
+        case let .status(_, _, _, _, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, _, sessions):
             self.agents = agents
             showLogShipping(logs)
             settings.hostAccess = host
@@ -780,11 +787,11 @@ final class AppModel {
             settings.commandLine.loginPath = loginPath
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
-            apply(spaces).forEach(attach)
-        case let .spaces(spaces, _):
+            apply(spaces, sessions: sessions).forEach(attach)
+        case let .spaces(spaces, sessions):
             // The layout broadcast leaves statuses out; `status_changed` carries them.
             let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
-            apply(spaces.map { $0.keepingStatuses(of: held[$0.id]) }).forEach(attach)
+            apply(spaces.map { $0.keepingStatuses(of: held[$0.id]) }, sessions: sessions).forEach(attach)
         case let .statusChanged(space, pane, status, spaceStatus):
             spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
@@ -857,6 +864,8 @@ final class AppModel {
             switch showWhenMade.removeValue(forKey: req) {
             case .space?: focus(space: id)
             case .pane?: show(pane: id)
+            case .session?:
+                if layout.session(id) != nil { show(session: id) } else { pendingSession = (id, Date()) }
             case nil: break
             }
             if let info = splitArtifacts.removeValue(forKey: req) {
@@ -1037,7 +1046,11 @@ final class AppModel {
         client.send(msg)
     }
 
-    func createSpace(cwd: String) { sendLayoutOp(showing: .space) { .spaceCreate(req: $0, cwd: cwd, focus: false) } }
+    /// A new space joins the session the focused window shows.
+    func createSpace(cwd: String) {
+        let session = layout.focusedWindow?.session
+        sendLayoutOp(showing: .space) { .spaceCreate(req: $0, cwd: cwd, focus: false, session: session) }
+    }
     func closeSpace(_ id: String) { sendLayoutOp { .spaceClose(req: $0, id: id) } }
 
     /// Focus `pane` in this client: it is the one its space's keys and header act on. The daemon is
@@ -1075,16 +1088,16 @@ final class AppModel {
     /// change is sent; a window that has gone is reported as showing nothing.
     func reportViews() {
         var now: [String: ReportedView] = [:]
-        func view(_ space: String?) -> ReportedView {
-            ReportedView(space: space, pane: space.flatMap { id in spaces.first { $0.id == id }?.focus })
+        func view(_ session: String?, _ space: String?) -> ReportedView {
+            ReportedView(session: session, space: space, pane: space.flatMap { id in spaces.first { $0.id == id }?.focus })
         }
-        for window in layout.windows { now[window.id] = view(window.active) }
-        for little in layout.littles { now["little-\(little.id)"] = view(little.space) }
+        for window in layout.windows { now[window.id] = view(window.session, window.active) }
+        for little in layout.littles { now["little-\(little.id)"] = view(layout.sessions.session(of: little.space)?.id, little.space) }
         for (key, shown) in now where reportedViews[key] != shown {
-            client.send(.view(req: nil, window: key, space: shown.space, pane: shown.pane))
+            client.send(.view(req: nil, window: key, space: shown.space, pane: shown.pane, session: shown.session))
         }
         for key in reportedViews.keys where now[key] == nil {
-            client.send(.view(req: nil, window: key, space: nil, pane: nil))
+            client.send(.view(req: nil, window: key, space: nil, pane: nil, session: nil))
         }
         reportedViews = now
     }

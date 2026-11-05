@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# § 4 Windows: windows hold spaces, closing sends them to the background, the layout comes back at launch.
+# § 4 Windows show sessions (ADR-0014, wheel-zpa4.1.5): a window shows one session and one of its spaces,
+# several windows may show the same session, a session no window shows is the background, closing the
+# last window of a session asks, and the windows come back at launch.
 # Drives the real Mac app through its debug server against this script's own daemon.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"
@@ -9,75 +11,100 @@ start_daemon --state-file "$SCR/spaces.json"
 prefs_reset
 IDS=($(mkspaces 6))
 S1=${IDS[0]} S2=${IDS[1]} S3=${IDS[2]} S4=${IDS[3]} S5=${IDS[4]} S6=${IDS[5]}
+N1="$(w session ls --json | jq -r '.[0].id')"
 
 launch_app
 check "the app connects at launch with its window open" wait_st '.connection == "connected"' 20
 wait_st '.windows[0].spaces | length == 6' 10
-eq "first launch: one window holds all six spaces" "$(st '.windows | length')" "1"
-eq "first launch: the window lists every space" "$(st '.windows[0].spaces | length')" "6"
+eq "first launch: one window" "$(st '.windows | length')" "1"
+eq "first launch: it shows the first session" "$(st '.windows[0].session')" "$N1"
+eq "first launch: it lists the session's six spaces" "$(st '.windows[0].spaces | length')" "6"
 
-# Two windows with three spaces each, a different space shown in each.
+# A second session holding S4 S5 S6, made and filled with the CLI: no window shows it, so it is the background.
+N2="$(w session new Review)"
+for s in "$S4" "$S5" "$S6"; do w session move "$s" "$N2" >/dev/null; done
+wait_st '.sessions | length == 2' 10
+wait_st '.windows[0].spaces | length == 3' 10
+eq "the first window lists only its session's three spaces" "$(st '.windows[0].spaces | sort | join(",")')" "$(printf '%s\n' "$S1" "$S2" "$S3" | sort | paste -sd, -)"
+eq "a session no window shows is the background" "$(st '.background_sessions | join(",")')" "$N2"
+eq "its three spaces are the background spaces" "$(st '.background | sort | join(",")')" "$(printf '%s\n' "$S4" "$S5" "$S6" | sort | paste -sd, -)"
+
+# Two windows show Review, each its own space of it.
 W1="$(st '.windows[0].id')"
-app_post "/windows?action=new&spaces=$S4,$S5,$S6" >/dev/null
+W2="$(app_post "/windows?action=new&session=$N2&space=$S5" | jq -r .window)"
 wait_st '.windows | length == 2' 10
-W2="$(win_of "$S4")"
-app_post "/windows?action=place&space=$S5&window=$W2&at=0" >/dev/null
-app_post "/windows?action=place&space=$S2&window=$W1&at=0" >/dev/null
-eq "window 1 holds s2, s1, s3 with s2 shown" "$(st --arg w "$W1" '.windows[] | select(.id==$w) | (.spaces|join(",")) + " " + .active')" "$S2,$S1,$S3 $S2"
-eq "window 2 holds s5, s4, s6 with s5 shown" "$(st --arg w "$W2" '.windows[] | select(.id==$w) | (.spaces|join(",")) + " " + .active')" "$S5,$S4,$S6 $S5"
-BEFORE="$(st -c '[.windows[] | {id, spaces, active}]')"
+eq "a new window on a session shows that session" "$(st --arg w "$W2" '.windows[] | select(.id==$w) | .session')" "$N2"
+eq "a new window opened at a space shows it" "$(st --arg w "$W2" '.windows[] | select(.id==$w) | .active')" "$S5"
+app_post "/windows?action=session&window=$W1&session=$N2" >/dev/null
+wait_st ".windows[] | select(.id==\"$W1\") | .session == \"$N2\"" 10
+eq "two windows show the same session" "$(st --arg n "$N2" '[.windows[] | select(.session==$n)] | length')" "2"
+eq "each lists the session's three spaces" "$(st --arg n "$N2" '[.windows[] | select(.session==$n) | .spaces | length] | join(",")')" "3,3"
+eq "switching the first window's session shows that session's first space" "$(st --arg w "$W1" '.windows[] | select(.id==$w) | .active')" "$S4"
+eq "the second window keeps its own space" "$(st --arg w "$W2" '.windows[] | select(.id==$w) | .active')" "$S5"
+eq "no session is in the background while two windows show Review and none shows the first" "$(st '.background_sessions | join(",")')" "$N1"
+BEFORE="$(st -c '[.windows[] | {id, session, active}]')"
 
-# Quit and reopen: the same two windows, spaces and active spaces.
+# Quit and reopen: the same windows, sessions and active spaces.
 quit_app
 check "the app quit" test -z "$(app_pid)"
 launch_app
 wait_st '.windows | length == 2' 20
-eq "after a relaunch the windows, their spaces and active spaces are as they were" "$(st -c '[.windows[] | {id, spaces, active}]')" "$BEFORE"
-eq "quitting did not send any space to the background" "$(st '.background | length')" "0"
+eq "after a relaunch the windows, their sessions and active spaces are as they were" "$(st -c '[.windows[] | {id, session, active}]')" "$BEFORE"
 
-# Close one window with its close button: the other stays, its three spaces are background.
+# Closing a window whose session another window shows closes it without asking.
 app_post "/windows?action=closebutton&window=$W2" >/dev/null
-app_post "/windows?action=closeanswer&answer=background" >/dev/null
 wait_st '.windows | length == 1' 10
-eq "closing a window leaves the other open" "$(st '.windows[0].id')" "$W1"
-eq "the closed window's three spaces are background spaces" "$(st '.background | sort | join(",")')" "$(printf '%s\n' "$S4" "$S5" "$S6" | sort | paste -sd, -)"
-eq "the spaces still run in wheeld" "$(w space ls | jq '.spaces | length')" "6"
+eq "no sheet: the other window still shows the session" "$(st '.window_close')" "null"
+eq "the first window stays" "$(st '.windows[0].id')" "$W1"
+eq "Review is still shown, so the first session alone is background" "$(st '.background_sessions | join(",")')" "$N1"
 
-# Close the last window: the app and its connection stay.
+# The last window of a session asks; Background closes the window and keeps the session running.
 app_post "/windows?action=closebutton&window=$W1" >/dev/null
+check "the last window of a session opens the close sheet" wait_st '.window_close != null' 10
+check "the sheet names the session" test -n "$(st '.window_close.summary' | grep 'Review')"
 app_post "/windows?action=closeanswer&answer=background" >/dev/null
 wait_st '.windows | length == 0' 10
-eq "closing the last window leaves no window" "$(st '.windows | length')" "0"
-eq "the app is still running" "$(test -n "$(app_pid)" && echo yes)" "yes"
-eq "the connection to wheeld is still up" "$(st .connection)" "connected"
-eq "all six spaces are background spaces" "$(st '.background | length')" "6"
+eq "the app and its connection stay" "$(st .connection)" "connected"
+eq "both sessions are background sessions" "$(st '.background_sessions | sort | join(",")')" "$(printf '%s\n' "$N1" "$N2" | sort | paste -sd, -)"
+eq "every space still runs in wheeld" "$(w space ls | jq '.spaces | length')" "6"
 app_post "/windows?action=reopen" >/dev/null
 wait_st '.windows | length == 1' 10
-eq "the Dock icon opens a window holding the background spaces" "$(st '.windows[0].spaces | length')" "6"
+eq "the Dock icon opens a window on a background session" "$(st '.windows[0].session != null')" "true"
 
-# A space deleted with the CLI while the app is closed is in no window at the next launch.
-quit_app
-w space close "$S2" >/dev/null
-launch_app
-wait_st '.spaces | length == 5' 20
-eq "a space closed while the app was away is in no window" "$(st --arg s "$S2" '[.windows[].spaces[], .background[]] | index($s)')" "null"
-eq "the other five spaces are still placed" "$(st '[.windows[].spaces[], .background[]] | length')" "5"
+# Stop closes the session: its windows, its spaces and their panes.
+app_post "/windows?action=session&window=$(st '.windows[0].id')&session=$N2" >/dev/null
+wait_st '.windows[0].session == "'"$N2"'"' 10
+app_post "/windows?action=closebutton&window=$(st '.windows[0].id')" >/dev/null
+wait_st '.window_close != null' 10
+app_post "/windows?action=closeanswer&answer=stop" >/dev/null
+wait_st '.windows | length == 0' 10
+eq "stopping closes the session in wheeld" "$(w session ls --json | jq -r --arg n "$N2" '[.[] | select(.id==$n)] | length')" "0"
+eq "and its three spaces" "$(w space ls | jq '.spaces | length')" "3"
 
-# Restore off: one window holds every space.
-app_post "/windows?action=new&spaces=$S3" >/dev/null
+# A session closed by the CLI while a window shows it: the window shows the first session.
+app_post "/windows?action=reopen" >/dev/null
+wait_st '.windows | length == 1' 10
+N3="$(w session new Third)"
+wait_st '.sessions | length == 2' 10
+app_post "/windows?action=session&window=$(st '.windows[0].id')&session=$N3" >/dev/null
+wait_st '.windows[0].session == "'"$N3"'"' 10
+w session close "$N3" >/dev/null
+wait_st '.sessions | length == 1' 10
+eq "a window whose session the CLI closed shows the first session" "$(st '.windows[0].session')" "$N1"
+
+# Restore off: one window.
+app_post "/windows?action=new&session=$N1" >/dev/null
 quit_app
 defaults write "$PREFS_SUITE" restoreWindows -bool false
 launch_app
-wait_st '.spaces | length == 5' 20
+wait_st '.spaces | length == 3' 20
 eq "with restore off, launch opens one window" "$(st '.windows | length')" "1"
-eq "with restore off, that window holds every space" "$(st '.windows[0].spaces | length')" "5"
-eq "with restore off, nothing is in the background" "$(st '.background | length')" "0"
 eq "the state reports the setting" "$(st .restore_windows)" "false"
 
 w space close "$S1" >/dev/null
-eq "a space closed in wheeld leaves its window" "$(wait_st '.windows[0].spaces | length == 4' 5 && echo yes)" "yes"
+eq "a space closed in wheeld leaves the window's tabs" "$(wait_st '.windows[0].spaces | length == 2' 5 && echo yes)" "yes"
 w space new "$SCR/proj1" >/dev/null
-eq "a space made while a window is open opens in the focused window" "$(wait_st '.windows[0].spaces | length == 5' 5 && echo yes)" "yes"
+eq "a space made while a window is open joins the window's session" "$(wait_st '.windows[0].spaces | length == 3' 5 && echo yes)" "yes"
 
 has_log "Mac app attached" "the daemon saw the app connect"
 finish

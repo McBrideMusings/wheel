@@ -438,8 +438,8 @@ extension AppModel {
         case let .action(id, _, _): CommandActions.run(id, self)
         case .openFolder: CommandActions.run(PaletteAction.openFolderID, self)
         case let .space(id, _, _):
-            // A window with no spaces brings the picked space to itself rather than jumping away.
-            if let window = layout.focusedWindow, window.spaces.isEmpty {
+            // A window whose session holds no space shows the picked space's session itself rather than jumping away.
+            if let window = layout.focusedWindow, layout.spaces(of: window).isEmpty {
                 Log.info("command palette: space \(id) brought to the empty window \(window.id.prefix(8))")
                 show(space: id, in: window.id)
             } else {

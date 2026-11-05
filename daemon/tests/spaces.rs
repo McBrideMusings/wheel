@@ -7210,6 +7210,7 @@ async fn mcp_tools(
         name: name.into(),
         scope: None,
         space: Some(space.into()),
+        pane: None,
     };
     match call(ws, msg).await {
         ServerMsg::Tools { tools, .. } => Ok(tools),
@@ -7230,6 +7231,7 @@ async fn mcp_call(
         name: name.into(),
         scope: None,
         space: Some(space.into()),
+        pane: None,
         tool: tool.into(),
         arguments,
     };
@@ -7356,6 +7358,7 @@ async fn an_a2ui_over_mcp_server_gives_a_client_its_layout_and_data() {
         name: "notes".into(),
         scope: None,
         space: Some(space.clone()),
+        pane: None,
         uri: "a2ui://notes".into(),
     };
     let ServerMsg::Resource { contents, .. } = call(&mut ws, read).await else {
@@ -7910,19 +7913,20 @@ async fn a_backgrounded_pane_that_needs_the_person_still_says_so() {
             req: Some(3),
             pane: "p1".into(),
             status: ReportedStatus::NeedsYou,
+            reason: None,
         },
     )
     .await;
     loop {
         if let ServerMsg::StatusChanged { pane, space_status, .. } = recv(&mut watcher).await {
             if pane.as_deref() == Some("p1") {
-                assert_eq!(space_status, Some(PaneStatus::NeedsYou { waiting: 1 }));
+                assert_eq!(space_status, Some(PaneStatus::NeedsYou { waiting: 1, reason: None }));
                 break;
             }
         }
     }
     let (spaces, _) = layout(&mut ws).await;
-    assert_eq!(spaces[0].status, Some(PaneStatus::NeedsYou { waiting: 1 }));
+    assert_eq!(spaces[0].status, Some(PaneStatus::NeedsYou { waiting: 1, reason: None }));
     assert_eq!(spaces[0].site_of("p1"), Some(Backgrounded), "it was not moved");
     assert_eq!(pane_ids(&spaces[0].root), vec![other]);
     let _ = std::fs::remove_dir_all(&base);

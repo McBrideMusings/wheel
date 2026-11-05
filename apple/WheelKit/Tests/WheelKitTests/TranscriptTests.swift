@@ -46,7 +46,7 @@ struct TranscriptTests {
 
     @Test func decodesARevision() throws {
         let json = #"{"kind":"text_revised","streamed":"a,","text":"a ,"}"#
-        let event = try JSONDecoder().decode(SessionEvent.self, from: Data(json.utf8))
+        let event = try JSONDecoder().decode(AgentEvent.self, from: Data(json.utf8))
         #expect(event == .textRevised(streamed: "a,", text: "a ,"))
     }
 

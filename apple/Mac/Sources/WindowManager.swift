@@ -196,7 +196,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         Self.apply(pinned: record.pinned, to: window)
         // `-g` launches and debug runs must not take the keyboard from whatever the person is using.
         if NSApp.isActive { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
-        Log.info("window \(record.id.prefix(8)) opened, \(record.spaces.count) spaces")
+        Log.info("window \(record.id.prefix(8)) opened, \(model.layout.spaces(of: record).count) spaces")
     }
 
     func bringFront(_ id: String) {
@@ -215,10 +215,10 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         return String(raw.dropFirst(Self.idPrefix.count))
     }
 
-    /// The red light on a main window that holds spaces asks first; the sheet's answer closes it.
+    /// The red light on the last window showing a session that holds spaces asks first; the sheet's answer closes it.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let id = Self.id(of: sender), Self.littleID(of: sender) == nil, !model.quitting,
-              model.layout.window(id)?.spaces.isEmpty == false else { return true }
+              model.windowCloseNeedsAnswer(id) else { return true }
         model.askCloseWindow(id)
         return false
     }

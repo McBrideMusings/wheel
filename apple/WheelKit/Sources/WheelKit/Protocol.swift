@@ -33,8 +33,12 @@ public enum ClientMsg: Sendable, Equatable {
     case spaceRename(req: UInt64?, space: String, name: String)
     /// Make an empty session named `name` (ADR-0021); the daemon answers `created` with its id.
     case sessionNew(req: UInt64?, name: String)
-    /// Move `space` to the end of `session`; nothing in it stops.
-    case sessionMove(req: UInt64?, space: String, session: String)
+    /// Name a session, by id or current name. An empty name is refused.
+    case sessionRename(req: UInt64?, session: String, name: String)
+    /// Close a session, by id or name: closes every space in it and every pane in those.
+    case sessionClose(req: UInt64?, session: String)
+    /// Move `space` into `session`, to `index` among its spaces (the end when nil); nothing in it stops.
+    case sessionMove(req: UInt64?, space: String, session: String, index: Int? = nil)
     /// This connection owns the Mac windows, so the daemon may send it `windowRequest`.
     case windowOffer
     /// The answer to `windowRequest` `id`: `data`, a JSON document, when it worked; `error` when not.
@@ -390,8 +394,14 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "space_rename", "space": space, "name": name]; put(req)
         case let .sessionNew(req, name):
             o = ["op": "session_new", "name": name]; put(req)
-        case let .sessionMove(req, space, session):
-            o = ["op": "session_move", "space": space, "session": session]; put(req)
+        case let .sessionRename(req, session, name):
+            o = ["op": "session_rename", "session": session, "name": name]; put(req)
+        case let .sessionClose(req, session):
+            o = ["op": "session_close", "session": session]; put(req)
+        case let .sessionMove(req, space, session, index):
+            o = ["op": "session_move", "space": space, "session": session]
+            if let index { o["index"] = index }
+            put(req)
         case .windowOffer:
             o = ["op": "window_offer"]
         case let .windowAnswer(id, data, error):
