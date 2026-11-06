@@ -2447,8 +2447,8 @@ fn agent_rows(node: &wheel_proto::Node, space: &wheel_proto::SpaceInfo, out: &mu
         wheel_proto::Node::Pane {
             id,
             status,
+            work,
             kind: wheel_proto::PaneKind::Agent { agent, harness, model, .. },
-            ..
         } => out.push(serde_json::json!({
             "space": space.name,
             "cwd": space.cwd,
@@ -2457,6 +2457,7 @@ fn agent_rows(node: &wheel_proto::Node, space: &wheel_proto::SpaceInfo, out: &mu
             "harness": harness,
             "model": model,
             "status": status.as_ref().and_then(|s| serde_json::to_value(s).ok()).and_then(|v| v["kind"].as_str().map(String::from)),
+            "work": work,
         })),
         wheel_proto::Node::Pane { .. } => {}
         wheel_proto::Node::Split { a, b, .. } => {

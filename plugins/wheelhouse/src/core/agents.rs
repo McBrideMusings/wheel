@@ -30,12 +30,42 @@ pub struct Agent {
     pub model: Option<String>,
     /// `idle`, `working`, `needs_you` (waiting on a permission) or `stopped`.
     pub status: Option<String>,
+    /// What the agent declared it is working on (`work_set`).
+    #[serde(default)]
+    pub work: Option<Work>,
 }
 
-/// The rows in `agents` whose space is in project `dir`.
+/// An agent's declaration: the items, the step and a note.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct Work {
+    #[serde(default)]
+    pub items: Vec<WorkItem>,
+    /// `plan`, `edit`, `build`, `verify`, `review` or `gate`.
+    pub stage: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct WorkItem {
+    /// `bead`, `issue` or `pr`.
+    pub kind: String,
+    pub id: String,
+}
+
+/// The rows in `agents` whose space is in project `dir`, or in a worktree of it under
+/// `.worktrees/<project name>/` (where `implement` and `swarm` work).
 pub fn in_project(agents: &[Agent], dir: &str) -> Vec<Agent> {
     let dir = dir.trim_end_matches('/');
-    agents.iter().filter(|a| a.cwd.trim_end_matches('/') == dir).cloned().collect()
+    let name = dir.rsplit('/').next().unwrap_or(dir);
+    let worktrees = format!("/.worktrees/{name}/");
+    agents
+        .iter()
+        .filter(|a| {
+            let cwd = a.cwd.trim_end_matches('/');
+            cwd == dir || (!name.is_empty() && format!("{cwd}/").contains(&worktrees))
+        })
+        .cloned()
+        .collect()
 }
 
 /// A line of `wheel agent watch`.

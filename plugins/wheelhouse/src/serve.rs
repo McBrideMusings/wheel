@@ -123,6 +123,10 @@ impl ServerHandler for Hub {
                 }
             }
             view.open(&dir);
+            // A list that arrived before this page subscribed is not announced again.
+            if view.follows_agents() {
+                view.agents_changed(&dir, &agents::in_project(&self.agents.all(), &dir));
+            }
         }
         Ok(())
     }

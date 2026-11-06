@@ -53,13 +53,6 @@ pub fn gh(dir: &str, args: &[&str]) -> Result<String, String> {
     text("gh", dir, args)
 }
 
-/// `git -C <dir> <args>`.
-pub fn git(dir: &str, args: &[&str]) -> Result<String, String> {
-    let mut all = vec!["-C", dir];
-    all.extend(args);
-    text("git", dir, &all)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

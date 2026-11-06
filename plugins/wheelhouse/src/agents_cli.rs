@@ -52,6 +52,8 @@ pub async fn run(args: Args, agents: Agents) -> anyhow::Result<()> {
             got.map_err(|_| anyhow::anyhow!("wheel agent watch sent no list within 10 seconds"))??;
             println!("{}", serde_json::to_string_pretty(&json!(in_project(&all, &dir).iter().map(|a| json!({
                 "space": a.space, "pane": a.pane, "agent": a.agent, "harness": a.harness, "model": a.model, "status": a.status,
+                "items": a.work.as_ref().map(|w| w.items.iter().map(|i| format!("{} {}", i.kind, i.id)).collect::<Vec<_>>()).unwrap_or_default(),
+                "stage": a.work.as_ref().and_then(|w| w.stage.clone()), "note": a.work.as_ref().and_then(|w| w.note.clone()),
             })).collect::<Vec<_>>()))?);
             Ok(())
         }

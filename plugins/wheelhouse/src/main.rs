@@ -12,6 +12,7 @@ mod status;
 mod repo;
 mod serve;
 mod view;
+mod work;
 
 use clap::{Parser, Subcommand};
 
@@ -45,13 +46,15 @@ enum Command {
 }
 
 /// Every view `serve` offers.
-fn registry(_agents: &core::agents::Agents) -> view::Registry {
+fn registry(agents: &core::agents::Agents) -> view::Registry {
     view::Registry::default().with(beads::serve::BeadsView::new())
         .with(repo::serve::RepoView::new())
         .with(diff::serve::DiffView::new())
         .with(prs::serve::PrsView::new())
         .with(issues::serve::IssuesView::new())
         .with(status::serve::ProjectView::new())
+        .with(work::serve::WorkView::new(work::serve::Mode::Implement, agents.clone()))
+        .with(work::serve::WorkView::new(work::serve::Mode::Swarm, agents.clone()))
 }
 
 #[tokio::main]
