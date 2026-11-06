@@ -849,13 +849,13 @@ async fn space_status_prints_what_space_ls_carries() {
     let ls = layout(&d).await;
     assert_eq!(
         ls["spaces"][0]["status"],
-        serde_json::json!({"kind": "idle"}),
+        serde_json::json!({"kind": "done"}),
         "{ls}"
     );
     let status = ok(&d, &["space", "status"]).await;
     assert_eq!(
         status,
-        format!("{name}  idle\n  {pane}  agent  idle"),
+        format!("{name}  done\n  {pane}  agent  done"),
         "{status}"
     );
 }

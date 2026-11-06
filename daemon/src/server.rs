@@ -1093,7 +1093,8 @@ async fn connection(
     }
     state.renderers.gone(peer);
     state.mac_apps.gone(peer);
-    state.views.gone(peer);
+    let left = state.views.gone(peer);
+    state.panes_shown(&left);
     state.release_sizes(peer, None);
     global_task.abort();
     writer.abort();
@@ -1882,9 +1883,10 @@ async fn handle(
             // Stored as reported: a view can name a space or pane that closed a moment ago, and
             // `client_ls` leaves out what no longer exists.
             tracing::debug!(%peer, window = %view.window, space = ?view.space, pane = ?view.pane, "view");
-            state
+            let changed = state
                 .views
                 .report(peer, state.client_name(peer, caller), view);
+            state.panes_shown(&changed);
             done(req, Ok(()))
         }
         ClientMsg::ClientLs { req } => req.map(|req| ServerMsg::Clients {

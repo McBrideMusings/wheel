@@ -9,6 +9,8 @@ public enum PaneStatus: Sendable, Equatable, Decodable {
     case needsYou(waiting: Int, reason: String? = nil)
     case stopped
     case working
+    /// A turn ended after any client last showed the pane.
+    case done
     case idle
 
     private enum K: String, CodingKey { case kind, waiting, reason }
@@ -21,6 +23,7 @@ public enum PaneStatus: Sendable, Equatable, Decodable {
                              reason: try c.decodeIfPresent(String.self, forKey: .reason))
         case "stopped": self = .stopped
         case "working": self = .working
+        case "done": self = .done
         case "idle": self = .idle
         case let other:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown status \(other)")
@@ -33,18 +36,20 @@ public enum PaneStatus: Sendable, Equatable, Decodable {
         case .needsYou: .needsYou
         case .stopped: .stopped
         case .working: .working
+        case .done: .done
         case .idle: .idle
         }
     }
 
     /// What VoiceOver reads for the dot, and its tooltip: "Needs you, 2 waiting", "Needs you: Bash:
-    /// make test", "Stopped", "Working", "Idle".
+    /// make test", "Stopped", "Working", "Done", "Idle".
     public var label: String {
         switch self {
         case let .needsYou(_, reason?): "Needs you: \(reason)"
         case let .needsYou(waiting, nil): "Needs you, \(waiting) waiting"
         case .stopped: "Stopped"
         case .working: "Working"
+        case .done: "Done"
         case .idle: "Idle"
         }
     }
@@ -60,14 +65,14 @@ public enum PaneStatus: Sendable, Equatable, Decodable {
         case let .needsYou(_, reason?): reason
         case let .needsYou(waiting, nil): "\(waiting) waiting"
         case .stopped: "stopped"
-        case .working, .idle: nil
+        case .working, .done, .idle: nil
         }
     }
 }
 
-/// The four ranks, highest first, as `status.dots` names them.
+/// The five ranks, highest first, as `status.dots` names them.
 public enum StatusRank: String, CaseIterable, Sendable, Identifiable {
-    case needsYou = "needs_you", stopped, working, idle
+    case needsYou = "needs_you", stopped, working, done, idle
 
     public var id: String { rawValue }
 
@@ -76,6 +81,7 @@ public enum StatusRank: String, CaseIterable, Sendable, Identifiable {
         case .needsYou: "Needs you"
         case .stopped: "Stopped"
         case .working: "Working"
+        case .done: "Done"
         case .idle: "Idle"
         }
     }
@@ -103,7 +109,7 @@ extension SpaceInfo {
     /// The most agent marks a space draws before it says how many more there are.
     public static let agentDotLimit = 4
 
-    /// One status per agent pane, most urgent first (needs you, stopped, working, idle), panes of
+    /// One status per agent pane, most urgent first (needs you, stopped, working, done, idle), panes of
     /// the same rank in layout order, leaving out the ranks `shown` leaves out. `marks` holds at
     /// most `limit` of them and `more` counts the rest.
     public func agentStatuses(shown: Set<StatusRank>, limit: Int = SpaceInfo.agentDotLimit)

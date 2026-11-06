@@ -3205,6 +3205,7 @@ fn status_words(status: Option<&wheel_proto::PaneStatus>) -> String {
         }) => format!("needs_you  waiting {waiting}  {reason}"),
         Some(PaneStatus::Stopped) => "stopped".into(),
         Some(PaneStatus::Working) => "working".into(),
+        Some(PaneStatus::Done) => "done".into(),
         Some(PaneStatus::Idle) => "idle".into(),
     }
 }

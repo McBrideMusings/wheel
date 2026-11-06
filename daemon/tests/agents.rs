@@ -4338,7 +4338,8 @@ async fn a_pane_and_its_space_follow_the_agent_through_a_permission_request() {
     )
     .await;
     status_until(&mut watcher, &pane, Some(Working), &mut seen).await;
-    status_until(&mut watcher, &pane, Some(Idle), &mut seen).await;
+    // No client shows the pane, so the finished turn is done, not idle.
+    status_until(&mut watcher, &pane, Some(wheel_proto::PaneStatus::Done), &mut seen).await;
 
     // Every message is a change: none repeats the one before, and the space follows its one pane.
     for pair in seen.windows(2) {

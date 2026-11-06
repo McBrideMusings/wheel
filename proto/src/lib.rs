@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -2946,7 +2946,8 @@ impl Node {
 
 /// What a pane or space asks of the person, highest rank first: a permission waits
 /// (`needs_you`), an agent stopped and will not run again (`stopped`), a turn runs (`working`),
-/// or the agent waits for a message (`idle`).
+/// a turn ended and no client has shown the pane since (`done`), or the agent waits for a
+/// message (`idle`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PaneStatus {
@@ -2960,15 +2961,18 @@ pub enum PaneStatus {
     },
     Stopped,
     Working,
+    /// A turn ended after the last time any client showed the pane; showing it makes it `idle`.
+    Done,
     Idle,
 }
 
 impl PaneStatus {
     fn rank(&self) -> u8 {
         match self {
-            PaneStatus::NeedsYou { .. } => 3,
-            PaneStatus::Stopped => 2,
-            PaneStatus::Working => 1,
+            PaneStatus::NeedsYou { .. } => 4,
+            PaneStatus::Stopped => 3,
+            PaneStatus::Working => 2,
+            PaneStatus::Done => 1,
             PaneStatus::Idle => 0,
         }
     }

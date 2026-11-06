@@ -64,6 +64,7 @@ enum PhoneCommands {
         case .needsYou: "needs you"
         case .stopped: "stopped"
         case .working: "working"
+        case .done: "done"
         case .idle: "idle"
         }
     }

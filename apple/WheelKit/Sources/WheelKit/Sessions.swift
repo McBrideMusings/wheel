@@ -125,6 +125,7 @@ public enum SessionCaption {
             case .needsYou: return "\(n) needs you"
             case .stopped: return "\(n) stopped"
             case .working: return "\(n) working"
+            case .done: return "\(n) done"
             case .idle: return nil
             }
         }

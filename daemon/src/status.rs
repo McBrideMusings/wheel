@@ -16,6 +16,22 @@ use crate::spaces::{space_panes, Spaces};
 pub(crate) struct StatusBook {
     panes: HashMap<String, PaneStatus>,
     spaces: HashMap<String, PaneStatus>,
+    /// Counts every finish and every show, so two moments compare without a clock.
+    tick: u64,
+    /// The agent panes in a turn as of the last recompute: an agent busy or waiting on a
+    /// permission, a terminal agent working or waiting. Starting up is not a turn.
+    turning: std::collections::HashSet<String>,
+    /// The tick at which each agent pane's turn last ended.
+    finished: HashMap<String, u64>,
+    /// The tick at which any client last showed each pane, or stopped showing it.
+    shown: HashMap<String, u64>,
+}
+
+impl StatusBook {
+    /// A turn ended after the pane was last shown. Held back while a client shows it now.
+    fn is_done(&self, pane: &str, showing: bool) -> bool {
+        !showing && self.finished.get(pane).is_some_and(|f| *f > self.shown.get(pane).copied().unwrap_or(0))
+    }
 }
 
 /// One space's panes and its own status, as of one recompute.
@@ -44,7 +60,12 @@ pub(crate) fn pane_status(state: Option<&AgentState>, waiting: u32) -> Option<Pa
 
 impl AppState {
     /// Every pane's status and every space's, as of now.
-    fn statuses(&self, spaces: &Spaces) -> (HashMap<String, PaneStatus>, Vec<SpaceStatus>) {
+    fn statuses(
+        &self,
+        spaces: &Spaces,
+        done: &dyn Fn(&str) -> bool,
+        turning: &mut std::collections::HashSet<String>,
+    ) -> (HashMap<String, PaneStatus>, Vec<SpaceStatus>) {
         let perms = self.perms.list();
         let reports = self.reports.lock().unwrap().clone();
         let waiting = |who: &str| perms.iter().filter(|p| p.agent == who).count() as u32;
@@ -83,6 +104,24 @@ impl AppState {
                     }),
                     _ => None,
                 };
+                let in_turn = match kind {
+                    PaneKind::Agent { agent, .. } => {
+                        waiting(agent) > 0
+                            || self.agent(agent).is_ok_and(|a| matches!(a.state(), AgentState::Busy { .. }))
+                    }
+                    PaneKind::Terminal { .. } => matches!(
+                        status,
+                        Some(PaneStatus::Working | PaneStatus::NeedsYou { .. })
+                    ),
+                    _ => false,
+                };
+                if in_turn {
+                    turning.insert(pane.to_string());
+                }
+                let status = match status {
+                    Some(PaneStatus::Idle) if done(pane) => Some(PaneStatus::Done),
+                    other => other,
+                };
                 if let Some(status) = status {
                     by_pane.insert(pane.to_string(), status.clone());
                     found.push(status);
@@ -99,7 +138,8 @@ impl AppState {
 
     /// The layout for a reader that asks: `listing`'s, with every pane's and space's status.
     pub(crate) fn with_statuses(&self, mut spaces: Spaces) -> Spaces {
-        let (by_pane, by_space) = self.statuses(&spaces);
+        let done = self.done_panes();
+        let (by_pane, by_space) = self.statuses(&spaces, &|p| done.contains(p), &mut Default::default());
         for (space, computed) in spaces.spaces.iter_mut().zip(by_space) {
             space.status = computed.status;
             for tree in space.trees_mut() {
@@ -112,8 +152,29 @@ impl AppState {
     /// Recompute every status and send `status_changed` for each one that differs from the last
     /// sent.
     pub(crate) fn refresh_statuses(&self) {
-        let (by_pane, by_space) = self.statuses(&self.spaces());
+        let spaces = self.spaces();
+        // A turn ended when a pane that was in a turn is now idle; this pass reads statuses
+        // without the done mark, which the second pass adds.
+        let mut turning = std::collections::HashSet::new();
+        let raw = self.statuses(&spaces, &|_| false, &mut turning).0;
+        let showing = |pane: &str| self.views.shows(pane);
         let mut book = self.statuses.lock().unwrap();
+        for (pane, status) in &raw {
+            if book.turning.contains(pane) && *status == PaneStatus::Idle {
+                book.tick += 1;
+                let tick = book.tick;
+                book.finished.insert(pane.clone(), tick);
+            }
+        }
+        book.turning = turning;
+        book.finished.retain(|pane, _| raw.contains_key(pane));
+        book.shown.retain(|pane, _| raw.contains_key(pane));
+        let done: std::collections::HashSet<String> = raw
+            .keys()
+            .filter(|pane| book.is_done(pane, showing(pane)))
+            .cloned()
+            .collect();
+        let (by_pane, by_space) = self.statuses(&spaces, &|p| done.contains(p), &mut Default::default());
         let mut sent = Vec::new();
         for SpaceStatus {
             id: space,
@@ -157,6 +218,35 @@ impl AppState {
         for msg in sent {
             let _ = self.global.send(msg);
         }
+    }
+}
+
+impl AppState {
+    /// The panes a client showed or stopped showing just now: each counts as shown at this
+    /// moment, so a turn that ended before it reads as seen and one that ends after it as done.
+    pub(crate) fn panes_shown(&self, panes: &[String]) {
+        if panes.is_empty() {
+            return;
+        }
+        {
+            let mut book = self.statuses.lock().unwrap();
+            for pane in panes {
+                book.tick += 1;
+                let tick = book.tick;
+                book.shown.insert(pane.clone(), tick);
+            }
+        }
+        self.refresh_statuses();
+    }
+
+    /// The panes whose last turn ended after they were last shown, and that no client shows now.
+    fn done_panes(&self) -> std::collections::HashSet<String> {
+        let book = self.statuses.lock().unwrap();
+        book.finished
+            .keys()
+            .filter(|pane| book.is_done(pane, self.views.shows(pane)))
+            .cloned()
+            .collect()
     }
 }
 
