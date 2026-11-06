@@ -4,8 +4,8 @@ import SwiftUI
 
 // MARK: Table — the system's List of sections of one-line rows (ADR-0029: it knows nothing of what the rows are)
 // column {key, label, width|null, tree, wide}; section {title, count, rows}; row {id, path, depth, kids, collapsed, dim, sel,
-// cells [{key, text, tone, mono, chip}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
-// Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
+// cells [{key, text, tone, mono, chip, buttons [{icon, help, action, context}]}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
+// `fit` sizes the table to its rows. A table with no `rowAction` takes no row picks. Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
 // menu item's own `action` with its `context`.
 struct A2UITableView: View {
     let node: ComponentNode
@@ -28,7 +28,7 @@ struct A2UITableView: View {
         let selected = Binding<String?>(
             get: { nil },
             set: { path in
-                guard let path else { return }
+                guard let path, !rowAction.isEmpty else { return }
                 for sec in sections { for r in (sec["rows"]?.arrayValue ?? []).compactMap({ $0.dictionaryValue }) where r["path"]?.stringValue == path {
                     fire(rowAction, ["id": .string(r["id"]?.stringValue ?? "")])
                 } }
@@ -58,7 +58,9 @@ struct A2UITableView: View {
                 Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary)
             }
         }
-        .frame(height: max(320, pane.height - 250))
+        .frame(height: p["fit"]?.boolValue == true
+               ? CGFloat(sections.reduce(0) { $0 + ($1["rows"]?.arrayValue ?? []).count }) * (WebTheme.rowHeight + 8) + 12
+               : max(320, pane.height - 250))
     }
 
     private func line(_ r: [String: AnyCodable], _ cols: [[String: AnyCodable]], _ narrow: Bool) -> some View {
@@ -129,12 +131,27 @@ struct A2UITableView: View {
             let chip = cell["chip"]?.boolValue == true
             let mono = cell["mono"]?.boolValue == true
             let secondary = dim || cell["tone"]?.stringValue == "muted"
+            let buttons = (cell["buttons"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+            if !buttons.isEmpty {
+                HStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    ForEach(Array(buttons.enumerated()), id: \.offset) { _, b in
+                        Button {
+                            fire(b["action"]?.stringValue ?? "", b["context"]?.dictionaryValue ?? [:])
+                        } label: { Image(systemName: b["icon"]?.stringValue ?? "circle") }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .help(b["help"]?.stringValue ?? "")
+                        .accessibilityLabel(b["help"]?.stringValue ?? "")
+                    }
+                }
+            } else {
             Text(text)
                 .font(mono ? .system(size: WebTheme.caption, design: .monospaced)
                       : chip ? .system(size: WebTheme.callout, weight: .semibold)
                       : .system(size: WebTheme.body, weight: key == "title" ? .medium : .regular))
                 .foregroundStyle(tone ?? (secondary ? t.secondary : t.label))
                 .lineLimit(1).truncationMode(.tail)
+            }
         }
     }
 }

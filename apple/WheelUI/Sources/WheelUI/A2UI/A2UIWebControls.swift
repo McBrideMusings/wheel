@@ -99,9 +99,11 @@ struct A2UISegmentedView: View {
 
 // MARK: Pill — the system's small bordered button raising its action; `style` link draws it as a link, `hideOff` keeps its room when it is disabled
 struct A2UIPillStyle: ViewModifier {
-    let link: Bool
+    let style: String
     func body(content: Content) -> some View {
-        if link {
+        if style == "plain" {
+            content.buttonStyle(.borderless)
+        } else if style == "link" {
             #if os(macOS)
             content.buttonStyle(.link)
             #else
@@ -123,14 +125,20 @@ struct A2UIPillView: View {
             guard let name = p["name"]?.stringValue else { return }
             surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: p["context"]?.dictionaryValue ?? [:])
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(p["text"]?.stringValue ?? "")
-                if let src = p["src"]?.stringValue {
-                    Text(src).font(.caption2).foregroundStyle(.secondary)
+            if let icon = p["icon"]?.stringValue {
+                Image(systemName: icon)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(p["text"]?.stringValue ?? "")
+                    if let src = p["src"]?.stringValue {
+                        Text(src).font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
-        .modifier(A2UIPillStyle(link: p["style"]?.stringValue == "link"))
+        .modifier(A2UIPillStyle(style: p["style"]?.stringValue ?? ""))
+        .help(p["help"]?.stringValue ?? "")
+        .accessibilityLabel(p["help"]?.stringValue ?? p["text"]?.stringValue ?? "")
         .disabled(off)
         .opacity(off && p["hideOff"]?.boolValue == true ? 0 : 1)
         .accessibilityIdentifier("a2ui.pill.\(node.instance.id)")

@@ -132,9 +132,9 @@ fn answer(dir: &str, ui: &Ui) -> CallToolResult {
     let runs = Runs::new(dir);
     let list = runs.list();
     let runners = config::list(&config::machine_file(), dir);
-    let log = ui.open.as_deref().filter(|id| list.iter().any(|r| r.id == *id))
-        .and_then(|id| runs.log(id, 0, Some(page::LOG_LINES)).ok().map(|(t, _)| t));
-    let messages = page::update(page::components(&runners, &list, ui, log.as_deref(), crate::now()));
+    let logs: HashMap<String, String> = page::shown(&list, ui).into_iter()
+        .filter_map(|r| runs.log(&r.id, 0, Some(page::LOG_LINES)).ok().map(|(t, _)| (r.id.clone(), t))).collect();
+    let messages = page::update(page::components(&runners, &list, ui, &logs, crate::now()));
     CallToolResult::success(vec![ContentBlock::resource(ResourceContents::TextResourceContents {
         uri: page::URI.into(), mime_type: Some(page::MIME.into()), text: messages.to_string(), meta: None })])
 }
@@ -184,7 +184,7 @@ impl Server {
             match Runs::new(dir).start(&runner, a.confirmed.as_deref(), None) {
                 Ok(s) => {
                     ui.asking = None;
-                    ui.open = Some(s.record.id);
+                    ui.closed.remove(&s.record.id);
                 }
                 Err(StartError::Confirm(_)) => {
                     if a.confirmed.is_some() {
@@ -202,28 +202,24 @@ impl Server {
         self.with(&meta, |_, ui| ui.asking = None)
     }
 
-    #[tool(description = "Open a run's log, or close it when it is the open one", meta = ui_meta())]
-    fn open_log(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.open = if ui.open.as_deref() == Some(path.as_str()) { None } else { Some(path) })
+    #[tool(description = "Close a run's block on the page", meta = ui_meta())]
+    fn close_log(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            ui.closed.insert(path);
+        })
     }
 
-    #[tool(description = "Close the open log", meta = ui_meta())]
-    fn close_log(&self, meta: RequestMetaObject) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.open = None)
+    #[tool(description = "Show the next batch of older runs", meta = ui_meta())]
+    fn show_older(&self, meta: RequestMetaObject) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.more += 1)
     }
 
-    #[tool(description = "Stop the run whose log is open", meta = ui_meta())]
-    async fn stop_open(&self, meta: RequestMetaObject) -> CallToolResult {
+    #[tool(description = "Stop a run from its block on the page", meta = ui_meta())]
+    async fn stop_log(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
         let dir = project(&meta);
-        let open = self.shared.lock().unwrap().panes.get(&format!("{dir}\u{0}{}", pane_of(&meta))).and_then(|u| u.open.clone());
-        let problem = match open {
-            // Ending a run waits for its processes to go; that must not hold up other calls.
-            Some(id) => {
-                let d = dir.clone();
-                tokio::task::spawn_blocking(move || Runs::new(&d).stop(&id)).await.unwrap_or_else(|e| Err(e.to_string())).err()
-            }
-            None => Some("no log is open".into()),
-        };
+        // Ending a run waits for its processes to go; that must not hold up other calls.
+        let d = dir.clone();
+        let problem = tokio::task::spawn_blocking(move || Runs::new(&d).stop(&path)).await.unwrap_or_else(|e| Err(e.to_string())).err();
         self.with(&meta, |_, ui| ui.problem = problem)
     }
 

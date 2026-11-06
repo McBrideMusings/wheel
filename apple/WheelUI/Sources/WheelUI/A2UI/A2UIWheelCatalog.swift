@@ -3,7 +3,7 @@ import A2UISwiftUI
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
-let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Segmented", "Select", "Check", "Sheet", "Table", "Canvas", "Stat", "Pill", "Unsupported"]
+let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Segmented", "Select", "Check", "Sheet", "Table", "Canvas", "Stat", "Pill", "Group", "Status", "Unsupported"]
 
 // The palette is the system's own semantic colours, so a page follows light and dark and the
 // person's accent colour like any native window.
@@ -211,6 +211,41 @@ struct A2UIDisclosureView: View {
 }
 
 
+// MARK: Group — the system's GroupBox: children[0] is the label, children[1] the content
+struct A2UIGroupView: View {
+    let node: ComponentNode
+    let surface: SurfaceModel
+    var body: some View {
+        GroupBox {
+            if node.children.count > 1 { A2UIChildView(node: node.children[1], surface: surface).frame(maxWidth: .infinity, alignment: .leading) }
+        } label: {
+            if let h = node.children.first { A2UIChildView(node: h, surface: surface) }
+        }
+    }
+}
+
+// MARK: Status — a system Label: an SF Symbol and a word in a tone; `symbol` "spinner" draws the system progress indicator
+struct A2UIStatusView: View {
+    let node: ComponentNode
+    @Environment(\.colorScheme) private var cs
+    var body: some View {
+        let p = node.instance.properties
+        let tone = WheelPalette(dark: cs == .dark).tone(p["tone"]?.stringValue)
+        let text = p["text"]?.stringValue ?? ""
+        let symbol = p["symbol"]?.stringValue ?? ""
+        Group {
+            if symbol == "spinner" {
+                HStack(spacing: 6) { ProgressView().controlSize(.small); Text(text) }
+            } else if symbol.isEmpty {
+                Text(text)
+            } else {
+                Label(text, systemImage: symbol)
+            }
+        }
+        .foregroundStyle(tone ?? Color.primary)
+    }
+}
+
 /// Wheel's additions to the basic catalog, drawn natively: styled text, a box, a progress bar, a
 /// disclosure and the placeholder for a component the catalog does not hold.
 struct WheelA2UICatalog: CustomComponentCatalog {
@@ -230,6 +265,8 @@ struct WheelA2UICatalog: CustomComponentCatalog {
         case "Canvas": A2UICanvasView(node: node, surface: surface)
         case "Stat": A2UIStatView(node: node)
         case "Pill": A2UIPillView(node: node, surface: surface)
+        case "Group": A2UIGroupView(node: node, surface: surface)
+        case "Status": A2UIStatusView(node: node)
         case "Unsupported": A2UIUnsupportedView(node: node)
         default: EmptyView()
         }

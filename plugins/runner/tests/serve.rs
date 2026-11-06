@@ -154,7 +154,11 @@ fn page_text(result: &Value) -> String {
     messages[0]["updateComponents"]["components"].as_array().unwrap().iter()
         .flat_map(|c| {
             let mut t = vec![c["text"].as_str().unwrap_or("").to_string()];
-            t.extend(c["sections"][0]["rows"].as_array().into_iter().flatten().flat_map(|r| r["cells"].as_array().unwrap().iter().map(|x| x["text"].as_str().unwrap_or("").to_string())));
+            t.extend(c["sections"][0]["rows"].as_array().into_iter().flatten().flat_map(|r| r["cells"].as_array().unwrap().iter().flat_map(|x| {
+                let mut v = vec![x["text"].as_str().unwrap_or("").to_string()];
+                v.extend(x["buttons"].as_array().into_iter().flatten().map(|b| b["help"].as_str().unwrap_or("").to_string()));
+                v
+            })));
             t
         })
         .collect::<Vec<_>>().join("\n")
@@ -192,7 +196,7 @@ fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run(
     host.request("resources/subscribe", json!({ "uri": uri }), json!({}));
 
     let (_, page) = page_call(&mut host, "get_runner", json!({}));
-    for want in ["Runner", "3 runners", "This project  2", "This machine  1", "echo restarted", "no runs yet"] {
+    for want in ["Runner", "3 runners", "This project  2", "This machine  1", "echo restarted", "No runs yet."] {
         assert!(page.contains(want), "{want} missing from:\n{page}");
     }
 
