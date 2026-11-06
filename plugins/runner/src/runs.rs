@@ -33,7 +33,7 @@ pub type Mirror = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, PartialEq)]
 pub enum StartError {
-    /// The command asks first; start it again with `confirmed`.
+    /// The command asks first; start it again with `confirmed` set to the command text it asked about.
     Confirm(String),
     /// A `requires` guard failed: the message says which and what to do.
     Guard(String),
@@ -79,9 +79,10 @@ impl Runs {
         self
     }
 
-    /// Start `runner` unless it asks first and `confirmed` is false.
-    pub fn start(&self, runner: &Runner, confirmed: bool, mirror: Option<Mirror>) -> Result<Started, StartError> {
-        if let (Some(question), false) = (&runner.confirm, confirmed) {
+    /// Start `runner` unless it asks first and `confirmed` is not its current command text: a yes
+    /// answers the command it was asked about, so an entry edited since asks again.
+    pub fn start(&self, runner: &Runner, confirmed: Option<&str>, mirror: Option<Mirror>) -> Result<Started, StartError> {
+        if let (Some(question), false) = (&runner.confirm, confirmed == Some(runner.command.as_str())) {
             return Err(StartError::Confirm(question.clone()));
         }
         let failed = StartError::Failed;

@@ -26,8 +26,9 @@ use crate::store::State;
 struct Named {
     /// The `[runner]` entry's name.
     name: String,
-    /// True once the person has answered the entry's `confirm` question with yes.
-    confirmed: Option<bool>,
+    /// The entry's command text the person answered the `confirm` question with yes for; an
+    /// entry whose command differs asks again.
+    confirmed: Option<String>,
     /// Run in this git worktree of the project; the entry must set `worktree = true`.
     worktree: Option<String>,
 }
@@ -74,8 +75,8 @@ fn refuse(e: impl ToString) -> CallToolResult {
 struct Press {
     /// The `[runner]` entry's name.
     name: String,
-    /// True when the person pressed the Run button that names the entry's confirm question.
-    confirmed: Option<bool>,
+    /// The command text of the Run button the person pressed to answer the entry's confirm question.
+    confirmed: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -174,12 +175,17 @@ impl Server {
                 ui.problem = Some(format!("no runner named {}", a.name));
                 return;
             };
-            match Runs::new(dir).start(&runner, a.confirmed == Some(true), None) {
+            match Runs::new(dir).start(&runner, a.confirmed.as_deref(), None) {
                 Ok(s) => {
                     ui.asking = None;
                     ui.open = Some(s.record.id);
                 }
-                Err(StartError::Confirm(_)) => ui.asking = Some(a.name),
+                Err(StartError::Confirm(_)) => {
+                    if a.confirmed.is_some() {
+                        ui.problem = Some(format!("{} changed since it was asked about; answer again", a.name));
+                    }
+                    ui.asking = Some(a.name);
+                }
                 Err(StartError::Guard(m) | StartError::Failed(m)) => ui.problem = Some(format!("{} did not start: {m}", a.name)),
             }
         })
@@ -220,7 +226,7 @@ impl Server {
         reply(json!(config::list(&config::machine_file(), &project(&meta))))
     }
 
-    #[tool(description = "Start a [runner] command. An entry with a confirm question answers {started:false, confirm} until it is started again with confirmed true; a failing guard answers {started:false, guard}; worktree runs an entry that sets worktree = true in another git worktree of the project")]
+    #[tool(description = "Start a [runner] command. An entry with a confirm question answers {started:false, confirm} with its command text, until it is started again with confirmed set to that command text (an entry edited since asks again); a failing guard answers {started:false, guard}; worktree runs an entry that sets worktree = true in another git worktree of the project")]
     async fn run_runner(&self, meta: RequestMetaObject, Parameters(a): Parameters<Named>) -> CallToolResult {
         let dir = project(&meta);
         let Some(runner) = config::list(&config::machine_file(), &dir).into_iter().find(|r| r.name == a.name) else {
@@ -231,12 +237,12 @@ impl Server {
             None => Runs::new(&dir),
         };
         // Guards run commands and may fetch; that must not hold up other calls.
-        let confirmed = a.confirmed == Some(true);
-        let started = tokio::task::spawn_blocking(move || runs.start(&runner, confirmed, None)).await;
+        let (confirmed, runner_command) = (a.confirmed, runner.command.clone());
+        let started = tokio::task::spawn_blocking(move || runs.start(&runner, confirmed.as_deref(), None)).await;
         let Ok(started) = started else { return refuse("the start panicked") };
         match started {
             Ok(s) => reply(json!({ "started": true, "id": s.record.id, "log": s.record.log })),
-            Err(StartError::Confirm(q)) => reply(json!({ "started": false, "confirm": q })),
+            Err(StartError::Confirm(q)) => reply(json!({ "started": false, "confirm": q, "command": runner_command })),
             Err(StartError::Guard(m)) => reply(json!({ "started": false, "guard": m })),
             Err(StartError::Failed(e)) => refuse(e),
         }

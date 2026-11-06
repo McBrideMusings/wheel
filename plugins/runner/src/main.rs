@@ -123,8 +123,8 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("no runner named {name}");
             };
             let mirror: runs::Mirror = Arc::new(|line| println!("{line}"));
-            let started = match project.start(&runner, yes, Some(mirror.clone())) {
-                Err(StartError::Confirm(q)) if asked_yes(&q) => project.start(&runner, true, Some(mirror)),
+            let started = match project.start(&runner, yes.then_some(runner.command.as_str()), Some(mirror.clone())) {
+                Err(StartError::Confirm(q)) if asked_yes(&q) => project.start(&runner, Some(runner.command.as_str()), Some(mirror)),
                 Err(StartError::Guard(m)) => anyhow::bail!("{name} did not start: {m}"),
                 Err(StartError::Confirm(q)) => anyhow::bail!("{name} asks first: {q} (run with --yes to answer yes)"),
                 other => other,

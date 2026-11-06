@@ -77,7 +77,9 @@ check "a confirm command's page shows the question and the Run button that names
 check "the question started nothing" test "$(call "$SP1" list_runs | grep -c restart-)" = 0
 CANCELLED="$(page "$SP1" cancel_ask)"
 check "Cancel puts the plain Run button back" hasnt "$CANCELLED" 'Run restart: Ends every agent.'
-page "$SP1" press_run '{"name":"restart","confirmed":true}' >/dev/null
+page "$SP1" press_run '{"name":"restart","confirmed":"echo stale"}' >/dev/null
+check "a yes for another command text starts nothing" test "$(call "$SP1" list_runs | grep -c restart-)" = 0
+page "$SP1" press_run '{"name":"restart","confirmed":"echo restarted-one"}' >/dev/null
 check "the question's Run button starts it" has "$(call "$SP1" list_runs)" 'restart'
 LIVE="$(page "$SP1" press_run '{"name":"long"}')"
 check "starting a command opens its log, running, with a Stop button" has "$LIVE" 'Stop'
