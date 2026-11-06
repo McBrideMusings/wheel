@@ -105,7 +105,7 @@ impl Runs {
         let log_file = File::create(&log).map_err(|e| failed(format!("{}: {e}", log.display())))?;
         let mut record = Record {
             id: id.clone(), name: runner.name.clone(), command: runner.command.clone(), dir: self.cwd.clone(),
-            state: State::Running, started, ended: None, exit_code: None, pid: 0, owner_pid: std::process::id(),
+            state: State::Running, started, ended: None, exit_code: None, pid: 0, pid_started: 0, owner_pid: std::process::id(),
             stop_requested: false, log: log.to_string_lossy().into_owned(),
         };
         store::write(&self.folder, &record).map_err(failed)?;
@@ -135,6 +135,7 @@ impl Runs {
             }
         };
         record.pid = child.id();
+        record.pid_started = sweep::started(record.pid);
         let _ = store::write(&self.folder, &record);
         let log_file = Arc::new(Mutex::new(log_file));
         let (pumped, pump_ends) = std::sync::mpsc::channel();
@@ -167,7 +168,7 @@ impl Runs {
             let status = child.wait();
             // The command is over; whatever it started goes with it. The sweep closes the pipes a
             // detached child still held, so the pumps end.
-            sweep::sweep(&record.id, Some(record.pid), GRACE);
+            sweep::sweep(&record.id, Some(record.leader()), GRACE);
             // Both pumps end once every holder of the pipes is gone. A holder the sweep could not
             // find (it hides its environment and left the group) must not hold the record open.
             for _ in 0..2 {
@@ -243,7 +244,7 @@ impl Runs {
         }
         // A marker file, not a rewrite of the record: the run's owner is the only writer of that.
         File::create(stop_marker(&self.folder, id)).map_err(|e| e.to_string())?;
-        sweep::sweep(id, Some(record.pid), GRACE);
+        sweep::sweep(id, Some(record.leader()), GRACE);
         Ok(record)
     }
 }
@@ -259,7 +260,7 @@ pub fn watch(id: &str, folder: &Path) {
     let _ = std::io::stdin().read_to_end(&mut sink);
     if let Ok(record) = store::read(folder, id) {
         if record.state == State::Running {
-            sweep::sweep(id, Some(record.pid), GRACE);
+            sweep::sweep(id, Some(record.leader()), GRACE);
             // Read again: a stop, or the run itself, may have finished while the sweep ran.
             if let Ok(mut record) = store::read(folder, id).map(|mut r| { r.stop_requested |= stop_marker(folder, id).exists(); r }) {
                 if record.state == State::Running {

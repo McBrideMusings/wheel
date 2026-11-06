@@ -27,7 +27,7 @@ mod tests {
     fn run(state: State, exit_code: Option<i32>, ended: Option<i64>) -> Record {
         Record {
             id: "i".into(), name: "deploy".into(), command: "c".into(), dir: "/p".into(), state, started: 100, ended, exit_code,
-            pid: 2, owner_pid: 1, stop_requested: false, log: "/l/i.log".into(),
+            pid: 2, pid_started: 0, owner_pid: 1, stop_requested: false, log: "/l/i.log".into(),
         }
     }
 

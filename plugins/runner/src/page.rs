@@ -212,7 +212,7 @@ mod tests {
     fn run(id: &str, state: State, code: Option<i32>) -> Record {
         Record {
             id: id.into(), name: "deploy".into(), command: "make deploy".into(), dir: "/p".into(), state, started: 100,
-            ended: (state != State::Running).then_some(160), exit_code: code, pid: 2, owner_pid: 1, stop_requested: false, log: "/l".into(),
+            ended: (state != State::Running).then_some(160), exit_code: code, pid: 2, pid_started: 0, owner_pid: 1, stop_requested: false, log: "/l".into(),
         }
     }
 

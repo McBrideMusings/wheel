@@ -31,10 +31,21 @@ pub struct Record {
     pub exit_code: Option<i32>,
     /// The command's process, which leads the run's process group.
     pub pid: u32,
+    /// When `pid` started, in seconds since the Unix epoch: a later process given the same pid
+    /// starts at another time. 0 when it could not be read.
+    #[serde(default)]
+    pub pid_started: u64,
     /// The process that owns the run: the runner, or the command line that started it.
     pub owner_pid: u32,
     pub stop_requested: bool,
     pub log: String,
+}
+
+impl Record {
+    /// The command's process, which leads the run's process group.
+    pub fn leader(&self) -> crate::sweep::Leader {
+        crate::sweep::Leader { pid: self.pid, started: self.pid_started }
+    }
 }
 
 /// Where the runs of project `dir` are kept: `$WHEEL_RUNNER_DIR`, else `~/.wheel/runs`, then one
@@ -104,7 +115,7 @@ mod tests {
     fn record(id: &str, started: i64) -> Record {
         Record {
             id: id.into(), name: "n".into(), command: "true".into(), dir: "/p".into(), state: State::Exited,
-            started, ended: Some(started + 1), exit_code: Some(0), pid: 2, owner_pid: 1, stop_requested: false, log: String::new(),
+            started, ended: Some(started + 1), exit_code: Some(0), pid: 2, pid_started: 0, owner_pid: 1, stop_requested: false, log: String::new(),
         }
     }
 
