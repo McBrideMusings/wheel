@@ -384,8 +384,8 @@ public struct CommandPalette: Sendable, Equatable {
             }
         }
         var rows: [Row]
-        if case .missing? = items.first?.item {
-            rows = [Row(item: items[0].item, score: 0)]
+        if let head = items.first, case .missing = head.item {
+            rows = [Row(item: head.item, score: 0)]
         } else {
             rows = rank(items, query: needle)
         }
@@ -519,12 +519,12 @@ public struct CommandPalette: Sendable, Equatable {
         }
         // best[j]: the best score with the query's letters so far matched, the latest at text position j.
         var best = [Int?](repeating: nil, count: chars.count)
-        for j in chars.indices where lower[j] == want[0] { best[j] = base(j) }
+        for j in chars.indices where lower[j] == want.first { best[j] = base(j) }
         for letter in want.dropFirst() {
             var next = [Int?](repeating: nil, count: chars.count)
             for j in chars.indices where lower[j] == letter {
                 var top: Int?
-                for i in 0 ..< j {
+                for i in chars.indices.prefix(j) {
                     guard let before = best[i] else { continue }
                     let step = i == j - 1 ? 5 : -min(3, j - i - 1)
                     top = max(top ?? Int.min, before + step)

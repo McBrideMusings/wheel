@@ -82,10 +82,21 @@ private struct SpaceSlot: View {
     let space: SpaceInfo
     let kept: CGSize?
 
+    /// The space's grid, or its card while the last crash names it.
+    @ViewBuilder private var spaceOrCard: some View {
+        if Quarantine.shared.isolates(space: space.id) {
+            QuarantineCard(title: space.name, detail: "Your other spaces opened as usual.") {
+                Quarantine.shared.release(space: space.id)
+            }
+        } else {
+            SpaceGrid(model: model, drag: model.gridDrag, space: space)
+        }
+    }
+
     var body: some View {
         let shown = model.shownFlag(space.id).shown
         let kept = shown ? nil : kept
-        SpaceGrid(model: model, drag: model.gridDrag, space: space)
+        spaceOrCard
             .environment(\.spaceShown, shown)
             .frame(width: kept?.width, height: kept?.height)
             .frame(width: kept == nil ? nil : 0, height: kept == nil ? nil : 0, alignment: .topLeading)
@@ -398,12 +409,13 @@ struct SpaceGrid: View {
     var body: some View {
         GeometryReader { geo in
             let rect = CGRect(origin: .zero, size: geo.size)
+            let _ = CrashGuard.mark(space: space.id)
             let layout = WheelKit.GridLayout(space.root, in: rect, ratios: drag.ratios, minimum: WheelKit.GridLayout.minimumPane)
             let zoomed = model.zoomedPane(in: space)
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes) { pane in
                     let slide = zoomed != nil && zoomed != pane.id && !reduceMotion ? slidOut(pane.frame, in: rect) : .zero
-                    PaneView(model: model, paneId: pane.id, space: space.id, kind: pane.kind, focused: pane.id == space.focus)
+                    PaneOrCard(model: model, paneId: pane.id, space: space.id, kind: pane.kind, focused: pane.id == space.focus)
                         .frame(width: zoomed == pane.id ? rect.width : pane.frame.width,
                                height: zoomed == pane.id ? rect.height : pane.frame.height)
                         .offset(x: zoomed == pane.id ? 0 : pane.frame.minX + slide.width,
@@ -455,9 +467,11 @@ struct SpaceGrid: View {
             .coordinateSpace(name: "grid")
             .coordinateSpace(name: "spaceGrid")
             .onChange(of: space.root, initial: true) { _, root in
+                CrashGuard.mark(space: space.id)
                 model.baseLayouts[space.id] = WheelKit.GridLayout(root, in: rect, minimum: WheelKit.GridLayout.minimumPane)
             }
             .onChange(of: geo.size) { _, size in
+                CrashGuard.mark(space: space.id)
                 model.baseLayouts[space.id] = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: size), minimum: WheelKit.GridLayout.minimumPane)
             }
         }
@@ -526,6 +540,7 @@ struct PaneView: View {
 
     var body: some View {
         let _ = GridMetrics.shared.body(of: paneId)
+        let _ = CrashGuard.mark(pane: paneId)
         VStack(spacing: 0) {
             PaneHeader(model: model, paneId: paneId, kind: kind, focused: focused)
             Divider()
@@ -1244,10 +1259,11 @@ struct PoppedWindow: View {
     }
 
     var body: some View {
+        let _ = CrashGuard.mark(space: space.id)
         let layout = WheelKit.GridLayout(tree, in: CGRect(origin: .zero, size: size), ratios: drag.ratios, minimum: WheelKit.GridLayout.minimumPane)
         ZStack(alignment: .topLeading) {
             ForEach(layout.panes) { pane in
-                PaneView(model: model, paneId: pane.id, space: space.id, kind: pane.kind, focused: pane.id == space.focus)
+                PaneOrCard(model: model, paneId: pane.id, space: space.id, kind: pane.kind, focused: pane.id == space.focus)
                     .frame(width: pane.frame.width, height: pane.frame.height)
                     .offset(x: pane.frame.minX, y: pane.frame.minY)
             }

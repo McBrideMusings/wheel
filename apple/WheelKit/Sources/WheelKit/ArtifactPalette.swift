@@ -209,7 +209,7 @@ public struct ArtifactPalette: Sendable, Equatable {
         let want = Array(query.lowercased())
         // Lowercasing can change the length (`İ`); a match then points at the wrong characters.
         guard chars.count == text.count else { return nil }
-        if let start = firstRange(of: want, in: chars) { return Array(start ..< start + want.count) }
+        if let start = firstRange(of: want, in: chars) { return Array(chars.indices.dropFirst(start).prefix(want.count)) }
         guard scattered else { return nil }
         var out: [Int] = []
         var from = 0
@@ -223,7 +223,8 @@ public struct ArtifactPalette: Sendable, Equatable {
 
     private static func firstRange(of want: [Character], in chars: [Character]) -> Int? {
         guard !want.isEmpty, want.count <= chars.count else { return nil }
-        for start in 0 ... chars.count - want.count where Array(chars[start ..< start + want.count]) == want { return start }
+        for start in stride(from: 0, through: chars.count - want.count, by: 1)
+        where chars.dropFirst(start).prefix(want.count).elementsEqual(want) { return start }
         return nil
     }
 }

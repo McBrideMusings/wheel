@@ -37,7 +37,7 @@ public struct RemoteInfo: Sendable, Equatable {
 
     static func isTailscale(_ address: String) -> Bool {
         let parts = address.split(separator: ".").compactMap { UInt8($0) }
-        return parts.count == 4 && address.split(separator: ".").count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
+        return parts.count == 4 && address.split(separator: ".").count == 4 && parts.first == 100 && parts.dropFirst().first.map { (64...127).contains($0) } == true
     }
 
     /// What the pairing code encodes for `address`: `{url, token, cert_sha256}` with sorted keys.

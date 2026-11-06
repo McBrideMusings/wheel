@@ -22,7 +22,7 @@ public struct DaemonEndpoint: Sendable {
         guard let host = url.host(percentEncoded: false)?.lowercased() else { return false }
         if host == "localhost" || host == "::1" { return true }
         let octets = host.split(separator: ".", omittingEmptySubsequences: false)
-        return octets.count == 4 && octets.allSatisfy { UInt8($0) != nil } && octets[0] == "127"
+        return octets.count == 4 && octets.allSatisfy { UInt8($0) != nil } && octets.first == "127"
     }
 
     /// A token read from a file, as the daemon writes it.
@@ -162,13 +162,20 @@ public final class DaemonClient {
                 return
             }
             guard gen == generation else { return }
-            var components = URLComponents(url: endpoint.url, resolvingAgainstBaseURL: false)!
+            guard var components = URLComponents(url: endpoint.url, resolvingAgainstBaseURL: false) else {
+                fail(gen, "bad daemon address \(endpoint.url)")
+                return
+            }
             if let name = endpoint.pairingAs {
                 components.queryItems = [URLQueryItem(name: "pair", value: token), URLQueryItem(name: "name", value: name)]
             } else {
                 components.queryItems = [URLQueryItem(name: "token", value: token)]
             }
-            let task = makeSocket(components.url!)
+            guard let socketURL = components.url else {
+                fail(gen, "bad daemon address \(endpoint.url)")
+                return
+            }
+            let task = makeSocket(socketURL)
             task.maximumMessageSize = 64 << 20
             self.task = task
             task.resume()
