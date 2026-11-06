@@ -64,7 +64,7 @@ impl AppState {
                     });
                 if let Some(dir) = &home {
                     let account = match parsed {
-                        Some(Harness::Claude) => self.usage_account_in(std::path::Path::new(dir)),
+                        Some(Harness::Claude | Harness::Codex) => self.usage_account_in(std::path::Path::new(dir)),
                         _ => None,
                     };
                     login = Some(PaneLogin {

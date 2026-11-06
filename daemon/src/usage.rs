@@ -139,20 +139,6 @@ impl UsageState {
 pub(crate) const AGENTS_KEY: &str = "usage.agents";
 pub(crate) const PINS_KEY: &str = "usage.pins";
 
-/// An agent wheel knows by name but has no usage reader for.
-fn other_agent(id: &str, name: &str, listed: &[String]) -> UsageAgent {
-    UsageAgent {
-        id: id.into(),
-        name: name.into(),
-        shown: listed.iter().any(|a| a == id),
-        readable: false,
-        why: Some(format!(
-            "can't read usage: wheel has no reader for {name}'s usage yet"
-        )),
-        accounts: Vec::new(),
-    }
-}
-
 /// One account as the daemon keeps it between reads.
 struct Account {
     key: String,
@@ -214,8 +200,14 @@ pub(crate) struct Usage {
 
 impl Default for Usage {
     fn default() -> Self {
+        Usage::reading(Arc::new(ClaudeLogins::default()))
+    }
+}
+
+impl Usage {
+    fn reading(source: Arc<dyn UsageSource>) -> Self {
         Usage {
-            source: Mutex::new(Arc::new(ClaudeLogins::default())),
+            source: Mutex::new(source),
             timing: UsageTiming::default(),
             kept: Mutex::new(Kept::default()),
             fetching: tokio::sync::Mutex::new(()),
@@ -252,37 +244,50 @@ fn account_id(key: &str) -> String {
 }
 
 impl AppState {
-    /// Read the usage from `source` instead of the Claude Code logins. Tests stub readings this way.
+    /// Read the usage from `source` instead of the Claude Code logins, and read no Codex login:
+    /// tests stub readings this way and must not reach this Mac's real Codex account.
     pub fn set_usage_source(&self, source: Arc<dyn UsageSource>) {
         *self.usage.source.lock().unwrap() = source;
+        *self.codex_usage.source.lock().unwrap() = Arc::new(NoLogins);
     }
 
     /// Read every login again when the last attempt is older than the interval or `force` is set,
     /// and tell every client the new board. A 429's wait holds even a forced read back.
     pub async fn usage_read(&self, force: bool) {
-        let _one = self.usage.fetching.lock().await;
-        let due = {
-            let every = self.usage.timing.every;
-            let kept = self.usage.kept.lock().unwrap();
-            let waiting = kept
-                .backoff_until
-                .is_some_and(|until| Instant::now() < until);
-            !waiting && (force || kept.last_attempt.is_none_or(|at| at.elapsed() >= every))
-        };
-        if due {
-            self.usage_fetch().await;
+        let claude = self.usage_poll(&self.usage, force).await;
+        let codex = self.usage_poll(&self.codex_usage, force).await;
+        if claude || codex {
             let _ = self.global.send(ServerMsg::UsageChanged {
                 board: self.usage_board(),
             });
         }
     }
 
+    /// One agent's poll; whether it called out.
+    async fn usage_poll(&self, usage: &Usage, force: bool) -> bool {
+        let _one = usage.fetching.lock().await;
+        let due = {
+            let every = usage.timing.every;
+            let kept = usage.kept.lock().unwrap();
+            let waiting = kept
+                .backoff_until
+                .is_some_and(|until| Instant::now() < until);
+            !waiting && (force || kept.last_attempt.is_none_or(|at| at.elapsed() >= every))
+        };
+        if due {
+            Self::usage_fetch(usage).await;
+        }
+        due
+    }
+
     /// The account whose login lives in `dir`, as the readings stand.
     pub(crate) fn usage_account_in(&self, dir: &Path) -> Option<UsageAccount> {
         let dir = dir.display().to_string();
+        let now = unix_ms_now();
         self.usage
-            .accounts(unix_ms_now())
+            .accounts(now)
             .into_iter()
+            .chain(self.codex_usage.accounts(now))
             .find(|a| a.dirs.contains(&dir))
     }
 
@@ -290,29 +295,39 @@ impl AppState {
     pub(crate) fn usage_board(&self) -> UsageBoard {
         let listed = self.usage_setting(AGENTS_KEY);
         let pins = self.usage_setting(PINS_KEY);
-        let accounts = self.usage.accounts(unix_ms_now());
-        let tried = self.usage.kept.lock().unwrap().last_attempt.is_some();
-        let why = if accounts.is_empty() {
-            Some(if tried {
-                "not detected: no Claude Code login on this Mac".to_string()
-            } else {
-                "not read yet".to_string()
-            })
-        } else {
-            None
-        };
+        let now = unix_ms_now();
         let agents = vec![
-            UsageAgent {
-                id: "claude".into(),
-                name: "Claude".into(),
-                shown: listed.iter().any(|a| a == "claude"),
-                readable: !accounts.is_empty(),
-                why,
-                accounts,
-            },
-            other_agent("codex", "Codex", &listed),
+            Self::usage_agent("claude", "Claude", "Claude Code", &self.usage, &listed, now),
+            Self::usage_agent("codex", "Codex", "Codex", &self.codex_usage, &listed, now),
         ];
         UsageBoard { agents, pins }
+    }
+
+    fn usage_agent(
+        id: &str,
+        name: &str,
+        login: &str,
+        usage: &Usage,
+        listed: &[String],
+        now: u64,
+    ) -> UsageAgent {
+        let accounts = usage.accounts(now);
+        let tried = usage.kept.lock().unwrap().last_attempt.is_some();
+        let why = accounts.is_empty().then(|| {
+            if tried {
+                format!("not detected: no {login} login on this Mac")
+            } else {
+                "not read yet".to_string()
+            }
+        });
+        UsageAgent {
+            id: id.into(),
+            name: name.into(),
+            shown: listed.iter().any(|a| a == id),
+            readable: !accounts.is_empty(),
+            why,
+            accounts,
+        }
     }
 
     /// A comma list setting, machine-wide, as its entries.
@@ -326,10 +341,10 @@ impl AppState {
             .collect()
     }
 
-    async fn usage_fetch(&self) {
-        let source = self.usage.source.lock().unwrap().clone();
+    async fn usage_fetch(usage: &Usage) {
+        let source = usage.source.lock().unwrap().clone();
         let reads = tokio::task::spawn_blocking(move || source.read()).await;
-        let mut kept = self.usage.kept.lock().unwrap();
+        let mut kept = usage.kept.lock().unwrap();
         kept.last_attempt = Some(Instant::now());
         kept.backoff_until = None;
         let reads = match reads {
@@ -927,6 +942,168 @@ pub fn credentials_in(raw: &str) -> Option<Credentials> {
     })
 }
 
+/// Codex's login and usage: `GET https://chatgpt.com/backend-api/wham/usage` with the ChatGPT
+/// access token Codex keeps in `<CODEX_HOME or ~/.codex>/auth.json`, the call Codex's own rate
+/// limit display makes. A Mac with no `auth.json` (or one holding an API key, which has no plan
+/// limits) has no Codex account here.
+struct CodexLogin;
+
+const CODEX_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
+
+impl Usage {
+    /// The Codex readings.
+    pub(crate) fn codex() -> Self {
+        Usage::reading(Arc::new(CodexLogin))
+    }
+}
+
+/// A source with no accounts.
+struct NoLogins;
+
+impl UsageSource for NoLogins {
+    fn read(&self) -> Vec<LoginRead> {
+        Vec::new()
+    }
+}
+
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
+}
+
+impl UsageSource for CodexLogin {
+    fn read(&self) -> Vec<LoginRead> {
+        let Some(dir) = codex_home() else {
+            return Vec::new();
+        };
+        let Ok(auth) = std::fs::read_to_string(dir.join("auth.json")) else {
+            return Vec::new();
+        };
+        let Some((token, account)) = codex_credentials(&auth) else {
+            return Vec::new();
+        };
+        let name = dir
+            .file_name()
+            .map_or("codex".into(), |n| n.to_string_lossy().into_owned());
+        let result = fetch_codex(&token, &account);
+        if let Err(UsageFailure::Failed { status, why, .. }) = &result {
+            tracing::warn!(
+                "codex usage read failed status={} why={why}",
+                status.map_or("-".to_string(), |s| s.to_string())
+            );
+        }
+        vec![LoginRead {
+            key: format!("codex:{account}"),
+            name,
+            dirs: vec![dir],
+            result,
+        }]
+    }
+}
+
+/// The access token and account id in Codex's `auth.json`; None for an API-key login.
+pub fn codex_credentials(raw: &str) -> Option<(String, String)> {
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let tokens = &value["tokens"];
+    Some((
+        tokens["access_token"].as_str()?.to_string(),
+        tokens["account_id"].as_str()?.to_string(),
+    ))
+}
+
+fn fetch_codex(token: &str, account: &str) -> Result<RawUsage, UsageFailure> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut response = agent
+        .get(CODEX_ENDPOINT)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("ChatGPT-Account-Id", account)
+        .header("User-Agent", "codex-cli")
+        .header("Accept", "application/json")
+        .call()
+        .map_err(|e| UsageFailure::Failed {
+            status: None,
+            why: format!("network: {e}"),
+            retry_after: None,
+        })?;
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
+    if status == 401 || status == 403 {
+        return Err(UsageFailure::NotLoggedIn(
+            "signed out: open Codex to sign in again".into(),
+        ));
+    }
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| UsageFailure::Failed {
+            status: Some(status),
+            why: format!("network: reading the answer: {e}"),
+            retry_after,
+        })?;
+    if !(200..300).contains(&status) {
+        return Err(UsageFailure::Failed {
+            status: Some(status),
+            why: format!("HTTP {status}"),
+            retry_after,
+        });
+    }
+    parse_codex_usage(&body).map_err(|why| UsageFailure::Failed {
+        status: Some(status),
+        why,
+        retry_after: None,
+    })
+}
+
+/// The fields wheeld uses out of Codex's usage answer: the primary (5-hour) and secondary
+/// (weekly) windows, each a percentage and an epoch-seconds reset time.
+pub fn parse_codex_usage(body: &str) -> Result<RawUsage, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|e| format!("the usage answer is not JSON: {e}"))?;
+    let window = |name: &str| -> Result<(f64, Option<String>), String> {
+        let w = &value["rate_limit"][name];
+        let pct = w["used_percent"].as_f64().ok_or_else(|| {
+            format!("the usage answer has no rate_limit.{name}.used_percent number")
+        })?;
+        Ok((pct, w["reset_at"].as_i64().and_then(rfc3339_utc)))
+    };
+    let (session_pct, session_resets_at) = window("primary_window")?;
+    let (weekly_pct, weekly_resets_at) = window("secondary_window")?;
+    let plan = value["plan_type"].as_str().map(|p| {
+        let mut chars = p.chars();
+        chars
+            .next()
+            .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
+    });
+    Ok(RawUsage {
+        session_pct,
+        session_resets_at,
+        weekly_pct,
+        weekly_resets_at,
+        model_limits: Vec::new(),
+        plan,
+        extra_usage: None,
+        email: value["email"].as_str().map(String::from),
+        account: value["account_id"].as_str().map(String::from),
+    })
+}
+
+/// Seconds since the Unix epoch as `2026-11-05T17:41:01Z`; a time out of range gives None.
+fn rfc3339_utc(secs: i64) -> Option<String> {
+    jiff::Timestamp::from_second(secs)
+        .ok()
+        .map(|t| t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
 /// A source that reads a JSON file on every read (`wheeld --usage-fixture`): one answer for one
 /// account, or `{"accounts": [{"name", …answer}]}` for several.
 pub struct FileUsage {
@@ -1125,7 +1302,19 @@ pub fn parse_usage(body: &str) -> Result<RawUsage, String> {
             })
             .ok_or_else(|| format!("the usage answer has no {name}.utilization number"))
     };
-    let (session_pct, session_resets_at) = window("five_hour", "session")?;
+    // No 5-hour window is open while the account is idle: the endpoint then sends `five_hour: null`
+    // and no unscoped session limit, which is 0% used with no reset time.
+    let idle = value["five_hour"].is_null()
+        && !value["limits"].as_array().is_some_and(|limits| {
+            limits
+                .iter()
+                .any(|l| l["group"].as_str() == Some("session") && l["scope"].is_null())
+        });
+    let (session_pct, session_resets_at) = if idle {
+        (0.0, None)
+    } else {
+        window("five_hour", "session")?
+    };
     let (weekly_pct, weekly_resets_at) = window("seven_day", "weekly")?;
     let model_limits = value["limits"]
         .as_array()
@@ -1164,6 +1353,48 @@ pub fn parse_usage(body: &str) -> Result<RawUsage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_idle_account_with_no_five_hour_window_reads_zero_session() {
+        let raw = parse_usage(
+            r#"{"five_hour":null,"seven_day":{"utilization":19.0,"resets_at":"2026-11-11T07:00:01+00:00"},
+               "limits":[{"kind":"weekly_all","group":"weekly","percent":19,"resets_at":"2026-11-11T07:00:01+00:00","scope":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!((raw.session_pct, raw.session_resets_at), (0.0, None));
+        assert_eq!(raw.weekly_pct, 19.0);
+    }
+
+    #[test]
+    fn a_five_hour_window_with_no_number_is_still_an_error() {
+        let err = parse_usage(r#"{"five_hour":{"resets_at":"x"},"seven_day":{"utilization":1.0}}"#)
+            .unwrap_err();
+        assert!(err.contains("five_hour"), "{err}");
+    }
+
+    #[test]
+    fn codex_answers_give_both_windows_with_rfc3339_resets() {
+        let raw = parse_codex_usage(
+            r#"{"email":"a@b.c","account_id":"acc","plan_type":"plus","rate_limit":{
+               "primary_window":{"used_percent":0,"reset_at":1793938861},
+               "secondary_window":{"used_percent":19,"reset_at":1794418386}}}"#,
+        )
+        .unwrap();
+        assert_eq!(raw.session_pct, 0.0);
+        assert_eq!(raw.weekly_pct, 19.0);
+        assert_eq!(raw.plan.as_deref(), Some("Plus"));
+        assert_eq!(rfc3339_utc(0).as_deref(), Some("1970-01-01T00:00:00Z"));
+        assert_eq!(rfc3339_utc(1794418386).as_deref(), Some("2026-11-11T17:33:06Z"));
+    }
+
+    #[test]
+    fn codex_credentials_need_a_chatgpt_token_and_account() {
+        assert_eq!(
+            codex_credentials(r#"{"tokens":{"access_token":"t","account_id":"a"}}"#),
+            Some(("t".into(), "a".into()))
+        );
+        assert_eq!(codex_credentials(r#"{"OPENAI_API_KEY":"sk","tokens":null}"#), None);
+    }
 
     #[test]
     fn the_service_is_the_first_eight_hex_of_the_path_hash() {

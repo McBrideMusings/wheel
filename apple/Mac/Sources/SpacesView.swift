@@ -668,14 +668,8 @@ struct PaneHeader: View {
     @Environment(\.poppedWindow) private var window
 
     /// The other way this pane can show its conversation: a chat for a terminal running Claude
-    /// Code, the Claude Code TUI for an agent pane.
-    private var otherView: ConversationView? {
-        switch kind {
-        case let .terminal(_, agent) where agent?.isClaude == true && model.agentFound("claude"): .agent
-        case let .agent(_, agent, _): agent == "claude" ? .terminal : nil
-        default: nil
-        }
-    }
+    /// Code or Codex, the agent's own terminal for an agent pane.
+    private var otherView: ConversationView? { kind.otherView(agentFound: model.agentFound) }
 
     /// How many controls the header has given up for lack of width. Each level drops the next
     /// group, and the pane menu offers whatever is dropped, so a narrow pane never draws controls

@@ -1161,14 +1161,10 @@ final class PhoneModel {
         client.send(.artifactLs(req: req, space: activeSpace?.id, paneOnly: true))
     }
 
-    /// The other way `kind` can show its conversation: a chat for a terminal running Claude Code,
-    /// the Claude Code terminal for an agent pane.
+    /// The other way `kind` can show its conversation: a chat for a terminal running Claude Code
+    /// or Codex, the agent's own terminal for an agent pane.
     func otherView(_ kind: PaneKind) -> ConversationView? {
-        switch kind {
-        case let .terminal(_, agent) where agent?.isClaude == true && agents.contains { $0.name == "claude" && $0.found }: .agent
-        case let .agent(_, agent, _): agent == "claude" ? .terminal : nil
-        default: nil
-        }
+        kind.otherView { name in agents.contains { $0.name == name && $0.found } }
     }
 }
 

@@ -44,11 +44,7 @@ enum CommandActions {
 
     /// The conversation view the focused pane could switch to, or nil when it has only one.
     static func otherView(_ model: AppModel) -> ConversationView? {
-        switch focusedKind(model) {
-        case let .terminal(_, agent)? where agent?.isClaude == true && model.agentFound("claude"): .agent
-        case let .agent(_, agent, _)?: agent == "claude" ? .terminal : nil
-        default: nil
-        }
+        focusedKind(model)?.otherView(agentFound: model.agentFound)
     }
 
     private static func hasPane(_ model: AppModel) -> Bool {

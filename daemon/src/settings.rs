@@ -445,14 +445,14 @@ const KEYS: [Key; 66] = [
     Key {
         id: crate::usage::AGENTS_KEY,
         accepts: Accepts::List,
-        default: "claude",
+        default: "claude,codex",
         help: "The coding agents the usage strip and the Usage window show, comma separated (claude, codex). An agent wheel cannot read usage for is listed there as not detected or unreadable. Read from this machine's file only.",
     },
     Key {
         id: crate::usage::PINS_KEY,
         accepts: Accepts::List,
-        default: "claude:session,claude:weekly",
-        help: "The usage rows pinned to the strip, comma separated as agent:limit (claude:session, claude:weekly, claude:opus). Read from this machine's file only.",
+        default: "claude:session,claude:weekly,codex:session,codex:weekly",
+        help: "The usage rows pinned to the strip, comma separated as agent:limit (claude:session, claude:weekly, claude:opus, codex:session, codex:weekly). Read from this machine's file only.",
     },
     Key {
         id: "agent.claude.command",
