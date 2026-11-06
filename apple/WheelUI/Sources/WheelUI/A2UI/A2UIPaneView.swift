@@ -25,6 +25,7 @@ public struct A2UIPaneView: View {
                 GeometryReader { geo in
                     ScrollView {
                         A2UISurfaceView(viewModel: styled(surface, palette), catalog: WheelA2UICatalog())
+                            .a2uiCatalogItems(a2uiLibraryItems())
                             .padding(-16) // the surface view pads itself by 16; the page sets its own margins
                             .frame(maxWidth: .infinity, alignment: .top)
                     }
