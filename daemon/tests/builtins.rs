@@ -314,3 +314,37 @@ async fn remove_takes_away_the_folder_the_entry_and_the_record() {
     );
     daemon.abort();
 }
+
+/// A wheeld that starts with an installed built-in behind it brings the built-in up to date when
+/// no file of it was edited, and leaves one with an edited file as it is.
+#[tokio::test]
+async fn a_starting_wheeld_catches_up_an_unedited_built_in_and_spares_an_edited_one() {
+    let inst = instance("catch-up");
+    let (mut ws, daemon) = start(&inst).await;
+    builtins(&mut ws, install()).await;
+    daemon.abort();
+    let page = inst.join("artifacts/sample/index.html");
+    let behind = |inst: &Path| {
+        let mut record = installed(inst);
+        record[NAME]["version"] = 0.into();
+        std::fs::write(inst.join("installed.json"), record.to_string()).unwrap();
+    };
+
+    behind(&inst);
+    let (mut ws, daemon) = start(&inst).await;
+    let listed = builtins(&mut ws, ClientMsg::BuiltinLs { req: Some(1) }).await;
+    assert_eq!(
+        sample(&listed).installed_version,
+        Some(sample(&listed).shipped_version)
+    );
+    daemon.abort();
+
+    std::fs::write(&page, "<p>my edit</p>\n").unwrap();
+    behind(&inst);
+    let (mut ws, daemon) = start(&inst).await;
+    let listed = builtins(&mut ws, ClientMsg::BuiltinLs { req: Some(1) }).await;
+    assert_eq!(sample(&listed).installed_version, Some(0));
+    assert_eq!(sample(&listed).edited_files, ["index.html"]);
+    assert_eq!(std::fs::read_to_string(&page).unwrap(), "<p>my edit</p>\n");
+    daemon.abort();
+}
