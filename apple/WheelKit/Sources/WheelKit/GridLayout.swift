@@ -63,7 +63,8 @@ public struct GridLayout: Sendable {
             let shared = Double(needA / (needA + needB))
             return shared ... shared
         }
-        let lo = Double(needA / total), hi = Double(1 - needB / total)
+        // The needs fit, so `lo <= hi` on paper; rounding can put `hi` one step under `lo` when they fit exactly.
+        let lo = Double(needA / total), hi = max(Double(1 - needB / total), lo)
         let (lo2, hi2) = (max(lo, ratios.lowerBound), min(hi, ratios.upperBound))
         return lo2 <= hi2 ? lo2 ... hi2 : lo ... hi
     }

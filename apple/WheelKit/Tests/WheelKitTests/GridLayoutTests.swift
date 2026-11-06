@@ -47,6 +47,20 @@ struct GridLayoutTests {
         #expect(layout.panes[1].frame.width >= 100 && layout.panes[2].frame.width >= 100)
     }
 
+    /// A row of panes whose minimums an area fits exactly leaves `needA / total` and
+    /// `1 - needB / total` equal on paper but a rounding step apart in floating point; the range
+    /// must never invert, whatever width the window has.
+    @Test func anAreaThatFitsTheMinimumsExactlyNeverInvertsTheRange() {
+        var root = Node.pane(id: "p0", kind: .empty)
+        for i in 1 ..< 9 {
+            root = .split(id: "x\(i)", axis: .horizontal, ratio: 0.2535, a: root, b: .pane(id: "p\(i)", kind: .empty))
+        }
+        for width in stride(from: 1900.0, through: 2600.0, by: 0.01) {
+            let layout = GridLayout(root, in: CGRect(x: 0, y: 0, width: width, height: 600), minimum: GridLayout.minimumPane)
+            #expect(layout.dividers.count == 8)
+        }
+    }
+
     @Test func tooSmallAnAreaSharesItByNeed() {
         let root = Node.split(id: "x1", axis: .vertical, ratio: 0.5, a: .pane(id: "p1", kind: .empty), b: .pane(id: "p2", kind: .empty))
         let layout = GridLayout(root, in: CGRect(x: 0, y: 0, width: 300, height: 108), minimum: minimum)
