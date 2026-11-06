@@ -7,6 +7,7 @@ start_daemon --state-file "$SCR/spaces.json"
 mkdir -p "$SCR/proj"
 w space new "$SCR/proj" >/dev/null
 P="$(w space ls | jget spaces.0.root.id)"
+S="$(w space ls | jget spaces.0.id)"
 B="$(BASE)/artifacts/$P"
 DIR="$INST/artifacts/sample"
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -46,22 +47,23 @@ mkdir -p "$DIR"
 expect_exit_out 6 'Wheel did not install it' "a folder Wheel did not make is never installed over" w artifact builtin install sample
 check "and is left as it was" test -d "$DIR"
 
-expect_out '^markdown  shipped 5  not installed$' "ls lists the markdown built-in" w artifact builtin ls
-expect_out '^markdown  shipped 5  installed 5$' "markdown installs" w artifact builtin install markdown
+expect_out '^markdown  shipped 9  not installed$' "ls lists the markdown built-in" w artifact builtin ls
+expect_out '^markdown  shipped 9  installed 9$' "markdown installs" w artifact builtin install markdown
 printf '# Post check-%s\n\n![shot](shot.png)\n' "$((6*7))" >"$SCR/index.md"
 printf 'png-bytes' >"$SCR/shot.png"
-expect_exit 0 "a post is made with --renderer" w artifact new ask --renderer markdown "$SCR/index.md"
+expect_exit 0 "a post is made with --renderer" w artifact new --space "$S" ask --renderer markdown "$SCR/index.md"
 check "and holds the markdown and the image it points at, no page" sh -c "test -f '$SCR/proj/.wheel/artifacts/ask/index.md' && test -f '$SCR/proj/.wheel/artifacts/ask/shot.png' && test ! -e '$SCR/proj/.wheel/artifacts/ask/index.html'"
-expect_out 'a post, drawn by markdown' "artifact show says it is a post" w artifact show ask
+expect_out 'a post, drawn by markdown' "artifact show says it is a post" w artifact show --space "$S" ask
 printf '# not index\n' >"$SCR/notes.md"
-expect_exit_out 6 'renderer markdown reads index.md' "a post without the file its renderer reads is refused" w artifact new wrongfile --renderer markdown "$SCR/notes.md"
-expect_exit_out 6 'renderer nope is not an artifact' "a missing renderer is refused" w artifact new bad --renderer nope "$SCR/index.md"
+expect_exit_out 6 'renderer markdown reads index.md' "a post without the file its renderer reads is refused" w artifact new --space "$S" wrongfile --renderer markdown "$SCR/notes.md"
+expect_exit_out 6 'renderer nope is not an artifact' "a missing renderer is refused" w artifact new --space "$S" bad --renderer nope "$SCR/index.md"
 expect_exit 0 "a web pane opens the post" w pane kind "$P" web --artifact ask
 eq "the post serves its renderer's page" "$(http -L -c "$SCR/jar" "$B/index.html?token=$(TOKEN)")" "200"
 check "that page reads the post's markdown and talks to the page channel" sh -c "curl -s -b '$SCR/jar' '$B/' | grep -q 'data/index.md' && curl -s -b '$SCR/jar' '$B/' | grep -q '.wheel/client.js'"
+check "the page's vendored markdown library is served beside it" sh -c "curl -s -b '$SCR/jar' '$B/marked.umd.js' | grep -q 'marked'"
 check "the post's own file is served under data/" sh -c "curl -s -b '$SCR/jar' '$B/data/index.md' | grep -q 'Post check-42'"
 check "and its image" sh -c "curl -s -b '$SCR/jar' '$B/data/shot.png' | grep -q png-bytes"
-expect_out '^markdown  shipped 5  not installed$' "markdown removes" w artifact builtin remove markdown
+expect_out '^markdown  shipped 9  not installed$' "markdown removes" w artifact builtin remove markdown
 
 expect_out '^mockup  shipped 4  not installed$' "ls lists the mockup built-in" w artifact builtin ls
 expect_out '^mockup  shipped 4  installed 4$' "mockup installs" w artifact builtin install mockup

@@ -2021,15 +2021,30 @@ final class AppModel {
     /// terminal sends the size its pane ended at.
     private func animateLayout(_ change: () -> Void) {
         layoutAnimations += 1
-        withAnimation(GridMotion.layout, completionCriteria: .logicallyComplete, change) { [weak self] in
-            guard let self else { return }
-            layoutAnimations -= 1
+        // SwiftUI may never call the completion (an animation interrupted by a space switch or a
+        // removed view); the count would stay above 0 and `settle` would never send another size.
+        // The watchdog ends the animation itself after `layoutAnimationLimit`; whichever of the two
+        // runs first ends it, and the other does nothing.
+        var ended = false
+        let end: @MainActor (String) -> Void = { [weak self] how in
+            guard let self, !ended else { return }
+            ended = true
+            layoutAnimations = max(0, layoutAnimations - 1)
+            if how != "done" { Log.info("layout animation \(how): completion never ran") }
             if layoutAnimations == 0 {
                 Log.info("layout animation done: settling \(terminals.count) terminal(s)")
                 for terminal in terminals.values { settle(terminal) }
             }
         }
+        withAnimation(GridMotion.layout, completionCriteria: .logicallyComplete, change) { end("done") }
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.layoutAnimationLimit)
+            end("released by watchdog")
+        }
     }
+
+    /// Several times a layout animation's length (`GridMotion.layoutDuration`, 0.22 s).
+    private static let layoutAnimationLimit: Duration = .seconds(2)
 
     private func attach(_ terminal: PaneTerminal) {
         Log.info("attaching to \(terminal.term)")
