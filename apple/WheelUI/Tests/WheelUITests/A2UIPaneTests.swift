@@ -1,4 +1,3 @@
-import A2UISwiftCore
 import Foundation
 import Testing
 import WheelKit
@@ -47,7 +46,7 @@ import WheelKit
     }
 
     func value(_ pane: A2UIPane, _ path: String) -> String? {
-        pane.surface?.surface.dataModel.get(path)?.stringValue
+        pane.surface?.get(path)?.stringValue
     }
 
     @Test func aServerThatLinksALayoutBecomesANativePaneWithItsFirstData() throws {
@@ -78,7 +77,7 @@ import WheelKit
         let escaped = String(decoding: try JSONSerialization.data(withJSONObject: [Self.layout]), as: UTF8.self).dropFirst().dropLast()
         _ = pane.handle(try frame(#"{"ev":"resource","req":2,"contents":[{"text":\#(escaped)}]}"#))
         #expect(pane.unsupported == ["Gizmo"])
-        let root = pane.surface?.componentTree
+        let root = pane.surface?.root
         #expect(root?.children.count == 4)
     }
 
@@ -90,7 +89,7 @@ import WheelKit
         _ = pane.handle(try frame(#"{"ev":"resource","req":2,"contents":[{"text":\#(escaped)}]}"#))
         _ = pane.handle(try result(Self.first))
 
-        pane.surface?.surface.dispatchAction(name: "save_note", sourceComponentId: "save", context: ["text": .string("Ship the spike")])
+        pane.surface?.dispatchAction(name: "save_note", sourceComponentId: "save", context: ["text": .string("Ship the spike")])
         guard case let .artifactCall(req, _, _, _, _, tool, arguments)? = sent.sent.last else { Issue.record("no call sent"); return }
         #expect(tool == "save_note")
         #expect(arguments == #"{"text":"Ship the spike"}"#)
@@ -109,7 +108,7 @@ import WheelKit
         let escaped = String(decoding: try JSONSerialization.data(withJSONObject: [Self.layout]), as: UTF8.self).dropFirst().dropLast()
         _ = pane.handle(try frame(#"{"ev":"resource","req":2,"contents":[{"text":\#(escaped)}]}"#))
         _ = pane.handle(try result(Self.first))
-        pane.surface?.surface.dispatchAction(name: "save_note", sourceComponentId: "save")
+        pane.surface?.dispatchAction(name: "save_note", sourceComponentId: "save")
         guard case let .artifactCall(req, _, _, _, _, _, _)? = sent.sent.last else { Issue.record("no call sent"); return }
         _ = pane.handle(try frame(#"{"ev":"error","req":\#(req ?? 0),"message":"the MCP server closed"}"#))
         #expect(pane.notice == "save_note: the MCP server closed")

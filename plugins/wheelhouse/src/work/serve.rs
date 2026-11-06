@@ -147,7 +147,7 @@ fn components(dir: &str, agents: &[agents::Agent], ui: &Ui, mode: Mode) -> Vec<V
         page.push(p.boxed("notice", "v", vec![l], json!({ "border": if *ok { "ok" } else { "bad" }, "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
     }
 
-    p.put(json!({ "id": "brief", "component": "SearchField", "value": ui.brief, "action": "set_brief", "placeholder": "Brief for a new agent" }));
+    p.search("brief", "set_brief", &ui.brief, "Brief for a new agent");
     let start = p.button("start", "Start agent", "start_agent", json!({}), json!({ "disabled": ui.brief.trim().is_empty() }));
     page.push(p.boxed("starter", "h", vec!["brief".into(), start], json!({ "spacing": 8, "widths": ["flex", null], "trailing": 1, "padding": [12, 0, 0, 0] })));
 
@@ -185,7 +185,7 @@ fn components(dir: &str, agents: &[agents::Agent], ui: &Ui, mode: Mode) -> Vec<V
     t["id"] = json!("table");
     p.put(t);
     page.push(p.boxed("table.b", "v", vec!["table".into()], json!({ "padding": [12, 0, 0, 0] })));
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
     p.out
 }
 

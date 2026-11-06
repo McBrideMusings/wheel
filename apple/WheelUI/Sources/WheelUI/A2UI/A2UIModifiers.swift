@@ -1,5 +1,3 @@
-import A2UISwiftCore
-import A2UISwiftUI
 import SwiftUI
 
 // A component's optional `modifiers` property is a list of SwiftUI modifiers applied in order, each named as SwiftUI names it
@@ -174,9 +172,3 @@ extension View {
     }
 }
 
-/// Every library component is drawn by the library and then given its `modifiers`.
-func a2uiLibraryItems() -> [CatalogItem] {
-    BuiltinComponentType.allCases.map { type in
-        CatalogItem(name: type) { ctx in AnyView(ctx.buildDefaultView().a2uiModified(ctx.node)) }
-    }
-}

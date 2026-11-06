@@ -87,7 +87,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
     }
     if s.repo.is_some() {
-        p.put(json!({ "id": "search", "component": "SearchField", "value": ui.q, "action": "set_query", "placeholder": "Search" }));
+        p.search("search", "set_query", &ui.q, "Search");
         let shown: Vec<&Pr> = s.prs.iter().filter(|x| matches(x, ui)).collect();
         let count = p.label("count", &format!("{} of {}", shown.len(), s.prs.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
         page.push(p.boxed("tools", "h", vec!["search".into(), count], json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": ["flex", 96], "trailing": 1 })));
@@ -115,7 +115,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             page.push(p.boxed("pr", "v", kids, json!({ "spacing": 3 })));
         }
     }
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
     p.out
 }
 
@@ -128,6 +128,7 @@ fn answer(s: &Snapshot, ui: &Ui) -> CallToolResult {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Query {
     /// The search text.
+    #[serde(alias = "value")]
     q: String,
 }
 

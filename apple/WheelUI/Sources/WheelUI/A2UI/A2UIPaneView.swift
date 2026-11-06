@@ -1,5 +1,3 @@
-import A2UISwiftCore
-import A2UISwiftUI
 import SwiftUI
 
 /// The native body of a pane whose MCP server speaks A2UI: the surface, with the last refusal of
@@ -24,9 +22,7 @@ public struct A2UIPaneView: View {
             if let surface = pane.surface {
                 GeometryReader { geo in
                     ScrollView {
-                        A2UISurfaceView(viewModel: styled(surface, palette), catalog: WheelA2UICatalog())
-                            .a2uiCatalogItems(a2uiLibraryItems())
-                            .padding(-16) // the surface view pads itself by 16; the page sets its own margins
+                        A2UISurfaceView(surface: surface)
                             .frame(maxWidth: .infinity, alignment: .top)
                     }
                     .environment(\.a2uiPane, geo.size)
@@ -39,13 +35,6 @@ public struct A2UIPaneView: View {
         }
         .background(palette.bg)
         .accessibilityIdentifier("a2ui.pane")
-    }
-
-    /// The theme goes on the view model: the surface view re-injects it from there and overwrites
-    /// a modifier set outside.
-    private func styled(_ surface: SurfaceViewModel, _ palette: WheelPalette) -> SurfaceViewModel {
-        surface.a2uiStyle = themedStyle(palette, leaf: 0)
-        return surface
     }
 
     private struct Banner: View {

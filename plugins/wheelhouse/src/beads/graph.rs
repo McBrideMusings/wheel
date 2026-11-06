@@ -798,8 +798,8 @@ impl<'a> Model<'a> {
         )];
         if focus {
             bar.push(p.button("graph.back", "‹ Back", "focus_back", json!({}), json!({ "disabled": ui.fhist.is_empty() })));
-            p.put(json!({ "id": "graph.depth", "component": "Segmented", "selected": ui.depth.to_string(), "action": "set_depth",
-                "options": [{ "value": "1", "text": "1 hop" }, { "value": "2", "text": "2 hops" }, { "value": "3", "text": "3 hops" }] }));
+            p.choose("graph.depth", "/set_depth", &ui.depth.to_string(), vec![
+                json!({ "value": "1", "text": "1 hop" }), json!({ "value": "2", "text": "2 hops" }), json!({ "value": "3", "text": "3 hops" })], true, false);
             bar.push("graph.depth".into());
         }
         ids.push(p.boxed("graph.bar", "h", bar, json!({ "spacing": 8, "padding": [10, 0, 4, 0] })));
@@ -868,11 +868,11 @@ impl<'a> Model<'a> {
         ]);
         let table = json!({ "id": "graph.more.t", "component": "Table", "rowAction": "focus_on", "foldAction": "", "columns": columns,
             "sort": { "key": "", "asc": true }, "sections": [{ "title": "", "count": rows.len(), "rows": rows }], "empty": "" });
-        let title = json!({ "id": "graph.more.h", "component": "Label", "text": format!("{} more beads", rows.len()), "weight": "semibold" });
+        let title = json!({ "id": "graph.more.h", "component": "Text", "text": format!("{} more beads", rows.len()), "modifiers": [{ "fontWeight": "semibold" }] });
         p.put(table);
         p.put(title);
-        p.put(json!({ "id": "graph.more.b", "component": "Box", "axis": "v", "spacing": 8, "children": ["graph.more.h", "graph.more.t"] }));
-        p.put(json!({ "id": "graph.more", "component": "Sheet", "presented": true, "action": "escape", "children": ["graph.more.b"] }));
+        p.put(json!({ "id": "graph.more.b", "component": "Column", "spacing": 8, "children": ["graph.more.h", "graph.more.t"] }));
+        p.put(json!({ "id": "graph.more", "component": "Modal", "presented": true, "dismissAction": "escape", "children": ["graph.more.b"] }));
     }
 
     /// The pane's focus history, cut to beads that still exist.
@@ -1332,7 +1332,7 @@ mod tests {
         let ids = m.components(&mut p, &ui);
         assert!(ids.contains(&"graph.more".to_string()));
         let sheet = p.out.iter().find(|c| c["id"] == "graph.more").unwrap();
-        assert_eq!(sheet["action"], "escape");
+        assert_eq!(sheet["dismissAction"], "escape");
         let table = p.out.iter().find(|c| c["id"] == "graph.more.t").unwrap();
         assert_eq!(table["sections"][0]["rows"].as_array().unwrap().len(), 2);
         assert_eq!(table["rowAction"], "focus_on");

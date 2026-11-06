@@ -73,6 +73,7 @@ struct Filter {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Query {
     /// The search text.
+    #[serde(alias = "value")]
     q: String,
 }
 

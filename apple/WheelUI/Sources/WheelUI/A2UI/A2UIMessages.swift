@@ -1,4 +1,3 @@
-import A2UISwiftCore
 import Foundation
 import WheelKit
 
@@ -32,7 +31,7 @@ public enum A2UIMessages {
 
     /// What the messages of a document or a tool result came to.
     public struct Decoded {
-        public var messages: [A2uiMessage]
+        public var messages: [[String: AnyCodable]]
         /// The names of the components the catalog does not hold; each is drawn as an
         /// "unsupported" placeholder instead of being dropped.
         public var unsupported: [String]
@@ -65,7 +64,7 @@ public enum A2UIMessages {
         }
         let rewritten = try JSONSerialization.data(withJSONObject: list)
         do {
-            return Decoded(messages: try JSONDecoder().decode([A2uiMessage].self, from: rewritten), unsupported: unsupported)
+            return Decoded(messages: try JSONDecoder().decode([[String: AnyCodable]].self, from: rewritten), unsupported: unsupported)
         } catch {
             throw Failure.notA2UI("not A2UI messages: \(error)")
         }
@@ -104,8 +103,8 @@ public enum A2UIMessages {
     }
 
     /// An action's context as the arguments of the tool it names.
-    public static func arguments(_ action: A2uiClientAction) -> String {
-        guard let data = try? JSONEncoder().encode(action.context) else { return "{}" }
+    public static func arguments(_ context: [String: AnyCodable]) -> String {
+        guard let data = try? JSONEncoder().encode(context) else { return "{}" }
         return String(decoding: data, as: UTF8.self)
     }
 }

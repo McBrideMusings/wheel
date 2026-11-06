@@ -32,6 +32,13 @@ pub trait View: Send + Sync {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData>;
 
+    /// The tool and arguments a control's `data_changed` (a `path` and the `value` written there) stands for.
+    /// The call a `data_changed` stands for (`change_call`) when this view has the tool the path names.
+    fn changed(&self, path: &str, value: &Value) -> Option<(String, serde_json::Map<String, Value>)> {
+        let (tool, args) = change_call(path, value)?;
+        self.tools().iter().any(|t| t.name == tool).then_some((tool, args))
+    }
+
     /// The A2UI messages a read of the page answers with before the first call draws it.
     fn skeleton(&self) -> Value;
 
@@ -95,5 +102,54 @@ impl Registry {
             None if self.views.len() == 1 => Ok(self.views[0].clone()),
             None => Err("the request names no artifact (_meta wheel/artifact)".into()),
         }
+    }
+}
+
+/// A path is `/<tool>` or `/<tool>/<key>`; the arguments are the written value as `value` text and the key as `key`. A choice
+/// (an array) sends its first selection.
+pub fn change_call(path: &str, value: &Value) -> Option<(String, serde_json::Map<String, Value>)> {
+    let mut parts = path.trim_start_matches('/').splitn(2, '/');
+    let tool = parts.next().filter(|t| !t.is_empty())?;
+    let text = match value {
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Array(a) => a.first().and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        _ => String::new(),
+    };
+    let mut args = serde_json::Map::new();
+    if let Some(key) = parts.next().filter(|k| !k.is_empty()) {
+        args.insert("key".into(), Value::String(key.into()));
+    }
+    args.insert("value".into(), Value::String(text));
+    Some((tool.to_string(), args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_path_names_the_tool_and_a_second_segment_its_key() {
+        let (tool, args) = change_call("/set_filter/status", &json!(["open"])).unwrap();
+        assert_eq!(tool, "set_filter");
+        assert_eq!((args["key"].as_str(), args["value"].as_str()), (Some("status"), Some("open")));
+        let (tool, args) = change_call("/set_query", &json!("bug")).unwrap();
+        assert_eq!((tool.as_str(), args["value"].as_str(), args.get("key")), ("set_query", Some("bug"), None));
+    }
+
+    #[test]
+    fn a_key_keeps_its_slashes_and_a_value_becomes_text() {
+        assert_eq!(change_call("/set_new/a/b", &json!("x")).unwrap().1["key"], "a/b");
+        assert_eq!(change_call("/set_hide", &json!(true)).unwrap().1["value"], "true");
+        assert_eq!(change_call("/set_n", &json!(3)).unwrap().1["value"], "3");
+        assert_eq!(change_call("/set_view", &json!([])).unwrap().1["value"], "");
+    }
+
+    #[test]
+    fn a_path_with_no_tool_is_no_call() {
+        assert!(change_call("/", &json!("x")).is_none());
+        assert!(change_call("", &json!("x")).is_none());
     }
 }

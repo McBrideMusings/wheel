@@ -61,7 +61,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     }
     match &ui.editing {
         Some(text) => {
-            p.put(json!({ "id": "vision.edit", "component": "SearchField", "value": text, "action": "set_vision_draft", "placeholder": "What this project is for" }));
+            p.search("vision.edit", "set_vision_draft", text, "What this project is for");
             let save = p.button("vision.save", "Save", "save_vision", json!({}), json!({ "disabled": text.trim().is_empty() }));
             let cancel = p.button("vision.cancel", "Cancel", "cancel_vision", json!({}), json!({ "style": "link" }));
             page.push(p.boxed("vision.row", "h", vec!["vision.edit".into(), save, cancel], json!({ "spacing": 8, "widths": ["flex", null, null], "padding": [0, 0, 14, 0] })));
@@ -102,7 +102,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         p.put(t);
         page.push(p.boxed("table.b", "v", vec!["table".into()], json!({ "padding": [18, 0, 0, 0] })));
     }
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
     p.out
 }
 
@@ -251,7 +251,7 @@ mod tests {
         assert!(c.iter().any(|v| v["id"] == "vision" && v["text"] == "Why."));
         assert!(c.iter().any(|v| v["id"] == "vision.edit" && v["action"]["event"]["name"] == "edit_vision"));
         let c = components(&s, &Ui { editing: Some("New".into()), notice: None });
-        assert!(c.iter().any(|v| v["id"] == "vision.edit" && v["value"] == "New"));
+        assert!(c.iter().any(|v| v["updateDataModel"]["path"] == "/set_vision_draft" && v["updateDataModel"]["value"] == "New"));
         assert!(c.iter().any(|v| v["id"] == "vision.save"));
     }
 }

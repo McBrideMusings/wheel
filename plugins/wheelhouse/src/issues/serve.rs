@@ -132,12 +132,10 @@ fn detail(p: &mut Page, i: &Item) -> String {
         let v = p.label("d.f.st.v", "closed", json!({ "chip": true, "tone": "muted" }));
         c.push(fact(p, "st", "Status", v));
     } else {
-        p.put(json!({ "id": "d.status", "component": "Select", "key": "status", "action": "set_field", "width": 140,
-            "options": options(&STATUSES), "selected": i.status }));
+        p.choose("d.status", "/set_field/status", &i.status.to_string(), options(&STATUSES), false, false);
         let l = p.label("d.f.st.k", "Status", json!({ "tone": "muted", "size": 12 }));
         c.push(p.boxed("d.f.st", "h", vec![l, "d.status".into()], json!({ "spacing": 12, "widths": [84, "flex"], "align": "firstTextBaseline" })));
-        p.put(json!({ "id": "d.pri", "component": "Select", "key": "priority", "action": "set_field", "width": 140,
-            "options": priorities(), "selected": i.priority.unwrap_or(2).to_string() }));
+        p.choose("d.pri", "/set_field/priority", &i.priority.unwrap_or(2).to_string(), priorities(), false, false);
         let l = p.label("d.f.pr.k", "Priority", json!({ "tone": "muted", "size": 12 }));
         c.push(p.boxed("d.f.pr", "h", vec![l, "d.pri".into()], json!({ "spacing": 12, "widths": [84, "flex"], "align": "firstTextBaseline" })));
     }
@@ -149,7 +147,7 @@ fn detail(p: &mut Page, i: &Item) -> String {
         c.push(p.button("d.close", "Close issue", "close_issue", json!({}), json!({})));
     }
     let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
-    p.put(json!({ "id": "detail", "component": "Sheet", "presented": true, "action": "close_detail", "children": [body] }));
+    p.put(json!({ "id": "detail", "component": "Modal", "presented": true, "dismissAction": "close_detail", "children": [body] }));
     "detail".into()
 }
 
@@ -170,16 +168,16 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         let l = p.label("none", "This project keeps no tracker (no .beads directory).", json!({ "tone": "muted" }));
         page.push(p.boxed("none.b", "v", vec![l], json!({ "padding": [12, 0] })));
     } else if s.error.is_none() {
-        p.put(json!({ "id": "new.title", "component": "SearchField", "value": ui.title, "action": "set_draft", "placeholder": "New issue title" }));
-        p.put(json!({ "id": "new.kind", "component": "Select", "key": "kind", "action": "set_new", "width": 110, "options": options(&KINDS), "selected": ui.kind }));
-        p.put(json!({ "id": "new.pri", "component": "Select", "key": "priority", "action": "set_new", "width": 80, "options": priorities(), "selected": ui.priority.to_string() }));
+        p.search("new.title", "set_draft", &ui.title, "New issue title");
+        p.choose("new.kind", "/set_new/kind", &ui.kind.to_string(), options(&KINDS), false, false);
+        p.choose("new.pri", "/set_new/priority", &ui.priority.to_string(), priorities(), false, false);
         let create = p.button("new.create", "Create", "create_issue", json!({}), json!({ "disabled": ui.title.trim().is_empty() }));
         page.push(p.boxed("new", "h", vec!["new.title".into(), "new.kind".into(), "new.pri".into(), create],
             json!({ "spacing": 8, "widths": ["flex", null, null, null], "padding": [0, 0, 12, 0] })));
-        p.put(json!({ "id": "search", "component": "SearchField", "value": ui.q, "action": "set_query", "placeholder": "Search" }));
-        p.put(json!({ "id": "views", "component": "Segmented", "selected": ui.show, "action": "set_show",
-            "options": [{ "value": "open", "text": "Open" }, { "value": "ready", "text": "Ready" },
-                { "value": "closed", "text": "Closed" }, { "value": "all", "text": "All" }] }));
+        p.search("search", "set_query", &ui.q, "Search");
+        p.choose("views", "/set_show", &ui.show, vec![
+            json!({ "value": "open", "text": "Open" }), json!({ "value": "ready", "text": "Ready" }),
+            json!({ "value": "closed", "text": "Closed" }), json!({ "value": "all", "text": "All" })], true, false);
         let rows: Vec<&Item> = s.items.iter().filter(|i| shown(i, ui)).collect();
         let count = p.label("count", &format!("{} of {}", rows.len(), s.items.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
         page.push(p.boxed("tools", "h", vec!["search".into(), "views".into(), count],
@@ -201,7 +199,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             page.push(detail(&mut p, i));
         }
     }
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
     p.out
 }
 
@@ -431,6 +429,6 @@ mod tests {
         ui.sel = Some("t-1".into());
         let c = components(&s, &ui);
         assert!(c.iter().any(|v| v["id"] == "d.close" && v["action"]["event"]["name"] == "close_issue"));
-        assert!(c.iter().any(|v| v["id"] == "d.status" && v["selected"] == "open"));
+        assert!(c.iter().any(|v| v["updateDataModel"]["path"] == "/set_field/status" && v["updateDataModel"]["value"][0] == "open"));
     }
 }

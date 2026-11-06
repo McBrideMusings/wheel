@@ -54,6 +54,9 @@ pub fn update(components: Vec<Value>) -> Value {
     json!([{ "version": "v0.9", "updateComponents": { "surfaceId": SURFACE, "components": components } }])
 }
 
+#[path = "../../wheelhouse/src/core/layout.rs"]
+mod layout;
+
 struct Page {
     out: Vec<Value>,
 }
@@ -63,16 +66,10 @@ impl Page {
         self.out.push(v);
     }
     fn label(&mut self, id: &str, text: &str, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Label", "text": text });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
+        layout::label(&mut self.out, id, text, &extra)
     }
     fn boxed(&mut self, id: &str, axis: &str, children: Vec<String>, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Box", "axis": axis, "children": children });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
+        layout::boxed(&mut self.out, id, axis, children, &extra)
     }
     /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or
     /// plain draws it borderless, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.
@@ -234,7 +231,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         page.push(p.boxed("runs", "v", blocks, json!({ "spacing": 16 })));
     }
 
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [28, 28, 56, 28], "spacing": 24, "children": page }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [28, 28, 56, 28], "spacing": 24 }));
     p.out
 }
 
@@ -281,7 +278,7 @@ mod tests {
         assert_eq!(find(&c, "g.project.h.t")["text"], "This project");
         assert_eq!(find(&c, "g.project.h.n")["text"], "1");
         assert_eq!(find(&c, "g.machine.h.t")["text"], "This machine");
-        assert_eq!(find(&c, "g.project")["border"], "line");
+        assert!(find(&c, "g.project")["modifiers"].as_array().unwrap().iter().any(|x| x["overlay"]["stroke"] == "separator"));
         assert_eq!(find(&c, "r.project.build.name")["text"], "build");
         assert_eq!(find(&c, "r.project.build.cmd")["text"], "make build");
         assert_eq!(find(&c, "r.project.build.run")["component"], "Button");
@@ -312,11 +309,11 @@ mod tests {
         let runs = [run("b", State::Running, None), run("a", State::Exited, Some(2))];
         let logs = std::collections::HashMap::from([("b".to_string(), "12:00:01  hi\n".to_string()), ("a".to_string(), String::new())]);
         let c = components(&rs, &runs, &Ui::default(), &logs, 142);
-        assert_eq!(find(&c, "run.b")["border"], "line");
-        assert_eq!(find(&c, "run.b.state")["text"], "running");
-        assert_eq!(find(&c, "run.b.state")["symbol"], "spinner");
-        assert_eq!(find(&c, "run.a.state")["text"], "exit 2");
-        assert_eq!(find(&c, "run.a.state")["symbol"], "xmark.circle.fill");
+        assert!(find(&c, "run.b")["modifiers"].as_array().unwrap().iter().any(|x| x["overlay"]["stroke"] == "separator"));
+        assert_eq!(find(&c, "run.b.state.t")["text"], "running");
+        assert_eq!(find(&c, "run.b.state.d")["component"], "ProgressView");
+        assert_eq!(find(&c, "run.a.state.t")["text"], "exit 2");
+        assert_eq!(find(&c, "run.a.state.d")["name"], "xmark.circle.fill");
         assert_eq!(find(&c, "run.a.when")["text"], "00:01:40 · 1:00".replace("00:01:40", &crate::clock(100)));
         assert_eq!(find(&c, "run.b.log")["text"], "12:00:01  hi");
         assert_eq!(find(&c, "run.a.log")["text"], "(no output yet)");
@@ -330,12 +327,12 @@ mod tests {
     fn closed_runs_drop_out_and_older_ones_come_in_batches_of_five() {
         let runs: Vec<Record> = (0..12).map(|i| run(&format!("r{i:02}"), State::Exited, Some(0))).collect();
         let c = components(&[], &runs, &Ui::default(), &Default::default(), 200);
-        assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 5);
+        assert_eq!(c.iter().filter(|v| v["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["overlay"]["stroke"] == "separator")) && v["id"].as_str().unwrap().starts_with("run.r")).count(), 5);
         assert_eq!(find(&c, "runs.more.t")["text"], "Show older runs · 7");
         let ui = Ui { more: 1, closed: ["r00".to_string()].into(), ..Ui::default() };
         let c = components(&[], &runs, &ui, &Default::default(), 200);
         assert!(c.iter().all(|v| v["id"] != "run.r00"));
-        assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 10);
+        assert_eq!(c.iter().filter(|v| v["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["overlay"]["stroke"] == "separator")) && v["id"].as_str().unwrap().starts_with("run.r")).count(), 10);
         assert_eq!(find(&c, "runs.more.t")["text"], "Show older runs · 1");
     }
 }

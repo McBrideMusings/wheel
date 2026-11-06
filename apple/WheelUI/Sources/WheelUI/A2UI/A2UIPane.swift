@@ -1,5 +1,3 @@
-import A2UISwiftCore
-import A2UISwiftUI
 import Foundation
 import Observation
 import WheelKit
@@ -27,7 +25,7 @@ public final class A2UIPane {
     public private(set) var notice: String?
     /// The names of the components the layout asked for and the catalog does not hold.
     public private(set) var unsupported: [String] = []
-    public private(set) var surface: SurfaceViewModel?
+    public private(set) var surface: SurfaceModel?
 
     /// Whether the pane shows this model in place of the artifact's web page: the server linked an
     /// A2UI layout, whether or not it has answered since.
@@ -45,11 +43,15 @@ public final class A2UIPane {
     private let nextReq: () -> UInt64
     private var link: A2UIMessages.Link?
     private var pending: [UInt64: Step] = [:]
-    private var subscription: Subscription?
-    static let catalogNames = basicCatalog.componentNames.union(wheelA2UIExtensions)
+    /// The newest change per path, sent once typing pauses; a change sent supersedes any waiting for the same path.
+    private var changeTimers: [String: Task<Void, Never>] = [:]
+    static let catalogNames = Set(["Text", "Image", "Icon", "Video", "AudioPlayer", "Row", "Column", "List", "Card", "Tabs", "Divider", "Modal", "Button",
+                                   "CheckBox", "TextField", "DateTimeInput", "ChoicePicker", "Slider"]).union(wheelA2UIExtensions)
     private var catalogNames: Set<String> { Self.catalogNames }
 
-    private enum Step { case tools, layout, data, action(String) }
+    private enum Step { case tools, layout, data, action(String), change(String) }
+    /// Change calls sent per path and not yet answered; a path with one, or with a timer waiting, is held in the surface.
+    private var inFlight: [String: Int] = [:]
 
     public init(pane: String, artifact: ArtifactRef, space: String?, send: @escaping (ClientMsg) -> Void, nextReq: @escaping () -> UInt64) {
         self.pane = pane
@@ -60,7 +62,7 @@ public final class A2UIPane {
     }
 
     /// The string at `path` of the surface's data model, for a check reading what the pane holds.
-    public func text(at path: String) -> String? { surface?.surface.dataModel.get(path)?.stringValue }
+    public func text(at path: String) -> String? { surface?.get(path)?.stringValue }
 
     /// The state as a word, for a check.
     public var stateName: String {
@@ -75,7 +77,7 @@ public final class A2UIPane {
 
     /// Raise the action a button would, with string context, for a check that has no pointer.
     public func press(_ name: String, context: [String: String]) {
-        surface?.surface.dispatchAction(name: name, sourceComponentId: "debug", context: context.mapValues { .string($0) })
+        surface?.dispatchAction(name: name, sourceComponentId: "debug", context: context.mapValues { .string($0) })
     }
 
     /// Ask the daemon whether the artifact's server links an A2UI layout.
@@ -107,6 +109,9 @@ public final class A2UIPane {
             switch pending.removeValue(forKey: req) {
             case .data?: apply(result, action: nil)
             case let .action(name)?: apply(result, action: name)
+            case let .change(path)?:
+                release(path)
+                apply(result, action: surface?.changeTool)
             default: return false
             }
         case let .mcpUpdated(pane):
@@ -123,6 +128,7 @@ public final class A2UIPane {
                 state = message.contains("no MCP server") ? .web : .failed(message)
             case .layout, .data: state = .failed(message)
             case let .action(name): notice = "\(name): \(message)"
+            case let .change(path): release(path); notice = "\(surface?.changeTool ?? "data_changed"): \(message)"
             }
         default: return false
         }
@@ -138,15 +144,15 @@ public final class A2UIPane {
     private func layout(_ text: String) {
         do {
             let decoded = try A2UIMessages.decode(text: text, catalog: catalogNames)
-            let catalog = Catalog(id: "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
-                                  componentNames: catalogNames, functions: basicCatalog.functions)
-            let model = SurfaceViewModel(catalog: catalog)
-            let errors = model.processMessages(decoded.messages)
-            if !errors.isEmpty { notice = errors.map { "\($0)" }.joined(separator: "; ") }
+            changeTimers.values.forEach { $0.cancel() }
+            changeTimers = [:]
+            inFlight = [:]
+            let model = SurfaceModel()
+            let errors = model.process(decoded.messages)
+            if !errors.isEmpty { notice = errors.joined(separator: "; ") }
             unsupported = decoded.unsupported
-            subscription = model.onAction { [weak self] action in
-                MainActor.assumeIsolated { self?.act(action) }
-            }
+            model.onAction = { [weak self] action in self?.act(action) }
+            model.onChange = { [weak self] change in self?.changed(change) }
             surface = model
         } catch {
             state = .failed("\(error)")
@@ -159,12 +165,38 @@ public final class A2UIPane {
     }
 
     /// A button's action calls the tool the action's event names, its context as the arguments.
-    private func act(_ action: A2uiClientAction) {
+    private func act(_ action: A2UIAction) {
         notice = nil
         let req = nextReq()
         pending[req] = .action(action.name)
         send(.artifactCall(req: req, name: artifact.name, scope: artifact.scope, space: space, pane: pane, tool: action.name,
-                           arguments: A2UIMessages.arguments(action)))
+                           arguments: A2UIMessages.arguments(action.context)))
+    }
+
+    /// A value a control wrote is sent to the server's change tool (`data_changed` with `path` and `value`) 200 ms after the last
+    /// change to that path, so typing sends one call when it pauses.
+    private func changed(_ change: A2UIChange) {
+        surface?.held.insert(change.path)
+        changeTimers[change.path]?.cancel()
+        changeTimers[change.path] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard !Task.isCancelled, let self, let surface = self.surface else { return }
+            self.changeTimers[change.path] = nil
+            let req = self.nextReq()
+            self.pending[req] = .change(change.path)
+            self.inFlight[change.path, default: 0] += 1
+            self.send(.artifactCall(req: req, name: self.artifact.name, scope: self.artifact.scope, space: self.space, pane: self.pane,
+                                    tool: surface.changeTool, arguments: A2UIMessages.arguments(["path": .string(change.path), "value": change.value])))
+        }
+    }
+
+    /// A change call was answered: when no newer change waits or flies at that path, the server's word on it counts again.
+    private func release(_ path: String) {
+        inFlight[path, default: 1] -= 1
+        if inFlight[path] ?? 0 <= 0 {
+            inFlight[path] = nil
+            if changeTimers[path] == nil { surface?.held.remove(path) }
+        }
     }
 
     private func apply(_ result: JSONValue, action: String?) {
@@ -176,8 +208,12 @@ public final class A2UIPane {
         for text in A2UIMessages.texts(ofResult: result) {
             guard let decoded = try? A2UIMessages.decode(text: text, catalog: catalogNames) else { continue }
             unsupported += decoded.unsupported
-            let errors = surface.processMessages(decoded.messages)
-            if !errors.isEmpty { notice = errors.map { "\($0)" }.joined(separator: "; ") }
+            let errors = surface.process(decoded.messages)
+            if !errors.isEmpty { notice = errors.joined(separator: "; ") }
+        }
+        if surface.components.isEmpty {
+            changeTimers.values.forEach { $0.cancel() }
+            changeTimers = [:]
         }
         state = .ready
     }

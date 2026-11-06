@@ -103,7 +103,18 @@ impl ServerHandler for Hub {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let artifact = Origin::of(&context.meta).artifact;
-        self.view_of(artifact.as_deref())?.call(request, context).await
+        let view = self.view_of(artifact.as_deref())?;
+        let mut request = request;
+        if request.name == "data_changed" {
+            let args = request.arguments.clone().unwrap_or_default();
+            let (path, value) = (args.get("path").and_then(|p| p.as_str()).unwrap_or(""), args.get("value").cloned().unwrap_or_default());
+            let (tool, arguments) = view
+                .changed(path, &value)
+                .ok_or_else(|| ErrorData::invalid_params(format!("{} has no control at {path}", view.name()), None))?;
+            request.name = tool.into();
+            request.arguments = Some(arguments);
+        }
+        view.call(request, context).await
     }
 
     async fn subscribe(

@@ -77,7 +77,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     }
     if let Some(scope) = scope_of(s, ui) {
         let options: Vec<Value> = s.scopes.iter().map(|c| json!({ "value": c.key, "text": c.label })).collect();
-        p.put(json!({ "id": "scopes", "component": "Segmented", "selected": scope.key, "action": "set_scope", "options": options }));
+        p.choose("scopes", "/set_scope", &scope.key.to_string(), options, true, false);
         let summary = format!("{} files · +{} −{}{}{}", scope.files.len(), scope.add(), scope.del(),
             scope.commits.map(|n| format!(" · {n} commits")).unwrap_or_default(),
             scope.fork.as_ref().map(|f| format!(" since {f}")).unwrap_or_default());
@@ -126,7 +126,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             page.push(p.boxed("file", "v", lines, json!({ "spacing": 0 })));
         }
     }
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
     p.out
 }
 
@@ -275,6 +275,6 @@ mod tests {
         let table = c.iter().find(|v| v["id"] == "table").unwrap();
         assert_eq!(table["sections"][0]["rows"].as_array().unwrap().len(), 2);
         assert!(c.iter().any(|v| v["id"] == "file.h" && v["text"] == "b.rs"));
-        assert!(c.iter().any(|v| v["id"] == "l0.0" && v["tone"] == "ok"));
+        assert!(c.iter().any(|v| v["id"] == "l0.0" && v["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["foregroundStyle"] == "green"))));
     }
 }

@@ -127,7 +127,7 @@ inputs = klass("Selection and input", "Values the person sets.", [
 ])
 
 layout = klass("Containers and layout", "Arrange other components.", [
-    ("Row", "HStack", [("justify " + j, row([txt("one"), txt("two"), txt("three")], justify=j)) for j in ("start", "center", "end", "spaceBetween", "spaceEvenly")]),
+    ("Row", "HStack", [("justify " + j, row([txt("one"), txt("two"), txt("three")], justify=j)) for j in ("start", "center", "end", "spaceBetween", "spaceEvenly")] + [("spacing 24", row([txt("one"), txt("two"), txt("three")], justify="start", spacing=24))]),
     ("Column", "VStack", [("align " + a, col([txt("short"), txt("a longer line")], align=a)) for a in ("start", "center", "end")]),
     ("List", "List", [("vertical", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="vertical")), ("horizontal", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="horizontal"))]),
     ("Card", "GroupBox", [("one child", put("Card", child=col([txt("Inside a card", "h4"), secondary("Body text")], align="start", modifiers=[{"padding": 12}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}])))]),
@@ -177,23 +177,52 @@ mrows = [col([row([mcell(secondary(t, "caption", modifiers=[{"fontWeight": "semi
          mrow("(unknown name)", "draws a red marker", mod("bad modifier", {"frobnicate": 1}))]
 modifiers = boxed("Modifiers", "A modifiers list on any component; each entry is a SwiftUI modifier by its SwiftUI name.", mrows)
 
-# ---- Wheel's own and planned
+# ---- SwiftUI's own controls under their SwiftUI names (ADR-0032)
+def mi(title):
+    return put("Button", child=txt(title), action=act())
+
+
+system = klass("SwiftUI controls", "Standard controls the library lacks, named as SwiftUI names them (ADR-0032). A property is the initializer's argument; children are its content.", [
+    ("ProgressView", "ProgressView", [("value 0.4 of 1", put("ProgressView", title="Uploading", value=0.4, total=1)), ("no value: spinner", put("ProgressView", title="Working"))]),
+    ("Gauge", "Gauge", [("linearCapacity", put("Gauge", title="Disk", value=40, min=0, max=100)), ("accessoryCircular", put("Gauge", title="CPU", value=70, min=0, max=100, style="accessoryCircular"))]),
+    ("Menu", "Menu", [("children are items", put("Menu", [mi("Copy"), put("Divider"), mi("Delete")], title="Actions"))]),
+    ("Link", "Link", [("title, destination", put("Link", title="Apple", destination="https://apple.com"))]),
+    ("Form, Section", "Form, Section", [("grouped", put("Form", [put("Section", [put("Stepper", title="Count", value=3, min=0, max=10)], title="Counts")], style="grouped"))]),
+    ("LabeledContent", "LabeledContent", [("value", put("LabeledContent", title="Branch", value="main")), ("children as content", put("LabeledContent", [txt("custom")], title="Child"))]),
+    ("Grid, GridRow", "Grid, GridRow", [("two rows", put("Grid", [put("GridRow", [txt("a"), txt("b")]), put("GridRow", [txt("c"), txt("d")])], horizontalSpacing=16))]),
+    ("Stepper", "Stepper", [("min 0, max 10, step 1", put("Stepper", title="Count", value=4, min=0, max=10, step=1))]),
+    ("ColorPicker", "ColorPicker", [("value #RRGGBB", put("ColorPicker", title="Tint", value="#3478F6"))]),
+    ("Popover", "popover", [("child 0 trigger, child 1 content", put("Popover", [txt("Open popover"), txt("Popover content")]))]),
+    ("Alert", "alert", [("presented false; not shown", put("Alert", title="Delete?", message="This cannot be undone.", presented=False, buttons=[{"title": "Delete", "role": "destructive", "action": "act"}, {"title": "Cancel", "role": "cancel", "action": "act"}], dismissAction="act"))]),
+    ("ConfirmationDialog", "confirmationDialog", [("presented false; not shown", put("ConfirmationDialog", title="Discard?", presented=False, buttons=[{"title": "Discard", "role": "destructive", "action": "act"}], dismissAction="act"))]),
+    ("NavigationSplitView", "NavigationSplitView", [("sidebar and detail", put("NavigationSplitView", [put("List", [txt("one"), txt("two")]), txt("Detail")], modifiers=[{"frame": {"height": 140}}]))]),
+    ("NavigationStack", "NavigationStack", [("title", put("NavigationStack", [txt("Root")], title="Stack", modifiers=[{"frame": {"height": 100}}]))]),
+    ("HSplitView, VSplitView", "HSplitView, VSplitView", [("horizontal", put("HSplitView", [txt("left"), txt("right")], modifiers=[{"frame": {"height": 60}}])), ("vertical", put("VSplitView", [txt("top"), txt("bottom")], modifiers=[{"frame": {"height": 100}}]))]),
+    ("Toolbar", "toolbar", [("child 0 content, rest items", put("Toolbar", [txt("Content"), mi("Item")], placement="automatic"))]),
+    ("Chart", "Chart", [("bar", put("Chart", mark="bar", data=[{"x": "Mon", "y": 3, "series": "a"}, {"x": "Tue", "y": 5, "series": "a"}, {"x": "Wed", "y": 2, "series": "a"}])), ("line", put("Chart", mark="line", data=[{"x": "Mon", "y": 3, "series": "a"}, {"x": "Tue", "y": 5, "series": "a"}, {"x": "Wed", "y": 2, "series": "a"}]))]),
+    ("Map", "Map", [("latitude, longitude, span, markers", put("Map", latitude=40.7, longitude=-74.0, span=0.2, markers=[{"title": "NYC", "latitude": 40.7, "longitude": -74.0}]))]),
+    ("ShareLink", "ShareLink", [("item", put("ShareLink", item="https://apple.com", title="Share"))]),
+    ("PasteButton", "PasteButton", [("raises action with text", put("PasteButton", action="act"))]),
+])
+
+own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu.", [
+    ("Table", "Table", [("one section, two rows", put("Table", rowAction="act", foldAction="act",
+                                                       columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": False}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False}],
+                                                       sections=[{"title": "Ready", "count": 2, "rows": [
+                                                           {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True}, {"key": "title", "text": "First row"}]},
+                                                           {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True}, {"key": "title", "text": "Second row", "tone": "ok"}]}]}],
+                                                       sort={"key": "id", "asc": True}, empty="None", modifiers=[{"frame": {"height": 160}}]))]),
+])
+
 own = klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", [
     ("Canvas", "Canvas", [("a display list with a camera and hit regions; needs a scene, not shown", secondary("Used by pages that draw graphs, such as the Beads dependency graph."))]),
 ])
-planned = klass("Planned", "Epic wheel-cmbu.20. Components named as SwiftUI names them.", [
-    ("wheel-cmbu.20.3", "to add", [("controls", txt("ProgressView, Gauge, Menu, Link, Form, Section, LabeledContent, Grid, Stepper, ColorPicker"))]),
-    ("wheel-cmbu.20.4", "to add", [("presentation and navigation", txt("Popover, Alert, ConfirmationDialog, NavigationSplitView, NavigationStack, HSplitView, VSplitView, Toolbar, Chart, Map, ShareLink, PasteButton"))]),
-    ("wheel-cmbu.20.5", "to replace", [("Wheel's Table, Disclosure, ProgressBar", txt("SwiftUI Table, DisclosureGroup, ProgressView"))]),
-    ("wheel-cmbu.20.8", "to delete", [("until pages stop using them", txt("Check, Select, Segmented, SearchField, Sheet, Label, Box")),
-                                      ("Pill", txt("deleted: every page sends the library's Button (branch refactor/wheel-cmbu.20-button-not-pill, not installed yet)"))]),
-])
-
+ONLY = sys.argv[2] if len(sys.argv) > 2 else None  # a class name shows that class alone
 page = col([
     txt("A2UI component gallery", "h1"),
-    secondary("A table per class of control: the A2UI library's components with every option, then modifiers, then the one Wheel component and what is planned."),
-    secondary("Updated with every change to a component or modifier. The disabled modifier needs the client built from refactor/wheel-cmbu.20-button-not-pill."),
-    content, controls, inputs, layout, nav, modifiers, own, planned,
+    secondary("A table per class of control: the basic catalog's components with every option, the SwiftUI controls, modifiers, then Wheel's own component."),
+    secondary("Updated with every change to a component or modifier."),
+    *({"system": [system]}.get(ONLY) or [content, controls, inputs, layout, nav, system, own_table, modifiers, own]),
 ], align="start", modifiers=[{"padding": 28}])
 out.append({"id": "root", "component": "Column", "align": "stretch", "children": [page]})
 

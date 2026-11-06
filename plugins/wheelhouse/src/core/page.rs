@@ -3,6 +3,8 @@
 
 use serde_json::{json, Value};
 
+use super::layout;
+
 pub const CATALOG: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
 
 /// The messages a read of a page answers with: the surface and an empty `page` column.
@@ -18,7 +20,16 @@ pub fn skeleton(surface: &str) -> Value {
 
 /// The `updateComponents` message for `components` on `surface`.
 pub fn update(surface: &str, components: Vec<Value>) -> Value {
-    json!([{ "version": "v0.9", "updateComponents": { "surfaceId": surface, "components": components } }])
+    // `Page::bind` entries carry a data-model value rather than a component; each becomes an `updateDataModel` message.
+    let (data, components): (Vec<Value>, Vec<Value>) = components.into_iter().partition(|c| c.get("updateDataModel").is_some());
+    let mut messages = vec![json!({ "version": "v0.9", "updateComponents": { "surfaceId": surface, "components": components } })];
+    for d in data {
+        let mut m = d;
+        m["version"] = json!("v0.9");
+        m["updateDataModel"]["surfaceId"] = json!(surface);
+        messages.push(m);
+    }
+    Value::Array(messages)
 }
 
 pub struct Page {
@@ -30,28 +41,57 @@ impl Page {
         self.out.push(v);
     }
     pub fn label(&mut self, id: &str, text: &str, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Label", "text": text });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
+        layout::label(&mut self.out, id, text, &extra)
     }
     pub fn runs(&mut self, id: &str, runs: Value, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Label", "text": "", "runs": runs });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
+        let mut e = extra;
+        e["runs"] = runs;
+        layout::label(&mut self.out, id, "", &e)
     }
     pub fn boxed(&mut self, id: &str, axis: &str, children: Vec<String>, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Box", "axis": axis, "children": children });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        self.put(v);
-        id.to_string()
+        layout::boxed(&mut self.out, id, axis, children, &extra)
     }
     /// A number over a caption in an outlined box: `value` in `tone` (muted when zero), `label` under it.
     pub fn stat(&mut self, id: &str, value: &str, label: &str, tone: &str) -> String {
         let v = self.label(&format!("{id}.v"), value, json!({ "size": 22, "weight": "semibold", "tabular": true, "tone": tone }));
         let l = self.label(&format!("{id}.l"), label, json!({ "tone": "muted" }));
         self.boxed(id, "v", vec![v, l], json!({ "border": "line", "spacing": 2 }))
+    }
+
+    /// Puts `value` in the data model at `path`, the path a control's `value` is bound to. A change the person makes there
+    /// calls the tool the path's first segment names (`view::changed`).
+    pub fn bind(&mut self, path: &str, value: Value) {
+        self.put(json!({ "updateDataModel": { "path": path, "value": value } }));
+    }
+
+    /// A text field that calls `tool` with what the person types.
+    pub fn search(&mut self, id: &str, tool: &str, value: &str, placeholder: &str) -> String {
+        self.bind(&format!("/{tool}"), json!(value));
+        self.put(json!({ "id": id, "component": "TextField", "label": placeholder, "value": { "path": format!("/{tool}") }, "variant": "shortText" }));
+        id.to_string()
+    }
+
+    /// A choice of one among `options` ({value, text}); `path` is `/<tool>` or `/<tool>/<key>`. A few options draw as a segmented
+    /// control (`chips`), more as a menu.
+    pub fn choose(&mut self, id: &str, path: &str, selected: &str, options: impl Into<Value>, chips: bool, disabled: bool) -> String {
+        self.bind(path, json!([selected]));
+        let options: Vec<Value> = options.into().as_array().cloned().unwrap_or_default().iter().map(|o| json!({ "label": o["text"], "value": o["value"] })).collect();
+        let mut v = json!({ "id": id, "component": "ChoicePicker", "variant": "mutuallyExclusive", "options": options, "value": { "path": path } });
+        if chips {
+            v["displayStyle"] = json!("chips");
+        }
+        if disabled {
+            v["modifiers"] = json!([{ "disabled": true }]);
+        }
+        self.put(v);
+        id.to_string()
+    }
+
+    /// A checkbox that calls `tool` with "true" or "false".
+    pub fn check(&mut self, id: &str, tool: &str, text: &str, value: bool) -> String {
+        self.bind(&format!("/{tool}"), json!(value));
+        self.put(json!({ "id": id, "component": "CheckBox", "label": text, "value": { "path": format!("/{tool}") } }));
+        id.to_string()
     }
 
     /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or

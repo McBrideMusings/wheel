@@ -1,8 +1,6 @@
-import A2UISwiftCore
-import A2UISwiftUI
 import SwiftUI
 
-// MARK: Table — the system's List of sections of one-line rows (ADR-0029: it knows nothing of what the rows are)
+// MARK: Table — SwiftUI's Table of rows under section titles (ADR-0029: it knows nothing of what the rows are)
 // column {key, label, width|null, tree, wide}; section {title, count, rows}; row {id, path, depth, kids, collapsed, dim, sel,
 // cells [{key, text, tone, mono, chip}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
 // Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
@@ -11,12 +9,28 @@ struct A2UITableView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @Environment(\.a2uiPane) private var pane
-    @State private var expanded: Set<String> = []
 
-    private static let cap = 10, tall = 22
+    /// One line of the table: a section's title, or a row.
+    private struct Line: Identifiable {
+        let id: String
+        let title: String?
+        let row: [String: AnyCodable]
+    }
 
     private func fire(_ name: String, _ context: [String: AnyCodable]) {
         surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+    }
+
+    private static func lines(_ sections: [[String: AnyCodable]]) -> [Line] {
+        var lines: [Line] = []
+        for (si, sec) in sections.enumerated() {
+            let rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+            if let title = sec["title"]?.stringValue, !title.isEmpty {
+                lines.append(Line(id: "s\(si)", title: "\(title)  \(Int(sec["count"]?.numberValue ?? 0))", row: [:]))
+            }
+            for (ri, r) in rows.enumerated() { lines.append(Line(id: r["path"]?.stringValue ?? "r\(si).\(ri)", title: nil, row: r)) }
+        }
+        return lines
     }
 
     var body: some View {
@@ -24,117 +38,75 @@ struct A2UITableView: View {
         let narrow = pane.width < 640
         let cols = (p["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.filter { !(narrow && $0["wide"]?.boolValue == true) }
         let sections = (p["sections"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+        let lines = Self.lines(sections)
         let rowAction = p["rowAction"]?.stringValue ?? ""
+        let foldAction = p["foldAction"]?.stringValue ?? ""
         let selected = Binding<String?>(
             get: { nil },
-            set: { path in
-                guard let path else { return }
-                for sec in sections { for r in (sec["rows"]?.arrayValue ?? []).compactMap({ $0.dictionaryValue }) where r["path"]?.stringValue == path {
-                    fire(rowAction, ["id": .string(r["id"]?.stringValue ?? "")])
-                } }
+            set: { id in
+                guard let id, let line = lines.first(where: { $0.id == id }), line.title == nil else { return }
+                fire(rowAction, ["id": .string(line.row["id"]?.stringValue ?? "")])
             })
-        List(selection: selected) {
-            ForEach(Array(sections.enumerated()), id: \.offset) { _, sec in
-                let rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-                let title = sec["title"]?.stringValue ?? ""
-                if title.isEmpty {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, r in line(r, cols, narrow) }
-                } else {
-                    Section {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { _, r in line(r, cols, narrow) }
-                    } header: {
-                        Text("\(title)  \(Int(sec["count"]?.numberValue ?? 0))")
-                    }
+        Table(lines, selection: selected) {
+            TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
+                TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction) }
+                    .width(min: c["width"]?.numberValue.map { CGFloat($0) }, ideal: c["width"]?.numberValue.map { CGFloat($0) },
+                           max: c["width"]?.numberValue.map { CGFloat($0) })
+            }
+        }
+        .contextMenu(forSelectionType: String.self) { ids in
+            if let id = ids.first, let line = lines.first(where: { $0.id == id }) {
+                ForEach(Array((line.row["menu"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.enumerated()), id: \.offset) { _, item in
+                    Button(item["label"]?.stringValue ?? "") { fire(item["action"]?.stringValue ?? "", item["context"]?.dictionaryValue ?? [:]) }
                 }
             }
         }
-        #if os(macOS)
-        .listStyle(.inset(alternatesRowBackgrounds: true))
-        #else
-        .listStyle(.plain)
-        #endif
         .overlay {
-            if sections.allSatisfy({ ($0["rows"]?.arrayValue ?? []).isEmpty }) {
-                Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary)
-            }
+            if lines.isEmpty { Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary) }
         }
-        .frame(height: max(320, pane.height - 250))
+        .accessibilityIdentifier("a2ui.table")
     }
 
-    private func line(_ r: [String: AnyCodable], _ cols: [[String: AnyCodable]], _ narrow: Bool) -> some View {
-        let foldAction = node.instance.properties["foldAction"]?.stringValue ?? ""
-        return RowView(row: r, cols: cols, narrow: narrow, first: true, fire: fire, rowAction: "", foldAction: foldAction).tag(r["path"]?.stringValue)
-    }
-
-    private struct RowView: View {
-        let row: [String: AnyCodable]
-        let cols: [[String: AnyCodable]]
-        let narrow: Bool
-        let first: Bool
-        let fire: (String, [String: AnyCodable]) -> Void
-        let rowAction: String
-        let foldAction: String
-
-        var body: some View {
-            let cells = (row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-            let menu = (row["menu"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-            let id = row["id"]?.stringValue ?? ""
-            let dim = row["dim"]?.boolValue == true
-            let depth = row["depth"]?.numberValue ?? 0
-            HStack(spacing: 10) {
-                ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
-                    column(c, cells: cells, depth: depth, dim: dim)
-                }
-            }
-            .frame(height: WebTheme.rowHeight)
-            .contentShape(Rectangle())
-            .contextMenu {
-                ForEach(Array(menu.enumerated()), id: \.offset) { _, item in
-                    Button(item["label"]?.stringValue ?? "") {
-                        fire(item["action"]?.stringValue ?? "", item["context"]?.dictionaryValue ?? [:])
-                    }
-                }
-            }
-        }
-
-        @ViewBuilder
-        private func column(_ c: [String: AnyCodable], cells: [[String: AnyCodable]], depth: Double, dim: Bool) -> some View {
-            let t = WebTheme.shared
-            // A row's cells carry their column's key, so a hidden column leaves the others in place.
-            let key = c["key"]?.stringValue ?? ""
+    @ViewBuilder
+    private func cell(_ line: Line, _ c: [String: AnyCodable], _ foldAction: String) -> some View {
+        let key = c["key"]?.stringValue ?? ""
+        if let title = line.title {
+            if c["tree"]?.boolValue == true || key == (surfaceFirstKey()) { Text(title).font(.headline) } else { Text("") }
+        } else {
+            let cells = (line.row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
             let cell = cells.first { $0["key"]?.stringValue == key } ?? [:]
-            let width: CGFloat? = c["width"]?.numberValue.map { CGFloat($0) }
             HStack(spacing: 0) {
                 if c["tree"]?.boolValue == true {
-                    Color.clear.frame(width: CGFloat(depth) * 18, height: 1)
-                    Text(row["kids"]?.boolValue == true ? (row["collapsed"]?.boolValue == true ? "▸" : "▾") : "")
-                        .font(.system(size: 11)).foregroundStyle(t.secondary)
-                        .frame(width: 16)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if row["kids"]?.boolValue == true { fire(foldAction, ["path": .string(row["path"]?.stringValue ?? "")]) }
+                    Color.clear.frame(width: CGFloat(line.row["depth"]?.numberValue ?? 0) * 18, height: 1)
+                    if line.row["kids"]?.boolValue == true {
+                        Button(line.row["collapsed"]?.boolValue == true ? "▸" : "▾") {
+                            fire(foldAction, ["path": .string(line.row["path"]?.stringValue ?? "")])
                         }
+                        .buttonStyle(.borderless).frame(width: 16)
+                    } else { Color.clear.frame(width: 16, height: 1) }
                 }
-                cellView(cell, key: key, dim: dim)
+                Text(cell["text"]?.text ?? "")
+                    .font(cell["mono"]?.boolValue == true ? .system(.caption, design: .monospaced) : cell["chip"]?.boolValue == true ? .callout.weight(.semibold) : .body)
+                    .foregroundStyle(cellColor(cell, dim: line.row["dim"]?.boolValue == true))
+                    .lineLimit(1).truncationMode(.tail)
             }
-            .frame(width: width, alignment: .leading)
-            .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
         }
+    }
 
-        @ViewBuilder
-        private func cellView(_ cell: [String: AnyCodable], key: String, dim: Bool) -> some View {
-            let t = WebTheme.shared
-            let text = cell["text"]?.stringValue ?? ""
-            let tone = t.tone(cell["tone"]?.stringValue)
-            let chip = cell["chip"]?.boolValue == true
-            let mono = cell["mono"]?.boolValue == true
-            let secondary = dim || cell["tone"]?.stringValue == "muted"
-            Text(text)
-                .font(mono ? .system(size: WebTheme.caption, design: .monospaced)
-                      : chip ? .system(size: WebTheme.callout, weight: .semibold)
-                      : .system(size: WebTheme.body, weight: key == "title" ? .medium : .regular))
-                .foregroundStyle(tone ?? (secondary ? t.secondary : t.label))
-                .lineLimit(1).truncationMode(.tail)
+    /// The first column's key, the one a section's title stands in.
+    private func surfaceFirstKey() -> String {
+        ((node.instance.properties["columns"]?.arrayValue ?? []).first?.dictionaryValue?["key"]?.stringValue) ?? ""
+    }
+
+    private func cellColor(_ cell: [String: AnyCodable], dim: Bool) -> Color {
+        switch cell["tone"]?.stringValue {
+        case "ok": .green
+        case "warn": .orange
+        case "bad": .red
+        case "accent", "focus": .accentColor
+        case "purple": .purple
+        case "muted", "faint", "todo": .secondary
+        default: dim ? .secondary : .primary
         }
     }
 }

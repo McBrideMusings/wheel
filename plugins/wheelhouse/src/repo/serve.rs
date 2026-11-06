@@ -130,10 +130,10 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         page.push(p.boxed("notice", "v", vec![l], json!({ "border": if *ok { "ok" } else { "bad" }, "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
     }
     if s.error.is_none() {
-        p.put(json!({ "id": "search", "component": "SearchField", "value": ui.q, "action": "set_query", "placeholder": "Search" }));
-        p.put(json!({ "id": "views", "component": "Segmented", "selected": if ui.show.is_empty() { "all" } else { &ui.show }, "action": "set_show",
-            "options": [{ "value": "all", "text": "All" }, { "value": "dead", "text": "Safe to delete" },
-                { "value": "worktrees", "text": "Worktrees" }, { "value": "prs", "text": "With a PR" }] }));
+        p.search("search", "set_query", &ui.q, "Search");
+        p.choose("views", "/set_show", if ui.show.is_empty() { "all" } else { &ui.show }, vec![
+            json!({ "value": "all", "text": "All" }), json!({ "value": "dead", "text": "Safe to delete" }),
+            json!({ "value": "worktrees", "text": "Worktrees" }), json!({ "value": "prs", "text": "With a PR" })], true, false);
         let shown: Vec<&Branch> = s.branches.iter().filter(|b| matches(b, ui)).collect();
         let count = p.label("count", &format!("{} of {}", shown.len(), s.branches.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
         page.push(p.boxed("tools", "h", vec!["search".into(), "views".into(), count],
@@ -172,7 +172,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             page.push(p.boxed("recent", "v", all, json!({ "spacing": 3, "padding": [18, 0, 0, 0] })));
         }
     }
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
     p.out
 }
 
@@ -191,6 +191,7 @@ struct Value1 {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Query {
     /// The search text.
+    #[serde(alias = "value")]
     q: String,
 }
 
