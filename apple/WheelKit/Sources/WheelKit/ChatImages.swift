@@ -38,6 +38,16 @@ public enum ChatImages {
         }
     }
 
+    /// `message` without the lines `attachedPaths` found, which the images stand for.
+    public static func withoutAttachedImages(_ message: String) -> String {
+        let drawn = Set(attachedPaths(in: message))
+        guard !drawn.isEmpty else { return message }
+        return message.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { line in !attachedPaths(in: String(line)).contains(where: drawn.contains) }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// `path` written so Markdown image syntax holds it: spaces and parentheses percent-encoded.
     public static func markdownImage(path: String) -> String {
         let encoded = path.map { "% ()".contains($0) ? String(format: "%%%02X", $0.asciiValue ?? 0) : String($0) }.joined()
