@@ -1,0 +1,23 @@
+[package]
+name = "wheel-runner"
+version.workspace = true
+edition.workspace = true
+description = "Wheel's runner: runs the commands a project's wheel.toml [runner] table names, keeps each run's log, status and exit code, as a command line and as an MCP server a host such as Wheel draws a page for"
+
+[[bin]]
+name = "wheel-runner"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+rmcp = { version = "3.8", default-features = false, features = ["server", "macros", "transport-io"] }
+serde.workspace = true
+serde_json.workspace = true
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+tokio.workspace = true
+toml_edit = "0.25"
+
+[dev-dependencies]
+libc = "0.2"
