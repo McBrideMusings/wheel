@@ -84,7 +84,6 @@ check "the question's Run button starts it" has "$(call "$SP1" list_runs)" 'rest
 LIVE="$(page "$SP1" press_run '{"name":"long"}')"
 check "starting a command opens its log, running, with a Stop button" has "$LIVE" 'Stop'
 eq "still one wheel-runner process serves every page" "$(servers)" 1
-page "$SP1" close_log >/dev/null
 
 # § Guards, per-command status checks and the worktree flag (wheel-cmbu.12), through wheeld.
 G="$(call "$SP2" run_runner '{"name":"guarded"}')"

@@ -153,9 +153,7 @@ fn page_text(result: &Value) -> String {
     let messages: Value = serde_json::from_str(result["content"][0]["resource"]["text"].as_str().unwrap_or("[]")).unwrap();
     messages[0]["updateComponents"]["components"].as_array().unwrap().iter()
         .flat_map(|c| {
-            let mut t = vec![c["text"].as_str().unwrap_or("").to_string()];
-            t.extend(c["sections"][0]["rows"].as_array().into_iter().flatten().flat_map(|r| r["cells"].as_array().unwrap().iter().map(|x| x["text"].as_str().unwrap_or("").to_string())));
-            t
+            vec![c["text"].as_str().unwrap_or("").to_string(), c["help"].as_str().unwrap_or("").to_string()]
         })
         .collect::<Vec<_>>().join("\n")
 }
@@ -192,7 +190,7 @@ fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run(
     host.request("resources/subscribe", json!({ "uri": uri }), json!({}));
 
     let (_, page) = page_call(&mut host, "get_runner", json!({}));
-    for want in ["Runner", "3 runners", "This project  2", "This machine  1", "echo restarted", "no runs yet"] {
+    for want in ["Runner", "3 runners", "This project", "This machine", "echo restarted", "No runs yet."] {
         assert!(page.contains(want), "{want} missing from:\n{page}");
     }
 

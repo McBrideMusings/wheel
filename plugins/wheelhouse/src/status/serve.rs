@@ -81,8 +81,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         let stats = [("Done", c.done, "ok"), ("In progress", c.progress, "fg"), ("Ready", c.ready, "ok"),
             ("Blocked", c.blocked, "warn"), ("Open", c.open, "fg"), ("Deferred", c.deferred, "muted")];
         let cards: Vec<String> = stats.iter().enumerate().map(|(i, (l, v, tone))| {
-            p.put(json!({ "id": format!("kpi{i}"), "component": "Stat", "value": v.to_string(), "label": l, "tone": if *v == 0 { "muted" } else { tone } }));
-            format!("kpi{i}")
+            p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), if *v == 0 { "muted" } else { tone })
         }).collect();
         page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex", "flex", "flex"] })));
         let rows: Vec<Value> = s.epics.iter().map(|e| {

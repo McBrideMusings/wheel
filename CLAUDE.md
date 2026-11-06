@@ -13,6 +13,10 @@ A native macOS and iOS agent development environment: a grid of panes (terminals
 - `docs/adr/` — decisions. Read ADR-0001 and ADR-0002 before changing how clients, the daemon or the agents fit together, ADR-0003 and ADR-0011 before changing what a web pane shows, ADR-0012 before changing how a pane switches between terminal and chat, ADR-0004 before changing what defines an artifact, ADR-0010 before changing how a post reaches its renderer, ADR-0005 before changing what a browser pane may point at or where settings live, ADR-0013 before making Wheel run, or expect to find on the machine, anything its app bundle does not carry, ADR-0020 before deciding whether work goes in the client or the server, ADR-0014, ADR-0021 and ADR-0022 before changing how windows, sessions and spaces relate or what a client shows, ADR-0023 before naming anything about an agent, ADR-0024 before changing how a phone is notified, ADR-0017 before changing what the agent brief says, ADR-0025 before giving a machine artifact a command, script or default of its own, ADR-0029 before adding or changing a component a plugin's server lays out, and ADR-0030 before changing how streams merge or where they write.
 - `DESIGN.md` — layout and visual direction. Early slices use stock macOS styling.
 
+## Components a page can name
+
+A page names a component of the A2UI library (`a2ui-swift`, sources under `apple/WheelUI/.build/checkouts/a2ui-swift`) or a SwiftUI control under its SwiftUI name, and styles it with SwiftUI modifiers. Before adding a view to `apple/WheelUI/Sources/WheelUI/A2UI`, search the library and SwiftUI for it and use theirs. Wheel adds a component only when neither has one (today only `Canvas`), after the user approves an ADR that names what was checked. A wrapper around a control the library or SwiftUI already has, a restyled copy, or a page-shaped component is not added. Epic `wheel-cmbu.20` removes the wrappers that exist.
+
 ## Tracking
 
 Work is tracked in beads (`bd`, prefix `wheel`). `bd ready` shows what is unblocked.

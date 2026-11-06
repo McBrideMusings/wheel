@@ -702,6 +702,9 @@ impl AppState {
             if let Err(e) = self.renderer_located(name, cwd) {
                 problems.push(e);
             }
+            if let Some(stale) = self.stale_builtin(name) {
+                problems.push(stale);
+            }
         }
         let (dir, page) = match &located {
             Ok(Located { root, .. }) if entry.renderer.is_some() => {

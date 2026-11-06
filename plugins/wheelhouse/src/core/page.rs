@@ -47,6 +47,13 @@ impl Page {
         self.put(v);
         id.to_string()
     }
+    /// A number over a caption in an outlined box: `value` in `tone` (muted when zero), `label` under it.
+    pub fn stat(&mut self, id: &str, value: &str, label: &str, tone: &str) -> String {
+        let v = self.label(&format!("{id}.v"), value, json!({ "size": 22, "weight": "semibold", "tabular": true, "tone": tone }));
+        let l = self.label(&format!("{id}.l"), label, json!({ "tone": "muted" }));
+        self.boxed(id, "v", vec![v, l], json!({ "border": "line", "spacing": 2 }))
+    }
+
     pub fn pill(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
         let mut v = json!({ "id": id, "component": "Pill", "text": text, "name": name, "context": context });
         v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());

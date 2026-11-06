@@ -1099,6 +1099,8 @@ final class DebugServer {
             let onScreen = window.convertPoint(toScreen: NSPoint(x: x, y: window.swiftUIHeight - y))
             let body: [String: Any] = ["x": onScreen.x, "y": main.frame.height - onScreen.y, "app_active": NSApp.isActive]
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
+        case ("POST", "/input/mouse"), ("POST", "/input/key"), ("GET", "/input/cursor"), ("GET", "/input/views"):
+            return realInput(target.path, query)
         case ("POST", "/pane/drag"):
             // A header drag without a pointer: `action` is start (`pane`), hover (`target` and
             // `zone`: center, left, right, up or down; a target in another space takes a side), hover
@@ -1710,6 +1712,164 @@ final class DebugServer {
                                     "head": selection.head.map { ["row": $0.row, "offset": $0.offset] as Any } ?? NSNull()]
         return ("200 OK", (try? JSONSerialization.data(withJSONObject: answer, options: [.prettyPrinted, .sortedKeys])) ?? Data())
     }
+
+    /// Real pointer and keyboard input (wheel-h3z5.31): CGEvents posted at the window server, so the
+    /// application receives them as it would a person's hand, and the cursor read back is the one
+    /// AppKit chose. Refuses unless this app is the active app, so no event reaches another app.
+    /// `POST /input/mouse?action=move|down|drag|up|click&x=&y=[&clicks=][&mods=][&button=left|right][&window=]`
+    /// (window points, top-left origin, as `/window/screen` takes them), `POST /input/key?action=press|down|up`
+    /// with `text=` (one letter, digit or space) or `code=` (a virtual key code, for any other key) and `mods=cmd,shift,opt,ctrl`, `GET /input/cursor`.
+    private func realInput(_ path: String, _ query: [String: String]) -> (String, Data) {
+        func refuse(_ status: String, _ why: String) -> (String, Data) {
+            Log.info("debug request refused: \(why)")
+            return (status, Data(#"{"error":"\#(why)"}"#.utf8))
+        }
+        func json(_ body: [String: Any]) -> (String, Data) {
+            ("200 OK", (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data())
+        }
+        guard NSApp.isActive || ["/input/cursor", "/input/views"].contains(path) else {
+            return refuse("409 Conflict", "this app is not the active app; POST /app/activate first, so no event goes to another app")
+        }
+        var flags: CGEventFlags = []
+        for mod in (query["mods"] ?? "").split(separator: ",") {
+            switch mod {
+            case "cmd": flags.insert(.maskCommand)
+            case "shift": flags.insert(.maskShift)
+            case "opt": flags.insert(.maskAlternate)
+            case "ctrl": flags.insert(.maskControl)
+            default: return refuse("400 Bad Request", "mods are cmd, shift, opt, ctrl")
+            }
+        }
+        // With Accessibility the event enters at the HID tap, where a person's hand does; without it
+        // the event goes to this process through the window server's per-process queue.
+        let hid = CGPreflightPostEventAccess()
+        func post(_ event: CGEvent) {
+            event.flags = flags
+            if hid { event.post(tap: .cghidEventTap) } else { event.postToPid(getpid()) }
+        }
+        switch path {
+        case "/input/views":
+            // Every visible view whose class name holds `class`, as a window-point frame (top-left origin,
+            // the space `/input/mouse` takes), so a check aims at a view without guessing its place.
+            guard let match = query["class"], !match.isEmpty else { return refuse("400 Bad Request", "class is required") }
+            guard let window = inputWindow(query["window"]), let root = window.contentView?.superview ?? window.contentView else {
+                return refuse("404 Not Found", "no such window")
+            }
+            var found: [[String: Any]] = []
+            func walk(_ view: NSView) {
+                guard !view.isHiddenOrHasHiddenAncestor else { return }
+                let name = String(describing: Swift.type(of: view))
+                if name.contains(match) {
+                    let box = view.convert(view.bounds, to: nil)
+                    found.append(["class": name, "x": box.minX, "y": window.swiftUIHeight - box.maxY, "w": box.width, "h": box.height,
+                                  "first_responder": window.firstResponder === view])
+                }
+                view.subviews.forEach(walk)
+            }
+            walk(root)
+            return json(["views": found])
+        case "/input/cursor":
+            let cursor = NSCursor.current
+            let known: [(String, NSCursor)] = [
+                ("arrow", .arrow), ("iBeam", .iBeam), ("pointingHand", .pointingHand), ("crosshair", .crosshair),
+                ("openHand", .openHand), ("closedHand", .closedHand), ("resizeLeftRight", .resizeLeftRight),
+                ("resizeUpDown", .resizeUpDown), ("operationNotAllowed", .operationNotAllowed),
+                ("contextualMenu", .contextualMenu), ("dragCopy", .dragCopy), ("dragLink", .dragLink)]
+            let name = known.first { $0.1 == cursor || $0.1.image.tiffRepresentation == cursor.image.tiffRepresentation }?.0 ?? "other"
+            let mouse = NSEvent.mouseLocation
+            return json(["cursor": name, "hot_spot": [cursor.hotSpot.x, cursor.hotSpot.y], "image_size": [cursor.image.size.width, cursor.image.size.height],
+                         "mouse": [mouse.x, NSScreen.screens.first.map { $0.frame.height - mouse.y } ?? mouse.y], "app_active": NSApp.isActive, "tap": hid ? "hid" : "pid"])
+        case "/input/mouse":
+            guard let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
+                return refuse("400 Bad Request", "x and y are required")
+            }
+            guard let window = inputWindow(query["window"]), window.swiftUIHeight > 0, let main = NSScreen.screens.first else {
+                return refuse("404 Not Found", "no such window")
+            }
+            let onScreen = window.convertPoint(toScreen: NSPoint(x: x, y: window.swiftUIHeight - y))
+            let point = CGPoint(x: onScreen.x, y: main.frame.height - onScreen.y)
+            let right = query["button"] == "right"
+            let button: CGMouseButton = right ? .right : .left
+            let clicks = max(query["clicks"].flatMap(Int64.init) ?? 1, 1)
+            func mouse(_ type: CGEventType, count: Int64 = 1) -> Bool {
+                guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return false }
+                event.setIntegerValueField(.mouseEventClickState, value: count)
+                // Name the window under the pointer, as the window server does for a hand, so the event
+                // is routed to that window when it is posted to this process.
+                event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
+                event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
+                post(event)
+                Self.spin(0.06)
+                return true
+            }
+            let down: CGEventType = right ? .rightMouseDown : .leftMouseDown
+            let up: CGEventType = right ? .rightMouseUp : .leftMouseUp
+            let drag: CGEventType = right ? .rightMouseDragged : .leftMouseDragged
+            let sent: Bool
+            switch query["action"] ?? "" {
+            case "move":
+                // Warp first so the window server's pointer is there, then post the move.
+                CGWarpMouseCursorPosition(point)
+                sent = mouse(.mouseMoved)
+            case "down": sent = mouse(down, count: clicks)
+            case "drag": sent = mouse(drag, count: clicks)
+            case "up": sent = mouse(up, count: clicks)
+            case "click":
+                var all = true
+                for count in 1...clicks { all = all && mouse(down, count: count) && mouse(up, count: count) }
+                sent = all
+            default: return refuse("400 Bad Request", "action is move, down, drag, up or click")
+            }
+            guard sent else { return refuse("500 Internal Server Error", "could not make a mouse event") }
+            Self.spin(0.2)
+            Log.info("debug: real mouse \(query["action"] ?? "") at window (\(Int(x)),\(Int(y))) screen (\(Int(point.x)),\(Int(point.y))) clicks \(clicks) tap \(hid ? "hid" : "pid")")
+            return json(["screen": [point.x, point.y], "tap": hid ? "hid" : "pid", "key_window": window.isKeyWindow, "app_active": NSApp.isActive])
+        default:
+            let text = query["text"]
+            guard text?.isEmpty == false || query["code"] != nil else { return refuse("400 Bad Request", "text or code is required") }
+            // `text` is one key by name (a letter, a digit or a space); any other key goes by `code`, so a
+            // key with no name here is refused and never sent as the A key.
+            let code: UInt16
+            if let given = query["code"] {
+                guard let parsed = UInt16(given) else { return refuse("400 Bad Request", "code is a virtual key code number") }
+                code = parsed
+            } else if let text, text.count == 1, let known = Self.keyCodes[text.lowercased()] {
+                code = known
+            } else {
+                return refuse("400 Bad Request", "text names one letter, digit or space; give code for any other key")
+            }
+            let action = query["action"] ?? "press"
+            guard ["press", "down", "up"].contains(action) else { return refuse("400 Bad Request", "action is press, down or up") }
+            let key = NSApp.keyWindow
+            for isDown in (action == "press" ? [true, false] : [action == "down"]) {
+                guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: isDown) else {
+                    return refuse("500 Internal Server Error", "could not make a key event")
+                }
+                if let text, !text.isEmpty, flags.isDisjoint(with: [.maskCommand, .maskControl]) {
+                    let units = Array(text.utf16)
+                    event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                }
+                post(event)
+                Self.spin(0.05)
+            }
+            Self.spin(0.2)
+            Log.info("debug: real key \(action) \(text ?? "code \(code)") mods \(query["mods"] ?? "") to \(key?.title ?? "no key window") tap \(hid ? "hid" : "pid")")
+            let responder = key?.firstResponder.map { String(describing: Swift.type(of: $0)) } ?? "none"
+            return json(["key_window": key?.title ?? "", "first_responder": responder, "tap": hid ? "hid" : "pid", "app_active": NSApp.isActive])
+        }
+    }
+
+    /// `settings` is the Settings window; anything else is a Wheel window by id prefix.
+    private func inputWindow(_ name: String?) -> NSWindow? {
+        name == "settings" ? Self.settingsWindow : wheelWindow(name)
+    }
+
+    /// Virtual key codes of a US keyboard for the keys `/input/key` types by name, so a chord such as
+    /// ⌘C reaches the app as the C key and not as the key code 0.
+    private static let keyCodes: [String: UInt16] = [
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14,
+        "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
+        "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46, " ": 49]
 
     /// Let the main run loop work for `seconds`: the views handle an event on a later turn, so one
     /// event is given time to land before the next goes in.

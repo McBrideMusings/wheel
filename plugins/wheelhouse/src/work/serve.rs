@@ -137,8 +137,7 @@ fn components(dir: &str, agents: &[agents::Agent], ui: &Ui, mode: Mode) -> Vec<V
         ],
     };
     let cards: Vec<String> = kpis.iter().enumerate().map(|(i, (l, v, tone))| {
-        p.put(json!({ "id": format!("kpi{i}"), "component": "Stat", "value": v.to_string(), "label": l, "tone": if *v == 0 { "muted" } else { tone } }));
-        format!("kpi{i}")
+        p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), if *v == 0 { "muted" } else { tone })
     }).collect();
     let widths: Vec<&str> = cards.iter().map(|_| "flex").collect();
     page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": widths })));
@@ -359,7 +358,7 @@ mod tests {
         let titles: Vec<&str> = table["sections"].as_array().unwrap().iter().map(|s| s["title"].as_str().unwrap()).collect();
         assert_eq!(titles, ["Edit", "Gate", "Agents with no item"]);
         assert_eq!(table["sections"][0]["rows"][0]["cells"][0]["text"], "bead b-p1");
-        assert_eq!(c.iter().find(|v| v["id"] == "kpi0").unwrap()["value"], "2");
+        assert_eq!(c.iter().find(|v| v["id"] == "kpi0.v").unwrap()["text"], "2");
     }
 
     #[test]

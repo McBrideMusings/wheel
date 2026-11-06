@@ -797,8 +797,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         .enumerate()
         .map(|(i, (l, v, hot))| {
             let tone = if *hot && *v > 0 { "ok" } else if *v == 0 { "muted" } else { "fg" };
-            p.put(json!({ "id": format!("kpi{i}"), "component": "Stat", "value": v.to_string(), "label": l, "tone": tone }));
-            format!("kpi{i}")
+            p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), tone)
         })
         .collect();
     page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));

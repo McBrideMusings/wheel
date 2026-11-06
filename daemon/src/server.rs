@@ -871,6 +871,7 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
     crate::status::follow(state.clone());
     crate::push::follow(state.clone());
     state.sync_settings_watch();
+    state.builtins_catch_up();
     let shipper = state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(crate::logship::SHIP_EVERY);
