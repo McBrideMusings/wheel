@@ -1098,10 +1098,11 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
         "{out}"
     );
     assert!(out.contains("age: 0 s"), "{out}");
-    // The strip's rows: the default pins, and Codex listed but not shown.
+    // The strip's rows: the default pins. Codex is listed, and the stub gives it no login.
     assert!(out.contains("strip: claude .claude session 42%"), "{out}");
     assert!(out.contains("strip: claude .claude weekly 7.5%"), "{out}");
-    assert!(out.contains("agent: codex not shown"), "{out}");
+    assert!(!out.contains("agent: codex not shown"), "{out}");
+    assert!(out.contains("strip: codex not detected: no Codex login on this Mac"), "{out}");
 
     let missing = daemon_with_agents_reading(Some(Arc::new(FixedUsage(Err(
         wheeld::usage::UsageFailure::NotLoggedIn("signed out".into()),

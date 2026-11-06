@@ -159,6 +159,8 @@ pub struct AppState {
     pub(crate) machine_file: PathBuf,
     /// Every Claude login's usage, as the usage strip shows it.
     pub(crate) usage: crate::usage::Usage,
+    /// Every Codex login's usage; `usage` above holds Claude's.
+    pub(crate) codex_usage: crate::usage::Usage,
     /// The program a refresh starts as its warden: `wheeld` itself.
     pub(crate) warden: PathBuf,
     /// One writer at a time for a `wheel.toml`, whichever file: a settings write is a read, a
@@ -308,6 +310,7 @@ impl AppState {
             instance_dir,
             machine_file,
             usage: crate::usage::Usage::default(),
+            codex_usage: crate::usage::Usage::codex(),
             warden,
             watchers: Mutex::new(HashMap::new()),
             pages: Mutex::new(HashMap::new()),

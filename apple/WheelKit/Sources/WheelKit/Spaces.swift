@@ -167,8 +167,28 @@ public struct TermAgent: Sendable, Equatable {
         self.context = context
     }
 
-    /// Claude Code, whose conversation the pane can also show as a chat.
-    public var isClaude: Bool { name == "claude" }
+    /// Whether the pane can show this agent's conversation the other way: Claude Code and Codex.
+    public var switchesView: Bool { PaneKind.switchableAgents.contains(name) }
+}
+
+extension PaneKind {
+    /// The agents whose conversation a pane shows either in a terminal or as a chat.
+    public static let switchableAgents: Set<String> = ["claude", "codex"]
+
+    /// The other way this pane can show its conversation: a chat for a terminal running one of
+    /// the switchable agents (when `agentFound` says its program is installed), the agent's own
+    /// terminal for an agent pane running one. Nil when it has only one.
+    public func otherView(agentFound: (String) -> Bool) -> ConversationView? {
+        switch self {
+        case let .terminal(_, agent):
+            guard let agent, agent.switchesView, agentFound(agent.name) else { return nil }
+            return .agent
+        case let .agent(_, harness, _):
+            return PaneKind.switchableAgents.contains(harness) ? .terminal : nil
+        default:
+            return nil
+        }
+    }
 }
 
 /// Which registry an artifact belongs to: `project` is the space's own, `machine` is every project
