@@ -33,8 +33,10 @@ pub type Mirror = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, PartialEq)]
 pub enum StartError {
-    /// The command asks first; start it again with `confirmed`.
+    /// The command asks first; start it again with `confirmed` set to the command text it asked about.
     Confirm(String),
+    /// A `requires` guard failed: the message says which and what to do.
+    Guard(String),
     Failed(String),
 }
 
@@ -44,10 +46,22 @@ pub struct Started {
     pub done: JoinHandle<Record>,
 }
 
+/// Whether `path` is one of the worktrees `git worktree list` names for the repository at `dir`.
+fn is_worktree_of(dir: &str, path: Option<&Path>) -> bool {
+    let Some(path) = path else { return false };
+    let Ok(out) = Command::new("git").arg("-C").arg(dir).args(["worktree", "list", "--porcelain"]).output() else { return false };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|w| std::fs::canonicalize(w).map(|c| c == path).unwrap_or(false))
+}
+
 /// The runs of one project.
 #[derive(Clone)]
 pub struct Runs {
     pub dir: String,
+    /// Where commands run: `dir`, or the worktree `in_worktree` named.
+    cwd: String,
     folder: PathBuf,
     /// The program the watcher is: `wheel-runner`, run as `__watch`.
     watcher: PathBuf,
@@ -55,15 +69,34 @@ pub struct Runs {
 
 impl Runs {
     pub fn new(dir: &str) -> Self {
-        Runs { dir: dir.to_string(), folder: store::folder(dir), watcher: std::env::current_exe().unwrap_or_else(|_| "wheel-runner".into()) }
+        Runs { dir: dir.to_string(), cwd: dir.to_string(), folder: store::folder(dir), watcher: std::env::current_exe().unwrap_or_else(|_| "wheel-runner".into()) }
     }
 
-    /// Start `runner` unless it asks first and `confirmed` is false.
-    pub fn start(&self, runner: &Runner, confirmed: bool, mirror: Option<Mirror>) -> Result<Started, StartError> {
-        if let (Some(question), false) = (&runner.confirm, confirmed) {
+    /// Run commands in the git worktree at `path` instead of the project's directory. The runs
+    /// stay listed under the project.
+    pub fn in_worktree(mut self, path: &str) -> Self {
+        self.cwd = path.to_string();
+        self
+    }
+
+    /// Start `runner` unless it asks first and `confirmed` is not its current command text: a yes
+    /// answers the command it was asked about, so an entry edited since asks again.
+    pub fn start(&self, runner: &Runner, confirmed: Option<&str>, mirror: Option<Mirror>) -> Result<Started, StartError> {
+        if let (Some(question), false) = (&runner.confirm, confirmed == Some(runner.command.as_str())) {
             return Err(StartError::Confirm(question.clone()));
         }
         let failed = StartError::Failed;
+        if self.cwd != self.dir {
+            let (here, project) = (std::fs::canonicalize(&self.cwd), std::fs::canonicalize(&self.dir));
+            if matches!((&here, &project), (Ok(a), Ok(b)) if a == b) {
+                // The project's own directory, spelled another way.
+            } else if !runner.worktree {
+                return Err(failed(format!("{} does not run in a worktree: its entry sets no worktree = true", runner.name)));
+            } else if !is_worktree_of(&self.dir, here.as_deref().ok()) {
+                return Err(failed(format!("{} is not a git worktree of {}", self.cwd, self.dir)));
+            }
+        }
+        crate::guards::check(&runner.requires, Path::new(&self.cwd), &crate::config::machine_file(), &self.dir).map_err(StartError::Guard)?;
         let started = crate::now();
         let safe: String = runner.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let id = format!("{}-{}-{}-{}", crate::now_ms(), safe, std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
@@ -71,11 +104,12 @@ impl Runs {
         std::fs::create_dir_all(&self.folder).map_err(|e| failed(e.to_string()))?;
         let log_file = File::create(&log).map_err(|e| failed(format!("{}: {e}", log.display())))?;
         let mut record = Record {
-            id: id.clone(), name: runner.name.clone(), command: runner.command.clone(), dir: self.dir.clone(),
-            state: State::Running, started, ended: None, exit_code: None, pid: 0, owner_pid: std::process::id(),
+            id: id.clone(), name: runner.name.clone(), command: runner.command.clone(), dir: self.cwd.clone(),
+            state: State::Running, started, ended: None, exit_code: None, pid: 0, pid_started: 0, owner_pid: std::process::id(),
             stop_requested: false, log: log.to_string_lossy().into_owned(),
         };
         store::write(&self.folder, &record).map_err(failed)?;
+        store::prune(&self.folder);
 
         let mut watcher = Command::new(&self.watcher);
         watcher.arg("__watch").arg(&id).arg(&self.folder).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -90,7 +124,7 @@ impl Runs {
         };
 
         let mut child = Command::new("sh");
-        child.arg("-c").arg(&runner.command).current_dir(&self.dir).env(sweep::ENV, &id).env("WHEEL_RUNNER_NAME", &runner.name)
+        child.arg("-c").arg(&runner.command).current_dir(&self.cwd).env(sweep::ENV, &id).env("WHEEL_RUNNER_NAME", &runner.name)
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
         let mut child = match child.spawn() {
             Ok(c) => c,
@@ -102,6 +136,7 @@ impl Runs {
             }
         };
         record.pid = child.id();
+        record.pid_started = sweep::started(record.pid);
         let _ = store::write(&self.folder, &record);
         let log_file = Arc::new(Mutex::new(log_file));
         let (pumped, pump_ends) = std::sync::mpsc::channel();
@@ -134,7 +169,7 @@ impl Runs {
             let status = child.wait();
             // The command is over; whatever it started goes with it. The sweep closes the pipes a
             // detached child still held, so the pumps end.
-            sweep::sweep(&record.id, Some(record.pid), GRACE);
+            sweep::sweep(&record.id, Some(record.leader()), GRACE);
             // Both pumps end once every holder of the pipes is gone. A holder the sweep could not
             // find (it hides its environment and left the group) must not hold the record open.
             for _ in 0..2 {
@@ -164,9 +199,14 @@ impl Runs {
         let _ = store::write(&self.folder, record);
     }
 
-    /// Every run, newest first.
+    /// The newest `store::KEEP` runs, newest first.
     pub fn list(&self) -> Vec<Record> {
-        store::all(&self.folder)
+        store::recent(&self.folder, store::KEEP)
+    }
+
+    /// The run most recently started, the only one the status line reads.
+    pub fn latest(&self) -> Option<Record> {
+        store::recent(&self.folder, 1).pop()
     }
 
     pub fn get(&self, id: &str) -> Result<Record, String> {
@@ -210,7 +250,7 @@ impl Runs {
         }
         // A marker file, not a rewrite of the record: the run's owner is the only writer of that.
         File::create(stop_marker(&self.folder, id)).map_err(|e| e.to_string())?;
-        sweep::sweep(id, Some(record.pid), GRACE);
+        sweep::sweep(id, Some(record.leader()), GRACE);
         Ok(record)
     }
 }
@@ -226,7 +266,7 @@ pub fn watch(id: &str, folder: &Path) {
     let _ = std::io::stdin().read_to_end(&mut sink);
     if let Ok(record) = store::read(folder, id) {
         if record.state == State::Running {
-            sweep::sweep(id, Some(record.pid), GRACE);
+            sweep::sweep(id, Some(record.leader()), GRACE);
             // Read again: a stop, or the run itself, may have finished while the sweep ran.
             if let Ok(mut record) = store::read(folder, id).map(|mut r| { r.stop_requested |= stop_marker(folder, id).exists(); r }) {
                 if record.state == State::Running {

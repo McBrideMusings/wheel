@@ -33,34 +33,73 @@ pub fn tagged(sys: &mut System, id: &str) -> Vec<Pid> {
         .collect()
 }
 
-/// Signal process group `group` (the run's leader started it) when it is a group of its own.
-fn signal_group(group: Option<u32>, signal: i32) {
-    if let Some(g) = group.filter(|g| *g > 1) {
-        // SAFETY: kill only sends a signal; the group is the one this run's leader made.
-        if g as i32 != unsafe { libc::getpgrp() } {
-            unsafe { libc::kill(-(g as i32), signal) };
-        }
+/// The process that leads a run's process group, and when it started.
+#[derive(Clone, Copy, Debug)]
+pub struct Leader {
+    pub pid: u32,
+    /// Seconds since the Unix epoch; 0 when unknown.
+    pub started: u64,
+}
+
+/// When process `pid` started, in seconds since the Unix epoch; 0 when it cannot be read.
+pub fn started(pid: u32) -> u64 {
+    let mut sys = System::new();
+    let p = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing());
+    sys.process(p).map(|p| p.start_time()).unwrap_or(0)
+}
+
+fn pgid_of(pid: u32) -> i32 {
+    // SAFETY: getpgid only reads.
+    unsafe { libc::getpgid(pid as i32) }
+}
+
+/// Whether process group `leader.pid` is still this run's. The kernel hands a process id out
+/// again only once no process group has that id, so a group that exists while its leader process
+/// does not is the run's own, left behind by the command. While a process with that id exists, it
+/// is the run's leader when it started when the run did, or when a member of the group carries the
+/// run's tag; otherwise the id was reused. (macOS withholds the tag of its own protected programs,
+/// so a leader that is one has only its start time to go by.)
+fn group_is_ours(sys: &mut System, id: &str, leader: Leader) -> bool {
+    let g = leader.pid;
+    // SAFETY: getpgrp only reads.
+    if g <= 1 || g as i32 == unsafe { libc::getpgrp() } {
+        return false;
+    }
+    let tagged_members = tagged(sys, id);
+    if sys.process(Pid::from_u32(g)).is_none() {
+        return true;
+    }
+    tagged_members.iter().any(|p| pgid_of(p.as_u32()) == g as i32)
+        || (leader.started != 0 && pgid_of(g) == g as i32 && sys.process(Pid::from_u32(g)).is_some_and(|p| p.start_time() == leader.started))
+}
+
+/// Signal the run's process group when it is still the run's.
+fn signal_group(sys: &mut System, id: &str, group: Option<Leader>, signal: i32) {
+    if let Some(l) = group.filter(|l| group_is_ours(sys, id, *l)) {
+        // SAFETY: kill only sends a signal; the group was just checked to hold this run.
+        unsafe { libc::kill(-(l.pid as i32), signal) };
     }
 }
 
-fn group_alive(group: Option<u32>) -> bool {
+fn group_alive(sys: &mut System, id: &str, group: Option<Leader>) -> bool {
     // SAFETY: signal 0 only checks that the group exists.
-    group.filter(|g| *g > 1).is_some_and(|g| unsafe { libc::kill(-(g as i32), 0) } == 0)
+    group.is_some_and(|l| group_is_ours(sys, id, l) && unsafe { libc::kill(-(l.pid as i32), 0) } == 0)
 }
 
 /// End every process of run `id`: SIGTERM, up to `grace` for them to go, then SIGKILL. The run's
 /// process group goes first, which reaches programs macOS withholds the environment of (its own
 /// protected `sleep`, `sh`); the tag reaches what left the group. Rescans up to three times, so a
 /// supervisor that respawns a child is caught. Returns the pids signalled by tag.
-pub fn sweep(id: &str, group: Option<u32>, grace: Duration) -> Vec<u32> {
+pub fn sweep(id: &str, group: Option<Leader>, grace: Duration) -> Vec<u32> {
     let mut sys = System::new();
     let mut signalled = vec![];
     for _ in 0..3 {
         let pids = tagged(&mut sys, id);
-        if pids.is_empty() && !group_alive(group) {
+        if pids.is_empty() && !group_alive(&mut sys, id, group) {
             break;
         }
-        signal_group(group, libc::SIGTERM);
+        signal_group(&mut sys, id, group, libc::SIGTERM);
         for pid in &pids {
             if let Some(p) = sys.process(*pid) {
                 p.kill_with(Signal::Term);
@@ -70,11 +109,11 @@ pub fn sweep(id: &str, group: Option<u32>, grace: Duration) -> Vec<u32> {
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
-            if tagged(&mut sys, id).is_empty() && !group_alive(group) {
+            if tagged(&mut sys, id).is_empty() && !group_alive(&mut sys, id, group) {
                 break;
             }
         }
-        signal_group(group, libc::SIGKILL);
+        signal_group(&mut sys, id, group, libc::SIGKILL);
         for pid in tagged(&mut sys, id) {
             if let Some(p) = sys.process(pid) {
                 p.kill();
@@ -112,5 +151,43 @@ mod tests {
         assert!(other.try_wait().unwrap().is_none(), "a process of another run was ended");
         other.kill().unwrap();
         other.wait().unwrap();
+    }
+    /// A recorded group whose id now belongs to someone else's process is left alone; the same
+    /// group is ended once its leader is the process that started with the run.
+    #[test]
+    fn a_group_that_is_not_the_runs_is_not_signalled() {
+        use std::os::unix::process::CommandExt;
+        let id = format!("test-group-{}", std::process::id());
+        let mut stranger = Command::new(sleeper("sleep-c")).arg("31003").process_group(0).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let pid = stranger.id();
+        // The pid was recorded for a run that is gone: no member carries its tag and the process
+        // that leads the group started at another time than the run did.
+        let stale = Leader { pid, started: started(pid) + 1000, };
+        sweep(&id, Some(stale), Duration::from_secs(1));
+        assert!(stranger.try_wait().unwrap().is_none(), "a group of another process was ended");
+        let unknown = Leader { pid, started: 0, };
+        sweep(&id, Some(unknown), Duration::from_secs(1));
+        assert!(stranger.try_wait().unwrap().is_none(), "a group with no start time on record was ended");
+        let ours = Leader { pid, started: started(pid), };
+        sweep(&id, Some(ours), Duration::from_secs(2));
+        assert!(stranger.wait().is_ok());
+    }
+
+    /// What a command left in its group after its leader exited is ended, though nothing in it
+    /// carries the run's tag.
+    #[test]
+    fn a_group_left_behind_by_an_exited_leader_is_ended() {
+        use std::os::unix::process::CommandExt;
+        let id = format!("test-left-{}", std::process::id());
+        let sleep = sleeper("sleep-d");
+        let mut leader = Command::new("sh").arg("-c").arg(format!("{} 31004 & exit 0", sleep.display()))
+            .process_group(0).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let (pid, at) = (leader.id(), started(leader.id()));
+        leader.wait().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let left = |n: &str| Command::new("pgrep").args(["-f", n]).stdout(Stdio::null()).status().unwrap().success();
+        assert!(left("sleep-d 31004"), "the command left nothing behind to end");
+        sweep(&id, Some(Leader { pid, started: at }), Duration::from_secs(2));
+        assert!(!left("sleep-d 31004"), "the group the exited leader left behind was not ended");
     }
 }

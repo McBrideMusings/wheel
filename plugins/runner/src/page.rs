@@ -112,7 +112,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, log: Option<&str
     let sub = p.label("sub", &count, json!({ "size": 12, "tone": "muted" }));
     page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 6, 0] })));
 
-    let line = status::line(runs, at);
+    let line = status::line(runs.first(), at);
     let latest = runs.first().map(|r| state_of(r).1).unwrap_or("muted");
     page.push(p.label("status", &line, json!({ "mono": true, "size": 12, "tone": latest, "padding": [0, 0, 10, 0] })));
 
@@ -143,7 +143,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, log: Option<&str
             let (what, acts) = if asking {
                 let q = r.confirm.clone().unwrap_or_default();
                 let cancel = p.pill(&format!("{id}.cancel"), "Cancel", "cancel_ask", json!({}), json!({}));
-                let go = p.pill(&format!("{id}.go"), &format!("Run {}: {q}", r.name), "press_run", json!({ "name": r.name, "confirmed": true }), json!({}));
+                let go = p.pill(&format!("{id}.go"), &format!("Run {}: {q}", r.name), "press_run", json!({ "name": r.name, "confirmed": r.command }), json!({}));
                 (p.label(&format!("{id}.cmd"), &q, json!({ "tone": "bad" })), vec![cancel, go])
             } else {
                 let run = p.pill(&format!("{id}.run"), &format!("Run {}", r.name), "press_run", json!({ "name": r.name }), json!({}));
@@ -206,13 +206,13 @@ mod tests {
     use super::*;
 
     fn runner(name: &str, confirm: Option<&str>, origin: &'static str) -> Runner {
-        Runner { name: name.into(), command: format!("make {name}"), confirm: confirm.map(String::from), origin }
+        Runner { name: name.into(), command: format!("make {name}"), confirm: confirm.map(String::from), origin, requires: vec![], status: None, worktree: false }
     }
 
     fn run(id: &str, state: State, code: Option<i32>) -> Record {
         Record {
             id: id.into(), name: "deploy".into(), command: "make deploy".into(), dir: "/p".into(), state, started: 100,
-            ended: (state != State::Running).then_some(160), exit_code: code, pid: 2, owner_pid: 1, stop_requested: false, log: "/l".into(),
+            ended: (state != State::Running).then_some(160), exit_code: code, pid: 2, pid_started: 0, owner_pid: 1, stop_requested: false, log: "/l".into(),
         }
     }
 
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(find(&c, "r.project.restart.cancel")["name"], "cancel_ask");
         let go = find(&c, "r.project.restart.go");
         assert_eq!(go["text"], "Run restart: Ends every agent.");
-        assert_eq!(go["context"], json!({ "name": "restart", "confirmed": true }));
+        assert_eq!(go["context"], json!({ "name": "restart", "confirmed": "make restart" }));
         assert!(c.iter().all(|v| v["id"] != "r.project.restart.run"), "the plain Run is replaced while asking");
     }
 

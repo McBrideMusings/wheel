@@ -2,7 +2,9 @@
 //! each run's log, status and exit code. As `wheel-runner serve` it is an MCP server for a host
 //! (Wheel); with no host every tool is also a command.
 
+mod check;
 mod config;
+mod guards;
 mod page;
 mod runs;
 mod serve;
@@ -39,7 +41,12 @@ enum Command {
         /// Answer yes to the command's confirm question.
         #[arg(long, short)]
         yes: bool,
+        /// Run in this git worktree of the project; the entry must set `worktree = true`.
+        #[arg(long)]
+        worktree: Option<String>,
     },
+    /// A command's status check: whether the thing it runs is up, and what it reads.
+    Check { name: String },
     /// The project's runs, newest first.
     Runs,
     /// A run's log.
@@ -107,13 +114,18 @@ fn main() -> anyhow::Result<()> {
                 println!("{:<20} {}{ask}", r.name, r.command);
             }
         }
-        Command::Run { name, yes } => {
+        Command::Run { name, yes, worktree } => {
+            let project = match &worktree {
+                Some(w) => project.in_worktree(w),
+                None => project,
+            };
             let Some(runner) = config::list(&config::machine_file(), &dir).into_iter().find(|r| r.name == name) else {
                 anyhow::bail!("no runner named {name}");
             };
             let mirror: runs::Mirror = Arc::new(|line| println!("{line}"));
-            let started = match project.start(&runner, yes, Some(mirror.clone())) {
-                Err(StartError::Confirm(q)) if asked_yes(&q) => project.start(&runner, true, Some(mirror)),
+            let started = match project.start(&runner, yes.then_some(runner.command.as_str()), Some(mirror.clone())) {
+                Err(StartError::Confirm(q)) if asked_yes(&q) => project.start(&runner, Some(runner.command.as_str()), Some(mirror)),
+                Err(StartError::Guard(m)) => anyhow::bail!("{name} did not start: {m}"),
                 Err(StartError::Confirm(q)) => anyhow::bail!("{name} asks first: {q} (run with --yes to answer yes)"),
                 other => other,
             };
@@ -121,6 +133,14 @@ fn main() -> anyhow::Result<()> {
             eprintln!("run {}  log {}", started.record.id, started.record.log);
             let record = started.done.join().map_err(|_| anyhow::anyhow!("the run's thread panicked"))?;
             std::process::exit(record.exit_code.unwrap_or(1));
+        }
+        Command::Check { name } => {
+            let runner = config::list(&config::machine_file(), &dir).into_iter().find(|r| r.name == name)
+                .ok_or_else(|| anyhow::anyhow!("no runner named {name}"))?;
+            let check = runner.status.ok_or_else(|| anyhow::anyhow!("{name} has no status check"))?;
+            let reading = check::run(&check, std::path::Path::new(&dir));
+            println!("{} {}", if reading.up { "up" } else { "down" }, reading.text);
+            std::process::exit(if reading.up { 0 } else { 1 });
         }
         Command::Runs => {
             for r in project.list() {
@@ -136,7 +156,7 @@ fn main() -> anyhow::Result<()> {
             project.stop(&id).map_err(|e| anyhow::anyhow!(e))?;
             println!("stopping {id}");
         }
-        Command::Status => println!("{}", status::line(&project.list(), now())),
+        Command::Status => println!("{}", status::line(project.latest().as_ref(), now())),
     }
     Ok(())
 }
