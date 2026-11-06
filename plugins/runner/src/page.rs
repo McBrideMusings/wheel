@@ -166,9 +166,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
             extra.as_object_mut().unwrap().extend(edge.as_object().unwrap().clone());
             lines.push(p.boxed(&id, "h", vec![name, what, buttons], extra));
         }
-        let list = p.boxed(&format!("g.{key}.rows"), "v", lines, json!({}));
-        p.put(json!({ "id": format!("g.{key}"), "component": "Group", "children": [list] }));
-        page.push(format!("g.{key}"));
+        page.push(p.boxed(&format!("g.{key}"), "v", lines, json!({ "border": "line", "radius": 8 })));
     }
 
     let show = shown(runs, ui);
@@ -182,10 +180,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         let took = crate::duration(r.ended.unwrap_or(at) - r.started);
         let id = format!("run.{}", sane(&r.id));
         let name = p.label(&format!("{id}.name"), &r.name, json!({ "weight": "semibold" }));
-        let st = {
-            p.put(json!({ "id": format!("{id}.state"), "component": "Status", "text": state, "symbol": symbol, "tone": tone }));
-            format!("{id}.state")
-        };
+        let st = p.label(&format!("{id}.state"), &state, json!({ "symbol": symbol, "tone": tone }));
         let when = p.label(&format!("{id}.when"), &format!("{} · {took}", crate::clock(r.started)), json!({ "mono": true, "size": 12, "tone": "muted", "tabular": true }));
         let mut bar = vec![name, st, when];
         if r.state == State::Running {
@@ -201,9 +196,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         };
         let body = p.label(&format!("{id}.log"), &text, json!({ "mono": true, "size": 12, "padding": [2, 0] }));
         let body = p.boxed(&format!("{id}.out"), "v", vec![body], json!({ "padding": [14, 14] }));
-        let both = p.boxed(&format!("{id}.in"), "v", vec![head, body], json!({}));
-        p.put(json!({ "id": id, "component": "Group", "children": [both] }));
-        blocks.push(id);
+        blocks.push(p.boxed(&id, "v", vec![head, body], json!({ "border": "line", "radius": 8 })));
     }
     let later = runs.iter().filter(|r| !ui.closed.contains(&r.id)).count().saturating_sub(show.len());
     if later > 0 {
@@ -249,7 +242,7 @@ mod tests {
         assert_eq!(find(&c, "g.project.h.t")["text"], "This project");
         assert_eq!(find(&c, "g.project.h.n")["text"], "1");
         assert_eq!(find(&c, "g.machine.h.t")["text"], "This machine");
-        assert_eq!(find(&c, "g.project")["component"], "Group");
+        assert_eq!(find(&c, "g.project")["border"], "line");
         assert_eq!(find(&c, "r.project.build.name")["text"], "build");
         assert_eq!(find(&c, "r.project.build.cmd")["text"], "make build");
         let b = find(&c, "r.project.build.run");
@@ -280,7 +273,7 @@ mod tests {
         let runs = [run("b", State::Running, None), run("a", State::Exited, Some(2))];
         let logs = std::collections::HashMap::from([("b".to_string(), "12:00:01  hi\n".to_string()), ("a".to_string(), String::new())]);
         let c = components(&rs, &runs, &Ui::default(), &logs, 142);
-        assert_eq!(find(&c, "run.b")["component"], "Group");
+        assert_eq!(find(&c, "run.b")["border"], "line");
         assert_eq!(find(&c, "run.b.state")["text"], "running");
         assert_eq!(find(&c, "run.b.state")["symbol"], "spinner");
         assert_eq!(find(&c, "run.a.state")["text"], "exit 2");
@@ -298,12 +291,12 @@ mod tests {
     fn closed_runs_drop_out_and_older_ones_come_in_batches_of_five() {
         let runs: Vec<Record> = (0..12).map(|i| run(&format!("r{i:02}"), State::Exited, Some(0))).collect();
         let c = components(&[], &runs, &Ui::default(), &Default::default(), 200);
-        assert_eq!(c.iter().filter(|v| v["component"] == "Group").count(), 5);
+        assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 5);
         assert_eq!(find(&c, "runs.more")["text"], "Show older runs · 7");
         let ui = Ui { more: 1, closed: ["r00".to_string()].into(), ..Ui::default() };
         let c = components(&[], &runs, &ui, &Default::default(), 200);
         assert!(c.iter().all(|v| v["id"] != "run.r00"));
-        assert_eq!(c.iter().filter(|v| v["component"] == "Group").count(), 10);
+        assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 10);
         assert_eq!(find(&c, "runs.more")["text"], "Show older runs · 1");
     }
 }
