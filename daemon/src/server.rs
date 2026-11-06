@@ -457,20 +457,41 @@ impl AppState {
                 crate::brief::unreadable_section(&e)
             }
         };
-        let file = crate::shell::brief_file(&self.instance_dir, Some(pane));
+        let all = self.guidance_text(None);
+        self.write_brief(
+            pane,
+            &crate::shell::brief_file(&self.instance_dir, Some(pane)),
+            &crate::brief::file_text(&section, &crate::brief::guidance_section(&all, "", "")),
+        );
+        // A terminal runs whichever agent the person types, so an agent with guidance of its own
+        // gets a brief of its own; one without keeps the pane's.
+        for agent in crate::settings::agent_names() {
+            let own = self.guidance_text(Some(agent));
+            let file = crate::shell::agent_brief_file(&self.instance_dir, pane, agent);
+            if own.trim().is_empty() {
+                let _ = std::fs::remove_file(&file);
+                continue;
+            }
+            let guidance = crate::brief::guidance_section(&all, agent, &own);
+            self.write_brief(pane, &file, &crate::brief::file_text(&section, &guidance));
+        }
+        section
+    }
+
+    /// Write one brief file of pane `pane`, and say so.
+    fn write_brief(&self, pane: &str, file: &std::path::Path, text: &str) {
         let written = file
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(&file, crate::brief::file_text(&section)));
+            .and_then(|()| std::fs::write(file, text));
         match written {
             Ok(()) => {
-                tracing::info!(%pane, file = %file.display(), bytes = section.len(), "wrote the pane's brief")
+                tracing::info!(%pane, file = %file.display(), bytes = text.len(), "wrote the pane's brief")
             }
             Err(e) => {
                 tracing::warn!(%pane, file = %file.display(), error = %e, "cannot write the pane's brief")
             }
         }
-        section
     }
 
     /// The configuration directory the person's login shell gives an agent started in `cwd`, asked
@@ -585,6 +606,7 @@ impl AppState {
                 pane,
                 name,
                 &self.pane_brief(pane, space_cwd),
+                &self.guidance_for(agent),
             )),
             env: self.agent_env(pane),
             restored: conversation.is_some(),
@@ -2402,6 +2424,25 @@ async fn handle(
             Ok(()) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => {
                 tracing::warn!(%message, "settings file ensure failed");
+                Some(failed(req, message))
+            }
+        },
+        ClientMsg::GuidanceLs { req, agent } => match state.guidance_ls(agent.as_deref()) {
+            Ok((brief, given, files)) => req.map(|req| ServerMsg::Guidance {
+                req,
+                brief,
+                given,
+                files,
+            }),
+            Err(message) => {
+                tracing::warn!(%message, "guidance ls failed");
+                Some(failed(req, message))
+            }
+        },
+        ClientMsg::GuidancePath { req, agent } => match state.guidance_path(agent.as_deref()) {
+            Ok(path) => req.map(|req| ServerMsg::GuidancePath { req, path }),
+            Err(message) => {
+                tracing::warn!(%message, "guidance path failed");
                 Some(failed(req, message))
             }
         },

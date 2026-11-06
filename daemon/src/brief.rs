@@ -14,14 +14,40 @@ const SECTION_MAX: usize = 2000;
 const DESCRIPTION_MAX: usize = 200;
 
 /// The brief for the agent in `pane`, whose agent is `agent`; `artifacts` is
-/// [`artifacts_section`].
-pub(crate) fn text(pane: &str, agent: &str, artifacts: &str) -> String {
-    format!("{BRIEF}\n{artifacts}\nYou are the agent in pane {pane} (agent {agent}). Closing that pane ends you.\n")
+/// [`artifacts_section`] and `guidance` is [`guidance_section`].
+pub(crate) fn text(pane: &str, agent: &str, artifacts: &str, guidance: &str) -> String {
+    format!("{BRIEF}\n{artifacts}\nYou are the agent in pane {pane} (agent {agent}). Closing that pane ends you.\n{guidance}")
 }
 
-/// The brief a terminal pane's wrappers hand its agent: the shared brief and the artifacts section.
-pub(crate) fn file_text(artifacts: &str) -> String {
-    format!("{BRIEF}\n{artifacts}")
+/// The brief a terminal pane's wrappers hand its agent: the shared brief, the artifacts section
+/// and `guidance`.
+pub(crate) fn file_text(artifacts: &str, guidance: &str) -> String {
+    format!("{BRIEF}\n{artifacts}{guidance}")
+}
+
+/// Wheel's own text, the part of every brief that is the same for every agent.
+pub(crate) fn fixed() -> &'static str {
+    BRIEF
+}
+
+/// The line that names a guidance file's text in a brief: every agent's, or `agent`'s.
+pub(crate) fn guidance_heading(agent: Option<&str>) -> String {
+    match agent {
+        None => "The person's own guidance for every agent:".into(),
+        Some(agent) => format!("The person's own guidance for {agent}:"),
+    }
+}
+
+/// The person's guidance files as they go after the brief, each text carried as it is under its
+/// heading (ADR-0017). A file with only whitespace in it adds nothing, heading included.
+pub(crate) fn guidance_section(all: &str, agent: &str, agent_text: &str) -> String {
+    let mut out = String::new();
+    for (who, text) in [(None, all), (Some(agent), agent_text)] {
+        if !text.trim().is_empty() {
+            out.push_str(&format!("\n{}\n{text}\n", guidance_heading(who)));
+        }
+    }
+    out
 }
 
 /// The artifacts that exist in a space, as of when the pane started, one line each. Past
@@ -69,10 +95,9 @@ pub(crate) fn unreadable_section(reason: &str) -> String {
     )
 }
 
-/// `text` cut to [`DESCRIPTION_MAX`] bytes, a run of three quotes in it shortened, because Codex
-/// receives the brief in a literal string.
+/// `text` cut to [`DESCRIPTION_MAX`] bytes.
 fn cut(text: &str) -> String {
-    let mut d = text.replace("'''", "'");
+    let mut d = text.to_string();
     if d.len() > DESCRIPTION_MAX {
         let mut end = DESCRIPTION_MAX;
         while !d.is_char_boundary(end) {
@@ -84,8 +109,7 @@ fn cut(text: &str) -> String {
     d
 }
 
-/// `- name (scope): description`. A description is cut to [`DESCRIPTION_MAX`] bytes, and a run of
-/// three quotes in it is shortened, because Codex receives the brief in a literal string.
+/// `- name (scope): description`. A description is cut to [`DESCRIPTION_MAX`] bytes.
 fn line(a: &ArtifactInfo) -> String {
     let scope = a.scope.name();
     match a.description.as_deref().filter(|d| !d.is_empty()) {
@@ -114,8 +138,32 @@ mod tests {
     }
 
     #[test]
+    fn guidance_goes_after_the_seat_all_agents_first_and_verbatim() {
+        let all = "Make a page.\n\n```sh\nwheel {x}\n```";
+        let section = guidance_section(all, "codex", "  codex only  ");
+        let pane = text("p3", "codex", "ARTS\n", &section);
+        let seat = pane.find("Closing that pane ends you.").unwrap();
+        let first = pane.find(all).unwrap();
+        let second = pane.find("  codex only  ").unwrap();
+        assert!(seat < first && first < second, "{pane}");
+        assert!(pane.contains("for every agent:\nMake a page."), "{pane}");
+        assert!(pane.contains("for codex:\n  codex only  \n"), "{pane}");
+        let file = file_text("ARTS\n", &section);
+        assert!(file.find("ARTS").unwrap() < file.find(all).unwrap(), "{file}");
+    }
+
+    #[test]
+    fn a_blank_guidance_file_adds_nothing() {
+        assert_eq!(guidance_section("", "claude", ""), "");
+        assert_eq!(guidance_section(" \n\t\n", "claude", "\n"), "");
+        assert_eq!(text("p1", "claude", "A\n", ""), text("p1", "claude", "A\n", &guidance_section("", "claude", "")));
+        let only_agent = guidance_section("", "pi", "x");
+        assert!(!only_agent.contains("every agent"), "{only_agent}");
+    }
+
+    #[test]
     fn a_pane_gets_the_brief_and_its_seat() {
-        let pane = text("p3", "w2", "");
+        let pane = text("p3", "w2", "", "");
         assert!(pane.starts_with(BRIEF));
         assert!(pane.contains("pane p3 (agent w2)"), "{pane}");
     }
@@ -132,8 +180,8 @@ mod tests {
         );
         assert!(section.contains("- clock (machine)\n"), "{section}");
         assert!(!section.contains("artifacts in all"), "{section}");
-        assert!(text("p1", "w1", &section).contains("- clock (machine)"));
-        assert!(file_text(&section).contains("- board (project)"));
+        assert!(text("p1", "w1", &section, "").contains("- clock (machine)"));
+        assert!(file_text(&section, "").contains("- board (project)"));
     }
 
     #[test]
@@ -158,12 +206,6 @@ mod tests {
         assert!(section.len() <= SECTION_MAX, "{}", section.len());
         assert!(section.contains("20 artifacts in all"), "{section}");
         assert!(section.matches("- a").count() < 20, "{section}");
-    }
-
-    #[test]
-    fn a_description_cannot_close_codex_s_literal_string() {
-        let section = artifacts_section(&[artifact("a", ArtifactScope::Project, Some("it'''s"))]);
-        assert!(!section.contains("'''"), "{section}");
     }
 
     #[test]
