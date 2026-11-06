@@ -89,7 +89,8 @@ public struct ToolRowInfo: Equatable, Sendable {
         case "mcp":
             // `mcp__server__tool` reads `server: tool`.
             let parts = title.components(separatedBy: "__")
-            return parts.count >= 3 && parts[0] == "mcp" ? "\(parts[1]): \(parts[2...].joined(separator: "__"))" : title
+            guard parts.first == "mcp", parts.count >= 3, let server = parts.dropFirst().first else { return title }
+            return "\(server): \(parts.dropFirst(2).joined(separator: "__"))"
         default: return title
         }
     }

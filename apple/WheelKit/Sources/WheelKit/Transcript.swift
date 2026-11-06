@@ -168,9 +168,10 @@ public struct Transcript: Sendable, Equatable {
         }
         switch event {
         case let .user(turn, text):
-            rows.append(TranscriptRow(id: nextId, kind: .user(text, queued: true)))
-            rows[rows.count - 1].turn = turn
-            rows[rows.count - 1].started = at
+            var row = TranscriptRow(id: nextId, kind: .user(text, queued: true))
+            row.turn = turn
+            row.started = at
+            rows.append(row)
             nextId += 1
             queuedTurns.append(turn)
         case let .turnStart(turn):

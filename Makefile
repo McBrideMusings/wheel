@@ -29,7 +29,10 @@ test: test-rust test-wheelkit test-query ## Run every test suite
 test-rust: ## cargo test
 	cd $(ROOT) && cargo test
 
-test-wheelkit: ## swift test on WheelKit
+lint-wheelkit: ## SwiftLint over WheelKit: no force-unwrap, try!, as!, unchecked range or subscript (a trap ends the app)
+	swiftlint lint --strict --config $(ROOT)/.swiftlint.yml --quiet $(ROOT)/apple/WheelKit/Sources
+
+test-wheelkit: lint-wheelkit ## swift test on WheelKit, after the lint
 	swift test --package-path $(ROOT)/apple/WheelKit
 
 test-query: ## The beads artifact's query tests

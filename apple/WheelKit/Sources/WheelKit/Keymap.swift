@@ -105,11 +105,10 @@ public struct Keymap: Sendable, Equatable {
                 continue
             }
             let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
-            guard parts.count == 2, let chord = KeyChord(parts[0]) else {
+            guard parts.count == 2, let head = parts.first, let action = parts.last, let chord = KeyChord(head) else {
                 problems.append("\(entry): not a binding this app can read")
                 continue
             }
-            let action = parts[1]
             if action != "unbind", !actions.contains(action) {
                 problems.append("\(entry): Wheel has no action \(action)")
                 continue

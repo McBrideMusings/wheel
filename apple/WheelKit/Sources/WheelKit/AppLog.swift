@@ -81,12 +81,12 @@ public final class AppLog: @unchecked Sendable {
         }
     }
 
-    nonisolated(unsafe) private static let urlPattern = try! NSRegularExpression(pattern: #"[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]+"#)
+    nonisolated(unsafe) private static let urlPattern = safeRegex(#"[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]+"#)
 
     /// `message` with each URL in it cut to its scheme, host, port and path: a setting or an address
     /// can carry a credential in its user, password or query.
     static func redactingURLs(_ message: String) -> String {
-        let matches = urlPattern.matches(in: message, range: NSRange(message.startIndex..., in: message))
+        let matches = urlPattern?.matches(in: message, range: NSRange(message.startIndex..., in: message)) ?? []
         guard !matches.isEmpty else { return message }
         var out = message
         for match in matches.reversed() {
@@ -178,7 +178,7 @@ public final class AppLog: @unchecked Sendable {
                 lines.append(AppLogLine(tsMs: UInt64(Date().timeIntervalSince1970 * 1000), msg: text))
             }
             used = next - data.startIndex
-            lines[lines.count - 1].end = UInt64(used)
+            if let last = lines.indices.last { lines[last].end = UInt64(used) }
             start = next
         }
         if !whole, lines.count > 1 {

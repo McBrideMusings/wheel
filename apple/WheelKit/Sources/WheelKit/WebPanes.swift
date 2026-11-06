@@ -27,11 +27,16 @@ public enum WebPanes {
         let parts = artifact.scope == .machine
             ? ["machine", artifact.name]
             : ["project", cwd, artifact.name]
-        var b = Array(SHA256.hash(data: Data(parts.joined(separator: "\n").utf8)).prefix(16))
-        b[6] = (b[6] & 0x0F) | 0x80
-        b[8] = (b[8] & 0x3F) | 0x80
-        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-                           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
+        let bytes = SHA256.hash(data: Data(parts.joined(separator: "\n").utf8)).prefix(16).enumerated().map { index, byte -> UInt8 in
+            switch index {
+            case 6: (byte & 0x0F) | 0x80
+            case 8: (byte & 0x3F) | 0x80
+            default: byte
+            }
+        }
+        var id = UUID().uuid
+        withUnsafeMutableBytes(of: &id) { $0.copyBytes(from: bytes) }
+        return UUID(uuid: id)
     }
 
     /// The scheme a web pane's page is opened under. A page's browser storage is keyed by its

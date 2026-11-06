@@ -200,32 +200,67 @@ struct UserMessage: View {
         .frame(maxWidth: .infinity, alignment: right ? .trailing : .leading)
     }
 
+    /// The message inside its bubble: attached images first, as in Messages, then the words with
+    /// the image paths left out, since the pictures stand for them.
     @ViewBuilder private var message: some View {
-        let body = Text(text)
-            .font(look.body)
-            .lineSpacing(look.lineSpacing(for: look.size))
-            .selectableText(.plain(text), source: text, id: row.id, chat: chat, style: look.bodyProse)
+        let paths = look.imagesInline ? ChatImages.attachedPaths(in: text) : []
+        let words = paths.isEmpty ? text : ChatImages.withoutAttachedImages(text)
+        let content = VStack(alignment: look.messageAlign == .right ? .trailing : .leading, spacing: 6) {
+            UserImages(chat: chat, id: row.id, paths: paths)
+            if !words.isEmpty || paths.isEmpty {
+                Text(words)
+                    .font(look.body)
+                    .lineSpacing(look.lineSpacing(for: look.size))
+                    .selectableText(.plain(words), source: words, id: row.id, chat: chat, style: look.bodyProse)
+            }
+        }
+        let tight = !paths.isEmpty && words.isEmpty
         switch look.messageStyle {
         case .bubble:
-            body
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+            content
+                .padding(.horizontal, tight ? 4 : 12)
+                .padding(.vertical, tight ? 4 : 7)
                 .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .foregroundStyle(queued ? .secondary : .primary)
         case .wash:
-            body
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+            content
+                .padding(.horizontal, tight ? 5 : 14)
+                .padding(.vertical, tight ? 5 : 8)
                 .background(Color.accentColor.opacity(queued ? 0.18 : 0.35), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .foregroundStyle(queued ? .secondary : .primary)
         case .accent:
-            body
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+            content
+                .padding(.horizontal, tight ? 4 : 12)
+                .padding(.vertical, tight ? 4 : 7)
                 .background(Color.accentColor.opacity(queued ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .foregroundStyle(.white)
         case .plain:
-            body.foregroundStyle(queued ? .secondary : .primary)
+            content.foregroundStyle(queued ? .secondary : .primary)
+        }
+    }
+}
+
+/// The images a message of the person's attached, drawn under it like the images of a reply, and
+/// opening at full size on a click.
+struct UserImages: View {
+    @Environment(\.chatAppearance) private var look
+    @Environment(\.chatLinks) private var links
+    let chat: AgentChat
+    let id: Int
+    let paths: [String]
+
+    var body: some View {
+        if !paths.isEmpty {
+            StructuredText(markdown: paths.map { ChatImages.markdownImage(path: $0) }.joined(separator: "\n\n"))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .textual.imageAttachmentLoader(
+                    ChatImageLoader(agent: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
+                .popover(item: Binding(
+                    get: { links?.fullImages[chat.name].flatMap { $0.row == id ? $0 : nil } },
+                    set: { if $0 == nil { links?.closeImage(agent: chat.name) } }
+                )) { image in
+                    ChatImageFull(image: image)
+                }
         }
     }
 }

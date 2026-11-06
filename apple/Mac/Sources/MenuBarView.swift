@@ -68,6 +68,10 @@ struct MenuBarPopover: View {
                 PopoverRow(symbol: "macwindow", title: "New Window", trailing: "⌘N")
             }
             .buttonStyle(.plain)
+            Button { NSApp.terminate(nil) } label: {
+                PopoverRow(symbol: "power", title: "Quit Wheel", trailing: "⌘Q")
+            }
+            .buttonStyle(.plain)
         }
         .padding(12)
         .frame(width: 320)

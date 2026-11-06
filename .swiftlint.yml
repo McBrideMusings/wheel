@@ -1,0 +1,38 @@
+# Pure WheelKit code must not trap: a trap ends the whole app, and Swift cannot catch it.
+# `make lint-wheelkit` runs this over apple/WheelKit/Sources only.
+included:
+  - apple/WheelKit/Sources
+
+only_rules:
+  - force_unwrapping
+  - force_cast
+  - force_try
+  - custom_rules
+
+force_unwrapping: error
+force_cast: error
+force_try: error
+
+custom_rules:
+  closed_range_between_values:
+    name: "Unchecked closed range"
+    # A range between two numeric literals (`0.1 ... 0.9`) cannot invert, so it passes.
+    regex: '(?:(?:[A-Za-z_\)\]]|(?<!(?<![\w.])[0-9.]{0,8})[0-9]) \.\.\. [A-Za-z0-9_\(\.]|[0-9] \.\.\. [A-Za-z_\(\.])'
+    match_kinds: [identifier, number, keyword]
+    message: "`a ... b` traps when a > b. Build the range from `min(a, b)` and `max(a, b)`, or use `a <= b ? a ... b : nil`."
+    severity: error
+  half_open_range_between_values:
+    name: "Unchecked half-open range"
+    regex: '[A-Za-z0-9_\)\]] \.\.< [A-Za-z0-9_\(\.]'
+    message: "`a ..< b` traps when a > b. Guard it, or use `stride`."
+    severity: error
+  subscript_by_literal_or_last:
+    name: "Unchecked subscript"
+    regex: '[A-Za-z0-9_\)\]]\[(\d+|[^\]\[]*\.count - \d+)\]'
+    message: "`array[0]` and `array[array.count - 1]` trap on an empty array. Use `.first`, `.last` or `indices.contains`."
+    severity: error
+  first_or_last_force:
+    name: "Unchecked first or last"
+    regex: '\.(first|last)!'
+    message: "`.first!` traps on an empty collection."
+    severity: error

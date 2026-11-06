@@ -144,7 +144,7 @@ public struct HTTPResponseReader: Sendable {
         var lines = text.components(separatedBy: "\r\n")
         let first = lines.removeFirst()
         let parts = first.split(separator: " ", maxSplits: 2)
-        guard parts.count >= 2, parts[0].hasPrefix("HTTP/"), let status = Int(parts[1]) else {
+        guard let proto = parts.first, proto.hasPrefix("HTTP/"), let code = parts.dropFirst().first, let status = Int(code) else {
             throw Malformed(reason: "status line \(first)")
         }
         var headers: [String: String] = [:]

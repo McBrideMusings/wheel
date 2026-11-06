@@ -145,7 +145,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     private mutating func normalize() {
         for i in windows.indices {
             guard !sessions.isEmpty else { continue }
-            if windows[i].session.flatMap(session) == nil { windows[i].session = sessions[0].id }
+            if windows[i].session.flatMap(session) == nil, let first = sessions.first { windows[i].session = first.id }
             guard let held = session(of: windows[i])?.spaces else { continue }
             if windows[i].active.map(held.contains) != true { windows[i].active = windows[i].lastSpace[windows[i].session ?? ""].flatMap { held.contains($0) ? $0 : nil } ?? held.first }
             if let active = windows[i].active, let session = windows[i].session { windows[i].lastSpace[session] = active }
@@ -195,7 +195,7 @@ public struct WindowLayout: Codable, Equatable, Sendable {
         windows = [WindowRecord(id: keep?.id ?? UUID().uuidString, name: keep?.name, session: keep?.session, active: keep?.active,
                                 lastSpace: keep?.lastSpace ?? [:], sidebar: keep?.sidebar ?? true, pinned: keep?.pinned ?? false)]
         littles = []
-        focused = windows[0].id
+        focused = windows.first?.id ?? focused
         normalize()
     }
 

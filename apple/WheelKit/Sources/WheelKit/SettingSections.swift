@@ -12,7 +12,7 @@ public struct SettingSection: Sendable, Equatable {
         var out: [SettingSection] = []
         for setting in settings {
             let segments = setting.key.split(separator: ".")
-            let name = label(String(segments.count >= 3 ? segments[1] : segments.first ?? Substring(setting.key)))
+            let name = label(String((segments.count >= 3 ? segments.dropFirst().first : segments.first) ?? Substring(setting.key)))
             if let i = out.firstIndex(where: { $0.name == name }) {
                 out[i].settings.append(setting)
             } else {

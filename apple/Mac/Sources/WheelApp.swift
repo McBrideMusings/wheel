@@ -37,6 +37,7 @@ struct WheelApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var windows: WindowManager?
+    private var statusMenu: StatusItemMenu?
     private var lastBackgroundBadge: Int?
     #if DEBUG
     private var debug: DebugServer?
@@ -47,6 +48,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
         UILog.sink = { Log.info($0) }
         super.init()
+        guardAgainstCrashes()
+    }
+
+    /// Record what is being drawn, and hold out what the last run died drawing, so a crash in one
+    /// space or pane costs that one space or pane and not every launch after it.
+    private func guardAgainstCrashes() {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support/\(Bundle.main.bundleIdentifier ?? "wheel")")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appending(path: "crash-mark.txt")
+        if let crash = CrashGuard.Crash.read(file: file) {
+            Quarantine.shared.hold(crash)
+            Log.info("last run died drawing space=\(crash.space ?? "none") pane=\(crash.pane ?? "none"); holding it out; report \(crash.report?.path ?? "none")")
+        }
+        CrashGuard.install(file: file)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -59,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let manager = WindowManager(model: model)
         windows = manager
         model.windowHost = manager
+        statusMenu = StatusItemMenu(model: model)
         #if DEBUG
         let server = DebugServer(model: model)
         server.start()

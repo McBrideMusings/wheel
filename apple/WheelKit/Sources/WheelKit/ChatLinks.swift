@@ -476,12 +476,12 @@ public enum ChatLinks {
         var target: ChatLinkTarget
     }
 
-    private static let urlPattern = try! NSRegularExpression(pattern: #"https?://[^\s<>()\[\]`"']+"#)
-    private static let artifactPattern = try! NSRegularExpression(pattern: #"(?<![\w-])artifact ([A-Za-z0-9][A-Za-z0-9._-]*)"#)
-    private static let panePattern = try! NSRegularExpression(pattern: #"(?<![\w/.-])p(\d+)(?![\w/@-]|\.\w)"#)
-    private static let filePattern = try! NSRegularExpression(
-        pattern: #"(?<![\w/.~@+:-])(?:(?:~|\.{1,2})?/)?(?:[\w@+.-]+/)*[\w@+.-]+(?::(\d+)(?::\d+)?)?(?![\w@+-])"#)
-    private static let extensionPattern = try! NSRegularExpression(pattern: #"[\w@+-]{2,}\.[A-Za-z][A-Za-z0-9]{0,9}$"#)
+    private static let urlPattern = safeRegex(#"https?://[^\s<>()\[\]`"']+"#)
+    private static let artifactPattern = safeRegex(#"(?<![\w-])artifact ([A-Za-z0-9][A-Za-z0-9._-]*)"#)
+    private static let panePattern = safeRegex(#"(?<![\w/.-])p(\d+)(?![\w/@-]|\.\w)"#)
+    private static let filePattern = safeRegex(
+        #"(?<![\w/.~@+:-])(?:(?:~|\.{1,2})?/)?(?:[\w@+.-]+/)*[\w@+.-]+(?::(\d+)(?::\d+)?)?(?![\w@+-])"#)
+    private static let extensionPattern = safeRegex(#"[\w@+-]{2,}\.[A-Za-z][A-Za-z0-9]{0,9}$"#)
 
     /// Every target in `text`, in order, none overlapping another: a web link wins over a path
     /// inside it, then the person's own patterns in the order they wrote them, an artifact name,
@@ -492,14 +492,14 @@ public enum ChatLinks {
         var taken: [Match] = []
         func free(_ r: NSRange) -> Bool { !taken.contains { NSIntersectionRange($0.range, r).length > 0 } }
 
-        for m in urlPattern.matches(in: text, range: all) {
+        for m in urlPattern?.matches(in: text, range: all) ?? [] {
             var r = m.range
             while r.length > 1, ".,;:!?".contains(ns.substring(with: NSRange(location: r.location + r.length - 1, length: 1))) {
                 r.length -= 1
             }
             if free(r) { taken.append(Match(range: r, target: .web(ns.substring(with: r)))) }
         }
-        for m in artifactPattern.matches(in: text, range: all) {
+        for m in artifactPattern?.matches(in: text, range: all) ?? [] {
             var name = ns.substring(with: m.range(at: 1))
             while name.hasSuffix(".") || name.hasSuffix("-") { name.removeLast() }
             guard !name.isEmpty else { continue }
@@ -512,12 +512,12 @@ public enum ChatLinks {
             }
         }
         if settings.panes {
-            for m in panePattern.matches(in: text, range: all) where free(m.range) {
+            for m in panePattern?.matches(in: text, range: all) ?? [] where free(m.range) {
                 taken.append(Match(range: m.range, target: .pane(ns.substring(with: m.range))))
             }
         }
         if settings.files != .off {
-            for m in filePattern.matches(in: text, range: all) {
+            for m in filePattern?.matches(in: text, range: all) ?? [] {
                 var r = m.range
                 var line: Int?
                 if m.range(at: 1).location != NSNotFound {
@@ -546,7 +546,7 @@ public enum ChatLinks {
     /// A path has a folder in it, or a name with an extension; a lone word or number is not one.
     private static func looksLikeFile(_ s: String) -> Bool {
         if s.contains("/") { return s.count > 1 && !s.hasSuffix("/") }
-        return extensionPattern.firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)) != nil
+        return extensionPattern?.firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)) != nil
     }
 }
 
