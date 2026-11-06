@@ -145,14 +145,18 @@ impl Runs {
             std::thread::spawn(move || {
                 let mut lines = BufReader::new(from);
                 let mut buf = Vec::new();
+                // A mirror that panicked (its terminal closed) is not called again: a panic per
+                // line of a long output costs more than the command.
+                let mut mirrored = mirror.is_some();
                 while matches!(lines.read_until(b'\n', &mut buf), Ok(n) if n > 0) {
                     let text = String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r']).to_string();
                     buf.clear();
                     let line = format!("{}  {text}", crate::clock(crate::now()));
+                    // One write per line, so the other pump's lines never split it.
+                    let _ = log.lock().unwrap_or_else(|e| e.into_inner()).write_all(format!("{line}\n").as_bytes());
                     // A panic in a mirror (a closed terminal) must not poison the log for the other pump.
-                    let _ = writeln!(log.lock().unwrap_or_else(|e| e.into_inner()), "{line}");
-                    if let Some(m) = &mirror {
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m(&line)));
+                    if let (true, Some(m)) = (mirrored, &mirror) {
+                        mirrored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m(&line))).is_ok();
                     }
                 }
                 let _ = ended.send(());

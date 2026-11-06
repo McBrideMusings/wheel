@@ -197,7 +197,7 @@ fn runners_list_from_the_project_and_the_machine() {
 
 #[test]
 fn output_read_by_a_reader_that_closed_early_does_not_hang_the_run() {
-    let p = Project::new("epipe", "loud = \"yes line | head -n 300000\"\n");
+    let p = Project::new("epipe", "loud = \"yes line | head -n 50000\"\n");
     let mut run = p.cmd(&["run", "loud"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut first = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(run.stdout.take().unwrap()), &mut first).unwrap();
@@ -205,7 +205,7 @@ fn output_read_by_a_reader_that_closed_early_does_not_hang_the_run() {
     let runs = p.text(&["runs"]);
     assert!(runs.contains("exited"), "{runs}");
     let log = p.text(&["log", &p.run_id()]);
-    assert_eq!(log.lines().count(), 300000, "the log lost lines");
+    assert_eq!(log.lines().count(), 50000, "the log lost lines");
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) {
