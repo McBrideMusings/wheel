@@ -27,31 +27,56 @@ public enum ChatImages {
     /// backticks or bare: what the composer writes for an attached file. Web addresses are left
     /// out, since nothing the person typed is fetched.
     public static func attachedPaths(in message: String) -> [String] {
-        message.split(separator: "\n").compactMap { line in
+        attachedLines(in: message).map(\.path)
+    }
+
+    /// The lines of `message` that name an attached image, by line index and path. Lines inside
+    /// fenced code are left alone, as `rewritten` leaves them.
+    private static func attachedLines(in message: String) -> [(index: Int, path: String)] {
+        var fence: (char: Character, length: Int)?
+        var found: [(index: Int, path: String)] = []
+        for (index, line) in message.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            let trimmed = line.drop(while: { $0 == " " })
+            if let open = fence {
+                let run = trimmed.prefix(while: { $0 == open.char }).count
+                if run >= open.length, trimmed.dropFirst(run).allSatisfy({ $0 == " " }) { fence = nil }
+                continue
+            }
+            if let c = trimmed.first, c == "`" || c == "~" {
+                let run = trimmed.prefix(while: { $0 == c }).count
+                if run >= 3 {
+                    fence = (c, run)
+                    continue
+                }
+            }
             var word = line.trimmingCharacters(in: .whitespaces)
             // The composer wraps each path in backticks, so a path in them may hold spaces.
             let quoted = word.count > 2 && word.hasPrefix("`") && word.hasSuffix("`")
             if quoted { word = String(word.dropFirst().dropLast()) }
-            if isRemote(word) { return nil }
-            if quoted { return isImageTarget(word) && (word.hasPrefix("/") || word.hasPrefix("~/")) ? word : nil }
-            return isBareImage(word) ? word : nil
+            if isRemote(word) { continue }
+            let named = quoted ? isImageTarget(word) && (word.hasPrefix("/") || word.hasPrefix("~/")) : isBareImage(word)
+            if named { found.append((index, word)) }
         }
+        return found
     }
 
     /// `message` without the lines `attachedPaths` found, which the images stand for.
     public static func withoutAttachedImages(_ message: String) -> String {
-        let drawn = Set(attachedPaths(in: message))
+        let drawn = Set(attachedLines(in: message).map(\.index))
         guard !drawn.isEmpty else { return message }
-        return message.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { line in !attachedPaths(in: String(line)).contains(where: drawn.contains) }
+        return message.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+            .filter { !drawn.contains($0.offset) }
+            .map(\.element)
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// `path` written so Markdown image syntax holds it: spaces and parentheses percent-encoded.
+    /// `path` written so Markdown image syntax holds it: every character a URL path or Markdown
+    /// destination reads specially is percent-encoded, so `100%.png` and `a#b.png` name those files.
     public static func markdownImage(path: String) -> String {
-        let encoded = path.map { "% ()".contains($0) ? String(format: "%%%02X", $0.asciiValue ?? 0) : String($0) }.joined()
-        return "![](\(encoded))"
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "()[]")
+        return "![](\(path.addingPercentEncoding(withAllowedCharacters: allowed) ?? path))"
     }
 
     /// Whether `target` is a web address, which is not fetched until the person clicks it.

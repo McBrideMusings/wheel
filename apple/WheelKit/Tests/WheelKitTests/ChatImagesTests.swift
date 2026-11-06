@@ -20,6 +20,17 @@ import Testing
         #expect(ChatImages.withoutAttachedImages("no image `/tmp/n.txt`") == "no image `/tmp/n.txt`")
     }
 
+    @Test func aPathInFencedCodeIsNotAnAttachment() {
+        let message = "```\n`/tmp/a.png`\n```\n`/tmp/b.png`"
+        #expect(ChatImages.attachedPaths(in: message) == ["/tmp/b.png"])
+        #expect(ChatImages.withoutAttachedImages(message) == "```\n`/tmp/a.png`\n```")
+    }
+
+    @Test func aPathWithPercentOrHashIsEncoded() {
+        #expect(ChatImages.markdownImage(path: "/tmp/100%.png") == "![](/tmp/100%25.png)")
+        #expect(ChatImages.markdownImage(path: "/tmp/a#b[1].png") == "![](/tmp/a%23b%5B1%5D.png)")
+    }
+
     @Test func aQuotedPathMayHoldSpaces() {
         let path = "/Users/p/Library/Application Support/CleanShot/Screen (1).png"
         #expect(ChatImages.attachedPaths(in: "x\n\n`\(path)`") == [path])
