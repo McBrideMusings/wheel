@@ -107,10 +107,10 @@ fn state_of(r: &Record) -> (String, &'static str, &'static str) {
 }
 
 /// A section heading: the words and, muted beside them, how many there are.
-fn heading(p: &mut Page, id: &str, text: &str, n: usize, top: u32) -> String {
-    let t = p.label(&format!("{id}.t"), text, json!({ "size": 14, "weight": "semibold" }));
-    let c = p.label(&format!("{id}.n"), &n.to_string(), json!({ "size": 13, "tone": "muted", "tabular": true }));
-    p.boxed(id, "h", vec![t, c], json!({ "spacing": 8, "align": "center", "padding": [top, 0, 12, 0] }))
+fn heading(p: &mut Page, id: &str, text: &str, n: usize) -> String {
+    let t = p.label(&format!("{id}.t"), text, json!({ "weight": "semibold" }));
+    let c = p.label(&format!("{id}.n"), &n.to_string(), json!({ "tone": "muted", "tabular": true }));
+    p.boxed(id, "h", vec![t, c], json!({ "align": "center" }))
 }
 
 /// `runners` are the commands, `runs` the project's runs newest first, `logs` the last lines of
@@ -124,19 +124,19 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         1 => "1 runner".to_string(),
         n => format!("{n} runners"),
     };
-    let sub = p.label("sub", &count, json!({ "size": 13, "tone": "muted" }));
-    page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 8, 0] })));
+    let sub = p.label("sub", &count, json!({ "tone": "muted" }));
+    page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between" })));
 
     if let Some(e) = &ui.problem {
         let l = p.label("problem.t", e, json!({ "tone": "bad" }));
-        page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [12, 14], "margin": [8, 0, 0, 0] })));
+        page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad" })));
     }
 
     if runners.is_empty() {
         page.push(p.label(
             "none",
             "No runners yet. Add a [runner] table to this project's wheel.toml, such as build = \"make -j8\"; the list updates when you save.",
-            json!({ "tone": "muted", "padding": [20, 0, 0, 0] }),
+            json!({ "tone": "muted" }),
         ));
     }
     for (machine, title) in [(false, "This project"), (true, "This machine")] {
@@ -145,7 +145,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
             continue;
         }
         let key = if machine { "machine" } else { "project" };
-        page.push(heading(&mut p, &format!("g.{key}.h"), title, rows.len(), 28));
+        page.push(heading(&mut p, &format!("g.{key}.h"), title, rows.len()));
         let mut lines = vec![];
         for (i, r) in rows.iter().enumerate() {
             let id = format!("r.{key}.{}", sane(&r.name));
@@ -158,19 +158,19 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
                 (p.label(&format!("{id}.cmd"), &q, json!({ "tone": "bad" })), vec![cancel, go])
             } else {
                 let run = p.pill(&format!("{id}.run"), "", "press_run", json!({ "name": r.name }), json!({ "icon": "play.fill", "help": format!("Run {}", r.name) }));
-                (p.label(&format!("{id}.cmd"), &r.command, json!({ "mono": true, "size": 12, "tone": "muted" })), vec![run])
+                (p.label(&format!("{id}.cmd"), &r.command, json!({ "mono": true, "tone": "muted" })), vec![run])
             };
-            let buttons = p.boxed(&format!("{id}.acts"), "h", acts, json!({ "spacing": 8 }));
+            let buttons = p.boxed(&format!("{id}.acts"), "h", acts, json!({}));
             let edge = if i + 1 < rows.len() { json!({ "edge": "bottom" }) } else { json!({}) };
-            let mut extra = json!({ "spacing": 16, "widths": [210, "flex", null], "padding": [12, 14], "align": "center", "trailing": 1 });
+            let mut extra = json!({ "widths": [210, "flex", null], "align": "center", "trailing": 1 });
             extra.as_object_mut().unwrap().extend(edge.as_object().unwrap().clone());
             lines.push(p.boxed(&id, "h", vec![name, what, buttons], extra));
         }
-        page.push(p.boxed(&format!("g.{key}"), "v", lines, json!({ "border": "line", "radius": 8 })));
+        page.push(p.boxed(&format!("g.{key}"), "v", lines, json!({ "border": "line", "spacing": 0, "padding": [0, 0] })));
     }
 
     let show = shown(runs, ui);
-    page.push(heading(&mut p, "runs.h", "Output", runs.iter().filter(|r| !ui.closed.contains(&r.id)).count(), 36));
+    page.push(heading(&mut p, "runs.h", "Output", runs.iter().filter(|r| !ui.closed.contains(&r.id)).count()));
     if show.is_empty() {
         page.push(p.label("runs.none", "No runs yet.", json!({ "tone": "muted" })));
     }
@@ -181,32 +181,32 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         let id = format!("run.{}", sane(&r.id));
         let name = p.label(&format!("{id}.name"), &r.name, json!({ "weight": "semibold" }));
         let st = p.label(&format!("{id}.state"), &state, json!({ "symbol": symbol, "tone": tone }));
-        let when = p.label(&format!("{id}.when"), &format!("{} · {took}", crate::clock(r.started)), json!({ "mono": true, "size": 12, "tone": "muted", "tabular": true }));
+        let when = p.label(&format!("{id}.when"), &format!("{} · {took}", crate::clock(r.started)), json!({ "mono": true, "tone": "muted", "tabular": true }));
         let mut bar = vec![name, st, when];
         if r.state == State::Running {
             bar.push(p.pill(&format!("{id}.stop"), "Stop", "stop_log", json!({ "path": r.id }), json!({})));
         }
         bar.push(p.pill(&format!("{id}.close"), "", "close_log", json!({ "path": r.id }), json!({ "icon": "xmark", "help": "Close", "style": "plain" })));
         let trailing = if r.state == State::Running { 2 } else { 1 };
-        let head = p.boxed(&format!("{id}.head"), "h", bar, json!({ "spacing": 12, "align": "center", "trailing": trailing, "padding": [12, 14], "edge": "bottom" }));
+        let head = p.boxed(&format!("{id}.head"), "h", bar, json!({ "align": "center", "trailing": trailing, "edge": "bottom" }));
         let text = match logs.get(&r.id) {
             Some(t) if !t.is_empty() => t.trim_end().to_string(),
             Some(_) => "(no output yet)".into(),
             None => "(the log cannot be read)".into(),
         };
-        let body = p.label(&format!("{id}.log"), &text, json!({ "mono": true, "size": 12, "padding": [2, 0] }));
-        let body = p.boxed(&format!("{id}.out"), "v", vec![body], json!({ "padding": [14, 14] }));
-        blocks.push(p.boxed(&id, "v", vec![head, body], json!({ "border": "line", "radius": 8 })));
+        let body = p.label(&format!("{id}.log"), &text, json!({ "mono": true }));
+        let body = p.boxed(&format!("{id}.out"), "v", vec![body], json!({ "padding": [12, 12] }));
+        blocks.push(p.boxed(&id, "v", vec![head, body], json!({ "border": "line", "spacing": 0, "padding": [0, 0] })));
     }
     let later = runs.iter().filter(|r| !ui.closed.contains(&r.id)).count().saturating_sub(show.len());
     if later > 0 {
         blocks.push(p.pill("runs.more", &format!("Show older runs · {later}"), "show_older", json!({}), json!({ "style": "link" })));
     }
     if !blocks.is_empty() {
-        page.push(p.boxed("runs", "v", blocks, json!({ "spacing": 20 })));
+        page.push(p.boxed("runs", "v", blocks, json!({ "spacing": 16 })));
     }
 
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [28, 28, 56, 28], "children": page }));
+    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [28, 28, 56, 28], "spacing": 24, "children": page }));
     p.out
 }
 

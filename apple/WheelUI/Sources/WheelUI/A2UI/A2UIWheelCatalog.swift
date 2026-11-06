@@ -98,7 +98,7 @@ struct A2UILabelView: View {
     }
 }
 
-// MARK: Box — one generic container: axis, spacing, widths (number | "flex" | null), padding, border, fill, radius, edge, controlSize
+// MARK: Box — one generic container (spacing, padding and radius have defaults): axis, spacing, widths (number | "flex" | null), padding, border, fill, radius, edge, controlSize
 struct A2UIBoxView: View {
     let node: ComponentNode
     let surface: SurfaceModel
@@ -107,10 +107,14 @@ struct A2UIBoxView: View {
         let pal = WheelPalette(dark: cs == .dark)
         let p = node.instance.properties
         let horizontal = p["axis"]?.stringValue == "h"
-        let spacing = p["spacing"]?.numberValue ?? 0
+        // Defaults, so a page that sends no spacing or padding still reads well: 8 pt between stacked
+        // children, 12 pt along a row, 12 pt of room inside anything outlined, filled or underlined,
+        // and rounded corners on an outline or a fill.
+        let outlined = p["border"] != nil || p["fill"] != nil
+        let spacing = p["spacing"]?.numberValue ?? (horizontal ? 12 : 8)
         let widths = p["widths"]?.arrayValue ?? []
         let trailing = Int(p["trailing"]?.numberValue ?? 0)
-        let radius = p["radius"]?.numberValue ?? 0
+        let radius = p["radius"]?.numberValue ?? (outlined ? 8 : 0)
         let alignName = p["align"]?.stringValue ?? "start"
         let kids = Array(node.children.enumerated())
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -158,7 +162,7 @@ struct A2UIBoxView: View {
         }
         .modifier(A2UIMonoIf(on: p["mono"]?.boolValue == true))
         .controlSize(size)
-        .padding(insets(p["padding"]))
+        .padding(p["padding"] == nil && (outlined || p["edge"] != nil) ? EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12) : insets(p["padding"]))
         .frame(maxWidth: horizontal ? nil : (alignName == "start" ? .infinity : nil), alignment: .leading)
         .background { if let fill { shape.fill(fill) } }
         .overlay(alignment: p["edge"]?.stringValue == "top" ? .top : .bottom) {
