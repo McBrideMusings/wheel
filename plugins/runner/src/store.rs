@@ -71,6 +71,27 @@ pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// The file of the processes seen below run `id`: one `pid started` line each.
+pub fn seen_path(folder: &Path, id: &str) -> PathBuf {
+    folder.join(format!("{id}.seen"))
+}
+
+pub fn read_seen(folder: &Path, id: &str) -> Vec<crate::sweep::Seen> {
+    let text = std::fs::read_to_string(seen_path(folder, id)).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let (pid, started) = l.split_once(' ')?;
+            Some(crate::sweep::Seen { pid: pid.parse().ok()?, started: started.parse().ok()? })
+        })
+        .collect()
+}
+
+pub fn write_seen(folder: &Path, id: &str, seen: &[crate::sweep::Seen]) -> bool {
+    let text: String = seen.iter().map(|s| format!("{} {}\n", s.pid, s.started)).collect();
+    let tmp = folder.join(format!(".{id}.seen.tmp"));
+    std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, seen_path(folder, id)).is_ok()
+}
+
 pub fn log_path(folder: &Path, id: &str) -> PathBuf {
     folder.join(format!("{id}.log"))
 }
@@ -122,6 +143,7 @@ pub fn prune(folder: &Path) {
         }
         let _ = std::fs::remove_file(record_path(folder, &id));
         let _ = std::fs::remove_file(log_path(folder, &id));
+        let _ = std::fs::remove_file(seen_path(folder, &id));
     }
 }
 

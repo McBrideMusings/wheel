@@ -126,6 +126,23 @@ fn a_command_that_asks_first_does_not_run_until_answered_yes() {
     assert!(String::from_utf8_lossy(&yes.stdout).contains("ran-danger"));
 }
 
+/// macOS's own `/bin/sleep` hides its environment, and here it also leaves the process group and
+/// the session: only the parent links the watcher sampled while the command lived reach it.
+#[test]
+fn a_run_ending_ends_a_protected_program_that_detached_into_its_own_session() {
+    let p = Project::new("protected", "");
+    std::fs::write(
+        p.root.join("proj/wheel.toml"),
+        "[runner]\ndetach = \"perl -e 'use POSIX; POSIX::setsid(); exec q(/bin/sleep), q(31340)' & sleep 1.5; echo started\"\n",
+    ).unwrap();
+    kill_all("/bin/sleep 31340");
+    let ran = p.out(&["run", "detach"]);
+    assert_eq!(ran.status.code(), Some(0));
+    let left = alive("/bin/sleep 31340");
+    kill_all("/bin/sleep 31340");
+    assert!(!left, "the detached protected program outlived its run");
+}
+
 #[test]
 fn a_run_ending_ends_the_children_it_started_even_a_detached_one() {
     let p = Project::new("sweep", "");

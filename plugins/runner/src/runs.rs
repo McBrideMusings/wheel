@@ -169,7 +169,7 @@ impl Runs {
             let status = child.wait();
             // The command is over; whatever it started goes with it. The sweep closes the pipes a
             // detached child still held, so the pumps end.
-            sweep::sweep(&record.id, Some(record.leader()), GRACE);
+            sweep::sweep(&record.id, Some(record.leader()), &store::read_seen(&folder, &record.id), GRACE);
             // Both pumps end once every holder of the pipes is gone. A holder the sweep could not
             // find (it hides its environment and left the group) must not hold the record open.
             for _ in 0..2 {
@@ -250,7 +250,7 @@ impl Runs {
         }
         // A marker file, not a rewrite of the record: the run's owner is the only writer of that.
         File::create(stop_marker(&self.folder, id)).map_err(|e| e.to_string())?;
-        sweep::sweep(id, Some(record.leader()), GRACE);
+        sweep::sweep(id, Some(record.leader()), &store::read_seen(&self.folder, id), GRACE);
         Ok(record)
     }
 }
@@ -259,14 +259,49 @@ fn stop_marker(folder: &Path, id: &str) -> PathBuf {
     folder.join(format!("{id}.stop"))
 }
 
-/// `wheel-runner __watch <id> <folder>`: block until stdin closes, then end run `id` if its record
-/// still says it is running.
+/// How often the watcher looks for what the run's command has started.
+const SAMPLE: Duration = Duration::from_millis(200);
+
+/// `wheel-runner __watch <id> <folder>`: while stdin stays open, note every process below the
+/// run's command in `<id>.seen` (the sweep reaches a protected program that detaches through that
+/// file); once it closes, end run `id` if its record still says it is running.
 pub fn watch(id: &str, folder: &Path) {
-    let mut sink = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut sink);
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = closed.clone();
+    std::thread::spawn(move || {
+        let mut sink = Vec::new();
+        let _ = std::io::stdin().read_to_end(&mut sink);
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let mut sys = sysinfo::System::new();
+    let mut seen = store::read_seen(folder, id);
+    // Set when the file does not hold `seen`: tried again at the next sample until it does.
+    let mut unsaved = false;
+    while !closed.load(std::sync::atomic::Ordering::SeqCst) {
+        if let Ok(record) = store::read(folder, id) {
+            if record.state == State::Running && record.pid != 0 {
+                let now = sweep::descendants(&mut sys, record.leader());
+                // Keep what is still running and add what is new, so the list holds live processes only.
+                let mut next: Vec<sweep::Seen> = seen.iter().filter(|s| sweep::still_running(&sys, s)).copied().collect();
+                for s in now {
+                    if !next.contains(&s) {
+                        next.push(s);
+                    }
+                }
+                if next != seen {
+                    seen = next;
+                    unsaved = true;
+                }
+                if unsaved {
+                    unsaved = !store::write_seen(folder, id, &seen);
+                }
+            }
+        }
+        std::thread::sleep(SAMPLE);
+    }
     if let Ok(record) = store::read(folder, id) {
         if record.state == State::Running {
-            sweep::sweep(id, Some(record.leader()), GRACE);
+            sweep::sweep(id, Some(record.leader()), &store::read_seen(folder, id), GRACE);
             // Read again: a stop, or the run itself, may have finished while the sweep ran.
             if let Ok(mut record) = store::read(folder, id).map(|mut r| { r.stop_requested |= stop_marker(folder, id).exists(); r }) {
                 if record.state == State::Running {

@@ -10,13 +10,8 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, Update
 
 pub const ENV: &str = "WHEEL_RUN_ID";
 
-/// The pids carrying run `id`, except this process and its ancestors.
-pub fn tagged(sys: &mut System, id: &str) -> Vec<Pid> {
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
-    );
+/// This process and its ancestors, which a sweep never signals.
+fn protected(sys: &System) -> HashSet<Pid> {
     let mut protected = HashSet::new();
     let mut at = Some(Pid::from_u32(std::process::id()));
     while let Some(p) = at {
@@ -25,12 +20,83 @@ pub fn tagged(sys: &mut System, id: &str) -> Vec<Pid> {
         }
         at = sys.process(p).and_then(|p| p.parent());
     }
+    protected
+}
+
+/// The pids carrying run `id`, except this process and its ancestors.
+pub fn tagged(sys: &mut System, id: &str) -> Vec<Pid> {
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
+    );
+    let protected = protected(sys);
     let want = format!("{ENV}={id}");
     sys.processes()
         .iter()
         .filter(|(pid, p)| !protected.contains(pid) && p.environ().iter().any(|e| e.to_str() == Some(want.as_str())))
         .map(|(pid, _)| *pid)
         .collect()
+}
+
+/// A process seen below a run's command while the command lived: its pid and when it started, so
+/// a later process given the same pid is told from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Seen {
+    pub pid: u32,
+    pub started: u64,
+}
+
+/// Every process below the run's command `root` by parent links, none when the process holding
+/// that pid is not the command (it started at another time than `root.started`). macOS withholds
+/// the environment of its own protected programs but not their parent, so this reaches a `sleep`
+/// that later detaches into its own session, where neither the tag nor the process group finds it.
+/// A process whose start time cannot be read is left out: it could not be told from a reused pid.
+pub fn descendants(sys: &mut System, root: Leader) -> Vec<Seen> {
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let top = Pid::from_u32(root.pid);
+    if root.started != 0 && sys.process(top).is_none_or(|p| p.start_time() != root.started) {
+        return vec![];
+    }
+    let mut children: std::collections::HashMap<Pid, Vec<Pid>> = std::collections::HashMap::new();
+    for (pid, p) in sys.processes() {
+        if let Some(parent) = p.parent() {
+            children.entry(parent).or_default().push(*pid);
+        }
+    }
+    let mut found = vec![];
+    let mut frontier = vec![top];
+    while let Some(parent) = frontier.pop() {
+        for pid in children.get(&parent).into_iter().flatten() {
+            let started = sys.process(*pid).map(|p| p.start_time()).unwrap_or(0);
+            if started != 0 && found.len() < MAX_SEEN {
+                found.push(Seen { pid: pid.as_u32(), started });
+                frontier.push(*pid);
+            }
+        }
+    }
+    found
+}
+
+/// The most processes noted below one run.
+const MAX_SEEN: usize = 4096;
+
+/// Whether the process `s` names is still running.
+pub fn still_running(sys: &System, s: &Seen) -> bool {
+    sys.process(Pid::from_u32(s.pid)).is_some_and(|p| p.start_time() == s.started)
+}
+
+/// The pids a sweep of run `id` signals: the tagged ones, and the `seen` ones still running.
+fn reach(sys: &mut System, id: &str, seen: &[Seen]) -> Vec<Pid> {
+    let mut pids = tagged(sys, id);
+    let protected = protected(sys);
+    for s in seen.iter().filter(|s| s.started != 0) {
+        let pid = Pid::from_u32(s.pid);
+        if !pids.contains(&pid) && !protected.contains(&pid) && still_running(sys, s) {
+            pids.push(pid);
+        }
+    }
+    pids
 }
 
 /// The process that leads a run's process group, and when it started.
@@ -91,11 +157,11 @@ fn group_alive(sys: &mut System, id: &str, group: Option<Leader>) -> bool {
 /// process group goes first, which reaches programs macOS withholds the environment of (its own
 /// protected `sleep`, `sh`); the tag reaches what left the group. Rescans up to three times, so a
 /// supervisor that respawns a child is caught. Returns the pids signalled by tag.
-pub fn sweep(id: &str, group: Option<Leader>, grace: Duration) -> Vec<u32> {
+pub fn sweep(id: &str, group: Option<Leader>, seen: &[Seen], grace: Duration) -> Vec<u32> {
     let mut sys = System::new();
     let mut signalled = vec![];
     for _ in 0..3 {
-        let pids = tagged(&mut sys, id);
+        let pids = reach(&mut sys, id, seen);
         if pids.is_empty() && !group_alive(&mut sys, id, group) {
             break;
         }
@@ -109,12 +175,12 @@ pub fn sweep(id: &str, group: Option<Leader>, grace: Duration) -> Vec<u32> {
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
-            if tagged(&mut sys, id).is_empty() && !group_alive(&mut sys, id, group) {
+            if reach(&mut sys, id, seen).is_empty() && !group_alive(&mut sys, id, group) {
                 break;
             }
         }
         signal_group(&mut sys, id, group, libc::SIGKILL);
-        for pid in tagged(&mut sys, id) {
+        for pid in reach(&mut sys, id, seen) {
             if let Some(p) = sys.process(pid) {
                 p.kill();
             }
@@ -145,7 +211,7 @@ mod tests {
         let id = format!("test-{}", std::process::id());
         let mut tagged_child = Command::new(sleeper("sleep-a")).arg("31001").env(ENV, &id).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
         let mut other = Command::new(sleeper("sleep-b")).arg("31002").env(ENV, "other-run").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-        let signalled = sweep(&id, None, Duration::from_secs(2));
+        let signalled = sweep(&id, None, &[], Duration::from_secs(2));
         assert_eq!(signalled, [tagged_child.id()]);
         assert!(tagged_child.wait().is_ok());
         assert!(other.try_wait().unwrap().is_none(), "a process of another run was ended");
@@ -163,13 +229,13 @@ mod tests {
         // The pid was recorded for a run that is gone: no member carries its tag and the process
         // that leads the group started at another time than the run did.
         let stale = Leader { pid, started: started(pid) + 1000, };
-        sweep(&id, Some(stale), Duration::from_secs(1));
+        sweep(&id, Some(stale), &[], Duration::from_secs(1));
         assert!(stranger.try_wait().unwrap().is_none(), "a group of another process was ended");
         let unknown = Leader { pid, started: 0, };
-        sweep(&id, Some(unknown), Duration::from_secs(1));
+        sweep(&id, Some(unknown), &[], Duration::from_secs(1));
         assert!(stranger.try_wait().unwrap().is_none(), "a group with no start time on record was ended");
         let ours = Leader { pid, started: started(pid), };
-        sweep(&id, Some(ours), Duration::from_secs(2));
+        sweep(&id, Some(ours), &[], Duration::from_secs(2));
         assert!(stranger.wait().is_ok());
     }
 
@@ -187,7 +253,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let left = |n: &str| Command::new("pgrep").args(["-f", n]).stdout(Stdio::null()).status().unwrap().success();
         assert!(left("sleep-d 31004"), "the command left nothing behind to end");
-        sweep(&id, Some(Leader { pid, started: at }), Duration::from_secs(2));
+        sweep(&id, Some(Leader { pid, started: at }), &[], Duration::from_secs(2));
         assert!(!left("sleep-d 31004"), "the group the exited leader left behind was not ended");
     }
 }
