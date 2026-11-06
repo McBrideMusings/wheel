@@ -167,6 +167,8 @@ struct UserMessage: View {
                 Text("You").font(look.meta).fontWeight(.semibold).foregroundStyle(.secondary)
             }
             message
+            UserImages(chat: chat, id: row.id, paths: look.imagesInline ? ChatImages.attachedPaths(in: text) : [])
+                .frame(maxWidth: .infinity, alignment: right ? .trailing : .leading)
             if queued {
                 HStack(spacing: 8) {
                     Text("Queued").foregroundStyle(.secondary)
@@ -226,6 +228,30 @@ struct UserMessage: View {
                 .foregroundStyle(.white)
         case .plain:
             body.foregroundStyle(queued ? .secondary : .primary)
+        }
+    }
+}
+
+/// The images a message of the person's attached, drawn under it like the images of a reply, and
+/// opening at full size on a click.
+struct UserImages: View {
+    @Environment(\.chatAppearance) private var look
+    @Environment(\.chatLinks) private var links
+    let chat: AgentChat
+    let id: Int
+    let paths: [String]
+
+    var body: some View {
+        if !paths.isEmpty {
+            StructuredText(markdown: paths.map { "![](\($0))" }.joined(separator: "\n\n"))
+                .textual.imageAttachmentLoader(
+                    ChatImageLoader(agent: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
+                .popover(item: Binding(
+                    get: { links?.fullImages[chat.name].flatMap { $0.row == id ? $0 : nil } },
+                    set: { if $0 == nil { links?.closeImage(agent: chat.name) } }
+                )) { image in
+                    ChatImageFull(image: image)
+                }
         }
     }
 }

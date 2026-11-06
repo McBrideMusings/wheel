@@ -23,6 +23,17 @@ public enum ChatImages {
             || word.hasPrefix("http://") || word.hasPrefix("https://")
     }
 
+    /// The local image files a message of the person's names, one per line that is only a path in
+    /// backticks or bare: what the composer writes for an attached file. Web addresses are left
+    /// out, since nothing the person typed is fetched.
+    public static func attachedPaths(in message: String) -> [String] {
+        message.split(separator: "\n").compactMap { line in
+            var word = line.trimmingCharacters(in: .whitespaces)
+            if word.count > 2, word.hasPrefix("`"), word.hasSuffix("`") { word = String(word.dropFirst().dropLast()) }
+            return isBareImage(word) && !isRemote(word) ? word : nil
+        }
+    }
+
     /// Whether `target` is a web address, which is not fetched until the person clicks it.
     public static func isRemote(_ target: String) -> Bool {
         target.hasPrefix("http://") || target.hasPrefix("https://")

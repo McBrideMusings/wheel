@@ -9,6 +9,11 @@ import Testing
         #expect(out == "Here:\n![](/tmp/shot.PNG)\n![](~/a/b.jpeg)\n![](https://x.test/c.webp?v=2)\nsee /tmp/inline.png in text\n/tmp/notes.txt")
     }
 
+    @Test func aMessageNamesItsAttachedImages() {
+        let message = "look\n\n`/Users/p/Desktop/Screen.2026.11.06.png`\n/tmp/b.jpg\n`/tmp/notes.txt`\n`https://x.test/c.png`\nsee /tmp/inline.png"
+        #expect(ChatImages.attachedPaths(in: message) == ["/Users/p/Desktop/Screen.2026.11.06.png", "/tmp/b.jpg"])
+    }
+
     @Test func fencedCodeIsLeftAlone() {
         let source = "```\n/tmp/shot.png\n```\n/tmp/shot.png"
         #expect(ChatImages.rewrite(source, inline: true) == "```\n/tmp/shot.png\n```\n![](/tmp/shot.png)")
