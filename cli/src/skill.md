@@ -73,6 +73,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   pane on the Mac and iPhone: the resource is the layout, a tool's result carries `updateDataModel`
   messages, and a button's action calls the tool named by the action event with its context as arguments.
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
+- `wheel guidance show | path [--agent <name>]`: the text an agent is given and the path of the person's own guidance file for every agent or one agent (made empty if missing).
 - `wheel run [<name>]`: the `[runner]` table of wheel.toml maps names you choose to shell commands
   (`build = "make -j8"`); a project's table overrides the machine's. `wheel run` lists them,
   `wheel run <name>` types the command into a new terminal pane in the space's directory and prints the pane.
@@ -84,62 +85,33 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel notify "text" [--level notice|warning|error] [--id <id>] [--pane <pane>]`: show a toast (green, orange or red) on every Mac client attached now (the phone shows none), and print its id. The text can be selected and copied; `--pane` adds Focus pane and Close pane buttons. The same `--id` replaces the toast; `wheel notify --clear <id>` takes it down. The daemon keeps nothing, so a client that attaches later does not see it. Use it for what the person should read now, not for progress.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
 
-## Asking the person a question, or showing a result with pictures: the `markdown` built-in
+## Showing a document or a result with pictures: the `markdown` built-in
 
 A post is a folder of data that another artifact's page draws. `markdown` is the page for a
-question or a result: write what you would write in chat, as a markdown file named `index.md`,
-and show it. When you have a new turn, change that same post and push it. Never make a second
-artifact for the same conversation. Install the page once per machine with
-`wheel artifact builtin install markdown` (`wheel artifact builtin ls` says whether it is there).
+document: write what you would write in chat, as a markdown file named `index.md`, and show it.
+It draws CommonMark with GitHub's tables, task lists and strikethrough. It collects no answer:
+to ask the person something, ask in chat. When you have a new turn, change that same post and
+push it. Never make a second artifact for the same conversation. Install the page once per machine
+with `wheel artifact builtin install markdown` (`wheel artifact builtin ls` says whether it is
+there).
 
 ```sh
-wheel artifact new ask --renderer markdown --reply-to "$WHEEL_PANE" index.md   # the post: index.md plus every local image it points at
-P=$(wheel pane split "$WHEEL_PANE" right)             # a pane for it
-wheel pane kind "$P" web --artifact ask
-wheel artifact state "$P" submitted --wait            # blocks until the person presses Send; prints {"answers":{"1":"A"},"note":"…","summary":"…"}
-# next turn: edit index.md, then push it; the open page changes with no reload and a choice on a kept question stays
+wheel artifact new notes --renderer markdown index.md   # the post: index.md plus every local image it points at
+P=$(wheel pane split "$WHEEL_PANE" right)               # a pane for it
+wheel pane kind "$P" web --artifact notes
+# next turn: edit index.md, then push it; the open page changes with no reload
 wheel artifact data "$P" index.md
 ```
 
-The page has a footer that lists what the person has chosen, a note box and a Send button. Choosing
-only changes that draft; **Send** is the one event you hear. It stores `submitted`, and does what the
-post's entry names: `--reply-to <pane>` types a one-line summary of the answers into that pane (your
-chat or terminal, so you are woken even if you are not waiting), and `--notify <url>` POSTs
-`{post, pane, submitted}` to an http(s) URL. Without either flag, wait on `submitted` as above.
-
-**When the answer has arrived, close the question pane** (`wheel pane close "$P"`) and tell the person what you took from it. A pane left open after Send is a question nobody is asking. Open a new pane for the next question, or push the next turn into the same post and keep the pane only while you are still asking.
-
-`--renderer markdown` names the page that draws the post; `ask` is the post's own name. A post
+`--renderer markdown` names the page that draws the post; `notes` is the post's own name. A post
 made with `--ends-with-agent` or `--expires 2h` deletes itself; without them it stays.
-`index.md` is read like this:
 
-```markdown
-# Per-agent status dots
-
-Plain paragraphs. **bold**, `code`, [links](https://example.com), [a file in the post](notes.pdf) and ![an image](shot.png) mid-sentence.
-
-![A, six agents, dark](dots-a.png)
-
-## 1. How do several agents show up as dots?
-
-### 1A. what physically happens — my pick
-- strongest case, one bullet each
-![](dots-a.png)
-Cost: what it costs
-
-### 1B. what happens instead
-Cost: what it costs
-
-Answer 1A, or type go to take every pick.
-```
-
-An image path is a file beside `index.md` (or below it), on its own line or in the middle of a
-sentence; `wheel artifact new` copies each one into the post and stops with the file name if one is
-missing. A link to a file beside `index.md` is copied too and opens from the post; an `http(s)`
-link, or a bare `http(s)` address, opens in the default browser. Other schemes and paths outside
-the folder are not links. A markdown file with no `##` question
-headings is a plain information page. A click on any image opens a spotlight (click again to zoom,
-drag to pan, Esc to close, arrow keys step between images).
+An image path is a file beside `index.md` (or below it); `wheel artifact new` copies each one into
+the post and stops with the file name if one is missing. A link to a file beside `index.md` is
+copied too and opens from the post; an `http(s)` link, or a bare `http(s)` address, opens in the
+default browser. Other schemes and paths outside the folder are not links, and raw HTML is shown as
+text. A click on any image opens a spotlight (click again to zoom, drag to pan, Esc to close, arrow
+keys step between images).
 
 ## Showing a mockup, and getting a pick: the `mockup` built-in
 

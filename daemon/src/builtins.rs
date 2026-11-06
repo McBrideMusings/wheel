@@ -340,6 +340,61 @@ impl AppState {
         Ok(Updated::Done(self.builtin_ls()?))
     }
 
+    /// Bring every installed built-in that is behind this wheeld up to date, when none of its files
+    /// was edited. One with an edited file is left alone (`builtin_ls` and
+    /// [`AppState::stale_builtin`] report it); a failure on one built-in never stops the others.
+    pub fn builtins_catch_up(&self) {
+        let installed = match self.read_installed() {
+            Ok(installed) => installed,
+            Err(e) => {
+                tracing::warn!(error = %e, "built-ins not caught up: the record cannot be read");
+                return;
+            }
+        };
+        for b in BUILTINS {
+            let Some(record) = installed.get(b.name) else {
+                continue;
+            };
+            if record.version >= b.version {
+                continue;
+            }
+            match self.builtin_update(b.name, OnEdited::Ask) {
+                Ok(Updated::Done(_)) => {
+                    tracing::info!(name = b.name, from = record.version, to = b.version, "built-in caught up at start");
+                }
+                Ok(Updated::Edited(files)) => {
+                    tracing::warn!(name = b.name, installed = record.version, shipped = b.version, edited = files.len(), "built-in is behind and has edited files; left as it is");
+                }
+                Err(e) => tracing::warn!(name = b.name, error = %e, "built-in not caught up"),
+            }
+        }
+    }
+
+    /// Why the installed built-in `name` is not the one this wheeld carries, or None when it is
+    /// current, or is not an installed built-in at all. A post drawn by a built-in renderer that is
+    /// behind says so where the post is made, instead of drawing as it once did without a word.
+    pub(crate) fn stale_builtin(&self, name: &str) -> Option<String> {
+        let b = BUILTINS.iter().find(|b| b.name == name)?;
+        let installed = self.read_installed().ok()?;
+        let record = installed.get(name)?;
+        if record.version >= b.version {
+            return None;
+        }
+        let edited = edited(&self.builtin_dir(name), record, b.files);
+        let how = if edited.is_empty() {
+            format!("run `wheel artifact builtin update {name}`")
+        } else {
+            format!(
+                "{} differs from what Wheel wrote; `wheel artifact builtin update {name}` shows the difference, and `--replace-edited` takes the shipped page",
+                edited.join(", ")
+            )
+        };
+        Some(format!(
+            "renderer {name} is built-in version {} here and this wheeld carries {}, so posts draw as the old page does: {how}",
+            record.version, b.version
+        ))
+    }
+
     /// Remove installed built-in `name`: its machine entry, its folder and its record.
     pub fn builtin_remove(&self, name: &str) -> Result<Vec<BuiltinInfo>, String> {
         shipped(name)?;

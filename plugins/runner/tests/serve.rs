@@ -103,7 +103,7 @@ fn a_host_starts_a_command_and_reads_its_status_and_log_after_the_page_closed() 
 
     // A command with confirm asks first and starts nothing.
     let (ok, asked) = host.call("run_runner", json!({ "name": "restart" }));
-    assert!(ok && asked == json!({ "started": false, "confirm": "Ends every agent." }), "{asked}");
+    assert!(ok && asked == json!({ "started": false, "confirm": "Ends every agent.", "command": "echo restarted" }), "{asked}");
     assert_eq!(host.call("list_runs", json!({})).1, json!([]));
 
     let (ok, started) = host.call("run_runner", json!({ "name": "hello" }));
@@ -128,8 +128,22 @@ fn a_host_starts_a_command_and_reads_its_status_and_log_after_the_page_closed() 
     let (_, status) = host.call("get_status", json!({}));
     assert!(status["line"].as_str().unwrap().starts_with("✗ hello exit 4 in "), "{status}");
 
-    let (ok, _) = host.call("run_runner", json!({ "name": "restart", "confirmed": true }));
+    let (_, asked) = host.call("run_runner", json!({ "name": "restart" }));
+    assert_eq!((asked["started"].clone(), asked["command"].clone()), (json!(false), json!("echo restarted")), "{asked}");
+    let (ok, _) = host.call("run_runner", json!({ "name": "restart", "confirmed": "echo restarted" }));
     assert!(ok);
+
+    // A yes answers the command it was asked about: edited since, the entry asks again.
+    std::fs::write(
+        root.join("proj/wheel.toml"),
+        "[runner]\nrestart = { command = \"echo replaced\", confirm = \"Ends every agent.\" }\n",
+    ).unwrap();
+    let (_, again) = host.call("run_runner", json!({ "name": "restart", "confirmed": "echo restarted" }));
+    assert_eq!((again["started"].clone(), again["command"].clone()), (json!(false), json!("echo replaced")), "{again}");
+    let (_, bare) = host.call("run_runner", json!({ "name": "restart", "confirmed": "" }));
+    assert_eq!(bare["started"], json!(false), "{bare}");
+    let (_, started) = host.call("run_runner", json!({ "name": "restart", "confirmed": "echo replaced" }));
+    assert_eq!(started["started"], json!(true), "{started}");
     assert!(!host.call("run_runner", json!({ "name": "nope" })).0, "an unknown runner is refused");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -139,9 +153,9 @@ fn page_text(result: &Value) -> String {
     let messages: Value = serde_json::from_str(result["content"][0]["resource"]["text"].as_str().unwrap_or("[]")).unwrap();
     messages[0]["updateComponents"]["components"].as_array().unwrap().iter()
         .flat_map(|c| {
-            let mut t = vec![c["text"].as_str().unwrap_or("").to_string()];
-            t.extend(c["sections"][0]["rows"].as_array().into_iter().flatten().flat_map(|r| r["cells"].as_array().unwrap().iter().map(|x| x["text"].as_str().unwrap_or("").to_string())));
-            t
+            let mut v = vec![c["text"].as_str().unwrap_or("").to_string()];
+            v.extend(c["modifiers"].as_array().into_iter().flatten().filter_map(|m| m["help"].as_str()).map(String::from));
+            v
         })
         .collect::<Vec<_>>().join("\n")
 }
@@ -178,7 +192,7 @@ fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run(
     host.request("resources/subscribe", json!({ "uri": uri }), json!({}));
 
     let (_, page) = page_call(&mut host, "get_runner", json!({}));
-    for want in ["Runner", "3 runners", "This project  2", "This machine  1", "echo restarted", "no runs yet"] {
+    for want in ["Runner", "3 runners", "This project", "This machine", "echo restarted", "No runs yet."] {
         assert!(page.contains(want), "{want} missing from:\n{page}");
     }
 
@@ -214,7 +228,7 @@ fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run(
     assert!(saw_first, "the first line showed before the run ended");
 
     // The question's Run button starts it; a stop ends a running run.
-    let (_, page) = page_call(&mut host, "press_run", json!({ "name": "restart", "confirmed": true }));
+    let (_, page) = page_call(&mut host, "press_run", json!({ "name": "restart", "confirmed": "echo restarted" }));
     assert!(!page.contains("Ends every agent."), "starting it closes the question: {page}");
     let runs = host.call("list_runs", json!({})).1;
     assert!(runs.as_array().unwrap().iter().any(|r| r["name"] == "restart"), "{runs}");

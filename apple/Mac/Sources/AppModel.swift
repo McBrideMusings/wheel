@@ -239,6 +239,10 @@ final class AppModel {
     /// The server the window's restart banner was closed for (`serverBannerKey`); nil when never.
     var serverBannerDismissed = Prefs.store.string(forKey: "serverBannerDismissed")
     @ObservationIgnored var settingsFileReqs: [UInt64: SettingLayer] = [:]
+    /// The `guidance_ls` request still unanswered, and each `guidance_path` request with the
+    /// agent it names (nil: every agent) and whether its answer opens the editor.
+    @ObservationIgnored var guidanceReq: UInt64?
+    @ObservationIgnored var guidanceOpenReqs: [UInt64: Bool] = [:]
     /// The person closed the folder access screen; it comes back at the next launch.
     var diskAccessScreenDismissed = false
     @ObservationIgnored var diskAccessTask: Task<Void, Never>?
@@ -853,6 +857,15 @@ final class AppModel {
             guard let parent = dirReqs.removeValue(forKey: req) else { return }
             Log.info("command palette: \(parent) -> \(path): \(dirs.count) folders\(error.map { ", error \($0)" } ?? "")")
             commandPalette?.listed(parent, .init(dirs: dirs, error: error))
+        case let .guidance(req, brief, given, files):
+            guard req == guidanceReq else { return }
+            guidanceReq = nil
+            settings.guidance.received(brief: brief, given: given, files: files)
+            Log.info("guidance: \(files.count) files listed, \(files.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count) with text")
+        case let .guidancePath(req, path):
+            guard let open = guidanceOpenReqs.removeValue(forKey: req) else { return }
+            settings.open(path, launch: open)
+            askGuidance()
         case let .runners(req, list):
             guard req == runnersReq else { return }
             runnersReq = nil
@@ -982,6 +995,15 @@ final class AppModel {
                 Log.info("space \(space) renamed")
             }
         case let .error(req, term, message):
+            if let req, guidanceOpenReqs.removeValue(forKey: req) != nil {
+                Log.info("guidance: the server could not make the file: \(message)")
+                settings.guidance.failed(message)
+            }
+            if let req, req == guidanceReq {
+                guidanceReq = nil
+                Log.info("guidance: the server would not list it: \(message)")
+                settings.guidance.failed(message)
+            }
             if let req, let layer = settingsFileReqs.removeValue(forKey: req) {
                 Log.info("settings: the server could not make the \(layer) file: \(message)")
             }
@@ -2021,15 +2043,30 @@ final class AppModel {
     /// terminal sends the size its pane ended at.
     private func animateLayout(_ change: () -> Void) {
         layoutAnimations += 1
-        withAnimation(GridMotion.layout, completionCriteria: .logicallyComplete, change) { [weak self] in
-            guard let self else { return }
-            layoutAnimations -= 1
+        // SwiftUI may never call the completion (an animation interrupted by a space switch or a
+        // removed view); the count would stay above 0 and `settle` would never send another size.
+        // The watchdog ends the animation itself after `layoutAnimationLimit`; whichever of the two
+        // runs first ends it, and the other does nothing.
+        var ended = false
+        let end: @MainActor (String) -> Void = { [weak self] how in
+            guard let self, !ended else { return }
+            ended = true
+            layoutAnimations = max(0, layoutAnimations - 1)
+            if how != "done" { Log.info("layout animation \(how): completion never ran") }
             if layoutAnimations == 0 {
                 Log.info("layout animation done: settling \(terminals.count) terminal(s)")
                 for terminal in terminals.values { settle(terminal) }
             }
         }
+        withAnimation(GridMotion.layout, completionCriteria: .logicallyComplete, change) { end("done") }
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.layoutAnimationLimit)
+            end("released by watchdog")
+        }
     }
+
+    /// Several times a layout animation's length (`GridMotion.layoutDuration`, 0.22 s).
+    private static let layoutAnimationLimit: Duration = .seconds(2)
 
     private func attach(_ terminal: PaneTerminal) {
         Log.info("attaching to \(terminal.term)")

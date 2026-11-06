@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1357,6 +1357,25 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         machine: bool,
     },
+    /// The text every agent is given and the person's own guidance files: the fixed brief, the
+    /// file for every agent and a file for each agent wheel has, each with its path and current
+    /// text. With `agent`, also the text that agent is given: the brief, then the files that apply
+    /// to it. Replies `guidance`; refused for an agent wheel does not have.
+    GuidanceLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
+    /// The path of the guidance file for every agent, or for `agent`, made empty when it is
+    /// absent so a client can open it for editing. The server makes it because the client holds
+    /// no files (ADR-0020). Replies `guidance_path`; refused for an agent wheel does not have.
+    GuidancePath {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
     /// Remove one setting from one file — the machine-wide `wheel.toml` with `machine`, else the
     /// one of `space`'s directory — so the layer below is in force. Removing a key the file does
     /// not set changes nothing and is not an error. Replies and tells every connection as
@@ -2248,6 +2267,22 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<AgentState>,
     },
+    /// The fixed brief and the guidance files `GuidanceLs` asked for: the file for every agent
+    /// first, then one per agent in key order.
+    Guidance {
+        req: u64,
+        brief: String,
+        /// The brief and then the guidance for the agent asked about (every agent's alone when
+        /// none was). An agent's own brief has its pane's artifacts and seat line between the two;
+        /// they differ per pane and are left out here.
+        given: String,
+        files: Vec<GuidanceFile>,
+    },
+    /// The path `GuidancePath` made.
+    GuidancePath {
+        req: u64,
+        path: String,
+    },
     /// The runner commands `RunnerLs` asked for, in name order.
     Runners {
         req: u64,
@@ -2435,6 +2470,8 @@ impl ServerMsg {
             | ServerMsg::Clients { req, .. }
             | ServerMsg::Started { req, .. }
             | ServerMsg::Runners { req, .. }
+            | ServerMsg::Guidance { req, .. }
+            | ServerMsg::GuidancePath { req, .. }
             | ServerMsg::PaneView { req, .. }
             | ServerMsg::PaneInfo { req, .. }
             | ServerMsg::Procs { req, .. }
@@ -3386,6 +3423,17 @@ pub struct AgentInfo {
     /// The skills in the agent's home, which a composer offers after the agent's skill prefix.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillInfo>,
+}
+
+/// One of the person's guidance files: the one for every agent (`agent` unset) or for one agent.
+/// `heading` is the line the brief puts before its text, `text` what the file holds now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GuidanceFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    pub heading: String,
+    pub path: String,
+    pub text: String,
 }
 
 /// One `[runner]` entry: a name a person chose and the shell command it runs.

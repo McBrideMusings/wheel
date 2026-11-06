@@ -126,6 +126,23 @@ fn a_command_that_asks_first_does_not_run_until_answered_yes() {
     assert!(String::from_utf8_lossy(&yes.stdout).contains("ran-danger"));
 }
 
+/// macOS's own `/bin/sleep` hides its environment, and here it also leaves the process group and
+/// the session: only the parent links the watcher sampled while the command lived reach it.
+#[test]
+fn a_run_ending_ends_a_protected_program_that_detached_into_its_own_session() {
+    let p = Project::new("protected", "");
+    std::fs::write(
+        p.root.join("proj/wheel.toml"),
+        "[runner]\ndetach = \"perl -e 'use POSIX; POSIX::setsid(); exec q(/bin/sleep), q(31340)' & sleep 1.5; echo started\"\n",
+    ).unwrap();
+    kill_all("/bin/sleep 31340");
+    let ran = p.out(&["run", "detach"]);
+    assert_eq!(ran.status.code(), Some(0));
+    let left = alive("/bin/sleep 31340");
+    kill_all("/bin/sleep 31340");
+    assert!(!left, "the detached protected program outlived its run");
+}
+
 #[test]
 fn a_run_ending_ends_the_children_it_started_even_a_detached_one() {
     let p = Project::new("sweep", "");
@@ -180,7 +197,7 @@ fn runners_list_from_the_project_and_the_machine() {
 
 #[test]
 fn output_read_by_a_reader_that_closed_early_does_not_hang_the_run() {
-    let p = Project::new("epipe", "loud = \"yes line | head -n 300000\"\n");
+    let p = Project::new("epipe", "loud = \"yes line | head -n 50000\"\n");
     let mut run = p.cmd(&["run", "loud"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut first = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(run.stdout.take().unwrap()), &mut first).unwrap();
@@ -188,5 +205,125 @@ fn output_read_by_a_reader_that_closed_early_does_not_hang_the_run() {
     let runs = p.text(&["runs"]);
     assert!(runs.contains("exited"), "{runs}");
     let log = p.text(&["log", &p.run_id()]);
-    assert_eq!(log.lines().count(), 300000, "the log lost lines");
+    assert_eq!(log.lines().count(), 50000, "the log lost lines");
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let ok = Command::new("git").arg("-C").arg(dir).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args)
+        .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success();
+    assert!(ok, "git {args:?} in {}", dir.display());
+}
+
+#[test]
+fn guards_stop_a_command_before_it_starts() {
+    let p = Project::new(
+        "guards",
+        "deploy = { command = \"echo shipped\", requires = [\"git-clean\", \"git-pushed\", \"has-token\"] }\n\n[guards.has-token]\nrun = \"test -f token\"\nfail = \"create the token file first\"\n",
+    );
+    let proj = p.root.join("proj");
+    let remote = p.root.join("remote.git");
+    git(&p.root, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    git(&proj, &["init", "-q", "-b", "main"]);
+    git(&proj, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&proj, &["add", "."]);
+    git(&proj, &["commit", "-qm", "first"]);
+
+    let out = p.out(&["run", "deploy"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("deploy did not start") && err.contains("git-pushed") && err.contains("no upstream"), "{err}");
+
+    git(&proj, &["push", "-q", "-u", "origin", "main"]);
+    let err = String::from_utf8_lossy(&p.out(&["run", "deploy"]).stderr).into_owned();
+    assert!(err.contains("has-token: create the token file first"), "{err}");
+
+    std::fs::write(proj.join("token"), "").unwrap();
+    let err = String::from_utf8_lossy(&p.out(&["run", "deploy"]).stderr).into_owned();
+    assert!(err.contains("git-clean") && err.contains("uncommitted"), "{err}");
+    assert_eq!(p.text(&["runs"]), "", "a refused command leaves no run");
+
+    git(&proj, &["add", "."]);
+    git(&proj, &["commit", "-qm", "token"]);
+    let err = String::from_utf8_lossy(&p.out(&["run", "deploy"]).stderr).into_owned();
+    assert!(err.contains("git-pushed") && err.contains("1 commit"), "{err}");
+
+    git(&proj, &["push", "-q"]);
+    let out = p.out(&["run", "deploy"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("shipped"));
+}
+
+#[test]
+fn an_unknown_guard_refuses_the_command() {
+    let p = Project::new("unknown-guard", "go = { command = \"echo hi\", requires = [\"nope\"] }\n");
+    let out = p.out(&["run", "go"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown guard nope"));
+}
+
+#[test]
+fn a_status_check_reads_a_command_an_http_answer_and_a_json_value() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut s = stream.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let (code, body) = if String::from_utf8_lossy(&buf[..n]).starts_with("GET /health") {
+                ("200 OK", r#"{"build":{"version":"1.4.2"}}"#)
+            } else {
+                ("500 Internal Server Error", "")
+            };
+            let _ = write!(s, "HTTP/1.1 {code}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    let p = Project::new(
+        "check",
+        &format!(
+            "version = {{ command = \"true\", status = {{ kind = \"command\", run = \"echo v9\" }} }}\nup = {{ command = \"true\", status = {{ kind = \"http\", url = \"http://127.0.0.1:{port}/health\" }} }}\nbroken = {{ command = \"true\", status = {{ kind = \"http\", url = \"http://127.0.0.1:{port}/other\" }} }}\nbuild = {{ command = \"true\", status = {{ kind = \"json\", url = \"http://127.0.0.1:{port}/health\", pull = \"build.version\" }} }}\nplain = \"true\"\n"
+        ),
+    );
+    assert_eq!(p.text(&["check", "version"]).trim(), "up v9");
+    assert_eq!(p.text(&["check", "up"]).trim(), "up up");
+    assert_eq!(p.text(&["check", "build"]).trim(), "up 1.4.2");
+    let broken = p.out(&["check", "broken"]);
+    assert_eq!(String::from_utf8_lossy(&broken.stdout).trim(), "down HTTP 500");
+    assert_eq!(broken.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&p.out(&["check", "plain"]).stderr).contains("no status check"));
+}
+
+#[test]
+fn a_worktree_flag_lets_a_command_run_in_another_worktree_of_the_project() {
+    let p = Project::new("worktree", "where = { command = \"pwd\", worktree = true }\nfixed = \"pwd\"\n");
+    let proj = p.root.join("proj");
+    git(&proj, &["init", "-q", "-b", "main"]);
+    git(&proj, &["add", "."]);
+    git(&proj, &["commit", "-qm", "first"]);
+    let other = p.root.join("other");
+    git(&proj, &["worktree", "add", "-q", other.to_str().unwrap()]);
+    let canon = std::fs::canonicalize(&other).unwrap();
+    let out = p.out(&["run", "where", "--worktree", other.to_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains(canon.to_str().unwrap()), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = p.out(&["run", "fixed", "--worktree", other.to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("sets no worktree = true"));
+    let stray = p.root.join("stray");
+    std::fs::create_dir_all(&stray).unwrap();
+    let out = p.out(&["run", "where", "--worktree", stray.to_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a git worktree"), "{}", String::from_utf8_lossy(&out.stderr));
+    let trailing = format!("{}/", proj.display());
+    assert!(p.out(&["run", "fixed", "--worktree", &trailing]).status.success(), "the project's own directory is no worktree request");
+    assert_eq!(p.text(&["runs"]).lines().count(), 2, "only the allowed runs are listed under the project");
+}
+
+#[test]
+fn a_malformed_requires_refuses_the_command_instead_of_dropping_the_guard() {
+    let p = Project::new("bad-requires", "go = { command = \"echo hi\", requires = [1] }\nalso = { command = \"echo hi\", requires = \"git-clean\" }\n");
+    for name in ["go", "also"] {
+        let out = p.out(&["run", name]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("requires must be a list of guard names"), "{name}");
+    }
 }

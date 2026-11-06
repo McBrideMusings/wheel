@@ -62,14 +62,14 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     match &ui.editing {
         Some(text) => {
             p.put(json!({ "id": "vision.edit", "component": "SearchField", "value": text, "action": "set_vision_draft", "placeholder": "What this project is for" }));
-            let save = p.pill("vision.save", "Save", "save_vision", json!({}), json!({ "disabled": text.trim().is_empty() }));
-            let cancel = p.pill("vision.cancel", "Cancel", "cancel_vision", json!({}), json!({ "style": "link" }));
+            let save = p.button("vision.save", "Save", "save_vision", json!({}), json!({ "disabled": text.trim().is_empty() }));
+            let cancel = p.button("vision.cancel", "Cancel", "cancel_vision", json!({}), json!({ "style": "link" }));
             page.push(p.boxed("vision.row", "h", vec!["vision.edit".into(), save, cancel], json!({ "spacing": 8, "widths": ["flex", null, null], "padding": [0, 0, 14, 0] })));
         }
         None => {
             let text = s.vision.as_deref().unwrap_or("No vision yet: the first paragraph of docs/CONTEXT.md.");
             let v = p.label("vision", text, json!({ "size": 14, "tone": if s.vision.is_some() { "fg" } else { "muted" } }));
-            let edit = p.pill("vision.edit", "Edit vision", "edit_vision", json!({}), json!({ "style": "link" }));
+            let edit = p.button("vision.edit", "Edit vision", "edit_vision", json!({}), json!({ "style": "link" }));
             page.push(p.boxed("vision.row", "h", vec![v, edit], json!({ "spacing": 12, "widths": ["flex", null], "padding": [0, 0, 14, 0] })));
         }
     }
@@ -81,8 +81,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         let stats = [("Done", c.done, "ok"), ("In progress", c.progress, "fg"), ("Ready", c.ready, "ok"),
             ("Blocked", c.blocked, "warn"), ("Open", c.open, "fg"), ("Deferred", c.deferred, "muted")];
         let cards: Vec<String> = stats.iter().enumerate().map(|(i, (l, v, tone))| {
-            p.put(json!({ "id": format!("kpi{i}"), "component": "Stat", "value": v.to_string(), "label": l, "tone": if *v == 0 { "muted" } else { tone } }));
-            format!("kpi{i}")
+            p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), if *v == 0 { "muted" } else { tone })
         }).collect();
         page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex", "flex", "flex"] })));
         let rows: Vec<Value> = s.epics.iter().map(|e| {
@@ -250,7 +249,7 @@ mod tests {
         let s = Snapshot { name: "t".into(), has_tracker: true, vision: Some("Why.".into()), ..Default::default() };
         let c = components(&s, &Ui::default());
         assert!(c.iter().any(|v| v["id"] == "vision" && v["text"] == "Why."));
-        assert!(c.iter().any(|v| v["id"] == "vision.edit" && v["name"] == "edit_vision"));
+        assert!(c.iter().any(|v| v["id"] == "vision.edit" && v["action"]["event"]["name"] == "edit_vision"));
         let c = components(&s, &Ui { editing: Some("New".into()), notice: None });
         assert!(c.iter().any(|v| v["id"] == "vision.edit" && v["value"] == "New"));
         assert!(c.iter().any(|v| v["id"] == "vision.save"));

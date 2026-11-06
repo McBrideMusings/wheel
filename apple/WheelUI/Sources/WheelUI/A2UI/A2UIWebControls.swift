@@ -97,46 +97,6 @@ struct A2UISegmentedView: View {
     }
 }
 
-// MARK: Pill — the system's small bordered button raising its action; `style` link draws it as a link, `hideOff` keeps its room when it is disabled
-struct A2UIPillStyle: ViewModifier {
-    let link: Bool
-    func body(content: Content) -> some View {
-        if link {
-            #if os(macOS)
-            content.buttonStyle(.link)
-            #else
-            content.buttonStyle(.borderless)
-            #endif
-        } else {
-            content.buttonStyle(.bordered).controlSize(.small)
-        }
-    }
-}
-
-struct A2UIPillView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    var body: some View {
-        let p = node.instance.properties
-        let off = p["disabled"]?.boolValue == true
-        Button {
-            guard let name = p["name"]?.stringValue else { return }
-            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: p["context"]?.dictionaryValue ?? [:])
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(p["text"]?.stringValue ?? "")
-                if let src = p["src"]?.stringValue {
-                    Text(src).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .modifier(A2UIPillStyle(link: p["style"]?.stringValue == "link"))
-        .disabled(off)
-        .opacity(off && p["hideOff"]?.boolValue == true ? 0 : 1)
-        .accessibilityIdentifier("a2ui.pill.\(node.instance.id)")
-    }
-}
-
 // MARK: Select — the system's pop-up menu of a set width: `options` [{value, text}], `selected`; raises its action with `key` and `value`
 struct A2UISelectView: View {
     let node: ComponentNode
@@ -185,20 +145,3 @@ struct A2UICheckView: View {
     }
 }
 
-// MARK: Stat — a number over its caption in the system's GroupBox
-struct A2UIStatView: View {
-    let node: ComponentNode
-    var body: some View {
-        let p = node.instance.properties
-        let t = WebTheme.shared
-        let zero = p["tone"]?.stringValue == "muted"
-        GroupBox {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(p["value"]?.stringValue ?? "").font(.title.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(zero ? t.tertiary : (t.tone(p["tone"]?.stringValue) ?? t.label))
-                Text(p["label"]?.stringValue ?? "").font(.callout).foregroundStyle(t.secondary).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}

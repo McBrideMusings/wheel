@@ -657,7 +657,7 @@ fn branch<'a>(
     *budget -= 1;
     let id = format!("{prefix}.{}", sane(&b.id));
     let k = kind_of(b);
-    let link = p.pill(
+    let link = p.button(
         &format!("{id}.l"),
         &format!("{}  {}", ix.short(&b.id), b.title),
         "open_bead",
@@ -709,7 +709,7 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
     let k = kind_of(b);
     let mut c: Vec<String> = vec![];
     if !ui.hist.is_empty() {
-        c.push(p.pill("d.back", "← Back", "back", json!({}), json!({ "style": "link" })));
+        c.push(p.button("d.back", "← Back", "back", json!({}), json!({ "style": "link" })));
     }
     c.push(p.label("d.title", &b.title, json!({ "size": 17, "weight": "semibold" })));
     let fact = |p: &mut Page, n: &str, name: &str, value: String| -> String {
@@ -729,7 +729,7 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
         c.push(fact(p, "lb", "Labels", v));
     }
     if let Some(par) = b.parent.as_deref().and_then(|x| ix.by_id.get(x)) {
-        let v = p.pill("d.f.pa.v", &format!("{}  {}", ix.short(&par.id), par.title), "open_bead", json!({ "id": par.id }), json!({ "style": "link" }));
+        let v = p.button("d.f.pa.v", &format!("{}  {}", ix.short(&par.id), par.title), "open_bead", json!({ "id": par.id }), json!({ "style": "link" }));
         c.push(fact(p, "pa", "Parent", v));
     }
     if let Some(o) = &b.owner {
@@ -763,7 +763,7 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
         .scripts
         .iter()
         .filter(|s| wants(s, b))
-        .map(|s| p.pill(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({})))
+        .map(|s| p.button(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({})))
         .collect();
     let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
     let mut parts = vec![body];
@@ -797,8 +797,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         .enumerate()
         .map(|(i, (l, v, hot))| {
             let tone = if *hot && *v > 0 { "ok" } else if *v == 0 { "muted" } else { "fg" };
-            p.put(json!({ "id": format!("kpi{i}"), "component": "Stat", "value": v.to_string(), "label": l, "tone": tone }));
-            format!("kpi{i}")
+            p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), tone)
         })
         .collect();
     page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));
@@ -843,7 +842,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
             "selected": ui.sort.0, "disabled": ui.custom() }));
         row.push("sort".into());
         let dirty = !ui.q.is_empty() || ui.f.values().any(|v| !v.is_empty());
-        row.push(p.pill("clear", "Clear", "clear", json!({}), json!({ "disabled": !dirty, "hideOff": true })));
+        row.push(p.button("clear", "Clear", "clear", json!({}), json!({ "disabled": !dirty, "hideOff": true })));
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
         row.push(p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" })));

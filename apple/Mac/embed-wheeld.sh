@@ -22,7 +22,7 @@ CONTENTS="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH"
 # builds; build from a clean one.
 env -i HOME="$HOME" USER="$USER" \
   PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-  cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel $CARGO_FLAGS
+  cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel -p wheel-runner --bin wheel-runner $CARGO_FLAGS
 
 # wheeld ships as its own bundle, Wheel Server: macOS names that bundle (its Info.plist name,
 # icon and folder usage strings) in Privacy & Security, and a grant to it is what terminals and
@@ -45,6 +45,9 @@ codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$SERVER"
 mkdir -p "$CONTENTS/Helpers"
 cp -p "$REPO/target/$PROFILE/wheel" "$CONTENTS/Helpers/wheel"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/Helpers/wheel"
+# The runner process: a machine entry runs it by path (mcp = "exec <app>/Contents/Helpers/wheel-runner serve").
+cp -p "$REPO/target/$PROFILE/wheel-runner" "$CONTENTS/Helpers/wheel-runner"
+codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/Helpers/wheel-runner"
 
 cp -p "$SRCROOT/Mac/wheel-server.sh" "$CONTENTS/Resources/wheel-server.sh"
 

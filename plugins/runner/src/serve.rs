@@ -26,8 +26,17 @@ use crate::store::State;
 struct Named {
     /// The `[runner]` entry's name.
     name: String,
-    /// True once the person has answered the entry's `confirm` question with yes.
-    confirmed: Option<bool>,
+    /// The entry's command text the person answered the `confirm` question with yes for; an
+    /// entry whose command differs asks again.
+    confirmed: Option<String>,
+    /// Run in this git worktree of the project; the entry must set `worktree = true`.
+    worktree: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CheckArgs {
+    /// The `[runner]` entry's name.
+    name: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -66,8 +75,8 @@ fn refuse(e: impl ToString) -> CallToolResult {
 struct Press {
     /// The `[runner]` entry's name.
     name: String,
-    /// True when the person pressed the Run button that names the entry's confirm question.
-    confirmed: Option<bool>,
+    /// The command text of the Run button the person pressed to answer the entry's confirm question.
+    confirmed: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -123,9 +132,9 @@ fn answer(dir: &str, ui: &Ui) -> CallToolResult {
     let runs = Runs::new(dir);
     let list = runs.list();
     let runners = config::list(&config::machine_file(), dir);
-    let log = ui.open.as_deref().filter(|id| list.iter().any(|r| r.id == *id))
-        .and_then(|id| runs.log(id, 0, Some(page::LOG_LINES)).ok().map(|(t, _)| t));
-    let messages = page::update(page::components(&runners, &list, ui, log.as_deref(), crate::now()));
+    let logs: HashMap<String, String> = page::shown(&list, ui).into_iter()
+        .filter_map(|r| runs.log(&r.id, 0, Some(page::LOG_LINES)).ok().map(|(t, _)| (r.id.clone(), t))).collect();
+    let messages = page::update(page::components(&runners, &list, ui, &logs, crate::now()));
     CallToolResult::success(vec![ContentBlock::resource(ResourceContents::TextResourceContents {
         uri: page::URI.into(), mime_type: Some(page::MIME.into()), text: messages.to_string(), meta: None })])
 }
@@ -149,7 +158,13 @@ impl Server {
         let mut ui = self.shared.lock().unwrap().panes.get(&key).cloned().unwrap_or_default();
         f(&dir, &mut ui);
         let drawn = answer(&dir, &ui);
-        self.shared.lock().unwrap().panes.insert(key, ui);
+        // A pane with nothing open keeps nothing, so a closed pane leaves no entry behind.
+        let mut shared = self.shared.lock().unwrap();
+        if ui == Ui::default() {
+            shared.panes.remove(&key);
+        } else {
+            shared.panes.insert(key, ui);
+        }
         drawn
     }
 
@@ -166,13 +181,18 @@ impl Server {
                 ui.problem = Some(format!("no runner named {}", a.name));
                 return;
             };
-            match Runs::new(dir).start(&runner, a.confirmed == Some(true), None) {
+            match Runs::new(dir).start(&runner, a.confirmed.as_deref(), None) {
                 Ok(s) => {
                     ui.asking = None;
-                    ui.open = Some(s.record.id);
+                    ui.closed.remove(&s.record.id);
                 }
-                Err(StartError::Confirm(_)) => ui.asking = Some(a.name),
-                Err(StartError::Failed(e)) => ui.problem = Some(format!("{} did not start: {e}", a.name)),
+                Err(StartError::Confirm(_)) => {
+                    if a.confirmed.is_some() {
+                        ui.problem = Some(format!("{} changed since it was asked about; answer again", a.name));
+                    }
+                    ui.asking = Some(a.name);
+                }
+                Err(StartError::Guard(m) | StartError::Failed(m)) => ui.problem = Some(format!("{} did not start: {m}", a.name)),
             }
         })
     }
@@ -182,28 +202,24 @@ impl Server {
         self.with(&meta, |_, ui| ui.asking = None)
     }
 
-    #[tool(description = "Open a run's log, or close it when it is the open one", meta = ui_meta())]
-    fn open_log(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.open = if ui.open.as_deref() == Some(path.as_str()) { None } else { Some(path) })
+    #[tool(description = "Close a run's block on the page", meta = ui_meta())]
+    fn close_log(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            ui.closed.insert(path);
+        })
     }
 
-    #[tool(description = "Close the open log", meta = ui_meta())]
-    fn close_log(&self, meta: RequestMetaObject) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.open = None)
+    #[tool(description = "Show the next batch of older runs", meta = ui_meta())]
+    fn show_older(&self, meta: RequestMetaObject) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.more += 1)
     }
 
-    #[tool(description = "Stop the run whose log is open", meta = ui_meta())]
-    async fn stop_open(&self, meta: RequestMetaObject) -> CallToolResult {
+    #[tool(description = "Stop a run from its block on the page", meta = ui_meta())]
+    async fn stop_log(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
         let dir = project(&meta);
-        let open = self.shared.lock().unwrap().panes.get(&format!("{dir}\u{0}{}", pane_of(&meta))).and_then(|u| u.open.clone());
-        let problem = match open {
-            // Ending a run waits for its processes to go; that must not hold up other calls.
-            Some(id) => {
-                let d = dir.clone();
-                tokio::task::spawn_blocking(move || Runs::new(&d).stop(&id)).await.unwrap_or_else(|e| Err(e.to_string())).err()
-            }
-            None => Some("no log is open".into()),
-        };
+        // Ending a run waits for its processes to go; that must not hold up other calls.
+        let d = dir.clone();
+        let problem = tokio::task::spawn_blocking(move || Runs::new(&d).stop(&path)).await.unwrap_or_else(|e| Err(e.to_string())).err();
         self.with(&meta, |_, ui| ui.problem = problem)
     }
 
@@ -212,16 +228,39 @@ impl Server {
         reply(json!(config::list(&config::machine_file(), &project(&meta))))
     }
 
-    #[tool(description = "Start a [runner] command. An entry with a confirm question answers {started:false, confirm} until it is started again with confirmed true")]
-    fn run_runner(&self, meta: RequestMetaObject, Parameters(a): Parameters<Named>) -> CallToolResult {
+    #[tool(description = "Start a [runner] command. An entry with a confirm question answers {started:false, confirm} with its command text, until it is started again with confirmed set to that command text (an entry edited since asks again); a failing guard answers {started:false, guard}; worktree runs an entry that sets worktree = true in another git worktree of the project")]
+    async fn run_runner(&self, meta: RequestMetaObject, Parameters(a): Parameters<Named>) -> CallToolResult {
         let dir = project(&meta);
         let Some(runner) = config::list(&config::machine_file(), &dir).into_iter().find(|r| r.name == a.name) else {
             return refuse(format!("no runner named {}", a.name));
         };
-        match Runs::new(&dir).start(&runner, a.confirmed == Some(true), None) {
+        let runs = match &a.worktree {
+            Some(w) => Runs::new(&dir).in_worktree(w),
+            None => Runs::new(&dir),
+        };
+        // Guards run commands and may fetch; that must not hold up other calls.
+        let (confirmed, runner_command) = (a.confirmed, runner.command.clone());
+        let started = tokio::task::spawn_blocking(move || runs.start(&runner, confirmed.as_deref(), None)).await;
+        let Ok(started) = started else { return refuse("the start panicked") };
+        match started {
             Ok(s) => reply(json!({ "started": true, "id": s.record.id, "log": s.record.log })),
-            Err(StartError::Confirm(q)) => reply(json!({ "started": false, "confirm": q })),
+            Err(StartError::Confirm(q)) => reply(json!({ "started": false, "confirm": q, "command": runner_command })),
+            Err(StartError::Guard(m)) => reply(json!({ "started": false, "guard": m })),
             Err(StartError::Failed(e)) => refuse(e),
+        }
+    }
+
+    #[tool(description = "A command's status check (http, json or command): {up, text}")]
+    async fn check_runner(&self, meta: RequestMetaObject, Parameters(a): Parameters<CheckArgs>) -> CallToolResult {
+        let dir = project(&meta);
+        let Some(runner) = config::list(&config::machine_file(), &dir).into_iter().find(|r| r.name == a.name) else {
+            return refuse(format!("no runner named {}", a.name));
+        };
+        let Some(check) = runner.status else { return refuse(format!("{} has no status check", a.name)) };
+        // A check waits on the network or a script; it must not hold up other calls.
+        match tokio::task::spawn_blocking(move || crate::check::run(&check, std::path::Path::new(&dir))).await {
+            Ok(reading) => reply(json!(reading)),
+            Err(e) => refuse(e),
         }
     }
 
@@ -251,7 +290,7 @@ impl Server {
 
     #[tool(description = "The status line: the latest run, its state, how long it ran and its log")]
     fn get_status(&self, meta: RequestMetaObject) -> CallToolResult {
-        reply(json!({ "line": status::line(&Runs::new(&project(&meta)).list(), crate::now()) }))
+        reply(json!({ "line": status::line(Runs::new(&project(&meta)).latest().as_ref(), crate::now()) }))
     }
 }
 
@@ -283,6 +322,9 @@ impl ServerHandler for Server {
                 e.0 -= 1;
                 if e.0 == 0 {
                     shared.subscribed.remove(&dir);
+                    // No host shows this project any more: its panes' state goes with them.
+                    let prefix = format!("{dir}\u{0}");
+                    shared.panes.retain(|k, _| !k.starts_with(&prefix));
                 }
             }
         }

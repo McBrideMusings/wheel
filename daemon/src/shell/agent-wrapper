@@ -23,6 +23,9 @@ if [ -n "$WHEEL_ENV" ] && [ -z "$WHEEL_AGENT_PANE" ] && [ -z "${@HOME_VAR@:-}" ]
   wheel_home=$("$self_dir/wheel" config get agent.@NAME@.home 2>/dev/null)
   if [ -n "$wheel_home" ]; then @HOME_VAR@=$wheel_home; export @HOME_VAR@; fi
 fi
+if [ -n "$WHEEL_ENV" ] && [ -n "$WHEEL_BRIEF_FILE" ] && [ -r "${WHEEL_BRIEF_FILE%.md}.@NAME@.md" ]; then
+  WHEEL_BRIEF_FILE=${WHEEL_BRIEF_FILE%.md}.@NAME@.md
+fi
 if [ -n "$WHEEL_ENV" ] && [ -r "$WHEEL_BRIEF_FILE" ]; then
   case "$1" in
     @SKIP@) ;;

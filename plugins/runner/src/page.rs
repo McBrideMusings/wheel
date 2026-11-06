@@ -7,7 +7,6 @@
 use serde_json::{json, Value};
 
 use crate::config::Runner;
-use crate::status;
 use crate::store::{Record, State};
 
 pub const CATALOG: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
@@ -18,14 +17,23 @@ pub const MIME: &str = "application/a2ui+json";
 
 /// How many of a log's last lines the viewer shows.
 pub const LOG_LINES: usize = 300;
+/// The runs shown before "Show older runs", and how many each press adds.
+const BATCH: usize = 5;
+
+/// The runs the page shows a block for: the newest not closed, `BATCH` plus a batch per press.
+pub fn shown<'a>(runs: &'a [Record], ui: &Ui) -> Vec<&'a Record> {
+    runs.iter().filter(|r| !ui.closed.contains(&r.id)).take(BATCH * (1 + ui.more)).collect()
+}
 
 /// What one pane has open.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ui {
     /// The command whose confirm question is showing.
     pub asking: Option<String>,
-    /// The run whose log is open.
-    pub open: Option<String>,
+    /// The runs whose block the person closed.
+    pub closed: std::collections::BTreeSet<String>,
+    /// How many more batches of older runs the person asked for.
+    pub more: usize,
     /// What went wrong with the last press, shown until the next one.
     pub problem: Option<String>,
 }
@@ -66,9 +74,37 @@ impl Page {
         self.put(v);
         id.to_string()
     }
-    fn pill(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Pill", "text": text, "name": name, "context": context });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or
+    /// plain draws it borderless, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.
+    fn button(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
+        let child = match extra["icon"].as_str() {
+            Some(i) => {
+                self.put(json!({ "id": format!("{id}.i"), "component": "Icon", "name": i }));
+                format!("{id}.i")
+            }
+            None => {
+                self.put(json!({ "id": format!("{id}.t"), "component": "Text", "text": text }));
+                format!("{id}.t")
+            }
+        };
+        let mut mods = vec![];
+        if extra["disabled"] == true {
+            mods.push(json!({ "disabled": true }));
+            if extra["hideOff"] == true {
+                mods.push(json!({ "opacity": 0 }));
+            }
+        }
+        if let Some(h) = extra["help"].as_str() {
+            mods.push(json!({ "help": h }));
+            mods.push(json!({ "accessibilityLabel": h }));
+        }
+        let mut v = json!({ "id": id, "component": "Button", "child": child, "action": { "event": { "name": name, "context": context } } });
+        if matches!(extra["style"].as_str(), Some("link" | "plain")) {
+            v["variant"] = json!("borderless");
+        }
+        if !mods.is_empty() {
+            v["modifiers"] = json!(mods);
+        }
         self.put(v);
         id.to_string()
     }
@@ -86,39 +122,42 @@ fn cell(text: impl Into<String>, extra: Value) -> Value {
     v
 }
 
-/// The state word and its tone for a run.
-fn state_of(r: &Record) -> (String, &'static str) {
+/// The state word, its SF Symbol (`spinner` while running) and its tone for a run.
+fn state_of(r: &Record) -> (String, &'static str, &'static str) {
     match (r.state, r.exit_code) {
-        (State::Running, _) => ("running".into(), "warn"),
-        (State::Exited, Some(0)) => ("exit 0".into(), "ok"),
-        (State::Exited, Some(c)) => (format!("exit {c}"), "bad"),
-        (State::Exited, None) => ("exit ?".into(), "bad"),
-        (State::Stopped, _) => ("stopped".into(), "muted"),
-        (State::Lost, _) => ("lost".into(), "bad"),
+        (State::Running, _) => ("running".into(), "spinner", "warn"),
+        (State::Exited, Some(0)) => ("exit 0".into(), "checkmark.circle.fill", "ok"),
+        (State::Exited, Some(c)) => (format!("exit {c}"), "xmark.circle.fill", "bad"),
+        (State::Exited, None) => ("exit ?".into(), "xmark.circle.fill", "bad"),
+        (State::Stopped, _) => ("stopped".into(), "stop.circle.fill", "muted"),
+        (State::Lost, _) => ("lost".into(), "xmark.circle.fill", "bad"),
     }
 }
 
-/// `runners` are the commands, `runs` the project's runs newest first, `log` the open run's last
-/// lines (when one is open and readable) and `at` the time now, in Unix seconds.
-pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, log: Option<&str>, at: i64) -> Vec<Value> {
+/// A section heading: the words and, muted beside them, how many there are.
+fn heading(p: &mut Page, id: &str, text: &str, n: usize) -> String {
+    let t = p.label(&format!("{id}.t"), text, json!({ "weight": "semibold" }));
+    let c = p.label(&format!("{id}.n"), &n.to_string(), json!({ "tone": "muted", "tabular": true }));
+    p.boxed(id, "h", vec![t, c], json!({ "align": "center" }))
+}
+
+/// `runners` are the commands, `runs` the project's runs newest first, `logs` the last lines of
+/// each shown run's log (a run absent from it has an unreadable log) and `at` the time now, in Unix seconds.
+pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::collections::HashMap<String, String>, at: i64) -> Vec<Value> {
     let mut p = Page { out: vec![] };
     let mut page = vec![];
 
-    let title = p.label("title", "Runner", json!({ "size": 20, "weight": "bold" }));
+    let title = p.label("title", "Runner", json!({ "size": 22, "weight": "bold" }));
     let count = match runners.len() {
         1 => "1 runner".to_string(),
         n => format!("{n} runners"),
     };
-    let sub = p.label("sub", &count, json!({ "size": 12, "tone": "muted" }));
-    page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 6, 0] })));
-
-    let line = status::line(runs, at);
-    let latest = runs.first().map(|r| state_of(r).1).unwrap_or("muted");
-    page.push(p.label("status", &line, json!({ "mono": true, "size": 12, "tone": latest, "padding": [0, 0, 10, 0] })));
+    let sub = p.label("sub", &count, json!({ "tone": "muted" }));
+    page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between" })));
 
     if let Some(e) = &ui.problem {
         let l = p.label("problem.t", e, json!({ "tone": "bad" }));
-        page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [0, 0, 10, 0] })));
+        page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad" })));
     }
 
     if runners.is_empty() {
@@ -128,76 +167,74 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, log: Option<&str
             json!({ "tone": "muted" }),
         ));
     }
-    for (machine, heading) in [(false, "This project"), (true, "This machine")] {
+    for (machine, title) in [(false, "This project"), (true, "This machine")] {
         let rows: Vec<&Runner> = runners.iter().filter(|r| (r.origin == "machine") == machine).collect();
         if rows.is_empty() {
             continue;
         }
         let key = if machine { "machine" } else { "project" };
-        let h = p.label(&format!("g.{key}.h"), &format!("{heading}  {}", rows.len()), json!({ "size": 12, "weight": "bold", "tone": "muted", "padding": [10, 0, 4, 0] }));
-        let mut group = vec![h];
-        for r in rows {
+        page.push(heading(&mut p, &format!("g.{key}.h"), title, rows.len()));
+        let mut lines = vec![];
+        for (i, r) in rows.iter().enumerate() {
             let id = format!("r.{key}.{}", sane(&r.name));
             let name = p.label(&format!("{id}.name"), &r.name, json!({ "weight": "semibold" }));
             let asking = ui.asking.as_deref() == Some(r.name.as_str()) && r.confirm.is_some();
             let (what, acts) = if asking {
                 let q = r.confirm.clone().unwrap_or_default();
-                let cancel = p.pill(&format!("{id}.cancel"), "Cancel", "cancel_ask", json!({}), json!({}));
-                let go = p.pill(&format!("{id}.go"), &format!("Run {}: {q}", r.name), "press_run", json!({ "name": r.name, "confirmed": true }), json!({}));
+                let cancel = p.button(&format!("{id}.cancel"), "", "cancel_ask", json!({}), json!({ "icon": "xmark", "help": "Cancel" }));
+                let go = p.button(&format!("{id}.go"), &format!("Run {}: {q}", r.name), "press_run", json!({ "name": r.name, "confirmed": r.command }), json!({ "icon": "checkmark", "help": format!("Run {}: {q}", r.name) }));
                 (p.label(&format!("{id}.cmd"), &q, json!({ "tone": "bad" })), vec![cancel, go])
             } else {
-                let run = p.pill(&format!("{id}.run"), &format!("Run {}", r.name), "press_run", json!({ "name": r.name }), json!({}));
-                (p.label(&format!("{id}.cmd"), &r.command, json!({ "mono": true, "size": 12, "tone": "muted" })), vec![run])
+                let run = p.button(&format!("{id}.run"), "", "press_run", json!({ "name": r.name }), json!({ "icon": "play.fill", "help": format!("Run {}", r.name) }));
+                (p.label(&format!("{id}.cmd"), &r.command, json!({ "mono": true, "tone": "muted" })), vec![run])
             };
-            let buttons = p.boxed(&format!("{id}.acts"), "h", acts, json!({ "spacing": 6 }));
-            group.push(p.boxed(&id, "h", vec![name, what, buttons], json!({ "spacing": 12, "widths": [150, "flex", null], "padding": [4, 0], "align": "center", "trailing": 1 })));
+            let buttons = p.boxed(&format!("{id}.acts"), "h", acts, json!({}));
+            let edge = if i + 1 < rows.len() { json!({ "edge": "bottom" }) } else { json!({}) };
+            let mut extra = json!({ "widths": [210, "flex", null], "align": "center", "trailing": 1 });
+            extra.as_object_mut().unwrap().extend(edge.as_object().unwrap().clone());
+            lines.push(p.boxed(&id, "h", vec![name, what, buttons], extra));
         }
-        page.push(p.boxed(&format!("g.{key}"), "v", group, json!({ "spacing": 2 })));
+        page.push(p.boxed(&format!("g.{key}"), "v", lines, json!({ "border": "line", "spacing": 0, "padding": [0, 0] })));
     }
 
-    let h = p.label("runs.h", &format!("Runs  {}", runs.len()), json!({ "size": 12, "weight": "bold", "tone": "muted", "padding": [14, 0, 4, 0] }));
-    page.push(h);
-    let rows: Vec<Value> = runs.iter().map(|r| {
-        let (state, tone) = state_of(r);
+    let show = shown(runs, ui);
+    page.push(heading(&mut p, "runs.h", "Output", runs.iter().filter(|r| !ui.closed.contains(&r.id)).count()));
+    if show.is_empty() {
+        page.push(p.label("runs.none", "No runs yet.", json!({ "tone": "muted" })));
+    }
+    let mut blocks = vec![];
+    for r in &show {
+        let (state, symbol, tone) = state_of(r);
         let took = crate::duration(r.ended.unwrap_or(at) - r.started);
-        let cells = vec![
-            cell(&r.name, json!({ "key": "name", "tone": "fg" })),
-            cell(state, json!({ "key": "state", "tone": tone, "chip": true })),
-            cell(crate::clock(r.started), json!({ "key": "started", "mono": true, "tone": "muted", "tabular": true })),
-            cell(took, json!({ "key": "took", "mono": true, "tone": "muted", "tabular": true })),
-        ];
-        json!({ "id": r.id, "path": r.id, "depth": 0, "kids": 0, "collapsed": false, "dim": false,
-            "sel": ui.open.as_deref() == Some(r.id.as_str()), "cells": cells, "menu": [] })
-    }).collect();
-    let column = |key: &str, label: &str, width: Value, wide: bool| json!({ "key": key, "label": label, "width": width, "tree": false, "wide": wide });
-    p.put(json!({ "id": "runs", "component": "Table", "rowAction": "open_log", "foldAction": "open_log",
-        "columns": [column("name", "Command", json!("flex"), true), column("state", "State", json!(90), false),
-            column("started", "Started (UTC)", json!(110), false), column("took", "Took", json!(70), false)],
-        "sort": { "key": "started", "asc": false },
-        "sections": [{ "title": "", "count": rows.len(), "rows": rows }], "empty": "No runs yet." }));
-    page.push("runs".into());
-
-    if let Some(r) = ui.open.as_deref().and_then(|id| runs.iter().find(|r| r.id == id)) {
-        let (state, tone) = state_of(r);
-        let head = p.label("log.h", &format!("{} · {state}", r.name), json!({ "weight": "bold", "tone": tone }));
-        let mut bar = vec![head];
+        let id = format!("run.{}", sane(&r.id));
+        let name = p.label(&format!("{id}.name"), &r.name, json!({ "weight": "semibold" }));
+        let st = p.label(&format!("{id}.state"), &state, json!({ "symbol": symbol, "tone": tone }));
+        let when = p.label(&format!("{id}.when"), &format!("{} · {took}", crate::clock(r.started)), json!({ "mono": true, "tone": "muted", "tabular": true }));
+        let mut bar = vec![name, st, when];
         if r.state == State::Running {
-            bar.push(p.pill("log.stop", "Stop", "stop_open", json!({}), json!({})));
+            bar.push(p.button(&format!("{id}.stop"), "Stop", "stop_log", json!({ "path": r.id }), json!({})));
         }
-        bar.push(p.pill("log.close", "Close log", "close_log", json!({}), json!({})));
-        let top = p.boxed("log.bar", "h", bar, json!({ "spacing": 10, "padding": [14, 0, 4, 0], "align": "center", "trailing": 2 }));
-        let cmd = p.label("log.cmd", &r.command, json!({ "mono": true, "size": 11, "tone": "muted" }));
-        let text = match log {
-            Some(t) if !t.is_empty() => t.to_string(),
+        bar.push(p.button(&format!("{id}.close"), "", "close_log", json!({ "path": r.id }), json!({ "icon": "xmark", "help": "Close", "style": "plain" })));
+        let trailing = if r.state == State::Running { 2 } else { 1 };
+        let head = p.boxed(&format!("{id}.head"), "h", bar, json!({ "align": "center", "trailing": trailing, "edge": "bottom" }));
+        let text = match logs.get(&r.id) {
+            Some(t) if !t.is_empty() => t.trim_end().to_string(),
             Some(_) => "(no output yet)".into(),
             None => "(the log cannot be read)".into(),
         };
-        let body = p.label("log.text", &text, json!({ "mono": true, "size": 11 }));
-        let frame = p.boxed("log.frame", "v", vec![body], json!({ "border": "line", "radius": 8, "padding": [8, 10] }));
-        page.push(p.boxed("log", "v", vec![top, cmd, frame], json!({ "spacing": 4 })));
+        let body = p.label(&format!("{id}.log"), &text, json!({ "mono": true }));
+        let body = p.boxed(&format!("{id}.out"), "v", vec![body], json!({ "padding": [12, 12] }));
+        blocks.push(p.boxed(&id, "v", vec![head, body], json!({ "border": "line", "spacing": 0, "padding": [0, 0] })));
+    }
+    let later = runs.iter().filter(|r| !ui.closed.contains(&r.id)).count().saturating_sub(show.len());
+    if later > 0 {
+        blocks.push(p.button("runs.more", &format!("Show older runs · {later}"), "show_older", json!({}), json!({ "style": "link" })));
+    }
+    if !blocks.is_empty() {
+        page.push(p.boxed("runs", "v", blocks, json!({ "spacing": 16 })));
     }
 
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [18, 16, 48, 16], "children": page }));
+    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [28, 28, 56, 28], "spacing": 24, "children": page }));
     p.out
 }
 
@@ -206,13 +243,13 @@ mod tests {
     use super::*;
 
     fn runner(name: &str, confirm: Option<&str>, origin: &'static str) -> Runner {
-        Runner { name: name.into(), command: format!("make {name}"), confirm: confirm.map(String::from), origin }
+        Runner { name: name.into(), command: format!("make {name}"), confirm: confirm.map(String::from), origin, requires: vec![], status: None, worktree: false }
     }
 
     fn run(id: &str, state: State, code: Option<i32>) -> Record {
         Record {
             id: id.into(), name: "deploy".into(), command: "make deploy".into(), dir: "/p".into(), state, started: 100,
-            ended: (state != State::Running).then_some(160), exit_code: code, pid: 2, owner_pid: 1, stop_requested: false, log: "/l".into(),
+            ended: (state != State::Running).then_some(160), exit_code: code, pid: 2, pid_started: 0, owner_pid: 1, stop_requested: false, log: "/l".into(),
         }
     }
 
@@ -226,48 +263,79 @@ mod tests {
         c.iter().find(|v| v["id"] == id).unwrap_or_else(|| panic!("no component {id}"))
     }
 
+    /// The action a `Button` raises: its event's name and context.
+    fn action(c: &[Value], id: &str) -> (Value, Value) {
+        let e = &find(c, id)["action"]["event"];
+        (e["name"].clone(), e["context"].clone())
+    }
+
+    /// A `Button`'s hover text, from its `help` modifier.
+    fn help(c: &[Value], id: &str) -> Value {
+        find(c, id)["modifiers"].as_array().unwrap().iter().find_map(|m| m.get("help").cloned()).unwrap_or(Value::Null)
+    }
+
     #[test]
-    fn each_command_has_a_run_button_under_where_it_comes_from() {
+    fn each_command_has_an_icon_run_button_under_where_it_comes_from() {
         let rs = [runner("build", None, "project"), runner("tidy", None, "machine")];
-        let c = components(&rs, &[], &Ui::default(), None, 200);
-        assert_eq!(find(&c, "g.project.h")["text"], "This project  1");
-        assert_eq!(find(&c, "g.machine.h")["text"], "This machine  1");
-        let b = find(&c, "r.project.build.run");
-        assert_eq!((b["name"].clone(), b["context"].clone(), b["text"].clone()), (json!("press_run"), json!({ "name": "build" }), json!("Run build")));
+        let c = components(&rs, &[], &Ui::default(), &Default::default(), 200);
+        assert_eq!(find(&c, "g.project.h.t")["text"], "This project");
+        assert_eq!(find(&c, "g.project.h.n")["text"], "1");
+        assert_eq!(find(&c, "g.machine.h.t")["text"], "This machine");
+        assert_eq!(find(&c, "g.project")["border"], "line");
+        assert_eq!(find(&c, "r.project.build.name")["text"], "build");
         assert_eq!(find(&c, "r.project.build.cmd")["text"], "make build");
-        assert_eq!(find(&c, "status")["text"], "no runs yet");
+        assert_eq!(find(&c, "r.project.build.run")["component"], "Button");
+        assert_eq!(find(&c, "r.project.build.run.i")["name"], "play.fill");
+        assert_eq!(action(&c, "r.project.build.run"), (json!("press_run"), json!({ "name": "build" })));
+        assert_eq!(help(&c, "r.project.build.run"), "Run build");
+        assert_eq!(find(&c, "runs.none")["text"], "No runs yet.");
+        assert!(c.iter().all(|v| v["id"] != "status"), "the page has no status line");
     }
 
     #[test]
     fn a_confirm_command_shows_its_question_with_cancel_and_a_run_that_confirms() {
         let rs = [runner("restart", Some("Ends every agent."), "project")];
-        let idle = components(&rs, &[], &Ui::default(), None, 0);
-        assert_eq!(find(&idle, "r.project.restart.run")["context"], json!({ "name": "restart" }));
+        let idle = components(&rs, &[], &Ui::default(), &Default::default(), 0);
+        assert_eq!(action(&idle, "r.project.restart.run").1, json!({ "name": "restart" }));
         let ui = Ui { asking: Some("restart".into()), ..Ui::default() };
-        let c = components(&rs, &[], &ui, None, 0);
+        let c = components(&rs, &[], &ui, &Default::default(), 0);
         assert_eq!(find(&c, "r.project.restart.cmd")["text"], "Ends every agent.");
-        assert_eq!(find(&c, "r.project.restart.cancel")["name"], "cancel_ask");
-        let go = find(&c, "r.project.restart.go");
-        assert_eq!(go["text"], "Run restart: Ends every agent.");
-        assert_eq!(go["context"], json!({ "name": "restart", "confirmed": true }));
+        assert_eq!(action(&c, "r.project.restart.cancel").0, "cancel_ask");
+        assert_eq!(help(&c, "r.project.restart.go"), "Run restart: Ends every agent.");
+        assert_eq!(action(&c, "r.project.restart.go").1, json!({ "name": "restart", "confirmed": "make restart" }));
         assert!(c.iter().all(|v| v["id"] != "r.project.restart.run"), "the plain Run is replaced while asking");
     }
 
     #[test]
-    fn runs_show_state_and_the_open_one_shows_its_log_and_a_stop_while_running() {
+    fn every_run_has_a_block_with_its_log_and_a_stop_while_running() {
         let rs = [runner("deploy", None, "project")];
         let runs = [run("b", State::Running, None), run("a", State::Exited, Some(2))];
-        let ui = Ui { open: Some("b".into()), ..Ui::default() };
-        let c = components(&rs, &runs, &ui, Some("12:00:01  hi\n"), 142);
-        let rows = &find(&c, "runs")["sections"][0]["rows"];
-        assert_eq!(rows[0]["cells"][1]["text"], "running");
-        assert_eq!(rows[0]["sel"], true);
-        assert_eq!(rows[1]["cells"][1]["text"], "exit 2");
-        assert_eq!(rows[1]["cells"][3]["text"], "1:00");
-        assert_eq!(find(&c, "log.text")["text"], "12:00:01  hi\n");
-        assert_eq!(find(&c, "log.stop")["name"], "stop_open");
-        let done = components(&rs, &runs, &Ui { open: Some("a".into()), ..Ui::default() }, Some(""), 142);
-        assert_eq!(find(&done, "log.text")["text"], "(no output yet)");
-        assert!(done.iter().all(|v| v["id"] != "log.stop"), "a finished run has no Stop");
+        let logs = std::collections::HashMap::from([("b".to_string(), "12:00:01  hi\n".to_string()), ("a".to_string(), String::new())]);
+        let c = components(&rs, &runs, &Ui::default(), &logs, 142);
+        assert_eq!(find(&c, "run.b")["border"], "line");
+        assert_eq!(find(&c, "run.b.state")["text"], "running");
+        assert_eq!(find(&c, "run.b.state")["symbol"], "spinner");
+        assert_eq!(find(&c, "run.a.state")["text"], "exit 2");
+        assert_eq!(find(&c, "run.a.state")["symbol"], "xmark.circle.fill");
+        assert_eq!(find(&c, "run.a.when")["text"], "00:01:40 · 1:00".replace("00:01:40", &crate::clock(100)));
+        assert_eq!(find(&c, "run.b.log")["text"], "12:00:01  hi");
+        assert_eq!(find(&c, "run.a.log")["text"], "(no output yet)");
+        assert_eq!(find(&c, "run.b.stop.t")["text"], "Stop");
+        assert_eq!(action(&c, "run.b.stop"), (json!("stop_log"), json!({ "path": "b" })));
+        assert!(c.iter().all(|v| v["id"] != "run.a.stop"), "a finished run has no Stop");
+        assert_eq!(action(&c, "run.a.close").1, json!({ "path": "a" }));
+    }
+
+    #[test]
+    fn closed_runs_drop_out_and_older_ones_come_in_batches_of_five() {
+        let runs: Vec<Record> = (0..12).map(|i| run(&format!("r{i:02}"), State::Exited, Some(0))).collect();
+        let c = components(&[], &runs, &Ui::default(), &Default::default(), 200);
+        assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 5);
+        assert_eq!(find(&c, "runs.more.t")["text"], "Show older runs · 7");
+        let ui = Ui { more: 1, closed: ["r00".to_string()].into(), ..Ui::default() };
+        let c = components(&[], &runs, &ui, &Default::default(), 200);
+        assert!(c.iter().all(|v| v["id"] != "run.r00"));
+        assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 10);
+        assert_eq!(find(&c, "runs.more.t")["text"], "Show older runs · 1");
     }
 }

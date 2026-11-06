@@ -3268,6 +3268,7 @@ dependencies = [
  "sysinfo",
  "tokio",
  "toml_edit",
+ "ureq",
  "url",
 ]
 

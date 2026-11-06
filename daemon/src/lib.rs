@@ -14,6 +14,7 @@ mod console;
 mod devices;
 mod dirs;
 mod files;
+mod guidance;
 mod homes;
 pub mod host;
 mod keybind;

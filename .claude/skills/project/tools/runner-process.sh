@@ -16,7 +16,7 @@ start_daemon --state-file "$SCR/spaces.json"
 
 mkdir -p "$SCR/one" "$SCR/two"
 printf '[runner]\nhello = "echo hello-from-one; exit 4"\nrestart = { command = "echo restarted-one", confirm = "Ends every agent." }\nlong = "exec sleep 30"\n' >"$SCR/one/wheel.toml"
-printf '[runner]\nonly-two = "echo two"\n' >"$SCR/two/wheel.toml"
+printf '[runner]\nonly-two = "echo two"\nguarded = { command = "echo guarded-ran", requires = ["has-token"] }\nprobe = { command = "true", status = { kind = "command", run = "echo build-v9" } }\nelsewhere = { command = "pwd", worktree = true }\n\n[guards.has-token]\nrun = "test -f token"\nfail = "create the token file first"\n' >"$SCR/two/wheel.toml"
 w space new "$SCR/one" >/dev/null
 w space new "$SCR/two" >/dev/null
 SP1="$(w space ls | jget spaces.0.id)"
@@ -77,10 +77,26 @@ check "a confirm command's page shows the question and the Run button that names
 check "the question started nothing" test "$(call "$SP1" list_runs | grep -c restart-)" = 0
 CANCELLED="$(page "$SP1" cancel_ask)"
 check "Cancel puts the plain Run button back" hasnt "$CANCELLED" 'Run restart: Ends every agent.'
-page "$SP1" press_run '{"name":"restart","confirmed":true}' >/dev/null
+page "$SP1" press_run '{"name":"restart","confirmed":"echo stale"}' >/dev/null
+check "a yes for another command text starts nothing" test "$(call "$SP1" list_runs | grep -c restart-)" = 0
+page "$SP1" press_run '{"name":"restart","confirmed":"echo restarted-one"}' >/dev/null
 check "the question's Run button starts it" has "$(call "$SP1" list_runs)" 'restart'
 LIVE="$(page "$SP1" press_run '{"name":"long"}')"
 check "starting a command opens its log, running, with a Stop button" has "$LIVE" 'Stop'
 eq "still one wheel-runner process serves every page" "$(servers)" 1
-page "$SP1" close_log >/dev/null
+
+# § Guards, per-command status checks and the worktree flag (wheel-cmbu.12), through wheeld.
+G="$(call "$SP2" run_runner '{"name":"guarded"}')"
+check "a failing guard starts nothing and says what to do" has "$G" 'create the token file first'
+check "and leaves no run in the second space" has "$(call "$SP2" list_runs)" '\[\]'
+: >"$SCR/two/token"
+check "once the guard passes the command starts" has "$(call "$SP2" run_runner '{"name":"guarded"}')" 'started\\":true'
+check "a status check reads its command's first line" has "$(call "$SP2" check_runner '{"name":"probe"}')" 'build-v9'
+check "a command without a status check says so" has "$(call "$SP2" check_runner '{"name":"only-two"}')" 'no status check'
+G2=(git -C "$SCR/two" -c user.email=t@t -c user.name=t)
+"${G2[@]}" init -q -b main && "${G2[@]}" add . && "${G2[@]}" commit -qm first && "${G2[@]}" worktree add -q "$SCR/elsewhere"
+mkdir -p "$SCR/stray"
+check "a directory that is no worktree of the project is refused" has "$(call "$SP2" run_runner "{\"name\":\"elsewhere\",\"worktree\":\"$SCR/stray\"}")" 'not a git worktree'
+check "a worktree command runs in the named directory" has "$(call "$SP2" run_runner "{\"name\":\"elsewhere\",\"worktree\":\"$SCR/elsewhere\"}")" 'started\\":true'
+check "a command without the flag refuses a worktree" has "$(call "$SP2" run_runner "{\"name\":\"only-two\",\"worktree\":\"$SCR/elsewhere\"}")" 'worktree = true'
 finish
