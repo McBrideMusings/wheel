@@ -243,7 +243,7 @@ struct UserImages: View {
 
     var body: some View {
         if !paths.isEmpty {
-            StructuredText(markdown: paths.map { "![](\($0))" }.joined(separator: "\n\n"))
+            StructuredText(markdown: paths.map { ChatImages.markdownImage(path: $0) }.joined(separator: "\n\n"))
                 .textual.imageAttachmentLoader(
                     ChatImageLoader(agent: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
                 .popover(item: Binding(

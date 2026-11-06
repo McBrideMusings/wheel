@@ -14,6 +14,13 @@ import Testing
         #expect(ChatImages.attachedPaths(in: message) == ["/Users/p/Desktop/Screen.2026.11.06.png", "/tmp/b.jpg"])
     }
 
+    @Test func aQuotedPathMayHoldSpaces() {
+        let path = "/Users/p/Library/Application Support/CleanShot/Screen (1).png"
+        #expect(ChatImages.attachedPaths(in: "x\n\n`\(path)`") == [path])
+        #expect(ChatImages.attachedPaths(in: path).isEmpty)
+        #expect(ChatImages.markdownImage(path: path) == "![](/Users/p/Library/Application%20Support/CleanShot/Screen%20%281%29.png)")
+    }
+
     @Test func fencedCodeIsLeftAlone() {
         let source = "```\n/tmp/shot.png\n```\n/tmp/shot.png"
         #expect(ChatImages.rewrite(source, inline: true) == "```\n/tmp/shot.png\n```\n![](/tmp/shot.png)")
