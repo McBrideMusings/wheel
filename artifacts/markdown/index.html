@@ -6,128 +6,57 @@
 <link rel="stylesheet" href=".wheel/wheel.css">
 <style>
   * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    padding: 24px 16px 48px;
-    background: var(--bg);
-    color: var(--label);
-    font: 14px/1.5 -apple-system, system-ui, sans-serif;
-  }
-  body { min-height: 100vh; display: flex; flex-direction: column; padding-bottom: 0; }
-  main { max-width: 900px; width: 100%; margin: 0 auto; flex: 1 0 auto; padding-bottom: 24px; }
-  h1 { font-size: 22px; line-height: 1.25; margin: 0 0 12px; }
-  p { margin: 0 0 10px; white-space: pre-line; }
-  pre { margin: 0 0 10px; padding: 10px 12px; background: var(--fill); border-radius: 8px; overflow-x: auto; }
+  body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--label); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
+  main { max-width: 900px; width: 100%; margin: 0 auto; overflow-wrap: anywhere; }
+  main > :first-child { margin-top: 0; }
+  h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.6em 0 0.5em; }
+  h1 { font-size: 22px; margin-top: 0; }
+  h2 { font-size: 18px; }
+  h3 { font-size: 16px; }
+  h4, h5, h6 { font-size: 14px; }
+  h6 { color: var(--secondary); }
+  p, ul, ol, blockquote, pre, table { margin: 0 0 10px; }
+  ul, ol { padding-left: 22px; }
+  li > ul, li > ol, li > p { margin: 4px 0 0; }
+  hr { border: 0; border-top: 1px solid var(--separator); margin: 20px 0; }
+  blockquote { padding: 2px 14px; border-left: 3px solid var(--separator-strong); color: var(--secondary); }
+  blockquote > :last-child { margin-bottom: 0; }
+  pre { padding: 10px 12px; background: var(--fill); border-radius: 8px; overflow-x: auto; }
   pre code { padding: 0; background: none; white-space: pre; }
-  main > ul, main > ol { margin: 0 0 10px; padding-left: 22px; }
   code { font: 13px ui-monospace, Menlo, monospace; background: var(--fill); padding: 1px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+  th, td { padding: 6px 12px; border: 1px solid var(--separator); text-align: left; vertical-align: top; }
+  th { background: var(--group); font-weight: 600; }
+  del { color: var(--secondary); }
+  a { color: var(--accent); }
+  input[type="checkbox"] { margin: 0 6px 0 0; }
   :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .notice { padding: 14px 16px; border-radius: 10px; background: var(--red-fill); color: var(--red); border: 1px solid var(--red); }
   .notice.plain { background: var(--group); color: var(--secondary); border-color: var(--separator); }
-  .thumbs { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
-  figure { margin: 0; flex: 1 1 280px; max-width: 100%; min-width: 0; }
-  .opt .thumbs figure { flex: 1 1 max(280px, calc(50% - 12px)); }
   .thumb {
-    display: block; width: 100%; padding: 0; margin: 0; border: 1px solid var(--separator); border-radius: 8px;
-    background: var(--group); cursor: zoom-in; overflow: hidden; font: inherit; color: inherit; box-shadow: none;
+    display: inline-block; max-width: 100%; padding: 0; margin: 2px 0; border: 1px solid var(--separator); border-radius: 8px;
+    background: var(--group); cursor: zoom-in; overflow: hidden; font: inherit; color: inherit; box-shadow: none; vertical-align: middle;
   }
-  .thumb img { display: block; width: 100%; height: auto; }
-  .thumb.inline { display: inline-block; width: auto; max-width: 100%; vertical-align: middle; margin: 2px 0; }
-  .thumb.inline img { width: auto; max-width: 100%; max-height: 240px; }
-  figcaption { color: var(--secondary); font-size: 12px; margin-top: 4px; }
-  .question { margin: 28px 0 0; }
-  .question > h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 8px; }
-  .qnum { color: var(--secondary); font-variant-numeric: tabular-nums; }
-  .opt {
-    margin: 0 0 10px; padding: 12px 14px; background: var(--group); border: 1px solid var(--separator);
-    border-radius: 10px; cursor: pointer;
-  }
-  .opt:hover { border-color: var(--separator-strong); }
-  .opt.selected { border: 3px solid var(--accent); padding: 10px 12px; background: var(--accent-fill); }
-  .choose {
-    display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 0; margin: 0; border: 0;
-    background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; box-shadow: none; border-radius: 0;
-  }
-  .letter { font-weight: 700; min-width: 1.6em; }
-  .title { font-weight: 600; flex: 1 1 auto; }
-  .pick { font-size: 12px; font-weight: 600; color: var(--accent); white-space: nowrap; }
-  .check { width: 1.4em; height: 1.4em; border-radius: 50%; background: var(--accent); color: var(--on-accent); display: none; align-items: center; justify-content: center; font-size: 12px; flex: 0 0 auto; }
-  .opt.selected .check { display: inline-flex; }
-  .opt ul { margin: 8px 0 0; padding-left: 22px; }
-  .cost { margin: 8px 0 0; color: var(--secondary); }
-  .cost b { color: var(--label); }
-  .hatch { margin-top: 24px; color: var(--secondary); }
-  #bar {
-    position: sticky; bottom: 0; z-index: 5; margin: 0 -16px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
-    background: color-mix(in srgb, var(--group) 92%, transparent); border-top: 1px solid var(--separator);
-    -webkit-backdrop-filter: saturate(1.4) blur(14px); backdrop-filter: saturate(1.4) blur(14px);
-  }
-  #bar[hidden] { display: none; }
-  #bar .inner { max-width: 900px; margin: 0 auto; display: grid; gap: 8px; }
-  #bar .sum { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
-  #bar .sum span { white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-  #bar .sum .none { color: var(--secondary); }
-  #bar .sum b { font-variant-numeric: tabular-nums; }
-  #bar .row { display: flex; gap: 10px; align-items: flex-end; }
-  #bar textarea {
-    flex: 1 1 auto; min-width: 0; min-height: 38px; max-height: 140px; resize: vertical; padding: 8px 10px; font: inherit;
-    color: var(--label); background: var(--group); border: 1px solid var(--separator); border-radius: 8px;
-  }
-  #bar button#send {
-    flex: 0 0 8.5em; min-height: 38px; padding: 0 8px; text-align: center; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
-    color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent);
-  }
-  #bar button#send:disabled { cursor: default; color: var(--secondary); background: transparent; border-color: var(--separator); }
-  .locked .opt { cursor: default; }
-  .locked .opt:not(.selected) { opacity: 0.55; }
-  .locked .opt:not(.selected):hover { border-color: var(--separator); }
-  #bar textarea:read-only { color: var(--secondary); background: transparent; cursor: default; }
-  #bar .status button {
-    font: inherit; font-size: 12px; padding: 0; margin: 0; border: 0; background: none; color: var(--accent);
-    text-decoration: underline; cursor: pointer; box-shadow: none;
-  }
-  #bar .status { margin: 0; font-size: 12px; color: var(--secondary); min-height: 1.4em; }
-  #bar .status .good { color: var(--green); font-weight: 600; }
-  #bar .status .bad { color: var(--red); font-weight: 600; }
+  .thumb img { display: block; max-width: 100%; max-height: 480px; height: auto; }
 </style>
 <main id="root"><div class="notice plain">Waiting for the post…</div></main>
-<footer id="bar" hidden>
-  <div class="inner">
-    <p class="sum" id="sum" aria-live="polite"></p>
-    <div class="row">
-      <textarea id="note" rows="1" placeholder="Add a note (optional). Enter sends, Shift+Enter adds a line" aria-label="Note"></textarea>
-      <button type="button" id="send">Send answers</button>
-    </div>
-    <p class="status" id="status" aria-live="polite"></p>
-  </div>
-</footer>
 <script src=".wheel/client.js"></script>
 <script src=".wheel/lightbox.js"></script>
+<script src="marked.umd.js"></script>
 <script>
 (() => {
   const root = document.getElementById("root");
-
-  let card = null;
-  let cardText = null;
-  let answers = {};
-  let note = "";
-  let sent = null;       // {at, key, delivered}: the last Send, and the draft it carried
-  let sending = false;
-  let reopened = false;  // the person chose Change answer after a Send
-  const bar = document.getElementById("bar");
-  const sumEl = document.getElementById("sum");
-  const noteEl = document.getElementById("note");
-  const sendEl = document.getElementById("send");
-  const statusEl = document.getElementById("status");
+  let shown = null;
   let pushed = false;
 
-  // ---- text -------------------------------------------------------------
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const dataUrl = (name) => "data/" + String(name).split("/").map(encodeURIComponent).join("/");
+
   // Where a link or image target goes: an http(s) address stays as written, a path with no scheme is
   // a file in the post's folder (served under data/), a #fragment stays on the page, and any other
   // scheme (javascript:, file:, data:) is refused.
   function target(raw) {
-    const t = String(raw).trim().replace(/\s+(".*"|'.*')$/, ""); // less a quoted title
+    const t = String(raw).trim();
     if (/^https?:\/\//i.test(t)) return { url: t, remote: true };
     if (t.startsWith("#")) return { url: t, anchor: true };
     if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith("//") || t.split(/[?#]/)[0].split("/").includes("..")) return null;
@@ -136,212 +65,49 @@
     while (path.startsWith("./")) path = path.slice(2);
     return path ? { url: dataUrl(path) + m[2] } : null;
   }
-  // Inline: `code`, **bold**, ![alt](image), [text](link) and bare http(s) addresses. An image opens the
-  // lightbox like a thumbnail does; blocks() adds fenced code and lists.
-  const INLINE = /`([^`]+)`|!\[([^\]]*)\]\(([^)]+)\)|\[((?:[^\[\]]|!\[[^\]]*\]\([^)]*\))+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|(https?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]'*])/g;
-  const link = (href, body, remote) => `<a href="${esc(href)}"${remote ? ' rel="noopener"' : ""}>${body}</a>`;
-  // `plain` draws no image, link or address: text that sits inside a button or another link.
-  function inline(s, plain) {
-    const text = String(s);
-    let out = "", last = 0;
-    for (const m of text.matchAll(INLINE)) { // matchAll copies the regex, so the recursive calls below keep their own position
-      out += esc(text.slice(last, m.index));
-      last = m.index + m[0].length;
-      const [whole, code, alt, img, label, href, bold, bare] = m;
-      const t = img !== undefined ? target(img) : href !== undefined ? target(href) : null;
-      if (code !== undefined) out += `<code>${esc(code)}</code>`;
-      else if (bold !== undefined) out += `<b>${inline(bold, plain)}</b>`;
-      else if (bare !== undefined) out += plain ? esc(bare) : link(bare, esc(bare), true);
-      else if (img !== undefined) out += plain ? esc(alt) : t && !t.anchor
-        ? `<button type="button" class="thumb inline" data-lightbox data-src="${esc(t.url)}" data-cap="${esc(alt)}"><img src="${esc(t.url)}" alt="${esc(alt || img)}"></button>`
-        : esc(whole);
-      else out += t && !plain ? link(t.url, inline(label, true), t.remote) : inline(label, true);
-    }
-    return out + esc(text.slice(last));
-  }
-  // Block text: fenced code, bullet and numbered lists, paragraphs split on blank lines.
-  function blocks(text) {
-    const out = [];
-    let para = [], items = null, fence = null;
-    const endPara = () => { if (para.length) out.push(`<p>${inline(para.join("\n"))}</p>`); para = []; };
-    const endList = () => { if (items) out.push(`<${items.tag}${items.start > 1 ? ` start="${items.start}"` : ""}>${items.li.map((t) => `<li>${inline(t)}</li>`).join("")}</${items.tag}>`); items = null; };
-    for (const raw of String(text).split("\n")) {
-      const line = raw.trim();
-      if (fence) {
-        if (line.startsWith(fence.mark) && !line.slice(fence.mark.length).replace(new RegExp("^" + fence.mark[0] + "+"), "").trim()) { out.push(`<pre><code>${esc(fence.lines.join("\n"))}</code></pre>`); fence = null; }
-        else fence.lines.push(raw);
-        continue;
-      }
-      let m;
-      if ((m = line.match(/^(```+|~~~+)/))) { endPara(); endList(); fence = { mark: m[1], lines: [] }; continue; }
-      if ((m = line.match(/^([-*]|\d+[.)])\s+(.*)$/))) {
-        endPara();
-        const tag = /^\d/.test(m[1]) ? "ol" : "ul";
-        if (items && items.tag !== tag) endList();
-        if (!items) items = { tag, li: [], start: tag === "ol" ? parseInt(m[1], 10) : 1 };
-        items.li.push(m[2]);
-        continue;
-      }
-      if (!line) { endPara(); endList(); continue; }
-      if (items) { items.li[items.li.length - 1] += " " + line; continue; }
-      para.push(line);
-    }
-    if (fence) out.push(`<pre><code>${esc(fence.lines.join("\n"))}</code></pre>`);
-    endPara(); endList();
-    return out.join("");
-  }
-  const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
-  const list = (v) => (Array.isArray(v) ? v : []);
-  const dataUrl = (name) => "data/" + String(name).split("/").map(encodeURIComponent).join("/");
 
-  // ---- render -----------------------------------------------------------
-  function thumb(src, caption, alt) {
-    return `<figure class="opt-image"><button type="button" class="thumb" data-lightbox data-src="${esc(dataUrl(src))}" data-cap="${esc(caption)}">` +
-      `<img src="${esc(dataUrl(src))}" alt="${esc(alt || caption || src)}"></button>` +
-      (caption ? `<figcaption>${inline(caption)}</figcaption>` : "") + `</figure>`;
-  }
-
-  function render() {
-    const c = card;
-    const out = [];
-    if (str(c.title)) out.push(`<h1>${inline(c.title)}</h1>`);
-    if (str(c.body)) out.push(blocks(str(c.body)));
-    const images = list(c.images).filter((i) => i && str(i.src));
-    if (images.length) out.push(`<div class="thumbs">${images.map((i) => thumb(i.src, str(i.caption))).join("")}</div>`);
-    const questions = list(c.questions).filter((q) => q && typeof q === "object");
-    questions.forEach((q, qi) => {
-      const qid = str(q.id) || String(qi + 1);
-      out.push(`<section class="question" data-q="${esc(qid)}"><h2><span class="qnum">${esc(qid)}.</span><span>${inline(q.text)}</span></h2>`);
-      list(q.notes).forEach((t) => out.push(`<p>${inline(t)}</p>`));
-      if (list(q.images).length) out.push(`<div class="thumbs">${q.images.map((n) => thumb(n, str(n), `${qid}: ${n}`)).join("")}</div>`);
-      list(q.options).filter((o) => o && typeof o === "object").forEach((o, oi) => {
-        const oid = str(o.id) || String.fromCharCode(65 + oi);
-        const on = answers[qid] === oid;
-        const cases = list(o.case);
-        const imgs = list(o.images).filter(Boolean);
-        out.push(`<div class="opt${on ? " selected" : ""}" data-q="${esc(qid)}" data-o="${esc(oid)}">` +
-          `<button type="button" class="choose" aria-pressed="${on}"><span class="check" aria-hidden="true">✓</span>` +
-          `<span class="letter">${esc(qid)}${esc(oid)}.</span><span class="title">${inline(o.title, true)}</span>` +
-          (o.pick ? `<span class="pick">my pick</span>` : "") + `</button>` +
-          list(o.notes).map((t) => `<p>${inline(t)}</p>`).join("") +
-          (cases.length ? `<ul>${cases.map((t) => `<li>${inline(t)}</li>`).join("")}</ul>` : "") +
-          (imgs.length ? `<div class="thumbs">${imgs.map((n) => thumb(n, str(n), `${qid}${oid}: ${n}`)).join("")}</div>` : "") +
-          (str(o.cost) ? `<p class="cost"><b>Cost:</b> ${inline(o.cost)}</p>` : "") + `</div>`);
-      });
-      out.push(`</section>`);
-    });
-    if (str(c.hatch)) out.push(`<p class="hatch">${inline(c.hatch)}</p>`);
-    list(c.after).forEach((chunk) => {
-      const img = imageLine(chunk.trim());
-      out.push(img ? `<div class="thumbs">${thumb(img.src, img.alt)}</div>` : blocks(chunk));
-    });
-    if (!out.length) out.push(`<div class="notice plain">This post has nothing to show yet.</div>`);
-    root.innerHTML = out.join("");
-    paintBar();
-    document.title = str(c.title) || "Markdown";
-  }
+  // Markdown is drawn by marked (vendored beside this page as marked.umd.js). Raw HTML is shown as text,
+  // a link or image whose target is refused is drawn as its text, and an image opens the lightbox.
+  marked.use({
+    gfm: true,
+    renderer: {
+      html({ text }) { return esc(text); },
+      link({ href, tokens }) {
+        const body = this.parser.parseInline(tokens);
+        const t = target(href);
+        return t && !t.anchor ? `<a href="${esc(t.url)}"${t.remote ? ' rel="noopener"' : ""}>${body}</a>` : body;
+      },
+      image({ href, text }) {
+        const t = target(href);
+        if (!t || t.anchor) return esc(text);
+        return `<button type="button" class="thumb" data-lightbox data-src="${esc(t.url)}" data-cap="${esc(text)}"><img src="${esc(t.url)}" alt="${esc(text || href)}"></button>`;
+      },
+      code({ text, lang }) {
+        const tag = (lang || "").match(/^[\w+-]+/);
+        return `<pre><code${tag ? ` class="language-${esc(tag[0])}"` : ""}>${esc(text)}</code></pre>`;
+      }
+    }
+  });
 
   function notice(message) {
     root.innerHTML = `<div class="notice" role="alert">${esc(message)}</div>`;
     if (window.wheelLightbox) wheelLightbox.close(true);
   }
 
-  // ---- loading ----------------------------------------------------------
-  // The markdown a post holds, read into the shape render() draws:
-  //   # title            first line
-  //   plain text         paragraphs; a line that is only ![caption](file) is a picture
-  //   ## 1. question     a numbered question
-  //   ### 1A. option     a lettered option; "— my pick" at its end marks the pick
-  //   - bullet           the option's case
-  //   Cost: text         the option's cost
-  //   ![](file)          a picture under the option
-  //   Answer ...         the closing line that says how to answer
-  // A line that is only ![alt](target): the target less a quoted title, ?query, #fragment and ./
-  function imageLine(line) {
-    const m = line.match(/^!\[([^\]]*)\]\((.*)\)$/);
-    if (!m) return null;
-    let t = m[2].trim().replace(/\s+(".*"|'.*')$/, "").split(/[?#]/)[0];
-    while (t.startsWith("./")) t = t.slice(2);
-    return t ? { alt: m[1], src: t } : null;
-  }
-
-  function parse(md) {
-    const card = { body: "", images: [], questions: [], after: [] };
-    const para = [];
-    let q = null, o = null, tail = false, text = [], fenced = false;
-    const flush = () => {
-      if (!text.length) return;
-      (tail ? card.after : para).push(text.join("\n"));
-      text = [];
-    };
-    for (const raw of String(md).replace(/\r/g, "").split("\n")) {
-      const line = raw.trim();
-      let m;
-      if (/^(```|~~~)/.test(line)) { fenced = !fenced; if (!tail && (q || o)) { tail = true; q = o = null; } text.push(line); continue; }
-      if (fenced) { text.push(raw); continue; }
-      if ((m = line.match(/^#\s+(.*)$/)) && card.title === undefined && !q && !tail) { card.title = m[1]; continue; }
-      if ((m = line.match(/^##\s+(\w+)[.)]\s+(.*)$/)) && !tail) {
-        flush(); q = { id: m[1], text: m[2], options: [], notes: [], images: [] }; card.questions.push(q); o = null; continue;
-      }
-      if ((m = line.match(/^###\s+(\w+?)([A-Za-z])[.)]\s*(.*)$/)) && q && !tail) {
-        flush();
-        const pick = /\s*[—–-]\s*my pick\s*$/i.test(m[3]);
-        o = { id: m[2], title: m[3].replace(/\s*[—–-]\s*my pick\s*$/i, ""), pick, case: [], images: [], notes: [] };
-        q.options.push(o); continue;
-      }
-      // Any other heading ends the questions; what follows is drawn after them.
-      if (/^#{1,6}\s/.test(line) && (q || tail)) {
-        flush(); tail = true; q = o = null;
-        text.push("**" + line.replace(/^#+\s*/, "") + "**"); continue;
-      }
-      if (/^answer\s+\S*\d+[A-Za-z]/i.test(line) || (/^answer\b/i.test(line) && /type `?go`?/i.test(line))) {
-        if (card.questions.length) { flush(); card.hatch = line; tail = true; q = o = null; continue; }
-      }
-      const img = imageLine(line);
-      if (o) {
-        if ((m = raw.match(/^\s{2,}[-*]\s+(.*)$/)) && o.case.length) o.case[o.case.length - 1] += "; " + m[1];
-        else if ((m = line.match(/^[-*]\s+(.*)$/))) o.case.push(m[1]);
-        else if ((m = line.match(/^cost:\s*(.*)$/i))) o.cost = m[1];
-        else if (img) o.images.push(img.src);
-        else if (line) o.notes.push(line);
-        continue;
-      }
-      if (q) {
-        if (img) q.images.push(img.src);
-        else if (line) q.notes.push(line);
-        continue;
-      }
-      if (img && !tail) { flush(); card.images.push({ src: img.src, caption: img.alt }); continue; }
-      if (img) { flush(); card.after.push("![" + img.alt + "](" + img.src + ")"); continue; }
-      if (!line) { flush(); continue; }
-      text.push(line);
-    }
-    flush();
-    card.body = para.join("\n\n");
-    return card;
-  }
-
   function accept(value) {
     if (typeof value !== "string") { notice("This post's markdown was replaced by something that is not text. Send it with `wheel artifact data <pane> index.md`."); return; }
-    const next = parse(value);
-    const text = JSON.stringify(next);
-    if (text === cardText) return;
-    cardText = text;
-    card = next;
-    // Keep a selection only while its question and option are still there.
-    const kept = {};
-    if (card && typeof card === "object") {
-      list(card.questions).forEach((q, qi) => {
-        if (!q) return;
-        const qid = str(q.id) || String(qi + 1);
-        const has = list(q.options).some((o, oi) => o && (str(o.id) || String.fromCharCode(65 + oi)) === answers[qid]);
-        if (has) kept[qid] = answers[qid];
-      });
-    }
-    answers = kept;
+    if (value === shown) return;
+    shown = value;
     const reopen = window.wheelLightbox ? wheelLightbox.key() : null;
-    render();
-    saveDraft();
+    if (!value.trim()) {
+      root.innerHTML = `<div class="notice plain">This post has nothing to show yet.</div>`;
+      document.title = "Markdown";
+    } else {
+      const tokens = marked.lexer(value);
+      const heading = tokens.find((token) => token.type === "heading" && token.depth === 1);
+      root.innerHTML = marked.parser(tokens);
+      document.title = heading ? new DOMParser().parseFromString(marked.parseInline(heading.text), "text/html").body.textContent : "Markdown";
+    }
     if (reopen && !wheelLightbox.show(reopen)) wheelLightbox.close(true);
   }
 
@@ -353,123 +119,7 @@
     .then((text) => { if (!pushed) accept(text); })
     .catch((e) => { if (!pushed) notice("Cannot show the post: " + e.message); });
 
-  if (window.wheel) {
-    window.wheel.onData((value) => { pushed = true; accept(value); });
-  } else {
-    // .wheel/client.js did not load: the post still shows, answers just have nowhere to go.
-    window.wheel = { set: () => Promise.resolve(), onData: () => {}, submit: () => Promise.reject(new Error("the page channel did not load")) };
-  }
-
-  // ---- answers and Send -------------------------------------------------
-  // The draft (what is chosen and written so far) lives in this page and in localStorage, so a
-  // reload keeps it. Nothing reaches the agent until Send: that stores `submitted`.
-  const draftKey = "markdown-draft:" + location.pathname;
-  function saveDraft() {
-    try { localStorage.setItem(draftKey, JSON.stringify({ answers, note, sent })); } catch (_) {}
-    paintBar();
-  }
-  function loadDraft() {
-    try {
-      const d = JSON.parse(localStorage.getItem(draftKey) || "null");
-      if (d && typeof d === "object") {
-        answers = d.answers && typeof d.answers === "object" ? d.answers : {};
-        note = str(d.note);
-        noteEl.value = note;
-        if (d.sent && typeof d.sent === "object") sent = d.sent;
-      }
-    } catch (_) {}
-  }
-  const draftKeyText = () => JSON.stringify({ answers, note: note.trim() });
-
-  function questionList() {
-    return list(card && card.questions).filter((q) => q && typeof q === "object").map((q, qi) => {
-      const id = str(q.id) || String(qi + 1);
-      const options = list(q.options).filter((o) => o && typeof o === "object");
-      const chosen = options.find((o, oi) => (str(o.id) || String.fromCharCode(65 + oi)) === answers[id]);
-      return { id, text: str(q.text), chosen: chosen ? { id: answers[id], title: str(chosen.title) } : null };
-    });
-  }
-  function summaryText() {
-    const parts = questionList().map((q) => q.id + ": " + (q.chosen ? q.id + q.chosen.id + " " + q.chosen.title : "no choice"));
-    if (note.trim()) parts.push("Note: " + note.trim());
-    return parts.join(" | ");
-  }
-
-  const isLocked = () => sending || (!!sent && sent.key === draftKeyText() && !reopened);
-
-  function paintBar() {
-    const qs = questionList();
-    bar.hidden = !qs.length;
-    if (!qs.length) return;
-    sumEl.innerHTML = qs.map((q) => q.chosen
-      ? `<span><b>${esc(q.id)}${esc(q.chosen.id)}</b> ${esc(q.chosen.title)}</span>`
-      : `<span class="none"><b>${esc(q.id)}</b> no choice yet</span>`).join("");
-    const anything = qs.some((q) => q.chosen) || note.trim();
-    const unchanged = sent && sent.key === draftKeyText();
-    const locked = isLocked();
-    root.classList.toggle("locked", locked);
-    noteEl.readOnly = locked;
-    root.querySelectorAll(".opt .choose").forEach((b) => { b.disabled = locked; });
-    sendEl.disabled = sending || !anything || !!unchanged;
-    sendEl.textContent = sending ? "Sending…" : unchanged ? "Sent" : sent ? "Send again" : "Send answers";
-    if (sending) return;
-    if (!sent) { statusEl.textContent = anything ? "Not sent yet." : "Choose an option or write a note, then send."; return; }
-    const t = new Date(sent.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const d = sent.delivered || {};
-    const bits = [`<span class="good">Sent ${esc(t)}</span>`];
-    if ("agent" in d) bits.push(d.agent === "ok" ? "chat message delivered" : `<span class="bad">chat message failed: ${esc(d.agent)}</span>`);
-    if ("webhook" in d) bits.push(d.webhook === "ok" ? "webhook delivered" : `<span class="bad">webhook failed: ${esc(d.webhook)}</span>`);
-    if (!unchanged) bits.push("changed since");
-    if (locked) bits.push(`<button type="button" id="edit">Change answer</button>`);
-    statusEl.innerHTML = bits.join(" · ");
-  }
-
-  async function send() {
-    if (sending) return;
-    sending = true; paintBar();
-    const key = draftKeyText();
-    try {
-      const delivered = await window.wheel.submit({ answers, note: note.trim(), summary: summaryText() });
-      sent = { at: Date.now(), key, delivered };
-      reopened = false;
-      saveDraft();
-    } catch (e) {
-      sent = null;
-      statusEl.innerHTML = `<span class="bad">Not sent: ${esc(e.message)}</span>`;
-      sending = false; sendEl.disabled = false; sendEl.textContent = "Send answers";
-      return;
-    }
-    sending = false; paintBar();
-  }
-  sendEl.addEventListener("click", send);
-  statusEl.addEventListener("click", (e) => {
-    if (e.target.id !== "edit") return;
-    reopened = true;
-    paintBar();
-    noteEl.focus();
-  });
-
-  root.addEventListener("click", (e) => {
-    if (e.target.closest(".thumb, a")) return; // an image opens in the lightbox and a link opens; neither picks the option
-    const opt = e.target.closest(".opt");
-    if (!opt || isLocked()) return;
-    answers[opt.dataset.q] = opt.dataset.o;
-    opt.parentNode.querySelectorAll(".opt").forEach((el) => {
-      const on = el === opt;
-      el.classList.toggle("selected", on);
-      el.querySelector(".choose").setAttribute("aria-pressed", String(on));
-    });
-    saveDraft();
-  });
-  noteEl.addEventListener("input", () => { note = noteEl.value; saveDraft(); });
-  noteEl.addEventListener("keydown", (e) => {
-    // Enter sends; Shift+Enter (or Option+Enter) starts a new line. A key press that is composing
-    // text (an IME) is left alone.
-    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.isComposing) {
-      e.preventDefault();
-      if (!sendEl.disabled) send();
-    }
-  });
-  loadDraft();
+  // .wheel/client.js did not load: the post still shows, it just gets no live updates.
+  if (window.wheel) window.wheel.onData((value) => { pushed = true; accept(value); });
 })();
 </script>
