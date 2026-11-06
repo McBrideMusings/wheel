@@ -66,7 +66,7 @@ const CLAUDE_SKIP: &str =
 const CODEX_EXEC: &str = r#"if [ -z "$WHEEL_AGENT_PANE" ] && [ -r "$WHEEL_HOOKS_DIR/codex-hooks.args" ]; then
   while IFS= read -r wheel_arg; do set -- -c "$wheel_arg" "$@"; done < "$WHEEL_HOOKS_DIR/codex-hooks.args"
 fi
-exec "$real" -c "developer_instructions='''$(cat "$WHEEL_BRIEF_FILE")'''" "$@""#;
+exec "$real" -c "developer_instructions=\"$(tr -d '\000-\010\013-\037\177' < "$WHEEL_BRIEF_FILE" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk 'BEGIN{ORS="\\n"}{print}')\"" "$@""#;
 const CODEX_SKIP: &str =
     "completion|update|doctor|login|logout|mcp|plugin|help|features|--help|-h|--version|-V";
 
@@ -178,6 +178,14 @@ pub(crate) fn brief_file(instance_dir: &Path, pane: Option<Seat>) -> PathBuf {
         Some(pane) => dir(instance_dir).join("briefs").join(format!("{pane}.md")),
         None => dir(instance_dir).join("brief.md"),
     }
+}
+
+/// The brief `agent`'s wrapper hands that agent in a pane when the person has guidance for it
+/// alone: the pane's brief with that guidance after it. The wrapper uses it when it is there.
+pub(crate) fn agent_brief_file(instance_dir: &Path, pane: Seat, agent: &str) -> PathBuf {
+    dir(instance_dir)
+        .join("briefs")
+        .join(format!("{pane}.{agent}.md"))
 }
 
 /// The bin directory a terminal puts on its `PATH`.
@@ -511,11 +519,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_brief_fits_codex_s_literal_string() {
-        assert!(!BRIEF.contains("'''"));
-    }
-
     fn sh(script: &str, env: &[(&str, &str)]) -> String {
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg(script);
@@ -611,6 +614,48 @@ mod tests {
             run("claude -p hi", &[("WHEEL_AGENT_PANE", "1")]).trim(),
             "dir=unset",
             "an agent pane keeps the home its own launch chose"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_wrapper_hands_its_agent_the_brief_made_for_it_when_there_is_one() {
+        let root = std::env::temp_dir().join(format!("wheel-shell-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        install(&root, None).unwrap();
+        let real = root.join("real");
+        fake_tool(&real, "claude");
+        fake_tool(&real, "codex");
+        let path = format!("{}:{}:/usr/bin:/bin", bin(&root).display(), real.display());
+        let briefs = dir(&root).join("briefs");
+        std::fs::create_dir_all(&briefs).unwrap();
+        let pane = briefs.join("p4.md");
+        std::fs::write(&pane, "pane brief").unwrap();
+        let run = |cmd: &str| {
+            sh(
+                cmd,
+                &[
+                    ("PATH", path.as_str()),
+                    ("WHEEL_ENV", "1"),
+                    ("WHEEL_BRIEF_FILE", pane.to_str().unwrap()),
+                ],
+            )
+        };
+        let without = run("claude -p hi");
+        assert!(without.contains("p4.md") && !without.contains("p4.claude.md"), "{without}");
+        std::fs::write(briefs.join("p4.claude.md"), "claude brief").unwrap();
+        let with = run("claude -p hi");
+        assert!(with.contains("p4.claude.md"), "{with}");
+        assert!(!run("codex hi").contains("p4.claude.md"));
+        let text = "all a'''b \\ \"q\"\ttab é\nnext\n\n  indented";
+        std::fs::write(&pane, text.replace('\n', "\r\n") + "\x0c\x7f").unwrap();
+        std::fs::write(real.join("codex"), "#!/bin/sh\nprintf '%s' \"$2\"\n").unwrap();
+        let value = run("codex hi");
+        let parsed: toml::Table = toml::from_str(&value).unwrap_or_else(|e| panic!("{e}: {value}"));
+        assert_eq!(
+            parsed["developer_instructions"].as_str().unwrap().trim_end_matches('\n'),
+            text,
+            "codex reads the same text the file holds"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -713,7 +758,7 @@ mod tests {
             ],
         );
         assert!(
-            out.contains("developer_instructions='''You are running inside Wheel"),
+            out.contains("developer_instructions=\"You are running inside Wheel"),
             "{out}"
         );
         assert!(

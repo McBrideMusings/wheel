@@ -17,6 +17,21 @@ struct ProtocolTests {
         #expect(try ClientMsg.agentDetach(agent: "w5").json() == #"{"agent":"w5","op":"agent_detach"}"#)
     }
 
+    /// The guidance messages as wheeld's serde writes and reads them.
+    @Test func guidanceMessagesMatchTheDaemonsSpelling() throws {
+        #expect(try ClientMsg.guidanceLs(req: 2, agent: nil).json() == #"{"op":"guidance_ls","req":2}"#)
+        #expect(try ClientMsg.guidanceLs(req: 2, agent: "pi").json() == #"{"agent":"pi","op":"guidance_ls","req":2}"#)
+        #expect(try ClientMsg.guidancePath(req: 3, agent: nil).json() == #"{"op":"guidance_path","req":3}"#)
+        #expect(try ClientMsg.guidancePath(req: 3, agent: "codex").json() == #"{"agent":"codex","op":"guidance_path","req":3}"#)
+        let listed = try ServerMsg.decode(#"{"ev":"guidance","req":2,"brief":"B","given":"BG","files":[{"heading":"H","path":"/m/guidance.md","text":""},{"agent":"pi","heading":"P","path":"/m/guidance/pi.md","text":"x"}]}"#)
+        guard case let .guidance(req, brief, given, files) = listed else { Issue.record("wrong case"); return }
+        #expect(req == 2 && brief == "B" && given == "BG")
+        #expect(files.map(\.agent) == [nil, "pi"])
+        #expect(files[1] == GuidanceFile(agent: "pi", heading: "P", path: "/m/guidance/pi.md", text: "x"))
+        guard case let .guidancePath(_, path) = try ServerMsg.decode(#"{"ev":"guidance_path","req":3,"path":"/m/guidance.md"}"#) else { Issue.record("wrong case"); return }
+        #expect(path == "/m/guidance.md")
+    }
+
     /// The built-in messages as wheeld's serde writes and reads them.
     @Test func builtinMessagesMatchTheDaemonsSpelling() throws {
         let update = try JSONSerialization.jsonObject(with: Data(ClientMsg.builtinUpdate(req: 4, name: "sample", onEdited: .keep).json().utf8)) as? [String: Any]

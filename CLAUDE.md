@@ -17,6 +17,10 @@ A native macOS and iOS agent development environment: a grid of panes (terminals
 
 A page names a component of the A2UI library (`a2ui-swift`, sources under `apple/WheelUI/.build/checkouts/a2ui-swift`) or a SwiftUI control under its SwiftUI name, and styles it with SwiftUI modifiers. Before adding a view to `apple/WheelUI/Sources/WheelUI/A2UI`, search the library and SwiftUI for it and use theirs. Wheel adds a component only when neither has one (today only `Canvas`), after an ADR names what was checked (ADR-0031). A wrapper around a control the library or SwiftUI already has, a restyled copy, or a page-shaped component is not added. Epic `wheel-cmbu.20` removes the wrappers that exist.
 
+The `gallery` artifact shows every component, option and modifier the client draws. Any change to one (a property, a modifier, an addition, a deletion) updates the gallery in the same turn, and the report says what it now shows.
+
+When the user asks for an ADR, write it to `docs/adr`, commit it and land it in the same turn, and say so in the report; its text in chat is the report, never a draft waiting for approval.
+
 ## Tracking
 
 Work is tracked in beads (`bd`, prefix `wheel`). `bd ready` shows what is unblocked.

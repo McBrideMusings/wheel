@@ -131,6 +131,9 @@ enum Command {
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// The text agents are given, and the person's own guidance files that follow it.
+    #[command(subcommand)]
+    Guidance(GuidanceCommand),
     /// Merged streams: a `[streams.<group>]` table in wheel.toml names commands whose output
     /// wheeld merges into one stream, held 2 seconds and ordered by arrival, and writes to a file.
     #[command(subcommand)]
@@ -245,6 +248,24 @@ enum RemoteCommand {
     },
     /// Forget a paired device: its credential stops working and its connections close.
     Revoke { id: String },
+}
+
+#[derive(Subcommand)]
+enum GuidanceCommand {
+    /// Print what an agent is given when its pane starts: Wheel's brief, then the person's
+    /// guidance for every agent, then the agent's own. The real brief has the pane's artifacts
+    /// and seat line between Wheel's brief and the guidance; they differ per pane and are not here.
+    Show {
+        /// The agent (claude, codex, pi); without it only the guidance for every agent follows the brief.
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Print the absolute path of the guidance file for every agent, or for `--agent`, and make
+    /// it empty if it is missing.
+    Path {
+        #[arg(long)]
+        agent: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5921,6 +5942,28 @@ async fn main() -> ExitCode {
                     return Err(Fail::Other("unexpected reply to run".into()));
                 };
                 println!("{pane}");
+                Ok(())
+            }
+            Command::Guidance(GuidanceCommand::Show { agent }) => {
+                let req = conn.req();
+                let ServerMsg::Guidance { given, .. } = conn
+                    .call(ClientMsg::GuidanceLs { req: Some(req), agent }, req)
+                    .await?
+                else {
+                    return Err(Fail::Other("unexpected reply to guidance show".into()));
+                };
+                print!("{given}");
+                Ok(())
+            }
+            Command::Guidance(GuidanceCommand::Path { agent }) => {
+                let req = conn.req();
+                let ServerMsg::GuidancePath { path, .. } = conn
+                    .call(ClientMsg::GuidancePath { req: Some(req), agent }, req)
+                    .await?
+                else {
+                    return Err(Fail::Other("unexpected reply to guidance path".into()));
+                };
+                println!("{path}");
                 Ok(())
             }
             Command::Config(ConfigCommand::Ls { space, json }) => {

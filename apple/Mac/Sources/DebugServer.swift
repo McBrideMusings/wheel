@@ -912,7 +912,7 @@ final class DebugServer {
             case "close": Self.settingsWindow?.close()
             case "tab":
                 guard let tab = query["tab"].flatMap(SettingsTab.init(rawValue:)) else {
-                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, chat, terminal, artifacts, project or devices")
+                    return refuse("400 Bad Request", "tab takes tab=general, agents, usage, keys, chat, terminal, artifacts, guidance, project or devices")
                 }
                 model.settings.tab = tab
             case "project":
@@ -942,6 +942,17 @@ final class DebugServer {
                 }
                 guard model.settings.file(layer) != nil else { return refuse("404 Not Found", "the page names no file for that layer") }
                 model.settings.openFile(layer, launch: query["launch"] == "true")
+            case "guidance_preview":
+                // The agent whose composed text Settings › Guidance's right column shows.
+                guard let agent = query["agent"] else { return refuse("400 Bad Request", "guidance_preview takes agent=<name>") }
+                model.previewGuidance(agent)
+            case "guidance_focus":
+                // A press on a document row on the left: the segment the right column scrolls to.
+                model.settings.guidance.focus = query["id"]
+            case "guidance_open":
+                // Settings › Guidance's Open in Editor for `agent` (none: every agent); launch=true
+                // really starts the editor, otherwise the press is only recorded in /state.
+                model.openGuidanceFile(query["agent"], launch: query["launch"] == "true")
             case "chat_query", "terminal_query":
                 model.settings.pages[action == "chat_query" ? .chat : .terminal, default: .init()].query = query["text"] ?? ""
             case "chat_layer", "terminal_layer":
@@ -2650,6 +2661,16 @@ final class DebugServer {
         let s = model.settings
         return [
             "open": s.open,
+            "guidance": [
+                "loaded": s.guidance.loaded,
+                "error": s.guidance.error ?? NSNull(),
+                "brief_bytes": s.guidance.brief?.utf8.count ?? NSNull(),
+                "preview_agent": s.guidance.previewAgent,
+                "given": s.guidance.given,
+                "segments": s.guidance.segments.map { ["id": $0.id, "text": $0.text] as [String: Any] },
+                "files": s.guidance.files.map { ["agent": $0.agent ?? NSNull(), "path": $0.path, "text": $0.text] as [String: Any] },
+                "opened_file": s.openedFile.map { ["path": $0.path, "how": $0.how] as [String: Any] } ?? NSNull(),
+            ] as [String: Any],
             "window_title": Self.settingsWindow?.title ?? NSNull(),
             "window_frame": Self.settingsWindow.map { ["x": $0.frame.origin.x, "y": $0.frame.origin.y, "width": $0.frame.width, "height": $0.frame.height] as [String: Any] } ?? NSNull(),
             "window_resizable": Self.settingsWindow?.styleMask.contains(.resizable) ?? NSNull(),

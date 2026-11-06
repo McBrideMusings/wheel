@@ -10,7 +10,7 @@ enum SettingLayer: String, CaseIterable {
 /// The Settings window's toolbar tabs: a page per topic of this machine's `wheel.toml`, the
 /// projects' own, then the devices that can pair.
 enum SettingsTab: String, CaseIterable {
-    case general, agents, usage, keys, chat, terminal, artifacts, project, devices
+    case general, agents, usage, keys, chat, terminal, artifacts, guidance, project, devices
 }
 
 /// What the Settings window shows: wheel's settings as the daemon resolved them for the project
@@ -25,6 +25,8 @@ final class SettingsModel: ObservableObject {
     /// the app menu's Settings… which a program cannot click.
     @Published var openRequest = 0
     @Published var tab: SettingsTab = .general
+    /// The Guidance tab: what the server says agents are given and the person's guidance files.
+    let guidance = GuidanceModel()
     /// The topic the Project tab shows for the chosen project.
     @Published var projectTopic: SettingTopic = .general
     /// The space whose `wheel.toml` the Project tab edits; nil when there are none.
@@ -76,6 +78,11 @@ final class SettingsModel: ObservableObject {
     /// (`AppModel.openSettingsFile`). `launch: false` records the press and starts no editor, for a check.
     func openFile(_ layer: SettingLayer, launch: Bool = true) {
         guard let path = file(layer) else { return }
+        open(path, launch: launch)
+    }
+
+    /// Opens a file for editing the same way, and records how.
+    func open(_ path: String, launch: Bool = true) {
         guard launch else {
             openedFile = (path, "not launched")
             Log.info("settings: open \(path) for editing (not launched)")
@@ -272,6 +279,14 @@ struct SettingsView: View {
             Tab("Artifacts", systemImage: "square.stack", value: SettingsTab.artifacts) {
                 scrolled {
                     content(.global) { BuiltinsSettings(model: model, builtins: model.builtinsModel) }
+                        .padding(.horizontal, 28)
+                        .padding(.top, 20)
+                        .padding(.bottom, 26)
+                }
+            }
+            Tab("Guidance", systemImage: "text.book.closed", value: SettingsTab.guidance) {
+                scrolled {
+                    GuidanceSettings(model: model, guidance: settings.guidance)
                         .padding(.horizontal, 28)
                         .padding(.top, 20)
                         .padding(.bottom, 26)

@@ -168,6 +168,11 @@ public enum ClientMsg: Sendable, Equatable {
     /// Create the `wheel.toml` about to be opened for editing when it is absent: this machine's with
     /// `machine`, else `space`'s. The server makes it; the client holds no files. Replies `ok`.
     case settingsFileEnsure(req: UInt64?, space: String?, machine: Bool)
+    /// The fixed brief and the person's guidance files, each with its path and text. Replies `guidance`.
+    case guidanceLs(req: UInt64?, agent: String?)
+    /// The path of the guidance file for every agent (`agent` nil) or one agent, made empty when
+    /// absent so it can be opened for editing. Replies `guidancePath`.
+    case guidancePath(req: UInt64?, agent: String?)
     /// Remove one setting from this machine's `wheel.toml` with `machine`, else from `space`'s, so
     /// the layer below is in force. Replies and tells every connection as `settingSet` does.
     case settingUnset(req: UInt64?, key: String, space: String?, machine: Bool)
@@ -380,6 +385,12 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "settings_file_ensure"]; put(req)
             if let space { o["space"] = space }
             if machine { o["machine"] = true }
+        case let .guidanceLs(req, agent):
+            o = ["op": "guidance_ls"]; put(req)
+            if let agent { o["agent"] = agent }
+        case let .guidancePath(req, agent):
+            o = ["op": "guidance_path"]; put(req)
+            if let agent { o["agent"] = agent }
         case let .settingUnset(req, key, space, machine):
             o = ["op": "setting_unset", "key": key]; put(req)
             if let space { o["space"] = space }
@@ -824,6 +835,23 @@ public enum SettingOrigin: String, Sendable, Equatable, Decodable {
     case `default`, machine, project
 }
 
+/// One of the person's guidance files: the one for every agent (`agent` nil) or for one agent.
+/// `heading` is the line the brief puts before its text, `text` what the file holds now.
+public struct GuidanceFile: Sendable, Equatable, Decodable, Identifiable {
+    public let agent: String?
+    public let heading: String
+    public let path: String
+    public let text: String
+    public var id: String { agent ?? "" }
+
+    public init(agent: String?, heading: String, path: String, text: String) {
+        self.agent = agent
+        self.heading = heading
+        self.path = path
+        self.text = text
+    }
+}
+
 /// One `[runner]` entry: a name a person chose, the shell command it runs, and the file that set it.
 public struct RunnerInfo: Sendable, Equatable, Decodable {
     public let name: String
@@ -1236,6 +1264,10 @@ public enum ServerMsg: Sendable {
     case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)
     /// The `[runner]` commands, in name order, in reply to `runnerLs`.
     case runners(req: UInt64, runners: [RunnerInfo])
+    /// The fixed brief and the guidance files, the one for every agent first, in reply to `guidanceLs`.
+    case guidance(req: UInt64, brief: String, given: String, files: [GuidanceFile])
+    /// The path `guidancePath` made.
+    case guidancePath(req: UInt64, path: String)
     /// `paneStart` finished: the pane, and for an agent its id.
     case started(req: UInt64, pane: String, agent: String?)
     /// What `paneView` left the pane showing: its view (nil for a pane that is neither) and the
@@ -1265,7 +1297,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text
+        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1399,6 +1431,8 @@ extension ServerMsg: Decodable {
                 data: try c.decodeIfPresent(String.self, forKey: .data).flatMap { Data(base64Encoded: $0) },
                 error: try c.decodeIfPresent(String.self, forKey: .error)))
         case "dir_roots": self = .dirRoots(req: try c.decode(UInt64.self, forKey: .req), roots: try c.decode([String].self, forKey: .roots))
+        case "guidance": self = .guidance(req: try c.decode(UInt64.self, forKey: .req), brief: try c.decode(String.self, forKey: .brief), given: try c.decode(String.self, forKey: .given), files: try c.decode([GuidanceFile].self, forKey: .files))
+        case "guidance_path": self = .guidancePath(req: try c.decode(UInt64.self, forKey: .req), path: try c.decode(String.self, forKey: .path))
         case "runners": self = .runners(req: try c.decode(UInt64.self, forKey: .req), runners: try c.decode([RunnerInfo].self, forKey: .runners))
         case "started": self = .started(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), agent: try c.decodeIfPresent(String.self, forKey: .agent))
         case "pane_view":
