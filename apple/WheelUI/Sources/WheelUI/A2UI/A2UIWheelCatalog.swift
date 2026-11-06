@@ -211,16 +211,15 @@ struct A2UIDisclosureView: View {
 }
 
 
-// MARK: Group — the system's GroupBox: children[0] is the label, children[1] the content
+// MARK: Group — the system's GroupBox around children[0], outlined so it reads as one block
 struct A2UIGroupView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     var body: some View {
         GroupBox {
-            if node.children.count > 1 { A2UIChildView(node: node.children[1], surface: surface).frame(maxWidth: .infinity, alignment: .leading) }
-        } label: {
-            if let h = node.children.first { A2UIChildView(node: h, surface: surface) }
+            if let c = node.children.first { A2UIChildView(node: c, surface: surface).frame(maxWidth: .infinity, alignment: .leading) }
         }
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(nsColor: .separatorColor)))
     }
 }
 

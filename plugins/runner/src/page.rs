@@ -106,65 +106,73 @@ fn state_of(r: &Record) -> (String, &'static str, &'static str) {
     }
 }
 
+/// A section heading: the words and, muted beside them, how many there are.
+fn heading(p: &mut Page, id: &str, text: &str, n: usize, top: u32) -> String {
+    let t = p.label(&format!("{id}.t"), text, json!({ "size": 14, "weight": "semibold" }));
+    let c = p.label(&format!("{id}.n"), &n.to_string(), json!({ "size": 13, "tone": "muted", "tabular": true }));
+    p.boxed(id, "h", vec![t, c], json!({ "spacing": 8, "align": "center", "padding": [top, 0, 12, 0] }))
+}
+
 /// `runners` are the commands, `runs` the project's runs newest first, `logs` the last lines of
 /// each shown run's log (a run absent from it has an unreadable log) and `at` the time now, in Unix seconds.
 pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::collections::HashMap<String, String>, at: i64) -> Vec<Value> {
     let mut p = Page { out: vec![] };
     let mut page = vec![];
 
-    let title = p.label("title", "Runner", json!({ "size": 20, "weight": "bold" }));
+    let title = p.label("title", "Runner", json!({ "size": 22, "weight": "bold" }));
     let count = match runners.len() {
         1 => "1 runner".to_string(),
         n => format!("{n} runners"),
     };
-    let sub = p.label("sub", &count, json!({ "size": 12, "tone": "muted" }));
+    let sub = p.label("sub", &count, json!({ "size": 13, "tone": "muted" }));
     page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 8, 0] })));
 
     if let Some(e) = &ui.problem {
         let l = p.label("problem.t", e, json!({ "tone": "bad" }));
-        page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [10, 12], "margin": [0, 0, 12, 0] })));
+        page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [12, 14], "margin": [8, 0, 0, 0] })));
     }
 
     if runners.is_empty() {
         page.push(p.label(
             "none",
             "No runners yet. Add a [runner] table to this project's wheel.toml, such as build = \"make -j8\"; the list updates when you save.",
-            json!({ "tone": "muted" }),
+            json!({ "tone": "muted", "padding": [20, 0, 0, 0] }),
         ));
     }
-    for (machine, heading) in [(false, "This project"), (true, "This machine")] {
+    for (machine, title) in [(false, "This project"), (true, "This machine")] {
         let rows: Vec<&Runner> = runners.iter().filter(|r| (r.origin == "machine") == machine).collect();
         if rows.is_empty() {
             continue;
         }
         let key = if machine { "machine" } else { "project" };
-        page.push(p.label(&format!("g.{key}.h"), &format!("{heading}  {}", rows.len()), json!({ "size": 13, "weight": "semibold", "padding": [20, 0, 8, 0] })));
-        let cells: Vec<Value> = rows.iter().map(|r| {
-            let asking = ui.asking.as_deref() == Some(r.name.as_str()) && r.confirm.is_some();
-            let (what, buttons) = if asking {
-                let q = r.confirm.clone().unwrap_or_default();
-                (cell(&q, json!({ "key": "cmd", "tone": "bad" })), json!([
-                    { "icon": "xmark", "help": "Cancel", "action": "cancel_ask", "context": {} },
-                    { "icon": "checkmark", "help": format!("Run {}: {q}", r.name), "action": "press_run", "context": { "name": r.name, "confirmed": r.command } },
-                ]))
-            } else {
-                (cell(&r.command, json!({ "key": "cmd", "mono": true, "tone": "muted" })), json!([
-                    { "icon": "play.fill", "help": format!("Run {}", r.name), "action": "press_run", "context": { "name": r.name } },
-                ]))
-            };
+        page.push(heading(&mut p, &format!("g.{key}.h"), title, rows.len(), 28));
+        let mut lines = vec![];
+        for (i, r) in rows.iter().enumerate() {
             let id = format!("r.{key}.{}", sane(&r.name));
-            json!({ "id": id, "path": id, "depth": 0, "kids": 0, "collapsed": false, "dim": false, "sel": false, "menu": [],
-                "cells": [cell(&r.name, json!({ "key": "name", "tone": "fg" })), what, cell("", json!({ "key": "act", "buttons": buttons }))] })
-        }).collect();
-        let column = |key: &str, width: Value| json!({ "key": key, "label": "", "width": width, "tree": false, "wide": false });
-        p.put(json!({ "id": format!("t.{key}"), "component": "Table", "fit": true,
-            "columns": [column("name", json!(150)), column("cmd", json!("flex")), column("act", json!(76))],
-            "sections": [{ "title": "", "count": cells.len(), "rows": cells }], "empty": "" }));
-        page.push(format!("t.{key}"));
+            let name = p.label(&format!("{id}.name"), &r.name, json!({ "weight": "semibold" }));
+            let asking = ui.asking.as_deref() == Some(r.name.as_str()) && r.confirm.is_some();
+            let (what, acts) = if asking {
+                let q = r.confirm.clone().unwrap_or_default();
+                let cancel = p.pill(&format!("{id}.cancel"), "", "cancel_ask", json!({}), json!({ "icon": "xmark", "help": "Cancel" }));
+                let go = p.pill(&format!("{id}.go"), &format!("Run {}: {q}", r.name), "press_run", json!({ "name": r.name, "confirmed": r.command }), json!({ "icon": "checkmark", "help": format!("Run {}: {q}", r.name) }));
+                (p.label(&format!("{id}.cmd"), &q, json!({ "tone": "bad" })), vec![cancel, go])
+            } else {
+                let run = p.pill(&format!("{id}.run"), "", "press_run", json!({ "name": r.name }), json!({ "icon": "play.fill", "help": format!("Run {}", r.name) }));
+                (p.label(&format!("{id}.cmd"), &r.command, json!({ "mono": true, "size": 12, "tone": "muted" })), vec![run])
+            };
+            let buttons = p.boxed(&format!("{id}.acts"), "h", acts, json!({ "spacing": 8 }));
+            let edge = if i + 1 < rows.len() { json!({ "edge": "bottom" }) } else { json!({}) };
+            let mut extra = json!({ "spacing": 16, "widths": [210, "flex", null], "padding": [12, 14], "align": "center", "trailing": 1 });
+            extra.as_object_mut().unwrap().extend(edge.as_object().unwrap().clone());
+            lines.push(p.boxed(&id, "h", vec![name, what, buttons], extra));
+        }
+        let list = p.boxed(&format!("g.{key}.rows"), "v", lines, json!({}));
+        p.put(json!({ "id": format!("g.{key}"), "component": "Group", "children": [list] }));
+        page.push(format!("g.{key}"));
     }
 
-    page.push(p.label("runs.h", "Output", json!({ "size": 13, "weight": "semibold", "padding": [24, 0, 8, 0] })));
     let show = shown(runs, ui);
+    page.push(heading(&mut p, "runs.h", "Output", runs.iter().filter(|r| !ui.closed.contains(&r.id)).count(), 36));
     if show.is_empty() {
         page.push(p.label("runs.none", "No runs yet.", json!({ "tone": "muted" })));
     }
@@ -175,8 +183,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         let id = format!("run.{}", sane(&r.id));
         let name = p.label(&format!("{id}.name"), &r.name, json!({ "weight": "semibold" }));
         let st = {
-            let v = json!({ "id": format!("{id}.state"), "component": "Status", "text": state, "symbol": symbol, "tone": tone });
-            p.put(v);
+            p.put(json!({ "id": format!("{id}.state"), "component": "Status", "text": state, "symbol": symbol, "tone": tone }));
             format!("{id}.state")
         };
         let when = p.label(&format!("{id}.when"), &format!("{} · {took}", crate::clock(r.started)), json!({ "mono": true, "size": 12, "tone": "muted", "tabular": true }));
@@ -186,14 +193,16 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         }
         bar.push(p.pill(&format!("{id}.close"), "", "close_log", json!({ "path": r.id }), json!({ "icon": "xmark", "help": "Close", "style": "plain" })));
         let trailing = if r.state == State::Running { 2 } else { 1 };
-        let head = p.boxed(&format!("{id}.head"), "h", bar, json!({ "spacing": 10, "align": "center", "trailing": trailing }));
+        let head = p.boxed(&format!("{id}.head"), "h", bar, json!({ "spacing": 12, "align": "center", "trailing": trailing, "padding": [12, 14], "edge": "bottom" }));
         let text = match logs.get(&r.id) {
             Some(t) if !t.is_empty() => t.trim_end().to_string(),
             Some(_) => "(no output yet)".into(),
             None => "(the log cannot be read)".into(),
         };
-        let body = p.label(&format!("{id}.log"), &text, json!({ "mono": true, "size": 11, "padding": [4, 2] }));
-        p.put(json!({ "id": id, "component": "Group", "children": [head, body] }));
+        let body = p.label(&format!("{id}.log"), &text, json!({ "mono": true, "size": 12, "padding": [2, 0] }));
+        let body = p.boxed(&format!("{id}.out"), "v", vec![body], json!({ "padding": [14, 14] }));
+        let both = p.boxed(&format!("{id}.in"), "v", vec![head, body], json!({}));
+        p.put(json!({ "id": id, "component": "Group", "children": [both] }));
         blocks.push(id);
     }
     let later = runs.iter().filter(|r| !ui.closed.contains(&r.id)).count().saturating_sub(show.len());
@@ -201,10 +210,10 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         blocks.push(p.pill("runs.more", &format!("Show older runs · {later}"), "show_older", json!({}), json!({ "style": "link" })));
     }
     if !blocks.is_empty() {
-        page.push(p.boxed("runs", "v", blocks, json!({ "spacing": 16 })));
+        page.push(p.boxed("runs", "v", blocks, json!({ "spacing": 20 })));
     }
 
-    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [24, 20, 48, 20], "children": page }));
+    p.put(json!({ "id": "page", "component": "Box", "axis": "v", "align": "start", "padding": [28, 28, 56, 28], "children": page }));
     p.out
 }
 
@@ -233,20 +242,19 @@ mod tests {
         c.iter().find(|v| v["id"] == id).unwrap_or_else(|| panic!("no component {id}"))
     }
 
-    fn table<'a>(c: &'a [Value], key: &str) -> &'a Vec<Value> {
-        find(c, &format!("t.{key}"))["sections"][0]["rows"].as_array().unwrap()
-    }
-
     #[test]
     fn each_command_has_an_icon_run_button_under_where_it_comes_from() {
         let rs = [runner("build", None, "project"), runner("tidy", None, "machine")];
         let c = components(&rs, &[], &Ui::default(), &Default::default(), 200);
-        assert_eq!(find(&c, "g.project.h")["text"], "This project  1");
-        assert_eq!(find(&c, "g.machine.h")["text"], "This machine  1");
-        let row = &table(&c, "project")[0];
-        assert_eq!(row["cells"][0]["text"], "build");
-        assert_eq!(row["cells"][1]["text"], "make build");
-        assert_eq!(row["cells"][2]["buttons"], json!([{ "icon": "play.fill", "help": "Run build", "action": "press_run", "context": { "name": "build" } }]));
+        assert_eq!(find(&c, "g.project.h.t")["text"], "This project");
+        assert_eq!(find(&c, "g.project.h.n")["text"], "1");
+        assert_eq!(find(&c, "g.machine.h.t")["text"], "This machine");
+        assert_eq!(find(&c, "g.project")["component"], "Group");
+        assert_eq!(find(&c, "r.project.build.name")["text"], "build");
+        assert_eq!(find(&c, "r.project.build.cmd")["text"], "make build");
+        let b = find(&c, "r.project.build.run");
+        assert_eq!((b["name"].clone(), b["context"].clone(), b["icon"].clone(), b["help"].clone()),
+            (json!("press_run"), json!({ "name": "build" }), json!("play.fill"), json!("Run build")));
         assert_eq!(find(&c, "runs.none")["text"], "No runs yet.");
         assert!(c.iter().all(|v| v["id"] != "status"), "the page has no status line");
     }
@@ -255,15 +263,15 @@ mod tests {
     fn a_confirm_command_shows_its_question_with_cancel_and_a_run_that_confirms() {
         let rs = [runner("restart", Some("Ends every agent."), "project")];
         let idle = components(&rs, &[], &Ui::default(), &Default::default(), 0);
-        assert_eq!(table(&idle, "project")[0]["cells"][2]["buttons"][0]["context"], json!({ "name": "restart" }));
+        assert_eq!(find(&idle, "r.project.restart.run")["context"], json!({ "name": "restart" }));
         let ui = Ui { asking: Some("restart".into()), ..Ui::default() };
         let c = components(&rs, &[], &ui, &Default::default(), 0);
-        let row = &table(&c, "project")[0];
-        assert_eq!(row["cells"][1]["text"], "Ends every agent.");
-        let b = &row["cells"][2]["buttons"];
-        assert_eq!(b[0]["action"], "cancel_ask");
-        assert_eq!(b[1]["help"], "Run restart: Ends every agent.");
-        assert_eq!(b[1]["context"], json!({ "name": "restart", "confirmed": "make restart" }));
+        assert_eq!(find(&c, "r.project.restart.cmd")["text"], "Ends every agent.");
+        assert_eq!(find(&c, "r.project.restart.cancel")["name"], "cancel_ask");
+        let go = find(&c, "r.project.restart.go");
+        assert_eq!(go["help"], "Run restart: Ends every agent.");
+        assert_eq!(go["context"], json!({ "name": "restart", "confirmed": "make restart" }));
+        assert!(c.iter().all(|v| v["id"] != "r.project.restart.run"), "the plain Run is replaced while asking");
     }
 
     #[test]
