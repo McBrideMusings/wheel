@@ -13,6 +13,8 @@ struct Host {
     out: BufReader<ChildStdout>,
     next: u64,
     dir: String,
+    /// The `resources/updated` URIs the server announced, in order.
+    announced: Vec<String>,
 }
 
 impl Host {
@@ -27,7 +29,7 @@ impl Host {
             .spawn()
             .unwrap();
         let (stdin, out) = (child.stdin.take().unwrap(), BufReader::new(child.stdout.take().unwrap()));
-        let mut h = Host { child, stdin, out, next: 1, dir: root.join("proj").to_string_lossy().into_owned() };
+        let mut h = Host { child, stdin, out, next: 1, announced: vec![], dir: root.join("proj").to_string_lossy().into_owned() };
         h.request("initialize", json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0" } }), json!({}));
         h.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
         h
@@ -48,6 +50,9 @@ impl Host {
             let mut line = String::new();
             assert!(self.out.read_line(&mut line).unwrap() > 0, "the server closed");
             let v: Value = serde_json::from_str(&line).unwrap();
+            if v["method"] == "notifications/resources/updated" {
+                self.announced.push(v["params"]["uri"].as_str().unwrap_or("").to_string());
+            }
             if v["id"] == json!(id) {
                 return v;
             }
@@ -126,5 +131,92 @@ fn a_host_starts_a_command_and_reads_its_status_and_log_after_the_page_closed() 
     let (ok, _) = host.call("run_runner", json!({ "name": "restart", "confirmed": true }));
     assert!(ok);
     assert!(!host.call("run_runner", json!({ "name": "nope" })).0, "an unknown runner is refused");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The page's text parts: every `text` of the page's components, joined.
+fn page_text(result: &Value) -> String {
+    let messages: Value = serde_json::from_str(result["content"][0]["resource"]["text"].as_str().unwrap_or("[]")).unwrap();
+    messages[0]["updateComponents"]["components"].as_array().unwrap().iter()
+        .flat_map(|c| {
+            let mut t = vec![c["text"].as_str().unwrap_or("").to_string()];
+            t.extend(c["sections"][0]["rows"].as_array().into_iter().flatten().flat_map(|r| r["cells"].as_array().unwrap().iter().map(|x| x["text"].as_str().unwrap_or("").to_string())));
+            t
+        })
+        .collect::<Vec<_>>().join("\n")
+}
+
+fn page_call(host: &mut Host, tool: &str, args: Value) -> (Value, String) {
+    let dir = host.dir.clone();
+    let r = host.request("tools/call", json!({ "name": tool, "arguments": args }), json!({ "wheel/dir": dir, "wheel/pane": "p1" }));
+    let text = page_text(&r["result"]);
+    (r["result"].clone(), text)
+}
+
+#[test]
+fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run() {
+    let root = std::env::temp_dir().join(format!("wheel-runner-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("proj")).unwrap();
+    std::fs::write(root.join("machine.toml"), "[runner]\ntidy = \"echo tidy\"\n").unwrap();
+    std::fs::write(
+        root.join("proj/wheel.toml"),
+        "[runner]\nslow = \"echo first-line; sleep 2; echo second-line\"\nrestart = { command = \"echo restarted\", confirm = \"Ends every agent.\" }\n",
+    )
+    .unwrap();
+    let mut host = Host::start(&root);
+    let dir = host.dir.clone();
+    let uri = format!("a2ui://runner-native?dir={}", dir.replace('/', "%2F"));
+
+    // The page is a resource: a read answers with the empty surface, and the page tools draw it.
+    let read = host.request("resources/read", json!({ "uri": uri }), json!({}));
+    assert!(read["result"]["contents"][0]["text"].as_str().unwrap().contains("createSurface"), "{read}");
+    assert!(host.request("resources/read", json!({ "uri": "a2ui://other" }), json!({}))["error"].is_object());
+    let tools = host.request("tools/list", json!({}), json!({}));
+    let ui_tool = tools["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "get_runner").unwrap().clone();
+    assert_eq!(ui_tool["_meta"]["ui"]["resourceUri"], "a2ui://runner-native");
+    host.request("resources/subscribe", json!({ "uri": uri }), json!({}));
+
+    let (_, page) = page_call(&mut host, "get_runner", json!({}));
+    for want in ["Runner", "3 runners", "This project  2", "This machine  1", "echo restarted", "no runs yet"] {
+        assert!(page.contains(want), "{want} missing from:\n{page}");
+    }
+
+    // A confirm command shows its question and starts nothing.
+    let (_, page) = page_call(&mut host, "press_run", json!({ "name": "restart" }));
+    assert!(page.contains("Ends every agent.") && page.contains("Run restart: Ends every agent."), "{page}");
+    assert_eq!(host.call("list_runs", json!({})).1, json!([]));
+    let (_, page) = page_call(&mut host, "cancel_ask", json!({}));
+    assert!(!page.contains("Ends every agent."), "{page}");
+
+    // A command without one starts at once, its log opens, and the page is announced as it grows.
+    host.announced.clear();
+    let (_, page) = page_call(&mut host, "press_run", json!({ "name": "slow" }));
+    assert!(page.contains("running") && page.contains("slow"), "{page}");
+    let end = Instant::now() + Duration::from_secs(15);
+    let (mut saw_first, mut saw_second) = (false, false);
+    while !saw_second {
+        assert!(Instant::now() < end, "the log did not follow the run: first {saw_first}");
+        if host.announced.is_empty() {
+            let mut line = String::new();
+            assert!(host.out.read_line(&mut line).unwrap() > 0, "the server closed");
+            let v: Value = serde_json::from_str(&line).unwrap();
+            if v["method"] == "notifications/resources/updated" {
+                host.announced.push(v["params"]["uri"].as_str().unwrap().to_string());
+            }
+            continue;
+        }
+        assert_eq!(host.announced.remove(0), uri);
+        let (_, page) = page_call(&mut host, "get_runner", json!({}));
+        saw_first |= page.contains("first-line");
+        saw_second = page.contains("second-line") && page.contains("exit 0");
+    }
+    assert!(saw_first, "the first line showed before the run ended");
+
+    // The question's Run button starts it; a stop ends a running run.
+    let (_, page) = page_call(&mut host, "press_run", json!({ "name": "restart", "confirmed": true }));
+    assert!(!page.contains("Ends every agent."), "starting it closes the question: {page}");
+    let runs = host.call("list_runs", json!({})).1;
+    assert!(runs.as_array().unwrap().iter().any(|r| r["name"] == "restart"), "{runs}");
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -3,6 +3,7 @@
 //! (Wheel); with no host every tool is also a command.
 
 mod config;
+mod page;
 mod runs;
 mod serve;
 mod status;

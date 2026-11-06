@@ -62,4 +62,25 @@ stopped() { has "$(call "$SP1" get_status)" '■ long stopped'; }
 check "a stop ends it and the status line says stopped" poll 10 stopped
 check "nothing of the stopped run is left running" test -z "$(pgrep -P "$RPID" -f 'sleep 30')"
 eq "one wheel-runner process serves both spaces" "$(servers)" 1
+
+# § Runner page (wheel-cmbu.9): the same process draws the page for each space.
+page() { local sp="$1"; shift; w artifact call runner-native "$@" --scope machine --space "$sp" 2>&1; }
+w artifact read runner-native a2ui://runner-native --scope machine --space "$SP1" >/dev/null 2>&1
+P1="$(page "$SP1" get_runner)"
+P2="$(page "$SP2" get_runner)"
+check "the page lists the first space's commands as Run buttons" has "$P1" 'Run hello'
+check "the page of the second space lists its own command" has "$P2" 'Run only-two'
+check "and none of the first's" hasnt "$P2" 'Run hello'
+check "each run appears in the page's table with its state" has "$P1" 'exit 4'
+ASKED="$(page "$SP1" press_run '{"name":"restart"}')"
+check "a confirm command's page shows the question and the Run button that names it" has "$ASKED" 'Run restart: Ends every agent.'
+check "the question started nothing" test "$(call "$SP1" list_runs | grep -c restart-)" = 0
+CANCELLED="$(page "$SP1" cancel_ask)"
+check "Cancel puts the plain Run button back" hasnt "$CANCELLED" 'Run restart: Ends every agent.'
+page "$SP1" press_run '{"name":"restart","confirmed":true}' >/dev/null
+check "the question's Run button starts it" has "$(call "$SP1" list_runs)" 'restart'
+LIVE="$(page "$SP1" press_run '{"name":"long"}')"
+check "starting a command opens its log, running, with a Stop button" has "$LIVE" 'Stop'
+eq "still one wheel-runner process serves every page" "$(servers)" 1
+page "$SP1" close_log >/dev/null
 finish

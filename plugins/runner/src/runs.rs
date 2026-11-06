@@ -22,6 +22,9 @@ use crate::sweep;
 /// How long a swept process gets to end on SIGTERM before SIGKILL.
 const GRACE: Duration = Duration::from_secs(3);
 
+/// How many bytes from the end of a log a tail reads.
+const TAIL_WINDOW: u64 = 256 * 1024;
+
 /// Makes an id unique among the runs this process starts in the same millisecond.
 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -173,18 +176,30 @@ impl Runs {
     /// The log of run `id` from byte `offset` (or its last `tail` lines): the text and the offset
     /// to ask from next.
     pub fn log(&self, id: &str, offset: u64, tail: Option<usize>) -> Result<(String, u64), String> {
+        use std::io::{Seek, SeekFrom};
         let record = self.get(id)?;
-        let bytes = std::fs::read(&record.log).map_err(|e| format!("{}: {e}", record.log))?;
-        let end = bytes.len() as u64;
-        let text = String::from_utf8_lossy(&bytes[(offset.min(end)) as usize..]).into_owned();
-        Ok(match tail {
-            Some(n) => {
-                let lines: Vec<&str> = text.lines().collect();
-                let from = lines.len().saturating_sub(n);
-                (lines[from..].iter().map(|l| format!("{l}\n")).collect(), end)
+        let fail = |e: std::io::Error| format!("{}: {e}", record.log);
+        let mut file = File::open(&record.log).map_err(fail)?;
+        let end = file.metadata().map_err(fail)?.len();
+        // A tail reads only the end of the file: enough for any sensible number of lines.
+        let from = match tail {
+            Some(_) => offset.max(end.saturating_sub(TAIL_WINDOW)),
+            None => offset,
+        }
+        .min(end);
+        file.seek(SeekFrom::Start(from)).map_err(fail)?;
+        let mut bytes = Vec::new();
+        file.take(end - from).read_to_end(&mut bytes).map_err(fail)?;
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        if let Some(n) = tail {
+            // A window that starts inside a line drops that line's partial start.
+            if from > offset {
+                text = text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or_default();
             }
-            None => (text, end),
-        })
+            let lines: Vec<&str> = text.lines().collect();
+            text = lines[lines.len().saturating_sub(n)..].iter().map(|l| format!("{l}\n")).collect();
+        }
+        Ok((text, end))
     }
 
     /// Ask run `id` to stop: its processes are ended, and the record says it was stopped.
