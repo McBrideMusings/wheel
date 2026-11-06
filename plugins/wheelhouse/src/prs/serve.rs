@@ -79,8 +79,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let n = |b: &str| s.prs.iter().filter(|p| p.bucket == b).count();
     let cards: Vec<String> = BUCKETS.iter().enumerate().map(|(i, (k, l))| {
         let v = n(k);
-        p.put(json!({ "id": format!("kpi{i}"), "component": "Stat", "value": v.to_string(), "label": l, "tone": if v == 0 { "muted" } else if *k == "needs-me" { "ok" } else { "fg" } }));
-        format!("kpi{i}")
+        p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), if v == 0 { "muted" } else if *k == "needs-me" { "ok" } else { "fg" })
     }).collect();
     page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));
     if let Some(e) = &s.error {

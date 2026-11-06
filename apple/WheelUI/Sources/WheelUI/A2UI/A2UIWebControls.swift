@@ -193,20 +193,3 @@ struct A2UICheckView: View {
     }
 }
 
-// MARK: Stat — a number over its caption in the system's GroupBox
-struct A2UIStatView: View {
-    let node: ComponentNode
-    var body: some View {
-        let p = node.instance.properties
-        let t = WebTheme.shared
-        let zero = p["tone"]?.stringValue == "muted"
-        GroupBox {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(p["value"]?.stringValue ?? "").font(.title.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(zero ? t.tertiary : (t.tone(p["tone"]?.stringValue) ?? t.label))
-                Text(p["label"]?.stringValue ?? "").font(.callout).foregroundStyle(t.secondary).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}

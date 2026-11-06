@@ -118,8 +118,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let kpis = [("Branches", s.branches.len(), "fg"), ("Safe to delete", n(&|b| kinds(b) == "dead"), "ok"),
         ("Worktrees", n(&|b| b.worktree.is_some()), "fg"), ("Open PRs", n(&|b| b.pr.is_some()), "fg")];
     let cards: Vec<String> = kpis.iter().enumerate().map(|(i, (l, v, tone))| {
-        p.put(json!({ "id": format!("kpi{i}"), "component": "Stat", "value": v.to_string(), "label": l, "tone": if *v == 0 { "muted" } else { tone } }));
-        format!("kpi{i}")
+        p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), if *v == 0 { "muted" } else { tone })
     }).collect();
     page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));
     for (i, e) in s.error.iter().chain(s.pr_error.iter()).enumerate() {
