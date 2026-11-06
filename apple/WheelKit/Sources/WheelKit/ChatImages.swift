@@ -23,6 +23,37 @@ public enum ChatImages {
             || word.hasPrefix("http://") || word.hasPrefix("https://")
     }
 
+    /// The local image files a message of the person's names, one per line that is only a path in
+    /// backticks or bare: what the composer writes for an attached file. Web addresses are left
+    /// out, since nothing the person typed is fetched.
+    public static func attachedPaths(in message: String) -> [String] {
+        message.split(separator: "\n").compactMap { line in
+            var word = line.trimmingCharacters(in: .whitespaces)
+            // The composer wraps each path in backticks, so a path in them may hold spaces.
+            let quoted = word.count > 2 && word.hasPrefix("`") && word.hasSuffix("`")
+            if quoted { word = String(word.dropFirst().dropLast()) }
+            if isRemote(word) { return nil }
+            if quoted { return isImageTarget(word) && (word.hasPrefix("/") || word.hasPrefix("~/")) ? word : nil }
+            return isBareImage(word) ? word : nil
+        }
+    }
+
+    /// `message` without the lines `attachedPaths` found, which the images stand for.
+    public static func withoutAttachedImages(_ message: String) -> String {
+        let drawn = Set(attachedPaths(in: message))
+        guard !drawn.isEmpty else { return message }
+        return message.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { line in !attachedPaths(in: String(line)).contains(where: drawn.contains) }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `path` written so Markdown image syntax holds it: spaces and parentheses percent-encoded.
+    public static func markdownImage(path: String) -> String {
+        let encoded = path.map { "% ()".contains($0) ? String(format: "%%%02X", $0.asciiValue ?? 0) : String($0) }.joined()
+        return "![](\(encoded))"
+    }
+
     /// Whether `target` is a web address, which is not fetched until the person clicks it.
     public static func isRemote(_ target: String) -> Bool {
         target.hasPrefix("http://") || target.hasPrefix("https://")

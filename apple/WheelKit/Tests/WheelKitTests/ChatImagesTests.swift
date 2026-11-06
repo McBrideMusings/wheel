@@ -9,6 +9,24 @@ import Testing
         #expect(out == "Here:\n![](/tmp/shot.PNG)\n![](~/a/b.jpeg)\n![](https://x.test/c.webp?v=2)\nsee /tmp/inline.png in text\n/tmp/notes.txt")
     }
 
+    @Test func aMessageNamesItsAttachedImages() {
+        let message = "look\n\n`/Users/p/Desktop/Screen.2026.11.06.png`\n/tmp/b.jpg\n`/tmp/notes.txt`\n`https://x.test/c.png`\nsee /tmp/inline.png"
+        #expect(ChatImages.attachedPaths(in: message) == ["/Users/p/Desktop/Screen.2026.11.06.png", "/tmp/b.jpg"])
+    }
+
+    @Test func theWordsKeepNoImagePath() {
+        #expect(ChatImages.withoutAttachedImages("look\n\n`/tmp/a b.png`\n`/tmp/c.png`") == "look")
+        #expect(ChatImages.withoutAttachedImages("`/tmp/a.png`").isEmpty)
+        #expect(ChatImages.withoutAttachedImages("no image `/tmp/n.txt`") == "no image `/tmp/n.txt`")
+    }
+
+    @Test func aQuotedPathMayHoldSpaces() {
+        let path = "/Users/p/Library/Application Support/CleanShot/Screen (1).png"
+        #expect(ChatImages.attachedPaths(in: "x\n\n`\(path)`") == [path])
+        #expect(ChatImages.attachedPaths(in: path).isEmpty)
+        #expect(ChatImages.markdownImage(path: path) == "![](/Users/p/Library/Application%20Support/CleanShot/Screen%20%281%29.png)")
+    }
+
     @Test func fencedCodeIsLeftAlone() {
         let source = "```\n/tmp/shot.png\n```\n/tmp/shot.png"
         #expect(ChatImages.rewrite(source, inline: true) == "```\n/tmp/shot.png\n```\n![](/tmp/shot.png)")
