@@ -109,6 +109,7 @@ impl Runs {
             stop_requested: false, log: log.to_string_lossy().into_owned(),
         };
         store::write(&self.folder, &record).map_err(failed)?;
+        store::prune(&self.folder);
 
         let mut watcher = Command::new(&self.watcher);
         watcher.arg("__watch").arg(&id).arg(&self.folder).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -198,9 +199,14 @@ impl Runs {
         let _ = store::write(&self.folder, record);
     }
 
-    /// Every run, newest first.
+    /// The newest `store::KEEP` runs, newest first.
     pub fn list(&self) -> Vec<Record> {
-        store::all(&self.folder)
+        store::recent(&self.folder, store::KEEP)
+    }
+
+    /// The run most recently started, the only one the status line reads.
+    pub fn latest(&self) -> Option<Record> {
+        store::recent(&self.folder, 1).pop()
     }
 
     pub fn get(&self, id: &str) -> Result<Record, String> {

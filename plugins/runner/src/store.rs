@@ -93,24 +93,42 @@ pub fn read(folder: &Path, id: &str) -> Result<Record, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Every run of the folder, newest first.
-pub fn all(folder: &Path) -> Vec<Record> {
+/// How many runs a project keeps: starting one removes the record and log of every older run that
+/// is not running, and every read stops at this many.
+pub const KEEP: usize = 100;
+
+/// The ids of the folder's runs, newest first. An id starts with the millisecond its run began, so
+/// the ids order the runs, and no record is opened to tell.
+fn ids(folder: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(folder) else { return vec![] };
-    let mut runs: Vec<Record> = entries
+    let mut ids: Vec<String> = entries
         .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            name.strip_suffix(".json").filter(|id| !id.starts_with('.')).and_then(|id| read(folder, id).ok())
-        })
+        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".json").filter(|id| !id.starts_with('.')).map(String::from))
         .collect();
-    // An id starts with the millisecond its run began, so the ids order the runs.
-    runs.sort_by(|a, b| b.id.cmp(&a.id));
-    runs
+    ids.sort_by(|a, b| b.cmp(a));
+    ids
+}
+
+/// The newest `n` runs of the folder, newest first. Only those records are read.
+pub fn recent(folder: &Path, n: usize) -> Vec<Record> {
+    ids(folder).iter().filter_map(|id| read(folder, id).ok()).take(n).collect()
+}
+
+/// Remove the record and log of every run past the newest `KEEP` that is not running.
+pub fn prune(folder: &Path) {
+    for id in ids(folder).into_iter().skip(KEEP) {
+        if read(folder, &id).is_ok_and(|r| r.state == State::Running) {
+            continue;
+        }
+        let _ = std::fs::remove_file(record_path(folder, &id));
+        let _ = std::fs::remove_file(log_path(folder, &id));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn record(id: &str, started: i64) -> Record {
         Record {
@@ -125,7 +143,7 @@ mod tests {
         write(&dir, &record("a", 10)).unwrap();
         write(&dir, &record("b", 20)).unwrap();
         assert_eq!(read(&dir, "a").unwrap(), record("a", 10));
-        let ids: Vec<String> = all(&dir).into_iter().map(|r| r.id).collect();
+        let ids: Vec<String> = recent(&dir, KEEP).into_iter().map(|r| r.id).collect();
         assert_eq!(ids, ["b", "a"]);
         assert_eq!(read(&dir, "zzz").unwrap_err(), "no run zzz");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -138,5 +156,29 @@ mod tests {
         assert!(name.starts_with("Users-p-my-project-"), "{name}");
         assert_ne!(folder("/a/b-c"), folder("/a/b/c"));
         assert_eq!(read(&f, "../x").unwrap_err(), "no run ../x");
+    }
+
+    #[test]
+    fn a_read_of_the_latest_run_stays_fast_among_thousands_and_old_runs_are_pruned() {
+        let dir = std::env::temp_dir().join(format!("wheel-runner-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for n in 0..2000 {
+            let mut r = record(&format!("{n:013}-x"), n);
+            if n == 5 {
+                r.state = State::Running;
+            }
+            write(&dir, &r).unwrap();
+            std::fs::write(log_path(&dir, &r.id), "log\n").unwrap();
+        }
+        let began = std::time::Instant::now();
+        let latest = recent(&dir, 1);
+        assert_eq!(latest[0].id, format!("{:013}-x", 1999));
+        assert!(began.elapsed() < Duration::from_millis(100), "one record took {:?} among 2000", began.elapsed());
+        prune(&dir);
+        let left = ids(&dir);
+        assert_eq!(left.len(), KEEP + 1, "the newest {KEEP} and the one still running stay");
+        assert!(left.contains(&format!("{:013}-x", 5)));
+        assert!(!log_path(&dir, &format!("{:013}-x", 6)).exists(), "a pruned run's log goes with its record");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

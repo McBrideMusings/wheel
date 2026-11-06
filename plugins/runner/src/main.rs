@@ -156,7 +156,7 @@ fn main() -> anyhow::Result<()> {
             project.stop(&id).map_err(|e| anyhow::anyhow!(e))?;
             println!("stopping {id}");
         }
-        Command::Status => println!("{}", status::line(&project.list(), now())),
+        Command::Status => println!("{}", status::line(project.latest().as_ref(), now())),
     }
     Ok(())
 }

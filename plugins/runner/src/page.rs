@@ -112,7 +112,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, log: Option<&str
     let sub = p.label("sub", &count, json!({ "size": 12, "tone": "muted" }));
     page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 6, 0] })));
 
-    let line = status::line(runs, at);
+    let line = status::line(runs.first(), at);
     let latest = runs.first().map(|r| state_of(r).1).unwrap_or("muted");
     page.push(p.label("status", &line, json!({ "mono": true, "size": 12, "tone": latest, "padding": [0, 0, 10, 0] })));
 

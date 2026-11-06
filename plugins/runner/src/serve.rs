@@ -158,7 +158,13 @@ impl Server {
         let mut ui = self.shared.lock().unwrap().panes.get(&key).cloned().unwrap_or_default();
         f(&dir, &mut ui);
         let drawn = answer(&dir, &ui);
-        self.shared.lock().unwrap().panes.insert(key, ui);
+        // A pane with nothing open keeps nothing, so a closed pane leaves no entry behind.
+        let mut shared = self.shared.lock().unwrap();
+        if ui == Ui::default() {
+            shared.panes.remove(&key);
+        } else {
+            shared.panes.insert(key, ui);
+        }
         drawn
     }
 
@@ -288,7 +294,7 @@ impl Server {
 
     #[tool(description = "The status line: the latest run, its state, how long it ran and its log")]
     fn get_status(&self, meta: RequestMetaObject) -> CallToolResult {
-        reply(json!({ "line": status::line(&Runs::new(&project(&meta)).list(), crate::now()) }))
+        reply(json!({ "line": status::line(Runs::new(&project(&meta)).latest().as_ref(), crate::now()) }))
     }
 }
 
@@ -320,6 +326,9 @@ impl ServerHandler for Server {
                 e.0 -= 1;
                 if e.0 == 0 {
                     shared.subscribed.remove(&dir);
+                    // No host shows this project any more: its panes' state goes with them.
+                    let prefix = format!("{dir}\u{0}");
+                    shared.panes.retain(|k, _| !k.starts_with(&prefix));
                 }
             }
         }
