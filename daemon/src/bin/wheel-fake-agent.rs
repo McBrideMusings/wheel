@@ -38,6 +38,7 @@
 //! - "edit N files" edits `src/file-1.go` to `src/file-N.go` as "ef-1" to "ef-N", each `old i\n` ->
 //!   `new i\nextra\n` (+2 -1 a file);
 //! - "reflect" thinks `pondering ` then `the question`;
+//! - "then wake" ends the turn, then starts one of its own that asks permission, as Claude Code does when a subagent finishes;
 //! - "switch mode" moves to plan mode on its own (`system/status` with `permissionMode`);
 //! - "work slowly" works the way a real turn paces itself: a thought in three deltas 0.5 s apart,
 //!   then "call-3" reading `src/main.rs` (done after 1 s), "call-4" grepping `parse_args` (done
@@ -918,6 +919,26 @@ async fn main() {
             "result": "",
             "modelUsage": {state.resolved_model(): {"contextWindow": WINDOW}},
         }));
+        if text.contains("then wake") {
+            // Like Claude Code when a subagent finishes: a turn no prompt started, which asks for
+            // permission and so stays open until answered.
+            let mut turn = Turn {
+                out: out.clone(),
+                state: state.clone(),
+                session: session.clone(),
+                message: 0,
+            };
+            answer(&mut turn, &args, "permission").await;
+            out.send(json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "stop_reason": "end_turn",
+                "session_id": session,
+                "result": "",
+                "modelUsage": {state.resolved_model(): {"contextWindow": WINDOW}},
+            }));
+        }
     }
 }
 

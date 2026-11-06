@@ -106,6 +106,8 @@ enum Cmd {
     Cancel {
         turn: u64,
     },
+    /// Stop the turn the agent started itself, if it is still running.
+    CancelSelfStarted,
     /// Messages taken back before their turn started; the runner drops them from its own queue and
     /// shows the queue's new length.
     Retract {
@@ -139,6 +141,8 @@ struct Inner {
     /// Whether the running turn has produced an event yet (anything after its `turn_start`). Until
     /// it has, the person can take the message back.
     answered: bool,
+    /// The agent is in a turn it started itself, which has no `running` turn of wheel's.
+    self_started: bool,
     /// The running turn whose message was taken back after it started: it is being interrupted, its
     /// remaining events are dropped, and it ends without a `turn_end`.
     unsent: Option<u64>,
@@ -313,6 +317,7 @@ impl Agent {
                 queued: VecDeque::new(),
                 running: None,
                 answered: false,
+                self_started: false,
                 unsent: None,
                 state: AgentState::Starting,
                 config: Vec::new(),
@@ -594,6 +599,13 @@ impl Agent {
     pub fn cancel(&self) -> Result<u64, String> {
         let inner = self.inner.lock().unwrap();
         let Some(turn) = inner.running else {
+            if inner.self_started {
+                tracing::info!(agent = %self.name, "cancel requested for the turn the agent started");
+                self.cmds
+                    .send(Cmd::CancelSelfStarted)
+                    .map_err(|_| format!("agent {} is not running", self.name))?;
+                return Ok(0);
+            }
             return Err(format!("agent {} has no running turn to cancel", self.name));
         };
         tracing::info!(agent = %self.name, turn, "cancel requested");
@@ -1369,8 +1381,10 @@ impl Agent {
 
         // The turn the agent is working on.
         let mut running: Option<u64> = None;
+        // A turn the agent started itself: it holds the agent Busy but belongs to no prompt.
+        let mut unprompted = false;
         loop {
-            if running.is_none() {
+            if running.is_none() && !unprompted {
                 if let Some((turn, text)) = queue.pop_front() {
                     if !self.start_turn(turn) {
                         tracing::info!(agent = %self.name, turn, "prompt taken back before it started");
@@ -1394,13 +1408,13 @@ impl Agent {
                     None => return Ok(()),
                     Some(Cmd::Prompt { turn, text }) => {
                         queue.push_back((turn, text));
-                        if running.is_some() {
+                        if running.is_some() || unprompted {
                             self.set_state(AgentState::Busy { queued: queue.len() });
                         }
                     }
                     Some(Cmd::Retract { turns }) => {
                         queue.retain(|(turn, _)| !turns.contains(turn));
-                        self.set_state(if running.is_some() {
+                        self.set_state(if running.is_some() || unprompted {
                             AgentState::Busy { queued: queue.len() }
                         } else {
                             idle(queue)
@@ -1414,6 +1428,15 @@ impl Agent {
                             return Err(exit_reason(&mut agent).await);
                         }
                     }
+                    Some(Cmd::CancelSelfStarted) => {
+                        if unprompted {
+                            tracing::info!(agent = %self.name, "cancel of the turn the agent started");
+                            perms.drop_agent(&self.name);
+                            if agent.input.cancel().is_err() {
+                                return Err(exit_reason(&mut agent).await);
+                            }
+                        }
+                    }
                     Some(Cmd::Cancel { turn }) => {
                         tracing::info!(agent = %self.name, turn, "cancel dropped; that turn already ended");
                     }
@@ -1422,7 +1445,7 @@ impl Agent {
                     Some(Cmd::SetConfig { config: option, value, reply }) => {
                         spawn_config_set(agent.input.clone(), self.clone(), option, value, reply);
                     }
-                    Some(Cmd::Switch { reply, .. }) if running.is_some() || !queue.is_empty() => {
+                    Some(Cmd::Switch { reply, .. }) if running.is_some() || unprompted || !queue.is_empty() => {
                         // Unreachable by any route a client has: `switch_conversation` refuses
                         // while a turn is running. Answered rather than dropped, so a caller could
                         // never hang on it.
@@ -1478,6 +1501,23 @@ impl Agent {
                     }
                     Some(DriverEvent::Ready { options, .. } | DriverEvent::Options(options)) => {
                         self.set_config_options(options);
+                    }
+                    Some(DriverEvent::TurnStart) => {
+                        if running.is_none() {
+                            tracing::info!(agent = %self.name, "turn started by the agent");
+                            unprompted = true;
+                            self.inner.lock().unwrap().self_started = true;
+                            self.set_state(AgentState::Busy { queued: queue.len() });
+                        }
+                    }
+                    Some(DriverEvent::TurnEnd { .. } | DriverEvent::TurnFailed { .. })
+                        if running.is_none() && unprompted =>
+                    {
+                        tracing::info!(agent = %self.name, "turn started by the agent ended");
+                        unprompted = false;
+                        self.inner.lock().unwrap().self_started = false;
+                        perms.drop_agent(&self.name);
+                        self.set_state(idle(queue));
                     }
                     Some(DriverEvent::TurnEnd { stop_reason }) => {
                         if let Some(turn) = running.take() {
@@ -1791,6 +1831,7 @@ mod tests {
                 queued: VecDeque::new(),
                 running: None,
                 answered: false,
+                self_started: false,
                 unsent: None,
                 state: AgentState::Ready,
                 config: Vec::new(),

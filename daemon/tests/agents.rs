@@ -5025,3 +5025,49 @@ async fn a_file_put_to_an_agent_pane_is_stored_for_its_agent_and_goes_with_the_p
     }
     assert!(!dir.exists(), "{dir:?} is still there");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_the_agent_starts_itself_holds_it_busy_until_it_ends() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "then wake").await;
+    // The prompt's turn ends, then the agent starts another that waits on a permission answer.
+    let perm = next_perm(&mut ws).await;
+    let held = layout(&url).await;
+    assert_eq!(held["spaces"][0]["root"]["state"]["phase"], "busy", "{held}");
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    // Its result ends it: the agent is ready again.
+    loop {
+        let now = layout(&url).await;
+        if now["spaces"][0]["root"]["state"]["phase"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_stops_a_turn_the_agent_started_itself() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "then wake").await;
+    let _perm = next_perm(&mut ws).await;
+    send(&mut ws, ClientMsg::AgentCancel { req: Some(77), agent: agent.clone() }).await;
+    loop {
+        let now = layout(&url).await;
+        if now["spaces"][0]["root"]["state"]["phase"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
