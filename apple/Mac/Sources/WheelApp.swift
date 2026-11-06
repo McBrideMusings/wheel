@@ -37,6 +37,7 @@ struct WheelApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var windows: WindowManager?
+    private var statusMenu: StatusItemMenu?
     private var lastBackgroundBadge: Int?
     #if DEBUG
     private var debug: DebugServer?
@@ -59,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let manager = WindowManager(model: model)
         windows = manager
         model.windowHost = manager
+        statusMenu = StatusItemMenu(model: model)
         #if DEBUG
         let server = DebugServer(model: model)
         server.start()
