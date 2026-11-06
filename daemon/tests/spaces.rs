@@ -4509,7 +4509,7 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
             waiting(Some("Bash: make test")),
         ),
         (ReportedStatus::NeedsYou, None, waiting(None)),
-        (ReportedStatus::Idle, None, PaneStatus::Idle),
+        (ReportedStatus::Idle, None, PaneStatus::Done),
     ] {
         ok(&mut ws, report_why(reported, why)).await;
         loop {
@@ -4526,6 +4526,29 @@ async fn a_terminal_pane_follows_what_its_agent_reports() {
         let (spaces, _) = layout(&mut ws).await;
         assert_eq!(spaces[0].status, Some(shown));
     }
+    // A turn that ended after any client last showed the pane is `done`; showing the pane
+    // makes it idle, and one that ends while a client shows it never is.
+    let space = layout(&mut ws).await.0[0].id.clone();
+    let view = |pane: Option<&str>| ClientMsg::View {
+        req: Some(40),
+        window: "w1".into(),
+        session: None,
+        space: Some(space.clone()),
+        pane: pane.map(str::to_owned),
+    };
+    let status = |spaces: Vec<wheel_proto::SpaceInfo>| spaces[0].status.clone();
+    ok(&mut ws, view(Some("p1"))).await;
+    assert_eq!(status(layout(&mut ws).await.0), Some(PaneStatus::Idle), "showing it clears done");
+    ok(&mut ws, report(ReportedStatus::Working)).await;
+    ok(&mut ws, report(ReportedStatus::Idle)).await;
+    assert_eq!(status(layout(&mut ws).await.0), Some(PaneStatus::Idle), "finished while shown");
+    ok(&mut ws, view(None)).await;
+    assert_eq!(status(layout(&mut ws).await.0), Some(PaneStatus::Idle), "leaving it is not a finish");
+    ok(&mut ws, report(ReportedStatus::Working)).await;
+    ok(&mut ws, report(ReportedStatus::Idle)).await;
+    assert_eq!(status(layout(&mut ws).await.0), Some(PaneStatus::Done), "finished while hidden");
+    ok(&mut ws, view(Some("p1"))).await;
+    assert_eq!(status(layout(&mut ws).await.0), Some(PaneStatus::Idle));
     // A prompt waiting on the person is answered by their next key, not by the end of the tool
     // call it allows; a focus report or an arrow key is not.
     let (spaces, _) = layout(&mut ws).await;

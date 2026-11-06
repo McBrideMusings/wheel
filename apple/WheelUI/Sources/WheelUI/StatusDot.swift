@@ -33,6 +33,7 @@ public struct StatusDot: View {
         case .working: WorkingArc()
         case .needsYou: Circle().fill(Color.orange).frame(width: 9, height: 9)
         case .stopped: Circle().strokeBorder(Color.red, lineWidth: 1.8).frame(width: 9, height: 9)
+        case .done: Circle().fill(Color.blue).frame(width: 9, height: 9)
         case .idle: Circle().fill(Color.green).frame(width: 9, height: 9)
         }
     }

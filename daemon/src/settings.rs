@@ -505,8 +505,8 @@ const KEYS: [Key; 66] = [
     Key {
         id: STATUS_DOTS,
         accepts: Accepts::List,
-        default: "needs_you,stopped,working,idle",
-        help: "The status ranks that show a dot beside a pane, a space's sidebar row and its tab, comma separated (needs_you, stopped, working, idle); empty shows no dots. Read from this machine's file only.",
+        default: "needs_you,stopped,working,done,idle",
+        help: "The status ranks that show a dot beside a pane, a space's sidebar row and its tab, comma separated (needs_you, stopped, working, done, idle); empty shows no dots. Read from this machine's file only.",
     },
     Key {
         id: PUSH_EVENTS,

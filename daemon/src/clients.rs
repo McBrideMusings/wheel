@@ -20,8 +20,9 @@ pub(crate) struct Views {
 
 impl Views {
     /// Record `view` for its window on the connection from `peer`, named `client`. A view that
-    /// shows nothing drops the window.
-    pub(crate) fn report(&self, peer: SocketAddr, client: String, view: WindowView) {
+    /// shows nothing drops the window. Returns the panes the window showed before and shows now,
+    /// whose "last shown" moment this report changes.
+    pub(crate) fn report(&self, peer: SocketAddr, client: String, view: WindowView) -> Vec<String> {
         let mut all = self.by_connection.lock().unwrap();
         let at = match all.iter().position(|(p, _, _)| *p == peer) {
             Some(at) => at,
@@ -32,6 +33,12 @@ impl Views {
         };
         all[at].1 = client;
         let windows = &mut all[at].2;
+        let mut changed: Vec<String> = windows
+            .iter()
+            .filter(|w| w.window == view.window)
+            .filter_map(|w| w.pane.clone())
+            .collect();
+        changed.extend(view.pane.clone());
         windows.retain(|w| w.window != view.window);
         if view.session.is_some() || view.space.is_some() || view.pane.is_some() {
             windows.push(view);
@@ -39,14 +46,28 @@ impl Views {
         if windows.is_empty() {
             all.remove(at);
         }
+        changed
     }
 
-    /// The connection closed: its windows are gone.
-    pub(crate) fn gone(&self, peer: SocketAddr) {
+    /// The connection closed: its windows are gone. Returns the panes they showed.
+    pub(crate) fn gone(&self, peer: SocketAddr) -> Vec<String> {
+        let mut all = self.by_connection.lock().unwrap();
+        let panes = all
+            .iter()
+            .filter(|(p, _, _)| *p == peer)
+            .flat_map(|(_, _, windows)| windows.iter().filter_map(|w| w.pane.clone()))
+            .collect();
+        all.retain(|(p, _, _)| *p != peer);
+        panes
+    }
+
+    /// Whether any window of any client shows `pane` now.
+    pub(crate) fn shows(&self, pane: &str) -> bool {
         self.by_connection
             .lock()
             .unwrap()
-            .retain(|(p, _, _)| *p != peer);
+            .iter()
+            .any(|(_, _, windows)| windows.iter().any(|w| w.pane.as_deref() == Some(pane)))
     }
 
     pub(crate) fn list(&self) -> Vec<ClientInfo> {
