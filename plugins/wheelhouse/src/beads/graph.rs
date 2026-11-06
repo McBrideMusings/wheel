@@ -789,7 +789,7 @@ impl<'a> Model<'a> {
         let focus = ui.view != "graph";
         let layout = self.layout(ui);
         let mut ids = vec![];
-        let mut bar = vec![p.pill(
+        let mut bar = vec![p.button(
             "graph.cross",
             if focus { "Show in graph" } else { "Focus on selected" },
             "graph_cross",
@@ -797,7 +797,7 @@ impl<'a> Model<'a> {
             json!({ "disabled": !focus && ui.sel.is_none() }),
         )];
         if focus {
-            bar.push(p.pill("graph.back", "‹ Back", "focus_back", json!({}), json!({ "disabled": ui.fhist.is_empty() })));
+            bar.push(p.button("graph.back", "‹ Back", "focus_back", json!({}), json!({ "disabled": ui.fhist.is_empty() })));
             p.put(json!({ "id": "graph.depth", "component": "Segmented", "selected": ui.depth.to_string(), "action": "set_depth",
                 "options": [{ "value": "1", "text": "1 hop" }, { "value": "2", "text": "2 hops" }, { "value": "3", "text": "3 hops" }] }));
             bar.push("graph.depth".into());

@@ -3,7 +3,7 @@ import A2UISwiftUI
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
-let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Segmented", "Select", "Check", "Sheet", "Table", "Canvas", "Pill", "Unsupported"]
+let wheelA2UIExtensions: Set<String> = ["ProgressBar", "Disclosure", "Label", "Box", "SearchField", "Segmented", "Select", "Check", "Sheet", "Table", "Canvas", "Unsupported"]
 
 // The palette is the system's own semantic colours, so a page follows light and dark and the
 // person's accent colour like any native window.
@@ -239,7 +239,6 @@ struct WheelA2UICatalog: CustomComponentCatalog {
         case "Sheet": A2UISheetView(node: node, surface: surface)
         case "Table": A2UITableView(node: node, surface: surface)
         case "Canvas": A2UICanvasView(node: node, surface: surface)
-        case "Pill": A2UIPillView(node: node, surface: surface)
         case "Unsupported": A2UIUnsupportedView(node: node)
         default: EmptyView()
         }

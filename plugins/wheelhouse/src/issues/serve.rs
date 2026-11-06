@@ -146,7 +146,7 @@ fn detail(p: &mut Page, i: &Item) -> String {
         c.push(p.boxed("d.desc.b", "v", vec![l], json!({ "padding": [10, 12], "fill": "soft", "radius": 8 })));
     }
     if i.status != "closed" {
-        c.push(p.pill("d.close", "Close issue", "close_issue", json!({}), json!({})));
+        c.push(p.button("d.close", "Close issue", "close_issue", json!({}), json!({})));
     }
     let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
     p.put(json!({ "id": "detail", "component": "Sheet", "presented": true, "action": "close_detail", "children": [body] }));
@@ -173,7 +173,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         p.put(json!({ "id": "new.title", "component": "SearchField", "value": ui.title, "action": "set_draft", "placeholder": "New issue title" }));
         p.put(json!({ "id": "new.kind", "component": "Select", "key": "kind", "action": "set_new", "width": 110, "options": options(&KINDS), "selected": ui.kind }));
         p.put(json!({ "id": "new.pri", "component": "Select", "key": "priority", "action": "set_new", "width": 80, "options": priorities(), "selected": ui.priority.to_string() }));
-        let create = p.pill("new.create", "Create", "create_issue", json!({}), json!({ "disabled": ui.title.trim().is_empty() }));
+        let create = p.button("new.create", "Create", "create_issue", json!({}), json!({ "disabled": ui.title.trim().is_empty() }));
         page.push(p.boxed("new", "h", vec!["new.title".into(), "new.kind".into(), "new.pri".into(), create],
             json!({ "spacing": 8, "widths": ["flex", null, null, null], "padding": [0, 0, 12, 0] })));
         p.put(json!({ "id": "search", "component": "SearchField", "value": ui.q, "action": "set_query", "placeholder": "Search" }));
@@ -430,7 +430,7 @@ mod tests {
         assert!(c.iter().all(|v| v["id"] != "detail"));
         ui.sel = Some("t-1".into());
         let c = components(&s, &ui);
-        assert!(c.iter().any(|v| v["id"] == "d.close" && v["name"] == "close_issue"));
+        assert!(c.iter().any(|v| v["id"] == "d.close" && v["action"]["event"]["name"] == "close_issue"));
         assert!(c.iter().any(|v| v["id"] == "d.status" && v["selected"] == "open"));
     }
 }

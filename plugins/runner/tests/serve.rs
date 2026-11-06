@@ -153,7 +153,9 @@ fn page_text(result: &Value) -> String {
     let messages: Value = serde_json::from_str(result["content"][0]["resource"]["text"].as_str().unwrap_or("[]")).unwrap();
     messages[0]["updateComponents"]["components"].as_array().unwrap().iter()
         .flat_map(|c| {
-            vec![c["text"].as_str().unwrap_or("").to_string(), c["help"].as_str().unwrap_or("").to_string()]
+            let mut v = vec![c["text"].as_str().unwrap_or("").to_string()];
+            v.extend(c["modifiers"].as_array().into_iter().flatten().filter_map(|m| m["help"].as_str()).map(String::from));
+            v
         })
         .collect::<Vec<_>>().join("\n")
 }

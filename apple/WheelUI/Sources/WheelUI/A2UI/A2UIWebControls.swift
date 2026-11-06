@@ -97,54 +97,6 @@ struct A2UISegmentedView: View {
     }
 }
 
-// MARK: Pill — the system's small bordered button raising its action; `style` link draws it as a link, `hideOff` keeps its room when it is disabled
-struct A2UIPillStyle: ViewModifier {
-    let style: String
-    func body(content: Content) -> some View {
-        if style == "plain" {
-            content.buttonStyle(.borderless)
-        } else if style == "link" {
-            #if os(macOS)
-            content.buttonStyle(.link)
-            #else
-            content.buttonStyle(.borderless)
-            #endif
-        } else {
-            content.buttonStyle(.bordered).controlSize(.small)
-        }
-    }
-}
-
-struct A2UIPillView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
-    var body: some View {
-        let p = node.instance.properties
-        let off = p["disabled"]?.boolValue == true
-        Button {
-            guard let name = p["name"]?.stringValue else { return }
-            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: p["context"]?.dictionaryValue ?? [:])
-        } label: {
-            if let icon = p["icon"]?.stringValue {
-                Image(systemName: icon)
-            } else {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(p["text"]?.stringValue ?? "")
-                    if let src = p["src"]?.stringValue {
-                        Text(src).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .modifier(A2UIPillStyle(style: p["style"]?.stringValue ?? ""))
-        .help(p["help"]?.stringValue ?? "")
-        .accessibilityLabel(p["help"]?.stringValue ?? p["text"]?.stringValue ?? "")
-        .disabled(off)
-        .opacity(off && p["hideOff"]?.boolValue == true ? 0 : 1)
-        .accessibilityIdentifier("a2ui.pill.\(node.instance.id)")
-    }
-}
-
 // MARK: Select — the system's pop-up menu of a set width: `options` [{value, text}], `selected`; raises its action with `key` and `value`
 struct A2UISelectView: View {
     let node: ComponentNode

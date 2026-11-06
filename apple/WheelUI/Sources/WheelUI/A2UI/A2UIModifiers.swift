@@ -9,7 +9,7 @@ import SwiftUI
 // colour name; padding: n | [v, h] | [top, right, bottom, left] | {horizontal|vertical|top|bottom|leading|trailing: n};
 // frame: {width, height, minWidth, maxWidth, minHeight, maxHeight ("infinity" or n), alignment}; overlay: {stroke: colour,
 // cornerRadius}; clipShape: {cornerRadius}; opacity; lineLimit; multilineTextAlignment; textSelection; textCase; tracking; help;
-// accessibilityLabel. A name this does not map draws a visible marker, never nothing.
+// disabled, accessibilityLabel. A name this does not map draws a visible marker, never nothing.
 
 /// The colour a modifier's colour name means.
 func a2uiColor(_ name: String?) -> Color? {
@@ -151,6 +151,7 @@ struct A2UIModifiers: ViewModifier {
             }
         case "clipShape":
             if let r = arg.dictionaryValue?["cornerRadius"]?.numberValue { return AnyView(v.clipShape(RoundedRectangle(cornerRadius: r, style: .continuous))) }
+        case "disabled": if arg.boolValue == true { return AnyView(v.disabled(true)) } else { return v }
         case "opacity": if let n = arg.numberValue { return AnyView(v.opacity(n)) }
         case "lineLimit": if let n = arg.numberValue { return AnyView(v.lineLimit(Int(n))) }
         case "multilineTextAlignment":

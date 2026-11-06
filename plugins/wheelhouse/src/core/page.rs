@@ -54,9 +54,37 @@ impl Page {
         self.boxed(id, "v", vec![v, l], json!({ "border": "line", "spacing": 2 }))
     }
 
-    pub fn pill(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Pill", "text": text, "name": name, "context": context });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or
+    /// plain draws it borderless, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.
+    pub fn button(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
+        let child = match extra["icon"].as_str() {
+            Some(i) => {
+                self.put(json!({ "id": format!("{id}.i"), "component": "Icon", "name": i }));
+                format!("{id}.i")
+            }
+            None => {
+                self.put(json!({ "id": format!("{id}.t"), "component": "Text", "text": text }));
+                format!("{id}.t")
+            }
+        };
+        let mut mods = vec![];
+        if extra["disabled"] == true {
+            mods.push(json!({ "disabled": true }));
+            if extra["hideOff"] == true {
+                mods.push(json!({ "opacity": 0 }));
+            }
+        }
+        if let Some(h) = extra["help"].as_str() {
+            mods.push(json!({ "help": h }));
+            mods.push(json!({ "accessibilityLabel": h }));
+        }
+        let mut v = json!({ "id": id, "component": "Button", "child": child, "action": { "event": { "name": name, "context": context } } });
+        if matches!(extra["style"].as_str(), Some("link" | "plain")) {
+            v["variant"] = json!("borderless");
+        }
+        if !mods.is_empty() {
+            v["modifiers"] = json!(mods);
+        }
         self.put(v);
         id.to_string()
     }

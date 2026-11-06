@@ -74,9 +74,37 @@ impl Page {
         self.put(v);
         id.to_string()
     }
-    fn pill(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
-        let mut v = json!({ "id": id, "component": "Pill", "text": text, "name": name, "context": context });
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or
+    /// plain draws it borderless, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.
+    fn button(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
+        let child = match extra["icon"].as_str() {
+            Some(i) => {
+                self.put(json!({ "id": format!("{id}.i"), "component": "Icon", "name": i }));
+                format!("{id}.i")
+            }
+            None => {
+                self.put(json!({ "id": format!("{id}.t"), "component": "Text", "text": text }));
+                format!("{id}.t")
+            }
+        };
+        let mut mods = vec![];
+        if extra["disabled"] == true {
+            mods.push(json!({ "disabled": true }));
+            if extra["hideOff"] == true {
+                mods.push(json!({ "opacity": 0 }));
+            }
+        }
+        if let Some(h) = extra["help"].as_str() {
+            mods.push(json!({ "help": h }));
+            mods.push(json!({ "accessibilityLabel": h }));
+        }
+        let mut v = json!({ "id": id, "component": "Button", "child": child, "action": { "event": { "name": name, "context": context } } });
+        if matches!(extra["style"].as_str(), Some("link" | "plain")) {
+            v["variant"] = json!("borderless");
+        }
+        if !mods.is_empty() {
+            v["modifiers"] = json!(mods);
+        }
         self.put(v);
         id.to_string()
     }
@@ -153,11 +181,11 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
             let asking = ui.asking.as_deref() == Some(r.name.as_str()) && r.confirm.is_some();
             let (what, acts) = if asking {
                 let q = r.confirm.clone().unwrap_or_default();
-                let cancel = p.pill(&format!("{id}.cancel"), "", "cancel_ask", json!({}), json!({ "icon": "xmark", "help": "Cancel" }));
-                let go = p.pill(&format!("{id}.go"), &format!("Run {}: {q}", r.name), "press_run", json!({ "name": r.name, "confirmed": r.command }), json!({ "icon": "checkmark", "help": format!("Run {}: {q}", r.name) }));
+                let cancel = p.button(&format!("{id}.cancel"), "", "cancel_ask", json!({}), json!({ "icon": "xmark", "help": "Cancel" }));
+                let go = p.button(&format!("{id}.go"), &format!("Run {}: {q}", r.name), "press_run", json!({ "name": r.name, "confirmed": r.command }), json!({ "icon": "checkmark", "help": format!("Run {}: {q}", r.name) }));
                 (p.label(&format!("{id}.cmd"), &q, json!({ "tone": "bad" })), vec![cancel, go])
             } else {
-                let run = p.pill(&format!("{id}.run"), "", "press_run", json!({ "name": r.name }), json!({ "icon": "play.fill", "help": format!("Run {}", r.name) }));
+                let run = p.button(&format!("{id}.run"), "", "press_run", json!({ "name": r.name }), json!({ "icon": "play.fill", "help": format!("Run {}", r.name) }));
                 (p.label(&format!("{id}.cmd"), &r.command, json!({ "mono": true, "tone": "muted" })), vec![run])
             };
             let buttons = p.boxed(&format!("{id}.acts"), "h", acts, json!({}));
@@ -184,9 +212,9 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
         let when = p.label(&format!("{id}.when"), &format!("{} · {took}", crate::clock(r.started)), json!({ "mono": true, "tone": "muted", "tabular": true }));
         let mut bar = vec![name, st, when];
         if r.state == State::Running {
-            bar.push(p.pill(&format!("{id}.stop"), "Stop", "stop_log", json!({ "path": r.id }), json!({})));
+            bar.push(p.button(&format!("{id}.stop"), "Stop", "stop_log", json!({ "path": r.id }), json!({})));
         }
-        bar.push(p.pill(&format!("{id}.close"), "", "close_log", json!({ "path": r.id }), json!({ "icon": "xmark", "help": "Close", "style": "plain" })));
+        bar.push(p.button(&format!("{id}.close"), "", "close_log", json!({ "path": r.id }), json!({ "icon": "xmark", "help": "Close", "style": "plain" })));
         let trailing = if r.state == State::Running { 2 } else { 1 };
         let head = p.boxed(&format!("{id}.head"), "h", bar, json!({ "align": "center", "trailing": trailing, "edge": "bottom" }));
         let text = match logs.get(&r.id) {
@@ -200,7 +228,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
     }
     let later = runs.iter().filter(|r| !ui.closed.contains(&r.id)).count().saturating_sub(show.len());
     if later > 0 {
-        blocks.push(p.pill("runs.more", &format!("Show older runs · {later}"), "show_older", json!({}), json!({ "style": "link" })));
+        blocks.push(p.button("runs.more", &format!("Show older runs · {later}"), "show_older", json!({}), json!({ "style": "link" })));
     }
     if !blocks.is_empty() {
         page.push(p.boxed("runs", "v", blocks, json!({ "spacing": 16 })));
@@ -235,6 +263,17 @@ mod tests {
         c.iter().find(|v| v["id"] == id).unwrap_or_else(|| panic!("no component {id}"))
     }
 
+    /// The action a `Button` raises: its event's name and context.
+    fn action(c: &[Value], id: &str) -> (Value, Value) {
+        let e = &find(c, id)["action"]["event"];
+        (e["name"].clone(), e["context"].clone())
+    }
+
+    /// A `Button`'s hover text, from its `help` modifier.
+    fn help(c: &[Value], id: &str) -> Value {
+        find(c, id)["modifiers"].as_array().unwrap().iter().find_map(|m| m.get("help").cloned()).unwrap_or(Value::Null)
+    }
+
     #[test]
     fn each_command_has_an_icon_run_button_under_where_it_comes_from() {
         let rs = [runner("build", None, "project"), runner("tidy", None, "machine")];
@@ -245,9 +284,10 @@ mod tests {
         assert_eq!(find(&c, "g.project")["border"], "line");
         assert_eq!(find(&c, "r.project.build.name")["text"], "build");
         assert_eq!(find(&c, "r.project.build.cmd")["text"], "make build");
-        let b = find(&c, "r.project.build.run");
-        assert_eq!((b["name"].clone(), b["context"].clone(), b["icon"].clone(), b["help"].clone()),
-            (json!("press_run"), json!({ "name": "build" }), json!("play.fill"), json!("Run build")));
+        assert_eq!(find(&c, "r.project.build.run")["component"], "Button");
+        assert_eq!(find(&c, "r.project.build.run.i")["name"], "play.fill");
+        assert_eq!(action(&c, "r.project.build.run"), (json!("press_run"), json!({ "name": "build" })));
+        assert_eq!(help(&c, "r.project.build.run"), "Run build");
         assert_eq!(find(&c, "runs.none")["text"], "No runs yet.");
         assert!(c.iter().all(|v| v["id"] != "status"), "the page has no status line");
     }
@@ -256,14 +296,13 @@ mod tests {
     fn a_confirm_command_shows_its_question_with_cancel_and_a_run_that_confirms() {
         let rs = [runner("restart", Some("Ends every agent."), "project")];
         let idle = components(&rs, &[], &Ui::default(), &Default::default(), 0);
-        assert_eq!(find(&idle, "r.project.restart.run")["context"], json!({ "name": "restart" }));
+        assert_eq!(action(&idle, "r.project.restart.run").1, json!({ "name": "restart" }));
         let ui = Ui { asking: Some("restart".into()), ..Ui::default() };
         let c = components(&rs, &[], &ui, &Default::default(), 0);
         assert_eq!(find(&c, "r.project.restart.cmd")["text"], "Ends every agent.");
-        assert_eq!(find(&c, "r.project.restart.cancel")["name"], "cancel_ask");
-        let go = find(&c, "r.project.restart.go");
-        assert_eq!(go["help"], "Run restart: Ends every agent.");
-        assert_eq!(go["context"], json!({ "name": "restart", "confirmed": "make restart" }));
+        assert_eq!(action(&c, "r.project.restart.cancel").0, "cancel_ask");
+        assert_eq!(help(&c, "r.project.restart.go"), "Run restart: Ends every agent.");
+        assert_eq!(action(&c, "r.project.restart.go").1, json!({ "name": "restart", "confirmed": "make restart" }));
         assert!(c.iter().all(|v| v["id"] != "r.project.restart.run"), "the plain Run is replaced while asking");
     }
 
@@ -281,10 +320,10 @@ mod tests {
         assert_eq!(find(&c, "run.a.when")["text"], "00:01:40 · 1:00".replace("00:01:40", &crate::clock(100)));
         assert_eq!(find(&c, "run.b.log")["text"], "12:00:01  hi");
         assert_eq!(find(&c, "run.a.log")["text"], "(no output yet)");
-        let stop = find(&c, "run.b.stop");
-        assert_eq!((stop["name"].clone(), stop["context"].clone()), (json!("stop_log"), json!({ "path": "b" })));
+        assert_eq!(find(&c, "run.b.stop.t")["text"], "Stop");
+        assert_eq!(action(&c, "run.b.stop"), (json!("stop_log"), json!({ "path": "b" })));
         assert!(c.iter().all(|v| v["id"] != "run.a.stop"), "a finished run has no Stop");
-        assert_eq!(find(&c, "run.a.close")["context"], json!({ "path": "a" }));
+        assert_eq!(action(&c, "run.a.close").1, json!({ "path": "a" }));
     }
 
     #[test]
@@ -292,11 +331,11 @@ mod tests {
         let runs: Vec<Record> = (0..12).map(|i| run(&format!("r{i:02}"), State::Exited, Some(0))).collect();
         let c = components(&[], &runs, &Ui::default(), &Default::default(), 200);
         assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 5);
-        assert_eq!(find(&c, "runs.more")["text"], "Show older runs · 7");
+        assert_eq!(find(&c, "runs.more.t")["text"], "Show older runs · 7");
         let ui = Ui { more: 1, closed: ["r00".to_string()].into(), ..Ui::default() };
         let c = components(&[], &runs, &ui, &Default::default(), 200);
         assert!(c.iter().all(|v| v["id"] != "run.r00"));
         assert_eq!(c.iter().filter(|v| v["border"] == "line" && v["id"].as_str().unwrap().starts_with("run.r")).count(), 10);
-        assert_eq!(find(&c, "runs.more")["text"], "Show older runs · 1");
+        assert_eq!(find(&c, "runs.more.t")["text"], "Show older runs · 1");
     }
 }

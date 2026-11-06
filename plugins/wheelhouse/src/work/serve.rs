@@ -148,7 +148,7 @@ fn components(dir: &str, agents: &[agents::Agent], ui: &Ui, mode: Mode) -> Vec<V
     }
 
     p.put(json!({ "id": "brief", "component": "SearchField", "value": ui.brief, "action": "set_brief", "placeholder": "Brief for a new agent" }));
-    let start = p.pill("start", "Start agent", "start_agent", json!({}), json!({ "disabled": ui.brief.trim().is_empty() }));
+    let start = p.button("start", "Start agent", "start_agent", json!({}), json!({ "disabled": ui.brief.trim().is_empty() }));
     page.push(p.boxed("starter", "h", vec!["brief".into(), start], json!({ "spacing": 8, "widths": ["flex", null], "trailing": 1, "padding": [12, 0, 0, 0] })));
 
     let sections: Vec<Value> = match mode {
@@ -368,9 +368,9 @@ mod tests {
         let table = c.iter().find(|v| v["id"] == "table").unwrap();
         assert_eq!(table["sections"][0]["title"], "Needs you");
         assert_eq!(table["sections"][1]["title"], "Working");
-        assert_eq!(c.iter().find(|v| v["id"] == "start").unwrap()["disabled"], true);
+        assert!(c.iter().find(|v| v["id"] == "start").unwrap()["modifiers"].as_array().unwrap().iter().any(|m| m["disabled"] == true));
         let typed = Ui { brief: "go".into(), notice: None };
         let c = components("/p", &list, &typed, Mode::Swarm);
-        assert_eq!(c.iter().find(|v| v["id"] == "start").unwrap()["disabled"], false);
+        assert!(c.iter().find(|v| v["id"] == "start").unwrap()["modifiers"].is_null(), "an enabled Start has no disabled modifier");
     }
 }
