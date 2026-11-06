@@ -28,6 +28,14 @@ struct Named {
     name: String,
     /// True once the person has answered the entry's `confirm` question with yes.
     confirmed: Option<bool>,
+    /// Run in this git worktree of the project; the entry must set `worktree = true`.
+    worktree: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CheckArgs {
+    /// The `[runner]` entry's name.
+    name: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -172,7 +180,7 @@ impl Server {
                     ui.open = Some(s.record.id);
                 }
                 Err(StartError::Confirm(_)) => ui.asking = Some(a.name),
-                Err(StartError::Failed(e)) => ui.problem = Some(format!("{} did not start: {e}", a.name)),
+                Err(StartError::Guard(m) | StartError::Failed(m)) => ui.problem = Some(format!("{} did not start: {m}", a.name)),
             }
         })
     }
@@ -212,16 +220,39 @@ impl Server {
         reply(json!(config::list(&config::machine_file(), &project(&meta))))
     }
 
-    #[tool(description = "Start a [runner] command. An entry with a confirm question answers {started:false, confirm} until it is started again with confirmed true")]
-    fn run_runner(&self, meta: RequestMetaObject, Parameters(a): Parameters<Named>) -> CallToolResult {
+    #[tool(description = "Start a [runner] command. An entry with a confirm question answers {started:false, confirm} until it is started again with confirmed true; a failing guard answers {started:false, guard}; worktree runs an entry that sets worktree = true in another git worktree of the project")]
+    async fn run_runner(&self, meta: RequestMetaObject, Parameters(a): Parameters<Named>) -> CallToolResult {
         let dir = project(&meta);
         let Some(runner) = config::list(&config::machine_file(), &dir).into_iter().find(|r| r.name == a.name) else {
             return refuse(format!("no runner named {}", a.name));
         };
-        match Runs::new(&dir).start(&runner, a.confirmed == Some(true), None) {
+        let runs = match &a.worktree {
+            Some(w) => Runs::new(&dir).in_worktree(w),
+            None => Runs::new(&dir),
+        };
+        // Guards run commands and may fetch; that must not hold up other calls.
+        let confirmed = a.confirmed == Some(true);
+        let started = tokio::task::spawn_blocking(move || runs.start(&runner, confirmed, None)).await;
+        let Ok(started) = started else { return refuse("the start panicked") };
+        match started {
             Ok(s) => reply(json!({ "started": true, "id": s.record.id, "log": s.record.log })),
             Err(StartError::Confirm(q)) => reply(json!({ "started": false, "confirm": q })),
+            Err(StartError::Guard(m)) => reply(json!({ "started": false, "guard": m })),
             Err(StartError::Failed(e)) => refuse(e),
+        }
+    }
+
+    #[tool(description = "A command's status check (http, json or command): {up, text}")]
+    async fn check_runner(&self, meta: RequestMetaObject, Parameters(a): Parameters<CheckArgs>) -> CallToolResult {
+        let dir = project(&meta);
+        let Some(runner) = config::list(&config::machine_file(), &dir).into_iter().find(|r| r.name == a.name) else {
+            return refuse(format!("no runner named {}", a.name));
+        };
+        let Some(check) = runner.status else { return refuse(format!("{} has no status check", a.name)) };
+        // A check waits on the network or a script; it must not hold up other calls.
+        match tokio::task::spawn_blocking(move || crate::check::run(&check, std::path::Path::new(&dir))).await {
+            Ok(reading) => reply(json!(reading)),
+            Err(e) => refuse(e),
         }
     }
 

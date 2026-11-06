@@ -14,6 +14,32 @@ pub struct Runner {
     pub confirm: Option<String>,
     /// `machine` or `project`: the file the entry is from; the project's wins over the machine's.
     pub origin: &'static str,
+    /// Guard names that must all pass before the command starts: `git-clean`, `git-pushed`, or a
+    /// `[guards.<name>]` table of the machine's or the project's `wheel.toml`.
+    pub requires: Vec<String>,
+    /// A readout of the thing the command runs or deploys: shown by `wheel-runner check`.
+    pub status: Option<StatusCheck>,
+    /// The command may run in another git worktree of the project (`--worktree <path>`).
+    pub worktree: bool,
+}
+
+/// One per-command status check.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum StatusCheck {
+    /// Up when `url` answers 2xx or 3xx.
+    Http { url: String },
+    /// Up when `url` answers 2xx or 3xx with JSON; the text is the value at the dotted `pull` path.
+    Json { url: String, pull: String },
+    /// Up when `run` exits 0; the text is the first line it prints.
+    Command { run: String },
+}
+
+/// A user-defined guard: `run` is a shell expression, `fail` the message when it exits non-zero.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Guard {
+    pub run: String,
+    pub fail: String,
 }
 
 /// The machine's `wheel.toml`: `$WHEEL_MACHINE_FILE`, else `~/.wheel/wheel.toml`.
@@ -40,13 +66,53 @@ pub fn read(path: &Path, origin: &'static str) -> Vec<Runner> {
     table
         .iter()
         .filter_map(|(name, item)| {
-            let (command, confirm) = match item.as_table_like() {
-                Some(t) => (text_of(t.get("command")), text_of(t.get("confirm"))),
-                None => (text_of(Some(item)), None),
+            let Some(t) = item.as_table_like() else {
+                return text_of(Some(item)).map(|command| Runner {
+                    name: name.to_string(), command, confirm: None, origin, requires: vec![], status: None, worktree: false,
+                });
             };
-            command.map(|command| Runner { name: name.to_string(), command, confirm, origin })
+            let requires = match t.get("requires") {
+                None => vec![],
+                Some(r) => match r.as_array().map(|a| a.iter().map(|v| v.as_str().map(String::from)).collect::<Option<Vec<_>>>()) {
+                    Some(Some(names)) => names,
+                    _ => vec![crate::guards::INVALID.to_string()],
+                },
+            };
+            let worktree = t.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false);
+            text_of(t.get("command")).map(|command| Runner {
+                name: name.to_string(), command, confirm: text_of(t.get("confirm")), origin, requires,
+                status: t.get("status").and_then(|s| s.as_table_like()).and_then(|s| status_check(s, &text_of)), worktree,
+            })
         })
         .collect()
+}
+
+fn status_check(t: &dyn toml_edit::TableLike, text_of: &dyn Fn(Option<&toml_edit::Item>) -> Option<String>) -> Option<StatusCheck> {
+    let get = |k: &str| text_of(t.get(k));
+    match get("kind")?.as_str() {
+        "http" => Some(StatusCheck::Http { url: get("url")? }),
+        "json" => Some(StatusCheck::Json { url: get("url")?, pull: get("pull")? }),
+        "command" => Some(StatusCheck::Command { run: get("run")? }),
+        _ => None,
+    }
+}
+
+/// The `[guards.<name>]` tables of the machine's and the project's `wheel.toml`, the project's over
+/// the machine's. A table without `run` is skipped.
+pub fn guards(machine: &Path, dir: &str) -> std::collections::BTreeMap<String, Guard> {
+    let mut found = std::collections::BTreeMap::new();
+    for path in [machine.to_path_buf(), Path::new(dir).join("wheel.toml")] {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { continue };
+        let Some(table) = doc.get("guards").and_then(|g| g.as_table_like()) else { continue };
+        for (name, item) in table.iter() {
+            let Some(t) = item.as_table_like() else { continue };
+            let Some(run) = t.get("run").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) else { continue };
+            let fail = t.get("fail").and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| format!("{name} failed"));
+            found.insert(name.to_string(), Guard { run: run.into(), fail });
+        }
+    }
+    found
 }
 
 /// The machine's entries, then the project's over them, sorted by name.

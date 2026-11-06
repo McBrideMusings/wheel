@@ -206,7 +206,7 @@ mod tests {
     use super::*;
 
     fn runner(name: &str, confirm: Option<&str>, origin: &'static str) -> Runner {
-        Runner { name: name.into(), command: format!("make {name}"), confirm: confirm.map(String::from), origin }
+        Runner { name: name.into(), command: format!("make {name}"), confirm: confirm.map(String::from), origin, requires: vec![], status: None, worktree: false }
     }
 
     fn run(id: &str, state: State, code: Option<i32>) -> Record {

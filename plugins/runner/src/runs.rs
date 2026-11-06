@@ -35,6 +35,8 @@ pub type Mirror = Arc<dyn Fn(&str) + Send + Sync>;
 pub enum StartError {
     /// The command asks first; start it again with `confirmed`.
     Confirm(String),
+    /// A `requires` guard failed: the message says which and what to do.
+    Guard(String),
     Failed(String),
 }
 
@@ -44,10 +46,22 @@ pub struct Started {
     pub done: JoinHandle<Record>,
 }
 
+/// Whether `path` is one of the worktrees `git worktree list` names for the repository at `dir`.
+fn is_worktree_of(dir: &str, path: Option<&Path>) -> bool {
+    let Some(path) = path else { return false };
+    let Ok(out) = Command::new("git").arg("-C").arg(dir).args(["worktree", "list", "--porcelain"]).output() else { return false };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|w| std::fs::canonicalize(w).map(|c| c == path).unwrap_or(false))
+}
+
 /// The runs of one project.
 #[derive(Clone)]
 pub struct Runs {
     pub dir: String,
+    /// Where commands run: `dir`, or the worktree `in_worktree` named.
+    cwd: String,
     folder: PathBuf,
     /// The program the watcher is: `wheel-runner`, run as `__watch`.
     watcher: PathBuf,
@@ -55,7 +69,14 @@ pub struct Runs {
 
 impl Runs {
     pub fn new(dir: &str) -> Self {
-        Runs { dir: dir.to_string(), folder: store::folder(dir), watcher: std::env::current_exe().unwrap_or_else(|_| "wheel-runner".into()) }
+        Runs { dir: dir.to_string(), cwd: dir.to_string(), folder: store::folder(dir), watcher: std::env::current_exe().unwrap_or_else(|_| "wheel-runner".into()) }
+    }
+
+    /// Run commands in the git worktree at `path` instead of the project's directory. The runs
+    /// stay listed under the project.
+    pub fn in_worktree(mut self, path: &str) -> Self {
+        self.cwd = path.to_string();
+        self
     }
 
     /// Start `runner` unless it asks first and `confirmed` is false.
@@ -64,6 +85,17 @@ impl Runs {
             return Err(StartError::Confirm(question.clone()));
         }
         let failed = StartError::Failed;
+        if self.cwd != self.dir {
+            let (here, project) = (std::fs::canonicalize(&self.cwd), std::fs::canonicalize(&self.dir));
+            if matches!((&here, &project), (Ok(a), Ok(b)) if a == b) {
+                // The project's own directory, spelled another way.
+            } else if !runner.worktree {
+                return Err(failed(format!("{} does not run in a worktree: its entry sets no worktree = true", runner.name)));
+            } else if !is_worktree_of(&self.dir, here.as_deref().ok()) {
+                return Err(failed(format!("{} is not a git worktree of {}", self.cwd, self.dir)));
+            }
+        }
+        crate::guards::check(&runner.requires, Path::new(&self.cwd), &crate::config::machine_file(), &self.dir).map_err(StartError::Guard)?;
         let started = crate::now();
         let safe: String = runner.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let id = format!("{}-{}-{}-{}", crate::now_ms(), safe, std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
@@ -71,7 +103,7 @@ impl Runs {
         std::fs::create_dir_all(&self.folder).map_err(|e| failed(e.to_string()))?;
         let log_file = File::create(&log).map_err(|e| failed(format!("{}: {e}", log.display())))?;
         let mut record = Record {
-            id: id.clone(), name: runner.name.clone(), command: runner.command.clone(), dir: self.dir.clone(),
+            id: id.clone(), name: runner.name.clone(), command: runner.command.clone(), dir: self.cwd.clone(),
             state: State::Running, started, ended: None, exit_code: None, pid: 0, owner_pid: std::process::id(),
             stop_requested: false, log: log.to_string_lossy().into_owned(),
         };
@@ -90,7 +122,7 @@ impl Runs {
         };
 
         let mut child = Command::new("sh");
-        child.arg("-c").arg(&runner.command).current_dir(&self.dir).env(sweep::ENV, &id).env("WHEEL_RUNNER_NAME", &runner.name)
+        child.arg("-c").arg(&runner.command).current_dir(&self.cwd).env(sweep::ENV, &id).env("WHEEL_RUNNER_NAME", &runner.name)
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
         let mut child = match child.spawn() {
             Ok(c) => c,
