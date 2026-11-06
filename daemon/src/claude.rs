@@ -441,8 +441,14 @@ impl Driver {
             return Ok(());
         }
         match message["type"].as_str() {
-            Some("stream_event") => self.stream_event(&message["event"]),
-            Some("assistant") => self.assistant(&message["message"]),
+            Some("stream_event") => {
+                self.begin_unprompted_turn();
+                self.stream_event(&message["event"])
+            }
+            Some("assistant") => {
+                self.begin_unprompted_turn();
+                self.assistant(&message["message"])
+            }
             Some("user") => {
                 // A local command such as `/compact` answers as a user message wrapping its output.
                 if let Some(text) = local_command_output(&message["message"]["content"]) {
@@ -565,6 +571,19 @@ impl Driver {
                 self.emit(DriverEvent::Transcript(event));
             }
         }
+    }
+
+    /// Claude Code starts a turn of its own when a subagent or a background task finishes; its
+    /// first output with no prompt in flight says so, and the turn ends with a `result` like any
+    /// other.
+    fn begin_unprompted_turn(&mut self) {
+        if self.in_turn {
+            return;
+        }
+        self.in_turn = true;
+        self.interrupted = false;
+        tracing::info!(pid = self.pid, "agent began a turn no prompt started");
+        self.emit(DriverEvent::TurnStart);
     }
 
     fn streamed_of_current(&mut self) -> &mut Streamed {

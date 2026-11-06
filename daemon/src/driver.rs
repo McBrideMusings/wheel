@@ -129,6 +129,9 @@ pub enum DriverEvent {
     Conversation { id: String },
     /// The agent changed its controls on its own.
     Options(Vec<ConfigOption>),
+    /// The agent began a turn no prompt of wheel's started, as Claude Code does when a subagent or
+    /// a background task finishes. Its end arrives as `TurnEnd` or `TurnFailed`.
+    TurnStart,
     /// The running turn is over; `stop_reason` is `end_turn`, `cancelled` or the agent's own reason.
     TurnEnd { stop_reason: String },
     /// The running turn ended in an error.
