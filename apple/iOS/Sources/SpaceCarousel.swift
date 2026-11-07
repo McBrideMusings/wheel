@@ -46,8 +46,8 @@ struct SpaceCarousel: View {
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                 }
-                if !landscape && pages.count > 1 {
-                    dots.padding(.vertical, 10)
+                if !landscape {
+                    pageHandle(dots: dots, showDots: pages.count > 1)
                 }
             }
             .onChange(of: trayIDs) { _, ids in trayChanged(ids) }
@@ -207,6 +207,34 @@ struct SpaceCarousel: View {
         .padding(.vertical, 6)
         .frame(minHeight: 50)
     }
+
+    /// The row under the composer: the page dots, or a grabber when the space has one page. A swipe
+    /// up from it opens the sheet on the tab last used, a long one on Agents; pane swipes are the
+    /// pager's, and this row sits outside it.
+    private func pageHandle(dots: Dots, showDots: Bool) -> some View {
+        ZStack {
+            if showDots {
+                dots
+            } else {
+                Capsule().fill(Color.secondary.opacity(0.35)).frame(width: 36, height: 5)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 36)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("page handle")
+        .accessibilityAction(named: "Open spaces and agents") { titleOpen = true }
+        .gesture(DragGesture(minimumDistance: Self.shortSwipe).onEnded { drag in
+            guard abs(drag.translation.height) > abs(drag.translation.width), drag.translation.height < 0 else { return }
+            if drag.translation.height < -Self.longSwipe { sheetTab = .agents }
+            Log.info("page handle: swipe up \(Int(-drag.translation.height)) pt, sheet on \(sheetTab)")
+            titleOpen = true
+        })
+    }
+
+    /// A swipe up this far from the page dots opens the sheet, and one this far opens the Agents tab.
+    private static let shortSwipe: CGFloat = 30
+    private static let longSwipe: CGFloat = 160
 
     private func openSettings(_ tab: SettingsTab) {
         settingsTab = tab

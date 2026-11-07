@@ -109,6 +109,15 @@ if step opened; then
     "$(w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | "\(.session) \(.space)"')" "$SESSION $A"
   ack opened
 fi
+plog() {
+  local data; data="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data 2>/dev/null)" || return 1
+  grep -q -- "$1" "$data/Documents/phone.log" 2>/dev/null
+}
+if step handle; then
+  check "phone.log has a short swipe opening the sheet on Spaces" plog 'page handle: swipe up [0-9]* pt, sheet on spaces'
+  check "phone.log has a long swipe opening the sheet on Agents" plog 'page handle: swipe up [0-9]* pt, sheet on agents'
+  ack handle
+fi
 
 for _ in $(seq 1 120); do grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log" && break; sleep 0.5; done
 if grep -q "Test Suite 'Selected tests' passed" "$SCR/xcodebuild.log"; then TEST_EXIT=0; else TEST_EXIT=1; fi

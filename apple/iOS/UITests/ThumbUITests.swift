@@ -117,6 +117,42 @@ final class ThumbUITests: XCTestCase {
         expectName("alpha")
         XCTAssertTrue(app.buttons["tab agents"].waitForNonExistence(timeout: 5), "a tap on a row closes the sheet")
         sync("opened")
+
+        // A swipe up from the page handle opens the sheet on the tab last used, a
+        // long one on Agents, with the keyboard down and up.
+        let handle = app.descendants(matching: .any).matching(identifier: "page handle").firstMatch
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        func swipeUp(_ points: CGFloat) {
+            let from = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            from.press(forDuration: 0.05, thenDragTo: from.withOffset(CGVector(dx: 0, dy: -points)))
+        }
+        func closeSheet() {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+            XCTAssertTrue(app.buttons["tab spaces"].waitForNonExistence(timeout: 5), "tapping above the sheet closes it")
+        }
+        swipeUp(80)
+        XCTAssertTrue(app.buttons["tab spaces"].waitForExistence(timeout: 5), "a short swipe up from the handle opens the sheet")
+        XCTAssertTrue(app.scrollViews["agents list"].exists, "on Agents, the tab last used")
+        app.buttons["tab spaces"].tap()
+        XCTAssertTrue(app.buttons["new space"].waitForExistence(timeout: 5))
+        closeSheet()
+        swipeUp(80)
+        XCTAssertTrue(app.buttons["new space"].waitForExistence(timeout: 5), "a short swipe reopens on Spaces, the tab last used")
+        closeSheet()
+        swipeUp(220)
+        XCTAssertTrue(app.scrollViews["agents list"].waitForExistence(timeout: 5), "a long swipe up opens Agents")
+        shot("handle-agents")
+        closeSheet()
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the keyboard is up")
+        swipeUp(80)
+        XCTAssertTrue(app.buttons["tab spaces"].waitForExistence(timeout: 5), "a swipe up opens the sheet with the keyboard up")
+        shot("handle-keyboard")
+        app.buttons["tab spaces"].tap()
+        app.buttons["space alpha"].tap()
+        sync("handle")
     }
 
     private func expectName(_ space: String) {
