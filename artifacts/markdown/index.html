@@ -24,8 +24,9 @@
   pre { padding: 10px 12px; background: var(--fill); border-radius: 8px; overflow-x: auto; }
   pre code { padding: 0; background: none; white-space: pre; }
   code { font: 13px ui-monospace, Menlo, monospace; background: var(--fill); padding: 1px 5px; border-radius: 4px; }
-  table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
-  th, td { padding: 6px 12px; border: 1px solid var(--separator); text-align: left; vertical-align: top; }
+  .table-scroll { overflow-x: auto; max-width: 100%; margin: 0 0 10px; }
+  .table-scroll > table { border-collapse: collapse; width: max-content; min-width: 100%; margin: 0; }
+  th, td { padding: 6px 12px; border: 1px solid var(--separator); text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; min-width: 6ch; max-width: 30ch; }
   th { background: var(--group); font-weight: 600; }
   del { color: var(--secondary); }
   a { color: var(--accent); }
@@ -106,6 +107,13 @@
       const tokens = marked.lexer(value);
       const heading = tokens.find((token) => token.type === "heading" && token.depth === 1);
       root.innerHTML = marked.parser(tokens);
+      // A table keeps the width its words need and scrolls sideways inside this wrapper.
+      for (const table of root.querySelectorAll("table")) {
+        const wrap = document.createElement("div");
+        wrap.className = "table-scroll";
+        table.replaceWith(wrap);
+        wrap.append(table);
+      }
       document.title = heading ? new DOMParser().parseFromString(marked.parseInline(heading.text), "text/html").body.textContent : "Markdown";
     }
     if (reopen && !wheelLightbox.show(reopen)) wheelLightbox.close(true);
