@@ -129,6 +129,12 @@ final class PhoneModel {
     var activeSpace: SpaceInfo? { spaces.first { $0.id == active } }
     /// The session this phone shows.
     var shownSession: SessionInfo? { sessions.first { $0.id == view.session } }
+    /// Agents waiting on the person, across every space of every session: the count beside the space name.
+    var needsYouCount: Int {
+        spaces.reduce(0) { n, space in
+            n + space.paneStatuses.values.filter { if case .needsYou = $0 { true } else { false } }.count
+        }
+    }
     /// The shown session's spaces, in its order: the only ones the title menu lists.
     var sessionSpaces: [SpaceInfo] {
         let ids = shownSession?.spaces ?? []

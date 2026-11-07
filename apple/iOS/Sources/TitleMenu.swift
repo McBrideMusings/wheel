@@ -11,29 +11,34 @@ enum TitleMenuRequest: Equatable {
     case newSpace
 }
 
-/// The phone's title: the shown space, its session's name under it. A tap opens the title menu.
+/// The phone's title, at the bar's left: the shown space, a ▾, and how many agents wait for the
+/// person in any space. The count has a reserved slot, blank at zero, so the name never moves.
+/// A tap opens the title menu.
 struct TitleButton: View {
     let model: PhoneModel
     @Binding var open: Bool
 
     var body: some View {
+        let waiting = model.needsYouCount
         Button { open = true } label: {
-            VStack(spacing: 1) {
-                HStack(spacing: 4) {
-                    if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
-                    Text(model.activeSpace?.name ?? "No space").font(.headline).lineLimit(1).truncationMode(.middle)
-                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                }
-                .foregroundStyle(.primary)
-                Text(model.shownSession?.name ?? "Spaces").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 4) {
+                if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
+                Text(model.activeSpace?.name ?? "No space").font(.headline).lineLimit(1).truncationMode(.middle)
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Text(waiting > 0 ? "\(waiting)" : "")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.orange)
+                    .frame(minWidth: 22, alignment: .leading)
+                    .accessibilityIdentifier("needs you count")
             }
-            // Narrow enough to leave the bar's buttons on either side uncovered.
-            .frame(maxWidth: 180)
+            .foregroundStyle(.primary)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .tint(.primary)
         .accessibilityIdentifier("title")
         .accessibilityLabel("\(model.activeSpace?.name ?? "No space"), session \(model.shownSession?.name ?? "none")")
+        .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
     }
 }
 

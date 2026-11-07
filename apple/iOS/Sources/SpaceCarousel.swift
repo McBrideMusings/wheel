@@ -168,6 +168,19 @@ struct SpaceCarousel: View {
 
     private func topBar(panes: [(id: String, kind: PaneKind)], dots: Dots, dotsHere: Bool) -> some View {
         HStack {
+            TitleButton(model: model, open: $titleOpen)
+                // A sheet, not a popover: a popover is as tall as its content and clips it, so a
+                // long list of spaces could not be scrolled or reached.
+                .sheet(isPresented: $titleOpen) {
+                    TitleMenu(model: model) { request in
+                        queued = request
+                        titleOpen = false
+                    }
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                }
+                // Leaves the bar's buttons on the right uncovered.
+                .frame(maxWidth: 240, alignment: .leading)
             Spacer()
             if dotsHere && dots.kinds.count > 1 {
                 dots
@@ -190,21 +203,7 @@ struct SpaceCarousel: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
-        // Tall enough for the title's two lines, which sit over the bar rather than in its row.
         .frame(minHeight: 50)
-        .overlay {
-            TitleButton(model: model, open: $titleOpen)
-                // A sheet, not a popover: a popover is as tall as its content and clips it, so a
-                // long list of spaces could not be scrolled or reached.
-                .sheet(isPresented: $titleOpen) {
-                    TitleMenu(model: model) { request in
-                        queued = request
-                        titleOpen = false
-                    }
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                }
-        }
     }
 
     private func openSettings(_ tab: SettingsTab) {
