@@ -14,6 +14,32 @@ public final class PageDaemon {
     public init() {}
 }
 
+/// Lets at most `limit` page requests run at once and holds the rest in order. The daemon's remote
+/// listener refuses a client address its 16th open connection (`MAX_PER_PEER`), the phone already
+/// holds one per terminal, chat and live stream, and a page opens one more for each file it asks
+/// for: with every page request let through, a page of ten images breaks the ones that arrive
+/// past the limit. One gate is shared by every web pane, since the limit is the phone's.
+@MainActor
+public final class RequestGate {
+    private var free: Int
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    public init(limit: Int) { free = limit }
+
+    public func enter() async {
+        if free > 0 {
+            free -= 1
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    /// Hands the place to the next in line, or frees it.
+    public func leave() {
+        if waiting.isEmpty { free += 1 } else { waiting.removeFirst().resume() }
+    }
+}
+
 /// Answers one web pane's requests under `WebPanes.scheme` by fetching them from the daemon with the
 /// token in a header, for that pane's own folder only. The page's origin is the scheme and a fixed
 /// host, so its `localStorage` stays with it when the daemon comes back on another port.
@@ -21,6 +47,8 @@ public final class PageDaemon {
 public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     private let pane: String
     private let daemon: PageDaemon
+    /// Page requests in flight across every pane; the event streams never count, since they stay open.
+    static let gate = RequestGate(limit: 4)
     /// Told the status of each page the pane's main frame loads.
     public var onDocument: ((Int) -> Void)?
 
@@ -188,6 +216,9 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                 // every other response is held whole so its length is known.
                 let streaming = target.path.hasSuffix("/.wheel/events")
                     || (sent.value(forHTTPHeaderField: "Accept") ?? "").contains("text/event-stream")
+                if !streaming { await Self.gate.enter() }
+                defer { if !streaming { Self.gate.leave() } }
+                guard !Task.isCancelled else { return }
                 UILog.info("web pane \(pane) page \(shown) requested \(transport.isPinned ? "through the pinned connection" : "over URLSession")")
                 let reply = try await Self.fetch(sent, over: transport, streaming: streaming)
                 var held = Data()
