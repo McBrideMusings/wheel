@@ -42,83 +42,129 @@ struct TitleButton: View {
     }
 }
 
-/// The title menu: the shown session's spaces, then Switch session… and New space; or, after
-/// Switch session…, every session and New session. A long press on a space offers Rename, New pane,
-/// Move to session… and Close space.
+/// The Thumb sheet: the shown session's spaces as a flat list in the session's own order (the Mac
+/// sidebar's), anchored to the bottom so the last space is nearest the thumb, then search, the
+/// Spaces | Agents control and the session bar at the bottom edge. A long press on a space offers
+/// Rename, New pane, Move to session… and Close space.
 struct TitleMenu: View {
     let model: PhoneModel
-    /// Closes the popover, then asks the carousel for what comes next (nil: nothing).
+    /// Closes the sheet, then asks the carousel for what comes next (nil: nothing).
     let done: (TitleMenuRequest?) -> Void
-    @State private var listingSessions = false
+    @State private var search = ""
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if listingSessions { sessionList } else { spaceList }
+        VStack(spacing: 0) {
+            spaceList
+            Divider()
+            VStack(spacing: 10) {
+                TextField("Search \(model.shownSession?.name ?? "spaces")", text: $search)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("space search")
+                tabControl
+                sessionBar
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 8)
         }
         .onAppear { logShown() }
-        .onChange(of: listingSessions) { _, _ in logShown() }
+        .onChange(of: model.view.session) { _, _ in
+            search = ""
+            logShown()
+        }
     }
 
     private func logShown() {
-        if listingSessions {
-            Log.info("title menu: sessions [\(model.sessions.map(\.id).joined(separator: ", "))]")
-        } else {
-            Log.info("title menu: session \(model.shownSession?.id ?? "none") spaces [\(model.sessionSpaces.map(\.id).joined(separator: ", "))]")
-        }
+        Log.info("title menu: session \(model.shownSession?.id ?? "none") spaces [\(model.sessionSpaces.map(\.id).joined(separator: ", "))]")
+    }
+
+    /// The shown session's spaces matching the search, in session order.
+    private var listed: [SpaceInfo] {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        return query.isEmpty ? model.sessionSpaces : model.sessionSpaces.filter { $0.name.localizedCaseInsensitiveContains(query) }
     }
 
     private var spaceList: some View {
-        let listed = model.sessionSpaces
-        return Group {
-            header("\(model.shownSession?.name ?? "No session") · Spaces")
-            ForEach(listed) { space in
-                row(dot: AnyView(SpaceDots(space: space, shown: model.statusDots)), name: space.name,
-                    caption: SessionCaption.space(space, shown: model.statusDots), checked: space.id == model.active) {
-                    model.select(space: space.id)
-                    done(nil)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if model.sessionSpaces.isEmpty {
+                    Text("No spaces in this session").font(.subheadline).foregroundStyle(.secondary).padding(16)
+                } else if listed.isEmpty {
+                    Text("No space matches “\(search)”").font(.subheadline).foregroundStyle(.secondary).padding(16)
                 }
-                .accessibilityIdentifier("space \(space.name)")
-                .contextMenu { spaceActions(space) } preview: {
-                    row(dot: AnyView(SpaceDots(space: space, shown: model.statusDots)), name: space.name,
-                        caption: SessionCaption.space(space, shown: model.statusDots), checked: false) {}
-                        .frame(width: 320)
+                ForEach(listed) { space in
+                    row(space) {
+                        model.select(space: space.id)
+                        done(nil)
+                    }
+                    .accessibilityIdentifier("space \(space.name)")
+                    .contextMenu { spaceActions(space) } preview: {
+                        row(space, checked: false) {}.frame(width: 320)
+                    }
+                    Divider().padding(.leading, 16)
                 }
-                Divider().padding(.leading, 16)
+                action("New space", symbol: "plus", id: "new space") { done(.newSpace) }
             }
-            if listed.isEmpty {
-                Text("No spaces in this session").font(.subheadline).foregroundStyle(.secondary).padding(16)
-                Divider()
-            }
-            action("Switch session…", symbol: nil, id: "switch session") { listingSessions = true }
-            Divider()
-            action("New space", symbol: "plus", id: "new space") { done(.newSpace) }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // The sheet opens at the end of the list, and a short list sits at the bottom.
+        .defaultScrollAnchor(.bottom)
+    }
+
+    /// Spaces | Agents. Agents has no content yet, so it is disabled.
+    private var tabControl: some View {
+        HStack(spacing: 8) {
+            Button { } label: { Text("Spaces").frame(maxWidth: .infinity, minHeight: 32) }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("tab spaces")
+            Button { } label: { Text("Agents").frame(maxWidth: .infinity, minHeight: 32) }
+                .buttonStyle(.bordered)
+                .disabled(true)
+                .accessibilityIdentifier("tab agents")
         }
     }
 
-    private var sessionList: some View {
-        Group {
-            header("Sessions")
+    /// Main · Mobile · Games: a tap on one, or a swipe along the bar, shows that session; the lists
+    /// above reload in place and the bar never moves. The + makes a new session.
+    private var sessionBar: some View {
+        HStack(spacing: 8) {
             ForEach(model.sessions) { session in
-                row(dot: AnyView(StatusDot(status: topStatus(session), shown: model.statusDots)), name: session.name,
-                    caption: SessionCaption.session(session, spaces: model.spaces, shown: model.statusDots),
-                    checked: session.id == model.view.session) {
-                    model.selectSession(session.id)
-                    done(nil)
+                let shown = session.id == model.view.session
+                let label = HStack(spacing: 4) {
+                    Text(session.name).lineLimit(1).minimumScaleFactor(0.7)
+                    Text("\(session.spaces.count)").monospacedDigit().opacity(0.7)
+                }
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, minHeight: 32)
+                Group {
+                    if shown {
+                        Button { model.selectSession(session.id) } label: { label }.buttonStyle(.borderedProminent)
+                    } else {
+                        Button { model.selectSession(session.id) } label: { label }.buttonStyle(.bordered)
+                    }
                 }
                 .accessibilityIdentifier("session \(session.name)")
-                Divider().padding(.leading, 16)
+                .accessibilityValue(shown ? "shown" : "")
             }
-            action("New session", symbol: "plus", id: "new session") { done(.newSession) }
+            Button { done(.newSession) } label: { Image(systemName: "plus").frame(width: 32, height: 32) }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("New session")
+                .accessibilityIdentifier("new session")
         }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("session bar")
+        .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { drag in
+            guard abs(drag.translation.width) > abs(drag.translation.height) else { return }
+            stepSession(drag.translation.width < 0 ? 1 : -1)
+        })
     }
 
-    /// The most urgent status among a session's spaces, for its dot.
-    private func topStatus(_ session: SessionInfo) -> PaneStatus? {
-        guard let rank = SessionCaption.rank(of: session, spaces: model.spaces) else { return nil }
-        return model.spaces.lazy.filter { session.spaces.contains($0.id) }.compactMap(\.status).first { $0.rank == rank }
+    private func stepSession(_ delta: Int) {
+        guard let current = model.sessions.firstIndex(where: { $0.id == model.view.session }) else { return }
+        let next = current + delta
+        guard model.sessions.indices.contains(next) else { return }
+        model.selectSession(model.sessions[next].id)
     }
 
     @ViewBuilder private func spaceActions(_ space: SpaceInfo) -> some View {
@@ -150,21 +196,27 @@ struct TitleMenu: View {
         }
     }
 
-    private func header(_ text: String) -> some View {
-        Text(text.uppercased()).font(.caption).foregroundStyle(.secondary)
-            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 6)
-    }
-
-    private func row(dot: AnyView, name: String, caption: String, checked: Bool, tap: @escaping () -> Void) -> some View {
-        Button(action: tap) {
+    /// A space: its dots, name, agent count, the number of agents waiting on the person, and a
+    /// check on the one shown.
+    private func row(_ space: SpaceInfo, checked: Bool? = nil, tap: @escaping () -> Void) -> some View {
+        let agents = space.paneStatuses.count
+        let waiting = space.paneStatuses.values.filter { if case .needsYou = $0 { true } else { false } }.count
+        return Button(action: tap) {
             HStack(spacing: 10) {
-                dot.frame(minWidth: 10)
+                SpaceDots(space: space, shown: model.statusDots).frame(minWidth: 10)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.body).foregroundStyle(.primary).lineLimit(1)
-                    Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(space.name).font(.body).foregroundStyle(.primary).lineLimit(1)
+                    Text(agents == 0 ? "No agents" : agents == 1 ? "1 agent" : "\(agents) agents")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                if checked { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                if waiting > 0 {
+                    Text("\(waiting)").font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(.white)
+                        .frame(minWidth: 22, minHeight: 22)
+                        .background(Color.orange, in: Capsule())
+                        .accessibilityLabel("\(waiting) waiting")
+                }
+                if checked ?? (space.id == model.active) { Image(systemName: "checkmark").foregroundStyle(.tint) }
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
             .contentShape(Rectangle())

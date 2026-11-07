@@ -92,6 +92,13 @@ if step waiting; then
   ack waiting
 fi
 
+if step sheet; then
+  ok "the sheet listed Main's spaces flat in session order, kept its controls' rects through Main, Mobile and Games, swiped along the session bar and filtered by search (the UI test asserts each)"
+  eq "client ls has the phone on beta in Main" \
+    "$(w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | "\(.session) \(.space)"')" "$SESSION $B"
+  ack sheet
+fi
+
 for _ in $(seq 1 120); do grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log" && break; sleep 0.5; done
 if grep -q "Test Suite 'Selected tests' passed" "$SCR/xcodebuild.log"; then TEST_EXIT=0; else TEST_EXIT=1; fi
 kill "$TPID" 2>/dev/null

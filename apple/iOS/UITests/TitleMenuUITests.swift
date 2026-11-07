@@ -40,31 +40,27 @@ final class TitleMenuUITests: XCTestCase {
         expectTitle("alpha", session: "wheel", timeout: 3)
         sync("switched")
 
-        // 3. Switch session…, then back: the session's last-shown space returns.
+        // 3. The session bar: games, then back to wheel. Each session's last-shown space returns.
         title.tap()
-        app.buttons["switch session"].tap()
-        XCTAssertTrue(row("session games").waitForExistence(timeout: 5))
-        XCTAssertTrue(row("session wheel").exists)
-        shot("session-menu")
         row("session games").tap()
+        XCTAssertEqual(row("session games").value as? String, "shown", "the bar marks games shown")
         expectTitle("chess", session: "games")
+        shot("session-menu")
 
-        // A long list scrolls: with thirteen spaces the last action starts below the fold of the
-        // sheet and a swipe brings it under the finger.
-        title.tap()
+        // A long list opens at its end: New space is under the thumb and the first space is off
+        // the top; a swipe down brings the first space into reach.
         let newSpace = app.buttons["new space"]
-        XCTAssertTrue(row("space chess").waitForExistence(timeout: 5))
-        XCTAssertFalse(newSpace.isHittable, "New space starts below the visible part of a long list")
-        app.swipeUp()
-        app.swipeUp()
-        XCTAssertTrue(newSpace.isHittable, "a swipe scrolls the list to its last action")
+        XCTAssertTrue(newSpace.isHittable, "New space is at the bottom of a long list")
+        XCTAssertFalse(row("space chess").isHittable, "the first space starts above the visible part of a long list")
         shot("space-menu-long")
+        for _ in 0 ..< 8 where !row("space chess").isHittable { app.scrollViews.firstMatch.swipeDown() }
+        XCTAssertTrue(row("space chess").isHittable, "a swipe scrolls the list to its first space")
         row("space chess").tap()
         expectTitle("chess", session: "games")
         title.tap()
-        app.buttons["switch session"].tap()
         row("session wheel").tap()
         expectTitle("alpha", session: "wheel")
+        row("space alpha").tap()
 
         // 4. Relaunch: the same session, space and pane come back. Show wheel's second pane first.
         title.tap()

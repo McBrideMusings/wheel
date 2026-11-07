@@ -35,6 +35,57 @@ final class ThumbUITests: XCTestCase {
         XCTAssertEqual(name.frame.minY, quietName.minY, accuracy: 0.5)
         shot("chat-3")
         sync("waiting")
+
+        // Stories 1-3: the sheet lists the session's spaces flat, in session order, over the
+        // search field, the Spaces | Agents control and the session bar.
+        title.tap()
+        let rows = ["wheel", "alpha", "beta"].map { app.buttons["space \($0)"] }
+        XCTAssertTrue(rows[0].waitForExistence(timeout: 5))
+        XCTAssertTrue(rows[0].frame.minY < rows[1].frame.minY && rows[1].frame.minY < rows[2].frame.minY,
+                      "spaces are listed in session order (wheel, alpha, beta), though alpha has agents waiting")
+        for header in ["Needs you", "Recent", "A to Z"] {
+            XCTAssertFalse(app.staticTexts[header].exists, "no \(header) section")
+        }
+        XCTAssertLessThan(abs(rows[2].frame.maxY - app.buttons["new space"].frame.minY), 40, "the list ends at the bottom, New space last")
+        let controls = ["space search", "tab spaces", "tab agents", "session Main", "session Mobile", "session Games"]
+        func rect(_ id: String) -> CGRect { (app.descendants(matching: .any).matching(identifier: id).firstMatch).frame }
+        let mainRects = controls.map(rect)
+        XCTAssertFalse(mainRects.contains(.zero), "every control of the sheet is on screen in Main")
+        shot("spaces")
+
+        // A tap on Mobile reloads the list in place; the controls keep their rects.
+        app.buttons["session Mobile"].tap()
+        XCTAssertTrue(app.buttons["space app"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["space wheel"].exists, "Main's spaces leave the list")
+        XCTAssertEqual(controls.map(rect), mainRects, "the controls do not move in Mobile")
+        let bar = app.descendants(matching: .any).matching(identifier: "session bar").firstMatch
+        // A swipe along the bar goes on to Games, and back.
+        bar.swipeLeft()
+        XCTAssertEqual(app.buttons["session Games"].value as? String, "shown", "a swipe along the bar shows Games")
+        XCTAssertEqual(controls.map(rect), mainRects, "the controls do not move in Games")
+        bar.swipeRight()
+        bar.swipeRight()
+        XCTAssertEqual(app.buttons["session Main"].value as? String, "shown", "swipes along the bar return to Main")
+        XCTAssertEqual(controls.map(rect), mainRects, "the controls do not move back in Main")
+
+        // Search filters the shown session.
+        let search = app.textFields["space search"]
+        search.tap()
+        search.typeText("alp")
+        XCTAssertTrue(app.buttons["space alpha"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["space wheel"].exists, "the search hides wheel")
+        XCTAssertFalse(app.buttons["space beta"].exists, "the search hides beta")
+        shot("search")
+        search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 3))
+        XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 5))
+        app.buttons["space beta"].tap()
+        expectName("beta")
+        sync("sheet")
+    }
+
+    private func expectName(_ space: String) {
+        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'title' AND label BEGINSWITH %@", "\(space), ")).firstMatch
+        XCTAssertTrue(shown.waitForExistence(timeout: 10), "the title shows \(space)")
     }
 
     /// Polls up to 15 s for `condition`.

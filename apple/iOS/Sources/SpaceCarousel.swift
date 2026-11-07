@@ -11,7 +11,7 @@ struct SpaceCarousel: View {
     @State private var newSpaceOpen = false
     @State private var titleOpen = false
     @State private var paletteOpen = false
-    /// What the title menu asked for, presented once its popover has closed.
+    /// What the title menu asked for, presented once its sheet has closed.
     @State private var queued: TitleMenuRequest?
     @State private var renaming: (space: String, name: String)?
     @State private var closing: (space: String, question: String)?
