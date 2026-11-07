@@ -30,7 +30,15 @@ public struct StatusDot: View {
     @ViewBuilder
     private func mark(_ status: PaneStatus) -> some View {
         switch status {
-        case .working: WorkingArc()
+        case .working:
+            #if os(iOS)
+            // A dot like the others, ringed so it differs from the plain blue "done" dot.
+            Circle().fill(Color.blue).frame(width: 9, height: 9)
+                .overlay(Circle().strokeBorder(Color.blue.opacity(0.45), lineWidth: 1.5).frame(width: 12, height: 12))
+                .frame(width: 12, height: 12)
+            #else
+            WorkingArc()
+            #endif
         case .needsYou: Circle().fill(Color.orange).frame(width: 9, height: 9)
         case .stopped: Circle().strokeBorder(Color.red, lineWidth: 1.8).frame(width: 9, height: 9)
         case .done: Circle().fill(Color.blue).frame(width: 9, height: 9)

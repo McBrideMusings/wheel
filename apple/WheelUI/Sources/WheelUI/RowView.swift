@@ -146,6 +146,7 @@ public struct RowView: View {
 /// when `chat.timestamps` is on.
 struct UserMessage: View {
     @Environment(\.chatAppearance) private var look
+    @Environment(\.colorScheme) private var colorScheme
     let chat: AgentChat
     @ObservedObject var queue: QueueState
     let row: TranscriptRow
@@ -223,11 +224,18 @@ struct UserMessage: View {
                 .background(Color.primary.opacity(queued ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .foregroundStyle(queued ? .secondary : .primary)
         case .wash:
+            #if os(iOS)
+            // A 35% wash of the accent on a dark page is a dark blue with grey text; on the phone
+            // the dark bubble is solid accent with white text.
+            let solid = colorScheme == .dark
+            #else
+            let solid = false
+            #endif
             content
                 .padding(.horizontal, tight ? 5 : 14)
                 .padding(.vertical, tight ? 5 : 8)
-                .background(Color.accentColor.opacity(queued ? 0.18 : 0.35), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .foregroundStyle(queued ? .secondary : .primary)
+                .background(Color.accentColor.opacity(solid ? (queued ? 0.5 : 1) : (queued ? 0.18 : 0.35)), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .foregroundStyle(solid ? AnyShapeStyle(.white) : queued ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
         case .accent:
             content
                 .padding(.horizontal, tight ? 4 : 12)

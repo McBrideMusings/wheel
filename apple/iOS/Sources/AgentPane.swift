@@ -85,7 +85,7 @@ struct PermissionCard: View {
                 .font(.callout.monospaced())
                 .lineLimit(8)
                 .fixedSize(horizontal: false, vertical: true)
-            PermissionChoices(perm: perm, answer: answer, keys: false)
+            PhonePermissionChoices(perm: perm, answer: answer)
         }
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -93,6 +93,42 @@ struct PermissionCard: View {
         .onAppear {
             Log.info("permission card \(perm.id): reason=\(perm.reason ?? "-") decision=\(perm.decisionReason ?? "-") path=\(perm.blockedPath ?? "-") buttons=\(perm.options.map(\.name).joined(separator: ","))")
         }
+    }
+}
+
+/// A request's choices for a thumb: Deny and a filled Allow, 44 pt tall and equal, and a ⋯ menu
+/// holding every other allowance (Always allow), a button's width from Allow so a mis-tap on
+/// Allow cannot grant a rule that lasts.
+struct PhonePermissionChoices: View {
+    let perm: PermInfo
+    let answer: (PermInfo, String) -> Void
+
+    var body: some View {
+        let allow = PermissionKey.allow.option(in: perm)
+        let rejects = perm.options.filter { $0.kind.hasPrefix("reject") }
+        let more = perm.options.filter { !$0.kind.hasPrefix("reject") && $0.id != allow?.id }
+        HStack(spacing: 10) {
+            ForEach(rejects, id: \.id) { option in
+                Button { answer(perm, option.id) } label: { Text(option.name).frame(maxWidth: .infinity, minHeight: 44) }
+                    .buttonStyle(.bordered)
+            }
+            if let allow {
+                Button { answer(perm, allow.id) } label: { Text(allow.name).frame(maxWidth: .infinity, minHeight: 44) }
+                    .buttonStyle(.borderedProminent)
+            }
+            if !more.isEmpty {
+                Menu {
+                    ForEach(more, id: \.id) { option in
+                        Button(option.name) { answer(perm, option.id) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("More answers")
+            }
+        }
+        .controlSize(.large)
     }
 }
 

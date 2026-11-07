@@ -175,14 +175,17 @@ struct SpaceCarousel: View {
             Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
                 .accessibilityLabel("Search")
                 .accessibilityIdentifier("search")
-            Button { openSettings(.global) } label: { Image(systemName: "gearshape") }
-                .accessibilityLabel("Settings")
+            // One ⋯ holds the pane's actions and Settings. The pane's logo and status dot are in the
+            // agent header below, once. With no pane to act on, the ⋯ holds Settings alone.
             if let current = panes.first(where: { $0.id == page }) ?? panes.first {
-                if case let .agent(_, agent, _) = current.kind {
-                    AgentLogo(agent: agent).frame(width: 18, height: 18)
+                PaneMenu(model: model, pane: current.id, kind: current.kind) { openSettings(.global) }
+            } else {
+                Menu {
+                    Button("Settings", systemImage: "gearshape") { openSettings(.global) }
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.title3)
                 }
-                StatusDot(status: model.paneStatus(current.id), shown: model.statusDots)
-                PaneMenu(model: model, pane: current.id, kind: current.kind)
+                .accessibilityLabel("Pane menu")
             }
         }
         .padding(.horizontal, 16)

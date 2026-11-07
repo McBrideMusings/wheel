@@ -8,6 +8,8 @@ struct PaneMenu: View {
     let model: PhoneModel
     let pane: String
     let kind: PaneKind
+    /// Opens Settings: the menu carries it so the top bar has one ⋯.
+    let openSettings: () -> Void
     @State private var confirmingClose = false
     @State private var confirmingKind: (() -> Void)?
     @State private var pickingArtifact = false
@@ -47,6 +49,8 @@ struct PaneMenu: View {
                 }
                 Button("Browser…", systemImage: "safari") { askingForAddress = true }
             }
+            Divider()
+            Button("Settings", systemImage: "gearshape", action: openSettings)
             Divider()
             Button("Close", systemImage: "xmark", role: .destructive) {
                 if kind.endsAnAgent { confirmingClose = true } else { model.closePane(pane) }

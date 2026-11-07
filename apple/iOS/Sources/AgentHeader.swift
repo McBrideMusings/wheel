@@ -25,9 +25,12 @@ struct AgentHeader: View {
             } label: {
                 HStack(spacing: 8) {
                     AgentGlyph(agent: harness)
+                    StatusDot(status: model.paneStatus(pane), shown: model.statusDots)
                     Text(AgentInfo.title(of: agent)).font(.subheadline.weight(.semibold))
-                    if let folder {
-                        Text(Self.leaf(folder)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    // The harness, when the pane's name is not already it. The folder is in the card:
+                    // it is usually the space's name, which the title above already shows.
+                    if harness.caseInsensitiveCompare(agent) != .orderedSame {
+                        Text("· \(harness)").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 8)
                     if let context = chat.context {

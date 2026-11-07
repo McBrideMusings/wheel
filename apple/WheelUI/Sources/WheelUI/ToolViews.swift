@@ -266,6 +266,16 @@ struct LiveTurnView: View {
     let context: RowContext
 
     var body: some View {
+        #if os(iOS)
+        // The tool row says "Needs your input" and the card holds the request: a third line for
+        // the same state takes room a phone's chat does not have.
+        if context.waitingCount == 0 { line }
+        #else
+        line
+        #endif
+    }
+
+    private var line: some View {
         HStack(spacing: 6) {
             (context.waitingCount > 0 ? ToolPhase.waiting : ToolPhase.running).icon.font(look.meta)
             Text(live.label(waiting: context.waitingCount > 0))
