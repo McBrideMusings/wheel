@@ -55,7 +55,11 @@ struct A2UIMenuView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     var body: some View {
-        Menu(node.string("title") ?? "") { kids(node, surface) }
+        // `keepOpen` leaves the menu open after an item is chosen, for ticking several (SwiftUI's menuActionDismissBehavior).
+        Menu(node.string("title") ?? "") { kids(node, surface).environment(\.a2uiInMenu, true) }
+            #if os(iOS)
+            .menuActionDismissBehavior(node.bool("keepOpen") == true ? .disabled : .automatic)
+            #endif
     }
 }
 
@@ -74,7 +78,7 @@ struct A2UIFormView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     var body: some View {
-        let f = Form { kids(node, surface) }
+        let f = Form { kids(node, surface).environment(\.a2uiInForm, true) }
         switch node.string("style") {
         case "columns": f.formStyle(.columns)
         case "grouped": f.formStyle(.grouped)

@@ -68,9 +68,7 @@ fn status_tone(c: char) -> &'static str {
 fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let mut p = Page { out: vec![] };
     let mut page = vec![];
-    let t = p.runs("title", json!([{ "text": format!("Diff · {}", s.name), "size": 20, "weight": "bold" }]), json!({}));
-    let sub = p.label("sub", &format!("{} at {}", s.branch.as_deref().unwrap_or("a detached HEAD"), s.head), json!({ "size": 12, "tone": "muted" }));
-    page.push(p.boxed("head", "h", vec![t, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 12, 0] })));
+    // No page title or subtitle: the pane's own bar says which page it is.
     if let Some(e) = &s.error {
         let l = p.label("problem.t", e, json!({ "tone": "bad" }));
         page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
@@ -82,7 +80,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             scope.commits.map(|n| format!(" · {n} commits")).unwrap_or_default(),
             scope.fork.as_ref().map(|f| format!(" since {f}")).unwrap_or_default());
         let count = p.label("count", &summary, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("tools", "h", vec!["scopes".into(), count], json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": [null, "flex"], "trailing": 1 })));
+        page.push(p.boxed("tools", "h", vec!["scopes".into(), count], json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": [null, "flex"], "trailing": 1 })));
         let sel = file_of(scope, ui);
         let rows: Vec<Value> = scope.files.iter().map(|f| {
             let name = match &f.old { Some(o) => format!("{o} → {}", f.path), None => f.path.clone() };

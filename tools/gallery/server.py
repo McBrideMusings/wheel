@@ -112,13 +112,13 @@ controls = klass("Buttons", "Run an action. The label is a child component.", [
 ])
 
 inputs = klass("Selection and input", "Values the person sets.", [
-    ("TextField", "TextField, SecureField, TextEditor", [("shortText", put("TextField", label="Name", value="", variant="shortText")), ("longText", put("TextField", label="Notes", value="", variant="longText")),
+    ("TextField", "TextField, SecureField, TextEditor", [("shortText: a filled box with a border", put("TextField", label="Name", value="", variant="shortText")), ("longText", put("TextField", label="Notes", value="", variant="longText")),
                                                           ("number", put("TextField", label="Count", value="12", variant="number")), ("obscured", put("TextField", label="Token", value="secret", variant="obscured"))]),
     ("CheckBox", "Toggle", [("off", put("CheckBox", label="Show closed", value=False)), ("on", put("CheckBox", label="Show closed", value=True))]),
     ("ChoicePicker", "Picker", [("mutuallyExclusive", put("ChoicePicker", label="Filter", options=OPTS, value=["b"], variant="mutuallyExclusive")),
                                 ("multipleSelection", put("ChoicePicker", label="Filter", options=OPTS, value=["a", "c"], variant="multipleSelection")),
                                 ("displayStyle checkbox", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="checkbox")),
-                                ("displayStyle chips", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="chips")),
+                                ("displayStyle chips: a segmented control that becomes a menu when the width is too small for it", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="chips")),
                                 ("filterable", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="mutuallyExclusive", filterable=True))]),
     ("Slider", "Slider", [("min 0, max 10, value 4", put("Slider", label="Volume", value=4, min=0, max=10))]),
     ("DateTimeInput", "DatePicker", [("date", put("DateTimeInput", label="Due", value="2026-11-06", enableDate=True, enableTime=False)),
@@ -136,10 +136,90 @@ layout = klass("Containers and layout", "Arrange other components.", [
 
 nav = klass("Navigation and presentation", "Switch between or reveal content.", [
     ("Tabs", "TabView", [("three tabs", put("Tabs", tabs=[{"title": "One", "child": txt("First pane")}, {"title": "Two", "child": txt("Second pane")}, {"title": "Three", "child": txt("Third pane")}]))]),
-    ("Modal", "sheet", [("button opens content", put("Modal", trigger=button(txt("Open")), content=col([txt("Modal title", "h3"), txt("The modal's content.")], modifiers=[{"padding": 20}]))),
+    ("Modal", "sheet", [("button opens content in a sheet with a title bar and Done (`title`)", put("Modal", title="Details", trigger=button(txt("Open")), content=col([txt("Modal title", "h3"), txt("The modal's content.")], modifiers=[{"padding": 20}]))),
                         ("presented true: dims and covers its own pane only, with a card and Close; dismissAction is raised on close; not shown", secondary("Modal with presented=true and dismissAction, children are the card's content."))]),
 ])
 
+
+# ---- Spike: the Beads filters, native (a sheet of a Form), not wired to anything
+def opts(pairs):
+    return [{"label": l, "value": v} for l, v in pairs]
+
+
+def kpi(value, label, selected=False):
+    mods = [{"padding": [7, 8]}, {"overlay": {"stroke": "tint" if selected else "separator", "cornerRadius": 8}}]
+    if selected:
+        mods.append({"background": "controlBackground"})
+    inner = col([txt(value, modifiers=[{"font": {"size": 20, "weight": "semibold"}}, {"monospacedDigit": True}]), secondary(label, modifiers=[{"font": {"size": 11}}, {"lineLimit": 1}])],
+                align="start", modifiers=[{"frame": {"maxWidth": "infinity", "alignment": "leading"}}])
+    return put("Button", child=inner, action=act(), variant="borderless", modifiers=[{"frame": {"maxWidth": "infinity"}}] + mods)
+
+
+def filter_form(height=None):
+    types = put("ChoicePicker", label="Type", variant="multipleSelection", options=opts([("task  107", "task"), ("bug  73", "bug"), ("feature  40", "feature"), ("epic  21", "epic"), ("decision  4", "decision"), ("chore  5", "chore"), ("spike  1", "spike")]), value=["bug"], displayStyle="checkbox")
+    labels = put("ChoicePicker", label="Label (any of)", variant="multipleSelection", options=opts([("client  132", "client"), ("daemon  113", "daemon"), ("mac  78", "mac"), ("cli  46", "cli"), ("human  37", "human"), ("wheelkit  22", "wheelkit")]), value=["client", "daemon"], displayStyle="checkbox")
+    prio = put("ChoicePicker", label="Priority", variant="mutuallyExclusive", options=opts([("All  251", "all"), ("Urgent: P0 to P1  22", "urgent"), ("P2  155", "p2"), ("P3 and lower  74", "low")]), value=["urgent"])
+    sort = put("ChoicePicker", label="Sort", variant="mutuallyExclusive", options=opts([("Priority", "priority"), ("Updated", "updated"), ("ID", "id"), ("Title", "title")]), value=["priority"])
+    clear = put("Button", child=txt("Clear all filters", modifiers=[{"foregroundStyle": "red"}]), action=act(), variant="borderless")
+    extra = {"modifiers": [{"frame": {"height": height}}]} if height else {}
+    return put("Form", [put("Section", [types], title="Type"), put("Section", [labels], title="Label"), put("Section", [prio, sort]), put("Section", [clear])], style="grouped", **extra)
+
+
+def chip_buttons(names):
+    return put("List", [put("Button", child=txt(t + "  ×"), action=act(), variant="borderless", modifiers=[{"padding": {"horizontal": 8, "vertical": 3}}, {"overlay": {"stroke": "tint", "cornerRadius": 12}}, {"font": {"size": 12}}])
+                        for t in names], direction="horizontal")
+
+
+def top_of_page():
+    views = put("ChoicePicker", label="View", variant="mutuallyExclusive", options=opts([("List", "list"), ("Epics", "epics"), ("Depends on", "deps"), ("Unlocks", "unlocks"), ("Focus", "focus"), ("Graph", "graph")]), value=["list"], displayStyle="chips")
+    search = put("TextField", label="Search", value="", variant="shortText", modifiers=[{"frame": {"maxWidth": "infinity"}}])
+    boxes = row([kpi("193", "Ready"), kpi("16", "Active", True), kpi("23", "Blocked"), kpi("652", "Closed")], justify="start")
+    return [boxes, row([search, views], justify="start", align="center")]
+
+
+def pill(title):
+    return put("Button", child=txt(title), action=act(), modifiers=[{"padding": {"horizontal": 12, "vertical": 5}}, {"overlay": {"stroke": "tint", "cornerRadius": 14}}, {"foregroundStyle": "tint"}])
+
+
+TYPES = ("task  107", "bug  73", "feature  40", "epic  21", "decision  4", "chore  5", "spike  1")
+LABELS = ("client  132", "daemon  113", "mac  78", "cli  46", "human  37", "wheelkit  22", "10 more")
+
+
+def boxes_of(names, on):
+    return [put("CheckBox", label=n, value=(n in on)) for n in names]
+
+
+def variation(letter):
+    head = {"a": ("A: a Filters button opens a sheet", "Every value is a switch in the sheet. Type is 7 rows, Label is 14."),
+            "b": ("B: a sheet, with Label as a menu", "Type is switches. Label is one menu row that stays open while you tick several."),
+            "c": ("C: no sheet, one row of menus", "Type, Label, Priority and Sort are menus in one row under the search line. Each stays open while you tick several.")}[letter]
+    parts = [txt(head[0], "h4"), secondary(head[1])] + top_of_page()
+    if letter == "a":
+        parts.append(row([put("Modal", trigger=pill("Filters · 3"), content=filter_form(), title="Filters"), secondary("14 of 882")], justify="spaceBetween", align="center"))
+    elif letter == "b":
+        label_menu = put("Menu", boxes_of(LABELS[:6], {"client  132", "daemon  113"}), title="Label · 2", keepOpen=True)
+        form = put("Form", [put("Section", [put("ChoicePicker", label="Type", variant="multipleSelection", options=opts([(t, t) for t in TYPES]), value=["bug  73"], displayStyle="checkbox")], title="Type"),
+                            put("Section", [label_menu], title="Label"),
+                            put("Section", [put("ChoicePicker", label="Priority", variant="mutuallyExclusive", options=opts([("All  251", "all"), ("Urgent: P0 to P1  22", "urgent"), ("P2  155", "p2"), ("P3 and lower  74", "low")]), value=["urgent"])]),
+                            put("Section", [put("Button", child=txt("Clear all filters", modifiers=[{"foregroundStyle": "red"}]), action=act(), variant="borderless")])], style="grouped")
+        parts.append(row([put("Modal", trigger=pill("Filters · 3"), content=form, title="Filters"), secondary("14 of 882")], justify="spaceBetween", align="center"))
+    else:
+        menus = [put("Menu", boxes_of(TYPES, {"bug  73"}), title="Type · 1", keepOpen=True),
+                 put("Menu", boxes_of(LABELS[:6], {"client  132", "daemon  113"}), title="Label · 2", keepOpen=True),
+                 put("ChoicePicker", label="Priority", variant="mutuallyExclusive", options=opts([("All  251", "all"), ("Urgent: P0 to P1  22", "urgent"), ("P2  155", "p2"), ("P3 and lower  74", "low")]), value=["urgent"]),
+                 put("ChoicePicker", label="Sort", variant="mutuallyExclusive", options=opts([("Sort: Priority", "priority"), ("Sort: Updated", "updated"), ("Sort: ID", "id")]), value=["priority"])]
+        parts.append(put("List", menus, direction="horizontal"))
+        parts.append(secondary("14 of 882"))
+    parts.append(chip_buttons(["Active", "bug", "client or daemon", "P0–P1"]))
+    return col(parts, align="start", modifiers=[{"padding": 4}])
+
+
+def filters_page():
+    return variation("a")
+
+
+filters_form = boxed("The Filters sheet, content only", "A Form of Sections holding pickers. On a phone this is a sheet; on the Mac a sheet too. A Form has no height of its own in scrolling content, so this copy is given one.", [filter_form(820)])
+filters = boxed("Spike: Beads filters, native", "Stat boxes are the status filter, the views choice sits beside the search field, one Filters button opens a sheet holding a Form. Nothing here is wired to a page.", [filters_page()])
 
 # ---- modifiers table: modifier, arguments, example
 def mod(t, *mods):
@@ -186,7 +266,7 @@ def mi(title):
 system = klass("SwiftUI controls", "Standard controls the library lacks, named as SwiftUI names them (ADR-0032). A property is the initializer's argument; children are its content.", [
     ("ProgressView", "ProgressView", [("value 0.4 of 1", put("ProgressView", title="Uploading", value=0.4, total=1)), ("no value: spinner", put("ProgressView", title="Working"))]),
     ("Gauge", "Gauge", [("linearCapacity", put("Gauge", title="Disk", value=40, min=0, max=100)), ("accessoryCircular", put("Gauge", title="CPU", value=70, min=0, max=100, style="accessoryCircular"))]),
-    ("Menu", "Menu", [("children are items", put("Menu", [mi("Copy"), put("Divider"), mi("Delete")], title="Actions"))]),
+    ("Menu", "Menu", [("children are items", put("Menu", [mi("Copy"), put("Divider"), mi("Delete")], title="Actions")), ("keepOpen: stays open while items are ticked (iOS only; a Mac menu closes after each tick)", put("Menu", [put("CheckBox", label="One", value=True), put("CheckBox", label="Two", value=False)], title="Pick several", keepOpen=True))]),
     ("Link", "Link", [("title, destination", put("Link", title="Apple", destination="https://apple.com"))]),
     ("Form, Section", "Form, Section", [("grouped", put("Form", [put("Section", [put("Stepper", title="Count", value=3, min=0, max=10)], title="Counts")], style="grouped"))]),
     ("LabeledContent", "LabeledContent", [("value", put("LabeledContent", title="Branch", value="main")), ("children as content", put("LabeledContent", [txt("custom")], title="Child"))]),
@@ -207,7 +287,7 @@ system = klass("SwiftUI controls", "Standard controls the library lacks, named a
 ])
 
 own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu.", [
-    ("Table", "Table", [("one section, two rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
+    ("Table", "Table", [("one section, two rows; with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
                                                        columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False}],
                                                        sections=[{"title": "Ready", "count": 2, "rows": [
                                                            {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True}, {"key": "title", "text": "First row"}]},
@@ -222,8 +302,8 @@ ONLY = sys.argv[2] if len(sys.argv) > 2 else None  # a class name shows that cla
 page = col([
     txt("A2UI component gallery", "h1"),
     secondary("A table per class of control: the basic catalog's components with every option, the SwiftUI controls, modifiers, then Wheel's own component."),
-    secondary("Updated with every change to a component or modifier."),
-    *({"system": [system]}.get(ONLY) or [content, controls, inputs, layout, nav, system, own_table, modifiers, own]),
+    secondary("Updated with every change to a component or modifier. Body text is 13 pt on the Mac and the phone."),
+    *({"system": [system], "filters": [filters], "filters-form": [filters_form], "var-a": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("a")])], "var-b": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("b")])], "var-c": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("c")])]}.get(ONLY) or [content, controls, inputs, layout, nav, system, own_table, modifiers, own]),
 ], align="start", modifiers=[{"padding": 28}])
 out.append({"id": "root", "component": "Column", "align": "stretch", "children": [page]})
 

@@ -113,12 +113,6 @@ fn sane(name: &str) -> String {
     name.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("_{b:02x}") }).collect()
 }
 
-fn cell(text: impl Into<String>, extra: Value) -> Value {
-    let mut v = json!({ "text": text.into() });
-    v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-    v
-}
-
 /// The state word, its SF Symbol (`spinner` while running) and its tone for a run.
 fn state_of(r: &Record) -> (String, &'static str, &'static str) {
     match (r.state, r.exit_code) {
@@ -144,13 +138,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, logs: &std::coll
     let mut p = Page { out: vec![] };
     let mut page = vec![];
 
-    let title = p.label("title", "Runner", json!({ "size": 22, "weight": "bold" }));
-    let count = match runners.len() {
-        1 => "1 runner".to_string(),
-        n => format!("{n} runners"),
-    };
-    let sub = p.label("sub", &count, json!({ "tone": "muted" }));
-    page.push(p.boxed("head", "h", vec![title, sub], json!({ "wrap": true, "justify": "between" })));
+    // No page title or subtitle: the pane's own bar says which page it is.
 
     if let Some(e) = &ui.problem {
         let l = p.label("problem.t", e, json!({ "tone": "bad" }));

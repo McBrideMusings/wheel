@@ -106,7 +106,7 @@ impl Registry {
 }
 
 /// A path is `/<tool>` or `/<tool>/<key>`; the arguments are the written value as `value` text and the key as `key`. A choice
-/// (an array) sends its first selection.
+/// (an array) sends its selections joined by commas, so one of several is just its own value.
 pub fn change_call(path: &str, value: &Value) -> Option<(String, serde_json::Map<String, Value>)> {
     let mut parts = path.trim_start_matches('/').splitn(2, '/');
     let tool = parts.next().filter(|t| !t.is_empty())?;
@@ -114,7 +114,7 @@ pub fn change_call(path: &str, value: &Value) -> Option<(String, serde_json::Map
         Value::String(s) => s.clone(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
-        Value::Array(a) => a.first().and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        Value::Array(a) => a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","),
         _ => String::new(),
     };
     let mut args = serde_json::Map::new();
@@ -145,6 +145,7 @@ mod tests {
         assert_eq!(change_call("/set_hide", &json!(true)).unwrap().1["value"], "true");
         assert_eq!(change_call("/set_n", &json!(3)).unwrap().1["value"], "3");
         assert_eq!(change_call("/set_view", &json!([])).unwrap().1["value"], "");
+        assert_eq!(change_call("/set_filter/label", &json!(["client", "mac"])).unwrap().1["value"], "client,mac");
     }
 
     #[test]

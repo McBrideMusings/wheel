@@ -42,7 +42,8 @@ struct A2UIChildView: View {
 struct A2UISurfaceView: View {
     let surface: SurfaceModel
     var body: some View {
-        if let root = surface.root { A2UIChildView(node: root, surface: surface) }
+        // The Mac's body size on every platform, so a page reads the same on a phone; a `font` modifier on a component still wins.
+        if let root = surface.root { A2UIChildView(node: root, surface: surface).font(.system(size: 13)) }
     }
 }
 
@@ -138,7 +139,8 @@ struct A2UIStack: View {
             if i > 0 && justify == "spaceBetween" || i > 0 && justify == "spaceEvenly" || i > 0 && justify == "spaceAround" { Spacer(minLength: 0) }
             A2UIChildView(node: k, surface: surface)
         }
-        if justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround" { Spacer(minLength: 0) }
+        // The spacer that keeps a start-aligned stack at the top gives way to a Table, which takes the height left over.
+        if justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround" { Spacer(minLength: 0).layoutPriority(-1) }
     }
 
     private func vertical(_ a: String?) -> VerticalAlignment { a == "start" ? .top : a == "end" ? .bottom : .center }
@@ -154,11 +156,12 @@ struct A2UIList: View {
         let horizontal = node.props["direction"]?.stringValue == "horizontal"
         ScrollView(horizontal ? .horizontal : .vertical) {
             if horizontal {
-                LazyHStack(spacing: 8) { items }
+                HStack(spacing: node.props["spacing"]?.numberValue.map { CGFloat($0) } ?? 8) { items }
             } else {
-                LazyVStack(alignment: .leading, spacing: 8) { items }
+                LazyVStack(alignment: .leading, spacing: node.props["spacing"]?.numberValue.map { CGFloat($0) } ?? 8) { items }
             }
         }
+        .fixedSize(horizontal: false, vertical: horizontal)
     }
     private var items: some View {
         ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface) }
@@ -190,7 +193,20 @@ struct A2UIModal: View {
             A2UIChildView(node: node.children[0], surface: surface)
                 .simultaneousGesture(TapGesture().onEnded { open = true })
                 .sheet(isPresented: $open) {
-                    A2UIChildView(node: node.children[1], surface: surface).padding(20).frame(minWidth: 320)
+                    // The system's sheet: a title bar with Done, a grabber and medium and large heights on a phone.
+                    NavigationStack {
+                        A2UIChildView(node: node.children[1], surface: surface)
+                            .navigationTitle(node.props["title"]?.text ?? "")
+                            #if os(iOS)
+                            .navigationBarTitleDisplayMode(.inline)
+                            #endif
+                            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { open = false } } }
+                    }
+                    #if os(iOS)
+                    .presentationDetents([.medium, .large])
+                    #else
+                    .frame(minWidth: 380, minHeight: 420)
+                    #endif
                 }
         }
     }
@@ -216,6 +232,7 @@ struct A2UIPresentedModals: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface) }
                     }
+                    .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading).padding(18)
                 }
                 if dismiss != nil {
@@ -224,7 +241,7 @@ struct A2UIPresentedModals: View {
                 }
             }
             .frame(maxWidth: 640, maxHeight: .infinity)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .background(a2uiColor("controlBackground") ?? Color.gray.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
             .shadow(radius: 18)
             .padding(24)
@@ -257,16 +274,37 @@ struct A2UIButton: View {
 }
 
 // MARK: CheckBox — `label`, `value`
+private struct A2UIInFormKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// Whether a component is a row of a Form, where a choice draws as its own rows.
+    var a2uiInForm: Bool {
+        get { self[A2UIInFormKey.self] }
+        set { self[A2UIInFormKey.self] = newValue }
+    }
+}
+
+private struct A2UIInMenuKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// Whether a component is an item of a Menu, where a Toggle draws as a tick row.
+    var a2uiInMenu: Bool {
+        get { self[A2UIInMenuKey.self] }
+        set { self[A2UIInMenuKey.self] = newValue }
+    }
+}
+
 struct A2UICheckBox: View {
     let node: ComponentNode
     let surface: SurfaceModel
+    @Environment(\.a2uiInMenu) private var inMenu
     var body: some View {
         let path = a2uiPath(of: node.instance, in: surface)
         let binding = Binding<Bool>(get: { a2uiValue(node, surface)?.boolValue ?? false }, set: { surface.set(path, .bool($0)) })
-        Toggle(node.props["label"]?.text ?? "", isOn: binding)
-            #if os(macOS)
-            .toggleStyle(.checkbox)
-            #endif
+        let toggle = Toggle(node.props["label"]?.text ?? "", isOn: binding)
+        #if os(macOS)
+        if inMenu { toggle } else { toggle.toggleStyle(.checkbox) }
+        #else
+        toggle
+        #endif
     }
 }
 
@@ -282,7 +320,12 @@ struct A2UITextField: View {
         case "longText": TextEditor(text: binding).frame(minHeight: 60).overlay(alignment: .topLeading) { if binding.wrappedValue.isEmpty { Text(label).foregroundStyle(.tertiary).padding(6) } }
         case "obscured": SecureField(label, text: binding)
         case "number": TextField(label, text: binding).autocorrectionDisabled()
-        default: TextField(label, text: binding).autocorrectionDisabled()
+        default:
+            // A filled, bordered box, so it reads as something to tap on a dark page.
+            TextField(label, text: binding).autocorrectionDisabled().textFieldStyle(.plain)
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(Color.secondary.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.45)))
         }
     }
 }
@@ -318,6 +361,8 @@ struct A2UIChoicePicker: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @State private var filter = ""
+    @Environment(\.a2uiPane) private var pane
+    @Environment(\.a2uiInForm) private var inForm
     var body: some View {
         let path = a2uiPath(of: node.instance, in: surface)
         let all = (node.props["options"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.map { (label: $0["label"]?.text ?? "", value: $0["value"]?.text ?? "") }
@@ -326,6 +371,25 @@ struct A2UIChoicePicker: View {
         let multiple = node.props["variant"]?.stringValue == "multipleSelection"
         let single = Binding<String>(get: { selected.first ?? "" }, set: { surface.set(path, .array([.string($0)])) })
         let title = node.props["label"]?.text ?? ""
+        if inForm {
+            // In a Form each option is its own row: a tick for one of several, and a labelled menu row for a single choice.
+            if multiple {
+                ForEach(options, id: \.value) { o in
+                    let on = selected.contains(o.value)
+                    Button {
+                        var next = selected.filter { $0 != o.value }
+                        if !on { next.append(o.value) }
+                        surface.set(path, .array(next.map { .string($0) }))
+                    } label: {
+                        HStack { Text(o.label); Spacer(); if on { Image(systemName: "checkmark").foregroundStyle(.tint).fontWeight(.semibold) } }
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.menu)
+            }
+        } else {
         VStack(alignment: .leading, spacing: 6) {
             if node.props["filterable"]?.boolValue == true { TextField("Filter", text: $filter) }
             if multiple {
@@ -335,10 +399,23 @@ struct A2UIChoicePicker: View {
                     VStack(alignment: .leading) { ForEach(options, id: \.value) { o in toggle(o, selected, path, chip: false) } }
                 }
             } else if node.props["displayStyle"]?.stringValue == "chips" || options.count <= 4 {
-                Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.segmented)
+                // A narrow pane gets the menu, which is one control wide. A wider one gets the segmented control when it fits the width
+                // it is given and the menu when it does not, so it never runs off the pane.
+                if pane.width < 640 {
+                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
+                        .pickerStyle(.menu).labelsHidden().fixedSize()
+                } else {
+                ViewThatFits(in: .horizontal) {
+                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize(horizontal: true, vertical: false)
+                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
+                        .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                }
+                }
             } else {
-                Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.menu)
+                Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.menu).labelsHidden().fixedSize()
             }
+        }
         }
     }
 

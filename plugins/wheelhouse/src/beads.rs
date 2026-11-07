@@ -2,7 +2,7 @@
 //! filters, sort, trees) and its drawing as A2UI. The same logic serves the command line
 //! (`cli`) and a host's pane over MCP (`serve`).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -312,19 +312,18 @@ struct Col {
     width: Option<f64>,
     tree: bool,
     desc_first: bool,
-    ungrouped: bool,
     /// Shown only when the pane is wide.
     wide: bool,
 }
 
 const COLS: [Col; 7] = [
-    Col { key: "id", label: "ID", width: Some(56.0), tree: false, desc_first: false, ungrouped: false, wide: true },
-    Col { key: "title", label: "Title", width: None, tree: true, desc_first: false, ungrouped: false, wide: false },
-    Col { key: "type", label: "Type", width: Some(56.0), tree: false, desc_first: false, ungrouped: false, wide: true },
-    Col { key: "unlocks", label: "Unlocks", width: Some(28.0), tree: false, desc_first: true, ungrouped: false, wide: true },
-    Col { key: "status", label: "Status", width: Some(84.0), tree: false, desc_first: false, ungrouped: true, wide: false },
-    Col { key: "pri", label: "Priority", width: Some(24.0), tree: false, desc_first: false, ungrouped: false, wide: false },
-    Col { key: "updated", label: "Updated", width: Some(30.0), tree: false, desc_first: true, ungrouped: false, wide: true },
+    Col { key: "id", label: "ID", width: Some(56.0), tree: false, desc_first: false, wide: true },
+    Col { key: "title", label: "Title", width: None, tree: true, desc_first: false, wide: false },
+    Col { key: "type", label: "Type", width: Some(56.0), tree: false, desc_first: false, wide: true },
+    Col { key: "unlocks", label: "Unlocks", width: Some(28.0), tree: false, desc_first: true, wide: true },
+    Col { key: "status", label: "Status", width: Some(84.0), tree: false, desc_first: false, wide: false },
+    Col { key: "pri", label: "Priority", width: Some(24.0), tree: false, desc_first: false, wide: false },
+    Col { key: "updated", label: "Updated", width: Some(30.0), tree: false, desc_first: true, wide: true },
 ];
 
 struct Ui {
@@ -372,14 +371,15 @@ impl Default for Ui {
 }
 
 impl Ui {
+    /// The values a filter holds: one, or several joined by commas.
+    fn values(&self, key: &str) -> Vec<&str> {
+        self.filter(key).split(',').filter(|s| !s.is_empty()).collect()
+    }
     fn filter(&self, key: &str) -> &str {
         self.f.get(key).map(String::as_str).unwrap_or("")
     }
     fn custom(&self) -> bool {
         self.view == "focus" || self.view == "graph"
-    }
-    fn grouped(&self) -> bool {
-        self.view == "list"
     }
 }
 
@@ -412,17 +412,20 @@ fn matches(ui: &Ui, b: &Bead) -> bool {
     if ui.hide && ui.filter("status").is_empty() && kind == "done" {
         return false;
     }
-    if !ui.filter("status").is_empty() && kind != ui.filter("status") {
+    let any_of = |key: &str, f: &dyn Fn(&str) -> bool| {
+        let v = ui.values(key);
+        v.is_empty() || v.iter().any(|x| f(x))
+    };
+    if !any_of("status", &|s| kind == s) || !any_of("type", &|t| b.kind == t) || !any_of("label", &|l| b.labels.iter().any(|x| x == l)) {
         return false;
     }
-    if !ui.filter("type").is_empty() && b.kind != ui.filter("type") {
-        return false;
-    }
-    if !ui.filter("label").is_empty() && !b.labels.iter().any(|l| l == ui.filter("label")) {
-        return false;
-    }
-    if !ui.filter("pri").is_empty() && b.priority.map(|p| p.to_string()).as_deref() != Some(ui.filter("pri")) {
-        return false;
+    match ui.filter("pri") {
+        "" => {}
+        "urgent" if !b.priority.is_some_and(|p| p <= 1) => return false,
+        "low" if !b.priority.is_some_and(|p| p >= 3) => return false,
+        "urgent" | "low" => {}
+        d if b.priority.map(|p| p.to_string()).as_deref() != Some(d) => return false,
+        _ => {}
     }
     let hay = haystack(b);
     ui.q.to_lowercase().split_whitespace().all(|w| hay.contains(w))
@@ -596,33 +599,13 @@ fn row_json(ix: &Ix, ui: &Ui, r: &RowOut, cols: &[&Col]) -> Value {
 
 fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
     let rows = build(ix, ui);
-    let grouped = ui.grouped();
-    let cols: Vec<&Col> = COLS.iter().filter(|c| !(c.ungrouped && grouped)).collect();
+    let cols: Vec<&Col> = COLS.iter().collect();
     let total = ix.snap.beads.iter().filter(|b| b.kind != "epic" && b.kind != "milestone").count();
     let shown = rows.len();
-    let sections: Vec<Value> = if grouped {
-        let titles = [
-            ("in progress", "In progress"),
-            ("ready", "Ready to start"),
-            ("blocked", "Blocked"),
-            ("open", "Open"),
-            ("deferred", "Deferred"),
-            ("done", "Done"),
-        ];
-        titles
-            .iter()
-            .filter_map(|(k, title)| {
-                let mine: Vec<Value> =
-                    rows.iter().filter(|r| kind_of(r.b) == *k).map(|r| row_json(ix, ui, r, &cols)).collect();
-                (!mine.is_empty()).then(|| table::section(title, mine))
-            })
-            .collect()
-    } else {
-        vec![table::section("", rows.iter().map(|r| row_json(ix, ui, r, &cols)).collect())]
-    };
+    let sections: Vec<Value> = vec![table::section("", rows.iter().map(|r| row_json(ix, ui, r, &cols)).collect())];
     let columns: Vec<Value> = cols
         .iter()
-        .map(|c| table::column(c.key, c.label, json!(c.width), c.tree && !grouped, c.wide))
+        .map(|c| table::column(c.key, c.label, json!(c.width), c.tree, c.wide))
         .collect();
     let v = table::component(
         columns,
@@ -635,11 +618,6 @@ fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
     (v, shown, total)
 }
 
-fn opts(first: &str, values: Vec<(String, String)>) -> Value {
-    let mut o = vec![json!({ "value": "", "text": first })];
-    o.extend(values.into_iter().map(|(v, t)| json!({ "value": v, "text": t })));
-    Value::Array(o)
-}
 
 type Next<'a, 'b> = &'b dyn Fn(&Bead) -> Vec<&'a Bead>;
 
@@ -665,7 +643,9 @@ fn branch<'a>(
         json!({ "style": "link" }),
     );
     let chip = p.label(&format!("{id}.c"), k, json!({ "chip": true, "size": 11, "tone": tone_of(k) }));
-    let mut kids_ids = vec![p.boxed(&format!("{id}.h"), "h", vec![link, chip], json!({ "spacing": 6, "align": "center" }))];
+    // The title takes the line and the status chip keeps one column, so the chips of a list line up whatever the titles.
+    crate::core::layout::modify(&mut p.out, &format!("{id}.l.t"), json!({ "lineLimit": 1 }));
+    let mut kids_ids = vec![p.boxed(&format!("{id}.h"), "h", vec![link, chip], json!({ "spacing": 6, "align": "center", "widths": ["flex", 76] }))];
     let kids: Vec<&Bead> = next(b).into_iter().filter(|x| !seen.contains(&x.id)).collect();
     if !kids.is_empty() {
         if depth >= 4 {
@@ -780,32 +760,37 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
     let all: Vec<&Bead> = snap.beads.iter().filter(|b| b.kind != "epic" && b.kind != "milestone").collect();
     let mut page: Vec<String> = vec![];
 
-    let name = if snap.has_repo { format!("Beads · {}", snap.name) } else { "Beads".into() };
-    let runs = if snap.has_repo {
-        json!([{ "text": "Beads", "size": 30, "weight": "bold" }, { "text": format!(" · {}", snap.name), "size": 30, "weight": "regular", "tone": "muted" }])
-    } else {
-        json!([{ "text": name, "size": 30, "weight": "bold" }])
-    };
-    let t = p.runs("title", runs, json!({}));
-    let sub = p.label("sub", &format!("{} beads, not counting epics and milestones", all.len()), json!({ "size": 12, "tone": "muted" }));
-    page.push(p.boxed("head", "h", vec![t, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 12, 0] })));
 
     let n = |f: &dyn Fn(&Bead) -> bool| all.iter().filter(|b| f(b)).count();
+    // The four boxes are the status filter: a tap picks one, a tap on the chosen one clears it.
     let kpis = [
-        ("Ready to start", n(&|b| b.ready && b.status == "open"), true),
-        ("In progress", n(&|b| b.status == "in_progress"), false),
-        ("Blocked", n(&|b| b.status == "open" && !b.ready && !b.blocked_by.is_empty()), false),
-        ("Closed", n(&|b| b.status == "closed"), false),
+        ("Ready", "ready", n(&|b| b.ready && b.status == "open"), true),
+        ("Active", "in progress", n(&|b| b.status == "in_progress"), false),
+        ("Blocked", "blocked", n(&|b| b.status == "open" && !b.ready && !b.blocked_by.is_empty()), false),
+        ("Closed", "done", n(&|b| b.status == "closed"), false),
     ];
     let cards: Vec<String> = kpis
         .iter()
         .enumerate()
-        .map(|(i, (l, v, hot))| {
-            let tone = if *hot && *v > 0 { "ok" } else if *v == 0 { "muted" } else { "fg" };
-            p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), tone)
+        .map(|(i, (label, kind, count, hot))| {
+            let on = ui.values("status") == [*kind];
+            let tone = if *hot && *count > 0 { "ok" } else if *count == 0 { "muted" } else { "fg" };
+            let v = p.label(&format!("kpi{i}.v"), &count.to_string(), json!({ "size": 20, "weight": "semibold", "tabular": true, "tone": tone }));
+            let l = p.label(&format!("kpi{i}.l"), label, json!({ "tone": "muted", "size": 11 }));
+            crate::core::layout::modify(&mut p.out, &l, json!({ "lineLimit": 1 }));
+            let inner = p.boxed(&format!("kpi{i}.c"), "v", vec![v, l], json!({ "spacing": 2, "align": "start" }));
+            let mut mods = vec![json!({ "frame": { "maxWidth": "infinity" } }), json!({ "padding": [7, 8] }),
+                json!({ "overlay": { "stroke": if on { "tint" } else { "separator" }, "cornerRadius": 8 } })];
+            if on {
+                mods.push(json!({ "background": "controlBackground" }));
+            }
+            let value = if on { "" } else { kind };
+            p.put(json!({ "id": format!("kpi{i}"), "component": "Button", "child": inner, "variant": "borderless",
+                "action": { "event": { "name": "set_filter", "context": { "key": "status", "value": value } } }, "modifiers": mods }));
+            format!("kpi{i}")
         })
         .collect();
-    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));
+    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 8, "widths": ["flex", "flex", "flex", "flex"] })));
 
     for (i, pr) in snap.problems.iter().chain(snap.error.iter()).enumerate() {
         let l = p.label(&format!("problem{i}.t"), pr, json!({ "tone": "bad" }));
@@ -815,44 +800,91 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
     if !snap.has_repo {
         page.push(p.label("none", "This space has no .beads directory, so there is nothing to list.", json!({ "tone": "muted" })));
     } else {
-        // toolbar: one row that scrolls sideways when the pane is narrow.
+        // Search with the views choice beside it, one Filters button opening a sheet, and the active filters as chips.
         p.search("search", "set_query", &ui.q, "Search");
         p.choose("views", "/set_view", &ui.view, vec![
                 json!({ "value": "list", "text": "List" }), json!({ "value": "epics", "text": "Epics" }),
                 json!({ "value": "deps", "text": "Depends on" }), json!({ "value": "unlocks", "text": "Unlocks" }),
                 json!({ "value": "focus", "text": "Focus" }), json!({ "value": "graph", "text": "Graph" })], true, false);
-        let uniq = |f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<(String, String)> {
-            let s: BTreeSet<String> = snap.beads.iter().flat_map(f).collect();
-            s.into_iter().map(|v| (v.clone(), v)).collect()
+        crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "maxWidth": "infinity" } }));
+        page.push(p.boxed("find", "h", vec!["search".into(), "views".into()], json!({ "spacing": 8, "align": "center", "widths": ["flex", Value::Null], "padding": [8, 0, 0, 0] })));
+
+        // The sheet: type and label take any number, priority and sort one.
+        let counted = |f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<Value> {
+            let mut c: BTreeMap<String, usize> = BTreeMap::new();
+            for v in all.iter().flat_map(|b| f(b)) {
+                *c.entry(v).or_default() += 1;
+            }
+            let mut v: Vec<(String, usize)> = c.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            v.into_iter().map(|(k, n)| json!({ "value": k, "text": format!("{k}  {n}") })).collect()
         };
-        let sel = |p: &mut Page, key: &str, first: &str, values: Vec<(String, String)>| -> String {
-            p.choose(&format!("f.{key}"), &format!("/set_filter/{key}"), &ui.filter(key).to_string(), opts(first, values), false, false);
-            format!("f.{key}")
-        };
-        let mut row = vec![
-            "views".to_string(),
-            sel(&mut p, "status", "Any status", KINDS.iter().map(|k| (k.to_string(), k.to_string())).collect()),
-            sel(&mut p, "type", "Any type", uniq(&|b| vec![b.kind.clone()])),
-            sel(&mut p, "label", "Any label", uniq(&|b| b.labels.clone())),
-            sel(&mut p, "pri", "Any priority", (0..5).map(|i| (i.to_string(), format!("P{i}"))).collect()),
-        ];
-        p.check("hide", "set_hide", "Hide done", ui.hide);
-        row.push("hide".into());
-        let sorts: Vec<Value> =
-            COLS.iter().map(|c| json!({ "value": c.key, "text": format!("Sort: {}", c.label) })).collect();
-        p.choose("sort", "/set_sort", &ui.sort.0.to_string(), sorts, false, ui.custom());
-        row.push("sort".into());
-        let dirty = !ui.q.is_empty() || ui.f.values().any(|v| !v.is_empty());
-        row.push(p.button("clear", "Clear", "clear", json!({}), json!({ "disabled": !dirty, "hideOff": true })));
+        let mine = |key: &str| ui.values(key).into_iter().map(String::from).collect::<Vec<_>>();
+        let type_rows = p.choose_many("filters.type", "/set_filter/type", mine("type"), counted(&|b| vec![b.kind.clone()]));
+        let label_rows = p.choose_many("filters.label", "/set_filter/label", mine("label"), counted(&|b| b.labels.clone()));
+        let urgent = all.iter().filter(|b| b.priority.is_some_and(|p| p <= 1)).count();
+        let low = all.iter().filter(|b| b.priority.is_some_and(|p| p >= 3)).count();
+        let p2 = all.iter().filter(|b| b.priority == Some(2)).count();
+        let pri = p.choose("filters.pri", "/set_filter/pri", ui.filter("pri"), vec![
+            json!({ "value": "", "text": format!("All  {}", all.len()) }), json!({ "value": "urgent", "text": format!("Urgent: P0 to P1  {urgent}") }),
+            json!({ "value": "2", "text": format!("P2  {p2}") }), json!({ "value": "low", "text": format!("P3 and lower  {low}") })], false, false);
+        p.set_prop(&pri, "label", json!("Priority"));
+        let sorts: Vec<Value> = COLS.iter().map(|c| json!({ "value": c.key, "text": c.label })).collect();
+        let sort = p.choose("filters.sort", "/set_sort", &ui.sort.0.to_string(), sorts, false, ui.custom());
+        p.set_prop(&sort, "label", json!("Sort"));
+        let clear = p.button("filters.clear", "Clear all filters", "clear", json!({}), json!({ "style": "link" }));
+        crate::core::layout::modify(&mut p.out, "filters.clear.t", json!({ "foregroundStyle": "red" }));
+        for (id, children, title) in [("filters.s.type", vec![type_rows], Some("Type")), ("filters.s.label", vec![label_rows], Some("Label")),
+                                      ("filters.s.order", vec![pri, sort], None), ("filters.s.clear", vec![clear], None)] {
+            let mut v = json!({ "id": id, "component": "Section", "children": children });
+            if let Some(t) = title {
+                v["title"] = json!(t);
+            }
+            p.put(v);
+        }
+        p.put(json!({ "id": "filters.form", "component": "Form", "style": "grouped",
+            "children": ["filters.s.type", "filters.s.label", "filters.s.order", "filters.s.clear"] }));
+        let active = mine("type").len() + mine("label").len() + usize::from(!ui.filter("pri").is_empty());
+        let pill = if active > 0 { format!("Filters · {active}") } else { "Filters".to_string() };
+        p.put(json!({ "id": "filters.btn.t", "component": "Text", "text": pill }));
+        p.put(json!({ "id": "filters.btn", "component": "Button", "child": "filters.btn.t",
+            "modifiers": [{ "padding": { "horizontal": 12, "vertical": 5 } }, { "overlay": { "stroke": "tint", "cornerRadius": 14 } }, { "foregroundStyle": "tint" }] }));
+        p.put(json!({ "id": "filters", "component": "Modal", "title": "Filters", "trigger": "filters.btn", "content": "filters.form" }));
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
-        row.push(p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" })));
-        let mut widths: Vec<Value> = (0..row.len() - 1).map(|_| Value::Null).collect();
-        widths.push(json!(96));
-        // The search field takes its own line, the page's full width, above the row of views and menus.
-        crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "maxWidth": "infinity" } }));
-        page.push("search".to_string());
-        page.push(p.boxed("tools", "h", row, json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": widths, "trailing": 1 })));
+        let count_id = p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
+        page.push(p.boxed("bar", "h", vec!["filters".into(), count_id], json!({ "spacing": 8, "align": "center", "widths": [Value::Null, "flex"], "padding": [4, 0, 0, 0] })));
+
+        // Active filters, each one a button that removes it.
+        let mut chips: Vec<String> = vec![];
+        let mut chip = |p: &mut Page, text: &str, tool: &str, ctx: Value| {
+            let id = format!("chip{}", chips.len());
+            p.button(&id, &format!("{text}  ×"), tool, ctx, json!({ "style": "link" }));
+            crate::core::layout::modify(&mut p.out, &format!("{id}.t"), json!({ "font": { "size": 12, "weight": "regular", "design": "default" } }));
+            crate::core::layout::modify(&mut p.out, &id, json!({ "padding": { "horizontal": 8, "vertical": 3 } }));
+            crate::core::layout::modify(&mut p.out, &id, json!({ "overlay": { "stroke": "tint", "cornerRadius": 12 } }));
+            chips.push(id);
+        };
+        for key in ["status", "type", "label"] {
+            let vals = ui.values(key);
+            for v in &vals {
+                let rest: Vec<&str> = vals.iter().copied().filter(|x| x != v).collect();
+                chip(&mut p, v, "set_filter", json!({ "key": key, "value": rest.join(",") }));
+            }
+        }
+        match ui.filter("pri") {
+            "" => {}
+            "urgent" => chip(&mut p, "P0 to P1", "set_filter", json!({ "key": "pri", "value": "" })),
+            "low" => chip(&mut p, "P3 and lower", "set_filter", json!({ "key": "pri", "value": "" })),
+            d => chip(&mut p, &format!("P{d}"), "set_filter", json!({ "key": "pri", "value": "" })),
+        }
+        if !ui.q.is_empty() {
+            chip(&mut p, &format!("“{}”", ui.q), "set_query", json!({ "value": "" }));
+        }
+        if !chips.is_empty() {
+            p.put(json!({ "id": "chips", "component": "List", "direction": "horizontal", "spacing": 6, "children": chips, "modifiers": [{ "padding": [4, 0, 0, 0] }] }));
+            page.push("chips".to_string());
+        }
 
         if ui.custom() {
             let parts = graph::Model::new(snap, ui).components(&mut p, ui);
@@ -863,9 +895,12 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
             p.put(t);
             page.push(p.boxed("table.b", "v", vec!["table".into()], json!({})));
         }
-        if let Some(d) = ui.detail.as_deref() {
-            if let Some(id) = detail(&mut p, &ix, ui, d) {
-                page.push(id);
+        // A closed panel is sent as a Modal that is not presented: the client keeps every component it was sent, so only that
+        // replaces the open one.
+        match ui.detail.as_deref().and_then(|d| detail(&mut p, &ix, ui, d)) {
+            Some(id) => page.push(id),
+            None => {
+                p.put(json!({ "id": "detail", "component": "Modal", "presented": false, "dismissAction": "close_detail" }));
             }
         }
     }
@@ -955,18 +990,59 @@ mod tests {
     }
 
     #[test]
-    fn the_toolbar_is_one_wrapping_row_and_a_row_names_its_columns() {
+    fn a_filter_of_several_values_matches_any_of_them_and_priority_groups_work() {
+        let b1 = bead("a", |b| { b.kind = "bug".into(); b.labels = vec!["client".into()]; b.priority = Some(1); });
+        let b2 = bead("b", |b| { b.kind = "task".into(); b.labels = vec!["mac".into()]; b.priority = Some(3); });
+        let mut ui = Ui::default();
+        ui.f.insert("type".into(), "bug,feature".into());
+        assert!(matches(&ui, &b1) && !matches(&ui, &b2));
+        ui.f.insert("type".into(), "".into());
+        ui.f.insert("label".into(), "client,mac".into());
+        assert!(matches(&ui, &b1) && matches(&ui, &b2));
+        ui.f.insert("label".into(), "".into());
+        ui.f.insert("pri".into(), "urgent".into());
+        assert!(matches(&ui, &b1) && !matches(&ui, &b2));
+        ui.f.insert("pri".into(), "low".into());
+        assert!(!matches(&ui, &b1) && matches(&ui, &b2));
+    }
+
+    #[test]
+    fn an_active_filter_is_a_chip_that_removes_it() {
+        let s = snap(vec![bead("a", |_| {})]);
+        let mut ui = Ui::default();
+        ui.f.insert("label".into(), "client,mac".into());
+        let c = page_components(&s, &ui);
+        let chip = c.iter().find(|x| x["id"] == "chip0").expect("a chip for client");
+        assert_eq!(chip["action"]["event"]["context"], json!({ "key": "label", "value": "mac" }));
+        assert!(c.iter().any(|x| x["id"] == "filters.btn.t" && x["text"] == "Filters · 2"));
+    }
+
+    #[test]
+    fn the_page_has_status_boxes_a_search_row_a_filters_sheet_and_a_table() {
         let s = snap(vec![bead("a", |_| {})]);
         let c = page_components(&s, &Ui::default());
-        let tools = c.iter().find(|x| x["id"] == "tools").expect("one toolbar");
-        assert_eq!(tools["component"], "List");
-        assert_eq!(tools["direction"], "horizontal");
-        assert_eq!(tools["children"].as_array().unwrap().len(), 9);
-        assert!(c.iter().any(|x| x["id"] == "page" && x["children"].as_array().unwrap().iter().any(|k| k == "search")));
+        let page = c.iter().find(|x| x["id"] == "page").unwrap()["children"].as_array().unwrap().clone();
+        assert_eq!(page[..4], ["kpis", "find", "bar", "table.b"].map(Value::from), "boxes, search with the views choice, the Filters button and count, the table");
+        let find = c.iter().find(|x| x["id"] == "find").unwrap();
+        assert_eq!(find["children"], json!(["search", "views"]));
+        let sheet = c.iter().find(|x| x["id"] == "filters").unwrap();
+        assert_eq!((sheet["component"].as_str(), sheet["title"].as_str(), sheet["trigger"].as_str()), (Some("Modal"), Some("Filters"), Some("filters.btn")));
+        assert!(c.iter().all(|x| x["id"] != "chips"), "no filter is on, so no chips");
+        let boxes: Vec<&Value> = c.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("kpi") && !i.contains('.') && i != "kpis")).collect();
+        assert_eq!(boxes.len(), 4);
+        assert!(boxes.iter().all(|b| b["component"] == "Button" && b["action"]["event"]["name"] == "set_filter"), "each box is a status filter");
+        let values: Vec<&str> = boxes.iter().map(|b| b["action"]["event"]["context"]["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["ready", "in progress", "blocked", "done"]);
+        assert!(values.iter().all(|v| KINDS.contains(v)), "a box filters by a status the rows are grouped under");
+        let mut ui = Ui::default();
+        ui.f.insert("status".into(), "ready".into());
+        let filtered = page_components(&s, &ui);
+        let on = filtered.iter().find(|x| x["id"] == "kpi0").unwrap();
+        assert_eq!(on["action"]["event"]["context"]["value"], "", "a tap on the chosen box clears it");
         let table = c.iter().find(|x| x["id"] == "table").expect("the table");
         let first = &table["sections"][0]["rows"][0];
         let keys: Vec<&str> = first["cells"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap()).collect();
-        assert_eq!(keys, ["id", "title", "type", "unlocks", "pri", "updated"]);
+        assert_eq!(keys, ["id", "title", "type", "unlocks", "status", "pri", "updated"]);
         let wide: Vec<&str> = table["columns"].as_array().unwrap().iter().filter(|x| x["wide"] == true).map(|x| x["key"].as_str().unwrap()).collect();
         assert_eq!(wide, ["id", "type", "unlocks", "updated"]);
     }

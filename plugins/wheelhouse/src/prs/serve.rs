@@ -72,10 +72,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let mut p = Page { out: vec![] };
     let at = now();
     let mut page = vec![];
-    let title = s.repo.clone().unwrap_or_else(|| s.name.clone());
-    let t = p.runs("title", json!([{ "text": format!("PRs · {title}"), "size": 20, "weight": "bold" }]), json!({}));
-    let sub = p.label("sub", &s.me.as_deref().map(|m| format!("signed in as {m}")).unwrap_or_default(), json!({ "size": 12, "tone": "muted" }));
-    page.push(p.boxed("head", "h", vec![t, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 12, 0] })));
+    // No page title or subtitle: the pane's own bar says which page it is.
     let n = |b: &str| s.prs.iter().filter(|p| p.bucket == b).count();
     let cards: Vec<String> = BUCKETS.iter().enumerate().map(|(i, (k, l))| {
         let v = n(k);
@@ -90,7 +87,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         p.search("search", "set_query", &ui.q, "Search");
         let shown: Vec<&Pr> = s.prs.iter().filter(|x| matches(x, ui)).collect();
         let count = p.label("count", &format!("{} of {}", shown.len(), s.prs.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("tools", "h", vec!["search".into(), count], json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": ["flex", 96], "trailing": 1 })));
+        page.push(p.boxed("tools", "h", vec!["search".into(), count], json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": ["flex", 96], "trailing": 1 })));
         let sections: Vec<Value> = BUCKETS.iter().filter_map(|(k, title)| {
             let rows: Vec<Value> = shown.iter().filter(|x| x.bucket == *k).map(|x| row(x, ui, at)).collect();
             (!rows.is_empty()).then(|| table::section(title, rows))

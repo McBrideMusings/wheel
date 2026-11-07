@@ -110,10 +110,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let mut p = Page { out: vec![] };
     let at = now();
     let mut page = vec![];
-    let t = p.runs("title", json!([{ "text": format!("Repo · {}", s.name), "size": 20, "weight": "bold" }]), json!({}));
-    let sub = p.label("sub", &s.default.as_deref().map(|d| format!("against {d}, on {}", s.head.as_deref().unwrap_or("a detached HEAD"))).unwrap_or_default(),
-        json!({ "size": 12, "tone": "muted" }));
-    page.push(p.boxed("head", "h", vec![t, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 12, 0] })));
+    // No page title or subtitle: the pane's own bar says which page it is.
     let n = |f: &dyn Fn(&Branch) -> bool| s.branches.iter().filter(|b| f(b)).count();
     let kpis = [("Branches", s.branches.len(), "fg"), ("Safe to delete", n(&|b| kinds(b) == "dead"), "ok"),
         ("Worktrees", n(&|b| b.worktree.is_some()), "fg"), ("Open PRs", n(&|b| b.pr.is_some()), "fg")];
@@ -137,7 +134,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         let shown: Vec<&Branch> = s.branches.iter().filter(|b| matches(b, ui)).collect();
         let count = p.label("count", &format!("{} of {}", shown.len(), s.branches.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
         page.push(p.boxed("tools", "h", vec!["search".into(), "views".into(), count],
-            json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": ["flex", null, 96], "trailing": 1 })));
+            json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": ["flex", null, 96], "trailing": 1 })));
         let sect = |title: &str, f: &dyn Fn(&Branch) -> bool| {
             let rows: Vec<Value> = shown.iter().filter(|b| f(b)).map(|b| row(b, ui, at)).collect();
             (!rows.is_empty()).then(|| table::section(title, rows))

@@ -47,9 +47,24 @@ struct A2UITableView: View {
                 guard let id, let line = lines.first(where: { $0.id == id }), line.title == nil else { return }
                 fire(rowAction, ["id": .string(line.row["id"]?.stringValue ?? "")])
             })
+        grid(lines, cols, selected: selected, rowAction: rowAction, foldAction: foldAction)
+        .overlay {
+            if lines.isEmpty { Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary) }
+        }
+        // A Table fills the height it is given and scrolls itself; a `frame` modifier on it sets that height.
+        .frame(maxHeight: .infinity)
+        .frame(minHeight: 120)
+        .accessibilityIdentifier("a2ui.table")
+    }
+
+    /// The Mac draws SwiftUI's Table. On a phone a Table shows only its first column, so a List of one-line rows draws the same cells.
+    @ViewBuilder
+    private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<String?>, rowAction: String, foldAction: String) -> some View {
+        let first = cols.first?["key"]?.stringValue ?? ""
+        #if os(macOS)
         Table(lines, selection: selected) {
             TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
-                TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: cols.first?["key"]?.stringValue ?? "") }
+                TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: first) }
                     .width(min: c["width"]?.numberValue.map { CGFloat($0) }, ideal: c["width"]?.numberValue.map { CGFloat($0) },
                            max: c["width"]?.numberValue.map { CGFloat($0) })
             }
@@ -61,19 +76,37 @@ struct A2UITableView: View {
                 }
             }
         }
-        .overlay {
-            if lines.isEmpty { Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary) }
+        #else
+        List(lines) { line in
+            if let title = line.title {
+                Text(title).font(.system(size: 13, weight: .semibold))
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
+                        let width = c["width"]?.numberValue.map { CGFloat($0) }
+                        cell(line, c, foldAction, first: first)
+                            .frame(width: width, alignment: .leading)
+                            .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { fire(rowAction, ["id": .string(line.row["id"]?.stringValue ?? "")]) }
+                .contextMenu {
+                    ForEach(Array((line.row["menu"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.enumerated()), id: \.offset) { _, item in
+                        Button(item["label"]?.stringValue ?? "") { fire(item["action"]?.stringValue ?? "", item["context"]?.dictionaryValue ?? [:]) }
+                    }
+                }
+            }
         }
-        // The page scrolls, so the table is as tall as its rows: a Table inside a ScrollView has no height of its own and draws none.
-        .frame(minHeight: CGFloat(max(lines.count, 3)) * 28 + 36)
-        .accessibilityIdentifier("a2ui.table")
+        .listStyle(.plain)
+        #endif
     }
 
     @ViewBuilder
     private func cell(_ line: Line, _ c: [String: AnyCodable], _ foldAction: String, first: String) -> some View {
         let key = c["key"]?.stringValue ?? ""
         if let title = line.title {
-            if key == first { Text(title).font(.headline) } else { Text("") }
+            if key == first { Text(title).font(.system(size: 13, weight: .semibold)) } else { Text("") }
         } else {
             let cells = (line.row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
             let cell = cells.first { $0["key"]?.stringValue == key } ?? [:]
@@ -88,7 +121,8 @@ struct A2UITableView: View {
                     } else { Color.clear.frame(width: 16, height: 1) }
                 }
                 Text(cell["text"]?.text ?? "")
-                    .font(cell["mono"]?.boolValue == true ? .system(.caption, design: .monospaced) : cell["chip"]?.boolValue == true ? .callout.weight(.semibold) : .body)
+                    // Point sizes, not text styles: a text style is 17 pt on a phone and 13 pt on a Mac.
+                    .font(cell["mono"]?.boolValue == true ? .system(size: 11, design: .monospaced) : cell["chip"]?.boolValue == true ? .system(size: 12, weight: .semibold) : .system(size: 13))
                     .foregroundStyle(cellColor(cell, dim: line.row["dim"]?.boolValue == true))
                     .lineLimit(1).truncationMode(.tail)
             }

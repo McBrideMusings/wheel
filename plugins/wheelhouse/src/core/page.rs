@@ -54,8 +54,9 @@ impl Page {
     /// A number over a caption in an outlined box: `value` in `tone` (muted when zero), `label` under it.
     pub fn stat(&mut self, id: &str, value: &str, label: &str, tone: &str) -> String {
         let v = self.label(&format!("{id}.v"), value, json!({ "size": 22, "weight": "semibold", "tabular": true, "tone": tone }));
-        let l = self.label(&format!("{id}.l"), label, json!({ "tone": "muted" }));
-        self.boxed(id, "v", vec![v, l], json!({ "border": "line", "spacing": 2 }))
+        let l = self.label(&format!("{id}.l"), label, json!({ "tone": "muted", "size": 11 }));
+        layout::modify(&mut self.out, &l, json!({ "lineLimit": 1 }));
+        self.boxed(id, "v", vec![v, l], json!({ "border": "line", "spacing": 2, "align": "start", "padding": [8, 10] }))
     }
 
     /// Puts `value` in the data model at `path`, the path a control's `value` is bound to. A change the person makes there
@@ -87,12 +88,21 @@ impl Page {
         id.to_string()
     }
 
-    /// A checkbox that calls `tool` with "true" or "false".
-    pub fn check(&mut self, id: &str, tool: &str, text: &str, value: bool) -> String {
-        self.bind(&format!("/{tool}"), json!(value));
-        self.put(json!({ "id": id, "component": "CheckBox", "label": text, "value": { "path": format!("/{tool}") } }));
+    /// A choice of any number among `options` ({value, text}), ticked in `selected`; `path` is `/<tool>/<key>`.
+    pub fn choose_many(&mut self, id: &str, path: &str, selected: Vec<String>, options: impl Into<Value>) -> String {
+        self.bind(path, json!(selected));
+        let options: Vec<Value> = options.into().as_array().cloned().unwrap_or_default().iter().map(|o| json!({ "label": o["text"], "value": o["value"] })).collect();
+        self.put(json!({ "id": id, "component": "ChoicePicker", "variant": "multipleSelection", "displayStyle": "checkbox", "options": options, "value": { "path": path } }));
         id.to_string()
     }
+
+    /// Sets `key` on the component `id` already put.
+    pub fn set_prop(&mut self, id: &str, key: &str, value: Value) {
+        if let Some(c) = self.out.iter_mut().find(|c| c["id"] == id) {
+            c[key] = value;
+        }
+    }
+
 
     /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or
     /// plain draws it borderless, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.

@@ -181,7 +181,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         let rows: Vec<&Item> = s.items.iter().filter(|i| shown(i, ui)).collect();
         let count = p.label("count", &format!("{} of {}", rows.len(), s.items.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
         page.push(p.boxed("tools", "h", vec!["search".into(), "views".into(), count],
-            json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "widths": ["flex", null, 96], "trailing": 1 })));
+            json!({ "spacing": 8, "align": "center", "widths": ["flex", null, 96], "trailing": 1 })));
         let mut sorted = rows.clone();
         sorted.sort_by(|a, b| (a.priority.unwrap_or(9), &a.id).cmp(&(b.priority.unwrap_or(9), &b.id)));
         let columns = vec![
@@ -195,8 +195,11 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         t["id"] = json!("table");
         p.put(t);
         page.push(p.boxed("table.b", "v", vec!["table".into()], json!({})));
-        if let Some(i) = ui.sel.as_deref().and_then(|id| s.items.iter().find(|i| i.id == id)) {
-            page.push(detail(&mut p, i));
+        match ui.sel.as_deref().and_then(|id| s.items.iter().find(|i| i.id == id)) {
+            Some(i) => page.push(detail(&mut p, i)),
+            None => {
+                p.put(json!({ "id": "detail", "component": "Modal", "presented": false, "dismissAction": "close_detail" }));
+            }
         }
     }
     p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
@@ -425,7 +428,7 @@ mod tests {
         let c = components(&s, &ui);
         let table = c.iter().find(|v| v["id"] == "table").unwrap();
         assert_eq!(table["sections"][0]["rows"][0]["cells"][0]["text"], "t-1");
-        assert!(c.iter().all(|v| v["id"] != "detail"));
+        assert!(c.iter().any(|v| v["id"] == "detail" && v["presented"] == false), "a closed panel is sent as a Modal that is not presented");
         ui.sel = Some("t-1".into());
         let c = components(&s, &ui);
         assert!(c.iter().any(|v| v["id"] == "d.close" && v["action"]["event"]["name"] == "close_issue"));

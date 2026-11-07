@@ -841,6 +841,8 @@ impl<'a> Model<'a> {
         if let Some(items) = layout["pop"]["items"].as_array() {
             self.more_sheet(p, items);
             ids.push("graph.more".into());
+        } else {
+            p.put(json!({ "id": "graph.more", "component": "Modal", "presented": false, "dismissAction": "escape" }));
         }
         ids
     }

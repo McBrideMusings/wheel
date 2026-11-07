@@ -13,7 +13,11 @@ import SwiftUI
 func a2uiColor(_ name: String?) -> Color? {
     switch name {
     case "primary": return .primary
-    case "secondary": return .secondary
+    #if os(macOS)
+    case "secondary": return Color(nsColor: .secondaryLabelColor)
+    #else
+    case "secondary": return Color(uiColor: .secondaryLabel)
+    #endif
     case "red": return .red
     case "orange": return .orange
     case "yellow": return .yellow
@@ -36,6 +40,12 @@ func a2uiColor(_ name: String?) -> Color? {
     case "controlBackground": return Color(nsColor: .controlBackgroundColor)
     case "textBackground": return Color(nsColor: .textBackgroundColor)
     case "tertiary": return Color(nsColor: .tertiaryLabelColor)
+    #else
+    case "separator": return Color(uiColor: .separator)
+    case "windowBackground": return Color(uiColor: .systemBackground)
+    case "controlBackground": return Color(uiColor: .secondarySystemBackground)
+    case "textBackground": return Color(uiColor: .systemBackground)
+    case "tertiary": return Color(uiColor: .tertiaryLabel)
     #endif
     default: return nil
     }

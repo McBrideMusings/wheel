@@ -157,11 +157,6 @@ impl Server {
         })
     }
 
-    #[tool(description = "Hide or show done beads: value true or false", meta = ui_meta())]
-    fn set_hide(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.hide = value == "true")
-    }
-
     #[tool(description = "Sort by a column from the Sort menu", meta = ui_meta())]
     fn set_sort(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
         self.with(&meta, |_, ui| {

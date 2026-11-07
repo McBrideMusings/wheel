@@ -64,6 +64,18 @@ public final class A2UIPane {
     /// The string at `path` of the surface's data model, for a check reading what the pane holds.
     public func text(at path: String) -> String? { surface?.get(path)?.stringValue }
 
+    /// Everything worth pasting into a bug report: which artifact and pane, what state, the daemon's message and the last notice.
+    public var diagnostics: String {
+        var lines = ["artifact: \(artifact.name) (\(artifact.scope))", "pane: \(pane)", "space: \(space ?? "none")", "state: \(stateName)"]
+        if let link { lines.append("linked tool: \(link.tool)  layout resource: \(link.uri)") }
+        if case let .failed(message) = state { lines.append("error: \(message)") }
+        if let notice { lines.append("notice: \(notice)") }
+        if !unsupported.isEmpty { lines.append("unsupported components: \(unsupported.joined(separator: ", "))") }
+        lines.append("components: \(surface?.components.count ?? 0), pending calls: \(pending.count)")
+        lines.append("time: \(ISO8601DateFormatter().string(from: Date()))")
+        return lines.joined(separator: "\n")
+    }
+
     /// The state as a word, for a check.
     public var stateName: String {
         switch state {
