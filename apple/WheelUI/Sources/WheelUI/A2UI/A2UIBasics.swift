@@ -52,7 +52,7 @@ func a2uiValue(_ node: ComponentNode, _ surface: SurfaceModel) -> AnyCodable? {
     surface.get(a2uiPath(of: node.instance, in: surface)) ?? node.props["value"]
 }
 
-// MARK: Text — `text`, `variant` (h1 to h5, body, caption)
+// MARK: Text — `text`, `variant` (h1 to h5, body, caption). Body sets no font, so a `font` modifier on it takes effect.
 struct A2UIText: View {
     let node: ComponentNode
     var body: some View {
@@ -64,7 +64,7 @@ struct A2UIText: View {
         case "h4": t.font(.system(size: 15, weight: .bold))
         case "h5": t.font(.system(size: 14, weight: .semibold))
         case "caption": t.font(.system(size: 12)).foregroundStyle(.secondary)
-        default: t.font(.system(size: 13))
+        default: t
         }
     }
 }
@@ -179,42 +179,57 @@ struct A2UITabs: View {
     }
 }
 
-// MARK: Modal — `trigger` opens a sheet holding `content`; with `presented` the server opens it and `dismissAction` is raised when it closes
+// MARK: Modal — `trigger` opens a sheet holding `content`. With `presented` the server opens it: it dims and covers its own pane
+// (A2UIPresentedModals, drawn by the pane over the page), and `dismissAction` is raised when it closes.
 struct A2UIModal: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @State private var open = false
     var body: some View {
-        if let presented = node.instance.properties["presented"]?.boolValue {
-            Color.clear.frame(width: 0, height: 0)
-                .sheet(isPresented: Binding(get: { presented }, set: { isOpen in
-                    if !isOpen, let name = node.instance.properties["dismissAction"]?.stringValue {
-                        surface.dispatchAction(name: name, sourceComponentId: node.instance.id)
-                    }
-                })) {
-                    VStack(spacing: 0) {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface) }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(18)
-                        }
-                        if let dismiss = node.instance.properties["dismissAction"]?.stringValue {
-                            Divider()
-                            HStack { Spacer(); Button("Close") { surface.dispatchAction(name: dismiss, sourceComponentId: node.instance.id) }.keyboardShortcut(.cancelAction) }.padding(10)
-                        }
-                    }
-                    #if os(macOS)
-                    .frame(minWidth: 480, idealWidth: 640, minHeight: 480, idealHeight: 720)
-                    #endif
-                }
-        } else if node.children.count >= 2 {
+        if node.instance.properties["presented"] == nil, node.children.count >= 2 {
             A2UIChildView(node: node.children[0], surface: surface)
                 .simultaneousGesture(TapGesture().onEnded { open = true })
                 .sheet(isPresented: $open) {
                     A2UIChildView(node: node.children[1], surface: surface).padding(20).frame(minWidth: 320)
                 }
         }
+    }
+}
+
+/// The presented Modals of a surface, drawn over the pane that shows it: a dimmed scrim and a card, so only that pane is covered.
+struct A2UIPresentedModals: View {
+    let surface: SurfaceModel
+    var body: some View {
+        let ids = surface.components.values.filter { $0.type == "Modal" && $0.properties["presented"]?.boolValue == true }.map(\.id).sorted()
+        ForEach(ids, id: \.self) { id in
+            if let node = surface.node(id) { card(node) }
+        }
+    }
+
+    private func card(_ node: ComponentNode) -> some View {
+        let dismiss = node.instance.properties["dismissAction"]?.stringValue
+        let close = { if let dismiss { surface.dispatchAction(name: dismiss, sourceComponentId: node.instance.id) } }
+        return ZStack {
+            Color.black.opacity(0.4).onTapGesture(perform: close)
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                }
+                if dismiss != nil {
+                    Divider()
+                    HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction) }.padding(10)
+                }
+            }
+            .frame(maxWidth: 640, maxHeight: .infinity)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
+            .shadow(radius: 18)
+            .padding(24)
+        }
+        .accessibilityIdentifier("a2ui.modal")
     }
 }
 

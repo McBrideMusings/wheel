@@ -160,6 +160,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_bound_value_becomes_a_data_message_and_never_a_component() {
+        let mut p = Page { out: vec![] };
+        p.search("search", "set_query", "bug", "Search");
+        let m = update("s", p.out);
+        let components = m[0]["updateComponents"]["components"].as_array().unwrap();
+        assert!(components.iter().all(|c| c["id"].is_string() && c["component"].is_string()));
+        assert_eq!(m[1]["updateDataModel"]["path"], "/set_query");
+        assert_eq!(m[1]["updateDataModel"]["value"], "bug");
+    }
+
+    #[test]
     fn an_age_uses_the_largest_whole_unit() {
         assert_eq!(ago(0, 30), "now");
         assert_eq!(ago(0, 300), "5m");

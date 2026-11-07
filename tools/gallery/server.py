@@ -136,7 +136,8 @@ layout = klass("Containers and layout", "Arrange other components.", [
 
 nav = klass("Navigation and presentation", "Switch between or reveal content.", [
     ("Tabs", "TabView", [("three tabs", put("Tabs", tabs=[{"title": "One", "child": txt("First pane")}, {"title": "Two", "child": txt("Second pane")}, {"title": "Three", "child": txt("Third pane")}]))]),
-    ("Modal", "sheet", [("button opens content", put("Modal", trigger=button(txt("Open")), content=col([txt("Modal title", "h3"), txt("The modal's content.")], modifiers=[{"padding": 20}])))]),
+    ("Modal", "sheet", [("button opens content", put("Modal", trigger=button(txt("Open")), content=col([txt("Modal title", "h3"), txt("The modal's content.")], modifiers=[{"padding": 20}]))),
+                        ("presented true: dims and covers its own pane only, with a card and Close; dismissAction is raised on close; not shown", secondary("Modal with presented=true and dismissAction, children are the card's content."))]),
 ])
 
 
@@ -206,8 +207,8 @@ system = klass("SwiftUI controls", "Standard controls the library lacks, named a
 ])
 
 own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu.", [
-    ("Table", "Table", [("one section, two rows", put("Table", rowAction="act", foldAction="act",
-                                                       columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": False}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False}],
+    ("Table", "Table", [("one section, two rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
+                                                       columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False}],
                                                        sections=[{"title": "Ready", "count": 2, "rows": [
                                                            {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True}, {"key": "title", "text": "First row"}]},
                                                            {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True}, {"key": "title", "text": "Second row", "tone": "ok"}]}]}],

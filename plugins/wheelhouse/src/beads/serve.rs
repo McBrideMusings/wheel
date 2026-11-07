@@ -46,8 +46,7 @@ fn origin(meta: &RequestMetaObject) -> (String, String) {
 }
 
 fn answer(snap: &Snapshot, ui: &Ui) -> CallToolResult {
-    let messages = json!([{ "version": "v0.9", "updateComponents": {
-        "surfaceId": SURFACE, "components": page_components(snap, ui) } }]);
+    let messages = crate::core::page::update(SURFACE, page_components(snap, ui));
     CallToolResult::success(vec![ContentBlock::resource(ResourceContents::TextResourceContents {
         uri: URI.into(),
         mime_type: Some(MIME.into()),

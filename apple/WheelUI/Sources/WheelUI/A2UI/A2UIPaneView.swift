@@ -26,6 +26,7 @@ public struct A2UIPaneView: View {
                             .frame(maxWidth: .infinity, alignment: .top)
                     }
                     .environment(\.a2uiPane, geo.size)
+                    .overlay { A2UIPresentedModals(surface: surface) }
                 }
             } else if case .failed = pane.state {
                 Spacer()

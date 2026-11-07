@@ -781,7 +781,12 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
     let mut page: Vec<String> = vec![];
 
     let name = if snap.has_repo { format!("Beads · {}", snap.name) } else { "Beads".into() };
-    let t = p.runs("title", json!([{ "text": name, "size": 20, "weight": "bold" }]), json!({}));
+    let runs = if snap.has_repo {
+        json!([{ "text": "Beads", "size": 30, "weight": "bold" }, { "text": format!(" · {}", snap.name), "size": 30, "weight": "regular", "tone": "muted" }])
+    } else {
+        json!([{ "text": name, "size": 30, "weight": "bold" }])
+    };
+    let t = p.runs("title", runs, json!({}));
     let sub = p.label("sub", &format!("{} beads, not counting epics and milestones", all.len()), json!({ "size": 12, "tone": "muted" }));
     page.push(p.boxed("head", "h", vec![t, sub], json!({ "wrap": true, "justify": "between", "spacing": 12, "rowSpacing": 4, "padding": [0, 0, 12, 0] })));
 
@@ -825,7 +830,6 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
             format!("f.{key}")
         };
         let mut row = vec![
-            "search".to_string(),
             "views".to_string(),
             sel(&mut p, "status", "Any status", KINDS.iter().map(|k| (k.to_string(), k.to_string())).collect()),
             sel(&mut p, "type", "Any type", uniq(&|b| vec![b.kind.clone()])),
@@ -843,9 +847,11 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
         row.push(p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" })));
-        let mut widths: Vec<Value> = vec![json!("flex")];
-        widths.extend((1..row.len() - 1).map(|_| Value::Null));
+        let mut widths: Vec<Value> = (0..row.len() - 1).map(|_| Value::Null).collect();
         widths.push(json!(96));
+        // The search field takes its own line, the page's full width, above the row of views and menus.
+        crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "maxWidth": "infinity" } }));
+        page.push("search".to_string());
         page.push(p.boxed("tools", "h", row, json!({ "wrap": true, "spacing": 8, "rowSpacing": 6, "padding": [12, 0, 0, 0], "widths": widths, "trailing": 1 })));
 
         if ui.custom() {
@@ -955,7 +961,8 @@ mod tests {
         let tools = c.iter().find(|x| x["id"] == "tools").expect("one toolbar");
         assert_eq!(tools["component"], "List");
         assert_eq!(tools["direction"], "horizontal");
-        assert_eq!(tools["children"].as_array().unwrap().len(), 10);
+        assert_eq!(tools["children"].as_array().unwrap().len(), 9);
+        assert!(c.iter().any(|x| x["id"] == "page" && x["children"].as_array().unwrap().iter().any(|k| k == "search")));
         let table = c.iter().find(|x| x["id"] == "table").expect("the table");
         let first = &table["sections"][0]["rows"][0];
         let keys: Vec<&str> = first["cells"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap()).collect();

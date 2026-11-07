@@ -49,7 +49,7 @@ struct A2UITableView: View {
             })
         Table(lines, selection: selected) {
             TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
-                TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction) }
+                TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: cols.first?["key"]?.stringValue ?? "") }
                     .width(min: c["width"]?.numberValue.map { CGFloat($0) }, ideal: c["width"]?.numberValue.map { CGFloat($0) },
                            max: c["width"]?.numberValue.map { CGFloat($0) })
             }
@@ -64,14 +64,16 @@ struct A2UITableView: View {
         .overlay {
             if lines.isEmpty { Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary) }
         }
+        // The page scrolls, so the table is as tall as its rows: a Table inside a ScrollView has no height of its own and draws none.
+        .frame(minHeight: CGFloat(max(lines.count, 3)) * 28 + 36)
         .accessibilityIdentifier("a2ui.table")
     }
 
     @ViewBuilder
-    private func cell(_ line: Line, _ c: [String: AnyCodable], _ foldAction: String) -> some View {
+    private func cell(_ line: Line, _ c: [String: AnyCodable], _ foldAction: String, first: String) -> some View {
         let key = c["key"]?.stringValue ?? ""
         if let title = line.title {
-            if c["tree"]?.boolValue == true || key == (surfaceFirstKey()) { Text(title).font(.headline) } else { Text("") }
+            if key == first { Text(title).font(.headline) } else { Text("") }
         } else {
             let cells = (line.row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
             let cell = cells.first { $0["key"]?.stringValue == key } ?? [:]
@@ -91,11 +93,6 @@ struct A2UITableView: View {
                     .lineLimit(1).truncationMode(.tail)
             }
         }
-    }
-
-    /// The first column's key, the one a section's title stands in.
-    private func surfaceFirstKey() -> String {
-        ((node.instance.properties["columns"]?.arrayValue ?? []).first?.dictionaryValue?["key"]?.stringValue) ?? ""
     }
 
     private func cellColor(_ cell: [String: AnyCodable], dim: Bool) -> Color {
