@@ -60,6 +60,7 @@ targets:
     platform: iOS
     sources:
       - iOS/Sources
+      - iOS/Assets.xcassets
       - AgentLogos.xcassets
       - Shared
     dependencies:
@@ -71,7 +72,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel.phone
         PRODUCT_NAME: Wheel
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Wheel
