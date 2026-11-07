@@ -104,7 +104,7 @@ public enum CrashGuard {
             return Crash(space: space, pane: pane, report: newestReport(in: reports))
         }
 
-        public static let defaultReports = FileManager.default.homeDirectoryForCurrentUser
+        public static let defaultReports = URL(fileURLWithPath: NSHomeDirectory())
             .appending(path: "Library/Logs/DiagnosticReports")
 
         private static func newestReport(in dir: URL) -> URL? {
