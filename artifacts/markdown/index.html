@@ -2,7 +2,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="wheel-post-reads" content="index.md">
-<title>Markdown</title>
 <link rel="stylesheet" href=".wheel/wheel.css">
 <style>
   * { box-sizing: border-box; }
@@ -102,10 +101,8 @@
     const reopen = window.wheelLightbox ? wheelLightbox.key() : null;
     if (!value.trim()) {
       root.innerHTML = `<div class="notice plain">This post has nothing to show yet.</div>`;
-      document.title = "Markdown";
     } else {
       const tokens = marked.lexer(value);
-      const heading = tokens.find((token) => token.type === "heading" && token.depth === 1);
       root.innerHTML = marked.parser(tokens);
       // A table keeps the width its words need and scrolls sideways inside this wrapper.
       for (const table of root.querySelectorAll("table")) {
@@ -114,7 +111,6 @@
         table.replaceWith(wrap);
         wrap.append(table);
       }
-      document.title = heading ? new DOMParser().parseFromString(marked.parseInline(heading.text), "text/html").body.textContent : "Markdown";
     }
     if (reopen && !wheelLightbox.show(reopen)) wheelLightbox.close(true);
   }
