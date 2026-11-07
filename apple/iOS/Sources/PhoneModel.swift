@@ -130,7 +130,10 @@ final class PhoneModel {
     /// The session this phone shows.
     var shownSession: SessionInfo? { sessions.first { $0.id == view.session } }
     /// Agents waiting on the person, across every space of every session: the count beside the space name.
-    var needsYouCount: Int {
+    var needsYouCount: Int { Self.needsYou(in: spaces) }
+
+    /// Agents waiting on the person in `spaces`.
+    static func needsYou(in spaces: [SpaceInfo]) -> Int {
         spaces.reduce(0) { n, space in
             n + space.paneStatuses.values.filter { if case .needsYou = $0 { true } else { false } }.count
         }

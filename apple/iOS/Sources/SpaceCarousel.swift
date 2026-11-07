@@ -10,6 +10,8 @@ struct SpaceCarousel: View {
     @State private var openTray: String?
     @State private var newSpaceOpen = false
     @State private var titleOpen = false
+    @State private var sheetTab = ThumbTab.spaces
+    @State private var sheetScope = AgentScope.all
     @State private var paletteOpen = false
     /// What the title menu asked for, presented once its sheet has closed.
     @State private var queued: TitleMenuRequest?
@@ -172,7 +174,7 @@ struct SpaceCarousel: View {
                 // A sheet, not a popover: a popover is as tall as its content and clips it, so a
                 // long list of spaces could not be scrolled or reached.
                 .sheet(isPresented: $titleOpen) {
-                    TitleMenu(model: model) { request in
+                    TitleMenu(model: model, tab: $sheetTab, scope: $sheetScope) { request in
                         queued = request
                         titleOpen = false
                     }

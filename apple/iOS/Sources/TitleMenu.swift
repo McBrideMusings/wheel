@@ -22,9 +22,9 @@ struct TitleButton: View {
         let waiting = model.needsYouCount
         Button { open = true } label: {
             HStack(spacing: 4) {
-                if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
                 Text(model.activeSpace?.name ?? "No space").font(.headline).lineLimit(1).truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
                 Text(waiting > 0 ? "\(waiting)" : "")
                     .font(.subheadline.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.orange)
@@ -48,20 +48,39 @@ struct TitleButton: View {
 /// Rename, New pane, Move to session… and Close space.
 struct TitleMenu: View {
     let model: PhoneModel
+    @Binding var tab: ThumbTab
+    @Binding var scope: AgentScope
     /// Closes the sheet, then asks the carousel for what comes next (nil: nothing).
     let done: (TitleMenuRequest?) -> Void
     @State private var search = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            spaceList
+            if tab == .spaces {
+                spaceList
+            } else {
+                AgentsList(model: model, scope: scope) { done(nil) }
+            }
             Divider()
             VStack(spacing: 10) {
-                TextField("Search \(model.shownSession?.name ?? "spaces")", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .accessibilityIdentifier("space search")
+                // One slot for both tabs: search over the spaces, the filter over the agents.
+                Group {
+                    if tab == .spaces {
+                        TextField("Search \(model.shownSession?.name ?? "spaces")", text: $search)
+                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .accessibilityIdentifier("space search")
+                    } else {
+                        Picker("Agents", selection: $scope) {
+                            Text("This space").tag(AgentScope.thisSpace)
+                            Text("All").tag(AgentScope.all)
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("agent scope")
+                    }
+                }
+                .frame(height: 34)
                 tabControl
                 sessionBar
             }
@@ -111,16 +130,29 @@ struct TitleMenu: View {
         .defaultScrollAnchor(.bottom)
     }
 
-    /// Spaces | Agents. Agents has no content yet, so it is disabled.
+    /// Spaces | Agents; the Agents label carries the number of agents waiting on the person.
     private var tabControl: some View {
         HStack(spacing: 8) {
-            Button { } label: { Text("Spaces").frame(maxWidth: .infinity, minHeight: 32) }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("tab spaces")
-            Button { } label: { Text("Agents").frame(maxWidth: .infinity, minHeight: 32) }
-                .buttonStyle(.bordered)
-                .disabled(true)
-                .accessibilityIdentifier("tab agents")
+            tabButton("Spaces", target: .spaces, badge: 0)
+            tabButton("Agents", target: .agents, badge: model.sessionNeedsYou)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("tab control")
+    }
+
+    @ViewBuilder private func tabButton(_ title: String, target: ThumbTab, badge: Int) -> some View {
+        let label = HStack(spacing: 6) {
+            Text(title)
+            if badge > 0 {
+                Text("\(badge)").font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(.white)
+                    .frame(minWidth: 20, minHeight: 20).background(Color.orange, in: Capsule())
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 32)
+        if tab == target {
+            Button { tab = target } label: { label }.buttonStyle(.borderedProminent).accessibilityIdentifier("tab \(title.lowercased())")
+        } else {
+            Button { tab = target } label: { label }.buttonStyle(.bordered).accessibilityIdentifier("tab \(title.lowercased())")
         }
     }
 

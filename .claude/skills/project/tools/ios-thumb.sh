@@ -6,7 +6,7 @@
 # for `$SYNC/ack-<name>`; this script checks wheeld at each step, then acknowledges. Shots go to
 # $WHEEL_SHOTS (default $SCR/shots), light and dark.
 #
-# The fixture: session Main holds wheel (two agents working, one idle), alpha (two agents that
+# The fixture: session Main holds wheel (two agents working, two idle), alpha (two agents that
 # will wait on a permission, one idle) and beta (one waiting, one idle); session Mobile holds app;
 # session Games holds chess and twelve fillers.
 #
@@ -48,10 +48,10 @@ w session new Games >/dev/null
 w space new "$SCR/chess" --session Games >/dev/null
 for i in $(seq 1 12); do mkdir -p "$SCR/fill$i"; w space new "$SCR/fill$i" --session Games >/dev/null; done
 
-WP1="$(first_pane "$W")"; WP2="$(w pane split "$WP1" right)"; WP3="$(w pane split "$WP2" right)"
+WP1="$(first_pane "$W")"; WP2="$(w pane split "$WP1" right)"; WP3="$(w pane split "$WP2" right)"; WP4="$(w pane split "$WP3" right)"
 AP1="$(first_pane "$A")"; AP2="$(w pane split "$AP1" right)"; AP3="$(w pane split "$AP2" right)"
 BP1="$(first_pane "$B")"; BP2="$(w pane split "$BP1" right)"
-for p in $WP1 $WP2 $WP3 $AP1 $AP2 $AP3 $BP1 $BP2; do w pane start "$p" agent >/dev/null; done
+for p in $WP1 $WP2 $WP3 $WP4 $AP1 $AP2 $AP3 $BP1 $BP2; do w pane start "$p" agent >/dev/null; done
 bg w agent send "$WP1" "work slowly 600"
 bg w agent send "$WP2" "work slowly 600"
 count_status() { w space ls | jq --arg k "$1" '[.spaces[].root | .. | select(.status?.kind == $k)] | length'; }
@@ -97,6 +97,17 @@ if step sheet; then
   eq "client ls has the phone on beta in Main" \
     "$(w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | "\(.session) \(.space)"')" "$SESSION $B"
   ack sheet
+fi
+if step allowed; then
+  for _ in $(seq 1 40); do [ "$(count_status needs_you)" = 2 ] && break; sleep 0.25; done
+  eq "Allow on the Agents tab answered one request: two agents still wait" "$(count_status needs_you)" 2
+  eq "wheeld holds two waiting requests" "$(w perm list | jq length)" 2
+  ack allowed
+fi
+if step opened; then
+  eq "a tap on alpha's agent row took the phone to alpha in Main" \
+    "$(w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | "\(.session) \(.space)"')" "$SESSION $A"
+  ack opened
 fi
 
 for _ in $(seq 1 120); do grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log" && break; sleep 0.5; done

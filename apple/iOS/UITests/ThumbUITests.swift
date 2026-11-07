@@ -81,6 +81,42 @@ final class ThumbUITests: XCTestCase {
         app.buttons["space beta"].tap()
         expectName("beta")
         sync("sheet")
+
+        // Stories 4-5: the Agents tab lists every agent of the session, answers a request inline,
+        // and a tap on a row takes the phone to that agent's space.
+        title.tap()
+        app.buttons["tab agents"].tap()
+        let agentRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'agentrow '"))
+        XCTAssertTrue(waitUntil { agentRows.count == 9 }, "All lists the session's nine agents, has \(agentRows.count)")
+        XCTAssertTrue(app.buttons["tab agents"].label.contains("3"), "the tab control shows 3 waiting, reads '\(app.buttons["tab agents"].label)'")
+        let needs = app.staticTexts["NEEDS YOU"].frame.minY
+        let working = app.staticTexts["WORKING"].frame.minY
+        let idle = app.staticTexts["IDLE"].frame.minY
+        XCTAssertTrue(idle < working && working < needs, "Idle above Working above Needs you, which sits lowest: \(idle) \(working) \(needs)")
+        let list = app.scrollViews["agents list"]
+        let allows = list.buttons.matching(identifier: "Allow")
+        XCTAssertEqual(allows.count, 3, "each waiting agent has Allow inline")
+        XCTAssertEqual(list.buttons.matching(identifier: "Deny").count, 3, "each waiting agent has Deny inline")
+        shot("agents")
+        XCTAssertEqual(["tab spaces", "tab agents", "session Main", "session Mobile", "session Games"].map(rect), Array(mainRects[1...]),
+                       "the tab control and the session bar keep their rects in the Agents tab")
+        XCTAssertEqual(rect("agent scope").minY, mainRects[0].minY, accuracy: 4, "the filter takes the search field's slot")
+
+        app.buttons["This space"].tap()
+        XCTAssertTrue(waitUntil { agentRows.count == 2 }, "This space lists beta's two agents, has \(agentRows.count)")
+        app.buttons["All"].tap()
+        XCTAssertTrue(waitUntil { agentRows.count == 9 })
+
+        allows.element(boundBy: allows.count - 1).tap()
+        XCTAssertTrue(waitUntil { allows.count == 2 }, "an answered request leaves the tab: \(allows.count) Allow buttons")
+        XCTAssertTrue(waitUntil { app.buttons["tab agents"].label.contains("2") }, "the tab control drops to 2 waiting")
+        XCTAssertTrue(waitUntil { count.label == "2" }, "the top-left count drops to 2, reads '\(count.label)'")
+        sync("allowed")
+
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'agentrow ' AND label CONTAINS 'alpha'")).firstMatch.tap()
+        expectName("alpha")
+        XCTAssertTrue(app.buttons["tab agents"].waitForNonExistence(timeout: 5), "a tap on a row closes the sheet")
+        sync("opened")
     }
 
     private func expectName(_ space: String) {
