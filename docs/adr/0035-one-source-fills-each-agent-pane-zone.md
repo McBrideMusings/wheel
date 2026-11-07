@@ -1,0 +1,9 @@
+# ADR-0035: One source fills each agent-pane zone: built-in, a text command, or an app
+
+An agent pane's header (right of the title) and footer (under the composer) each show exactly one source, chosen by `[chat.header]` and `[chat.footer]` in the space's `wheel.toml`, the project's over this machine's, the three sources of ADR-0034. With no entry the zone is built in: the footer is one line (context bar, working directory, branch and changes, profile only when the harness has two or more logins, billing, and the agent's own model, effort and permission controls), with no ordering or per-item settings.
+
+`command` (with optional `every` seconds and, for the footer, `lines`) is text: wheeld runs it in the pane's directory through `/bin/sh -c` on a timer and when the pane's context, state or directory changes, writes a JSON context to stdin (space, pane, agent, home, account, usage board), and the zone draws the printed lines with their ANSI colours. The footer reserves `lines` lines (default 1) whatever was printed, so the composer never moves. `artifact` names an `mcp` or `mcp_url` server (ADR-0026, ADR-0028) whose A2UI surface the zone hosts with the system controls (ADR-0031); naming both or neither is a settings problem and the built-in shows.
+
+The composer takes plain settings: `chat.composer.placeholder`, `chat.composer.hint` (a line above the input, absent when empty) and `chat.snippets`, a list of `{label, text}` checked like `chat.links.patterns`, each drawn as a button above the input that inserts its text at the cursor and sends nothing. The permission card and the attach, skills and send controls stay fixed; the transcript intro line and `chat.agent.home` are deleted.
+
+wheeld runs commands and servers, the client draws (ADR-0020); the pane's home and account are new context fields, a server change a client relies on, so `PROTOCOL_VERSION` and `ServerProtocol.current` rise together.
