@@ -48,6 +48,19 @@ final class TitleMenuUITests: XCTestCase {
         shot("session-menu")
         row("session games").tap()
         expectTitle("chess", session: "games")
+
+        // A long list scrolls: with thirteen spaces the last action starts below the fold of the
+        // sheet and a swipe brings it under the finger.
+        title.tap()
+        let newSpace = app.buttons["new space"]
+        XCTAssertTrue(row("space chess").waitForExistence(timeout: 5))
+        XCTAssertFalse(newSpace.isHittable, "New space starts below the visible part of a long list")
+        app.swipeUp()
+        app.swipeUp()
+        XCTAssertTrue(newSpace.isHittable, "a swipe scrolls the list to its last action")
+        shot("space-menu-long")
+        row("space chess").tap()
+        expectTitle("chess", session: "games")
         title.tap()
         app.buttons["switch session"].tap()
         row("session wheel").tap()

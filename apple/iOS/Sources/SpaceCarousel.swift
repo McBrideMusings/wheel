@@ -194,12 +194,15 @@ struct SpaceCarousel: View {
         .frame(minHeight: 50)
         .overlay {
             TitleButton(model: model, open: $titleOpen)
-                .popover(isPresented: $titleOpen) {
+                // A sheet, not a popover: a popover is as tall as its content and clips it, so a
+                // long list of spaces could not be scrolled or reached.
+                .sheet(isPresented: $titleOpen) {
                     TitleMenu(model: model) { request in
                         queued = request
                         titleOpen = false
                     }
-                    .presentationCompactAdaptation(.popover)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
                 }
         }
     }

@@ -45,14 +45,15 @@ A="$(w space new "$SCR/alpha" --session wheel)"
 B="$(w space new "$SCR/beta" --session wheel)"
 w session new games >/dev/null
 C="$(w space new "$SCR/chess" --session games)"
+for i in $(seq 1 12); do mkdir -p "$SCR/fill$i"; w space new "$SCR/fill$i" --session games >/dev/null; done
 P1="$(first_pane "$W")"
 P2="$(w pane split "$P1" right)"
 w pane start "$P1" agent >/dev/null
 w pane start "$P2" agent >/dev/null
 bg w agent send "$P1" "work slowly 600"
 bg w agent send "$P2" "work slowly 600"
-check "the fixture: wheel holds wheel, alpha and beta; games holds chess" eq "sessions" \
-  "$(w session ls --json | jq -c '[.[] | {name, n: (.spaces | length)}]')" '[{"name":"wheel","n":3},{"name":"games","n":1}]'
+check "the fixture: wheel holds wheel, alpha and beta; games holds chess and twelve fillers" eq "sessions" \
+  "$(w session ls --json | jq -c '[.[] | {name, n: (.spaces | length)}]')" '[{"name":"wheel","n":3},{"name":"games","n":13}]'
 for _ in $(seq 1 60); do
   [ "$(w space ls | jq --arg s "$W" '[.spaces[] | select(.id==$s) | .root | .. | select(.status?.kind == "working")] | length')" = 2 ] && break
   sleep 0.5
@@ -148,8 +149,8 @@ fi
 if step closed-wheel; then
   for _ in $(seq 1 20); do [ -z "$(space_named wheel)" ] && break; sleep 0.25; done
   eq "Close space in the dialog closes wheel" "$(space_named wheel)" ""
-  eq "session wheel is left empty and games keeps chess and beta2" \
-    "$(w session ls --json | jq -c '[.[] | {name, n: (.spaces | length)}]')" '[{"name":"wheel","n":0},{"name":"games","n":2}]'
+  eq "session wheel is left empty and games keeps chess, beta2 and the twelve fillers" \
+    "$(w session ls --json | jq -c '[.[] | {name, n: (.spaces | length)}]')" '[{"name":"wheel","n":0},{"name":"games","n":14}]'
   ack closed-wheel
 fi
 # xcodebuild can stay up after a failed test; the suite's last line is the end of the run.

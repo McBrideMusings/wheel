@@ -47,10 +47,12 @@ struct TitleMenu: View {
     @State private var listingSessions = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if listingSessions { sessionList } else { spaceList }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if listingSessions { sessionList } else { spaceList }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: 320)
         .onAppear { logShown() }
         .onChange(of: listingSessions) { _, _ in logShown() }
     }
