@@ -92,7 +92,7 @@ final class ThumbUITests: XCTestCase {
         let needs = app.staticTexts["NEEDS YOU"].frame.minY
         let working = app.staticTexts["WORKING"].frame.minY
         let idle = app.staticTexts["IDLE"].frame.minY
-        XCTAssertTrue(idle < working && working < needs, "Idle above Working above Needs you, which sits lowest: \(idle) \(working) \(needs)")
+        XCTAssertTrue(needs < working && working < idle, "Needs you first, then Working, then Idle: \(needs) \(working) \(idle)")
         let list = app.scrollViews["agents list"]
         let allows = list.buttons.matching(identifier: "Allow")
         XCTAssertEqual(allows.count, 3, "each waiting agent has Allow inline")
@@ -107,7 +107,7 @@ final class ThumbUITests: XCTestCase {
         app.buttons["All"].tap()
         XCTAssertTrue(waitUntil { agentRows.count == 9 })
 
-        allows.element(boundBy: allows.count - 1).tap()
+        allows.element(boundBy: 0).tap()
         XCTAssertTrue(waitUntil { allows.count == 2 }, "an answered request leaves the tab: \(allows.count) Allow buttons")
         XCTAssertTrue(waitUntil { app.buttons["tab agents"].label.contains("2") }, "the tab control drops to 2 waiting")
         XCTAssertTrue(waitUntil { count.label == "2" }, "the top-left count drops to 2, reads '\(count.label)'")

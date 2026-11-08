@@ -8,7 +8,8 @@ enum ThumbTab: Equatable { case spaces, agents }
 /// Which agents the Agents tab lists.
 enum AgentScope: Equatable { case thisSpace, all }
 
-/// One agent of the shown session, as the Agents tab draws it.
+/// One agent of the shown session, as the Agents tab draws it: an agent pane, or a terminal pane
+/// running an agent the daemon has seen.
 struct AgentRow: Identifiable {
     let pane: String
     let agent: String
@@ -16,51 +17,42 @@ struct AgentRow: Identifiable {
     let space: SpaceInfo
     let status: PaneStatus?
     let perm: PermInfo?
+    /// The context window's use for an agent in a terminal, from the daemon; an agent pane's is in its chat.
+    let context: ContextUse?
     var id: String { pane }
 
-    /// Needs you, then working, then idle, done and stopped.
-    enum Group: Int, CaseIterable {
-        case needsYou, working, rest
-
-        var title: String {
-            switch self {
-            case .needsYou: "Needs you"
-            case .working: "Working"
-            case .rest: "Idle"
-            }
-        }
-    }
-
-    var group: Group {
-        switch status {
-        case .needsYou: .needsYou
-        case .working: .working
-        default: .rest
-        }
-    }
+    /// Where the row sorts: waiting on a permission, then stopped, working, done, idle.
+    var rank: StatusRank { status?.rank ?? .idle }
 }
 
 extension PhoneModel {
-    /// Every agent pane of the shown session's spaces, in session order and layout order within a
-    /// space; `scope` narrows it to the shown space. Each agent's status comes from its space, its
-    /// oldest waiting request from `perms`.
+    /// Every agent in the shown session's spaces, most in need first: a waiting request, then
+    /// stopped, working, done, idle; session order and layout order within a rank. `scope` narrows
+    /// it to the shown space. Each agent's status comes from its space, its oldest waiting request
+    /// from `perms`.
     func agentRows(scope: AgentScope) -> [AgentRow] {
         let spaces = scope == .all ? sessionSpaces : sessionSpaces.filter { $0.id == active }
-        return spaces.flatMap { space in
+        let rows = spaces.flatMap { space in
             space.allPanes.compactMap { pane -> AgentRow? in
-                guard case let .agent(agent, harness, _) = pane.kind else { return nil }
+                let agent: String, harness: String, context: ContextUse?
+                switch pane.kind {
+                case let .agent(name, program, _): (agent, harness, context) = (name, program, nil)
+                case let .terminal(_, found?): (agent, harness, context) = (found.name, found.name, found.context)
+                default: return nil
+                }
                 return AgentRow(pane: pane.id, agent: agent, harness: harness, space: space,
-                                status: space.paneStatuses[pane.id], perm: perms.first { $0.agent == agent })
+                                status: space.paneStatuses[pane.id], perm: perms.first { $0.agent == agent }, context: context)
             }
         }
+        return StatusRank.allCases.flatMap { rank in rows.filter { $0.rank == rank } }
     }
 
     /// How many of the shown session's agents wait on the person.
     var sessionNeedsYou: Int { Self.needsYou(in: sessionSpaces) }
 }
 
-/// The Agents tab: the shown session's agents, the ones waiting for the person nearest the thumb
-/// at the bottom, then working, then the rest above. A waiting request carries its answers inline.
+/// The Agents tab: every agent of the shown session, the ones waiting on a permission first, then
+/// by state. A waiting request carries its answers inline.
 struct AgentsList: View {
     let model: PhoneModel
     let scope: AgentScope
@@ -75,10 +67,10 @@ struct AgentsList: View {
                     Text(scope == .all ? "No agents in this session" : "No agents in this space")
                         .font(.subheadline).foregroundStyle(.secondary).padding(16)
                 }
-                ForEach(AgentRow.Group.allCases.reversed(), id: \.self) { group in
-                    let members = rows.filter { $0.group == group }
+                ForEach(StatusRank.allCases) { rank in
+                    let members = rows.filter { $0.rank == rank }
                     if !members.isEmpty {
-                        Text(group.title.uppercased()).font(.caption).foregroundStyle(.secondary)
+                        Text(rank.title.uppercased()).font(.caption).foregroundStyle(.secondary)
                             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
                         ForEach(members) { row in
                             AgentRowView(model: model, row: row, chat: model.chats[row.agent], done: done)
@@ -89,9 +81,8 @@ struct AgentsList: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .defaultScrollAnchor(.bottom)
         .accessibilityIdentifier("agents list")
-        .onAppear { Log.info("agents tab \(scope == .all ? "all" : "this space"): \(rows.map { "\($0.agent)=\($0.group.title)" }.joined(separator: ", "))") }
+        .onAppear { Log.info("agents tab \(scope == .all ? "all" : "this space"): \(rows.map { "\($0.agent)=\($0.rank.title)" }.joined(separator: ", "))") }
     }
 }
 
@@ -116,10 +107,10 @@ private struct AgentRowView: View {
                             Text(row.agent).font(.body.weight(.semibold)).foregroundStyle(.primary)
                             Text(row.space.name).font(.subheadline).foregroundStyle(.secondary)
                             Spacer(minLength: 8)
-                            if let chat { ContextPercent(chat: chat) }
+                            if let chat { ContextPercent(chat: chat) } else if let context = row.context { Text("\(context.percent)%").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
                         }
                         .lineLimit(1)
-                        if let perm = row.perm, row.group == .needsYou {
+                        if let perm = row.perm, row.rank == .needsYou {
                             Text(perm.title).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
                         } else if let chat {
                             LastLine(chat: chat)
@@ -130,7 +121,7 @@ private struct AgentRowView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("agentrow \(row.agent)")
-            if let perm = row.perm, row.group == .needsYou {
+            if let perm = row.perm, row.rank == .needsYou {
                 PhonePermissionChoices(perm: perm, answer: model.answer)
             }
         }
