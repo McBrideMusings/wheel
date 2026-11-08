@@ -43,10 +43,15 @@ fn free_port() -> u16 {
 }
 
 fn start(dir: &Path, local: u16) -> Daemon {
+    start_as(dir, local, "wheel")
+}
+
+fn start_as(dir: &Path, local: u16, instance: &str) -> Daemon {
     let log = dir.join("wheeld.log");
     let _ = std::fs::remove_file(&log);
     let child = Command::new(env!("CARGO_BIN_EXE_wheeld"))
         .args(["--listen", &format!("127.0.0.1:{local}")])
+        .args(["--instance", instance])
         .arg("--support-dir")
         .arg(dir)
         .arg("--machine-file")
@@ -448,6 +453,47 @@ async fn nothing_listens_remotely_when_unset() {
     assert_eq!(info["fingerprint"], "");
     assert!(!dir.0.join("remote-cert.pem").exists());
     assert!(TcpStream::connect(("127.0.0.1", other)).await.is_err());
+    drop(daemon);
+}
+
+#[tokio::test]
+async fn another_instance_never_binds_the_default_instances_listener() {
+    let dir =
+        Scratch(std::env::temp_dir().join(format!("wheeld-remote-dev-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let port = free_port();
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote]\nlisten = \"127.0.0.1:{port}\"\n"),
+    )
+    .unwrap();
+    let local = free_port();
+    let daemon = start_as(&dir.0, local, "wheel-dev");
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let info = remote_info(local, token.trim()).await;
+    assert!(info["listen"].is_null(), "{info}");
+    assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
+    drop(daemon);
+}
+
+#[tokio::test]
+async fn another_instance_binds_its_own_listener() {
+    let dir =
+        Scratch(std::env::temp_dir().join(format!("wheeld-remote-dev2-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let port = free_port();
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote.wheel-dev]\nlisten = \"127.0.0.1:{port}\"\n"),
+    )
+    .unwrap();
+    let local = free_port();
+    let daemon = start_as(&dir.0, local, "wheel-dev");
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let info = remote_info(local, token.trim()).await;
+    assert_eq!(info["listen"], format!("127.0.0.1:{port}"), "{info}");
     drop(daemon);
 }
 

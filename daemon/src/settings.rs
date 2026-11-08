@@ -500,7 +500,7 @@ const KEYS: [Key; 66] = [
         id: REMOTE_LISTEN,
         accepts: Accepts::Listen,
         default: "",
-        help: "The address wheeld also listens on for remote clients over TLS with a self-signed certificate, such as 0.0.0.0:7430; empty means no remote access. Read when wheeld starts, from this machine's file only; `wheel remote info` shows the certificate fingerprint a client pins.",
+        help: "The address wheeld also listens on for remote clients over TLS with a self-signed certificate, such as 0.0.0.0:7430; empty means no remote access. Read when wheeld starts, from this machine's file only, by the default instance; another instance (the dev build) reads `remote.<instance>.listen` instead, so it never takes this port; `wheel remote info` shows the certificate fingerprint a client pins.",
     },
     Key {
         id: STATUS_DOTS,
@@ -1264,14 +1264,23 @@ impl AppState {
             .unwrap_or_else(|| "claude".into())
     }
 
-    /// The address the remote listener binds, when `remote.listen` is set. Read from this machine's
+    /// The address the remote listener binds, when this instance has one set. The default
+    /// instance reads `remote.listen`; any other instance (the dev build, `wheel-dev`) reads
+    /// `remote.<instance>.listen` and never the default's, because every instance on a machine
+    /// reads this one file and two of them cannot bind the same port. Read from this machine's
     /// file as the daemon starts.
-    pub fn remote_listen(&self) -> Option<String> {
-        file(&self.machine_file())
-            .sets
-            .get(REMOTE_LISTEN)
-            .filter(|l| !l.is_empty())
-            .cloned()
+    pub fn remote_listen(&self, instance: &str) -> Option<String> {
+        let key = if instance == wheel_proto::DEFAULT_INSTANCE {
+            REMOTE_LISTEN.to_string()
+        } else {
+            format!("remote.{instance}.listen")
+        };
+        let text = std::fs::read_to_string(self.machine_file()).ok()?;
+        let table: toml::Table = toml::from_str(&text).ok()?;
+        match at(&table, &key)? {
+            toml::Value::String(listen) if !listen.is_empty() => Some(listen.clone()),
+            _ => None,
+        }
     }
 
     /// The named agent as `agent_table` lists it, or why it cannot be run: no such agent, or its
