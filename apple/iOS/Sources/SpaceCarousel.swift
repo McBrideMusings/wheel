@@ -47,7 +47,7 @@ struct SpaceCarousel: View {
                     .tabViewStyle(.page(indexDisplayMode: .never))
                 }
                 if !landscape {
-                    pageHandle(dots: dots, showDots: pages.count > 1)
+                    pageHandle(pages: pages, dots: dots)
                 }
             }
             .onChange(of: trayIDs) { _, ids in trayChanged(ids) }
@@ -208,33 +208,77 @@ struct SpaceCarousel: View {
         .frame(minHeight: 50)
     }
 
-    /// The row under the composer: the page dots, or a grabber when the space has one page. A swipe
-    /// up from it opens the sheet on the tab last used, a long one on Agents; pane swipes are the
-    /// pager's, and this row sits outside it.
-    private func pageHandle(dots: Dots, showDots: Bool) -> some View {
-        ZStack {
-            if showDots {
+    /// The pager bar under the composer: a 44 pt pill outside the pager, so a horizontal scroller
+    /// in a page can never take its drag. A drag left or right changes page, the end buttons name
+    /// and open the neighbour, and a swipe up opens the sheet on the tab last used, a long one on
+    /// Agents. A space with one page shows a grabber instead.
+    private func pageHandle(pages: Pages, dots: Dots) -> some View {
+        let ids = pages.pageIDs
+        let index = pages.index(of: page)
+        let prev = index > 0 ? index - 1 : nil
+        let next = index + 1 < ids.count ? index + 1 : nil
+        return HStack(spacing: 0) {
+            if ids.count > 1 {
+                neighbour(pages.title(at: prev), symbol: "chevron.left", leading: true) { if let prev { go(ids[prev]) } }
                 dots
+                neighbour(pages.title(at: next), symbol: "chevron.right", leading: false) { if let next { go(ids[next]) } }
             } else {
                 Capsule().fill(Color.secondary.opacity(0.35)).frame(width: 36, height: 5)
+                    .frame(maxWidth: .infinity)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 36)
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+        .background(Capsule().fill(Color.secondary.opacity(0.14)))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 2)
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("page handle")
         .accessibilityAction(named: "Open spaces and agents") { titleOpen = true }
-        .gesture(DragGesture(minimumDistance: Self.shortSwipe).onEnded { drag in
-            guard abs(drag.translation.height) > abs(drag.translation.width), drag.translation.height < 0 else { return }
-            if drag.translation.height < -Self.longSwipe { sheetTab = .agents }
-            Log.info("page handle: swipe up \(Int(-drag.translation.height)) pt, sheet on \(sheetTab)")
+        .simultaneousGesture(DragGesture(minimumDistance: Self.shortSwipe).onEnded { drag in
+            let across = drag.translation.width, up = -drag.translation.height
+            if abs(across) > abs(up) {
+                guard abs(across) > Self.sideSwipe else { return }
+                let target = across < 0 ? next : prev
+                Log.info("page handle: swipe \(across < 0 ? "left" : "right") \(Int(abs(across))) pt, page \(target.map { ids[$0] } ?? "none")")
+                if let target { withAnimation { page = ids[target] } }
+                return
+            }
+            guard up > 0 else { return }
+            if up > Self.longSwipe { sheetTab = .agents }
+            Log.info("page handle: swipe up \(Int(up)) pt, sheet on \(sheetTab)")
             titleOpen = true
         })
     }
 
-    /// A swipe up this far from the page dots opens the sheet, and one this far opens the Agents tab.
-    private static let shortSwipe: CGFloat = 30
+    /// One end of the pager bar: the neighbouring page's name and an arrow, blank at either end.
+    private func neighbour(_ title: String?, symbol: String, leading: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if leading, title != nil { Image(systemName: symbol) }
+                if let title { Text(title).lineLimit(1) }
+                if !leading, title != nil { Image(systemName: symbol) }
+            }
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: leading ? .leading : .trailing)
+            .padding(.horizontal, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(title == nil)
+        .accessibilityLabel(title.map { (leading ? "Previous page, " : "Next page, ") + $0 } ?? "")
+        .accessibilityIdentifier(leading ? "page previous" : "page next")
+    }
+
+    private func go(_ id: String) { withAnimation { page = id } }
+
+    /// A swipe up this far from the pager bar opens the sheet, and one this far opens the Agents tab;
+    /// a swipe sideways this far changes page.
+    private static let shortSwipe: CGFloat = 24
     private static let longSwipe: CGFloat = 160
+    private static let sideSwipe: CGFloat = 40
 
     private func openSettings(_ tab: SettingsTab) {
         settingsTab = tab
@@ -406,6 +450,17 @@ private struct Pages {
 
     var dotKinds: [Dots.Kind] {
         grid.map { _ in .grid } + popped.map { _ in .popped } + (tray.isEmpty ? [] : [.tray])
+    }
+
+    /// Every page's id in order, the tray page last.
+    var pageIDs: [String] { panes.map(\.id) + (tray.isEmpty ? [] : [Self.trayID]) }
+
+    /// The name the pager bar shows for a neighbouring page.
+    func title(at index: Int?) -> String? {
+        guard let index else { return nil }
+        if index == panes.count { return "Background" }
+        guard panes.indices.contains(index) else { return nil }
+        return PhoneCommands.paneName(panes[index].kind, status: nil) ?? "Pane"
     }
 
     func index(of page: String?) -> Int {
