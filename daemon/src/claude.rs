@@ -59,6 +59,7 @@ fn perm_options(always: bool) -> Vec<PermOption> {
         id: id.into(),
         name: name.into(),
         kind: kind.into(),
+        description: None,
     };
     let mut options = vec![option("allow", "Allow", "allow_once")];
     if always {
@@ -66,6 +67,41 @@ fn perm_options(always: bool) -> Vec<PermOption> {
     }
     options.push(option("deny", "Deny", "reject_once"));
     options
+}
+
+/// A question the agent put to the person with `AskUserQuestion`, waiting on one answer. The
+/// tool's input holds up to four questions; they are asked one after another, each as its own
+/// request, and the tool call is answered once the last has an answer.
+struct Ask {
+    /// The id of the agent's `can_use_tool` request, which the one final response answers.
+    control: String,
+    /// The tool's input, which the final response hands back with the answers added.
+    input: Value,
+    /// The answers so far: each question's text and the label of the option picked.
+    answers: serde_json::Map<String, Value>,
+    /// The index of the question now waiting.
+    at: usize,
+    tool_call: Option<String>,
+}
+
+/// The request that asks question `ask.at`: its text is the reason, each option's label a choice
+/// (id `pick:<index>`, kind `answer`) with its description, and Skip refuses the whole tool call.
+fn question_request(ask: &Ask, id: &str) -> Option<DriverEvent> {
+    let question = &ask.input["questions"][ask.at];
+    let text = question["question"].as_str()?;
+    let choices = question["options"].as_array()?.iter().map(|option| {
+        Some((option["label"].as_str()?.to_string(), option["description"].as_str().map(String::from)))
+    });
+    Some(DriverEvent::Permission {
+        request: id.to_string(),
+        title: text.to_string(),
+        tool_call: ask.tool_call.clone(),
+        options: driver::question_options(choices.collect::<Option<Vec<_>>>()?),
+        why: wheel_proto::PermWhy {
+            reason: question["header"].as_str().map(String::from),
+            ..Default::default()
+        },
+    })
 }
 
 /// The permission updates an "Always allow" hands back: Claude Code's own suggestions when it sent
@@ -203,6 +239,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         pending: HashMap::new(),
         next_request: 1,
         permissions: HashMap::new(),
+        asks: HashMap::new(),
         options: Vec::new(),
         models: Vec::new(),
         in_turn: false,
@@ -309,6 +346,8 @@ struct Driver {
     /// Permission requests waiting on an answer, by the agent's request id, with the tool input
     /// an `allow` hands back and the rules an `allow_always` does.
     permissions: HashMap<String, (Value, Value)>,
+    /// Questions waiting on an answer, by the request id they were put under (`<agent's id>#<n>`).
+    asks: HashMap<String, Ask>,
     options: Vec<ConfigOption>,
     /// Each model choice's value and the model it resolves to.
     models: Vec<(String, String)>,
@@ -439,6 +478,9 @@ impl Driver {
                     .await
             }
             Input::Answer { request, choice } => {
+                if let Some(ask) = self.asks.remove(&request) {
+                    return self.answer_question(ask, choice.as_deref()).await;
+                }
                 let Some((input, suggestions)) = self.permissions.remove(&request) else {
                     return Ok(());
                 };
@@ -771,6 +813,7 @@ impl Driver {
         self.streamed.clear();
         // Nothing asked during the turn can still be answered.
         self.permissions.clear();
+        self.asks.clear();
         if let Some((model, used)) = self.last_usage.take() {
             let size = message["modelUsage"][&model]["contextWindow"].as_u64();
             if let Some(size) = size {
@@ -816,8 +859,12 @@ impl Driver {
         }
         let tool = request["tool_name"].as_str().unwrap_or("tool");
         let input = request["input"].clone();
-        let (title, _) = tool_title(tool, &input);
         let tool_call = request["tool_use_id"].as_str().map(String::from);
+        if tool == "AskUserQuestion" && input["questions"].as_array().is_some_and(|q| !q.is_empty()) {
+            let ask = Ask { control: id, input, answers: serde_json::Map::new(), at: 0, tool_call };
+            return self.put_question(ask).await;
+        }
+        let (title, _) = tool_title(tool, &input);
         // Fields of a `can_use_tool` request, from Claude Code 2.1.314's own schema and the SDK's
         // `CanUseTool` options (https://code.claude.com/docs/en/agent-sdk/typescript): `description`,
         // `title`, `display_name`, `decision_reason`, `decision_reason_type`, `blocked_path`,
@@ -841,6 +888,51 @@ impl Driver {
             why,
         });
         Ok(())
+    }
+
+    /// Put question `ask.at` to the person, or refuse the tool call when the agent's input does not
+    /// hold a question with options.
+    async fn put_question(&mut self, ask: Ask) -> Result<(), String> {
+        let id = format!("{}#{}", ask.control, ask.at);
+        let Some(event) = question_request(&ask, &id) else {
+            tracing::info!(pid = self.pid, "AskUserQuestion refused: question {} has no text or options", ask.at);
+            return self.respond(&ask.control, json!({"behavior": "deny", "message": "The question had no text or options."})).await;
+        };
+        self.asks.insert(id, ask);
+        self.emit(event);
+        Ok(())
+    }
+
+    /// Take the person's choice for the waiting question: a pick records its label and asks the next
+    /// question, or answers the tool call with every answer in `updatedInput.answers` after the
+    /// last; anything else refuses the tool call.
+    async fn answer_question(&mut self, mut ask: Ask, choice: Option<&str>) -> Result<(), String> {
+        let question = &ask.input["questions"][ask.at];
+        let label = driver::picked(choice)
+            .and_then(|i| question["options"][i]["label"].as_str())
+            .map(String::from);
+        let Some(label) = label else {
+            let message = match choice {
+                Some(_) => "The person skipped the question.",
+                None => "The request was withdrawn.",
+            };
+            return self.respond(&ask.control, json!({"behavior": "deny", "message": message})).await;
+        };
+        let text = question["question"].as_str().unwrap_or_default().to_string();
+        ask.answers.insert(text, Value::String(label));
+        ask.at += 1;
+        if ask.at < ask.input["questions"].as_array().map_or(0, Vec::len) {
+            return self.put_question(ask).await;
+        }
+        let mut input = ask.input;
+        input["answers"] = Value::Object(ask.answers);
+        self.respond(&ask.control, json!({"behavior": "allow", "updatedInput": input})).await
+    }
+
+    /// Answer the agent's `can_use_tool` request `id`.
+    async fn respond(&mut self, id: &str, response: Value) -> Result<(), String> {
+        self.write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": response}}))
+            .await
     }
 
     async fn control_response(&mut self, response: &Value) -> Result<(), String> {

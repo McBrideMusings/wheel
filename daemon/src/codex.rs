@@ -129,6 +129,19 @@ struct Approval {
     id: Value,
     /// Whether the answer is `acceptForSession` for "allow always".
     agent_scope: bool,
+    /// Set when the request is a `request_user_input` call: the questions are put one at a time.
+    ask: Option<Ask>,
+}
+
+/// The questions of one `item/tool/requestUserInput` request, asked one after another.
+struct Ask {
+    questions: Vec<Value>,
+    /// Each answered question's id with `{"answers": [<label>]}`.
+    answers: serde_json::Map<String, Value>,
+    /// The index of the question now waiting.
+    at: usize,
+    /// Codex's id for the tool call, which every question of the request repeats.
+    tool_call: Option<String>,
 }
 
 struct Driver {
@@ -303,6 +316,9 @@ impl Driver {
                 let Some(approval) = self.approvals.remove(&request) else {
                     return Ok(());
                 };
+                if let Some(ask) = approval.ask {
+                    return self.answer_question(approval.id, ask, choice.as_deref()).await;
+                }
                 let decision = match choice.as_deref() {
                     Some("allow") => "accept",
                     Some("allow_always") if approval.agent_scope => "acceptForSession",
@@ -662,12 +678,69 @@ impl Driver {
         self.emit(DriverEvent::TurnFailed { message });
     }
 
+    /// Put question `ask.at` to the person under the request id `<Codex's id>#<index>`.
+    fn put_question(&mut self, id: Value, ask: Ask) {
+        let question = &ask.questions[ask.at];
+        let choices = question["options"].as_array().into_iter().flatten().map(|o| {
+            (o["label"].as_str().unwrap_or_default().to_string(), o["description"].as_str().map(String::from))
+        });
+        let request = format!("{id}#{}", ask.at);
+        tracing::info!(pid = self.pid, %request, question = %question["question"], "agent asks a question");
+        self.emit(DriverEvent::Permission {
+            request: request.clone(),
+            title: question["question"].as_str().unwrap_or_default().to_string(),
+            tool_call: ask.tool_call.clone(),
+            options: driver::question_options(choices),
+            why: wheel_proto::PermWhy {
+                reason: question["header"].as_str().filter(|h| !h.is_empty()).map(String::from),
+                ..Default::default()
+            },
+        });
+        self.approvals.insert(request, Approval { id, agent_scope: false, ask: Some(ask) });
+    }
+
+    /// Take the person's choice for the waiting question: a pick records it and asks the next one,
+    /// or answers Codex's request after the last. Skip, or a withdrawn request, refuses the whole request.
+    async fn answer_question(&mut self, id: Value, mut ask: Ask, choice: Option<&str>) -> Result<(), String> {
+        let question = &ask.questions[ask.at];
+        let label = driver::picked(choice)
+            .and_then(|i| question["options"][i]["label"].as_str())
+            .map(String::from);
+        if let Some(label) = label {
+            let key = question["id"].as_str().unwrap_or_default().to_string();
+            ask.answers.insert(key, json!({"answers": [label]}));
+            ask.at += 1;
+            if ask.at < ask.questions.len() {
+                self.put_question(id, ask);
+                return Ok(());
+            }
+            return self.write(json!({"id": id, "result": {"answers": ask.answers}})).await;
+        }
+        let message = if choice.is_some() { "The person skipped the question." } else { "The request was withdrawn." };
+        self.write(json!({"id": id, "error": {"code": -32000, "message": message}})).await
+    }
+
     async fn server_request(
         &mut self,
         method: &str,
         id: Value,
         params: &Value,
     ) -> Result<(), String> {
+        if method == "item/tool/requestUserInput" {
+            let questions: Vec<Value> = params["questions"].as_array().cloned().unwrap_or_default();
+            // A question with no options wants typed text, which a card has nowhere to take.
+            let choosable = !questions.is_empty()
+                && questions.iter().all(|q| q["options"].as_array().is_some_and(|o| !o.is_empty()));
+            if !choosable {
+                tracing::info!(pid = self.pid, "agent question refused: it takes typed text");
+                return self
+                    .write(json!({"id": id, "error": {"code": -32601, "message": "not supported by this host"}}))
+                    .await;
+            }
+            let ask = Ask { questions, answers: serde_json::Map::new(), at: 0, tool_call: params["itemId"].as_str().map(String::from) };
+            self.put_question(id, ask);
+            return Ok(());
+        }
         let (title, tool_call, agent_scope) = match method {
             "item/commandExecution/requestApproval" => (
                 command_title(params),
@@ -698,7 +771,7 @@ impl Driver {
         };
         let request = id.to_string();
         self.approvals
-            .insert(request.clone(), Approval { id, agent_scope });
+            .insert(request.clone(), Approval { id, agent_scope, ask: None });
         tracing::info!(pid = self.pid, %request, %method, %title, "agent asks permission");
         let reason = params["reason"]
             .as_str()
@@ -724,6 +797,7 @@ fn perm_options(agent: bool) -> Vec<PermOption> {
         id: id.into(),
         name: name.into(),
         kind: kind.into(),
+        description: None,
     };
     let mut options = vec![option("allow", "Allow", "allow_once")];
     if agent {

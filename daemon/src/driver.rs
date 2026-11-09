@@ -414,3 +414,51 @@ mod exit_tests {
         );
     }
 }
+
+/// The options that answer a question an agent put to the person: one per choice, with its
+/// description, id `pick:<index>` and kind `answer`, then Skip, which refuses the question.
+pub(crate) fn question_options(choices: impl IntoIterator<Item = (String, Option<String>)>) -> Vec<PermOption> {
+    let mut options: Vec<PermOption> = choices
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, description))| PermOption {
+            id: format!("pick:{i}"),
+            name,
+            kind: "answer".into(),
+            description: description.filter(|d| !d.trim().is_empty()),
+        })
+        .collect();
+    options.push(PermOption { id: "deny".into(), name: "Skip".into(), kind: "reject_once".into(), description: None });
+    options
+}
+
+/// The index of the choice an answer to [`question_options`] picked; none for Skip or a withdrawn
+/// request.
+pub(crate) fn picked(choice: Option<&str>) -> Option<usize> {
+    choice?.strip_prefix("pick:")?.parse().ok()
+}
+
+#[cfg(test)]
+mod question_tests {
+    use super::*;
+
+    #[test]
+    fn a_question_offers_each_choice_then_skip_and_a_pick_names_its_index() {
+        let options = question_options([("Red".to_string(), Some("Warm".to_string())), ("Blue".to_string(), Some(" ".to_string()))]);
+        let offered: Vec<(&str, &str, &str, Option<&str>)> = options
+            .iter()
+            .map(|o| (o.id.as_str(), o.name.as_str(), o.kind.as_str(), o.description.as_deref()))
+            .collect();
+        assert_eq!(
+            offered,
+            [
+                ("pick:0", "Red", "answer", Some("Warm")),
+                ("pick:1", "Blue", "answer", None),
+                ("deny", "Skip", "reject_once", None),
+            ]
+        );
+        assert_eq!(picked(Some("pick:1")), Some(1));
+        assert_eq!(picked(Some("deny")), None);
+        assert_eq!(picked(None), None);
+    }
+}

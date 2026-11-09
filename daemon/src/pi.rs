@@ -770,6 +770,7 @@ impl Driver {
             id,
             name: name.into(),
             kind: kind.into(),
+            description: None,
         };
         let (dialog, title, options) = match method {
             "confirm" => {
@@ -793,7 +794,7 @@ impl Driver {
                 let options = choices
                     .iter()
                     .enumerate()
-                    .map(|(i, name)| option(i.to_string(), name, "other"))
+                    .map(|(i, name)| option(i.to_string(), name, "answer"))
                     // A choice none of pi's options is: `perm answer <id> deny`, and the way
                     // out of a select with no options.
                     .chain([option("dismiss".into(), "Dismiss", "reject_once")])

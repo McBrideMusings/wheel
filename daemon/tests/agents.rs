@@ -546,6 +546,67 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_question_is_asked_one_at_a_time_and_every_pick_reaches_the_agent() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "ask a question").await;
+
+    let first = next_perm(&mut ws).await;
+    assert_eq!(first.title, "Which color?");
+    assert_eq!(first.why.reason.as_deref(), Some("Color"));
+    let offered: Vec<(&str, &str, Option<&str>)> = first
+        .options
+        .iter()
+        .map(|o| (o.id.as_str(), o.kind.as_str(), o.description.as_deref()))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            ("pick:0", "answer", Some("Warm")),
+            ("pick:1", "answer", Some("Cool")),
+            ("deny", "reject_once", None),
+        ]
+    );
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer { req: Some(20), id: first.id.clone(), choice: "pick:1".into() },
+    )
+    .await;
+    // The second question is a new request; the tool call is not answered until it has one.
+    let second = next_perm(&mut ws).await;
+    assert_eq!(second.title, "Which size?");
+    assert_ne!(second.id, first.id);
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer { req: Some(21), id: second.id.clone(), choice: "pick:0".into() },
+    )
+    .await;
+    let text = turn_text(&mut ws).await;
+    assert!(
+        text.contains(r#"question: allow answers={"Which color?":"Blue","Which size?":"Small"}"#),
+        "the agent got both answers: {text:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn skipping_a_question_refuses_the_tool_call() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "ask a question").await;
+    let first = next_perm(&mut ws).await;
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer { req: Some(20), id: first.id.clone(), choice: "deny".into() },
+    )
+    .await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("question: deny"), "{text:?}");
+    assert!(!text.contains("answers="), "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_queued_message_shows_at_once_and_starts_inside_the_running_turn() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;

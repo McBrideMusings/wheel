@@ -82,11 +82,16 @@ struct PermissionCard: View {
                 if count > 1 { Text("+\(count - 1) more").font(.caption).foregroundStyle(.secondary) }
             }
             PermissionWhy(perm: perm)
-            Text(perm.title)
-                .font(.callout.monospaced())
-                .lineLimit(8)
-                .fixedSize(horizontal: false, vertical: true)
-            PhonePermissionChoices(perm: perm, answer: answer)
+            if perm.isQuestion {
+                Text(perm.title).font(.callout).fixedSize(horizontal: false, vertical: true)
+                QuestionChoices(perm: perm, answer: answer).controlSize(.large)
+            } else {
+                Text(perm.title)
+                    .font(.callout.monospaced())
+                    .lineLimit(8)
+                    .fixedSize(horizontal: false, vertical: true)
+                PhonePermissionChoices(perm: perm, answer: answer)
+            }
         }
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))

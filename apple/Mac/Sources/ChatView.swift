@@ -159,13 +159,19 @@ struct PermissionCard: View {
             // The asking agent's own tool line, when its transcript holds one: the kind and
             // content that explain the request. Observed, so a tool_update redraws it.
             PermissionWhy(perm: perm)
-            if let call = perm.toolCall,
-               let chat = model.chats[perm.agent] {
-                PermissionTool(model: model, chat: chat, call: call, title: perm.title)
+            if perm.isQuestion {
+                Text(perm.title).font(ChatFont.line).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                QuestionChoices(perm: perm, answer: model.answer).controlSize(.small)
             } else {
-                PermissionTitle(text: perm.title)
+                if let call = perm.toolCall,
+                   let chat = model.chats[perm.agent] {
+                    PermissionTool(model: model, chat: chat, call: call, title: perm.title)
+                } else {
+                    PermissionTitle(text: perm.title)
+                }
+                PermissionChoices(perm: perm, answer: model.answer, keys: shortcut)
             }
-            PermissionChoices(perm: perm, answer: model.answer, keys: shortcut)
         }
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))

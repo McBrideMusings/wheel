@@ -1,6 +1,11 @@
 import SwiftUI
 import WheelKit
 
+extension PermInfo {
+    /// A question the agent put to the person: its choices are answers to it, not allowances.
+    public var isQuestion: Bool { options.contains { $0.kind == "answer" } }
+}
+
 /// The three answers a permission card offers, in the order its buttons sit.
 public enum PermissionKey {
     case deny, always, allow
@@ -11,7 +16,7 @@ public enum PermissionKey {
         switch self {
         case .deny: perm.options.first { $0.kind.hasPrefix("reject") }
         case .always: perm.options.first { $0.kind == "allow_always" }
-        case .allow: perm.options.first { $0.kind == "allow_once" } ?? perm.options.first { !$0.kind.hasPrefix("reject") && $0.kind != "allow_always" }
+        case .allow: perm.options.first { $0.kind == "allow_once" } ?? perm.options.first { !$0.kind.hasPrefix("reject") && $0.kind != "allow_always" && $0.kind != "answer" }
         }
     }
 }
@@ -39,6 +44,43 @@ public struct PermissionWhy: View {
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// A question's choices: one full-width button per option, its label over its description, then
+/// Skip at the right. No option is the default, so Return picks nothing; Esc skips through the
+/// composer.
+public struct QuestionChoices: View {
+    let perm: PermInfo
+    let answer: (PermInfo, String) -> Void
+
+    public init(perm: PermInfo, answer: @escaping (PermInfo, String) -> Void) {
+        self.perm = perm
+        self.answer = answer
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(perm.options.filter { $0.kind == "answer" }, id: \.id) { option in
+                Button { answer(perm, option.id) } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(option.name).fontWeight(.medium)
+                        if let description = option.description {
+                            Text(description).font(ChatFont.meta).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+            }
+            HStack {
+                Spacer(minLength: 8)
+                ForEach(perm.options.filter { $0.kind.hasPrefix("reject") }, id: \.id) { option in
+                    Button(option.name) { answer(perm, option.id) }
+                }
+            }
         }
     }
 }

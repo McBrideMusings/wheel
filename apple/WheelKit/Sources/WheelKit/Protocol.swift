@@ -517,6 +517,8 @@ public struct PermOption: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let kind: String
+    /// For an option that answers a question: what choosing it means, one line.
+    public let description: String?
 }
 
 /// One line a browser pane's page wrote to its console, or an error it raised.

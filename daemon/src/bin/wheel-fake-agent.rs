@@ -37,6 +37,9 @@
 //!   `description`; "nosuggest" omits `permission_suggestions`; "twice" asks a second command
 //!   (`rm -rf dist`) and reports `permission again: <answer>`, or `skipped` when a rule from an
 //!   earlier "always" answer in the same turn covers it, as Claude Code treats a session rule;
+//! - "question" calls AskUserQuestion as "call-8" with two questions, "Which color?" (Red, Blue) and
+//!   "Which size?" (Small, Large), asks permission for it, and reports `question: <allow|deny>`,
+//!   followed by ` answers=<the answers object>` when the answer carried one;
 //! - "diff" calls Edit on `src/a.rs` (`one\n` -> `two\n`) as "call-2", whose result is `edited
 //!   src/a.rs`;
 //! - "show tools" thinks, then one of each tool kind: Read `src/model.go`, Grep `addSuggestions` in
@@ -544,6 +547,21 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
             }
         }
     }
+    if text.contains("question") {
+        let input = json!({"questions": [
+            {"question": "Which color?", "header": "Color", "multiSelect": false, "options": [
+                {"label": "Red", "description": "Warm"}, {"label": "Blue", "description": "Cool"}]},
+            {"question": "Which size?", "header": "Size", "multiSelect": false, "options": [
+                {"label": "Small", "description": "Fits a pocket"}, {"label": "Large", "description": "Fits a bag"}]}]});
+        turn.tool("call-8", "AskUserQuestion", input.clone());
+        match turn.ask("call-8", "AskUserQuestion", input, json!({}), false).await {
+            Some(behavior) => {
+                turn.tool_done("call-8", "answered");
+                turn.say(&format!("question: {behavior}\n"));
+            }
+            None => return out_of_time(turn),
+        }
+    }
     if text.contains("switch mode") {
         *turn.state.mode.lock().unwrap() = "plan".into();
         turn.out.send(json!({"type": "system", "subtype": "status", "status": null, "permissionMode": "plan", "session_id": turn.session}));
@@ -916,6 +934,9 @@ async fn main() {
                                 rule["ruleContent"].as_str().map(String::from),
                             ));
                         }
+                    }
+                    if let Some(answers) = answer["updatedInput"]["answers"].as_object() {
+                        behavior.push_str(&format!(" answers={}", serde_json::Value::Object(answers.clone())));
                     }
                     if let Some(tx) = reader_state.answers.lock().unwrap().remove(id) {
                         let _ = tx.send(behavior);

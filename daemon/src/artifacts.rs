@@ -1140,11 +1140,13 @@ impl AppState {
                 id: "allow".into(),
                 name: "Keep it".into(),
                 kind: "allow_once".into(),
+                description: None,
             },
             wheel_proto::PermOption {
                 id: "deny".into(),
                 name: "Leave it".into(),
                 kind: "reject_once".into(),
+                description: None,
             },
         ];
         let answer = self.perms.ask(&agent, title, options).await?;

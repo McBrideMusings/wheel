@@ -2921,8 +2921,12 @@ pub struct PermWhy {
 pub struct PermOption {
     pub id: String,
     pub name: String,
-    /// allow_once, allow_always, reject_once or reject_always.
+    /// allow_once, allow_always, reject_once or reject_always, or `answer` for a choice that
+    /// answers a question the agent asked.
     pub kind: String,
+    /// For an option that answers a question: the option's own description, one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
