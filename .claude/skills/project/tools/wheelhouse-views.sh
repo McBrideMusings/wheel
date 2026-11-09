@@ -33,10 +33,10 @@ SP1="$(w space ls | jget spaces.0.id)"
 SP2="$(w space ls | jget spaces.1.id)"
 
 for v in repo diff prs; do
-  printf '[artifacts.%s-native]\nmcp = "exec %s serve"\nshared = true\ntitle = "%s"\n' "$v" "$HOUSE" "$v" >>"$INST/wheel.toml"
+  printf '[artifacts.%s]\nmcp = "exec %s serve"\nshared = true\ntitle = "%s"\n' "$v" "$HOUSE" "$v" >>"$INST/wheel.toml"
 done
 
-call() { w artifact call "$1-native" "$2" ${4:+"$4"} --scope machine --space "$3" 2>&1; }
+call() { w artifact call "$1" "$2" ${4:+"$4"} --scope machine --space "$3" 2>&1; }
 servers() { pgrep -P "$DPID" -f "$HOUSE serve" | wc -l | tr -d ' '; }
 has() { printf %s "$1" | grep -q -- "$2"; }
 hasnt() { ! has "$1" "$2"; }
@@ -62,7 +62,7 @@ OUT="$(call repo delete_branch "$SP1" '{"branch":"nope"}')"
 check "a branch that does not exist is refused" has "$OUT" "no such local branch"
 
 # A file edited in a subscribed project reaches its Diff page without a reload.
-w artifact read diff-native a2ui://diff-native --scope machine --space "$SP1" >/dev/null 2>&1
+w artifact read diff a2ui://diff --scope machine --space "$SP1" >/dev/null 2>&1
 echo "changed" >>"$ONE/readme"
 changed() { has "$(call diff get_diff "$SP1")" "readme"; }
 check "an edit to a tracked file shows on the Diff page within 5 seconds" poll 5 changed

@@ -20,8 +20,8 @@ use crate::core::table;
 use crate::core::tracker::{KINDS, STATUSES};
 use crate::view::{View, MIME};
 
-pub const NAME: &str = "issues-native";
-const URI: &str = "a2ui://issues-native";
+pub const NAME: &str = "issues";
+const URI: &str = "a2ui://issues";
 const SURFACE: &str = "issues";
 
 struct Ui {

@@ -65,8 +65,8 @@ struct A2UITableView: View {
         Table(lines, selection: selected) {
             TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                 TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: first) }
-                    .width(min: c["width"]?.numberValue.map { CGFloat($0) }, ideal: c["width"]?.numberValue.map { CGFloat($0) },
-                           max: c["width"]?.numberValue.map { CGFloat($0) })
+                    // A column with a width starts at it and can be dragged wider or narrower; one without fills what is left.
+                    .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: nil)
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in

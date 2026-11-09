@@ -19,8 +19,8 @@ use crate::core::project::Origin;
 use crate::core::table;
 use crate::view::{View, MIME};
 
-pub const NAME: &str = "prs-native";
-const URI: &str = "a2ui://prs-native";
+pub const NAME: &str = "prs";
+const URI: &str = "a2ui://prs";
 const SURFACE: &str = "prs";
 
 #[derive(Default)]
