@@ -815,7 +815,10 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
                 json!({ "value": "deps", "text": "Depends on" }), json!({ "value": "unlocks", "text": "Unlocks" }),
                 json!({ "value": "focus", "text": "Focus" }), json!({ "value": "graph", "text": "Graph" })], true, false);
         crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "maxWidth": "infinity" } }));
-        page.push(p.boxed("find", "h", vec!["search".into(), "views".into()], json!({ "spacing": 8, "align": "center", "widths": ["flex", Value::Null], "padding": [8, 0, 0, 0] })));
+        p.boxed("find", "h", vec!["search".into(), "views".into()], json!({ "spacing": 8, "align": "center", "widths": ["flex", Value::Null], "padding": [8, 0, 0, 0] }));
+        // The row takes the page's full width, so the search field grows to the views choice.
+        crate::core::layout::modify(&mut p.out, "find", json!({ "frame": { "maxWidth": "infinity" } }));
+        page.push("find".to_string());
 
         // The filters are one row of menus, each starting at "Any": status, type, label, priority and sort, then Clear and the count.
         let counted = |any: &str, f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<Value> {
