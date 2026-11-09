@@ -1529,6 +1529,14 @@ final class DebugServer {
                 return refuse("409 Conflict", "no enabled menu item \(item)")
             }
             if item == "close" { model.closePane(pane) } else { model.runHeaderMenu(item, pane: pane) }
+        case ("POST", "/pane/header"):
+            // Where a pane kind's header puts a control, as Settings › Pane header does: `kind`, `control` (a `HeaderControl` name) and `placement` bar|menu|off, or `reset` for the kind.
+            guard let kind = query["kind"] else { return refuse("400 Bad Request", "kind is required") }
+            if query["reset"] != nil { model.resetHeaderLayout(kind: kind); break }
+            guard let control = query["control"].flatMap(HeaderControl.init(rawValue:)), let placement = query["placement"].flatMap(HeaderPlacement.init(rawValue:)) else {
+                return refuse("400 Bad Request", "control and placement are required")
+            }
+            model.setHeaderPlacement(control, kind: kind, to: placement)
         case ("POST", "/pane/button"):
             // A press of a pane header's own button, by the id `/state` lists under `header_buttons`.
             guard let pane = query["pane"], let button = query["button"] else { return refuse("400 Bad Request", "pane and button are required") }
@@ -1538,6 +1546,7 @@ final class DebugServer {
             switch button {
             case "pop": model.toggleSite(pane, .popped)
             case "background": model.toggleSite(pane, .backgrounded)
+            case "screenshot": model.copyPaneImage(pane)
             case "tray-open":
                 guard let space = model.space(holding: pane) else { return refuse("404 Not Found", "no pane \(pane)") }
                 model.setTrayOpen(space.id, true)

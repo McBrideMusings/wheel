@@ -336,7 +336,10 @@ struct SettingsView: View {
     private func topicPage(_ topic: SettingTopic) -> some View {
         scrolled {
             VStack(alignment: .leading, spacing: 18) {
-                if topic == .general { WindowsSettings(model: model) }
+                if topic == .general {
+                    WindowsSettings(model: model)
+                    PaneHeaderSettings(model: model)
+                }
                 content(.global) { SettingsForm(model: model, settings: settings, layer: .global, topic: topic) }
             }
                 .padding(.horizontal, 28)
@@ -795,6 +798,56 @@ struct WindowsSettings: View {
             Toggle("Restore windows at launch", isOn: Binding(get: { model.restoresWindows }, set: { model.restoresWindows = $0 }))
             Text("On, Wheel reopens the windows as you left them. Off, it opens one window holding every space.")
                 .font(ChatFont.line).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Settings › General › Pane header: for each kind of pane, where every icon button of its header
+/// goes: the top bar, the ⋯ menu, or nowhere. This Mac's own preference, as the header is its drawing.
+struct PaneHeaderSettings: View {
+    var model: AppModel
+    @State private var kind = HeaderKind.terminal
+
+    var body: some View {
+        let layout = model.headerLayout
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Pane header").font(ChatFont.body).fontWeight(.semibold)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Picker("Pane type", selection: $kind) {
+                        ForEach(HeaderKind.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Button("Reset") { model.resetHeaderLayout(kind: kind.rawValue) }
+                        .disabled(layout.choices[kind.rawValue] == nil)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                ForEach(HeaderControl.allCases.filter { $0.applies(to: kind.rawValue) }) { control in
+                    Divider()
+                    HStack {
+                        Image(systemName: control.symbol).frame(width: 20)
+                        Text(control.title)
+                        Spacer()
+                        Picker(control.title, selection: Binding(
+                            get: { layout.placement(control, kind: kind.rawValue) },
+                            set: { model.setHeaderPlacement(control, kind: kind.rawValue, to: $0) })) {
+                            ForEach(HeaderPlacement.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                }
+                Divider()
+                Text("Where each icon button of a \(kind.title.lowercased()) pane's header goes. A narrow header moves what does not fit into the ⋯ menu.")
+                    .font(ChatFont.line).foregroundStyle(.secondary)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
         }
     }
 }

@@ -12,10 +12,31 @@ extension AppModel {
     /// not shown: its views are mounted but drawn at zero opacity. A web or browser pane in such a
     /// space still has its WebKit view mounted, and WebKit renders the page itself, so it is drawn.
     func renderPane(id: UInt64, pane: String, full: Bool = false) {
+        drawPane(pane, full: full) { [weak self] result in
+            switch result {
+            case let .success(png): self?.answerRender(id, pane, png)
+            case let .failure(refusal): self?.refuseRender(id, pane, refusal.message)
+            }
+        }
+    }
+
+    /// Why a pane could not be drawn.
+    struct RenderFailure: Error { let message: String }
+
+    /// Draw `pane` and hand the PNG, or the reason it could not be drawn, to `done`: the answer to
+    /// `wheel pane shot` and the header's Copy Pane Image button share this one drawing.
+    func drawPane(_ pane: String, full: Bool = false, done: @escaping (Result<Data, RenderFailure>) -> Void) {
+        func refuse(_ message: String) {
+            Log.info("render \(pane) not drawn: \(message)")
+            done(.failure(RenderFailure(message: message)))
+        }
+        func answer(_ png: Data) {
+            Log.info("render \(pane) drawn, \(png.count) bytes")
+            done(.success(png))
+        }
         guard let space = spaces.first(where: { $0.allPanes.contains { $0.id == pane } }),
               let kind = space.allPanes.first(where: { $0.id == pane })?.kind else {
-            Log.info("render \(id): pane \(pane) is not on screen")
-            reply(.renderRefused(id: id, message: RenderRefusal.notShown))
+            refuse(RenderRefusal.notShown)
             return
         }
         // A palette or a refresh request open over the pane is drawn by the window, not by WebKit's
@@ -25,16 +46,15 @@ extension AppModel {
         let native = a2uiPanes[pane]?.isNative == true
         let web = covered || native ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
         guard web != nil || shownSpaces.contains(space.id) else {
-            Log.info("render \(id): pane \(pane) is not on screen")
-            reply(.renderRefused(id: id, message: RenderRefusal.notShown))
+            refuse(RenderRefusal.notShown)
             return
         }
-        Log.info("render \(id): drawing \(pane) (\(kind.name))")
+        Log.info("render \(pane): drawing \(pane) (\(kind.name))")
         if let web {
             // The header strip is the window's drawing of the pane above its body; WebKit's
             // snapshot is the page alone, so the strip goes on top of it.
             let header = headerStrip(pane: pane, space: space.id, web: web)
-            if header == nil { Log.info("render \(id): \(pane) has no header to draw (no window shows it); the shot is the page alone") }
+            if header == nil { Log.info("render \(pane): \(pane) has no header to draw (no window shows it); the shot is the page alone") }
             // A page in a hidden space is hidden (no cursor rects); WebKit draws it only when shown.
             web.isHidden = false
             let take: (WKSnapshotConfiguration?) -> Void = { configuration in
@@ -45,12 +65,12 @@ extension AppModel {
                     guard let png = whole.flatMap(Self.png) else {
                         let drew = "WebKit drew no image: \(error?.localizedDescription ?? "no error")"
                         let hidden = self.map { !$0.shownSpaces.contains(space.id) } ?? false
-                        self?.refuseRender(id, pane, hidden
+                        refuse(hidden
                             ? "pane \(pane) is in background space \(space.id), which no window shows, so it cannot be drawn; show the space first with `wheel space move \(space.id) <window>` (\(drew))"
                             : drew)
                         return
                     }
-                    self?.answerRender(id, pane, png)
+                    answer(png)
                 }
               }
             }
@@ -63,7 +83,7 @@ extension AppModel {
                     let configuration = WKSnapshotConfiguration()
                     configuration.rect = CGRect(origin: .zero, size: size)
                     configuration.snapshotWidth = NSNumber(value: Double(size.width))
-                    Log.info("render \(id): \(pane) page is \(Int(size.width))x\(Int(size.height)) pt; drawing all of it")
+                    Log.info("render \(pane): \(pane) page is \(Int(size.width))x\(Int(size.height)) pt; drawing all of it")
                     take(configuration)
                 }
             }
@@ -72,7 +92,7 @@ extension AppModel {
         guard let frame = paneFrames[pane], frame.width > 0, frame.height > 0,
               let window = layout.window(holding: space.id).flatMap({ windowHost?.window($0.id) }) ?? NSApp.wheelWindow,
               let content = window.contentView else {
-            refuseRender(id, pane, "the pane has no size in the window")
+            refuse("the pane has no size in the window")
             return
         }
         let paneRect = Self.contentRect(frame, in: content)
@@ -80,15 +100,15 @@ extension AppModel {
            let document = scroll.documentView, document.frame.height > scroll.contentView.bounds.height + 1 {
             Task { @MainActor in
                 guard let png = await Self.stitched(scroll, in: content, within: paneRect) else {
-                    self.refuseRender(id, pane, "the window could not draw the pane's whole content")
+                    refuse("the window could not draw the pane's whole content")
                     return
                 }
-                self.answerRender(id, pane, png)
+                answer(png)
             }
             return
         }
         if full, kind.name == "terminal" {
-            refuseRender(id, pane, "the terminal's scrollback is not a scroll view the window can draw whole; read it with `wheel term read`")
+            refuse("the terminal's scrollback is not a scroll view the window can draw whole; read it with `wheel term read`")
             return
         }
         // A pane's frame is rarely whole device pixels (a 1090.5 pt pane on a 1x display). The bitmap
@@ -96,16 +116,16 @@ extension AppModel {
         // neighbour beyond the pane's edge; snapping every edge inward keeps the image inside the frame.
         let rect = content.backingAlignedRect(paneRect, options: .alignAllEdgesInward)
         guard rect.width > 0, rect.height > 0, let rep = content.bitmapImageRepForCachingDisplay(in: rect) else {
-            refuseRender(id, pane, "the window could not make a bitmap for \(Int(paneRect.width))x\(Int(paneRect.height))")
+            refuse("the window could not make a bitmap for \(Int(paneRect.width))x\(Int(paneRect.height))")
             return
         }
         content.cacheDisplay(in: rect, to: rep)
-        Log.info("render \(id): \(pane) frame \(frame) drawn from \(rect) into \(rep.pixelsWide)x\(rep.pixelsHigh) px")
+        Log.info("render \(pane): \(pane) frame \(frame) drawn from \(rect) into \(rep.pixelsWide)x\(rep.pixelsHigh) px")
         guard let png = rep.representation(using: .png, properties: [:]) else {
-            refuseRender(id, pane, "the drawing could not be encoded as a PNG")
+            refuse("the drawing could not be encoded as a PNG")
             return
         }
-        answerRender(id, pane, png)
+        answer(png)
     }
 
     /// The smallest scroll view whose frame holds the middle of `rect` (a rect of `content`).

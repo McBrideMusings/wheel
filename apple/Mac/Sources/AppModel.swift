@@ -133,6 +133,10 @@ final class AppModel {
     private(set) var paneAway: PaneAway?
     /// Counts changes to `restoresWindows`, which lives in the preferences; reading it tracks them.
     var restoreWindowsChanges = 0
+    /// Counts changes to the pane header's controls (`HeaderLayout`), which live in the preferences.
+    var headerLayoutChanges = 0
+    /// The pane whose info popover the ⋯ menu opened, when its ⓘ button is not in the header.
+    var infoPane: String?
     /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its
     /// space is hit-tested against the space that window shows.
     @ObservationIgnored var gridFrames: [String: CGRect] = [:]

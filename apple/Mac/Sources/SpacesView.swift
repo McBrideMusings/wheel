@@ -626,23 +626,39 @@ struct PaneMenuItems: View {
 
     @ViewBuilder var body: some View {
         let items = model.headerMenu(for: paneId, kind: kind)
-        if level >= 1 {
-            if let browser = model.browserPanes[paneId], case .browser = kind {
-                Menu("Browser") { BrowserMenu(model: model, paneId: paneId, browser: browser) }
-            }
+        let layout = model.headerLayout
+        let name = kind.name
+        let offered = HeaderControl.allCases.filter { layout.inMenu($0, kind: name, level: level) }
+        if offered.contains(.browser), let browser = model.browserPanes[paneId], case .browser = kind {
+            Menu("Browser") { BrowserMenu(model: model, paneId: paneId, browser: browser) }
+        }
+        if offered.contains(.info) {
+            Button("Pane Info") { model.requestPaneInfo(paneId); model.infoPane = paneId }
+        }
+        if offered.contains(.screenshot) {
+            Button("Copy Pane Image") { model.copyPaneImage(paneId) }
+        }
+        if offered.contains(.pop) {
             let pop = model.popButton(for: paneId)
             Button(pop.title) { model.toggleSite(paneId, .popped) }
+        }
+        if offered.contains(.background) {
             Button(model.backgroundButton().title) { model.toggleSite(paneId, .backgrounded) }
         }
-        if level >= 2, let view = otherView {
+        if offered.contains(.switchView), let view = otherView {
             Button(view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
         }
-        if level >= 4 {
+        if offered.contains(.zoom) {
             let zoom = model.zoomButton(for: paneId)
             Button(zoom.title) { model.toggleZoom(paneId) }.disabled(!zoom.enabled)
         }
-        if level >= 1 { Divider() }
-        ForEach(items.filter { !$0.id.hasPrefix("move-space:") && !$0.id.hasPrefix("kind:") }, id: \.id) { item in
+        let hidden: Set<String> = Set([
+            layout.isOff(.splitRight, kind: name) ? "split-right" : nil,
+            layout.isOff(.splitDown, kind: name) ? "split-down" : nil,
+            layout.isOff(.close, kind: name) ? "close" : nil,
+        ].compactMap { $0 })
+        if !offered.filter({ ![.splitRight, .splitDown, .close].contains($0) }).isEmpty { Divider() }
+        ForEach(items.filter { !$0.id.hasPrefix("move-space:") && !$0.id.hasPrefix("kind:") && !hidden.contains($0.id) }, id: \.id) { item in
             if item.id == "close" { Divider() }
             if item.id == "move-new-space" {
                 changeTypeMenu(items)
@@ -708,6 +724,10 @@ struct PaneHeader: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.toggleZoom(paneId) }
         .contextMenu { PaneMenuItems(model: model, paneId: paneId, kind: kind) }
+        // Pane Info chosen from the ⋯ menu, when the ⓘ button is not in the header.
+        .popover(isPresented: Binding(get: { model.infoPane == paneId }, set: { if !$0, model.infoPane == paneId { model.infoPane = nil } }), arrowEdge: .bottom) {
+            PaneInfoView(fields: model.paneInfo[paneId]).frame(width: 360)
+        }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
         // previews the result and the daemon changes the tree once the pointer is released.
         .gesture(
@@ -736,7 +756,7 @@ struct PaneHeader: View {
                 .fontWeight(focused ? .semibold : .regular)
                 .lineLimit(1)
                 .frame(minWidth: 0, idealWidth: 64, maxWidth: .infinity, alignment: .leading)
-            if level == 0, let browser = model.browserPanes[paneId], case .browser = kind {
+            if bar(.browser, level), let browser = model.browserPanes[paneId], case .browser = kind {
                 Menu {
                     BrowserMenu(model: model, paneId: paneId, browser: browser)
                 } label: {
@@ -748,18 +768,15 @@ struct PaneHeader: View {
                 .help("Back, forward, reload and home")
                 .accessibilityLabel("Browser controls")
             }
-            if level <= 1, let view = otherView {
+            if bar(.switchView, level), let view = otherView {
                 headerButton(view == .agent ? "bubble.left.and.text.bubble.right" : "terminal",
                              view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
             }
-            if case .unknown = kind {} else {
-                if level == 0 { PaneInfoButton(model: model, paneId: paneId) }
-                if level <= 2 {
-                    headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) }
-                    headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) }
-                }
-            }
-            if level == 0 {
+            if bar(.info, level) { PaneInfoButton(model: model, paneId: paneId) }
+            if bar(.splitRight, level) { headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) } }
+            if bar(.splitDown, level) { headerButton("square.split.1x2", "Split Down") { model.split(paneId, .down) } }
+            if bar(.screenshot, level) { headerButton("camera.viewfinder", "Copy pane image") { model.copyPaneImage(paneId) } }
+            if bar(.pop, level) {
                 let pop = model.popButton(for: paneId)
                 Button { model.toggleSite(paneId, .popped) } label: { Image(systemName: pop.symbol) }
                     .buttonStyle(.borderless)
@@ -767,10 +784,12 @@ struct PaneHeader: View {
                     .help(pop.title)
                     .accessibilityLabel(pop.title)
                     .accessibilityValue(pop.on ? "on" : "off")
+            }
+            if bar(.background, level) {
                 let background = model.backgroundButton()
                 headerButton(background.symbol, background.title) { model.toggleSite(paneId, .backgrounded) }
             }
-            if level <= 3 {
+            if bar(.zoom, level) {
                 let zoom = model.zoomButton(for: paneId)
                 Button { model.toggleZoom(paneId) } label: { Image(systemName: zoom.symbol) }
                     .buttonStyle(.borderless)
@@ -785,8 +804,14 @@ struct PaneHeader: View {
                 .fixedSize()
                 .help("Pane menu")
                 .accessibilityLabel("Pane menu")
-            headerButton("xmark", "Close Pane", action: close)
+            if bar(.close, level) { headerButton("xmark", "Close Pane", action: close) }
         }
+    }
+
+    /// Whether the header of `level` draws `control` as an icon: the person's choice for this kind
+    /// of pane, and room for it.
+    private func bar(_ control: HeaderControl, _ level: Int) -> Bool {
+        model.headerLayout.inBar(control, kind: kind.name, level: level)
     }
 
     private func headerButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
