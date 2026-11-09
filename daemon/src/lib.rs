@@ -45,6 +45,7 @@ mod submit;
 pub mod usage;
 mod views;
 mod voice;
+mod voice_events;
 
 pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};

@@ -54,6 +54,9 @@ eq "a pipe from an allowed command did not run" "$([ -e "$SCR/alpha/made-by-pipe
 w agent send "$V" "Run exactly this command and nothing else: wheel perm list" --timeout 120 >/dev/null 2>&1
 check "it ran wheel perm list" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' agent read '$V' 2>&1 | grep -q 'wheel perm list'"
 
+w agent send "$V" "Run exactly this command and nothing else: wheel voice events $A" --timeout 120 >/dev/null 2>&1
+check "it ran wheel voice events" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' agent read '$V' 2>&1 | grep -q 'wheel voice events'"
+
 w voice stop "$A"
 check "voice stop ends it" bash -c "! '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' voice stop $A 2>/dev/null"
 finish

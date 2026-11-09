@@ -1291,6 +1291,12 @@ enum VoiceCommand {
         /// A space id, or `daemon` for the whole daemon.
         scope: String,
     },
+    /// Print, one per line, what the voice orchestrator for a scope has not been told yet, and
+    /// take it. Fails when none is running.
+    Events {
+        /// A space id, or `daemon`.
+        scope: String,
+    },
     /// End the voice orchestrator for a scope. Fails when none is running.
     Stop {
         /// A space id, or `daemon`.
@@ -2928,6 +2934,19 @@ async fn voice_start(conn: &mut Conn, scope: String) -> Result<(), Fail> {
     match conn.call(ClientMsg::VoiceStart { req: Some(req), scope }, req).await? {
         ServerMsg::VoiceStarted { agent, .. } => {
             println!("{agent}");
+            Ok(())
+        }
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+async fn voice_events(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+    let req = conn.req();
+    match conn.call(ClientMsg::VoiceEvents { req: Some(req), scope }, req).await? {
+        ServerMsg::VoiceEventLines { lines, .. } => {
+            for line in lines {
+                println!("{line}");
+            }
             Ok(())
         }
         other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
@@ -5854,6 +5873,7 @@ async fn main() -> ExitCode {
                 agent_commands(&mut conn, agent, json).await
             }
             Command::Voice(VoiceCommand::Start { scope }) => voice_start(&mut conn, scope).await,
+            Command::Voice(VoiceCommand::Events { scope }) => voice_events(&mut conn, scope).await,
             Command::Voice(VoiceCommand::Stop { scope }) => voice_stop(&mut conn, scope).await,
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await

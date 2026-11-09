@@ -13,6 +13,7 @@ use crate::server::AppState;
 /// follows each prefix.
 pub(crate) const ALLOWED: &[&str] = &[
     "Bash(wheel status:*)",
+    "Bash(wheel voice events:*)",
     "Bash(wheel agent:*)",
     "Bash(wheel perm:*)",
     "Bash(wheel space ls:*)",
@@ -69,6 +70,9 @@ pub(crate) fn brief(scope: &str, space_name: Option<&str>) -> String {
          Answer a permission request only when what the person said approves or refuses it. Before a \
          call that may take a moment, say one short word such as \"checking\". After you act, say in one \
          sentence what you did, for example \"approved the test run in auth\".\n\
+         A line that starts with \"Event:\" is news from wheeld, such as a permission request or a \
+         failure: say it to the person in one short sentence. Other events wait; when the person asks \
+         what happened, run `wheel voice events {scope}` and summarize what it prints.\n\
          Read an agent's transcript only when asked about that agent."
     )
 }
@@ -89,7 +93,9 @@ impl AppState {
                 .ok_or_else(|| format!("no space {scope}"))?;
             (space.cwd.clone(), Some(space.name.clone()))
         };
-        self.spawn_voice_agent(&name, &cwd, brief(scope, space_name.as_deref()), MODEL)?;
+        if self.spawn_voice_agent(&name, &cwd, brief(scope, space_name.as_deref()), MODEL)? {
+            self.voice_follow(scope);
+        }
         Ok(name)
     }
 
@@ -101,5 +107,94 @@ impl AppState {
         }
         self.end_agent(&name);
         Ok(())
+    }
+}
+
+/// The most lines a scope keeps for the orchestrator to ask for.
+const KEPT: usize = 50;
+
+impl AppState {
+    /// Give voice to the connection from `peer`; returns its id as `voice_lease` names it.
+    pub(crate) fn voice_claim(&self, peer: std::net::SocketAddr) -> String {
+        *self.voice_lease.lock().unwrap() = Some(peer);
+        let owner = peer.to_string();
+        let _ = self.global.send(wheel_proto::ServerMsg::VoiceLease { owner: Some(owner.clone()) });
+        owner
+    }
+
+    /// `peer` gives voice up; refused when it does not hold it.
+    pub(crate) fn voice_release(&self, peer: std::net::SocketAddr) -> Result<(), String> {
+        let mut lease = self.voice_lease.lock().unwrap();
+        if *lease != Some(peer) {
+            return Err("this connection does not own voice".into());
+        }
+        *lease = None;
+        let _ = self.global.send(wheel_proto::ServerMsg::VoiceLease { owner: None });
+        Ok(())
+    }
+
+    /// `peer` disconnected: it no longer owns voice.
+    pub(crate) fn voice_gone(&self, peer: std::net::SocketAddr) {
+        let _ = self.voice_release(peer);
+    }
+
+    /// The lines waiting for the orchestrator of `scope`, taken.
+    pub(crate) fn voice_take_events(&self, scope: &str) -> Result<Vec<String>, String> {
+        if !self.agents.lock().unwrap().contains_key(&agent_name(scope)) {
+            return Err(format!("no voice orchestrator is running for {scope}"));
+        }
+        let mut events = self.voice_events.lock().unwrap();
+        Ok(events.remove(scope).map(Vec::from_iter).unwrap_or_default())
+    }
+
+    /// Whether `agent` belongs to `scope`: any agent for the daemon scope, otherwise one whose pane
+    /// is in that space. The orchestrators themselves belong to none.
+    fn voice_scope_has(&self, scope: &str, agent: &str) -> bool {
+        if agent.starts_with("voice-") {
+            return false;
+        }
+        if scope == DAEMON {
+            return true;
+        }
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .filter(|s| s.id == scope)
+            .flat_map(crate::spaces::agent_panes)
+            .any(|p| p.agent == agent)
+    }
+
+    /// Feed the orchestrator of `scope` from the global broadcast until it ends: urgent lines go to
+    /// it as a message, the rest wait in its buffer.
+    fn voice_follow(&self, scope: &str) {
+        let Some(state) = self.me.upgrade() else { return };
+        let scope = scope.to_string();
+        let mut global = self.global.subscribe();
+        tokio::spawn(async move {
+            let mut filter = crate::voice_events::Filter::default();
+            loop {
+                let msg = match global.recv().await {
+                    Ok(msg) => msg,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                };
+                let Ok(orchestrator) = state.agent(&agent_name(&scope)) else { break };
+                let Some(line) = filter.line(&msg) else { continue };
+                if !line.agent.is_empty() && !state.voice_scope_has(&scope, &line.agent) {
+                    continue;
+                }
+                if line.urgent {
+                    let _ = orchestrator.send(format!("Event: {}", line.text));
+                } else {
+                    let mut events = state.voice_events.lock().unwrap();
+                    let kept = events.entry(scope.clone()).or_default();
+                    kept.push_back(line.text);
+                    while kept.len() > KEPT {
+                        kept.pop_front();
+                    }
+                }
+            }
+        });
     }
 }

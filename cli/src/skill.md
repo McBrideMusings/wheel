@@ -46,7 +46,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel agent send <pane> "message"`: send a chat agent a message and print its reply as it ends.
   `agent read`, `agent wait`, `agent cancel`, `agent conversations`, `agent new`, `agent resume`,
   `agent context`, `agent config`: follow and steer a chat agent. `wheel agent watch` prints every agent pane as one JSON line (`space`, `cwd`, `pane`, `agent`, `harness`, `model`, `status`: idle, working, needs_you or stopped), then again whenever the list changes, until the daemon goes away.
-- `wheel voice start <space-id|daemon>` starts the voice orchestrator, an agent that belongs to no pane, and prints its agent name (`voice-<scope>`); read it and send to it with `wheel agent read` and `wheel agent send`. It runs only whitelisted `wheel` commands. `wheel voice stop <scope>` ends it.
+- `wheel voice start <space-id|daemon>` starts the voice orchestrator, an agent that belongs to no pane, and prints its agent name (`voice-<scope>`); read it and send to it with `wheel agent read` and `wheel agent send`. It runs only whitelisted `wheel` commands. `wheel voice events <scope>` prints and takes the events it has not been told yet. `wheel voice stop <scope>` ends it.
 - `wheel perm list | wait | answer`: permission requests agents are waiting on.
   `wheel perm answer <request-id-or-agent-pane> allow|deny|<option-id>` answers one. **Only answer a
   request when the person has told you to.** Never answer your own.
