@@ -156,7 +156,7 @@ final class DebugServer {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
              ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"), ("POST", "/agent/message"),
-             ("POST", "/agent/attach"), ("POST", "/agent/pasteboard"), ("POST", "/agent/paste"):
+             ("POST", "/agent/attach"), ("POST", "/agent/pasteboard"), ("POST", "/agent/paste"), ("POST", "/agent/read-aloud"):
             guard let agent = query["agent"], let chat = model.chats[agent] else {
                 return refuse("404 Not Found", "no agent pane shows that agent")
             }
@@ -224,6 +224,10 @@ final class DebugServer {
                 // Text in the composer, not sent: what a person typing sees.
                 Log.info("debug: draft for \(agent), \(text.count) chars")
                 chat.draft = text
+            case "/agent/read-aloud":
+                // The speaker toggle's state, set directly: `on=1` or `on=0`. A stand-in for the click.
+                Log.info("debug: read-aloud for \(agent): \(query["on"] ?? "")")
+                chat.readsAloud = query["on"] == "1"
             case "/agent/focus":
                 Log.info("debug: focus the composer of \(agent)")
                 chat.composerFocusRequest += 1
@@ -2163,6 +2167,8 @@ final class DebugServer {
                         }
                     } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
+                    o["reads_aloud"] = chat?.readsAloud ?? NSNull()
+                    o["read_aloud"] = ["spoken": ReadAloud.shared.spokenCount, "last": ReadAloud.shared.lastSpoken] as [String: Any]
                     o["composer_drag_types"] = (NSApp.wheelWindow?.firstResponder as? NSTextView)?.registeredDraggedTypes.count ?? NSNull()
                     o["attachments"] = chat.map { chat in
                         model.attachments(for: chat).chips.map { ["name": $0.name, "detail": $0.detail, "thumbnail": $0.thumbnail != nil] as [String: Any] }
