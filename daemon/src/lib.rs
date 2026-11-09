@@ -42,6 +42,7 @@ mod settings;
 mod settings_watch;
 mod skills;
 mod submit;
+mod title_buttons;
 pub mod usage;
 mod views;
 

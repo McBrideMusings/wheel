@@ -183,6 +183,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         args.cli,
     );
     state.log_agents();
+    state.start_title_buttons();
     if let Some(listen) = state.remote_listen(&args.instance) {
         // Not fatal: a port already taken must not take the local listener down with it.
         if let Err(e) = wheeld::remote::start(&state, &listen, &support).await {

@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1271,6 +1271,22 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// The title-row buttons `[[title.button]]` entries define for `space`, this machine's file
+    /// merged with the space's by `id` (ADR-0036), each with the state its `state` command last
+    /// printed. Replies `title_buttons`; a change is pushed as `title_buttons_changed`.
+    TitleButtonLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        space: String,
+    },
+    /// A press of title-row button `id` in `space`: wheeld runs its `command` in the space's
+    /// directory. Refused for an id with no command.
+    TitleButtonPress {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        space: String,
+        id: String,
+    },
     /// The groups a `[streams]` table names for `space`, project over machine, with each source,
     /// its problems and whether the group runs. Replies `streams`.
     StreamLs {
@@ -2288,6 +2304,18 @@ pub enum ServerMsg {
         req: u64,
         runners: Vec<RunnerInfo>,
     },
+    /// The title-row buttons `TitleButtonLs` asked for.
+    TitleButtons {
+        req: u64,
+        space: String,
+        buttons: Vec<TitleButtonInfo>,
+    },
+    /// A space's title-row buttons changed: the files changed or a `state` command printed
+    /// something new. Sent to every client.
+    TitleButtonsChanged {
+        space: String,
+        buttons: Vec<TitleButtonInfo>,
+    },
     /// The groups `StreamLs` asked for, in group name order.
     Streams {
         req: u64,
@@ -2470,6 +2498,7 @@ impl ServerMsg {
             | ServerMsg::Clients { req, .. }
             | ServerMsg::Started { req, .. }
             | ServerMsg::Runners { req, .. }
+            | ServerMsg::TitleButtons { req, .. }
             | ServerMsg::Guidance { req, .. }
             | ServerMsg::GuidancePath { req, .. }
             | ServerMsg::PaneView { req, .. }
@@ -2484,6 +2513,7 @@ impl ServerMsg {
             ServerMsg::TermOutput { .. }
             | ServerMsg::TermExited { .. }
             | ServerMsg::UsageChanged { .. }
+            | ServerMsg::TitleButtonsChanged { .. }
             | ServerMsg::DevicesChanged { .. }
             | ServerMsg::Paired { .. }
             | ServerMsg::DeviceConnected { .. }
@@ -3434,6 +3464,39 @@ pub struct GuidanceFile {
     pub heading: String,
     pub path: String,
     pub text: String,
+}
+
+/// Which end of the title row a `[[title.button]]` sits at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TitleSide {
+    Left,
+    Right,
+}
+
+/// One title-row button after the machine's and the project's `[[title.button]]` entries are
+/// merged by `id` (ADR-0036). `hidden` with no `command` removes a built-in button of that id.
+/// `icon`, `tip`, `tint`, `badge` and `enabled` are what the last `state` output set over the
+/// entry's own `icon` and `tip`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TitleButtonInfo {
+    pub id: String,
+    pub side: TitleSide,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tip: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
+    pub enabled: bool,
+    /// Whether a press runs something.
+    pub has_command: bool,
+    /// The file that set it: the project's, or this machine's when the project does not.
+    pub origin: SettingOrigin,
 }
 
 /// One `[runner]` entry: a name a person chose and the shell command it runs.

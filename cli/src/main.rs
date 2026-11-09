@@ -138,6 +138,9 @@ enum Command {
     /// wheeld merges into one stream, held 2 seconds and ordered by arrival, and writes to a file.
     #[command(subcommand)]
     Stream(StreamCommand),
+    /// The window's title-row buttons: list them or press one.
+    #[command(subcommand)]
+    Title(TitleCommand),
     /// Run a command the `[runner]` table of wheel.toml names, in a new terminal pane in the
     /// space's directory, and print the pane. Without a name, list the commands. The table maps
     /// any name you choose to a shell command, e.g. `build = "make -j8"`; a project's table
@@ -154,6 +157,28 @@ enum Command {
         /// Give the new pane the focus and show its space.
         #[arg(long)]
         focus: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TitleCommand {
+    /// List the space's title-row buttons: this machine's `[[title.button]]` entries merged with
+    /// the project's by id, each with the state its `state` command last printed (ADR-0036).
+    Ls {
+        /// The space; the space of the calling pane, else required.
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Press a title-row button: wheeld runs its `command` in the space's directory.
+    Press {
+        /// The button's id.
+        id: String,
+        /// The space; the space of the calling pane, else required.
+        #[arg(long)]
+        space: Option<String>,
     },
 }
 
@@ -5910,6 +5935,42 @@ async fn main() -> ExitCode {
                 artifact_ls(&mut conn, space, pane, json).await
             }
             Command::Stream(command) => stream(&mut conn, command).await,
+            Command::Title(TitleCommand::Ls { space, json }) => {
+                let space = default_space(&mut conn, space)
+                    .await?
+                    .ok_or_else(|| Fail::Other("title ls needs --space".into()))?;
+                let req = conn.req();
+                let ServerMsg::TitleButtons { buttons, .. } = conn
+                    .call(ClientMsg::TitleButtonLs { req: Some(req), space }, req)
+                    .await?
+                else {
+                    return Err(Fail::Other("unexpected reply to title ls".into()));
+                };
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&buttons).map_err(other)?);
+                } else {
+                    for b in &buttons {
+                        println!(
+                            "{}\t{:?}\t{}\t{}{}",
+                            b.id,
+                            b.side,
+                            if b.hidden { "hidden" } else { &b.icon },
+                            b.tint.as_deref().unwrap_or(""),
+                            b.badge.as_deref().map(|x| format!("\t{x}")).unwrap_or_default()
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Command::Title(TitleCommand::Press { id, space }) => {
+                let space = default_space(&mut conn, space)
+                    .await?
+                    .ok_or_else(|| Fail::Other("title press needs --space".into()))?;
+                let req = conn.req();
+                conn.call(ClientMsg::TitleButtonPress { req: Some(req), space, id }, req)
+                    .await?;
+                Ok(())
+            }
             Command::Run { name: None, space, json, .. } => {
                 let space = default_space(&mut conn, space).await?;
                 let req = conn.req();

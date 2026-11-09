@@ -188,6 +188,8 @@ final class AppModel {
     let builtinsModel = BuiltinsModel()
     /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
     let usage = UsageModel()
+    /// Each space's title-row buttons, merged and with their state, as wheeld last sent them (ADR-0036).
+    private(set) var titleButtons: [String: [TitleButtonInfo]] = [:]
     @ObservationIgnored private var usageTimer: Timer?
     /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over that
     /// pane alone.
@@ -540,6 +542,7 @@ final class AppModel {
         for pane in palettes.keys { askArtifacts(pane) }
         if settings.open { askSettings() }
         askUsage(dueOnly: true)
+        for space in spaces { client.send(.titleButtonLs(req: client.req(), space: space.id)) }
         askRemote()
         askStatusDots()
         appearances.keep(only: spaces, reset: true)
@@ -872,6 +875,10 @@ final class AppModel {
             guard let open = guidanceOpenReqs.removeValue(forKey: req) else { return }
             settings.open(path, launch: open)
             askGuidance()
+        case let .titleButtons(_, space, buttons), let .titleButtonsChanged(space, buttons):
+            guard titleButtons[space] != buttons else { break }
+            titleButtons[space] = buttons
+            Log.info("title buttons of \(space): \(buttons.map { "\($0.id)\($0.hidden ? " hidden" : "") \($0.icon)" }.joined(separator: ", "))")
         case let .runners(req, list):
             guard req == runnersReq else { return }
             runnersReq = nil

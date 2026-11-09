@@ -549,4 +549,14 @@ struct ProtocolTests {
         #expect(clients[0].windows == [WindowView(window: "w1", session: "n1", space: "s1", pane: "p2")])
         #expect(clients[1].windows.first?.pane == nil)
     }
+
+    /// ADR-0036: a space's merged title-row buttons, as the daemon sends them.
+    @Test func titleButtonsDecodeWithTheirState() throws {
+        let json = #"{"ev":"title_buttons_changed","space":"s1","buttons":[{"id":"vpn","side":"right","icon":"lock.fill","tip":"VPN on","tint":"green","badge":"2","enabled":true,"has_command":true,"origin":"project"},{"id":"pin","side":"left","hidden":true,"enabled":true,"has_command":false,"origin":"machine"}]}"#
+        guard case let .titleButtonsChanged(space, buttons) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(space == "s1")
+        #expect(buttons.map(\.id) == ["vpn", "pin"])
+        #expect(buttons[0].side == .right && buttons[0].tint == "green" && buttons[0].badge == "2" && buttons[0].hasCommand)
+        #expect(buttons[1].hidden && buttons[1].icon == "")
+    }
 }
