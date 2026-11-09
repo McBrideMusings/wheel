@@ -19,6 +19,10 @@ struct SpokenTextTests {
         #expect(SpokenText.from(reply) == "Done. I changed main.rs and fixed the bug. first. second.")
     }
 
+    @Test func namesKeepTheirUnderscoresAndLinksAreNotReadOut() {
+        #expect(SpokenText.from("Call read_aloud on _this_ and see https://x.test/a_b now") == "Call read_aloud on this and see a link now.")
+    }
+
     @Test func emptyReplySaysNothing() {
         #expect(SpokenText.from("```\ncode\n```").isEmpty)
     }
@@ -35,7 +39,6 @@ struct SpokenTextTests {
         transcript.apply(.toolCall(id: "t", title: "ls", kind: "execute", status: "completed", content: []))
         transcript.apply(.text("answer"))
         transcript.apply(.turnEnd(turn: 2, stopReason: "end_turn"))
-        #expect(transcript.lastReply == "second \n\nanswer" || transcript.lastReply.hasPrefix("second"))
-        #expect(!transcript.lastReply.contains("first"))
+        #expect(transcript.lastReply == "second \n\nanswer")
     }
 }

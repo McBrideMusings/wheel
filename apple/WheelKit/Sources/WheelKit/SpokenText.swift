@@ -22,7 +22,9 @@ public enum SpokenText {
         text = text.replacingOccurrences(of: #"(?m)^\s{0,3}#{1,6}\s+"#, with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?m)^\s*(?:[-*+]|\d+[.)])\s+"#, with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?m)^\s*>\s?"#, with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: #"[`*_~]+"#, with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"https?://\S+"#, with: "a link", options: .regularExpression)
+        // Emphasis and code marks go; an underscore inside a name (read_aloud) stays.
+        text = text.replacingOccurrences(of: #"[`*~]+|(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])"#, with: "", options: .regularExpression)
         let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         return lines.map { line in
             guard let last = line.last, !".!?:;".contains(last) else { return line }
