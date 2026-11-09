@@ -257,7 +257,7 @@ struct SpaceCarousel: View {
 
     private func go(_ id: String) { withAnimation { page = id } }
 
-    /// A swipe up this far from the grabber opens the sheet, and one this far opens the Agents tab;
+    /// A swipe up this far from the dots bar opens the sheet, and one this far opens the Agents tab;
     /// a swipe sideways this far across the pager changes page.
     private static let shortSwipe: CGFloat = 24
     private static let longSwipe: CGFloat = 160
