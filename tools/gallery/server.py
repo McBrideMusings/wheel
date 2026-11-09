@@ -119,6 +119,7 @@ inputs = klass("Selection and input", "Values the person sets.", [
                                 ("multipleSelection", put("ChoicePicker", label="Filter", options=OPTS, value=["a", "c"], variant="multipleSelection")),
                                 ("displayStyle checkbox", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="checkbox")),
                                 ("displayStyle chips: a segmented control that becomes a menu when the width is too small for it", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="chips")),
+                                ("displayStyle menu: always a menu, as wide as its widest option, and it takes a width from a frame modifier", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="mutuallyExclusive", displayStyle="menu")),
                                 ("filterable", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="mutuallyExclusive", filterable=True))]),
     ("Slider", "Slider", [("min 0, max 10, value 4", put("Slider", label="Volume", value=4, min=0, max=10))]),
     ("DateTimeInput", "DatePicker", [("date", put("DateTimeInput", label="Due", value="2026-11-06", enableDate=True, enableTime=False)),

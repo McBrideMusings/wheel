@@ -841,7 +841,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let low = all.iter().filter(|b| b.priority.is_some_and(|p| p >= 3)).count();
         let p2 = all.iter().filter(|b| b.priority == Some(2)).count();
         let pri = p.choose("filters.pri", "/set_filter/pri", ui.filter("pri"), vec![
-            json!({ "value": "", "text": "Any priority" }), json!({ "value": "urgent", "text": format!("Urgent: P0 to P1  {urgent}") }),
+            json!({ "value": "", "text": "Any priority" }), json!({ "value": "urgent", "text": format!("P0 to P1  {urgent}") }),
             json!({ "value": "2", "text": format!("P2  {p2}") }), json!({ "value": "low", "text": format!("P3 and lower  {low}") })], false, false);
         let sorts: Vec<Value> = COLS.iter().map(|c| json!({ "value": c.key, "text": format!("Sort: {}", c.label) })).collect();
         let sort = p.choose("filters.sort", "/set_sort", &ui.sort.0.to_string(), sorts, false, ui.custom());
@@ -849,7 +849,14 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
         let count_id = p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("bar", "h", vec![status, kind, label, pri, sort, clear, count_id], json!({ "spacing": 8, "align": "center", "wrap": true, "padding": [4, 0, 0, 0] })));
+        page.push(p.boxed("bar", "h", vec![status, kind, label, pri, sort, clear, count_id], json!({ "spacing": 8, "align": "center", "widths": ["flex", "flex", "flex", "flex", "flex", Value::Null, Value::Null], "padding": [4, 0, 0, 0] })));
+        // A Row, never a sideways-scrolling list: the five menus share the width and Clear and the count keep their size.
+        crate::core::layout::modify(&mut p.out, "bar", json!({ "frame": { "maxWidth": "infinity" } }));
+        for id in ["filters.status", "filters.type", "filters.label", "filters.pri", "filters.sort"] {
+            if let Some(c) = p.out.iter_mut().find(|c| c["id"] == id) {
+                c["displayStyle"] = json!("menu");
+            }
+        }
 
         // Active filters, each one a button that removes it.
         let mut chips: Vec<String> = vec![];
