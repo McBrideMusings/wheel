@@ -40,6 +40,9 @@ public struct Composer: View {
     /// the turn; with a draft, send queues the message behind the turn.
     var busy = false
     var stop: () -> Void = {}
+    /// Control-Return with a draft while a turn runs: send the message and have the agent take it
+    /// up now, interrupting the turn.
+    var sendNow: () -> Void = {}
     /// Takes back the message the agent has not answered, returning false when there is none. Escape
     /// and Up call it while nothing is typed.
     var takeBack: () -> Bool = { false }
@@ -68,6 +71,7 @@ public struct Composer: View {
         skillPrefix: Character? = nil,
         busy: Bool = false,
         stop: @escaping () -> Void = {},
+        sendNow: @escaping () -> Void = {},
         takeBack: @escaping () -> Bool = { false },
         permissionKey: ((PermissionKey) -> Bool)? = nil,
         readAloud: Binding<Bool>? = nil
@@ -78,6 +82,7 @@ public struct Composer: View {
         self.permissionKey = permissionKey
         self.busy = busy
         self.stop = stop
+        self.sendNow = sendNow
         self.skills = skills
         self.skillPrefix = skillPrefix
         self.placeholder = placeholder
@@ -180,6 +185,11 @@ public struct Composer: View {
                             return .handled
                         }
                         if chosen, acceptHighlighted() == .handled { return .handled }
+                        if press.modifiers.contains(.control), busy {
+                            guard hasContent, attachmentsReady else { return .handled }
+                            sendNow()
+                            return .handled
+                        }
                         submit()
                         return .handled
                     }
@@ -246,7 +256,7 @@ public struct Composer: View {
                         .buttonStyle(.chat("composer", "Send the message"))
                         .font(.title2)
                         .disabled(!canSend)
-                        .help(busy ? "Queue: sends when this turn ends" : "Send")
+                        .help(busy ? "Send now: the agent takes it up after the tool call it is on. Control-Return interrupts the turn and sends it first." : "Send")
                 }
             }
             .foregroundStyle(.secondary)

@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -686,6 +686,15 @@ pub enum ClientMsg {
     /// no event yet. Either way its `user` event leaves the transcript (`retract` tells attached
     /// clients). Fails once the agent has answered it.
     AgentUnsend {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        agent: String,
+        turn: u64,
+    },
+    /// Run the message queued as `turn` now instead of when the running turn ends: the turn
+    /// running is interrupted and the message goes ahead of the rest of the queue. Fails when the
+    /// message is not waiting in the queue.
+    AgentSendNow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         agent: String,

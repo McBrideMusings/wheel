@@ -12,7 +12,10 @@
 //! `get_messages` with the session's messages, and `get_session_stats` with 10,000 tokens per
 //! turn the process has run in a 200,000-token window. Each `prompt` is accepted with
 //! `disposition: started`, and its reply `echo: <prompt>` streams as `text_delta` updates before
-//! `agent_settled`. `abort` stops the running turn, which settles with `aborted: true`. Before
+//! `agent_settled`. `steer` while a turn runs queues the message (`disposition: queued`, then a
+//! `queue_update` listing the queue); the turn takes each in after its tool call, as a user message
+//! and an `echo:` of its own inside the same run. With no turn running, `steer` starts one.
+//! `clear_queue` empties the queue and answers with what it held. `abort` stops the running turn, which settles with `aborted: true`. Before
 //! the echo, a prompt containing:
 //! - "show setup" reports `setup: pi_home=<PI_CODING_AGENT_DIR> session=<id> thinking=<level>`
 //!   and `brief: <the first line of --append-system-prompt>` (`-` when unset or none);
@@ -20,7 +23,8 @@
 //!   `Allow rm -rf build?` offering `Yes` and `No`, then runs `rm -rf build` as tool call "call-1"
 //!   when the answer is `Yes` and blocks it otherwise, and reports `permission: <value>` (or
 //!   `cancelled`);
-//! - "work slowly" runs `sleep 30` as tool call "call-3" for 30 s unless aborted;
+//! - "work slowly" runs `sleep 30` as tool call "call-3" for 30 s unless aborted ("work slowly 3"
+//!   runs it for 3 s);
 //! - "fail now" ends the reply with stop reason `error` and the message `429 rate limited`,
 //!   sending no echo.
 
@@ -64,6 +68,8 @@ struct State {
     next_dialog: AtomicU64,
     aborted: AtomicBool,
     abort: Notify,
+    /// Messages sent with `steer` that no turn has taken in.
+    queue: Mutex<Vec<String>>,
 }
 
 impl State {
@@ -153,6 +159,7 @@ pub async fn main() {
         next_dialog: AtomicU64::new(1),
         aborted: AtomicBool::new(false),
         abort: Notify::new(),
+        queue: Mutex::new(Vec::new()),
     });
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut running: Option<tokio::task::JoinHandle<()>> = None;
@@ -204,6 +211,30 @@ pub async fn main() {
                 state.aborted.store(false, Ordering::SeqCst);
                 running = Some(tokio::spawn(turn(state.clone(), text)));
             }
+            "steer" => {
+                let text = command["message"].as_str().unwrap_or_default().to_string();
+                if running.as_ref().is_some_and(|turn| !turn.is_finished()) {
+                    state.queue.lock().unwrap().push(text);
+                    state
+                        .out
+                        .send(reply("steer", json!({"disposition": "queued"})));
+                    state.queue_update();
+                } else {
+                    state
+                        .out
+                        .send(reply("steer", json!({"disposition": "started"})));
+                    state.aborted.store(false, Ordering::SeqCst);
+                    running = Some(tokio::spawn(turn(state.clone(), text)));
+                }
+            }
+            "clear_queue" => {
+                let held = std::mem::take(&mut *state.queue.lock().unwrap());
+                state.out.send(reply(
+                    "clear_queue",
+                    json!({"steering": held, "followUp": []}),
+                ));
+                state.queue_update();
+            }
             "abort" => {
                 state.aborted.store(true, Ordering::SeqCst);
                 state.abort.notify_waiters();
@@ -235,6 +266,14 @@ async fn select(state: &State, title: &str, options: &[&str]) -> Option<String> 
     state.event(json!({"type": "extension_ui_request", "id": id, "method": "select", "title": title, "options": options}));
     let answer = rx.await.ok()?;
     answer["value"].as_str().map(String::from)
+}
+
+impl State {
+    /// Tell the host what is queued now.
+    fn queue_update(&self) {
+        let steering = self.queue.lock().unwrap().clone();
+        self.event(json!({"type": "queue_update", "steering": steering, "followUp": []}));
+    }
 }
 
 /// Wait `secs`, or less when the turn is aborted; true when it was.
@@ -297,12 +336,33 @@ async fn turn(state: Arc<State>, prompt: String) {
             answer.as_deref().unwrap_or("cancelled")
         ));
     }
-    if prompt.contains("work slowly") {
-        let args = json!({"command": "sleep 30"});
+    if let Some(rest) = prompt.split("work slowly").nth(1) {
+        let secs: u64 = rest
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(30);
+        let args = json!({"command": format!("sleep {secs}")});
         state.event(json!({"type": "tool_execution_start", "toolCallId": "call-3", "toolName": "bash", "args": args}));
-        aborted = wait_or_abort(&state, 30).await;
+        aborted = wait_or_abort(&state, secs).await;
         let text = if aborted { "Command aborted" } else { "" };
         state.event(json!({"type": "tool_execution_end", "toolCallId": "call-3", "toolName": "bash", "result": {"content": [{"type": "text", "text": text}]}, "isError": aborted}));
+    }
+    // Messages queued during the turn are taken in after its tool call, into the same run.
+    while !aborted {
+        let next = {
+            let mut queue = state.queue.lock().unwrap();
+            (!queue.is_empty()).then(|| queue.remove(0))
+        };
+        let Some(next) = next else {
+            break;
+        };
+        state.queue_update();
+        let user = json!({"role": "user", "content": [{"type": "text", "text": next}]});
+        state.keep(user.clone());
+        state.event(json!({"type": "message_start", "message": user}));
+        state.event(json!({"type": "message_end", "message": user}));
+        say(&format!("echo: {next}\n"));
     }
     let (stop, error) = if aborted {
         ("error", Some("This operation was aborted"))

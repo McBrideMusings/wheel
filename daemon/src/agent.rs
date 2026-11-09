@@ -113,6 +113,11 @@ enum Cmd {
     Retract {
         turns: Vec<u64>,
     },
+    /// Run the queued message of `turn` now: the turn running is interrupted and the message goes
+    /// first.
+    SendNow {
+        turn: u64,
+    },
     /// Change one config option. The agent answers with the whole new list, so the reply says only
     /// whether it took it; the values reach clients as a `agent_config` broadcast.
     SetConfig {
@@ -143,6 +148,9 @@ struct Inner {
     answered: bool,
     /// The agent is in a turn it started itself, which has no `running` turn of wheel's.
     self_started: bool,
+    /// Background tasks the agent has running, as it last counted them. The agent is working on
+    /// while this is above zero, whatever its turn state; a new agent process starts at zero.
+    background: usize,
     /// The running turn whose message was taken back after it started: it is being interrupted, its
     /// remaining events are dropped, and it ends without a `turn_end`.
     unsent: Option<u64>,
@@ -255,6 +263,10 @@ pub struct AgentConfig {
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
 type Queue = VecDeque<(u64, String)>;
 
+/// Messages handed to an agent that takes input mid-turn, which it has not taken in yet. They are
+/// still queued as far as a client can tell.
+type Steered = Vec<(u64, String)>;
+
 /// Holds an agent's `switching` flag for as long as one conversation change is in flight, and
 /// clears it however that change ends — answered, refused, or its caller dropped.
 pub struct Switching<'a>(&'a Agent);
@@ -320,6 +332,7 @@ impl Agent {
                 running: None,
                 answered: false,
                 self_started: false,
+                background: 0,
                 unsent: None,
                 state: AgentState::Starting,
                 config: Vec::new(),
@@ -353,6 +366,10 @@ impl Agent {
         let pane = pane.unwrap_or_else(|| "-".into());
         let runner = tokio::spawn(async move {
             let mut queue = Queue::new();
+            let mut steered = Steered::new();
+            // Steered messages the running turn took in, which end with it, kept here so a process
+            // that dies mid-turn still ends them.
+            let mut merged: Vec<u64> = Vec::new();
             let restart = config.restart;
             let mut backoff = restart.backoff;
             let name = run.name.clone();
@@ -364,9 +381,10 @@ impl Agent {
                 tracing::info!(agent = %name, %pane, command = %config.command, cwd = %config.cwd.display(), "agent spawned");
                 let result = run
                     .clone()
-                    .run(&config, perms.clone(), &mut cmd_rx, &mut queue)
+                    .run(&config, perms.clone(), &mut cmd_rx, &mut queue, &mut steered, &mut merged)
                     .await;
                 perms.drop_agent(&name);
+                run.end_merged(&mut merged, "cancelled");
                 // A turn the agent was on when it stopped never ends; it is not running any more.
                 {
                     let mut inner = run.inner.lock().unwrap();
@@ -572,7 +590,10 @@ impl Agent {
 
     /// The runner took up `turn`: its `user` event joins the transcript, then `turn_start`.
     /// Returns false when the message was taken back while it waited, so the turn never starts.
-    fn start_turn(&self, turn: u64) -> bool {
+    ///
+    /// `merge` is a message the running turn took in: it joins the transcript with its own
+    /// `turn_start` and leaves the running turn as it was.
+    fn start_turn(&self, turn: u64, merge: bool) -> bool {
         let mut inner = self.inner.lock().unwrap();
         let position = inner
             .queued
@@ -582,11 +603,37 @@ impl Agent {
             return false;
         };
         Self::record(&mut inner, user);
-        inner.running = Some(turn);
-        inner.answered = false;
-        inner.unsent = None;
+        if !merge {
+            inner.running = Some(turn);
+            inner.answered = false;
+            inner.unsent = None;
+        }
         self.push_locked(&mut inner, AgentEvent::TurnStart { turn });
         true
+    }
+
+    /// Whether the message of `turn` is still waiting to join the transcript.
+    fn is_queued(&self, turn: u64) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .queued
+            .iter()
+            .any(|e| matches!(e.event, AgentEvent::User { turn: t, .. } if t == turn))
+    }
+
+    /// The running turn is ending: end the turns it took in too, each ahead of it, so every message
+    /// shows as answered.
+    fn end_merged(&self, merged: &mut Vec<u64>, stop_reason: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        for turn in merged.drain(..).rev() {
+            self.push_locked(
+                &mut inner,
+                AgentEvent::TurnEnd {
+                    turn,
+                    stop_reason: stop_reason.into(),
+                },
+            );
+        }
     }
 
     /// The turn is over: `event` is its `turn_end`, or the `error` it failed with.
@@ -615,6 +662,21 @@ impl Agent {
             .send(Cmd::Cancel { turn })
             .map_err(|_| format!("agent {} is not running", self.name))?;
         Ok(turn)
+    }
+
+    /// Run the queued message of `turn` at once, ahead of the rest of the queue: the turn running
+    /// is interrupted, or for an agent that takes input mid-turn the message interrupts it.
+    /// Fails when the message is not waiting.
+    pub fn send_now(&self, turn: u64) -> Result<(), String> {
+        if !self.is_queued(turn) {
+            return Err(format!(
+                "agent {} has no queued message for turn {turn}",
+                self.name
+            ));
+        }
+        self.cmds
+            .send(Cmd::SendNow { turn })
+            .map_err(|_| format!("agent {} is not running", self.name))
     }
 
     /// Take back the message of `turn` while the agent has not answered it. A queued message just
@@ -857,6 +919,29 @@ impl Agent {
         let _ = self.global.send(ServerMsg::AgentTitle {
             agent: self.name.clone(),
             title,
+        });
+    }
+
+    /// How many background tasks the agent has running.
+    pub fn background(&self) -> usize {
+        self.inner.lock().unwrap().background
+    }
+
+    /// Record the agent's background-task count. Anything that derives from the agent's state (a
+    /// pane's status) follows the state message, so a change sends the unchanged state again.
+    fn set_background(&self, count: usize) {
+        let state = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.background == count {
+                return;
+            }
+            inner.background = count;
+            inner.state.clone()
+        };
+        tracing::info!(agent = %self.name, count, "background tasks");
+        let _ = self.global.send(ServerMsg::AgentStateChanged {
+            agent: self.name.clone(),
+            state,
         });
     }
 
@@ -1225,7 +1310,13 @@ impl Agent {
         perms: Arc<Perms>,
         cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>,
         queue: &mut Queue,
+        steered: &mut Steered,
+        merged: &mut Vec<u64>,
     ) -> Result<(), String> {
+        // A process that stopped took the messages it held with it; they go first in the next.
+        for held in steered.drain(..).rev() {
+            queue.push_front(held);
+        }
         // An agent started in a missing directory fails in ways that differ per agent; say why.
         if !config.cwd.is_dir() {
             return Err(format!("{} is not a directory", config.cwd.display()));
@@ -1380,22 +1471,26 @@ impl Agent {
         tracing::info!(agent = %self.name, conversation = %conversation.id(), start_ms, "agent ready");
         self.ready_this_run.store(true, Ordering::SeqCst);
         self.settle(Ok(()));
-        self.set_state(idle(queue));
+        // A new process has no background tasks, whatever the last one had.
+        self.set_background(0);
+        self.set_state(idle(queue.len() + steered.len()));
 
         // The turn the agent is working on.
         let mut running: Option<u64> = None;
         // A turn the agent started itself: it holds the agent Busy but belongs to no prompt.
         let mut unprompted = false;
         loop {
-            if running.is_none() && !unprompted {
+            // A message the agent holds starts the next turn on its own, so nothing is sent
+            // before it does.
+            if running.is_none() && !unprompted && steered.is_empty() {
                 if let Some((turn, text)) = queue.pop_front() {
-                    if !self.start_turn(turn) {
+                    if !self.start_turn(turn, false) {
                         tracing::info!(agent = %self.name, turn, "prompt taken back before it started");
-                        self.set_state(idle(queue));
+                        self.set_state(idle(queue.len() + steered.len()));
                         continue;
                     }
                     self.set_state(AgentState::Busy {
-                        queued: queue.len(),
+                        queued: queue.len() + steered.len(),
                     });
                     self.save_on_first_prompt(config);
                     tracing::info!(agent = %self.name, turn, chars = text.len(), "prompt start");
@@ -1410,17 +1505,60 @@ impl Agent {
                 cmd = cmd_rx.recv() => match cmd {
                     None => return Ok(()),
                     Some(Cmd::Prompt { turn, text }) => {
-                        queue.push_back((turn, text));
+                        // An agent that takes input mid-turn, and lets a message not yet taken in
+                        // be taken back, gets the message at once, as in its terminal; any other
+                        // waits for the turn to end.
+                        if agent.steers && agent.withdraws && running.is_some() && queue.is_empty() {
+                            tracing::info!(agent = %self.name, turn, "prompt steered into the running turn");
+                            if agent.input.steer(turn, text.clone()).is_err() {
+                                return Err(exit_reason(&mut agent).await);
+                            }
+                            steered.push((turn, text));
+                        } else {
+                            queue.push_back((turn, text));
+                        }
                         if running.is_some() || unprompted {
-                            self.set_state(AgentState::Busy { queued: queue.len() });
+                            self.set_state(AgentState::Busy { queued: queue.len() + steered.len() });
+                        }
+                    }
+                    Some(Cmd::SendNow { turn }) => {
+                        if let Some(at) = queue.iter().position(|(t, _)| *t == turn) {
+                            let held = queue.remove(at).expect("position is in range");
+                            if agent.steers && running.is_some() && !agent.withdraws {
+                                // Not interrupted: the agent takes the message into the turn, and
+                                // since it cannot give it back, it was kept here until now.
+                                tracing::info!(agent = %self.name, turn, "queued message steered now");
+                                if agent.input.steer(turn, held.1.clone()).is_err() {
+                                    return Err(exit_reason(&mut agent).await);
+                                }
+                                steered.push(held);
+                                continue;
+                            }
+                            queue.push_front(held);
+                            if running.is_some() || unprompted {
+                                tracing::info!(agent = %self.name, turn, "queued message sent now: turn interrupted");
+                                if agent.input.cancel().is_err() {
+                                    return Err(exit_reason(&mut agent).await);
+                                }
+                            }
+                        } else if steered.iter().any(|(t, _)| *t == turn) {
+                            tracing::info!(agent = %self.name, turn, "steered message sent now");
+                            if agent.input.send_now(turn).is_err() {
+                                return Err(exit_reason(&mut agent).await);
+                            }
                         }
                     }
                     Some(Cmd::Retract { turns }) => {
                         queue.retain(|(turn, _)| !turns.contains(turn));
+                        let held = steered.len();
+                        steered.retain(|(turn, _)| !turns.contains(turn));
+                        if steered.len() != held && agent.input.withdraw(turns.clone()).is_err() {
+                            return Err(exit_reason(&mut agent).await);
+                        }
                         self.set_state(if running.is_some() || unprompted {
-                            AgentState::Busy { queued: queue.len() }
+                            AgentState::Busy { queued: queue.len() + steered.len() }
                         } else {
-                            idle(queue)
+                            idle(queue.len() + steered.len())
                         });
                     }
                     Some(Cmd::Cancel { turn }) if running == Some(turn) => {
@@ -1448,7 +1586,7 @@ impl Agent {
                     Some(Cmd::SetConfig { config: option, value, reply }) => {
                         spawn_config_set(agent.input.clone(), self.clone(), option, value, reply);
                     }
-                    Some(Cmd::Switch { reply, .. }) if running.is_some() || unprompted || !queue.is_empty() => {
+                    Some(Cmd::Switch { reply, .. }) if running.is_some() || unprompted || !queue.is_empty() || !steered.is_empty() => {
                         // Unreachable by any route a client has: `switch_conversation` refuses
                         // while a turn is running. Answered rather than dropped, so a caller could
                         // never hang on it.
@@ -1495,6 +1633,7 @@ impl Agent {
                     // Folded into the `mode` option so a client has one place to read the mode
                     // from.
                     Some(DriverEvent::Mode(mode)) => self.set_current_mode(&mode),
+                    Some(DriverEvent::Background(count)) => self.set_background(count),
                     Some(DriverEvent::Commands(commands)) => self.set_commands(commands),
                     // The agent wrote nothing for the new conversation yet, so its id is not
                     // saved until a prompt reaches it, and the old transcript goes.
@@ -1505,12 +1644,48 @@ impl Agent {
                     Some(DriverEvent::Ready { options, .. } | DriverEvent::Options(options)) => {
                         self.set_config_options(options);
                     }
+                    Some(DriverEvent::SteerRefused { turn }) => {
+                        // Not taken in: it goes back to the front of the queue, if its sender has
+                        // not taken it back meanwhile.
+                        if let Some(at) = steered.iter().position(|(t, _)| *t == turn) {
+                            let held = steered.remove(at);
+                            if self.is_queued(turn) {
+                                tracing::info!(agent = %self.name, turn, "steered message refused; queued again");
+                                queue.push_front(held);
+                            }
+                        }
+                        self.set_state(if running.is_some() || unprompted {
+                            AgentState::Busy { queued: queue.len() + steered.len() }
+                        } else {
+                            idle(queue.len() + steered.len())
+                        });
+                    }
+                    Some(DriverEvent::Steered { turn }) => {
+                        steered.retain(|(held, _)| *held != turn);
+                        let queued = self.is_queued(turn);
+                        if queued && running.is_some() {
+                            tracing::info!(agent = %self.name, turn, "steered message taken into the running turn");
+                            self.start_turn(turn, true);
+                            merged.push(turn);
+                        } else if queued && self.start_turn(turn, false) {
+                            // The turn it was steered into ended first; the message started its own.
+                            tracing::info!(agent = %self.name, turn, "steered message started its own turn");
+                            self.save_on_first_prompt(config);
+                            running = Some(turn);
+                        } else if running.is_none() && !unprompted {
+                            // Taken back too late: the agent runs it, so the turn is its own.
+                            tracing::info!(agent = %self.name, turn, "withdrawn message ran anyway");
+                            unprompted = true;
+                            self.inner.lock().unwrap().self_started = true;
+                        }
+                        self.set_state(AgentState::Busy { queued: queue.len() + steered.len() });
+                    }
                     Some(DriverEvent::TurnStart) => {
                         if running.is_none() {
                             tracing::info!(agent = %self.name, "turn started by the agent");
                             unprompted = true;
                             self.inner.lock().unwrap().self_started = true;
-                            self.set_state(AgentState::Busy { queued: queue.len() });
+                            self.set_state(AgentState::Busy { queued: queue.len() + steered.len() });
                         }
                     }
                     Some(DriverEvent::TurnEnd { .. } | DriverEvent::TurnFailed { .. })
@@ -1520,31 +1695,33 @@ impl Agent {
                         unprompted = false;
                         self.inner.lock().unwrap().self_started = false;
                         perms.drop_agent(&self.name);
-                        self.set_state(idle(queue));
+                        self.set_state(idle(queue.len() + steered.len()));
                     }
                     Some(DriverEvent::TurnEnd { stop_reason }) => {
                         if let Some(turn) = running.take() {
                             // Nothing this turn asked for can still be answered once it is over.
                             perms.drop_agent(&self.name);
                             tracing::info!(agent = %self.name, turn, %stop_reason, "prompt end");
+                            self.end_merged(merged, &stop_reason);
                             if self.end_unsent(turn) {
-                                self.set_state(idle(queue));
+                                self.set_state(idle(queue.len() + steered.len()));
                                 continue;
                             }
                             self.end_turn(AgentEvent::TurnEnd { turn, stop_reason });
-                            self.set_state(idle(queue));
+                            self.set_state(idle(queue.len() + steered.len()));
                         }
                     }
                     Some(DriverEvent::TurnFailed { message }) => {
                         if let Some(turn) = running.take() {
                             perms.drop_agent(&self.name);
                             tracing::warn!(agent = %self.name, turn, error = %message, "prompt failed");
+                            self.end_merged(merged, "end_turn");
                             if self.end_unsent(turn) {
-                                self.set_state(idle(queue));
+                                self.set_state(idle(queue.len() + steered.len()));
                                 continue;
                             }
                             self.end_turn(AgentEvent::Error { turn: Some(turn), message });
-                            self.set_state(idle(queue));
+                            self.set_state(idle(queue.len() + steered.len()));
                         }
                     }
                 },
@@ -1663,13 +1840,11 @@ fn title_of(text: &str) -> Option<String> {
 }
 
 /// The state an agent between turns is in: ready, or busy with what is queued.
-fn idle(queue: &Queue) -> AgentState {
-    if queue.is_empty() {
+fn idle(waiting: usize) -> AgentState {
+    if waiting == 0 {
         AgentState::Ready
     } else {
-        AgentState::Busy {
-            queued: queue.len(),
-        }
+        AgentState::Busy { queued: waiting }
     }
 }
 
@@ -1835,6 +2010,7 @@ mod tests {
                 running: None,
                 answered: false,
                 self_started: false,
+                background: 0,
                 unsent: None,
                 state: AgentState::Ready,
                 config: Vec::new(),
@@ -1882,7 +2058,7 @@ mod tests {
     fn a_long_turn_never_drops_a_queued_message() {
         let (agent, _rx) = idle_agent();
         agent.send("first".into()).unwrap();
-        agent.start_turn(1);
+        agent.start_turn(1, false);
         agent.send("second".into()).unwrap();
         for n in 0..TRANSCRIPT_CAP + 10 {
             agent.push(tool(n));
@@ -1901,7 +2077,7 @@ mod tests {
                 text: "second".into()
             })
         );
-        agent.start_turn(2);
+        agent.start_turn(2, false);
         let events: Vec<AgentEvent> = agent
             .attach()
             .events
@@ -1950,7 +2126,7 @@ mod tests {
     fn large_diffs_keep_the_transcript_under_its_byte_budget() {
         let (agent, _rx) = idle_agent();
         agent.send("first".into()).unwrap();
-        agent.start_turn(1);
+        agent.start_turn(1, false);
         agent.send("second".into()).unwrap();
         for n in 0..20 {
             agent.push(AgentEvent::ToolCall {
@@ -2005,7 +2181,7 @@ mod tests {
             agent.cancel(),
             Err("agent w1 has no running turn to cancel".into())
         );
-        assert!(agent.start_turn(1));
+        assert!(agent.start_turn(1, false));
         assert_eq!(agent.cancel(), Ok(1));
         let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|cmd| match cmd {
@@ -2025,8 +2201,8 @@ mod tests {
         agent.send("second".into()).unwrap();
         agent.send("third".into()).unwrap();
         assert_eq!(agent.unsend(2), Ok("second".into()));
-        assert!(!agent.start_turn(2));
-        assert!(agent.start_turn(1));
+        assert!(!agent.start_turn(2, false));
+        assert!(agent.start_turn(1, false));
         // Started, no event yet: unsent, text returned, the transcript forgets it.
         assert_eq!(agent.unsend(1), Ok("first".into()));
         assert!(agent
@@ -2038,7 +2214,7 @@ mod tests {
         // The agent's late events for it are dropped, and its end makes no `turn_end`.
         agent.push_agent(AgentEvent::Text { text: "late".into() });
         assert!(agent.end_unsent(1));
-        assert!(agent.start_turn(3));
+        assert!(agent.start_turn(3, false));
         agent.push_agent(AgentEvent::Text { text: "hi".into() });
         assert_eq!(
             agent.unsend(3),
@@ -2062,7 +2238,7 @@ mod tests {
         for text in ["a", "b", "c"] {
             agent.send(text.into()).unwrap();
         }
-        assert!(agent.start_turn(1));
+        assert!(agent.start_turn(1, false));
         assert_eq!(agent.clear_queue(), Ok(2));
         let users = agent
             .attach()

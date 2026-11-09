@@ -158,6 +158,9 @@ fn arguments(launch: &Launch) -> Vec<String> {
             "--output-format",
             "stream-json",
             "--include-partial-messages",
+            // Each user message comes back as it is taken in, which is how a steered one is known
+            // to have been.
+            "--replay-user-messages",
             "--permission-prompts",
             "host",
             "--permission-prompt-tool",
@@ -209,11 +212,14 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         calls: Calls::default(),
         last_usage: None,
         reset_from: None,
+        steered: HashMap::new(),
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
     Ok(DriverHandle {
         input: DriverInput(input),
         events: events_rx,
+        steers: true,
+        withdraws: true,
         _group: ProcessGroup(pid),
     })
 }
@@ -227,6 +233,18 @@ enum Pending {
         value: String,
         reply: oneshot::Sender<Result<Vec<ConfigOption>, String>>,
     },
+    /// A steered message's withdrawal: the answer says whether the agent still held it.
+    Withdraw { turn: u64 },
+    /// A steered message pulled out of the agent's queue to be sent again as an interrupt, when the
+    /// agent still held it.
+    SendNow { turn: u64 },
+}
+
+/// A message written to the agent mid-turn that it has not taken in yet.
+struct Steered {
+    /// The id the agent echoes when it takes the message in.
+    uuid: String,
+    text: String,
 }
 
 /// The text and thoughts of one message that arrived as stream events, one entry per content
@@ -310,6 +328,8 @@ struct Driver {
     /// A `/clear` has started a new conversation, whose id is not known yet: the session id the
     /// reset message itself carried, which the first message of the new conversation differs from.
     reset_from: Option<String>,
+    /// Messages written mid-turn that the agent has not taken in, by their turn.
+    steered: HashMap<u64, Steered>,
 }
 
 impl Driver {
@@ -389,6 +409,26 @@ impl Driver {
                 self.write(json!({"type": "user", "message": {"role": "user", "content": text}}))
                     .await
             }
+            Input::Steer { turn, text } => {
+                self.write_steered(turn, text, false).await
+            }
+            Input::Withdraw { turns } => {
+                for turn in turns {
+                    let Some(held) = self.steered.get(&turn) else {
+                        continue;
+                    };
+                    let uuid = held.uuid.clone();
+                    self.request_cancel(Pending::Withdraw { turn }, &uuid).await?;
+                }
+                Ok(())
+            }
+            Input::SendNow { turn } => {
+                let Some(held) = self.steered.get(&turn) else {
+                    return Ok(());
+                };
+                let uuid = held.uuid.clone();
+                self.request_cancel(Pending::SendNow { turn }, &uuid).await
+            }
             Input::Cancel => {
                 if !self.in_turn || self.interrupted {
                     return Ok(());
@@ -427,6 +467,35 @@ impl Driver {
         }
     }
 
+    /// Write a user message the agent takes in mid-turn, under a new id it echoes back. `now` has
+    /// the agent abort what it is doing and run the message first.
+    async fn write_steered(&mut self, turn: u64, text: String, now: bool) -> Result<(), String> {
+        let uuid = new_conversation_id();
+        let mut message = json!({
+            "type": "user",
+            "uuid": uuid,
+            "message": {"role": "user", "content": text},
+        });
+        if now {
+            message["priority"] = json!("now");
+            // The turn it aborts ends as a stop, as with Escape.
+            if self.in_turn {
+                self.interrupted = true;
+            }
+        }
+        self.steered.insert(turn, Steered { uuid, text });
+        self.write(message).await
+    }
+
+    /// Ask the agent to drop the queued message `uuid`; `pending` is what to do with its answer.
+    async fn request_cancel(&mut self, pending: Pending, uuid: &str) -> Result<(), String> {
+        self.request(
+            pending,
+            json!({"subtype": "cancel_async_message", "message_uuid": uuid}),
+        )
+        .await
+    }
+
     async fn output(&mut self, line: &str) -> Result<(), String> {
         let Ok(message) = serde_json::from_str::<Value>(line) else {
             tracing::warn!(
@@ -459,6 +528,25 @@ impl Driver {
                 self.assistant(&message["message"])
             }
             Some("user") => {
+                // A steered message echoes back when the agent takes it in.
+                if message["isReplay"] == true {
+                    let uuid = message["uuid"].as_str().unwrap_or_default();
+                    let turn = self
+                        .steered
+                        .iter()
+                        .find(|(_, held)| held.uuid == uuid)
+                        .map(|(turn, _)| *turn);
+                    if let Some(turn) = turn {
+                        self.steered.remove(&turn);
+                        if !self.in_turn {
+                            // It started a turn of its own: the one running ended first.
+                            self.in_turn = true;
+                            self.interrupted = false;
+                        }
+                        self.emit(DriverEvent::Steered { turn });
+                    }
+                    return Ok(());
+                }
                 // A local command such as `/compact` answers as a user message wrapping its output.
                 if let Some(text) = local_command_output(&message["message"]["content"]) {
                     self.emit(DriverEvent::Transcript(AgentEvent::Text { text }));
@@ -478,7 +566,7 @@ impl Driver {
                 }
             }
             Some("control_request") => self.control_request(&message).await?,
-            Some("control_response") => self.control_response(&message["response"]),
+            Some("control_response") => self.control_response(&message["response"]).await?,
             _ => {}
         }
         Ok(())
@@ -616,6 +704,15 @@ impl Driver {
                 tracing::info!(pid = self.pid, status = ?message["status"].as_str(), "a background task ended");
                 self.emit(DriverEvent::Transcript(AgentEvent::Notice { text: line }));
             }
+            // The level signal: the whole set of live background tasks, sent whenever it changes.
+            // An ambient task (one that is always there, such as a monitor) is not work.
+            Some("background_tasks_changed") => {
+                let live = message["tasks"]
+                    .as_array()
+                    .map_or(0, |tasks| tasks.iter().filter(|t| t["ambient"] != true).count());
+                tracing::info!(pid = self.pid, live, "background tasks changed");
+                self.emit(DriverEvent::Background(live));
+            }
             Some("status") => {
                 if let Some(mode) = message["permissionMode"].as_str() {
                     if set_current(&mut self.options, "mode", mode) {
@@ -746,10 +843,10 @@ impl Driver {
         Ok(())
     }
 
-    fn control_response(&mut self, response: &Value) {
+    async fn control_response(&mut self, response: &Value) -> Result<(), String> {
         let id = response["request_id"].as_str().unwrap_or_default();
         let Some(pending) = self.pending.remove(id) else {
-            return;
+            return Ok(());
         };
         let refused = (response["subtype"] != "success").then(|| {
             response["error"]
@@ -758,6 +855,22 @@ impl Driver {
                 .to_string()
         });
         match pending {
+            Pending::Withdraw { turn } => {
+                let held = response["response"]["cancelled"] == true;
+                tracing::info!(pid = self.pid, turn, held, "steered message withdrawn");
+                if held {
+                    self.steered.remove(&turn);
+                }
+            }
+            Pending::SendNow { turn } => {
+                let held = response["response"]["cancelled"] == true;
+                tracing::info!(pid = self.pid, turn, held, "steered message sent now");
+                if held {
+                    if let Some(Steered { text, .. }) = self.steered.remove(&turn) {
+                        self.write_steered(turn, text, true).await?;
+                    }
+                }
+            }
             Pending::Initialize => {
                 if let Some(e) = refused {
                     tracing::warn!(pid = self.pid, error = %e, "agent initialize refused");
@@ -787,7 +900,7 @@ impl Driver {
                         );
                         tracing::warn!(pid = self.pid, %model, %error, "agent started on an unknown model");
                         self.emit(DriverEvent::Exited { error: Some(error) });
-                        return;
+                        return Ok(());
                     }
                 }
                 self.options = initial_options(answer, self.model.as_deref());
@@ -811,6 +924,7 @@ impl Driver {
                 let _ = reply.send(answer);
             }
         }
+        Ok(())
     }
 }
 
