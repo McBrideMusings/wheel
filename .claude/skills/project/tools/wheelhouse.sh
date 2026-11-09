@@ -2,7 +2,7 @@
 # § Wheelhouse (wheel-cmbu.2): `wheelhouse serve` is one process that serves every artifact, and
 # answers each request from the view the asking artifact names (`_meta` `wheel/artifact`), for the
 # project the asking space holds (`wheel/dir`). Two spaces on two projects, each with its own beads,
-# share one `beads-native` entry: each page shows its own project's bead, and one wheelhouse
+# share one `beads` entry: each page shows its own project's bead, and one wheelhouse
 # process runs. Needs `cargo build -p wheelhouse -p wheeld -p wheel-cli`, `bd` and git. No app.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -27,14 +27,14 @@ w space new "$TWO" >/dev/null
 SP1="$(w space ls | jget spaces.0.id)"
 SP2="$(w space ls | jget spaces.1.id)"
 
-printf '[artifacts.beads-native]\nmcp = "exec %s serve"\nshared = true\ntitle = "Beads"\n' "$HOUSE" >"$INST/wheel.toml"
+printf '[artifacts.beads]\nmcp = "exec %s serve"\nshared = true\ntitle = "Beads"\n' "$HOUSE" >"$INST/wheel.toml"
 
-page() { w artifact call beads-native get_beads --scope machine --space "$1" 2>&1; }
+page() { w artifact call beads get_beads --scope machine --space "$1" 2>&1; }
 servers() { pgrep -P "$DPID" -f "$HOUSE serve" | wc -l | tr -d ' '; }
 
 has() { printf %s "$1" | grep -q -- "$2"; }
 hasnt() { ! has "$1" "$2"; }
-tools_of() { w artifact tools beads-native --scope machine --space "$1" 2>&1; }
+tools_of() { w artifact tools beads --scope machine --space "$1" 2>&1; }
 
 P1="$(page "$SP1")"
 P2="$(page "$SP2")"
@@ -47,7 +47,7 @@ check "the artifact lists the Beads view's tools" has "$(tools_of "$SP1")" "set_
 
 # A change to a subscribed project's beads reaches its page without a reload. Reading the page's
 # resource is what subscribes the host to it.
-w artifact read beads-native a2ui://beads-native --scope machine --space "$SP1" >/dev/null 2>&1
+w artifact read beads a2ui://beads --scope machine --space "$SP1" >/dev/null 2>&1
 (cd "$ONE" && bd create "Bead added later" -t task -p 2 -l cli >/dev/null 2>&1)
 later() { has "$(page "$SP1")" "Bead added later"; }
 check "a bead added to the first project shows on its page within 5 seconds" poll 5 later

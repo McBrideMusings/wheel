@@ -335,6 +335,8 @@ struct Ui {
     collapsed: HashSet<String>,
     detail: Option<String>,
     hist: Vec<String>,
+    /// What the last button run did, shown in the open bead.
+    ran: Option<String>,
     /// The bead Focus centres on and Graph highlights.
     sel: Option<String>,
     /// How many hops Focus shows on each side.
@@ -360,6 +362,7 @@ impl Default for Ui {
             collapsed: HashSet::new(),
             detail: None,
             hist: vec![],
+            ran: None,
             sel: None,
             depth: 2,
             fhist: vec![],
@@ -743,12 +746,17 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
         .scripts
         .iter()
         .filter(|s| wants(s, b))
-        .map(|s| p.button(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({})))
+        .map(|s| p.button(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({ "style": "primary", "fill": true })))
         .collect();
     let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
     let mut parts = vec![body];
     if !acts.is_empty() {
-        parts.push(p.boxed("d.acts", "h", acts, json!({ "wrap": true, "spacing": 8, "rowSpacing": 6 })));
+        let mut col = vec![];
+        if let Some(r) = &ui.ran {
+            col.push(p.label("d.ran", r, json!({ "tone": "ok", "weight": "semibold" })));
+        }
+        col.extend(acts);
+        parts.push(p.boxed("d.acts", "v", col, json!({ "spacing": 8, "align": "start" })));
     }
     p.put(json!({ "id": "detail", "component": "Modal", "presented": true, "dismissAction": "close_detail", "children": parts }));
     Some("detail".into())
@@ -809,51 +817,37 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "maxWidth": "infinity" } }));
         page.push(p.boxed("find", "h", vec!["search".into(), "views".into()], json!({ "spacing": 8, "align": "center", "widths": ["flex", Value::Null], "padding": [8, 0, 0, 0] })));
 
-        // The sheet: type and label take any number, priority and sort one.
-        let counted = |f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<Value> {
+        // The filters are one row of menus, each starting at "Any": status, type, label, priority and sort, then Clear and the count.
+        let counted = |any: &str, f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<Value> {
             let mut c: BTreeMap<String, usize> = BTreeMap::new();
             for v in all.iter().flat_map(|b| f(b)) {
                 *c.entry(v).or_default() += 1;
             }
             let mut v: Vec<(String, usize)> = c.into_iter().collect();
             v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            v.into_iter().map(|(k, n)| json!({ "value": k, "text": format!("{k}  {n}") })).collect()
+            let mut out = vec![json!({ "value": "", "text": any })];
+            out.extend(v.into_iter().map(|(k, n)| json!({ "value": k, "text": format!("{k}  {n}") })));
+            out
         };
-        let mine = |key: &str| ui.values(key).into_iter().map(String::from).collect::<Vec<_>>();
-        let type_rows = p.choose_many("filters.type", "/set_filter/type", mine("type"), counted(&|b| vec![b.kind.clone()]));
-        let label_rows = p.choose_many("filters.label", "/set_filter/label", mine("label"), counted(&|b| b.labels.clone()));
+        let first = |key: &str| ui.values(key).first().copied().unwrap_or("").to_string();
+        let mut status_opts = vec![json!({ "value": "", "text": "Any status" })];
+        status_opts.extend(KINDS.iter().map(|k| json!({ "value": k, "text": k })));
+        let status = p.choose("filters.status", "/set_filter/status", &first("status"), status_opts, false, false);
+        let kind = p.choose("filters.type", "/set_filter/type", &first("type"), counted("Any type", &|b| vec![b.kind.clone()]), false, false);
+        let label = p.choose("filters.label", "/set_filter/label", &first("label"), counted("Any label", &|b| b.labels.clone()), false, false);
         let urgent = all.iter().filter(|b| b.priority.is_some_and(|p| p <= 1)).count();
         let low = all.iter().filter(|b| b.priority.is_some_and(|p| p >= 3)).count();
         let p2 = all.iter().filter(|b| b.priority == Some(2)).count();
         let pri = p.choose("filters.pri", "/set_filter/pri", ui.filter("pri"), vec![
-            json!({ "value": "", "text": format!("All  {}", all.len()) }), json!({ "value": "urgent", "text": format!("Urgent: P0 to P1  {urgent}") }),
+            json!({ "value": "", "text": "Any priority" }), json!({ "value": "urgent", "text": format!("Urgent: P0 to P1  {urgent}") }),
             json!({ "value": "2", "text": format!("P2  {p2}") }), json!({ "value": "low", "text": format!("P3 and lower  {low}") })], false, false);
-        p.set_prop(&pri, "label", json!("Priority"));
-        let sorts: Vec<Value> = COLS.iter().map(|c| json!({ "value": c.key, "text": c.label })).collect();
+        let sorts: Vec<Value> = COLS.iter().map(|c| json!({ "value": c.key, "text": format!("Sort: {}", c.label) })).collect();
         let sort = p.choose("filters.sort", "/set_sort", &ui.sort.0.to_string(), sorts, false, ui.custom());
-        p.set_prop(&sort, "label", json!("Sort"));
-        let clear = p.button("filters.clear", "Clear all filters", "clear", json!({}), json!({ "style": "link" }));
-        crate::core::layout::modify(&mut p.out, "filters.clear.t", json!({ "foregroundStyle": "red" }));
-        for (id, children, title) in [("filters.s.type", vec![type_rows], Some("Type")), ("filters.s.label", vec![label_rows], Some("Label")),
-                                      ("filters.s.order", vec![pri, sort], None), ("filters.s.clear", vec![clear], None)] {
-            let mut v = json!({ "id": id, "component": "Section", "children": children });
-            if let Some(t) = title {
-                v["title"] = json!(t);
-            }
-            p.put(v);
-        }
-        p.put(json!({ "id": "filters.form", "component": "Form", "style": "grouped",
-            "children": ["filters.s.type", "filters.s.label", "filters.s.order", "filters.s.clear"] }));
-        let active = mine("type").len() + mine("label").len() + usize::from(!ui.filter("pri").is_empty());
-        let pill = if active > 0 { format!("Filters · {active}") } else { "Filters".to_string() };
-        p.put(json!({ "id": "filters.btn.t", "component": "Text", "text": pill }));
-        p.put(json!({ "id": "filters.btn", "component": "Button", "child": "filters.btn.t",
-            "modifiers": [{ "padding": { "horizontal": 12, "vertical": 5 } }, { "overlay": { "stroke": "tint", "cornerRadius": 14 } }, { "foregroundStyle": "tint" }] }));
-        p.put(json!({ "id": "filters", "component": "Modal", "title": "Filters", "trigger": "filters.btn", "content": "filters.form" }));
+        let clear = p.button("filters.clear", "Clear", "clear", json!({}), json!({ "style": "link" }));
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
         let count_id = p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("bar", "h", vec!["filters".into(), count_id], json!({ "spacing": 8, "align": "center", "widths": [Value::Null, "flex"], "padding": [4, 0, 0, 0] })));
+        page.push(p.boxed("bar", "h", vec![status, kind, label, pri, sort, clear, count_id], json!({ "spacing": 8, "align": "center", "wrap": true, "padding": [4, 0, 0, 0] })));
 
         // Active filters, each one a button that removes it.
         let mut chips: Vec<String> = vec![];
@@ -1014,19 +1008,20 @@ mod tests {
         let c = page_components(&s, &ui);
         let chip = c.iter().find(|x| x["id"] == "chip0").expect("a chip for client");
         assert_eq!(chip["action"]["event"]["context"], json!({ "key": "label", "value": "mac" }));
-        assert!(c.iter().any(|x| x["id"] == "filters.btn.t" && x["text"] == "Filters · 2"));
+        let label = c.iter().find(|x| x["id"] == "filters.label").expect("the label menu");
+        assert_eq!(label["value"]["path"], "/set_filter/label");
     }
 
     #[test]
-    fn the_page_has_status_boxes_a_search_row_a_filters_sheet_and_a_table() {
+    fn the_page_has_status_boxes_a_search_row_filter_menus_and_a_table() {
         let s = snap(vec![bead("a", |_| {})]);
         let c = page_components(&s, &Ui::default());
         let page = c.iter().find(|x| x["id"] == "page").unwrap()["children"].as_array().unwrap().clone();
-        assert_eq!(page[..4], ["kpis", "find", "bar", "table.b"].map(Value::from), "boxes, search with the views choice, the Filters button and count, the table");
+        assert_eq!(page[..4], ["kpis", "find", "bar", "table.b"].map(Value::from), "boxes, search with the views choice, the filter menus with Clear and the count, the table");
         let find = c.iter().find(|x| x["id"] == "find").unwrap();
         assert_eq!(find["children"], json!(["search", "views"]));
-        let sheet = c.iter().find(|x| x["id"] == "filters").unwrap();
-        assert_eq!((sheet["component"].as_str(), sheet["title"].as_str(), sheet["trigger"].as_str()), (Some("Modal"), Some("Filters"), Some("filters.btn")));
+        let bar = c.iter().find(|x| x["id"] == "bar").unwrap();
+        assert_eq!(bar["children"], json!(["filters.status", "filters.type", "filters.label", "filters.pri", "filters.sort", "filters.clear", "count"]));
         assert!(c.iter().all(|x| x["id"] != "chips"), "no filter is on, so no chips");
         let boxes: Vec<&Value> = c.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("kpi") && !i.contains('.') && i != "kpis")).collect();
         assert_eq!(boxes.len(), 4);

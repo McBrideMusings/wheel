@@ -140,7 +140,9 @@ struct A2UIStack: View {
             A2UIChildView(node: k, surface: surface)
         }
         // The spacer that keeps a start-aligned stack at the top gives way to a Table, which takes the height left over.
-        if justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround" { Spacer(minLength: 0).layoutPriority(-1) }
+        // Only the page column gets it: in a card or a box a spacer made the stack take height and stretched it.
+        let pinsTop = horizontal || node.instance.id == "page"
+        if pinsTop && (justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround") { Spacer(minLength: 0).layoutPriority(-1) }
     }
 
     private func vertical(_ a: String?) -> VerticalAlignment { a == "start" ? .top : a == "end" ? .bottom : .center }

@@ -88,24 +88,8 @@ impl Page {
         id.to_string()
     }
 
-    /// A choice of any number among `options` ({value, text}), ticked in `selected`; `path` is `/<tool>/<key>`.
-    pub fn choose_many(&mut self, id: &str, path: &str, selected: Vec<String>, options: impl Into<Value>) -> String {
-        self.bind(path, json!(selected));
-        let options: Vec<Value> = options.into().as_array().cloned().unwrap_or_default().iter().map(|o| json!({ "label": o["text"], "value": o["value"] })).collect();
-        self.put(json!({ "id": id, "component": "ChoicePicker", "variant": "multipleSelection", "displayStyle": "checkbox", "options": options, "value": { "path": path } }));
-        id.to_string()
-    }
-
-    /// Sets `key` on the component `id` already put.
-    pub fn set_prop(&mut self, id: &str, key: &str, value: Value) {
-        if let Some(c) = self.out.iter_mut().find(|c| c["id"] == id) {
-            c[key] = value;
-        }
-    }
-
-
     /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or
-    /// plain draws it borderless, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.
+    /// plain draws it borderless, primary draws it prominent, `fill` stretches it across, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.
     pub fn button(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
         let child = match extra["icon"].as_str() {
             Some(i) => {
@@ -124,13 +108,18 @@ impl Page {
                 mods.push(json!({ "opacity": 0 }));
             }
         }
+        if extra["fill"] == true {
+            mods.push(json!({ "frame": { "maxWidth": "infinity" } }));
+        }
         if let Some(h) = extra["help"].as_str() {
             mods.push(json!({ "help": h }));
             mods.push(json!({ "accessibilityLabel": h }));
         }
         let mut v = json!({ "id": id, "component": "Button", "child": child, "action": { "event": { "name": name, "context": context } } });
-        if matches!(extra["style"].as_str(), Some("link" | "plain")) {
-            v["variant"] = json!("borderless");
+        match extra["style"].as_str() {
+            Some("link" | "plain") => v["variant"] = json!("borderless"),
+            Some("primary") => v["variant"] = json!("primary"),
+            _ => {}
         }
         if !mods.is_empty() {
             v["modifiers"] = json!(mods);

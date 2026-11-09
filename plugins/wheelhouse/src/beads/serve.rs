@@ -15,8 +15,8 @@ use crate::core::project::Origin;
 use crate::view::{View, MIME};
 
 /// The artifact name this view answers to, and so the host of its page's URI.
-pub const NAME: &str = "beads-native";
-const URI: &str = "a2ui://beads-native";
+pub const NAME: &str = "beads";
+const URI: &str = "a2ui://beads";
 
 struct Project {
     snap: Snapshot,
@@ -196,6 +196,7 @@ impl Server {
     fn select_bead(&self, meta: RequestMetaObject, Parameters(BeadId { id }): Parameters<BeadId>) -> CallToolResult {
         self.with(&meta, |_, ui| {
             ui.hist.clear();
+            ui.ran = None;
             ui.sel = Some(id.clone());
             ui.detail = Some(id);
         })
@@ -208,6 +209,7 @@ impl Server {
                 ui.hist.push(cur);
             }
             ui.detail = Some(id);
+            ui.ran = None;
         })
     }
 
@@ -225,6 +227,7 @@ impl Server {
         self.with(&meta, |_, ui| {
             ui.detail = None;
             ui.hist.clear();
+            ui.ran = None;
         })
     }
 
@@ -316,7 +319,7 @@ impl Server {
 
     #[tool(description = "Run a bead's button", meta = ui_meta())]
     fn run_script(&self, meta: RequestMetaObject, Parameters(RunScript { bead, script }): Parameters<RunScript>) -> CallToolResult {
-        let (dir, _) = origin(&meta);
+        let (dir, pane) = origin(&meta);
         let snap = self.shared.lock().unwrap().project(&dir).snap.clone();
         let Some(b) = snap.beads.iter().find(|b| b.id == bead) else {
             return CallToolResult::error(vec![ContentBlock::text(format!("no bead {bead}"))]);
@@ -329,7 +332,11 @@ impl Server {
             Ok(f) => f,
             Err(e) => return CallToolResult::error(vec![ContentBlock::text(format!("{}: {e}", log.display()))]),
         };
-        let spawned = Command::new("/bin/sh")
+        let mut command = Command::new("/bin/sh");
+        if pane != "default" {
+            command.env("WHEEL_PANE", &pane);
+        }
+        let spawned = command
             .arg("-c")
             .arg(&sc.run)
             .current_dir(&snap.path)
@@ -344,10 +351,28 @@ impl Server {
             .spawn();
         match spawned {
             Ok(mut child) => {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                self.with(&meta, |_, _| {})
+                // A script that fails at once says so; one still running after ten seconds is reported as started.
+                let started = std::time::Instant::now();
+                let status = loop {
+                    match child.try_wait() {
+                        Ok(Some(s)) => break Some(s),
+                        Ok(None) if started.elapsed() > std::time::Duration::from_secs(10) => break None,
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                        Err(_) => break None,
+                    }
+                };
+                if let Some(s) = status.filter(|s| !s.success()) {
+                    let text = std::fs::read_to_string(&log).unwrap_or_default();
+                    let tail: String = text.trim().lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
+                    return CallToolResult::error(vec![ContentBlock::text(format!("{} failed ({s}): {tail}", sc.label.as_deref().unwrap_or(&sc.name)))]);
+                }
+                if status.is_none() {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
+                let label = sc.label.clone().unwrap_or_else(|| sc.name.clone());
+                self.with(&meta, |_, ui| ui.ran = Some(format!("{label} started for {bead}. See the new pane.")))
             }
             Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("{script}: {e}"))]),
         }

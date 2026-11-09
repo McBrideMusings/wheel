@@ -6,7 +6,7 @@ ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 WHEEL_DERIVED_DATA ?= $(ROOT)/DerivedData
 PROJECT_TOOLS := $(ROOT)/.claude/skills/project/tools
 
-.PHONY: help build-server build-client dev test test-rust test-wheelkit test-query vet fmt kill \
+.PHONY: help build-server build-client dev test test-rust test-wheelkit vet fmt kill \
 	deploy-client deploy-dev restart-server restart-server-dev deploy-phone ios-check \
 	grid-motion idle-chat lsregister-prune icon-render
 
@@ -24,7 +24,7 @@ build-client: ## Build the Debug Mac app into WHEEL_DERIVED_DATA (xcodegen, then
 dev: ## Run wheeld from source on its default port
 	cd $(ROOT) && cargo run --bin wheeld
 
-test: test-rust test-wheelkit test-query ## Run every test suite
+test: test-rust test-wheelkit ## Run every test suite
 
 test-rust: ## cargo test
 	cd $(ROOT) && cargo test
@@ -34,9 +34,6 @@ lint-wheelkit: ## SwiftLint over WheelKit: no force-unwrap, try!, as!, unchecked
 
 test-wheelkit: lint-wheelkit ## swift test on WheelKit, after the lint
 	swift test --package-path $(ROOT)/apple/WheelKit
-
-test-query: ## The beads artifact's query tests
-	node $(ROOT)/artifacts/beads/query.test.js
 
 vet: ## Clippy with warnings as errors
 	cd $(ROOT) && cargo clippy --all-targets -- -D warnings

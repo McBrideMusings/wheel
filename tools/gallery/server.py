@@ -128,7 +128,7 @@ inputs = klass("Selection and input", "Values the person sets.", [
 
 layout = klass("Containers and layout", "Arrange other components.", [
     ("Row", "HStack", [("justify " + j, row([txt("one"), txt("two"), txt("three")], justify=j)) for j in ("start", "center", "end", "spaceBetween", "spaceEvenly")] + [("spacing 24", row([txt("one"), txt("two"), txt("three")], justify="start", spacing=24))]),
-    ("Column", "VStack", [("align " + a, col([txt("short"), txt("a longer line")], align=a)) for a in ("start", "center", "end")]),
+    ("Column", "VStack", [("align " + a, col([txt("short"), txt("a longer line")], align=a)) for a in ("start", "center", "end")] + [("in a row beside a Table: keeps its own height", row([col([txt("128", "h4"), secondary("Ready")], align="start", modifiers=[{"padding": [7, 8]}, {"overlay": {"stroke": "separator", "cornerRadius": 8}}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}]) for _ in range(2)], justify="start"))]),
     ("List", "List", [("vertical", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="vertical")), ("horizontal", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="horizontal"))]),
     ("Card", "GroupBox", [("one child", put("Card", child=col([txt("Inside a card", "h4"), secondary("Body text")], align="start", modifiers=[{"padding": 12}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}])))]),
     ("Divider", "Divider", [("horizontal", col([txt("above"), put("Divider", axis="horizontal"), txt("below")], align="start")), ("vertical", row([txt("left"), put("Divider", axis="vertical"), txt("right")], justify="start"))]),
