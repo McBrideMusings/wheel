@@ -46,6 +46,9 @@ public struct Composer: View {
     /// Set while a permission request waits on this conversation: Return with nothing typed allows
     /// it and Escape denies it. Returns whether the request took the key.
     var permissionKey: ((PermissionKey) -> Bool)?
+    /// Whether this conversation's replies are read aloud; nil draws no speaker control.
+    @Binding var readAloud: Bool
+    let showsReadAloud: Bool
 
     public init(
         placeholder: String,
@@ -66,8 +69,11 @@ public struct Composer: View {
         busy: Bool = false,
         stop: @escaping () -> Void = {},
         takeBack: @escaping () -> Bool = { false },
-        permissionKey: ((PermissionKey) -> Bool)? = nil
+        permissionKey: ((PermissionKey) -> Bool)? = nil,
+        readAloud: Binding<Bool>? = nil
     ) {
+        self._readAloud = readAloud ?? .constant(false)
+        self.showsReadAloud = readAloud != nil
         self.takeBack = takeBack
         self.permissionKey = permissionKey
         self.busy = busy
@@ -210,6 +216,15 @@ public struct Composer: View {
                 .fixedSize()
                 .chatControl("composer", "Run a skill")
                 .help("Run a skill")
+                }
+                if showsReadAloud {
+                    Button(readAloud ? "Stop reading replies aloud" : "Read replies aloud",
+                           systemImage: readAloud ? "speaker.wave.2.fill" : "speaker.slash") {
+                        readAloud.toggle()
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.chat("composer", "Toggle reading replies aloud"))
+                    .help(readAloud ? "Stop reading replies aloud" : "Read this agent's replies aloud")
                 }
                 if let error {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
