@@ -202,6 +202,8 @@ pub struct AppState {
     pub(crate) mcp: crate::mcp::Sessions,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
+    /// Each space's title-row buttons: the `state` output seen and the list clients were told (ADR-0037).
+    pub(crate) title_buttons: Mutex<crate::title_buttons::Buttons>,
     /// The merged streams started since this daemon began, by space and group (ADR-0030).
     pub(crate) streams: crate::streams::Streams,
     /// This state, for callbacks an agent runs later and for a task that saves the layout after
@@ -324,6 +326,7 @@ impl AppState {
             apps: Mutex::new(crate::app::Apps::new()),
             mcp: Default::default(),
             runner_feeds: Mutex::new(HashMap::new()),
+            title_buttons: Mutex::new(crate::title_buttons::Buttons::default()),
             streams: Default::default(),
             me: me.clone(),
             renderers: Default::default(),
@@ -2381,6 +2384,17 @@ async fn handle(
             Ok(runners) => req.map(|req| ServerMsg::Runners { req, runners }),
             Err(message) => Some(failed(req, message)),
         },
+        ClientMsg::TitleButtonLs { req, space } => match state.title_buttons(&space) {
+            Ok(buttons) => req.map(|req| ServerMsg::TitleButtons {
+                req,
+                space,
+                buttons,
+            }),
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::TitleButtonPress { req, space, id } => {
+            done(req, state.title_button_press(&space, &id))
+        }
         ClientMsg::StreamLs { req, space } => match state.stream_ls(space.as_deref()) {
             Ok(groups) => req.map(|req| ServerMsg::Streams { req, groups }),
             Err(message) => Some(failed(req, message)),

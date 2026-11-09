@@ -16,15 +16,26 @@ struct TitleRow: View {
 
     var body: some View {
         let open = model.sidebarOpen(in: windowID)
+        let space = model.layout.window(windowID)?.active
+        let plugins = space.map { model.titleButtons[$0] ?? [] } ?? []
+        let hidden = Set(plugins.filter(\.hidden).map(\.id))
+        let shown = plugins.filter { !$0.hidden }
         HStack(spacing: 6) {
             Color.clear.frame(width: Self.lightsWidth, height: 1)
-            Button { model.setSidebar(open: !open, in: windowID) } label: {
-                Image(systemName: "sidebar.left")
+            if !hidden.contains("sidebar") {
+                Button { model.setSidebar(open: !open, in: windowID) } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help(open ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
+                .accessibilityLabel(open ? "Hide sidebar" : "Show sidebar")
+                .titleButtonFrame(model, window: windowID, id: "sidebar")
             }
-            .help(open ? "Hide the sidebar; spaces become tabs" : "Show the sidebar")
-            .accessibilityLabel(open ? "Hide sidebar" : "Show sidebar")
-            .titleButtonFrame(model, window: windowID, id: "sidebar")
             SessionMenu(model: model, windowID: windowID)
+            if let space {
+                ForEach(shown.filter { $0.side == .left }) { button in
+                    PluginButton(model: model, window: windowID, space: space, button: button)
+                }
+            }
             if open || model.renamingWindow == windowID {
                 WindowTitle(model: model, windowID: windowID)
                     .padding(.leading, 4)
@@ -35,27 +46,38 @@ struct TitleRow: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 2) {
-                if let space = model.layout.window(windowID)?.active {
-                    ProcessesButton(model: model, space: space)
-                        .titleButtonFrame(model, window: windowID, id: "processes")
+                if let space {
+                    ForEach(shown.filter { $0.side == .right }) { button in
+                        PluginButton(model: model, window: windowID, space: space, button: button)
+                    }
+                    if !hidden.contains("processes") {
+                        ProcessesButton(model: model, space: space)
+                            .titleButtonFrame(model, window: windowID, id: "processes")
+                    }
                 }
-                Button { model.openCommandPalette() } label: {
-                    Text("⌘K").font(.system(size: 12, weight: .medium, design: .rounded))
+                if !hidden.contains("palette") {
+                    Button { model.openCommandPalette() } label: {
+                        Text("⌘K").font(.system(size: 12, weight: .medium, design: .rounded))
+                    }
+                    .help("Command palette: spaces, panes, artifacts and actions")
+                    .accessibilityLabel("Command palette")
+                    .titleButtonFrame(model, window: windowID, id: "palette")
                 }
-                .help("Command palette: spaces, panes, artifacts and actions")
-                .accessibilityLabel("Command palette")
-                .titleButtonFrame(model, window: windowID, id: "palette")
                 let pinned = model.layout.window(windowID)?.pinned == true
-                Button { model.setPinned(!pinned, window: windowID) } label: {
-                    Image(systemName: pinned ? "pin.fill" : "pin").foregroundStyle(pinned ? Color.accentColor : Color.primary)
+                if !hidden.contains("pin") {
+                    Button { model.setPinned(!pinned, window: windowID) } label: {
+                        Image(systemName: pinned ? "pin.fill" : "pin").foregroundStyle(pinned ? Color.accentColor : Color.primary)
+                    }
+                    .help(pinned ? "Unpin" : "Pin on top")
+                    .accessibilityLabel(pinned ? "Unpin" : "Pin")
+                    .titleButtonFrame(model, window: windowID, id: "pin")
                 }
-                .help(pinned ? "Unpin" : "Pin on top")
-                .accessibilityLabel(pinned ? "Unpin" : "Pin")
-                .titleButtonFrame(model, window: windowID, id: "pin")
-                Button { model.openNewSpacePalette() } label: { Image(systemName: "plus") }
-                    .help("New space from a folder")
-                    .accessibilityLabel("New space")
-                    .titleButtonFrame(model, window: windowID, id: "new-space")
+                if !hidden.contains("new-space") {
+                    Button { model.openNewSpacePalette() } label: { Image(systemName: "plus") }
+                        .help("New space from a folder")
+                        .accessibilityLabel("New space")
+                        .titleButtonFrame(model, window: windowID, id: "new-space")
+                }
             }
         }
         .buttonStyle(TitleButtonStyle())
@@ -66,6 +88,62 @@ struct TitleRow: View {
 }
 
 /// A title row button: a bare symbol that shows a rounded fill under the pointer and while pressed.
+/// A button a `[[title.button]]` entry defines (ADR-0037): an SF Symbol in the title row's own
+/// button style, tinted and badged by what its `state` command printed. A press goes to wheeld,
+/// which runs the entry's `command`; an entry with no command is an indicator and draws the same
+/// slot without being a button. Icon-only and the badge an overlay, so a state change never moves
+/// a neighbour.
+struct PluginButton: View {
+    var model: AppModel
+    let window: String
+    let space: String
+    let button: TitleButtonInfo
+
+    var body: some View {
+        // A fixed icon box: a state that swaps in a wider symbol never grows the slot.
+        let symbol = Image(systemName: button.icon)
+            .frame(width: 16, height: 16)
+            .foregroundStyle(Self.color(button.tint) ?? Color.primary)
+            .overlay(alignment: .topTrailing) {
+                if let badge = button.badge {
+                    Text(badge)
+                        .font(.system(size: 8, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3)
+                        .background(Capsule().fill(Color.red))
+                        .offset(x: 8, y: -6)
+                }
+            }
+        Group {
+            if button.hasCommand {
+                Button { model.pressTitleButton(space: space, id: button.id) } label: { symbol }
+                    .buttonStyle(TitleButtonStyle())
+            } else {
+                symbol.font(.system(size: 13)).frame(minWidth: 28, minHeight: 26)
+            }
+        }
+        .disabled(!button.enabled)
+        .help(button.tip)
+        .accessibilityLabel(button.tip.isEmpty ? button.id : button.tip)
+        .titleButtonFrame(model, window: window, id: "plugin-\(button.id)")
+    }
+
+    /// The named colours a `state` command's `tint` may print; anything else draws in the primary colour.
+    static func color(_ name: String?) -> Color? {
+        switch name {
+        case "red": .red
+        case "orange": .orange
+        case "yellow": .yellow
+        case "green": .green
+        case "blue": .blue
+        case "purple": .purple
+        case "pink": .pink
+        case "gray", "grey": .gray
+        default: nil
+        }
+    }
+}
+
 struct TitleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         TitleButtonBody(configuration: configuration)
@@ -97,6 +175,8 @@ extension View {
         onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
             model.titleButtonFrames[window, default: [:]][id] = $0
         }
+        // A button a `[[title.button]]` entry hides, or a space switch removes, leaves no frame behind.
+        .onDisappear { model.titleButtonFrames[window]?[id] = nil }
     }
 }
 

@@ -305,6 +305,12 @@ extension AppModel {
         client.send(.runnerLs(req: req, space: space))
     }
 
+    /// Press a title-row button: wheeld runs its command in the space's directory (ADR-0037).
+    func pressTitleButton(space: String, id: String) {
+        guard connection == .connected else { return }
+        client.send(.titleButtonPress(req: nil, space: space, id: id))
+    }
+
     /// Run `[runner]` command `name` of the active space in a new terminal pane, as `wheel run` does.
     func startRunner(_ name: String) {
         guard connection == .connected, let space = active else { return }

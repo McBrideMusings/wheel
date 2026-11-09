@@ -65,6 +65,10 @@ public enum ClientMsg: Sendable, Equatable {
     case agentHomes(req: UInt64?, agent: String, path: String?)
     /// The `[runner]` commands of `space`'s wheel.toml over this machine's; the daemon answers `runners`.
     case runnerLs(req: UInt64?, space: String?)
+    /// The title-row buttons of `space` (ADR-0037); the daemon answers `titleButtons`.
+    case titleButtonLs(req: UInt64?, space: String)
+    /// Press title-row button `id` of `space`: the daemon runs its command in the space's directory.
+    case titleButtonPress(req: UInt64?, space: String, id: String)
     /// Run the `[runner]` command `name` in a new terminal pane of `space`; the daemon answers `started`.
     case run(req: UInt64?, name: String, space: String?, focus: Bool)
     /// Ask every client to show a space or a pane (`space_focused`). The daemon keeps no view of its
@@ -266,6 +270,10 @@ public enum ClientMsg: Sendable, Equatable {
         case let .agentHomes(req, agent, path):
             o = ["op": "agent_homes", "agent": agent]; put(req)
             if let path { o["path"] = path }
+        case let .titleButtonLs(req, space):
+            o = ["op": "title_button_ls", "space": space]; put(req)
+        case let .titleButtonPress(req, space, id):
+            o = ["op": "title_button_press", "space": space, "id": id]; put(req)
         case let .runnerLs(req, space):
             o = ["op": "runner_ls"]; put(req)
             if let space { o["space"] = space }
@@ -852,6 +860,46 @@ public struct GuidanceFile: Sendable, Equatable, Decodable, Identifiable {
     }
 }
 
+/// Which end of the title row a `[[title.button]]` sits at.
+public enum TitleSide: String, Sendable, Equatable, Decodable {
+    case left, right
+}
+
+/// One title-row button after the machine's and the project's `[[title.button]]` entries are merged
+/// by id (ADR-0037). `hidden` removes the built-in button of that id; `icon`, `tip`, `tint`, `badge`
+/// and `enabled` are what the entry set, over which its `state` command's last output.
+public struct TitleButtonInfo: Sendable, Equatable, Decodable, Identifiable {
+    public let id: String
+    public let side: TitleSide
+    public let hidden: Bool
+    public let icon: String
+    public let tip: String
+    public let tint: String?
+    public let badge: String?
+    public let enabled: Bool
+    public let hasCommand: Bool
+    public let origin: SettingOrigin
+
+    enum CodingKeys: String, CodingKey {
+        case id, side, hidden, icon, tip, tint, badge, enabled, origin
+        case hasCommand = "has_command"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        side = try c.decode(TitleSide.self, forKey: .side)
+        hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? ""
+        tip = try c.decodeIfPresent(String.self, forKey: .tip) ?? ""
+        tint = try c.decodeIfPresent(String.self, forKey: .tint)
+        badge = try c.decodeIfPresent(String.self, forKey: .badge)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        hasCommand = try c.decode(Bool.self, forKey: .hasCommand)
+        origin = try c.decode(SettingOrigin.self, forKey: .origin)
+    }
+}
+
 /// One `[runner]` entry: a name a person chose, the shell command it runs, and the file that set it.
 public struct RunnerInfo: Sendable, Equatable, Decodable {
     public let name: String
@@ -1262,6 +1310,10 @@ public enum ServerMsg: Sendable {
     case fileImage(req: UInt64, image: FileImage)
     /// The homes found for an agent and the reading of the path asked about, in reply to `agentHomes`.
     case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)
+    /// A space's title-row buttons, in reply to `titleButtonLs`.
+    case titleButtons(req: UInt64, space: String, buttons: [TitleButtonInfo])
+    /// A space's title-row buttons changed: its files did, or a state command printed something new.
+    case titleButtonsChanged(space: String, buttons: [TitleButtonInfo])
     /// The `[runner]` commands, in name order, in reply to `runnerLs`.
     case runners(req: UInt64, runners: [RunnerInfo])
     /// The fixed brief and the guidance files, the one for every agent first, in reply to `guidanceLs`.
@@ -1297,7 +1349,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
+        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1371,6 +1423,8 @@ extension ServerMsg: Decodable {
             self = .conversation(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
                                  id: try c.decode(String.self, forKey: .id))
         case "usage": self = .usage(req: try c.decode(UInt64.self, forKey: .req), board: try c.decode(UsageBoard.self, forKey: .board))
+        case "title_buttons": self = .titleButtons(req: try c.decode(UInt64.self, forKey: .req), space: try c.decode(String.self, forKey: .space), buttons: try c.decode([TitleButtonInfo].self, forKey: .buttons))
+        case "title_buttons_changed": self = .titleButtonsChanged(space: try c.decode(String.self, forKey: .space), buttons: try c.decode([TitleButtonInfo].self, forKey: .buttons))
         case "usage_changed": self = .usageChanged(board: try c.decode(UsageBoard.self, forKey: .board))
         case "remote":
             self = .remote(req: try c.decode(UInt64.self, forKey: .req), info: RemoteInfo(
