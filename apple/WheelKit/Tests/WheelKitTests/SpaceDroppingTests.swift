@@ -50,11 +50,11 @@ struct SpaceDroppingTests {
     /// A card's rows pick the gap the way a sidebar's do: above the first row whose middle is below the pointer.
     @Test func aPointerInAPopoverCardPicksTheGapUnderIt() {
         let popover = DropPopover(frame: CGRect(x: 0, y: 0, width: 300, height: 400), cards: [
-            DropCard(window: "A", frame: CGRect(x: 10, y: 250, width: 280, height: 100), rows: [CGRect(x: 10, y: 320, width: 280, height: 24), CGRect(x: 10, y: 290, width: 280, height: 24)]),
+            DropCard(session: "A", frame: CGRect(x: 10, y: 250, width: 280, height: 100), rows: [CGRect(x: 10, y: 320, width: 280, height: 24), CGRect(x: 10, y: 290, width: 280, height: 24)]),
         ])
-        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 340), windows: [], popover: popover) == .card(window: "A", index: 0))
-        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 310), windows: [], popover: popover) == .card(window: "A", index: 1))
-        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 255), windows: [], popover: popover) == .card(window: "A", index: 2))
+        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 340), windows: [], popover: popover) == .card(session: "A", index: 0))
+        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 310), windows: [], popover: popover) == .card(session: "A", index: 1))
+        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 255), windows: [], popover: popover) == .card(session: "A", index: 2))
     }
 
     @Test func theFrontWindowWinsWhereWindowsOverlap() {
@@ -65,19 +65,19 @@ struct SpaceDroppingTests {
 
     @Test func thePopoverIsInFrontAndItsCardsAreTheTargets() {
         let popover = DropPopover(frame: CGRect(x: 0, y: 0, width: 300, height: 400), cards: [
-            DropCard(window: "A", frame: CGRect(x: 10, y: 250, width: 280, height: 100), rows: [CGRect(x: 10, y: 320, width: 280, height: 24), CGRect(x: 10, y: 290, width: 280, height: 24)]),
-            DropCard(window: nil, frame: CGRect(x: 10, y: 100, width: 280, height: 100)),
+            DropCard(session: "A", frame: CGRect(x: 10, y: 250, width: 280, height: 100), rows: [CGRect(x: 10, y: 320, width: 280, height: 24), CGRect(x: 10, y: 290, width: 280, height: 24)]),
+            DropCard(session: "B", frame: CGRect(x: 10, y: 100, width: 280, height: 100)),
         ])
-        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 300), windows: [a], popover: popover) == .card(window: "A", index: 2))
-        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 150), windows: [a], popover: popover) == .card(window: nil, index: 0))
+        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 300), windows: [a], popover: popover) == .card(session: "A", index: 2))
+        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 150), windows: [a], popover: popover) == .card(session: "B", index: 0))
         // Between the cards: the nearer one.
-        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 215), windows: [a], popover: popover) == .card(window: nil, index: 0))
+        #expect(SpaceDropping.target(at: CGPoint(x: 100, y: 215), windows: [a], popover: popover) == .card(session: "B", index: 0))
     }
 
     @Test func theHintNamesWhatReleasingDoes() {
         let title: (String) -> String = { _ in "Work" }
         #expect(SpaceDropping.hint(.desktop, space: "wheel", windowTitle: title) == "Release to open “wheel” in a little window")
-        #expect(SpaceDropping.hint(.card(window: nil, index: 0), space: "wheel", windowTitle: title) == "Run “wheel” in the background, with no window")
+        #expect(SpaceDropping.hint(.card(session: "B", index: 0), space: "wheel", sessionName: { _ in "docs" }, windowTitle: title) == "Move “wheel” to the “docs” session")
         #expect(SpaceDropping.hint(.sidebar(window: "A", index: 0), space: "wheel", windowTitle: title) == "Place “wheel” here in “Work”")
         #expect(SpaceDropping.hint(.window("A"), space: "wheel", windowTitle: title) == "Move “wheel” to “Work”")
     }

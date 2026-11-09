@@ -14,17 +14,18 @@ struct SpaceMenuItem: Equatable {
 
 extension AppModel {
     /// What right-clicking `space` in `window` offers; the views draw it and the debug state reports it.
-    /// `session:<id>` items are the Move to Session submenu, one per other session.
-    /// `window` is nil for a space in a background session (a popover row), where the menu has no
-    /// neighbours to move among.
+    /// `session:<id>` items and `new-session` move the space: one per other session, then a new one. A new window is ⌘N's and the menu bar's, never a space's.
+    /// `window` is nil for a space in a session no window shows (a popover row); it only matters to
+    /// Close Other Spaces in Window.
     func spaceMenu(for space: String, in window: String?) -> [SpaceMenuItem] {
-        let held = window.flatMap { layout.window($0).map(layout.spaces(of:)) } ?? []
-        let index = held.firstIndex(of: space)
         let home = layout.sessions.session(of: space)?.id
-        var items = [SpaceMenuItem(id: "new-window", title: "Open in New Window", enabled: true, section: 0)]
+        let held = layout.sessions.session(of: space)?.spaces ?? []
+        let index = held.firstIndex(of: space)
+        var items: [SpaceMenuItem] = []
         for other in layout.sessions where other.id != home {
-            items.append(SpaceMenuItem(id: "session:\(other.id)", title: other.name, enabled: true, section: 0))
+            items.append(SpaceMenuItem(id: "session:\(other.id)", title: "Move to \(other.name)", enabled: true, section: 0))
         }
+        items.append(SpaceMenuItem(id: "new-session", title: "Move to New Session", enabled: true, section: 0))
         items += [
             SpaceMenuItem(id: "little", title: layout.little(showing: space) == nil ? "Open in Little Window" : "Go to Little Window", enabled: true, section: 0),
             SpaceMenuItem(id: "left", title: "Move Left", enabled: index.map { $0 > 0 } ?? false, section: 1),
@@ -33,7 +34,7 @@ extension AppModel {
             SpaceMenuItem(id: "copy-path", title: "Copy Path", enabled: true, section: 2),
             SpaceMenuItem(id: "reveal", title: "Reveal in Finder", enabled: true, section: 2),
             SpaceMenuItem(id: "new-pane", title: "New Pane", enabled: true, section: 3),
-            SpaceMenuItem(id: "close-others", title: "Close Other Spaces in Window…", enabled: held.count > 1, section: 4, destructive: true),
+            SpaceMenuItem(id: "close-others", title: "Close Other Spaces in Window…", enabled: window != nil && held.count > 1, section: 4, destructive: true),
             SpaceMenuItem(id: "close", title: "Close Space", enabled: true, section: 4, destructive: true),
         ]
         return items
@@ -42,15 +43,15 @@ extension AppModel {
     /// Run a space menu item, as the menu, the debug endpoint and a check do.
     func runSpaceMenu(_ id: String, space: String, in window: String?) {
         guard let info = spaces.first(where: { $0.id == space }) else { return }
-        Log.info("space menu \(space): \(id) in \(window.map { "window \($0.prefix(8))" } ?? "the background")")
-        let held = window.flatMap { layout.window($0).map(layout.spaces(of:)) } ?? []
+        Log.info("space menu \(space): \(id) in \(window.map { "window \($0.prefix(8))" } ?? "no window")")
+        let held = layout.sessions.session(of: space)?.spaces ?? []
         switch id {
-        case "new-window": tearOff(space)
+        case "new-session": newSession(holding: space)
         case "little": openLittle(for: space)
         case "left", "right":
             // A reorder is wheeld's; every window showing the session lists the new order and
             // each keeps showing the space it showed.
-            guard let window, let session = layout.window(window)?.session, let i = held.firstIndex(of: space),
+            guard let session = layout.sessions.session(of: space)?.id, let i = held.firstIndex(of: space),
                   id == "left" ? i > 0 : i < held.count - 1 else { return }
             moveSpace(space, toSession: session, at: id == "left" ? i - 1 : i + 1)
         case "rename": beginRename(space: space)
@@ -79,7 +80,8 @@ extension AppModel {
     }
 }
 
-/// A space's context menu, drawn from `spaceMenu(for:in:)`.
+/// A space's context menu, drawn from `spaceMenu(for:in:)`. Moving to a session is one flat item
+/// per session ("Move to <name>", then "Move to New Session"): a submenu in a context menu did not open.
 struct SpaceMenuItems: View {
     var model: AppModel
     let space: String
@@ -87,24 +89,12 @@ struct SpaceMenuItems: View {
 
     var body: some View {
         let items = model.spaceMenu(for: space, in: window)
-        let sessions = items.filter { $0.id.hasPrefix("session:") }
         ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
             if offset > 0, items[offset - 1].section != item.section { Divider() }
-            if item.id.hasPrefix("session:") {
-                // The submenu is drawn once, where its first session is.
-                if item.id == sessions.first?.id {
-                    Menu("Move to Session") {
-                        ForEach(sessions, id: \.id) { entry in
-                            Button(entry.title) { model.runSpaceMenu(entry.id, space: space, in: window) }
-                        }
-                    }
-                }
-            } else {
-                Button(item.title, role: item.destructive ? .destructive : nil) {
-                    model.runSpaceMenu(item.id, space: space, in: window)
-                }
-                .disabled(!item.enabled)
+            Button(item.title, role: item.destructive ? .destructive : nil) {
+                model.runSpaceMenu(item.id, space: space, in: window)
             }
+            .disabled(!item.enabled)
         }
     }
 }

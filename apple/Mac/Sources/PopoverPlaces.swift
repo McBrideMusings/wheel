@@ -2,21 +2,9 @@ import AppKit
 import SwiftUI
 import WheelKit
 
-/// Where a space can go from the menu bar popover: the session a main window shows, a new window
-/// or a little window.
-enum PlaceKind: Equatable {
-    case window(String)
-    case newWindow
-    case little
-}
-
 /// One of the icon buttons a popover row shows, and whether it names where the space is now.
 struct PlaceButton: Equatable, Identifiable {
-    /// `window:<id>`, `new-window` or `little`.
     let id: String
-    let kind: PlaceKind
-    /// The window's number, for a `window:` button.
-    let number: Int?
     let help: String
     let lit: Bool
 }
@@ -30,23 +18,14 @@ extension AppModel {
         layout.littles.filter { $0.owner == nil }.compactMap { little in spaces.first { $0.id == little.space } }
     }
 
-    /// The Background group's rows: the spaces in no window, then those in an ownerless little window.
-    var backgroundRows: [SpaceInfo] { backgroundSpaces + ownerlessLittleSpaces }
+    /// The spaces that run in a session no window shows, then those in an ownerless little window:
+    /// what the status item's badge counts.
+    var windowlessSpaces: [SpaceInfo] { backgroundSpaces + ownerlessLittleSpaces }
 
-    /// The buttons a row shows, in order: one per main window (moving the space into the session it shows), New Window, Little Window.
+    /// The buttons a row shows: Little Window. Where a space lives is its session's (the row's menu moves it).
     func placeButtons(for space: String) -> [PlaceButton] {
         let little = layout.little(showing: space)
-        let home = layout.window(holding: space)
-        var buttons = layout.windows.enumerated().map { offset, window -> PlaceButton in
-            let here = layout.spaces(of: window).contains(space) && home?.id == window.id && little == nil
-            let name = title(of: window)
-            return PlaceButton(id: "window:\(window.id)", kind: .window(window.id), number: offset + 1,
-                               help: here ? "In the \(name) window" : "Move into the session the \(name) window shows", lit: here)
-        }
-        buttons.append(PlaceButton(id: "new-window", kind: .newWindow, number: nil, help: "Open in a new window", lit: false))
-        buttons.append(PlaceButton(id: "little", kind: .little, number: nil,
-                                   help: little == nil ? "Open in a little window" : "Go to its little window", lit: little != nil))
-        return buttons
+        return [PlaceButton(id: "little", help: little == nil ? "Open in a little window" : "Go to its little window", lit: little != nil)]
     }
 
     /// Press a row's button by id, as a click on it does. Returns false when the row has no such button.
@@ -55,29 +34,17 @@ extension AppModel {
         guard spaces.contains(where: { $0.id == space }),
               let button = placeButtons(for: space).first(where: { $0.id == id }) else { return false }
         Log.info("popover place \(space): \(id)\(button.lit ? " (already there)" : "")")
-        switch button.kind {
-        case let .window(window):
-            if button.lit { break }
-            if let little = layout.little(showing: space), little.owner == window {
-                bringBack(space: space)
-            } else {
-                place(space, in: window)
-            }
-        case .newWindow: tearOff(space)
-        case .little: openLittle(for: space)
-        }
+        openLittle(for: space)
         return true
     }
 }
 
 /// The small drawn marks the popover and the tab strip share, on a 16-point grid: a window with its
-/// number, a new window, a little window and the background tray.
+/// number and a little window.
 struct PlaceGlyph: View {
     enum Kind: Equatable {
         case window(Int)
-        case newWindow
         case little
-        case background
     }
 
     let kind: Kind
@@ -99,32 +66,9 @@ struct PlaceGlyph: View {
                 context.stroke(frame(), with: .foreground, lineWidth: line)
                 context.stroke(bar(), with: .foreground, lineWidth: line)
                 context.draw(Text("\(number)").font(.system(size: 6.5 * u, weight: .bold)), at: CGPoint(x: 8 * u, y: 9.6 * u))
-            case .newWindow:
-                context.stroke(frame(), with: .foreground, lineWidth: line)
-                context.stroke(bar(), with: .foreground, lineWidth: line)
-                var plus = Path()
-                plus.move(to: CGPoint(x: 8 * u, y: 7.3 * u))
-                plus.addLine(to: CGPoint(x: 8 * u, y: 11.7 * u))
-                plus.move(to: CGPoint(x: 5.8 * u, y: 9.5 * u))
-                plus.addLine(to: CGPoint(x: 10.2 * u, y: 9.5 * u))
-                context.stroke(plus, with: .foreground, lineWidth: line)
             case .little:
                 context.stroke(frame(), with: .foreground, lineWidth: line)
                 context.fill(Path(roundedRect: CGRect(x: 8 * u, y: 8 * u, width: 5 * u, height: 4 * u), cornerRadius: 1 * u), with: .foreground)
-            case .background:
-                var tray = Path()
-                tray.move(to: CGPoint(x: 2 * u, y: 9.5 * u))
-                tray.addLine(to: CGPoint(x: 2 * u, y: 12.5 * u))
-                tray.addQuadCurve(to: CGPoint(x: 3 * u, y: 13.5 * u), control: CGPoint(x: 2 * u, y: 13.5 * u))
-                tray.addLine(to: CGPoint(x: 13 * u, y: 13.5 * u))
-                tray.addQuadCurve(to: CGPoint(x: 14 * u, y: 12.5 * u), control: CGPoint(x: 14 * u, y: 13.5 * u))
-                tray.addLine(to: CGPoint(x: 14 * u, y: 9.5 * u))
-                tray.move(to: CGPoint(x: 8 * u, y: 2.5 * u))
-                tray.addLine(to: CGPoint(x: 8 * u, y: 9.5 * u))
-                tray.move(to: CGPoint(x: 5 * u, y: 7 * u))
-                tray.addLine(to: CGPoint(x: 8 * u, y: 10 * u))
-                tray.addLine(to: CGPoint(x: 11 * u, y: 7 * u))
-                context.stroke(tray, with: .foreground, style: StrokeStyle(lineWidth: line, lineCap: .round, lineJoin: .round))
             }
         }
         .frame(width: size, height: size)
@@ -141,7 +85,7 @@ struct PlaceButtons: View {
         HStack(spacing: 0) {
             ForEach(model.placeButtons(for: space.id)) { button in
                 Button { model.runPlace(button.id, space: space.id) } label: {
-                    PlaceGlyph(kind: glyph(button)).frame(width: 22, height: 20).contentShape(Rectangle())
+                    PlaceGlyph(kind: .little).frame(width: 22, height: 20).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(button.lit ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
@@ -152,16 +96,9 @@ struct PlaceButtons: View {
         }
     }
 
-    private func glyph(_ button: PlaceButton) -> PlaceGlyph.Kind {
-        switch button.kind {
-        case .window: .window(button.number ?? 0)
-        case .newWindow: .newWindow
-        case .little: .little
-        }
-    }
 }
 
-/// The menu bar item's image: the Wheel mark, with the number of background spaces in a badge at
+/// The menu bar item's image: the Wheel mark, with the number of spaces in windowless sessions in a badge at
 /// its top right. A template image, so the system draws it in the menu bar's own colour; the badge
 /// is a capsule with the number cut out of it.
 enum MenuBarIcon {

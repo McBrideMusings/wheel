@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateBadge() {
-        let background = model.backgroundRows.count
+        let background = model.windowlessSpaces.count
         if background != lastBackgroundBadge {
             lastBackgroundBadge = background
             Log.info("menu bar badge: \(background == 0 ? "none" : "\(background)")")

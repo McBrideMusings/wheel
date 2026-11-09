@@ -27,12 +27,12 @@ extension AppModel {
     /// What releasing would do, in words: the debug state reports it, no view draws it.
     var spaceDragHint: String? {
         guard let drag = spaceDrag, let target = drag.target else { return nil }
-        return SpaceDropping.hint(target, space: spaceName(drag.space) ?? drag.space) { id in
-            layout.window(id).map { title(of: $0) } ?? id
-        }
+        return SpaceDropping.hint(target, space: spaceName(drag.space) ?? drag.space,
+                                  sessionName: { layout.session($0)?.name ?? $0 },
+                                  windowTitle: { id in layout.window(id).map { title(of: $0) } ?? id })
     }
 
-    /// The `window` a bar in a popover group reports: this, then the group's window id or `background`.
+    /// The `window` a bar in a popover group reports: this, then the group's session id.
     static let popoverInsertionPrefix = "popover:"
 
     /// Where the insertion bar shows: the window and the number of items left of it, nil where
@@ -44,9 +44,9 @@ extension AppModel {
         case let .sidebar(window, index)?, let .tabs(window, index)?:
             let held = spaces(in: window).map(\.id)
             return SpaceDropping.barIndex(index, held: held, dragged: drag.space).map { (window, $0) }
-        case let .card(window, index)?:
-            let held = (window.map { spaces(in: $0) } ?? backgroundRows).map(\.id)
-            let key = Self.popoverInsertionPrefix + (window ?? MenuBarWindow.backgroundKey)
+        case let .card(session, index)?:
+            let held = spaces(inSession: session).map(\.id)
+            let key = Self.popoverInsertionPrefix + session
             return SpaceDropping.barIndex(index, held: held, dragged: drag.space).map { (key, $0) }
         default: return nil
         }
@@ -109,7 +109,7 @@ extension AppModel {
         case let .sidebar(window, index): "sidebar of \(window.prefix(8)) at \(index)"
         case let .tabs(window, index): "tabs of \(window.prefix(8)) at \(index)"
         case let .window(window): "window \(window.prefix(8))"
-        case let .card(window, index): "popover card \(window.map { String($0.prefix(8)) } ?? "background") at \(index)"
+        case let .card(session, index): "popover card \(session.prefix(8)) at \(index)"
         case .desktop: "the desktop"
         }
     }
@@ -131,7 +131,7 @@ extension AppModel {
         switch target {
         case let .sidebar(window, index), let .tabs(window, index): place(drag.space, in: window, at: index)
         case let .window(window): place(drag.space, in: window)
-        case let .card(window, index): place(drag.space, in: window, at: index)
+        case let .card(session, index): place(drag.space, inSession: session, at: index)
         case .desktop:
             // A space with no main window to belong to has nowhere to keep its tab: it opens a full window.
             if openLittle(for: drag.space, from: card) == nil { tearOff(drag.space) }
@@ -183,11 +183,11 @@ extension AppModel {
         var popover: DropPopover?
         if let pop = MenuBarWindow.current, pop.isVisible {
             let cards = cardFrames.map { key, frame in
-                let held = key == MenuBarWindow.backgroundKey ? backgroundRows : spaces(in: key)
+                let held = spaces(inSession: key)
                 // A row not measured yet would shift the others' indices: with any missing the card reports no rows.
                 let measured = held.compactMap { popoverRowFrames[key]?[$0.id] }
                 let rows = measured.count == held.count ? measured.map { screenRect($0, in: pop) } : []
-                return DropCard(window: key == MenuBarWindow.backgroundKey ? nil : key, frame: screenRect(frame, in: pop), rows: rows)
+                return DropCard(session: key, frame: screenRect(frame, in: pop), rows: rows)
             }
             popover = DropPopover(frame: pop.frame, cards: cards)
         }
@@ -217,7 +217,6 @@ extension AppModel {
 
 /// The popover window, found by what it is.
 enum MenuBarWindow {
-    static let backgroundKey = "background"
     static var current: NSWindow? { NSApp.windows.first { String(describing: type(of: $0)).contains("MenuBarExtra") } }
 }
 

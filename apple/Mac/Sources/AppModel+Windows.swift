@@ -63,6 +63,16 @@ extension AppModel {
     /// The spaces in no window, in the order they went there.
     var backgroundSpaces: [SpaceInfo] { layout.background.compactMap { id in spaces.first { $0.id == id } } }
 
+    /// The spaces of a session, in its order.
+    func spaces(inSession id: String) -> [SpaceInfo] {
+        (layout.session(id)?.spaces ?? []).compactMap { space in spaces.first { $0.id == space } }
+    }
+
+    /// The main windows showing a session; none when it runs with no window.
+    func windows(showing session: String) -> [WindowRecord] {
+        layout.windows.filter { $0.session == session }
+    }
+
     func spaces(in window: String) -> [SpaceInfo] {
         (layout.window(window).map(layout.spaces(of:)) ?? []).compactMap { id in spaces.first { $0.id == id } }
     }
@@ -223,7 +233,8 @@ extension AppModel {
         sidebarFrames = sidebarFrames.filter { open.contains($0.key) }
         tabStripFrames = tabStripFrames.filter { open.contains($0.key) }
         titleButtonFrames = titleButtonFrames.filter { open.contains($0.key) }
-        cardFrames = cardFrames.filter { open.contains($0.key) || $0.key == MenuBarWindow.backgroundKey }
+        let held = Set(layout.sessions.map(\.id))
+        cardFrames = cardFrames.filter { held.contains($0.key) }
         windowHost?.sync()
         refocusKeyboard()
         reportViews()
@@ -355,6 +366,15 @@ extension AppModel {
         editLayoutSilently { $0.focused = window }
         moveSpace(space, toSession: session.id, at: position)
         return true
+    }
+
+    /// Move `space` into `session` at `position` among its spaces (the end by default). A
+    /// position past the space's own slot counts the list as it was before the move.
+    func place(_ space: String, inSession session: String, at position: Int? = nil) {
+        guard spaces.contains(where: { $0.id == space }), let target = layout.session(session) else { return }
+        var position = position
+        if let was = target.spaces.firstIndex(of: space), let p = position, was < p { position = p - 1 }
+        moveSpace(space, toSession: session, at: position)
     }
 
     /// Open a window showing the session that holds `space`, at `space`.
@@ -562,6 +582,20 @@ extension AppModel {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         sendLayoutOp(showing: .session) { .sessionNew(req: $0, name: trimmed) }
+    }
+
+    /// Make an empty session with a generated name and show it in the focused window once it exists.
+    func newSession() {
+        newSession(named: SessionNames.next(avoiding: layout.sessions.map(\.name)))
+    }
+
+    /// Make a session with a generated name and move `space` into it once it exists.
+    func newSession(holding space: String) {
+        let name = SessionNames.next(avoiding: layout.sessions.map(\.name))
+        sendLayoutOp { req in
+            self.spaceForNewSession[req] = space
+            return .sessionNew(req: req, name: name)
+        }
     }
 
     func renameSession(_ id: String, to name: String) {

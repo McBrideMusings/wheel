@@ -4,13 +4,13 @@ import WheelKit
 import WheelUI
 
 /// The menu bar item's label: the Wheel mark as a template image, with the number of spaces
-/// running in the background in a badge, and none at zero. Approvals waiting in spaces no window
+/// in sessions no window shows, in a badge, and none at zero. Approvals waiting in spaces no window
 /// shows are in the accessibility label, on the Dock icon and on the rows.
 struct MenuBarLabel: View {
     var model: AppModel
 
     var body: some View {
-        let background = model.backgroundRows.count
+        let background = model.windowlessSpaces.count
         let waiting = model.unseenApprovals
         let update = model.serverRestartWaiting
         Image(nsImage: MenuBarIcon.image(background: background, update: update))
@@ -20,7 +20,7 @@ struct MenuBarLabel: View {
     static func accessibility(background: Int, waiting: Int, update: Bool = false) -> String {
         var parts = ["Wheel"]
         if update { parts.append("a new server waits for a restart") }
-        if background > 0 { parts.append("\(background) \(background == 1 ? "space" : "spaces") in the background") }
+        if background > 0 { parts.append("\(background) \(background == 1 ? "space" : "spaces") in sessions with no window") }
         if waiting > 0 { parts.append("\(waiting) waiting for approval") }
         return parts.joined(separator: ", ")
     }
@@ -39,8 +39,8 @@ private struct MenuBarGlyph: View {
     }
 }
 
-/// What the menu bar item opens: the server, the pairing code and settings, a card per window
-/// listing its spaces, a Background card for the spaces no window shows, and New Window.
+/// What the menu bar item opens: the server, the pairing code and settings, a card per session
+/// listing its spaces (a session may have a window showing it, or none), and New Window.
 struct MenuBarPopover: View {
     var model: AppModel
     @Environment(\.openSettings) private var openSettings
@@ -59,10 +59,9 @@ struct MenuBarPopover: View {
                 }
                 .buttonStyle(.plain)
             }
-            ForEach(model.layout.windows) { window in
-                WindowCard(model: model, window: window)
+            ForEach(model.sessions) { session in
+                SessionCard(model: model, session: session)
             }
-            BackgroundCard(model: model)
             Divider()
             Button { model.newWindow() } label: {
                 PopoverRow(symbol: "macwindow", title: "New Window", trailing: "⌘N")
@@ -217,17 +216,26 @@ struct PairingRow: View {
     }
 }
 
-/// A window's group: its numbered icon, title and how many spaces it holds, then one row per space.
-struct WindowCard: View {
+/// A session's group: its name, the windows showing it (a numbered icon each) or "No window", and
+/// how many spaces it holds, then one row per space.
+struct SessionCard: View {
     var model: AppModel
-    let window: WindowRecord
+    let session: SessionInfo
 
     var body: some View {
-        let spaces = model.spaces(in: window.id)
+        let spaces = model.spaces(inSession: session.id)
+        let windows = model.windows(showing: session.id)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                PlaceGlyph(kind: .window(model.windowNumber(window.id) ?? 0)).foregroundStyle(.secondary)
-                Text(model.title(of: window)).fontWeight(.semibold).lineLimit(1)
+                Image(systemName: "rectangle.stack").foregroundStyle(.secondary)
+                Text(session.name).fontWeight(.semibold).lineLimit(1)
+                if windows.isEmpty {
+                    Text("No window").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(windows) { window in
+                        PlaceGlyph(kind: .window(model.windowNumber(window.id) ?? 0)).foregroundStyle(.secondary)
+                    }
+                }
                 Spacer(minLength: 8)
                 Text("\(spaces.count) \(spaces.count == 1 ? "space" : "spaces")")
                     .font(.caption).foregroundStyle(.secondary)
@@ -237,73 +245,42 @@ struct WindowCard: View {
                 Text("No spaces. Drop one here.").font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
             }
             ForEach(Array(spaces.enumerated()), id: \.element.id) { offset, space in
-                SpaceRow(model: model, space: space, in: window.id, shown: window.active == space.id, offset: offset, count: spaces.count)
+                SpaceRow(model: model, space: space, in: session.id, offset: offset, count: spaces.count)
             }
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.isCardTarget(window.id) ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: model.isCardTarget(window.id) ? 2 : 1))
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.cardFrames[window.id] = $0 }
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.isCardTarget(session.id) ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: model.isCardTarget(session.id) ? 2 : 1))
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.cardFrames[session.id] = $0 }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(model.title(of: window)) window")
+        .accessibilityLabel("\(session.name) session, \(windows.isEmpty ? "no window" : "\(windows.count) \(windows.count == 1 ? "window" : "windows")")")
     }
 }
 
-/// The spaces that run with no window, and those in a little window that belongs to none: a
-/// dashed, tinted card, so it reads apart from a window without colour.
-struct BackgroundCard: View {
-    var model: AppModel
-
-    var body: some View {
-        let spaces = model.backgroundRows
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                PlaceGlyph(kind: .background).foregroundStyle(.secondary)
-                Text("Background").fontWeight(.semibold)
-                Spacer(minLength: 8)
-                Text("\(spaces.count)").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(.bottom, 4)
-            if spaces.isEmpty {
-                Text("Nothing here. Drop a space to keep it running without a window.")
-                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
-            }
-            ForEach(Array(spaces.enumerated()), id: \.element.id) { offset, space in
-                SpaceRow(model: model, space: space, in: nil, shown: false, offset: offset, count: spaces.count)
-            }
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(model.isCardTarget(nil) ? Color.accentColor : Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: model.isCardTarget(nil) ? 2 : 1, dash: [4, 3])))
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.cardFrames[MenuBarWindow.backgroundKey] = $0 }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Background spaces")
-    }
-}
-
-/// A space in a group: its name, one dot per agent (worst first, `+N` past four), a dot when its window shows it, a badge when approvals wait in
+/// A space in a session's group: its name, one dot per agent (worst first, `+N` past four), a dot when a window shows it, a badge when approvals wait in
 /// it, a little-window mark when it is in one that belongs to no window, and, under the pointer,
 /// the buttons that move it. Clicking the name shows it; right-click opens the space's menu.
 struct SpaceRow: View {
     var model: AppModel
     let space: SpaceInfo
-    /// The window holding it; nil in the background.
-    let window: String?
-    let shown: Bool
+    /// The session holding it.
+    let session: String
     /// Its place in the group and the group's size: where the insertion bar draws.
     let offset: Int
     let count: Int
 
-    init(model: AppModel, space: SpaceInfo, in window: String?, shown: Bool, offset: Int, count: Int) {
+    init(model: AppModel, space: SpaceInfo, in session: String, offset: Int, count: Int) {
         self.model = model
         self.space = space
-        self.window = window
-        self.shown = shown
+        self.session = session
         self.offset = offset
         self.count = count
     }
 
-    private var cardKey: String { window ?? MenuBarWindow.backgroundKey }
+    private var cardKey: String { session }
+
+    /// Whether a window of the session shows this space.
+    private var shown: Bool { model.windows(showing: session).contains { $0.active == space.id } }
 
     /// Where the dragged space would land in this row's group: the number of rows above the bar.
     private var insertion: Int? {
@@ -312,7 +289,7 @@ struct SpaceRow: View {
 
     var body: some View {
         let hovering = model.popoverHover == space.id
-        let ownerlessLittle = window == nil && model.layout.little(showing: space.id) != nil
+        let ownerlessLittle = model.layout.little(showing: space.id).map { $0.owner == nil } ?? false
         HStack(spacing: 8) {
             PaneStack(space: space).foregroundStyle(.secondary)
             // A Text with a tap, as the sidebar's rows are: the drag gesture sat on a Button here, and a row dragged by hand did not move.
@@ -354,14 +331,14 @@ struct SpaceRow: View {
         .overlay(alignment: .top) { if insertion == offset { InsertionBar().offset(y: -1) } }
         .overlay(alignment: .bottom) { if offset == count - 1, insertion == count { InsertionBar().offset(y: 1) } }
         .onHover { inside in model.rowHover(space.id, inside: inside) }
-        .contextMenu { SpaceMenuItems(model: model, space: space.id, window: window) }
+        .contextMenu { SpaceMenuItems(model: model, space: space.id, window: model.windows(showing: session).first?.id) }
     }
 }
 
 extension AppModel {
-    /// Whether the drag is over the popover group of `window` (the Background group when nil).
-    func isCardTarget(_ window: String?) -> Bool {
-        if case let .card(held, _)? = spaceDrag?.target { return held == window }
+    /// Whether the drag is over the popover group of `session`.
+    func isCardTarget(_ session: String) -> Bool {
+        if case let .card(held, _)? = spaceDrag?.target { return held == session }
         return false
     }
 

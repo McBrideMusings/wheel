@@ -1338,6 +1338,7 @@ final class DebugServer {
                 } else if let spec = query["target"] {
                     let parts = spec.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
                     func window(_ text: String) -> String? { if case let .success(id) = model.windowID(named: text) { id } else { nil } }
+                    func session(_ text: String) -> String? { model.sessions.first { $0.id == text || $0.name == text }?.id }
                     let target: SpaceDropTarget?
                     switch (parts.first, parts.count) {
                     case ("sidebar", 3): target = window(parts[1]).flatMap { id in Int(parts[2]).map { .sidebar(window: id, index: $0) } }
@@ -1345,14 +1346,14 @@ final class DebugServer {
                     case ("window", 2): target = window(parts[1]).map { .window($0) }
                     case ("card", 2), ("card", 3):
                         // Without an index the space goes to the end of the group.
-                        let key = parts[1] == "background" ? nil : window(parts[1])
-                        let held = key.map { model.spaces(in: $0).count } ?? model.backgroundRows.count
+                        let key = session(parts[1])
+                        let held = key.map { model.spaces(inSession: $0).count } ?? 0
                         let index = parts.count == 3 ? Int(parts[2]) : held
-                        target = (parts[1] == "background" || key != nil) ? index.map { .card(window: key, index: $0) } : nil
+                        target = key.flatMap { key in index.map { .card(session: key, index: $0) } }
                     case ("desktop", 1): target = .desktop
                     default: target = nil
                     }
-                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, tabs:<window>:<index>, window:<window>, card:<window|background>[:<index>] or desktop") }
+                    guard let target else { return refuse("400 Bad Request", "target is sidebar:<window>:<index>, tabs:<window>:<index>, window:<window>, card:<session id or name>[:<index>] or desktop") }
                     model.hoverSpaceDrag(target)
                 } else {
                     return refuse("400 Bad Request", "hover takes target or at")
@@ -1453,7 +1454,7 @@ final class DebugServer {
                 guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
                 // `target=icon` writes the status item's image as it is drawn now, at 4x.
                 if query["target"] == "icon" {
-                    let icon = MenuBarIcon.image(background: model.backgroundRows.count, update: model.serverRestartWaiting)
+                    let icon = MenuBarIcon.image(background: model.windowlessSpaces.count, update: model.serverRestartWaiting)
                     let size = NSSize(width: icon.size.width * 4, height: icon.size.height * 4)
                     let big = NSImage(size: size, flipped: false) { rect in
                         NSColor.white.setFill(); rect.fill()
@@ -1508,7 +1509,7 @@ final class DebugServer {
                 }
             case "icon":
                 guard let path = query["path"] else { return refuse("400 Bad Request", "path is required") }
-                let image = MenuBarIcon.image(background: model.backgroundRows.count)
+                let image = MenuBarIcon.image(background: model.windowlessSpaces.count)
                 guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                       let png = rep.representation(using: .png, properties: [:]) else { return refuse("500 Internal Server Error", "no png") }
                 do { try png.write(to: URL(filePath: path)) } catch { return refuse("500 Internal Server Error", "could not write \(path): \(error)") }
@@ -1581,9 +1582,9 @@ final class DebugServer {
             // A pick from a space's context menu (tab or sidebar row), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
             guard let space = query["space"], let item = query["item"] else { return refuse("400 Bad Request", "space and item are required") }
-            // A space in the background (a popover row) has no window.
+            // A space in a session no window shows (a popover row) has no window.
             let window = model.layout.window(holding: space)?.id
-            guard window != nil || model.backgroundRows.contains(where: { $0.id == space }) else { return refuse("404 Not Found", "no window or background holds space \(space)") }
+            guard model.layout.sessions.session(of: space) != nil else { return refuse("404 Not Found", "no session holds space \(space)") }
             guard let entry = model.spaceMenu(for: space, in: window).first(where: { $0.id == item }), entry.enabled else {
                 return refuse("409 Conflict", "no enabled menu item \(item)")
             }
@@ -2339,7 +2340,7 @@ final class DebugServer {
         for window in model.layout.windows {
             for space in model.layout.spaces(of: window) where holders[space] == nil { holders[space] = window.id }
         }
-        for row in model.backgroundRows where holders[row.id] == nil { holders[row.id] = .some(nil) }
+        for row in model.windowlessSpaces where holders[row.id] == nil { holders[row.id] = .some(nil) }
         var menus: [String: [[String: Any]]] = [:]
         for (space, window) in holders {
             menus[space] = model.spaceMenu(for: space, in: window).map {
@@ -2469,7 +2470,7 @@ final class DebugServer {
             ] as [String: Any],
             "menu_bar": [
                 // The number on the status item: spaces running with no window.
-                "badge": model.backgroundRows.count,
+                "badge": model.windowlessSpaces.count,
                 "approvals": model.unseenApprovals,
                 "hover": model.popoverHover ?? NSNull(),
                 // The hover preview beside the popover: the space, the side of the popover it is on, and what it draws.
@@ -2493,19 +2494,24 @@ final class DebugServer {
                 "windows": model.layout.windows.map { window in
                     ["id": window.id, "number": model.windowNumber(window.id) ?? 0, "title": model.title(of: window), "spaces": model.spaces(in: window.id).map(\.name)] as [String: Any]
                 },
-                "background": model.backgroundRows.map(\.name),
-                // Every popover row: its group, whether it is dimmed or marked, and its place buttons.
-                "rows": (model.layout.windows.flatMap { window in model.spaces(in: window.id).map { ($0, window.id as String?) } }
-                    + model.backgroundRows.map { ($0, nil as String?) }).map { space, window in
-                    [
-                        "space": space.id, "name": space.name, "group": window ?? "background",
-                        "dimmed": model.isDimmed(space: space.id) && !(window == nil && model.layout.little(showing: space.id) != nil),
-                        "little_mark": window == nil && model.layout.little(showing: space.id) != nil,
+                // One card per session: its windows' numbers (none when no window shows it) and its spaces.
+                "sessions": model.sessions.map { session in
+                    ["id": session.id, "name": session.name,
+                     "windows": model.windows(showing: session.id).map { model.windowNumber($0.id) ?? 0 },
+                     "spaces": model.spaces(inSession: session.id).map(\.name)] as [String: Any]
+                },
+                // Every popover row: its session, whether it is dimmed or marked, and its place buttons.
+                "rows": model.sessions.flatMap { session in model.spaces(inSession: session.id).map { ($0, session.id) } }.map { space, session in
+                    let ownerlessLittle = model.layout.little(showing: space.id).map { $0.owner == nil } ?? false
+                    return [
+                        "space": space.id, "name": space.name, "group": session,
+                        "dimmed": model.isDimmed(space: space.id) && !ownerlessLittle,
+                        "little_mark": ownerlessLittle,
                         "hovered": model.popoverHover == space.id,
                         // The agent dots the row draws: each mark's kind, worst first, and how many more follow.
                         "dots": menuBarDots(space),
                         "buttons": model.placeButtons(for: space.id).map {
-                            ["id": $0.id, "number": $0.number ?? NSNull(), "help": $0.help, "lit": $0.lit] as [String: Any]
+                            ["id": $0.id, "help": $0.help, "lit": $0.lit] as [String: Any]
                         },
                     ] as [String: Any]
                 },

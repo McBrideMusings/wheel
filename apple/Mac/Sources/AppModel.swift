@@ -39,6 +39,8 @@ final class AppModel {
     /// What to show when the daemon's answer to a layout op names what it made: the new space or pane.
     enum ShowWhenMade { case space, pane, session }
     @ObservationIgnored var showWhenMade: [UInt64: ShowWhenMade] = [:]
+    /// A space waiting to move into the session a `session_new` op (by its req) is making.
+    @ObservationIgnored var spaceForNewSession: [UInt64: String] = [:]
     /// A space or pane to show whose layout has not arrived: the daemon's answer to the op that made
     /// it can come ahead of the `spaces` broadcast, so it is shown when the layout names it.
     @ObservationIgnored var pendingShow: (space: String?, pane: String?) = (nil, nil)
@@ -299,7 +301,7 @@ final class AppModel {
     /// re-runs the views of the two spaces it changes and no other.
     @ObservationIgnored var shownFlags: [String: ShownFlag] = [:]
     @ObservationIgnored var cardFrames: [String: CGRect] = [:]
-    /// Each popover row, by its card's key (a window id or `MenuBarWindow.backgroundKey`) and space id, in the popover's top-left space.
+    /// Each popover row, by its card's key (a session id) and space id, in the popover's top-left space.
     @ObservationIgnored var popoverRowFrames: [String: [String: CGRect]] = [:]
     /// The rows' places when the drag began: the gap moving rows aside never moves the target under the pointer.
     @ObservationIgnored var frozenRowFrames: [String: [String: CGRect]]?
@@ -892,6 +894,7 @@ final class AppModel {
             refreshCommandPalette()
         case let .created(req, id):
             if layoutReqs.remove(req) != nil { Log.info("created \(id)") }
+            if let space = spaceForNewSession.removeValue(forKey: req) { moveSpace(space, toSession: id) }
             switch showWhenMade.removeValue(forKey: req) {
             case .space?: focus(space: id)
             case .pane?: show(pane: id)

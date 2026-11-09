@@ -22,7 +22,7 @@ struct SessionMenu: View {
                 }
             }
             Divider()
-            Button("New Session…") { model.promptNewSession() }
+            Button("New Session") { model.newSession() }
             Button("Rename Session…") { if let current { model.promptRename(session: current) } }
                 .disabled(current == nil)
             Button("Close Session…", role: .destructive) { if let current { model.askCloseSession(current) } }
@@ -41,13 +41,6 @@ struct SessionMenu: View {
 }
 
 extension AppModel {
-    /// Ask for a session's name, then make it; it shows in the focused window once it exists.
-    func promptNewSession() {
-        Self.askName(title: "New session", message: "A session is a group of spaces a window shows.", initial: "", button: "Create") { [weak self] name in
-            self?.newSession(named: name)
-        }
-    }
-
     func promptRename(session: SessionInfo) {
         Self.askName(title: "Rename session", message: "", initial: session.name, button: "Rename") { [weak self] name in
             self?.renameSession(session.id, to: name)

@@ -35,18 +35,16 @@ struct PaneMoveGroup: Equatable {
 extension AppModel {
     // MARK: The menu
 
-    /// The spaces a pane can move to, grouped under each window's name and then the background.
+    /// The spaces a pane can move to, grouped under each session's name.
     func paneMoveGroups(for pane: String) -> [PaneMoveGroup] {
         let home = space(holding: pane)?.id
         func rows(_ spaces: [SpaceInfo]) -> [PaneMoveRow] {
             spaces.map { PaneMoveRow(space: $0.id, title: $0.name, here: $0.id == home) }
         }
-        var groups = layout.windows.compactMap { window -> PaneMoveGroup? in
-            let held = spaces(in: window.id)
-            return held.isEmpty ? nil : PaneMoveGroup(title: title(of: window), rows: rows(held))
+        return layout.sessions.compactMap { session -> PaneMoveGroup? in
+            let held = spaces(inSession: session.id)
+            return held.isEmpty ? nil : PaneMoveGroup(title: session.name, rows: rows(held))
         }
-        if !backgroundRows.isEmpty { groups.append(PaneMoveGroup(title: "Background", rows: rows(backgroundRows))) }
-        return groups
     }
 
     /// The submenu as the debug state reports it: for every pane, its groups of spaces.

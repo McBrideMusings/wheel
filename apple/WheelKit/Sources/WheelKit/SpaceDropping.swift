@@ -14,9 +14,9 @@ public enum SpaceDropTarget: Equatable, Sendable {
     case tabs(window: String, index: Int)
     /// A window's body: the space goes to the end of the window.
     case window(String)
-    /// A card in the menu bar popover: a window's, or the Background card (`nil`). `index` counts
+    /// A session's card in the menu bar popover, whether or not a window shows it. `index` counts
     /// the card's rows above the insertion bar, in the list as it was before the drag.
-    case card(window: String?, index: Int)
+    case card(session: String, index: Int)
     /// No Wheel window under the pointer: the space opens in a little window.
     case desktop
 }
@@ -44,22 +44,22 @@ public struct DropWindow: Equatable, Sendable {
     }
 }
 
-/// A card in the popover: a window's group, or the Background group (`window` nil).
+/// A card in the popover: one session's group of spaces.
 public struct DropCard: Sendable {
-    public var window: String?
+    public var session: String
     public var frame: CGRect
     /// The rows, top to bottom.
     public var rows: [CGRect]
 
-    public init(window: String?, frame: CGRect, rows: [CGRect] = []) {
-        self.window = window
+    public init(session: String, frame: CGRect, rows: [CGRect] = []) {
+        self.session = session
         self.frame = frame
         self.rows = rows
     }
 
     /// The bar goes above the first row whose middle is below the pointer.
     func target(at point: CGPoint) -> SpaceDropTarget {
-        .card(window: window, index: rows.firstIndex { point.y > $0.midY } ?? rows.count)
+        .card(session: session, index: rows.firstIndex { point.y > $0.midY } ?? rows.count)
     }
 }
 
@@ -107,12 +107,11 @@ public enum SpaceDropping {
     }
 
     /// The words under a drag, naming what releasing will do.
-    public static func hint(_ target: SpaceDropTarget, space: String, windowTitle: (String) -> String) -> String {
+    public static func hint(_ target: SpaceDropTarget, space: String, sessionName: (String) -> String = { $0 }, windowTitle: (String) -> String) -> String {
         switch target {
         case let .sidebar(window, _), let .tabs(window, _): "Place “\(space)” here in “\(windowTitle(window))”"
         case let .window(window): "Move “\(space)” to “\(windowTitle(window))”"
-        case let .card(window?, _): "Move “\(space)” to “\(windowTitle(window))”"
-        case .card(nil, _): "Run “\(space)” in the background, with no window"
+        case let .card(session, _): "Move “\(space)” to the “\(sessionName(session))” session"
         case .desktop: "Release to open “\(space)” in a little window"
         }
     }
