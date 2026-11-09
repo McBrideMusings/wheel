@@ -616,6 +616,15 @@ impl Driver {
                 tracing::info!(pid = self.pid, status = ?message["status"].as_str(), "a background task ended");
                 self.emit(DriverEvent::Transcript(AgentEvent::Notice { text: line }));
             }
+            // The level signal: the whole set of live background tasks, sent whenever it changes.
+            // An ambient task (one that is always there, such as a monitor) is not work.
+            Some("background_tasks_changed") => {
+                let live = message["tasks"]
+                    .as_array()
+                    .map_or(0, |tasks| tasks.iter().filter(|t| t["ambient"] != true).count());
+                tracing::info!(pid = self.pid, live, "background tasks changed");
+                self.emit(DriverEvent::Background(live));
+            }
             Some("status") => {
                 if let Some(mode) = message["permissionMode"].as_str() {
                     if set_current(&mut self.options, "mode", mode) {

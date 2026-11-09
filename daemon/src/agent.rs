@@ -143,6 +143,9 @@ struct Inner {
     answered: bool,
     /// The agent is in a turn it started itself, which has no `running` turn of wheel's.
     self_started: bool,
+    /// Background tasks the agent has running, as it last counted them. The agent is working on
+    /// while this is above zero, whatever its turn state; a new agent process starts at zero.
+    background: usize,
     /// The running turn whose message was taken back after it started: it is being interrupted, its
     /// remaining events are dropped, and it ends without a `turn_end`.
     unsent: Option<u64>,
@@ -320,6 +323,7 @@ impl Agent {
                 running: None,
                 answered: false,
                 self_started: false,
+                background: 0,
                 unsent: None,
                 state: AgentState::Starting,
                 config: Vec::new(),
@@ -860,6 +864,29 @@ impl Agent {
         });
     }
 
+    /// How many background tasks the agent has running.
+    pub fn background(&self) -> usize {
+        self.inner.lock().unwrap().background
+    }
+
+    /// Record the agent's background-task count. Anything that derives from the agent's state (a
+    /// pane's status) follows the state message, so a change sends the unchanged state again.
+    fn set_background(&self, count: usize) {
+        let state = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.background == count {
+                return;
+            }
+            inner.background = count;
+            inner.state.clone()
+        };
+        tracing::info!(agent = %self.name, count, "background tasks");
+        let _ = self.global.send(ServerMsg::AgentStateChanged {
+            agent: self.name.clone(),
+            state,
+        });
+    }
+
     pub fn state(&self) -> AgentState {
         self.inner.lock().unwrap().state.clone()
     }
@@ -1380,6 +1407,8 @@ impl Agent {
         tracing::info!(agent = %self.name, conversation = %conversation.id(), start_ms, "agent ready");
         self.ready_this_run.store(true, Ordering::SeqCst);
         self.settle(Ok(()));
+        // A new process has no background tasks, whatever the last one had.
+        self.set_background(0);
         self.set_state(idle(queue));
 
         // The turn the agent is working on.
@@ -1495,6 +1524,7 @@ impl Agent {
                     // Folded into the `mode` option so a client has one place to read the mode
                     // from.
                     Some(DriverEvent::Mode(mode)) => self.set_current_mode(&mode),
+                    Some(DriverEvent::Background(count)) => self.set_background(count),
                     Some(DriverEvent::Commands(commands)) => self.set_commands(commands),
                     // The agent wrote nothing for the new conversation yet, so its id is not
                     // saved until a prompt reaches it, and the old transcript goes.
@@ -1835,6 +1865,7 @@ mod tests {
                 running: None,
                 answered: false,
                 self_started: false,
+                background: 0,
                 unsent: None,
                 state: AgentState::Ready,
                 config: Vec::new(),

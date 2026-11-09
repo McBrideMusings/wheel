@@ -42,7 +42,12 @@ struct SpaceStatus {
 }
 
 /// A pane's status from its agent's state and the permission requests waiting on it.
-pub(crate) fn pane_status(state: Option<&AgentState>, waiting: u32) -> Option<PaneStatus> {
+/// An agent with `background` tasks running is working while it waits for a prompt.
+pub(crate) fn pane_status(
+    state: Option<&AgentState>,
+    waiting: u32,
+    background: usize,
+) -> Option<PaneStatus> {
     if waiting > 0 {
         return Some(PaneStatus::NeedsYou {
             waiting,
@@ -54,6 +59,7 @@ pub(crate) fn pane_status(state: Option<&AgentState>, waiting: u32) -> Option<Pa
         AgentState::Busy { .. } | AgentState::Starting | AgentState::Switching => {
             PaneStatus::Working
         }
+        AgentState::Ready if background > 0 => PaneStatus::Working,
         AgentState::Ready => PaneStatus::Idle,
     })
 }
@@ -78,9 +84,11 @@ impl AppState {
                 ids.push(pane.to_string());
                 let status = match kind {
                     PaneKind::Agent { agent, .. } => {
-                        let state = self.agent(agent).ok().map(|s| s.state());
+                        let found = self.agent(agent).ok();
+                        let state = found.as_ref().map(|s| s.state());
+                        let background = found.as_ref().map_or(0, |s| s.background());
                         // An agent that is not running has no state, and no status until it is.
-                        pane_status(state.as_ref(), waiting(agent))
+                        pane_status(state.as_ref(), waiting(agent), background)
                     }
                     // A refresh command's request names the web pane, not an agent.
                     PaneKind::Web { .. } => Some(waiting(pane))
@@ -107,7 +115,9 @@ impl AppState {
                 let in_turn = match kind {
                     PaneKind::Agent { agent, .. } => {
                         waiting(agent) > 0
-                            || self.agent(agent).is_ok_and(|a| matches!(a.state(), AgentState::Busy { .. }))
+                            || self.agent(agent).is_ok_and(|a| {
+                                matches!(a.state(), AgentState::Busy { .. }) || a.background() > 0
+                            })
                     }
                     PaneKind::Terminal { .. } => matches!(
                         status,
@@ -278,4 +288,23 @@ pub(crate) fn follow(state: Arc<AppState>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ready_agent_with_background_tasks_is_working() {
+        assert_eq!(pane_status(Some(&AgentState::Ready), 0, 0), Some(PaneStatus::Idle));
+        assert_eq!(pane_status(Some(&AgentState::Ready), 0, 2), Some(PaneStatus::Working));
+    }
+
+    #[test]
+    fn a_request_waiting_outranks_background_tasks() {
+        assert!(matches!(
+            pane_status(Some(&AgentState::Ready), 1, 2),
+            Some(PaneStatus::NeedsYou { waiting: 1, .. })
+        ));
+    }
 }
