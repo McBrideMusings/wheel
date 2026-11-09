@@ -133,8 +133,10 @@ final class AppModel {
     private(set) var paneAway: PaneAway?
     /// Counts changes to `restoresWindows`, which lives in the preferences; reading it tracks them.
     var restoreWindowsChanges = 0
-    /// Counts changes to the pane header's controls (`HeaderLayout`), which live in the preferences.
-    var headerLayoutChanges = 0
+    /// Where each pane kind's header puts its controls, read once from the preferences; Settings
+    /// writes through `setHeaderPlacement`.
+    var headerLayout = HeaderLayout.saved()
+    @ObservationIgnored var paneImageTimer: Task<Void, Never>?
     /// The pane whose info popover the ⋯ menu opened, when its ⓘ button is not in the header.
     var infoPane: String?
     /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its

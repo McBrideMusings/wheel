@@ -2058,7 +2058,7 @@ final class DebugServer {
             for pane in space.allPanes {
                 var o: [String: Any] = ["space": space.id, "kind": pane.kind.name, "status": statusJSON(space.paneStatuses[pane.id]),
                                         "zoomed": model.zoomedPane(in: space) == pane.id,
-                                        "header_buttons": [model.popButton(for: pane.id), model.backgroundButton(), model.zoomButton(for: pane.id)].map { ["id": $0.id, "title": $0.title, "symbol": $0.symbol, "enabled": $0.enabled, "on": $0.on] as [String: Any] },
+                                        "header_buttons": [model.popButton(for: pane.id), model.backgroundButton(), model.zoomButton(for: pane.id), AppModel.HeaderButton(id: "screenshot", title: "Copy pane image", symbol: "camera.viewfinder", enabled: true, on: false)].map { ["id": $0.id, "title": $0.title, "symbol": $0.symbol, "enabled": $0.enabled, "on": $0.on] as [String: Any] },
                                         "menu": model.headerMenu(for: pane.id, kind: pane.kind).map { ["id": $0.id, "title": $0.title, "enabled": $0.enabled] as [String: Any] }]
                 if case .empty = pane.kind { o["picker"] = AgentInfo.pickable(model.agents).map(\.name) }
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
@@ -2388,6 +2388,7 @@ final class DebugServer {
                           "rows": space.backgrounded.flatMap(\.panes).map { ["pane": $0.id, "icon": $0.kind.icon, "title": self.model.trayTitle($0.kind)] }] as [String: Any],
                  "stack": ["layers": space.stackLayers, "glyph": space.firstPaneKind.icon] as [String: Any]] as [String: Any]
             },
+            "header_layout": model.headerLayout.choices.mapValues { $0.mapValues(\.rawValue) },
             "status_dots": StatusRank.allCases.filter(model.statusDots.contains).map(\.rawValue),
             "active": model.active ?? NSNull(),
             "last_switch": model.lastSwitch.map {

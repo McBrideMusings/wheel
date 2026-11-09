@@ -26,14 +26,8 @@ extension AppModel {
     /// Draw `pane` and hand the PNG, or the reason it could not be drawn, to `done`: the answer to
     /// `wheel pane shot` and the header's Copy Pane Image button share this one drawing.
     func drawPane(_ pane: String, full: Bool = false, done: @escaping (Result<Data, RenderFailure>) -> Void) {
-        func refuse(_ message: String) {
-            Log.info("render \(pane) not drawn: \(message)")
-            done(.failure(RenderFailure(message: message)))
-        }
-        func answer(_ png: Data) {
-            Log.info("render \(pane) drawn, \(png.count) bytes")
-            done(.success(png))
-        }
+        func refuse(_ message: String) { done(.failure(RenderFailure(message: message))) }
+        func answer(_ png: Data) { done(.success(png)) }
         guard let space = spaces.first(where: { $0.allPanes.contains { $0.id == pane } }),
               let kind = space.allPanes.first(where: { $0.id == pane })?.kind else {
             refuse(RenderRefusal.notShown)
@@ -49,12 +43,12 @@ extension AppModel {
             refuse(RenderRefusal.notShown)
             return
         }
-        Log.info("render \(pane): drawing \(pane) (\(kind.name))")
+        Log.info("render: drawing \(pane) (\(kind.name))")
         if let web {
             // The header strip is the window's drawing of the pane above its body; WebKit's
             // snapshot is the page alone, so the strip goes on top of it.
             let header = headerStrip(pane: pane, space: space.id, web: web)
-            if header == nil { Log.info("render \(pane): \(pane) has no header to draw (no window shows it); the shot is the page alone") }
+            if header == nil { Log.info("render \(pane) \(pane) has no header to draw (no window shows it); the shot is the page alone") }
             // A page in a hidden space is hidden (no cursor rects); WebKit draws it only when shown.
             web.isHidden = false
             let take: (WKSnapshotConfiguration?) -> Void = { configuration in
@@ -83,7 +77,7 @@ extension AppModel {
                     let configuration = WKSnapshotConfiguration()
                     configuration.rect = CGRect(origin: .zero, size: size)
                     configuration.snapshotWidth = NSNumber(value: Double(size.width))
-                    Log.info("render \(pane): \(pane) page is \(Int(size.width))x\(Int(size.height)) pt; drawing all of it")
+                    Log.info("render \(pane) \(pane) page is \(Int(size.width))x\(Int(size.height)) pt; drawing all of it")
                     take(configuration)
                 }
             }
@@ -120,7 +114,7 @@ extension AppModel {
             return
         }
         content.cacheDisplay(in: rect, to: rep)
-        Log.info("render \(pane): \(pane) frame \(frame) drawn from \(rect) into \(rep.pixelsWide)x\(rep.pixelsHigh) px")
+        Log.info("render \(pane) \(pane) frame \(frame) drawn from \(rect) into \(rep.pixelsWide)x\(rep.pixelsHigh) px")
         guard let png = rep.representation(using: .png, properties: [:]) else {
             refuse("the drawing could not be encoded as a PNG")
             return

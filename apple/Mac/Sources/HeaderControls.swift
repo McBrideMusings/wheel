@@ -137,31 +137,21 @@ struct HeaderLayout: Codable, Equatable {
 }
 
 extension AppModel {
-    /// Every kind's header choices. Reading it tracks `headerLayoutChanges`, so a header redraws
-    /// when Settings changes a choice.
-    var headerLayout: HeaderLayout {
-        _ = headerLayoutChanges
-        return HeaderLayout.saved()
-    }
-
     func setHeaderPlacement(_ control: HeaderControl, kind: String, to placement: HeaderPlacement) {
-        var layout = HeaderLayout.saved()
-        layout.set(control, kind: kind, to: placement)
-        layout.save()
-        headerLayoutChanges += 1
+        headerLayout.set(control, kind: kind, to: placement)
+        headerLayout.save()
         Log.info("pane header: \(kind) \(control.rawValue) -> \(placement.rawValue)")
     }
 
     func resetHeaderLayout(kind: String) {
-        var layout = HeaderLayout.saved()
-        layout.choices[kind] = nil
-        layout.save()
-        headerLayoutChanges += 1
+        headerLayout.choices[kind] = nil
+        headerLayout.save()
         Log.info("pane header: \(kind) reset")
     }
 
     /// The header's Copy Pane Image button: draw the pane (what `wheel pane shot` draws) and put
-    /// the PNG on the clipboard, with a notice saying which.
+    /// the PNG on the clipboard, with a notice saying which. A later copy replaces the notice and
+    /// restarts its 3 s timer.
     func copyPaneImage(_ pane: String) {
         drawPane(pane) { [weak self] result in
             guard let self else { return }
@@ -175,8 +165,10 @@ extension AppModel {
             case let .failure(failure):
                 post(Toast(id: "pane-image", level: .error, text: "Could not copy \(pane): \(failure.message)"))
             }
-            Task { @MainActor [weak self] in
+            paneImageTimer?.cancel()
+            paneImageTimer = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
                 self?.removeToast("pane-image")
             }
         }

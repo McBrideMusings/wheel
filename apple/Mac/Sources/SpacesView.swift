@@ -703,10 +703,10 @@ struct PaneHeader: View {
     private var otherView: ConversationView? { kind.otherView(agentFound: model.agentFound) }
 
     /// How many controls the header has given up for lack of width. Each level drops the next
-    /// group, and the pane menu offers whatever is dropped, so a narrow pane never draws controls
+    /// group, and the pane menu offers whatever is dropped (a control the person set to Off stays out of both), so a narrow pane never draws controls
     /// over its title or its neighbour.
     ///
-    /// 0 every control; 1 no browser controls, info, Pop Out or Background; 2 also no chat/terminal
+    /// 0 every control; 1 no browser controls, info, Copy Pane Image, Pop Out or Background; 2 also no chat/terminal
     /// switch; 3 also no split buttons; 4 also no Zoom (the icon, title, menu and Close stay).
     static let levels = 0 ... 4
 
