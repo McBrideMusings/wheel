@@ -534,5 +534,5 @@ private struct Dots: View {
 /// pages, the terminal's key row, the composer and the dots bar. A web page is not tinted: its
 /// horizontal scrollers cannot be told from the rest of it.
 enum SwipeArea {
-    static let tint = Color.accentColor.opacity(0.16)
+    static let tint = Color.primary.opacity(0.08)
 }
