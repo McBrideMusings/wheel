@@ -248,8 +248,8 @@ pub struct AgentConfig {
     pub model: Option<String>,
     /// The permission mode and Codex sandbox the agent's first process starts with.
     pub permissions: AgentPermissions,
-    /// The agent is the voice orchestrator (`crate::voice`).
-    pub voice: bool,
+    /// The agent is the orchestrator (`crate::orchestrator`).
+    pub orchestrator: bool,
 }
 
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
@@ -1204,7 +1204,7 @@ impl Agent {
             conversation,
             model: config.model.clone(),
             permissions: self.permissions(),
-            voice: config.voice,
+            orchestrator: config.orchestrator,
         });
         if let Ok(agent) = &launched {
             self.agent_pid.store(agent._group.0, Ordering::SeqCst);

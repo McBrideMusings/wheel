@@ -1,7 +1,7 @@
-//! What the voice orchestrator is told about: wheeld's global broadcast reduced to short spoken
+//! What the orchestrator is told about: wheeld's global broadcast reduced to short spoken
 //! lines. A permission request or a failure is urgent and is sent to the orchestrator at once,
 //! which says it unprompted; a finished turn or an answered request waits in a buffer until the
-//! orchestrator asks (`voice_events`). Raw transcripts never come through here.
+//! orchestrator asks (`orchestrator_events`). Raw transcripts never come through here.
 
 use std::collections::HashSet;
 

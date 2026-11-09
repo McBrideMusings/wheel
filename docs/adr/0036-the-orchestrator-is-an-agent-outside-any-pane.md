@@ -1,4 +1,4 @@
-# ADR-0036: The voice orchestrator is an agent outside any pane and drives every agent function
+# ADR-0036: The orchestrator is an agent outside any pane and drives every agent function
 
 wheeld runs one voice orchestrator per scope, a space id or `daemon`, started by `voice_start` and ended by `voice_stop` or when its space closes. It is an agent that belongs to no pane: ADR-0002's "Wheel runs no agent outside a pane" has this one exception, and its "no agent answers a permission request" has the same one, because the person is talking to it and what they say is the answer. Clients reach it as they reach any agent: `agent_attach` for its transcript stream, `agent_send` for what the person said (ADR-0020: the process lives in wheeld so the conversation moves between a phone and a Mac).
 

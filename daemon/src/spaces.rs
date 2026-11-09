@@ -1032,7 +1032,7 @@ impl AppState {
     fn close_locked(&self, spaces: &mut Spaces, index: usize) {
         let space = spaces.remove(index);
         self.streams.close_space(&space.id);
-        self.end_agent(&crate::voice::agent_name(&space.id));
+        self.end_agent(&crate::orchestrator::agent_name(&space.id));
         for (pane, kind) in space_panes(&space) {
             self.drop_content(pane, kind);
         }

@@ -64,9 +64,9 @@ pub struct Launch {
     /// The permission mode to start in, in the agent's own terms, and Codex's sandbox; a field
     /// left unset leaves the agent's default.
     pub permissions: AgentPermissions,
-    /// The agent is the voice orchestrator: it gets only the `wheel` commands it may run and
-    /// no other tool (`crate::voice`).
-    pub voice: bool,
+    /// The agent is the orchestrator: it gets only the `wheel` commands it may run and
+    /// no other tool (`crate::orchestrator`).
+    pub orchestrator: bool,
 }
 
 /// Codex's sandbox values.
