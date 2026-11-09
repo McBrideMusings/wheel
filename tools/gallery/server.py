@@ -287,7 +287,7 @@ system = klass("SwiftUI controls", "Standard controls the library lacks, named a
 ])
 
 own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu.", [
-    ("Table", "Table", [("one section, two rows; with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
+    ("Table", "Table", [("one section, two rows; every column divider can be dragged (a column with a width starts at it, at least 40 pt); with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
                                                        columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False}],
                                                        sections=[{"title": "Ready", "count": 2, "rows": [
                                                            {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True}, {"key": "title", "text": "First row"}]},
