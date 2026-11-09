@@ -101,10 +101,10 @@ enum Command {
     /// Agents, by the name their agent pane carries (e.g. `w5`).
     #[command(subcommand)]
     Agent(AgentCommand),
-    /// The voice orchestrator: an agent that talks for a space, or for the whole daemon, and is
+    /// The orchestrator: an agent that talks for a space, or for the whole daemon, and is
     /// no pane's agent.
     #[command(subcommand)]
-    Voice(VoiceCommand),
+    Orchestrator(OrchestratorCommand),
     /// Permission requests waiting on a person.
     #[command(subcommand)]
     Perm(PermCommand),
@@ -1316,21 +1316,21 @@ fn parse_work_item(text: &str) -> Result<wheel_proto::WorkItem, String> {
 }
 
 #[derive(Subcommand)]
-enum VoiceCommand {
-    /// Start the voice orchestrator for a scope, or find the one running, and print its agent's
+enum OrchestratorCommand {
+    /// Start the orchestrator for a scope, or find the one running, and print its agent's
     /// name. Attach to that agent and send to it as to any agent (`wheel agent read`, `wheel agent
     /// send`). Fails for a scope that names no space.
     Start {
         /// A space id, or `daemon` for the whole daemon.
         scope: String,
     },
-    /// Print, one per line, what the voice orchestrator for a scope has not been told yet, and
+    /// Print, one per line, what the orchestrator for a scope has not been told yet, and
     /// take it. Fails when none is running.
     Events {
         /// A space id, or `daemon`.
         scope: String,
     },
-    /// End the voice orchestrator for a scope. Fails when none is running.
+    /// End the orchestrator for a scope. Fails when none is running.
     Stop {
         /// A space id, or `daemon`.
         scope: String,
@@ -1346,7 +1346,7 @@ enum PermCommand {
     Answer {
         id: String,
         choice: String,
-        /// For the voice orchestrator, which refuses to allow a request that cannot be undone (a
+        /// For the orchestrator, which refuses to allow a request that cannot be undone (a
         /// push, a delete, a restart) until the person has confirmed it out loud: pass this once
         /// they have.
         #[arg(long)]
@@ -2969,11 +2969,11 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
     Ok(())
 }
 
-/// Start the voice orchestrator for `scope` and print its agent's name.
-async fn voice_start(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+/// Start the orchestrator for `scope` and print its agent's name.
+async fn orchestrator_start(conn: &mut Conn, scope: String) -> Result<(), Fail> {
     let req = conn.req();
-    match conn.call(ClientMsg::VoiceStart { req: Some(req), scope }, req).await? {
-        ServerMsg::VoiceStarted { agent, .. } => {
+    match conn.call(ClientMsg::OrchestratorStart { req: Some(req), scope }, req).await? {
+        ServerMsg::OrchestratorStarted { agent, .. } => {
             println!("{agent}");
             Ok(())
         }
@@ -2981,10 +2981,10 @@ async fn voice_start(conn: &mut Conn, scope: String) -> Result<(), Fail> {
     }
 }
 
-async fn voice_events(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+async fn orchestrator_events(conn: &mut Conn, scope: String) -> Result<(), Fail> {
     let req = conn.req();
-    match conn.call(ClientMsg::VoiceEvents { req: Some(req), scope }, req).await? {
-        ServerMsg::VoiceEventLines { lines, .. } => {
+    match conn.call(ClientMsg::OrchestratorEvents { req: Some(req), scope }, req).await? {
+        ServerMsg::OrchestratorEventLines { lines, .. } => {
             for line in lines {
                 println!("{line}");
             }
@@ -2994,8 +2994,8 @@ async fn voice_events(conn: &mut Conn, scope: String) -> Result<(), Fail> {
     }
 }
 
-async fn voice_stop(conn: &mut Conn, scope: String) -> Result<(), Fail> {
-    simple(conn, |req| ClientMsg::VoiceStop { req: Some(req), scope }).await
+async fn orchestrator_stop(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::OrchestratorStop { req: Some(req), scope }).await
 }
 
 async fn agent_cancel(conn: &mut Conn, agent: String) -> Result<(), Fail> {
@@ -3104,7 +3104,7 @@ async fn perm_id(conn: &mut Conn, target: String) -> Result<String, Fail> {
     }
 }
 
-/// The voice orchestrator's gate: a request that cannot be undone is not allowed until the person
+/// The orchestrator's gate: a request that cannot be undone is not allowed until the person
 /// has confirmed it out loud, which the orchestrator says by passing `--confirmed`.
 async fn perm_gate(conn: &mut Conn, id: &str) -> Result<(), Fail> {
     let req = conn.req();
@@ -5938,9 +5938,9 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Commands { agent, json }) => {
                 agent_commands(&mut conn, agent, json).await
             }
-            Command::Voice(VoiceCommand::Start { scope }) => voice_start(&mut conn, scope).await,
-            Command::Voice(VoiceCommand::Events { scope }) => voice_events(&mut conn, scope).await,
-            Command::Voice(VoiceCommand::Stop { scope }) => voice_stop(&mut conn, scope).await,
+            Command::Orchestrator(OrchestratorCommand::Start { scope }) => orchestrator_start(&mut conn, scope).await,
+            Command::Orchestrator(OrchestratorCommand::Events { scope }) => orchestrator_events(&mut conn, scope).await,
+            Command::Orchestrator(OrchestratorCommand::Stop { scope }) => orchestrator_stop(&mut conn, scope).await,
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await
             }
@@ -5960,7 +5960,7 @@ async fn main() -> ExitCode {
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice, confirmed }) => {
                 let id = perm_id(&mut conn, id).await?;
-                if std::env::var_os("WHEEL_VOICE").is_some() && !confirmed && choice != "deny" {
+                if std::env::var_os("WHEEL_ORCHESTRATOR").is_some() && !confirmed && choice != "deny" {
                     perm_gate(&mut conn, &id).await?;
                 }
                 simple(&mut conn, |req| ClientMsg::PermAnswer {

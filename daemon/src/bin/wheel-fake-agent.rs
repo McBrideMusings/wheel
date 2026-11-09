@@ -461,9 +461,9 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
             args.model.as_deref().unwrap_or("-")
         ));
     }
-    if text.contains("show voice") {
+    if text.contains("show orchestrator") {
         turn.say(&format!(
-            "voice: tools={} setting-sources={} mode={} model={} allowed={}\nbrief: {}\n",
+            "orchestrator: tools={} setting-sources={} mode={} model={} allowed={}\nbrief: {}\n",
             args.tools.as_deref().unwrap_or("-"),
             args.setting_sources.as_deref().map(|s| format!("[{s}]")).unwrap_or_else(|| "-".into()),
             args.permission_mode.as_deref().unwrap_or("-"),
