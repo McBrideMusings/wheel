@@ -363,6 +363,9 @@ impl Agent {
         let runner = tokio::spawn(async move {
             let mut queue = Queue::new();
             let mut steered = Steered::new();
+            // Steered messages the running turn took in, which end with it, kept here so a process
+            // that dies mid-turn still ends them.
+            let mut merged: Vec<u64> = Vec::new();
             let restart = config.restart;
             let mut backoff = restart.backoff;
             let name = run.name.clone();
@@ -374,9 +377,10 @@ impl Agent {
                 tracing::info!(agent = %name, %pane, command = %config.command, cwd = %config.cwd.display(), "agent spawned");
                 let result = run
                     .clone()
-                    .run(&config, perms.clone(), &mut cmd_rx, &mut queue, &mut steered)
+                    .run(&config, perms.clone(), &mut cmd_rx, &mut queue, &mut steered, &mut merged)
                     .await;
                 perms.drop_agent(&name);
+                run.end_merged(&mut merged, "cancelled");
                 // A turn the agent was on when it stopped never ends; it is not running any more.
                 {
                     let mut inner = run.inner.lock().unwrap();
@@ -615,14 +619,14 @@ impl Agent {
 
     /// The running turn is ending: end the turns it took in too, each ahead of it, so every message
     /// shows as answered.
-    fn end_merged(&self, merged: &mut Vec<u64>) {
+    fn end_merged(&self, merged: &mut Vec<u64>, stop_reason: &str) {
         let mut inner = self.inner.lock().unwrap();
         for turn in merged.drain(..).rev() {
             self.push_locked(
                 &mut inner,
                 AgentEvent::TurnEnd {
                     turn,
-                    stop_reason: "end_turn".into(),
+                    stop_reason: stop_reason.into(),
                 },
             );
         }
@@ -1280,6 +1284,7 @@ impl Agent {
         cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>,
         queue: &mut Queue,
         steered: &mut Steered,
+        merged: &mut Vec<u64>,
     ) -> Result<(), String> {
         // A process that stopped took the messages it held with it; they go first in the next.
         for held in steered.drain(..).rev() {
@@ -1445,8 +1450,6 @@ impl Agent {
         let mut running: Option<u64> = None;
         // A turn the agent started itself: it holds the agent Busy but belongs to no prompt.
         let mut unprompted = false;
-        // Steered messages the running turn took in, which it answers along with its own.
-        let mut merged: Vec<u64> = Vec::new();
         loop {
             // A message the agent holds starts the next turn on its own, so nothing is sent
             // before it does.
@@ -1505,14 +1508,12 @@ impl Agent {
                             queue.push_front(held);
                             if running.is_some() || unprompted {
                                 tracing::info!(agent = %self.name, turn, "queued message sent now: turn interrupted");
-                                perms.drop_agent(&self.name);
                                 if agent.input.cancel().is_err() {
                                     return Err(exit_reason(&mut agent).await);
                                 }
                             }
                         } else if steered.iter().any(|(t, _)| *t == turn) {
                             tracing::info!(agent = %self.name, turn, "steered message sent now");
-                            perms.drop_agent(&self.name);
                             if agent.input.send_now(turn).is_err() {
                                 return Err(exit_reason(&mut agent).await);
                             }
@@ -1671,7 +1672,7 @@ impl Agent {
                             // Nothing this turn asked for can still be answered once it is over.
                             perms.drop_agent(&self.name);
                             tracing::info!(agent = %self.name, turn, %stop_reason, "prompt end");
-                            self.end_merged(&mut merged);
+                            self.end_merged(merged, &stop_reason);
                             if self.end_unsent(turn) {
                                 self.set_state(idle(queue.len() + steered.len()));
                                 continue;
@@ -1684,7 +1685,7 @@ impl Agent {
                         if let Some(turn) = running.take() {
                             perms.drop_agent(&self.name);
                             tracing::warn!(agent = %self.name, turn, error = %message, "prompt failed");
-                            self.end_merged(&mut merged);
+                            self.end_merged(merged, "end_turn");
                             if self.end_unsent(turn) {
                                 self.set_state(idle(queue.len() + steered.len()));
                                 continue;
