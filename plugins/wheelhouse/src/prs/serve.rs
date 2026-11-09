@@ -132,7 +132,7 @@ struct Query {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Number {
     /// The PR's number, as the row's id.
-    path: String,
+    id: String,
 }
 
 #[derive(Clone)]
@@ -169,9 +169,9 @@ impl Server {
     }
 
     #[tool(description = "Open or close a PR's details", meta = ui_meta())]
-    fn select_pr(&self, meta: RequestMetaObject, Parameters(Number { path }): Parameters<Number>) -> CallToolResult {
+    fn select_pr(&self, meta: RequestMetaObject, Parameters(Number { id }): Parameters<Number>) -> CallToolResult {
         self.with(&meta, |ui| {
-            let n = path.parse().ok();
+            let n = id.parse().ok();
             ui.sel = if ui.sel == n { None } else { n };
         })
     }
