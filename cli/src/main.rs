@@ -1310,7 +1310,15 @@ enum PermCommand {
     List,
     /// Answer one: `allow`, `deny`, or one of its option ids. The first argument is the request's
     /// id, or the id of the agent pane (or its agent) whose waiting request this answers.
-    Answer { id: String, choice: String },
+    Answer {
+        id: String,
+        choice: String,
+        /// For the voice orchestrator, which refuses to allow a request that cannot be undone (a
+        /// push, a delete, a restart) until the person has confirmed it out loud: pass this once
+        /// they have.
+        #[arg(long)]
+        confirmed: bool,
+    },
     /// Wait for a permission request and print it as JSON (an already-waiting one counts).
     Wait {
         #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
@@ -3051,6 +3059,22 @@ async fn perm_id(conn: &mut Conn, target: String) -> Result<String, Fail> {
         (Some(_), Some(_)) => Err(Fail::Daemon(format!(
             "{target} has several permission requests waiting; name one by its id (wheel perm list)"
         ))),
+    }
+}
+
+/// The voice orchestrator's gate: a request that cannot be undone is not allowed until the person
+/// has confirmed it out loud, which the orchestrator says by passing `--confirmed`.
+async fn perm_gate(conn: &mut Conn, id: &str) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Status { perms, .. } = conn.call(ClientMsg::Status { req: Some(req) }, req).await? else {
+        return Err(Fail::Other("unexpected reply to status".into()));
+    };
+    match perms.iter().find(|p| p.id == id) {
+        Some(p) if wheel_proto::is_irreversible(&p.title) => Err(Fail::Daemon(format!(
+            "{} cannot be undone ({}): ask the person out loud, then run this again with --confirmed",
+            p.id, p.title
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -5889,8 +5913,11 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Watch) => agent_watch(&mut conn).await,
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
-            Command::Perm(PermCommand::Answer { id, choice }) => {
+            Command::Perm(PermCommand::Answer { id, choice, confirmed }) => {
                 let id = perm_id(&mut conn, id).await?;
+                if std::env::var_os("WHEEL_VOICE").is_some() && !confirmed && choice != "deny" {
+                    perm_gate(&mut conn, &id).await?;
+                }
                 simple(&mut conn, |req| ClientMsg::PermAnswer {
                     req: Some(req),
                     id,

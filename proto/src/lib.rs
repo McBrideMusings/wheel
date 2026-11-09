@@ -4410,3 +4410,35 @@ mod tests {
 }
 // perf 1793567529
 // perf 1793570682
+
+/// Whether the tool call a permission request describes cannot be undone: a push, a delete, a hard
+/// reset, a deploy, a publish, a restart, killing a process. The voice orchestrator never allows
+/// such a request until the person has confirmed it out loud.
+pub fn is_irreversible(title: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "git push", "push --force", "push -f", "reset --hard", "clean -f", "branch -d", "branch -D",
+        "rm ", "rm -", "rmdir", "unlink", "delete", "drop table", "drop database", "truncate",
+        "deploy", "publish", "restart", "kill ", "pkill", "killall", "shutdown", "reboot",
+    ];
+    let title = title.to_lowercase();
+    WORDS.iter().any(|w| title.contains(&w.to_lowercase()))
+}
+
+#[cfg(test)]
+mod irreversible_tests {
+    use super::is_irreversible;
+
+    #[test]
+    fn pushes_deletes_and_restarts_cannot_be_undone() {
+        for title in ["Bash: git push origin main", "Bash: rm -rf build", "Bash: make restart-server", "Delete file notes.md", "Bash: git reset --hard HEAD~1"] {
+            assert!(is_irreversible(title), "{title}");
+        }
+    }
+
+    #[test]
+    fn reads_and_builds_can() {
+        for title in ["Bash: cargo test", "Read src/main.rs", "Bash: git status", "Edit src/lib.rs"] {
+            assert!(!is_irreversible(title), "{title}");
+        }
+    }
+}

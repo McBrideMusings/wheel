@@ -30,7 +30,11 @@ impl Filter {
         match msg {
             ServerMsg::PermRequested { perm } => Some(Line {
                 agent: perm.agent.clone(),
-                text: format!("{} needs permission: {}", perm.agent, perm.title),
+                text: if wheel_proto::is_irreversible(&perm.title) {
+                    format!("{} needs permission: {} (this cannot be undone: ask the person out loud, then answer with --confirmed)", perm.agent, perm.title)
+                } else {
+                    format!("{} needs permission: {}", perm.agent, perm.title)
+                },
                 urgent: true,
             }),
             ServerMsg::PermResolved { id, choice } => Some(Line {
@@ -94,6 +98,21 @@ mod tests {
         assert_eq!(line.text, "w5 needs permission: Bash: cargo test");
         assert!(line.urgent);
         assert_eq!(line.agent, "w5");
+    }
+
+    #[test]
+    fn an_irreversible_request_says_to_confirm_out_loud() {
+        let perm = PermInfo {
+            id: "q2".into(),
+            agent: "w5".into(),
+            title: "Bash: git push origin main".into(),
+            options: Vec::new(),
+            tool_call: None,
+            why: PermWhy::default(),
+        };
+        let line = Filter::default().line(&ServerMsg::PermRequested { perm }).unwrap();
+        assert!(line.text.contains("cannot be undone: ask the person out loud"), "{}", line.text);
+        assert!(line.urgent);
     }
 
     #[test]

@@ -5114,6 +5114,7 @@ async fn the_voice_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
     assert!(text.contains("model=haiku"), "{text:?}");
     assert!(text.contains("Bash(wheel agent:*)") && text.contains("Bash(wheel perm:*)"), "{text:?}");
     assert!(text.contains("setting-sources=[]"), "{text:?}");
+    assert!(text.contains("wheel perm answer <id> allow --confirmed"), "the brief says to confirm out loud first: {text:?}");
     assert!(!text.contains("Bash(wheel:*)"), "{text:?}");
     assert!(text.contains(&format!("Your scope is the space {space_id}")), "{text:?}");
 

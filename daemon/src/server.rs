@@ -657,7 +657,11 @@ impl AppState {
             cwd: cwd.into(),
             home: self.agent_home("claude"),
             brief: Some(brief),
-            env: self.agent_env_for(None),
+            env: {
+                let mut env = self.agent_env_for(None);
+                env.push(("WHEEL_VOICE".into(), "1".into()));
+                env
+            },
             restored: false,
             conversation: None,
             context: None,
