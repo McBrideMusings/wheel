@@ -98,6 +98,10 @@ enum CommandActions {
                   enabled: { _ in true }, run: { $0.toggleShortcuts() }),
             Entry(id: "toggle-sidebar", title: "Toggle Sidebar", keys: "ctrl+cmd+s",
                   enabled: { _ in true }, run: { $0.setSidebar(open: !$0.sidebarOpen) }),
+            Entry(id: "mode-spaces", title: "Show Spaces", keys: "opt+cmd+1",
+                  enabled: { _ in true }, run: { $0.setMode(WindowMode.spaces) }),
+            Entry(id: "mode-desk", title: "Show Desk", keys: "opt+cmd+2",
+                  enabled: { _ in true }, run: { $0.setMode(WindowMode.desk) }),
             Entry(id: "split-right", title: "Split Right", keys: "cmd+d",
                   enabled: hasPane, run: onPane { $0.split($1, nil) }),
             Entry(id: "split-down", title: "Split Down", keys: "shift+cmd+d",
@@ -195,7 +199,7 @@ enum CommandActions {
                    "resize-left", "resize-right", "resize-up", "resize-down", "equalize-splits", "zoom-pane"]),
         ("Spaces", ["new-space", "close-space", "previous-space", "next-space"]
             + (1 ... 8).map { "space-\($0)" } + ["last-space"]),
-        ("Windows", ["new-window", "close-window", "rename-window", PaletteAction.openFolderID, "toggle-sidebar",
+        ("Windows", ["new-window", "close-window", "rename-window", PaletteAction.openFolderID, "toggle-sidebar", "mode-spaces", "mode-desk",
                      "settings", "command-palette", "shortcuts"]),
         ("Agent", ["switch-view"]),
     ]

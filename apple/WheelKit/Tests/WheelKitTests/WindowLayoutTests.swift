@@ -278,6 +278,21 @@ struct WindowLayoutTests {
         #expect(layout.title(of: layout.windows[0]) { names[$0] } == "plex-db")
     }
 
+    /// A window's mode is its own: setting one leaves the other window alone, it is saved with the layout, and a window
+    /// saved with no mode shows spaces.
+    @Test func modeBelongsToOneWindowAndDefaultsToSpaces() throws {
+        var (saved, first, second) = layout()
+        saved.setMode(WindowMode.desk, in: first)
+        #expect(saved.window(first)?.mode == "desk")
+        #expect(saved.window(second)?.mode == "spaces")
+        let back = try JSONDecoder().decode(WindowLayout.self, from: JSONEncoder().encode(saved))
+        #expect(back.window(first)?.mode == "desk")
+        let old = #"{"windows":[{"id":"w","session":"n1","sidebar":true}],"littles":[]}"#
+        let legacy = try JSONDecoder().decode(WindowLayout.self, from: Data(old.utf8))
+        #expect(legacy.windows[0].mode == "spaces")
+        #expect(WindowMode.builtIn == ["spaces", "desk"])
+    }
+
     /// A pin on a window or a little window is saved with the layout; a layout saved before pins existed reads as unpinned.
     @Test func pinsRoundTripAndDefaultOff() throws {
         var (saved, first, _) = layout()

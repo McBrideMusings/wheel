@@ -38,7 +38,7 @@ geo() { app_get /geometry; }
 keys() { geo | jq -r --arg w "$A" '.windows[$w].title_buttons | keys | join(",")'; }
 rect() { geo | jq -c --arg w "$A" --arg b "$1" '.windows[$w].title_buttons[$b]'; }
 poll 10 sh -c "[ \"\$(curl -sf -H 'Authorization: Bearer $(TOKEN)' http://127.0.0.1:$DEBUG_PORT/geometry | jq -r '.windows[\"$A\"].title_buttons | has(\"plugin-vpn\")')\" = true ]"
-eq "the row draws both plugin buttons, no pin, and keeps the other built-ins" "$(keys)" "new-space,palette,plugin-ci,plugin-vpn,processes,session,sidebar"
+eq "the row draws both plugin buttons, no pin, and keeps the other built-ins" "$(keys)" "mode,new-space,palette,plugin-ci,plugin-vpn,processes,session,sidebar"
 LEFT="$(geo | jq -r --arg w "$A" '.windows[$w].title_buttons["plugin-vpn"][0] < .windows[$w].title_buttons["palette"][0]')"
 eq "a left plugin sits left of the right-hand group" "$LEFT" "true"
 RIGHT="$(geo | jq -r --arg w "$A" '.windows[$w].title_buttons | .["plugin-ci"][0] < .processes[0]')"

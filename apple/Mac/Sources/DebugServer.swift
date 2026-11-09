@@ -1152,7 +1152,7 @@ final class DebugServer {
             // The window layout's own operations, the calls the menus, the popover and drags make:
             // `action` is new (`name`, `spaces` comma-separated), close (`window`), place (`space`,
             // `window` or `window=background`, `at`), tearoff (`space`), rename (`window`, `name`),
-            // sidebar (`window`, `open`), pin (`window` or `space`, `on`), focus (`window`), quit-flag (`quitting`) and reopen.
+            // sidebar (`window`, `open`), mode (`window`, `mode`), pin (`window` or `space`, `on`), focus (`window`), quit-flag (`quitting`) and reopen.
             Log.info("debug: windows \(query)")
             func windowID(_ key: String = "window") -> String? {
                 guard let text = query[key] else { return nil }
@@ -1231,6 +1231,11 @@ final class DebugServer {
             case "sidebar":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.setSidebar(open: query["open"] != "false", in: id)
+            case "mode":
+                guard let id = windowID(), let mode = query["mode"], WindowMode.builtIn.contains(mode) else {
+                    return refuse("400 Bad Request", "window and a mode (\(WindowMode.builtIn.joined(separator: ", "))) are required")
+                }
+                model.setMode(mode, in: id)
             case "focus":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 model.windowHost?.bringFront(id)
@@ -1267,7 +1272,7 @@ final class DebugServer {
             case "reopen":
                 model.openWindowForBackground()
             default:
-                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, pin, focus, frame, sweep or reopen")
+                return refuse("400 Bad Request", "action takes new, close, closebutton, place, tearoff, rename, sidebar, mode, pin, focus, frame, sweep or reopen")
             }
         case ("POST", "/pairing"):
             // The pairing row and window: `action` is copy, show, close, switch (`on`), details
@@ -2410,6 +2415,7 @@ final class DebugServer {
                     "spaces": model.layout.spaces(of: window),
                     "active": window.active ?? NSNull(),
                     "sidebar": window.sidebar,
+                    "mode": window.mode,
                     "pinned": window.pinned,
                     "level": (model.windowHost as? WindowManager)?.window(window.id)?.level.rawValue ?? NSNull(),
                     // False: only the title row's empty ground moves a main window.

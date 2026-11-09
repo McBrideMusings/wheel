@@ -22,7 +22,11 @@ struct ContentView: View {
                     if model.serverStoppedByMenu {
                         ServerStoppedNotice()
                     } else {
-                        SpacesView(model: model, windowID: windowID)
+                        if model.mode(in: windowID) == WindowMode.desk {
+                            DeskView()
+                        } else {
+                            SpacesView(model: model, windowID: windowID)
+                        }
                     }
                     HStack(spacing: 12) {
                         ConnectionBadge(connection: model.connection)

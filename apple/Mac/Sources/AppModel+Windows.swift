@@ -483,6 +483,20 @@ extension AppModel {
         Log.info("little window \(id.prefix(8)) \(pinned ? "pinned" : "unpinned")")
     }
 
+    /// The mode a window's body draws: its stored mode when this client draws it, else spaces.
+    func mode(in window: String) -> String {
+        let stored = layout.window(window)?.mode ?? WindowMode.spaces
+        return WindowMode.builtIn.contains(stored) ? stored : WindowMode.spaces
+    }
+
+    /// Show `mode` in a window's body. The mode belongs to this window of this client; no message goes to wheeld.
+    func setMode(_ mode: String, in window: String? = nil) {
+        guard WindowMode.builtIn.contains(mode), let id = window ?? layout.focusedWindow?.id,
+              let record = layout.window(id), record.mode != mode else { return }
+        editLayoutSilently { $0.setMode(mode, in: id) }
+        Log.info("window \(id.prefix(8)) mode \(mode)")
+    }
+
     func setSidebar(open: Bool, in window: String? = nil) {
         guard let id = window ?? layout.focusedWindow?.id, layout.window(id)?.sidebar != open else { return }
         withAnimation { editLayoutSilently { $0.setSidebar(open, in: id) } }

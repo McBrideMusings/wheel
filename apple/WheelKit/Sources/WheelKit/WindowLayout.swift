@@ -16,9 +16,13 @@ public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
     public var sidebar: Bool
     /// The window stacks above every unpinned window of any app, on every desktop.
     public var pinned: Bool
+    /// What the window's body shows: `WindowMode.spaces`, `WindowMode.desk` or a plugin mode's id. The
+    /// client holds it for this window only; wheeld never hears of it (ADR-0022).
+    public var mode: String
 
     public init(id: String = UUID().uuidString, name: String? = nil, session: String? = nil, active: String? = nil,
-                lastSpace: [String: String] = [:], sidebar: Bool = true, pinned: Bool = false) {
+                lastSpace: [String: String] = [:], sidebar: Bool = true, pinned: Bool = false,
+                mode: String = WindowMode.spaces) {
         self.id = id
         self.name = name
         self.session = session
@@ -26,9 +30,10 @@ public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
         self.lastSpace = lastSpace
         self.sidebar = sidebar
         self.pinned = pinned
+        self.mode = mode
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, session, active, lastSpace, sidebar, pinned }
+    private enum CodingKeys: String, CodingKey { case id, name, session, active, lastSpace, sidebar, pinned, mode }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -39,7 +44,18 @@ public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
         lastSpace = try c.decodeIfPresent([String: String].self, forKey: .lastSpace) ?? [:]
         sidebar = try c.decode(Bool.self, forKey: .sidebar)
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? WindowMode.spaces
     }
+}
+
+/// The built-in modes a window's body can show; any other id is a plugin's mode.
+public enum WindowMode {
+    /// The sidebar of spaces and the grid of panes.
+    public static let spaces = "spaces"
+    /// Every agent as a card on one surface.
+    public static let desk = "desk"
+    /// Every mode this client draws, in menu order.
+    public static let builtIn = [spaces, desk]
 }
 
 /// One little window: a Mac window showing a single space's pane grid under a header strip, with no
@@ -193,7 +209,8 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     public mutating func collapse() {
         let keep = focusedWindow
         windows = [WindowRecord(id: keep?.id ?? UUID().uuidString, name: keep?.name, session: keep?.session, active: keep?.active,
-                                lastSpace: keep?.lastSpace ?? [:], sidebar: keep?.sidebar ?? true, pinned: keep?.pinned ?? false)]
+                                lastSpace: keep?.lastSpace ?? [:], sidebar: keep?.sidebar ?? true, pinned: keep?.pinned ?? false,
+                                mode: keep?.mode ?? WindowMode.spaces)]
         littles = []
         focused = windows.first?.id ?? focused
         normalize()
@@ -273,6 +290,11 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     public mutating func setSidebar(_ open: Bool, in id: String) {
         guard let i = index(of: id) else { return }
         windows[i].sidebar = open
+    }
+
+    public mutating func setMode(_ mode: String, in id: String) {
+        guard let i = index(of: id) else { return }
+        windows[i].mode = mode
     }
 
     public mutating func setPinned(_ pinned: Bool, window id: String) {

@@ -31,6 +31,10 @@ struct TitleRow: View {
                 .titleButtonFrame(model, window: windowID, id: "sidebar")
             }
             SessionMenu(model: model, windowID: windowID)
+            if !hidden.contains("mode") {
+                ModeMenu(model: model, windowID: windowID)
+                    .titleButtonFrame(model, window: windowID, id: "mode")
+            }
             if let space {
                 ForEach(shown.filter { $0.side == .left }) { button in
                     PluginButton(model: model, window: windowID, space: space, button: button)
@@ -85,6 +89,38 @@ struct TitleRow: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TitleBarGround())
     }
+}
+
+/// The mode button: one icon at the title row's left, whose menu picks what the window's body shows.
+/// The icon is a fixed box, so a mode with a wider symbol never moves a neighbour.
+struct ModeMenu: View {
+    var model: AppModel
+    let windowID: String
+
+    var body: some View {
+        let current = model.mode(in: windowID)
+        Menu {
+            ForEach(Self.modes, id: \.id) { mode in
+                Button { model.setMode(mode.id, in: windowID) } label: {
+                    Label(mode.title, systemImage: current == mode.id ? "checkmark" : mode.icon)
+                }
+            }
+        } label: {
+            Image(systemName: Self.modes.first { $0.id == current }?.icon ?? "square.grid.2x2")
+                .frame(width: 16, height: 16)
+        }
+        .menuIndicator(.hidden)
+        .menuStyle(.button)
+        .buttonStyle(TitleButtonStyle())
+        .fixedSize()
+        .help("Mode: what this window shows")
+        .accessibilityLabel("Mode")
+    }
+
+    static let modes: [(id: String, title: String, icon: String)] = [
+        (WindowMode.spaces, "Spaces", "square.grid.2x2"),
+        (WindowMode.desk, "Desk", "rectangle.3.group"),
+    ]
 }
 
 /// A title row button: a bare symbol that shows a rounded fill under the pointer and while pressed.

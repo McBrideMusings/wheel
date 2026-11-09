@@ -154,6 +154,8 @@ struct WheelCommands: Commands {
         CommandGroup(replacing: .appSettings) { item("settings", as: "Settings…") }
         CommandGroup(after: .sidebar) {
             item("toggle-sidebar")
+            item("mode-spaces")
+            item("mode-desk")
             item("command-palette")
             item("shortcuts")
         }
