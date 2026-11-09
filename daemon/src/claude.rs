@@ -219,6 +219,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         input: DriverInput(input),
         events: events_rx,
         steers: true,
+        withdraws: true,
         _group: ProcessGroup(pid),
     })
 }

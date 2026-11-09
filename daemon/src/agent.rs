@@ -1473,9 +1473,10 @@ impl Agent {
                 cmd = cmd_rx.recv() => match cmd {
                     None => return Ok(()),
                     Some(Cmd::Prompt { turn, text }) => {
-                        // An agent that takes input mid-turn gets the message at once, as in its
-                        // terminal; any other waits for the turn to end.
-                        if agent.steers && running.is_some() && queue.is_empty() {
+                        // An agent that takes input mid-turn, and lets a message not yet taken in
+                        // be taken back, gets the message at once, as in its terminal; any other
+                        // waits for the turn to end.
+                        if agent.steers && agent.withdraws && running.is_some() && queue.is_empty() {
                             tracing::info!(agent = %self.name, turn, "prompt steered into the running turn");
                             if agent.input.steer(turn, text.clone()).is_err() {
                                 return Err(exit_reason(&mut agent).await);
@@ -1491,6 +1492,16 @@ impl Agent {
                     Some(Cmd::SendNow { turn }) => {
                         if let Some(at) = queue.iter().position(|(t, _)| *t == turn) {
                             let held = queue.remove(at).expect("position is in range");
+                            if agent.steers && running.is_some() && !agent.withdraws {
+                                // Not interrupted: the agent takes the message into the turn, and
+                                // since it cannot give it back, it was kept here until now.
+                                tracing::info!(agent = %self.name, turn, "queued message steered now");
+                                if agent.input.steer(turn, held.1.clone()).is_err() {
+                                    return Err(exit_reason(&mut agent).await);
+                                }
+                                steered.push(held);
+                                continue;
+                            }
                             queue.push_front(held);
                             if running.is_some() || unprompted {
                                 tracing::info!(agent = %self.name, turn, "queued message sent now: turn interrupted");
@@ -1601,6 +1612,22 @@ impl Agent {
                     }
                     Some(DriverEvent::Ready { options, .. } | DriverEvent::Options(options)) => {
                         self.set_config_options(options);
+                    }
+                    Some(DriverEvent::SteerRefused { turn }) => {
+                        // Not taken in: it goes back to the front of the queue, if its sender has
+                        // not taken it back meanwhile.
+                        if let Some(at) = steered.iter().position(|(t, _)| *t == turn) {
+                            let held = steered.remove(at);
+                            if self.is_queued(turn) {
+                                tracing::info!(agent = %self.name, turn, "steered message refused; queued again");
+                                queue.push_front(held);
+                            }
+                        }
+                        self.set_state(if running.is_some() || unprompted {
+                            AgentState::Busy { queued: queue.len() + steered.len() }
+                        } else {
+                            idle(queue.len() + steered.len())
+                        });
                     }
                     Some(DriverEvent::Steered { turn }) => {
                         steered.retain(|(held, _)| *held != turn);

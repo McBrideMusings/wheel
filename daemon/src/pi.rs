@@ -87,12 +87,15 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         shown: HashSet::new(),
         wrote_text: false,
         pad_text: false,
+        steered: Vec::new(),
+        resume: None,
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
     Ok(DriverHandle {
         input: DriverInput(input),
         events: events_rx,
-        steers: false,
+        steers: true,
+        withdraws: true,
         _group: ProcessGroup(pid),
     })
 }
@@ -107,6 +110,20 @@ enum Pending {
         history: History,
     },
     Prompt,
+    /// `steer` for the message of `turn`.
+    Steer {
+        turn: u64,
+    },
+    /// `clear_queue`, which empties pi's queue and answers with what it held: these turns' messages
+    /// go, the others are steered again.
+    Withdraw {
+        turns: Vec<u64>,
+    },
+    /// `clear_queue` to run the message of `turn` first: if pi still held it, the running turn is
+    /// aborted and the message sent as a prompt.
+    SendNow {
+        turn: u64,
+    },
     Abort,
     /// The turn has settled; `aborted` says whether it was cancelled.
     Stats {
@@ -116,6 +133,14 @@ enum Pending {
         level: String,
         reply: oneshot::Sender<Result<Vec<ConfigOption>, String>>,
     },
+}
+
+/// A message sent with `steer` that pi has not taken in.
+struct Steered {
+    turn: u64,
+    text: String,
+    /// pi confirmed it holds the message, so a queue without it means it took it in.
+    queued: bool,
 }
 
 /// An extension's dialog a person has not answered.
@@ -152,6 +177,10 @@ struct Driver {
     wrote_text: bool,
     /// The next reply text opens with a paragraph break.
     pad_text: bool,
+    /// Messages sent with `steer` that pi has not taken in, in the order they were sent.
+    steered: Vec<Steered>,
+    /// A message to send as a prompt once the turn it aborted has ended.
+    resume: Option<(u64, String)>,
 }
 
 impl Driver {
@@ -235,8 +264,26 @@ impl Driver {
                 self.request(Pending::Prompt, json!({"type": "prompt", "message": text}))
                     .await
             }
-            // Never sent: this agent's `steers` is false.
-            Input::Steer { .. } | Input::Withdraw { .. } | Input::SendNow { .. } => Ok(()),
+            Input::Steer { turn, text } => {
+                self.steered.push(Steered {
+                    turn,
+                    text: text.clone(),
+                    queued: false,
+                });
+                self.request(
+                    Pending::Steer { turn },
+                    json!({"type": "steer", "message": text}),
+                )
+                .await
+            }
+            Input::Withdraw { turns } => {
+                self.request(Pending::Withdraw { turns }, json!({"type": "clear_queue"}))
+                    .await
+            }
+            Input::SendNow { turn } => {
+                self.request(Pending::SendNow { turn }, json!({"type": "clear_queue"}))
+                    .await
+            }
             Input::Cancel => {
                 if !self.in_turn || self.aborted {
                     return Ok(());
@@ -389,6 +436,60 @@ impl Driver {
                 }
                 Ok(())
             }
+            Pending::Steer { turn } => {
+                match error {
+                    Some(e) => {
+                        tracing::warn!(pid = self.pid, turn, error = %e, "agent steer refused");
+                        self.steered.retain(|s| s.turn != turn);
+                        self.emit(DriverEvent::SteerRefused { turn });
+                    }
+                    // No turn was running, so pi ran the message as a turn of its own.
+                    None if data["disposition"] != "queued" => {
+                        if let Some(at) = self.steered.iter().position(|s| s.turn == turn) {
+                            self.steered.remove(at);
+                            self.begin_turn();
+                            self.emit(DriverEvent::Steered { turn });
+                        }
+                    }
+                    None => {
+                        if let Some(held) = self.steered.iter_mut().find(|s| s.turn == turn) {
+                            held.queued = true;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Pending::Withdraw { turns } => {
+                if let Some(e) = error {
+                    tracing::warn!(pid = self.pid, error = %e, "agent queue clear refused");
+                    return Ok(());
+                }
+                self.after_clear(data, &turns).await?;
+                Ok(())
+            }
+            Pending::SendNow { turn } => {
+                if let Some(e) = error {
+                    tracing::warn!(pid = self.pid, error = %e, "agent queue clear refused");
+                    return Ok(());
+                }
+                let text = self.steered.iter().find(|s| s.turn == turn).map(|s| s.text.clone());
+                let held = self.after_clear(data, &[turn]).await?;
+                let (Some(text), true) = (text, held.contains(&turn)) else {
+                    // pi already took the message in.
+                    return Ok(());
+                };
+                tracing::info!(pid = self.pid, turn, "steered message sent now");
+                if self.in_turn {
+                    self.resume = Some((turn, text));
+                    if !self.aborted {
+                        self.aborted = true;
+                        return self.request(Pending::Abort, json!({"type": "abort"})).await;
+                    }
+                    Ok(())
+                } else {
+                    self.send_prompt(turn, text).await
+                }
+            }
             Pending::Abort => {
                 if let Some(e) = error {
                     tracing::warn!(pid = self.pid, error = %e, "agent abort refused");
@@ -402,7 +503,7 @@ impl Driver {
                         tracing::warn!(pid = self.pid, error = %e, "asking the agent for its context failed")
                     }
                 }
-                self.turn_over(aborted);
+                self.turn_over(aborted).await;
                 Ok(())
             }
             Pending::Thinking { level, reply } => {
@@ -418,6 +519,58 @@ impl Driver {
                 Ok(())
             }
         }
+    }
+
+    /// A turn starts: a prompt was sent, or pi took a message that was sent with nothing running.
+    fn begin_turn(&mut self) {
+        self.in_turn = true;
+        self.aborted = false;
+        self.failure = None;
+        self.wrote_text = false;
+        self.pad_text = false;
+    }
+
+    /// Send `text` as the prompt that starts the turn of `turn`.
+    async fn send_prompt(&mut self, turn: u64, text: String) -> Result<(), String> {
+        self.steered.retain(|s| s.turn != turn);
+        self.begin_turn();
+        self.emit(DriverEvent::Steered { turn });
+        self.request(Pending::Prompt, json!({"type": "prompt", "message": text}))
+            .await
+    }
+
+    /// pi's queue was just cleared and held `data["steering"]`. The messages of `turns` are gone
+    /// for good; the others it held are steered again. Returns the turns whose messages it held.
+    async fn after_clear(&mut self, data: &Value, turns: &[u64]) -> Result<Vec<u64>, String> {
+        let mut cleared: Vec<String> = data["steering"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m.as_str().map(String::from))
+            .collect();
+        let mut held = Vec::new();
+        let mut again = Vec::new();
+        for steered in &mut self.steered {
+            let Some(at) = cleared.iter().position(|text| *text == steered.text) else {
+                continue;
+            };
+            cleared.remove(at);
+            held.push(steered.turn);
+            if turns.contains(&steered.turn) {
+                continue;
+            }
+            steered.queued = false;
+            again.push((steered.turn, steered.text.clone()));
+        }
+        self.steered.retain(|s| !(turns.contains(&s.turn) && held.contains(&s.turn)));
+        for (turn, text) in again {
+            self.request(
+                Pending::Steer { turn },
+                json!({"type": "steer", "message": text}),
+            )
+            .await?;
+        }
+        Ok(held)
     }
 
     fn ready(&self, history: Option<History>) {
@@ -453,6 +606,30 @@ impl Driver {
 
     async fn event(&mut self, kind: &str, record: &Value) {
         match kind {
+            // The messages still waiting; one pi confirmed it held and no longer lists has been
+            // taken in.
+            "queue_update" => {
+                let mut waiting: Vec<String> = record["steering"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|m| m.as_str().map(String::from))
+                    .collect();
+                let mut taken = Vec::new();
+                for steered in &self.steered {
+                    match waiting.iter().position(|text| *text == steered.text) {
+                        Some(at) => {
+                            waiting.remove(at);
+                        }
+                        None if steered.queued => taken.push(steered.turn),
+                        None => {}
+                    }
+                }
+                self.steered.retain(|s| !taken.contains(&s.turn));
+                for turn in taken {
+                    self.emit(DriverEvent::Steered { turn });
+                }
+            }
             "message_start" if record["message"]["role"] == "assistant" => {
                 // A second reply in a turn starts its own paragraph.
                 self.pad_text = self.wrote_text;
@@ -541,7 +718,7 @@ impl Driver {
                     .await
                 {
                     tracing::warn!(pid = self.pid, error = %e, "asking the agent for its context failed");
-                    self.turn_over(aborted);
+                    self.turn_over(aborted).await;
                 }
             }
             "extension_error" => {
@@ -552,7 +729,7 @@ impl Driver {
     }
 
     /// End the running turn: cancelled, failed with what the model or a retry said, or done.
-    fn turn_over(&mut self, aborted: bool) {
+    async fn turn_over(&mut self, aborted: bool) {
         if !std::mem::take(&mut self.in_turn) {
             return;
         }
@@ -572,6 +749,12 @@ impl Driver {
         };
         tracing::info!(pid = self.pid, ?event, "agent turn over");
         self.emit(event);
+        // A message sent now ran after the turn it aborted.
+        if let Some((turn, text)) = self.resume.take() {
+            if let Err(e) = self.send_prompt(turn, text).await {
+                tracing::warn!(pid = self.pid, turn, error = %e, "steered message not sent");
+            }
+        }
     }
 
     /// An extension's request to the person: a choice or a yes/no becomes a permission request,

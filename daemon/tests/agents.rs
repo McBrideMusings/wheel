@@ -2241,6 +2241,101 @@ async fn a_queued_message_sent_now_interrupts_the_turn_and_runs_first() {
     );
 }
 
+/// Wait for turn `turn` to start, so a message sent next arrives mid-turn.
+async fn until_turn_start(ws: &mut Ws, turn: u64) {
+    loop {
+        if let ServerMsg::Agent {
+            event: StampedEvent {
+                event: AgentEvent::TurnStart { turn: t },
+                ..
+            },
+            ..
+        } = recv(ws).await
+        {
+            if t == turn {
+                break;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_during_a_pi_turn_joins_it_and_can_be_sent_now() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = pi_agent(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    // Steered into the running turn: pi takes it in after its tool call and both end together.
+    queue(&mut ws, &agent, "work slowly 3", 2).await;
+    until_turn_start(&mut ws, 1).await;
+    queue(&mut ws, &agent, "two", 3).await;
+    let events = events_until_ended(&mut ws, &[1, 2]).await;
+    let start = events.iter().position(|e| *e == AgentEvent::TurnStart { turn: 2 });
+    let echo = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: two")));
+    assert!(start.is_some() && echo.is_some() && start < echo, "{events:?}");
+    // Sent now: pi's queue is emptied, the turn aborted, and the message runs as a turn of its own.
+    queue(&mut ws, &agent, "work slowly 30", 4).await;
+    until_turn_start(&mut ws, 3).await;
+    queue(&mut ws, &agent, "three", 5).await;
+    let now = ClientMsg::AgentSendNow {
+        req: Some(6),
+        agent: agent.clone(),
+        turn: 4,
+    };
+    assert_eq!(ok_or_error(&mut ws, now, 6).await, ServerMsg::Ok { req: 6 });
+    let events = events_until_ended(&mut ws, &[3, 4]).await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { turn: 3, stop_reason } if stop_reason == "cancelled")),
+        "{events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: three"))),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_message_waits_in_the_queue_until_sent_now_and_is_then_steered_into_the_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let agent = start_agent_as(&url, &pane, None, Some("codex")).await;
+    attach(&mut ws, &agent, 1).await;
+    queue(&mut ws, &agent, "work slowly", 2).await;
+    until_turn_start(&mut ws, 1).await;
+    queue(&mut ws, &agent, "two", 3).await;
+    // Codex cannot give a steered message back, so this one is not handed over yet: it stays queued
+    // where Remove and Edit work.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let shown = attach(&mut ws, &agent, 4).await;
+    assert!(
+        !shown.contains(&AgentEvent::TurnStart { turn: 2 }),
+        "turn 2 waits: {shown:?}"
+    );
+    let now = ClientMsg::AgentSendNow {
+        req: Some(5),
+        agent: agent.clone(),
+        turn: 2,
+    };
+    assert_eq!(ok_or_error(&mut ws, now, 5).await, ServerMsg::Ok { req: 5 });
+    let events = events_until_ended(&mut ws, &[1, 2]).await;
+    assert!(events.contains(&AgentEvent::TurnStart { turn: 2 }), "{events:?}");
+    let said: String = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(said.contains("echo: two"), "turn 1 took the message in: {said:?}");
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "cancelled")),
+        "nothing was interrupted: {events:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_agent_name() {
     let url = start_daemon().await;
