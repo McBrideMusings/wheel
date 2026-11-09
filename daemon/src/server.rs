@@ -138,6 +138,10 @@ pub struct AppState {
     /// Every running agent by name: the ones agent panes own.
     pub(crate) agents: Mutex<HashMap<String, Arc<Agent>>>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
+    /// The connection that owns voice, if any (`crate::voice`).
+    pub(crate) voice_lease: Mutex<Option<SocketAddr>>,
+    /// The events each voice orchestrator has not been told yet, by scope.
+    pub(crate) voice_events: Mutex<HashMap<String, std::collections::VecDeque<String>>>,
     /// Panes whose `start_agent` is still running, so a second agent start on one of them is
     /// refused instead of replacing the agent that is coming up. Other kind changes are not held.
     pub(crate) agent_starts: Mutex<HashSet<String>>,
@@ -295,6 +299,8 @@ impl AppState {
             global,
             agents: Mutex::new(HashMap::new()),
             agent_timing: Mutex::new(AgentTiming::default()),
+            voice_lease: Mutex::new(None),
+            voice_events: Mutex::new(HashMap::new()),
             agent_starts: Mutex::new(HashSet::new()),
             view_options: Mutex::new(HashMap::new()),
             spaces: Mutex::new(Spaces::default()),
@@ -437,10 +443,15 @@ impl AppState {
     /// The environment for the agent in `pane` of `space`: where `wheel` reaches this daemon, and a
     /// `PATH` that finds it. Empty when this daemon has no address to give.
     pub(crate) fn agent_env(&self, pane: &str) -> Vec<(String, String)> {
+        self.agent_env_for(Some(pane))
+    }
+
+    /// [`AppState::agent_env`] for an agent that may have no pane: with none, `WHEEL_PANE` is not set.
+    pub(crate) fn agent_env_for(&self, pane: Option<&str>) -> Vec<(String, String)> {
         let Some(control) = self.control.lock().unwrap().clone() else {
             return Vec::new();
         };
-        let mut env = crate::shell::env(&control, &self.instance_dir, Some(pane));
+        let mut env = crate::shell::env(&control, &self.instance_dir, pane);
         env.push(("WHEEL_AGENT_PANE".into(), "1".into()));
         env.push((
             "PATH".into(),
@@ -626,6 +637,7 @@ impl AppState {
             restart: self.agent_timing.lock().unwrap().restart,
             model,
             permissions,
+            voice: false,
         };
         let agent = Agent::start(
             name.into(),
@@ -636,6 +648,36 @@ impl AppState {
         );
         self.agents.lock().unwrap().insert(name.into(), agent);
         Ok(())
+    }
+
+    /// Start the voice orchestrator's agent `name` in `cwd` on `model`, with `brief` as its whole
+    /// instructions (`crate::voice`). It belongs to no pane.
+    pub(crate) fn spawn_voice_agent(&self, name: &str, cwd: &str, brief: String, model: &str) -> Result<bool, String> {
+        let command = self.agent_ready("claude")?.command;
+        let config = AgentConfig {
+            agent: Harness::Claude,
+            command,
+            cwd: cwd.into(),
+            home: self.agent_home("claude"),
+            brief: Some(brief),
+            env: self.agent_env_for(None),
+            restored: false,
+            conversation: None,
+            context: None,
+            on_saved: None,
+            restart: self.agent_timing.lock().unwrap().restart,
+            model: Some(model.into()),
+            permissions: AgentPermissions::default(),
+            voice: true,
+        };
+        // One lock holds the check and the insert, so two starts never leave a process unowned.
+        let mut agents = self.agents.lock().unwrap();
+        if agents.contains_key(name) {
+            return Ok(false);
+        }
+        let agent = Agent::start(name.into(), None, config, self.perms.clone(), self.global.clone());
+        agents.insert(name.into(), agent);
+        Ok(true)
     }
 
     /// End an agent for good; its agent process is killed.
@@ -1122,6 +1164,7 @@ async fn connection(
     let left = state.views.gone(peer);
     state.panes_shown(&left);
     state.release_sizes(peer, None);
+    state.voice_gone(peer);
     global_task.abort();
     writer.abort();
     if let Some(id) = &device {
@@ -1376,6 +1419,36 @@ async fn handle(
             });
             None
         }
+        ClientMsg::VoiceStart { req, scope } => match state.voice_start(&scope) {
+            Ok(agent) => {
+                tracing::info!(%peer, %scope, %agent, "voice start");
+                req.map(|req| ServerMsg::VoiceStarted { req, scope, agent })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::VoiceClaim { req } => {
+            let owner = state.voice_claim(peer);
+            tracing::info!(%peer, "voice claim");
+            req.map(|req| ServerMsg::VoiceClaimed { req, owner })
+        }
+        ClientMsg::VoiceRelease { req } => match state.voice_release(peer) {
+            Ok(()) => {
+                tracing::info!(%peer, "voice release");
+                req.map(|req| ServerMsg::Ok { req })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::VoiceEvents { req, scope } => match state.voice_take_events(&scope) {
+            Ok(lines) => req.map(|req| ServerMsg::VoiceEventLines { req, lines }),
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::VoiceStop { req, scope } => match state.voice_stop(&scope) {
+            Ok(()) => {
+                tracing::info!(%peer, %scope, "voice stop");
+                req.map(|req| ServerMsg::Ok { req })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
         ClientMsg::AgentCancel { req, agent } => {
             match state
                 .resolve_agent(&agent)

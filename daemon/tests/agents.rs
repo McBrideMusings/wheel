@@ -5071,3 +5071,220 @@ async fn a_cancel_stops_a_turn_the_agent_started_itself() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
+
+/// The voice orchestrator is an agent that belongs to no pane: `voice_start` names it, it runs on
+/// the fast model with the speech brief and the `wheel` whitelist and no other tool, a second start
+/// finds the same one, a scope that names no space is refused, and `voice_stop` ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_voice_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (space_id, _) = space(&url, "/tmp").await;
+
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(70), scope: "s-missing".into() }).await;
+    let refused = loop {
+        match recv(&mut ws).await {
+            ServerMsg::Error { req: Some(70), message, .. } => break message,
+            _ => {}
+        }
+    };
+    assert!(refused.contains("no space s-missing"), "{refused:?}");
+
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(71), scope: space_id.clone() }).await;
+    let agent = loop {
+        if let ServerMsg::VoiceStarted { req: 71, scope, agent } = recv(&mut ws).await {
+            assert_eq!(scope, space_id);
+            break agent;
+        }
+    };
+    assert_eq!(agent, format!("voice-{space_id}"));
+
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(72), scope: space_id.clone() }).await;
+    let again = loop {
+        if let ServerMsg::VoiceStarted { req: 72, agent, .. } = recv(&mut ws).await {
+            break agent;
+        }
+    };
+    assert_eq!(again, agent, "a second start finds the running orchestrator");
+
+    attach_and_send(&mut ws, &agent, "show voice").await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("tools=Bash"), "{text:?}");
+    assert!(text.contains("mode=dontAsk"), "{text:?}");
+    assert!(text.contains("model=haiku"), "{text:?}");
+    assert!(text.contains("Bash(wheel agent:*)") && text.contains("Bash(wheel perm:*)"), "{text:?}");
+    assert!(text.contains("setting-sources=[]"), "{text:?}");
+    assert!(!text.contains("Bash(wheel:*)"), "{text:?}");
+    assert!(text.contains(&format!("Your scope is the space {space_id}")), "{text:?}");
+
+    let panes = layout(&url).await;
+    assert!(!panes.to_string().contains(&agent), "no pane holds the orchestrator");
+
+    send(&mut ws, ClientMsg::VoiceStop { req: Some(73), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::Ok { req: 73 } = recv(&mut ws).await {
+            break;
+        }
+    }
+    send(&mut ws, ClientMsg::VoiceStop { req: Some(74), scope: space_id }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(74), message, .. } = recv(&mut ws).await {
+            assert!(message.contains("no voice orchestrator is running"), "{message:?}");
+            break;
+        }
+    }
+}
+
+/// Closing a space ends its voice orchestrator, and a start for the closed space is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_space_ends_its_voice_orchestrator() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (space_id, _) = space(&url, "/tmp").await;
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(80), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::VoiceStarted { req: 80, .. } = recv(&mut ws).await {
+            break;
+        }
+    }
+    client_op(&mut ws, 81, ClientMsg::SpaceClose { req: Some(81), id: space_id.clone(), if_empty: false }).await;
+    send(&mut ws, ClientMsg::VoiceStop { req: Some(82), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(82), message, .. } = recv(&mut ws).await {
+            assert!(message.contains("no voice orchestrator is running"), "{message:?}");
+            break;
+        }
+    }
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(83), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(83), message, .. } = recv(&mut ws).await {
+            assert!(message.contains(&format!("no space {space_id}")), "{message:?}");
+            break;
+        }
+    }
+}
+
+/// Voice is owned by one connection at a time: a claim takes it from the holder, every connection
+/// hears each change, a release clears it, a connection that is not the owner cannot release, and
+/// a closed connection gives it up.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_connection_owns_voice_at_a_time() {
+    let url = start_daemon().await;
+    let mut a = connect(&url).await;
+    let mut b = connect(&url).await;
+
+    send(&mut a, ClientMsg::VoiceClaim { req: Some(90) }).await;
+    let a_id = loop {
+        if let ServerMsg::VoiceClaimed { req: 90, owner } = recv(&mut a).await {
+            break owner;
+        }
+    };
+    let heard = loop {
+        if let ServerMsg::VoiceLease { owner } = recv(&mut b).await {
+            break owner;
+        }
+    };
+    assert_eq!(heard, Some(a_id.clone()), "the other connection hears who owns voice");
+
+    send(&mut b, ClientMsg::VoiceRelease { req: Some(91) }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(91), message, .. } = recv(&mut b).await {
+            assert!(message.contains("does not own voice"), "{message:?}");
+            break;
+        }
+    }
+
+    send(&mut b, ClientMsg::VoiceClaim { req: Some(92) }).await;
+    let b_id = loop {
+        if let ServerMsg::VoiceClaimed { req: 92, owner } = recv(&mut b).await {
+            break owner;
+        }
+    };
+    assert_ne!(a_id, b_id);
+    let taken = loop {
+        if let ServerMsg::VoiceLease { owner } = recv(&mut a).await {
+            if owner == Some(b_id.clone()) {
+                break owner;
+            }
+        }
+    };
+    assert_eq!(taken, Some(b_id));
+
+    // A closed connection gives voice up.
+    drop(b);
+    let freed = loop {
+        if let ServerMsg::VoiceLease { owner } = recv(&mut a).await {
+            if owner.is_none() {
+                break owner;
+            }
+        }
+    };
+    assert_eq!(freed, None);
+
+    send(&mut a, ClientMsg::VoiceClaim { req: Some(93) }).await;
+    loop {
+        if let ServerMsg::VoiceClaimed { req: 93, .. } = recv(&mut a).await {
+            break;
+        }
+    }
+    send(&mut a, ClientMsg::VoiceRelease { req: Some(94) }).await;
+    loop {
+        if let ServerMsg::Ok { req: 94 } = recv(&mut a).await {
+            break;
+        }
+    }
+}
+
+/// The orchestrator hears its space's events: a finished turn waits until it asks, a permission
+/// request is sent to it at once, and another space's events never reach it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_voice_orchestrator_is_told_its_spaces_events() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (space_id, pane) = space(&url, "/tmp").await;
+    let (_, other_pane) = space(&url, "/tmp").await;
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(95), scope: space_id.clone() }).await;
+    let voice = loop {
+        if let ServerMsg::VoiceStarted { req: 95, agent, .. } = recv(&mut ws).await {
+            break agent;
+        }
+    };
+    let mine = start_agent(&url, &pane, Some("hello")).await;
+    let _theirs = start_agent(&url, &other_pane, Some("hello")).await;
+    let mut watcher = connect(&url).await;
+    transcript_when(&mut watcher, &mine, |events| {
+        events.contains(&AgentEvent::TurnEnd { turn: 1, stop_reason: "end_turn".into() })
+    })
+    .await;
+
+    let mut lines = Vec::new();
+    for _ in 0..50 {
+        send(&mut ws, ClientMsg::VoiceEvents { req: Some(96), scope: space_id.clone() }).await;
+        loop {
+            if let ServerMsg::VoiceEventLines { req: 96, lines: got } = recv(&mut ws).await {
+                lines.extend(got);
+                break;
+            }
+        }
+        if lines.iter().any(|l| l.contains("finished its turn")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(lines.iter().any(|l| l == &format!("{mine} finished its turn")), "{lines:?}");
+    assert!(lines.iter().all(|l| l.starts_with(&mine)), "only this space's events: {lines:?}");
+
+    // A permission request is urgent: it goes to the orchestrator as a message.
+    send(&mut ws, ClientMsg::AgentSend { req: Some(97), agent: mine.clone(), text: "permission".into() }).await;
+    let mut seen = String::new();
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut peek = connect(&url).await;
+        let events = attach(&mut peek, &voice, 500).await;
+        seen = format!("{events:?}");
+        if seen.contains("Event: ") && seen.contains("needs permission") {
+            break;
+        }
+    }
+    assert!(seen.contains(&format!("Event: {mine} needs permission")), "{seen}");
+}

@@ -101,6 +101,10 @@ enum Command {
     /// Agents, by the name their agent pane carries (e.g. `w5`).
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// The voice orchestrator: an agent that talks for a space, or for the whole daemon, and is
+    /// no pane's agent.
+    #[command(subcommand)]
+    Voice(VoiceCommand),
     /// Permission requests waiting on a person.
     #[command(subcommand)]
     Perm(PermCommand),
@@ -1301,6 +1305,28 @@ fn parse_work_item(text: &str) -> Result<wheel_proto::WorkItem, String> {
         kind,
         id: id.trim().to_string(),
     })
+}
+
+#[derive(Subcommand)]
+enum VoiceCommand {
+    /// Start the voice orchestrator for a scope, or find the one running, and print its agent's
+    /// name. Attach to that agent and send to it as to any agent (`wheel agent read`, `wheel agent
+    /// send`). Fails for a scope that names no space.
+    Start {
+        /// A space id, or `daemon` for the whole daemon.
+        scope: String,
+    },
+    /// Print, one per line, what the voice orchestrator for a scope has not been told yet, and
+    /// take it. Fails when none is running.
+    Events {
+        /// A space id, or `daemon`.
+        scope: String,
+    },
+    /// End the voice orchestrator for a scope. Fails when none is running.
+    Stop {
+        /// A space id, or `daemon`.
+        scope: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2925,6 +2951,35 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
         serde_json::to_string(&state).map_err(other)?
     );
     Ok(())
+}
+
+/// Start the voice orchestrator for `scope` and print its agent's name.
+async fn voice_start(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+    let req = conn.req();
+    match conn.call(ClientMsg::VoiceStart { req: Some(req), scope }, req).await? {
+        ServerMsg::VoiceStarted { agent, .. } => {
+            println!("{agent}");
+            Ok(())
+        }
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+async fn voice_events(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+    let req = conn.req();
+    match conn.call(ClientMsg::VoiceEvents { req: Some(req), scope }, req).await? {
+        ServerMsg::VoiceEventLines { lines, .. } => {
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+async fn voice_stop(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::VoiceStop { req: Some(req), scope }).await
 }
 
 async fn agent_cancel(conn: &mut Conn, agent: String) -> Result<(), Fail> {
@@ -5842,6 +5897,9 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Commands { agent, json }) => {
                 agent_commands(&mut conn, agent, json).await
             }
+            Command::Voice(VoiceCommand::Start { scope }) => voice_start(&mut conn, scope).await,
+            Command::Voice(VoiceCommand::Events { scope }) => voice_events(&mut conn, scope).await,
+            Command::Voice(VoiceCommand::Stop { scope }) => voice_stop(&mut conn, scope).await,
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await
             }

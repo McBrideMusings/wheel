@@ -1082,7 +1082,8 @@ struct AgentBody: View {
                         model.answer(perm, option.id)
                         return true
                     }
-                }
+                },
+                readAloud: $chat.readsAloud
             )
             .padding([.horizontal, .top], 10)
             ConfigRow(model: model, chat: chat, paneId: paneId, agent: agent)

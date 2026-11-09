@@ -56,7 +56,8 @@ struct AgentPane: View {
                 skillPrefix: SkillSearch.prefix(ofAgent: agent),
                 busy: chat.isBusy,
                 stop: { model.cancel(chat) },
-                takeBack: { chat.takeBack() }
+                takeBack: { chat.takeBack() },
+                readAloud: $chat.readsAloud
             )
             .padding(10)
         }

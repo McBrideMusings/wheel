@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -639,6 +639,40 @@ pub enum ClientMsg {
         req: Option<u64>,
         agent: String,
         timeout_secs: f64,
+    },
+    /// Start the voice orchestrator for `scope`, a space id or `daemon`, or find the one already
+    /// running for it. Replies `voice_started` naming its agent; a client attaches to that agent
+    /// with `agent_attach` for its transcript stream and sends to it with `agent_send`, as for
+    /// any agent. It is no pane's agent. Fails for a scope that names no space.
+    VoiceStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        scope: String,
+    },
+    /// Take the voice lease: this connection owns voice until it releases it or closes. Another
+    /// connection's claim takes it over. Replies `voice_claimed` naming this connection, and
+    /// every connection gets `voice_lease`.
+    VoiceClaim {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// Give up the voice lease. Fails when this connection does not hold it.
+    VoiceRelease {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// The events the voice orchestrator for `scope` has not been told yet, as short lines, oldest
+    /// first; asking takes them. Replies `voice_event_lines`. Fails when none is running.
+    VoiceEvents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        scope: String,
+    },
+    /// End the voice orchestrator for `scope` and its agent process. Fails when none is running.
+    VoiceStop {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        scope: String,
     },
     /// Stop an agent's current turn. Queued messages are left alone: taking one back is
     /// `agent_unsend`.
@@ -1997,6 +2031,27 @@ pub enum ServerMsg {
         agent: String,
         id: String,
     },
+    /// The reply to `voice_claim`: the id of this connection, as `voice_lease` names the owner.
+    VoiceClaimed {
+        req: u64,
+        owner: String,
+    },
+    /// The reply to `voice_events`.
+    VoiceEventLines {
+        req: u64,
+        lines: Vec<String>,
+    },
+    /// Sent to every connection when the voice lease changes hands: the owner's connection id, or
+    /// none once it is released or its connection closed.
+    VoiceLease {
+        owner: Option<String>,
+    },
+    /// The reply to `voice_start`: the orchestrator's agent for `scope`.
+    VoiceStarted {
+        req: u64,
+        scope: String,
+        agent: String,
+    },
     /// One step of an agent's conversation. `text` events are chunks: append each to the last.
     /// An agent that ends sends an `error` with no `turn`, then nothing more.
     Agent {
@@ -2507,6 +2562,9 @@ impl ServerMsg {
             | ServerMsg::Opened { req, .. }
             | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }
+            | ServerMsg::VoiceStarted { req, .. }
+            | ServerMsg::VoiceClaimed { req, .. }
+            | ServerMsg::VoiceEventLines { req, .. }
             | ServerMsg::PaneRecorded { req, .. }
             | ServerMsg::Inspected { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
@@ -2530,6 +2588,7 @@ impl ServerMsg {
             | ServerMsg::ToastClear { .. }
             | ServerMsg::AgentTitle { .. }
             | ServerMsg::PermRequested { .. }
+            | ServerMsg::VoiceLease { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }
             | ServerMsg::SpaceFocused { .. }

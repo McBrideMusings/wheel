@@ -207,10 +207,20 @@ public final class AgentChat: ObservableObject {
         syncQueue()
     }
 
+    /// Whether this agent's finished replies are spoken. Per conversation, off until the person
+    /// turns it on; a reply that arrives while it is on is read once its turn ends, and history
+    /// loaded on attach is never read.
+    @Published public var readsAloud = false {
+        didSet { if !readsAloud { ReadAloud.shared.stop(for: name) } }
+    }
+
     public func apply(_ event: StampedEvent) {
         transcript.apply(event)
         syncRows()
         syncQueue()
+        if readsAloud, case let .turnEnd(_, stopReason) = event.event, stopReason == "end_turn" {
+            ReadAloud.shared.speak(transcript.lastReply, for: name)
+        }
         if case let .retract(turn) = event.event, let text = editing.removeValue(forKey: turn) {
             restore(text)
         }

@@ -101,7 +101,9 @@ const MODELS: [(&str, &str, &str); 3] = [
 const WINDOW: u64 = 200_000;
 
 /// The flags `claude --print` takes that carry a value.
-const VALUED: [&str; 11] = [
+const VALUED: [&str; 13] = [
+    "--tools",
+    "--setting-sources",
     "--permission-mode",
     "--input-format",
     "--output-format",
@@ -404,6 +406,8 @@ struct Args {
     disallowed: Option<String>,
     model: Option<String>,
     permission_mode: Option<String>,
+    tools: Option<String>,
+    setting_sources: Option<String>,
 }
 
 async fn answer(turn: &mut Turn, args: &Args, text: &str) {
@@ -438,6 +442,17 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         turn.say(&format!(
             "model: {}\n",
             args.model.as_deref().unwrap_or("-")
+        ));
+    }
+    if text.contains("show voice") {
+        turn.say(&format!(
+            "voice: tools={} setting-sources={} mode={} model={} allowed={}\nbrief: {}\n",
+            args.tools.as_deref().unwrap_or("-"),
+            args.setting_sources.as_deref().map(|s| format!("[{s}]")).unwrap_or_else(|| "-".into()),
+            args.permission_mode.as_deref().unwrap_or("-"),
+            args.model.as_deref().unwrap_or("-"),
+            args.allowed.as_deref().unwrap_or("-"),
+            args.brief.as_deref().unwrap_or("-").replace('\n', " "),
         ));
     }
     if text.contains("show setup") {
@@ -784,6 +799,8 @@ async fn main() {
         disallowed: None,
         model: None,
         permission_mode: None,
+        tools: None,
+        setting_sources: None,
     };
     let mut words = all.into_iter().skip(1);
     while let Some(word) = words.next() {
@@ -808,6 +825,8 @@ async fn main() {
             ("--disallowedTools", Some(tools)) => args.disallowed = Some(tools),
             ("--model", Some(model)) => args.model = Some(model),
             ("--permission-mode", Some(mode)) => args.permission_mode = Some(mode),
+            ("--tools", Some(tools)) => args.tools = Some(tools),
+            ("--setting-sources", Some(sources)) => args.setting_sources = Some(sources),
             _ => {}
         }
     }
