@@ -30,7 +30,7 @@ struct SpaceCarousel: View {
             let panes = pages.panes
             let dots = Dots(kinds: pages.dotKinds, current: pages.index(of: page), trayNeedsYou: trayNeedsYou(pages.tray))
             VStack(spacing: 0) {
-                topBar(pages: pages, dots: dots)
+                topBar(pages: pages, dots: dots, landscape: landscape)
                 if panes.isEmpty {
                     ContentUnavailableView(connectionText, systemImage: "rectangle.on.rectangle")
                         .accessibilityIdentifier("no panes")
@@ -47,7 +47,7 @@ struct SpaceCarousel: View {
                     .tabViewStyle(.page(indexDisplayMode: .never))
                 }
                 if !landscape {
-                    pageHandle
+                    pageHandle(pages: pages, dots: dots)
                 }
             }
             .onChange(of: trayIDs) { _, ids in trayChanged(ids) }
@@ -168,7 +168,7 @@ struct SpaceCarousel: View {
         tray.contains { if case .needsYou = model.paneStatus($0.id) { true } else { false } }
     }
 
-    private func topBar(pages: Pages, dots: Dots) -> some View {
+    private func topBar(pages: Pages, dots: Dots, landscape: Bool) -> some View {
         let panes = pages.panes
         return HStack {
             TitleButton(model: model, open: $titleOpen)
@@ -185,8 +185,8 @@ struct SpaceCarousel: View {
                 // Leaves the bar's buttons on the right uncovered.
                 .frame(maxWidth: 240, alignment: .leading)
             Spacer()
-            if dots.kinds.count > 1 {
-                pager(pages: pages, dots: dots)
+            if landscape && dots.kinds.count > 1 {
+                dots
             }
             Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
                 .accessibilityLabel("Search")
@@ -209,57 +209,47 @@ struct SpaceCarousel: View {
         .frame(minHeight: 50)
     }
 
-    /// The page dots in a tinted capsule in the nav bar. The capsule is outside the pager, so a
-    /// horizontal scroller in a page can never take its drag: a drag across it changes page.
-    private func pager(pages: Pages, dots: Dots) -> some View {
+    /// The bar under the composer: the page dots on the swipe tint, full width and flush with the
+    /// bottom edge. It sits outside the pager, so a horizontal scroller in a page can never take
+    /// its drag: a drag across it changes page, and a swipe up opens the sheet on the tab last
+    /// used, a long one on Agents. The composer above wears the same tint, since a swipe there
+    /// changes page too.
+    private func pageHandle(pages: Pages, dots: Dots) -> some View {
         let ids = pages.pageIDs
         let index = pages.index(of: page)
         let prev = index > 0 ? index - 1 : nil
         let next = index + 1 < ids.count ? index + 1 : nil
-        return dots
-            .padding(.horizontal, 14)
-            .frame(minHeight: 32)
-            .background(Capsule().fill(Self.swipeTint))
-            .overlay(Capsule().strokeBorder(Self.swipeEdge, lineWidth: 1))
-            .contentShape(Capsule())
-            .gesture(DragGesture(minimumDistance: 12).onEnded { drag in
-                guard abs(drag.translation.width) > Self.sideSwipe else { return }
-                let target = drag.translation.width < 0 ? next : prev
-                Log.info("pager: swipe \(drag.translation.width < 0 ? "left" : "right"), page \(target.map { ids[$0] } ?? "none")")
-                if let target { go(ids[target]) }
-            })
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("pager")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: if let next { go(ids[next]) }
-                case .decrement: if let prev { go(ids[prev]) }
-                @unknown default: break
-                }
+        return Group {
+            if ids.count > 1 { dots } else { Color.clear.frame(height: 7) }
+        }
+        .frame(maxWidth: .infinity, minHeight: 40)
+        .background(SwipeArea.tint.ignoresSafeArea(edges: .bottom))
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("page handle")
+        .accessibilityAction(named: "Open spaces and agents") { titleOpen = true }
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: if let next { go(ids[next]) }
+            case .decrement: if let prev { go(ids[prev]) }
+            @unknown default: break
             }
+        }
+        .gesture(DragGesture(minimumDistance: Self.shortSwipe).onEnded { drag in
+            let across = drag.translation.width, up = -drag.translation.height
+            if abs(across) > abs(up) {
+                guard abs(across) > Self.sideSwipe else { return }
+                let target = across < 0 ? next : prev
+                Log.info("page handle: swipe \(across < 0 ? "left" : "right"), page \(target.map { ids[$0] } ?? "none")")
+                if let target { go(ids[target]) }
+                return
+            }
+            guard up > 0 else { return }
+            if up > Self.longSwipe { sheetTab = .agents }
+            Log.info("page handle: swipe up \(Int(up)) pt, sheet on \(sheetTab)")
+            titleOpen = true
+        })
     }
-
-    /// The grabber under the composer, in the same tint as the pager: a swipe up from it opens the
-    /// sheet on the tab last used, a long one on Agents.
-    private var pageHandle: some View {
-        Capsule().fill(Color.accentColor.opacity(0.35)).frame(width: 40, height: 5)
-            .frame(maxWidth: .infinity, minHeight: 28)
-            .background(Capsule().fill(Self.swipeTint).padding(.horizontal, 12).padding(.vertical, 2))
-            .contentShape(Rectangle())
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("page handle")
-            .accessibilityAction(named: "Open spaces and agents") { titleOpen = true }
-            .gesture(DragGesture(minimumDistance: Self.shortSwipe).onEnded { drag in
-                guard abs(drag.translation.height) > abs(drag.translation.width), drag.translation.height < 0 else { return }
-                if drag.translation.height < -Self.longSwipe { sheetTab = .agents }
-                Log.info("page handle: swipe up \(Int(-drag.translation.height)) pt, sheet on \(sheetTab)")
-                titleOpen = true
-            })
-    }
-
-    /// The colour shift every swipe area wears: the accent at low opacity, with a hairline edge.
-    private static let swipeTint = Color.accentColor.opacity(0.14)
-    private static let swipeEdge = Color.accentColor.opacity(0.28)
 
     private func go(_ id: String) { withAnimation { page = id } }
 
@@ -534,4 +524,10 @@ private struct Dots: View {
                 }
         }
     }
+}
+
+/// The colour every area wears where a horizontal swipe changes the pane: the bar under the
+/// composer, and the composer itself.
+enum SwipeArea {
+    static let tint = Color.accentColor.opacity(0.16)
 }
