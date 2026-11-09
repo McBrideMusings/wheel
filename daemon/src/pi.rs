@@ -92,6 +92,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     Ok(DriverHandle {
         input: DriverInput(input),
         events: events_rx,
+        steers: false,
         _group: ProcessGroup(pid),
     })
 }
@@ -234,6 +235,8 @@ impl Driver {
                 self.request(Pending::Prompt, json!({"type": "prompt", "message": text}))
                     .await
             }
+            // Never sent: this agent's `steers` is false.
+            Input::Steer { .. } | Input::Withdraw { .. } | Input::SendNow { .. } => Ok(()),
             Input::Cancel => {
                 if !self.in_turn || self.aborted {
                     return Ok(());

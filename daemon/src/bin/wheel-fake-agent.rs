@@ -8,6 +8,13 @@
 //! written out when its first prompt arrives; `--resume` of an id with no transcript exits 1, as
 //! Claude Code does.
 //!
+//! A user message that carries a `uuid` is echoed back with `isReplay: true` when the process takes
+//! it in, as Claude Code does under `--replay-user-messages`. A message that arrives while a turn
+//! runs is taken in after that turn's reply, into the same turn, which then ends with one `result`;
+//! `cancel_async_message` withdraws one not taken in yet (`cancelled` says whether it was still
+//! waiting), and `priority: "now"` interrupts the running turn and runs the message as a turn of
+//! its own.
+//!
 //! It answers `initialize` with three models (`default`, `sonnet`, `haiku`) and permission mode
 //! `default` (or the `--permission-mode` it was started with), takes `set_permission_mode` (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`) and
 //! `set_model` for those values and refuses any other, and stops the running turn on `interrupt`:
@@ -80,7 +87,7 @@ mod codex;
 #[path = "wheel-fake-agent/pi.rs"]
 mod pi;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -246,6 +253,16 @@ struct State {
     rules: Mutex<Vec<(String, Option<String>)>>,
     interrupted: AtomicBool,
     interrupt: Notify,
+    /// The ids of messages read from stdin and not taken in yet.
+    waiting: Mutex<HashSet<String>>,
+}
+
+/// A user message read from stdin.
+struct Prompt {
+    text: String,
+    uuid: Option<String>,
+    /// `priority: "now"`: it interrupts the running turn and starts its own.
+    now: bool,
 }
 
 impl State {
@@ -849,8 +866,9 @@ async fn main() {
         rules: Mutex::new(Vec::new()),
         interrupted: AtomicBool::new(false),
         interrupt: Notify::new(),
+        waiting: Mutex::new(HashSet::new()),
     });
-    let (prompts, mut prompts_rx) = mpsc::unbounded_channel::<String>();
+    let (prompts, mut prompts_rx) = mpsc::unbounded_channel::<Prompt>();
     let reader_out = out.clone();
     let reader_state = state.clone();
     tokio::spawn(async move {
@@ -871,7 +889,16 @@ async fn main() {
                             .filter_map(|b| b["text"].as_str())
                             .collect(),
                     };
-                    let _ = prompts.send(text);
+                    let uuid = message["uuid"].as_str().map(String::from);
+                    if let Some(uuid) = &uuid {
+                        reader_state.waiting.lock().unwrap().insert(uuid.clone());
+                    }
+                    let now = message["priority"] == "now";
+                    if now {
+                        reader_state.interrupted.store(true, Ordering::SeqCst);
+                        reader_state.interrupt.notify_waiters();
+                    }
+                    let _ = prompts.send(Prompt { text, uuid, now });
                 }
                 Some("control_request") => {
                     control(&reader_out, &reader_state, &message);
@@ -902,7 +929,20 @@ async fn main() {
     let args = Arc::new(args);
     // `/clear` moves the process into a new conversation without restarting it.
     let mut session = args.session.clone();
-    while let Some(text) = prompts_rx.recv().await {
+    // Messages read ahead of the turn that runs them: a `now` message found while looking for ones
+    // to take into the running turn.
+    let mut ahead: VecDeque<Prompt> = VecDeque::new();
+    loop {
+        let next = match ahead.pop_front() {
+            Some(next) => next,
+            None => match prompts_rx.recv().await {
+                Some(next) => next,
+                None => break,
+            },
+        };
+        let Some(text) = taken(&out, &state, &session, next) else {
+            continue;
+        };
         state.interrupted.store(false, Ordering::SeqCst);
         let mut turn = Turn {
             out: out.clone(),
@@ -927,6 +967,21 @@ async fn main() {
         } else {
             keep(&session, user_entry(json!(text)));
             answer(&mut turn, &args, &text).await;
+            // Messages that arrived during the turn join it, unless it was interrupted.
+            while !state.interrupted.load(Ordering::SeqCst) {
+                let Ok(more) = prompts_rx.try_recv() else {
+                    break;
+                };
+                if more.now {
+                    ahead.push_back(more);
+                    break;
+                }
+                let Some(more) = taken(&out, &state, &session, more) else {
+                    continue;
+                };
+                keep(&session, user_entry(json!(more)));
+                answer(&mut turn, &args, &more).await;
+            }
             keep(&session, turn_over());
         }
         out.send(json!({
@@ -959,6 +1014,24 @@ async fn main() {
             }));
         }
     }
+}
+
+/// Take in `prompt`: its text, or none when it was withdrawn first. A message with an id is echoed
+/// back as the host asked for with `--replay-user-messages`.
+fn taken(out: &Out, state: &State, session: &str, prompt: Prompt) -> Option<String> {
+    if let Some(uuid) = &prompt.uuid {
+        if !state.waiting.lock().unwrap().remove(uuid) {
+            return None;
+        }
+        out.send(json!({
+            "type": "user",
+            "uuid": uuid,
+            "isReplay": true,
+            "message": {"role": "user", "content": prompt.text},
+            "session_id": session,
+        }));
+    }
+    Some(prompt.text)
 }
 
 /// Answer one of the host's control requests.
@@ -1003,6 +1076,11 @@ fn control(out: &Out, state: &State, message: &Value) {
             state.interrupted.store(true, Ordering::SeqCst);
             state.interrupt.notify_waiters();
             success(json!({"still_queued": []}));
+        }
+        Some("cancel_async_message") => {
+            let uuid = request["message_uuid"].as_str().unwrap_or_default();
+            let cancelled = state.waiting.lock().unwrap().remove(uuid);
+            success(json!({"cancelled": cancelled}));
         }
         other => refuse(format!("unsupported control request {other:?}")),
     }

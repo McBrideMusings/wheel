@@ -1204,6 +1204,14 @@ enum AgentCommand {
         /// The message's turn id.
         turn: u64,
     },
+    /// Run a queued message now: the running turn is interrupted and the message goes ahead of the
+    /// rest of the queue. `agent send` prints the turn. Fails when the message is not queued.
+    SendNow {
+        /// An agent pane's id or its agent name.
+        agent: String,
+        /// The message's turn id.
+        turn: u64,
+    },
     /// Take back every queued message; the running turn is untouched. Fails when none is queued.
     ClearQueue {
         /// An agent pane's id or its agent name.
@@ -3000,6 +3008,15 @@ async fn agent_cancel(conn: &mut Conn, agent: String) -> Result<(), Fail> {
 
 async fn agent_unsend(conn: &mut Conn, agent: String, turn: u64) -> Result<(), Fail> {
     simple(conn, |req| ClientMsg::AgentUnsend {
+        req: Some(req),
+        agent,
+        turn,
+    })
+    .await
+}
+
+async fn agent_send_now(conn: &mut Conn, agent: String, turn: u64) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::AgentSendNow {
         req: Some(req),
         agent,
         turn,
@@ -5929,6 +5946,9 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Unsend { agent, turn }) => {
                 agent_unsend(&mut conn, agent, turn).await
+            }
+            Command::Agent(AgentCommand::SendNow { agent, turn }) => {
+                agent_send_now(&mut conn, agent, turn).await
             }
             Command::Agent(AgentCommand::ClearQueue { agent }) => {
                 agent_clear_queue(&mut conn, agent).await
