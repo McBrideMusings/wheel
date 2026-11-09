@@ -28,10 +28,10 @@ SP1="$(w space ls | jget spaces.0.id)"
 SP2="$(w space ls | jget spaces.1.id)"
 
 for v in issues project; do
-  printf '[artifacts.%s-native]\nmcp = "exec %s serve"\nshared = true\ntitle = "%s"\n' "$v" "$HOUSE" "$v" >>"$INST/wheel.toml"
+  printf '[artifacts.%s]\nmcp = "exec %s serve"\nshared = true\ntitle = "%s"\n' "$v" "$HOUSE" "$v" >>"$INST/wheel.toml"
 done
 
-call() { w artifact call "$1-native" "$2" ${4:+"$4"} --scope machine --space "$3" 2>&1; }
+call() { w artifact call "$1" "$2" ${4:+"$4"} --scope machine --space "$3" 2>&1; }
 has() { printf %s "$1" | grep -q -- "$2"; }
 hasnt() { ! has "$1" "$2"; }
 

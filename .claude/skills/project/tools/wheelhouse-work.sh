@@ -23,12 +23,12 @@ PANE="$(w space ls | jq -r --arg s "$SP" '.spaces[] | select(.id==$s) | [.root |
 OPANE="$(w space ls | jq -r --arg s "$OTHER" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 
 for v in implement swarm; do
-  printf '[artifacts.%s-native]\nmcp = "exec %s serve"\nshared = true\ntitle = "%s"\n' "$v" "$HOUSE" "$v" >>"$INST/wheel.toml"
+  printf '[artifacts.%s]\nmcp = "exec %s serve"\nshared = true\ntitle = "%s"\n' "$v" "$HOUSE" "$v" >>"$INST/wheel.toml"
 done
 # A call's answer: the page's components as JSON, or the tool's own error text. The asking pane is
 # the space's first pane, which `spawn_agent` splits.
 call() {
-  local out; out="$(w artifact call "$1-native" "$2" ${4:+"$4"} --scope machine --space "$3" --pane "$PANE" 2>&1)"
+  local out; out="$(w artifact call "$1" "$2" ${4:+"$4"} --scope machine --space "$3" --pane "$PANE" 2>&1)"
   printf %s "$out" | jq -r '.resource.text' 2>/dev/null || printf %s "$out"
 }
 has() { printf %s "$1" | grep -q -- "$2"; }
@@ -44,8 +44,8 @@ WHEEL_PANE="$A2" w work set --item bead:other-y2 --stage edit >/dev/null
 # read of the resource subscribes the host to it.
 for v in implement swarm; do
   P="$(w pane split "$PANE" right | awk '{print $1}')"
-  w pane kind "$P" web --artifact "$v-native" --scope machine >/dev/null
-  w artifact read "$v-native" "a2ui://$v-native" --scope machine --space "$SP" >/dev/null 2>&1
+  w pane kind "$P" web --artifact "$v" --scope machine >/dev/null
+  w artifact read "$v" "a2ui://$v" --scope machine --space "$SP" >/dev/null 2>&1
 done
 shows_item() { has "$(call implement get_page "$SP")" "bead wheel-x1"; }
 check "the Implement page shows the declared item within 10 seconds" poll 10 shows_item

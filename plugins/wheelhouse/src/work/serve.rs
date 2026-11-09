@@ -31,8 +31,8 @@ pub enum Mode {
 impl Mode {
     fn name(self) -> &'static str {
         match self {
-            Mode::Implement => "implement-native",
-            Mode::Swarm => "swarm-native",
+            Mode::Implement => "implement",
+            Mode::Swarm => "swarm",
         }
     }
     fn uri(self) -> String {

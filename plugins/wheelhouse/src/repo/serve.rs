@@ -19,13 +19,17 @@ use crate::core::project::Origin;
 use crate::core::table;
 use crate::view::{View, MIME};
 
-pub const NAME: &str = "repo-native";
-const URI: &str = "a2ui://repo-native";
+pub const NAME: &str = "repo";
+const URI: &str = "a2ui://repo";
 const SURFACE: &str = "repo";
 
 #[derive(Default)]
 struct Ui {
     q: String,
+    /// "history" shows stashes and commits; anything else shows the branches.
+    tab: String,
+    /// The column the branches are ordered by; empty is `state`, which groups safe-to-delete, blocked and live.
+    sort: String,
     show: String,
     sel: Option<String>,
     notice: Option<(bool, String)>,
@@ -65,6 +69,22 @@ fn matches(b: &Branch, ui: &Ui) -> bool {
             "prs" => b.pr.is_some(),
             _ => true,
         }
+}
+
+/// The order of two branches under `sort`; ties fall back to the newest first, then the name.
+fn order(a: &Branch, b: &Branch, sort: &str) -> std::cmp::Ordering {
+    let group = |x: &Branch| match kinds(x) { "dead" => 0, "blocked" => 1, _ => 2 };
+    let ci = |x: &Branch| match x.pr.as_ref().and_then(|p| p.ci) { Some("fail") => 0, Some("pass") => 2, Some(_) => 1, None => 3 };
+    let wt = |x: &Branch| x.worktree.as_ref().map(|w| w.path.rsplit('/').next().unwrap_or(&w.path).to_string());
+    let first = match sort {
+        "branch" => a.branch.cmp(&b.branch),
+        "worktree" => match (wt(a), wt(b)) { (Some(x), Some(y)) => x.cmp(&y), (Some(_), None) => std::cmp::Ordering::Less, (None, Some(_)) => std::cmp::Ordering::Greater, _ => std::cmp::Ordering::Equal },
+        "pr" => match (a.pr.as_ref().map(|p| p.number), b.pr.as_ref().map(|p| p.number)) { (Some(x), Some(y)) => y.cmp(&x), (Some(_), None) => std::cmp::Ordering::Less, (None, Some(_)) => std::cmp::Ordering::Greater, _ => std::cmp::Ordering::Equal },
+        "checks" => ci(a).cmp(&ci(b)),
+        "updated" => std::cmp::Ordering::Equal,
+        _ => group(a).cmp(&group(b)),
+    };
+    first.then(b.ts.cmp(&a.ts)).then(a.branch.cmp(&b.branch))
 }
 
 fn row(b: &Branch, ui: &Ui, at: i64) -> Value {
@@ -127,47 +147,62 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         page.push(p.boxed("notice", "v", vec![l], json!({ "border": if *ok { "ok" } else { "bad" }, "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
     }
     if s.error.is_none() {
+        let history = ui.tab == "history";
+        p.choose("tab", "/set_tab", if history { "history" } else { "branches" },
+            vec![json!({ "value": "branches", "text": "Branches" }), json!({ "value": "history", "text": "History" })], true, false);
         p.search("search", "set_query", &ui.q, "Search");
+        // The views choice keeps its place on the History tab, disabled, so no control moves between tabs.
         p.choose("views", "/set_show", if ui.show.is_empty() { "all" } else { &ui.show }, vec![
             json!({ "value": "all", "text": "All" }), json!({ "value": "dead", "text": "Safe to delete" }),
-            json!({ "value": "worktrees", "text": "Worktrees" }), json!({ "value": "prs", "text": "With a PR" })], true, false);
-        let shown: Vec<&Branch> = s.branches.iter().filter(|b| matches(b, ui)).collect();
-        let count = p.label("count", &format!("{} of {}", shown.len(), s.branches.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("tools", "h", vec!["search".into(), "views".into(), count],
-            json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": ["flex", null, 96], "trailing": 1 })));
-        let sect = |title: &str, f: &dyn Fn(&Branch) -> bool| {
-            let rows: Vec<Value> = shown.iter().filter(|b| f(b)).map(|b| row(b, ui, at)).collect();
-            (!rows.is_empty()).then(|| table::section(title, rows))
+            json!({ "value": "worktrees", "text": "Worktrees" }), json!({ "value": "prs", "text": "With a PR" })], true, history);
+        let sort = if ui.sort.is_empty() { "state" } else { ui.sort.as_str() };
+        p.choose("sort", "/set_sort", sort, vec![
+            json!({ "value": "state", "text": "Sort: State" }), json!({ "value": "updated", "text": "Sort: Updated" }),
+            json!({ "value": "branch", "text": "Sort: Branch" }), json!({ "value": "worktree", "text": "Sort: Worktree" }),
+            json!({ "value": "pr", "text": "Sort: PR" }), json!({ "value": "checks", "text": "Sort: Checks" })], false, history);
+        let q = ui.q.to_lowercase();
+        let stashes: Vec<&(String, String, String)> = s.stashes.iter().filter(|(r, subj, _)| q.is_empty() || format!("{r} {subj}").to_lowercase().contains(&q)).collect();
+        let commits: Vec<&Commit> = s.commits.iter().filter(|c| q.is_empty() || format!("{} {} {}", c.sha, c.subject, c.author).to_lowercase().contains(&q)).collect();
+        let mut shown: Vec<&Branch> = s.branches.iter().filter(|b| matches(b, ui)).collect();
+        shown.sort_by(|a, b| order(a, b, sort));
+        let count_text = if history { format!("{} of {}", stashes.len() + commits.len(), s.stashes.len() + s.commits.len()) } else { format!("{} of {}", shown.len(), s.branches.len()) };
+        let count = p.label("count", &count_text, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
+        page.push(p.boxed("tools", "h", vec!["tab".into(), "search".into(), "views".into(), "sort".into(), count],
+            json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": [null, "flex", null, null, 96], "trailing": 1 })));
+        let mut t = if history {
+            let default = s.default.as_deref().unwrap_or("the default branch");
+            let stash_rows: Vec<Value> = stashes.iter().map(|(r, subj, when)| json!({ "id": r, "path": r, "depth": 0, "kids": 0, "collapsed": false, "dim": false,
+                "sel": ui.sel.as_deref() == Some(r.as_str()), "menu": [], "cells": [
+                    cell(r.as_str(), json!({ "key": "ref", "mono": true })), cell(subj.as_str(), json!({ "key": "subject" })),
+                    cell("", json!({ "key": "author" })), cell(when.as_str(), json!({ "key": "when", "tone": "muted" }))] })).collect();
+            let commit_rows: Vec<Value> = commits.iter().map(|c| json!({ "id": c.sha, "path": c.sha, "depth": 0, "kids": 0, "collapsed": false, "dim": false,
+                "sel": ui.sel.as_deref() == Some(c.sha.as_str()), "menu": [], "cells": [
+                    cell(c.sha.as_str(), json!({ "key": "ref", "mono": true })), cell(c.subject.as_str(), json!({ "key": "subject" })),
+                    cell(c.author.as_str(), json!({ "key": "author", "tone": "muted" })), cell(ago(c.ts, at), json!({ "key": "when", "tone": "muted" }))] })).collect();
+            let sections: Vec<Value> = [
+                (!stash_rows.is_empty()).then(|| table::section("Stashes", stash_rows)),
+                (!commit_rows.is_empty()).then(|| table::section(&format!("Commits on {default}"), commit_rows)),
+            ].into_iter().flatten().collect();
+            let columns = vec![
+                table::column("ref", "Commit", json!(90), false, false), table::column("subject", "Subject", json!("flex"), false, true),
+                table::column("author", "Author", json!(140), false, true), table::column("when", "When", json!(70), false, false),
+            ];
+            table::component(columns, sections, "select_branch", "select_branch", ("when", false),
+                if s.stashes.is_empty() && s.commits.is_empty() { "No stashes or commits." } else { "Nothing matches the search." })
+        } else {
+            let sections = vec![table::section("", shown.iter().map(|b| row(b, ui, at)).collect())];
+            let columns = vec![
+                table::column("branch", "Branch", json!("flex"), false, true), table::column("worktree", "Worktree", json!(180), false, true),
+                table::column("vs", format!("vs {}", s.default.as_deref().unwrap_or("default")).as_str(), json!(90), false, false),
+                table::column("pr", "PR", json!(60), false, false), table::column("ci", "Checks", json!(84), false, false),
+                table::column("state", "State", json!(150), false, true), table::column("updated", "Updated", json!(70), false, false),
+            ];
+            table::component(columns, sections, "select_branch", "select_branch", ("updated", false),
+                if s.branches.is_empty() { "No branches besides the default." } else { "Nothing matches the search." })
         };
-        let sections: Vec<Value> = [
-            sect("Safe to delete", &|b| kinds(b) == "dead"),
-            sect("Dead, but blocked", &|b| kinds(b) == "blocked"),
-            sect("Branches", &|b| kinds(b) == "live"),
-        ].into_iter().flatten().collect();
-        let columns = vec![
-            table::column("branch", "Branch", json!("flex"), false, true), table::column("worktree", "Worktree", json!(180), false, true),
-            table::column("vs", format!("vs {}", s.default.as_deref().unwrap_or("default")).as_str(), json!(90), false, false),
-            table::column("pr", "PR", json!(60), false, false), table::column("ci", "Checks", json!(84), false, false),
-            table::column("state", "State", json!(150), false, true), table::column("updated", "Updated", json!(70), false, false),
-        ];
-        let mut t = table::component(columns, sections, "select_branch", "select_branch", ("updated", false),
-            if s.branches.is_empty() { "No branches besides the default." } else { "Nothing matches the search." });
         t["id"] = json!("table");
         p.put(t);
         page.push(p.boxed("table.b", "v", vec!["table".into()], json!({})));
-        if !s.stashes.is_empty() || !s.commits.is_empty() {
-            let mut lines = vec![];
-            for (i, (r, subject, when)) in s.stashes.iter().enumerate() {
-                lines.push(p.label(&format!("stash{i}"), &format!("{r}  {subject}  ({when})"), json!({ "mono": true, "tone": "muted", "size": 11 })));
-            }
-            for (i, c) in s.commits.iter().enumerate() {
-                lines.push(p.label(&format!("commit{i}"), &format!("{}  {}  {} · {}", c.sha, c.subject, c.author, ago(c.ts, at)), json!({ "mono": true, "size": 11 })));
-            }
-            let h = p.label("recent.h", &format!("Stashes and recent commits on {}", s.default.as_deref().unwrap_or("the default branch")), json!({ "weight": "bold", "tone": "muted" }));
-            let mut all = vec![h];
-            all.extend(lines);
-            page.push(p.boxed("recent", "v", all, json!({ "spacing": 3, "padding": [18, 0, 0, 0] })));
-        }
     }
     p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
     p.out
@@ -196,6 +231,12 @@ struct Query {
 struct BranchName {
     /// The local branch.
     branch: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct RowId {
+    /// The picked row's id, which is its branch.
+    id: String,
 }
 
 #[derive(Clone)]
@@ -231,17 +272,27 @@ impl Server {
         self.with(&meta, |_, ui| ui.q = q)
     }
 
+    #[tool(description = "Show the branches or the history", meta = ui_meta())]
+    fn set_tab(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.tab = value)
+    }
+
+    #[tool(description = "Order the branches by a column", meta = ui_meta())]
+    fn set_sort(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.sort = value)
+    }
+
     #[tool(description = "Show all, dead, worktrees or prs", meta = ui_meta())]
     fn set_show(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
         self.with(&meta, |_, ui| ui.show = if value == "all" { String::new() } else { value })
     }
 
     #[tool(description = "Select a branch's row", meta = ui_meta())]
-    fn select_branch(&self, meta: RequestMetaObject, Parameters(BranchName { branch }): Parameters<BranchName>) -> CallToolResult {
+    fn select_branch(&self, meta: RequestMetaObject, Parameters(RowId { id: branch }): Parameters<RowId>) -> CallToolResult {
         self.with(&meta, |_, ui| ui.sel = if ui.sel.as_deref() == Some(&branch) { None } else { Some(branch) })
     }
 
-    #[tool(description = "Delete a dead branch, and its worktree first when it has one", meta = ui_meta())]
+    #[tool(description = "Delete a dead branch, and its worktree first when it has one")]
     fn delete_branch(&self, meta: RequestMetaObject, Parameters(BranchName { branch }): Parameters<BranchName>) -> CallToolResult {
         let o = Origin::of(&meta);
         let result = delete(&o.dir, &branch);
@@ -336,6 +387,18 @@ mod tests {
     }
 
     #[test]
+    fn the_history_tab_lists_stashes_and_commits_in_a_table() {
+        let mut s = Snapshot { name: "t".into(), default: Some("origin/main".into()), ..Default::default() };
+        s.stashes.push(("stash@{0}".into(), "On main: wip".into(), "2h ago".into()));
+        let ui = Ui { tab: "history".into(), ..Default::default() };
+        let c = components(&s, &ui);
+        let table = c.iter().find(|v| v["id"] == "table").unwrap();
+        assert_eq!(table["sections"][0]["title"], "Stashes");
+        assert_eq!(table["sections"][0]["rows"][0]["cells"][1]["text"], "On main: wip");
+        assert!(c.iter().any(|v| v["id"] == "views" && v["modifiers"][0]["disabled"] == true));
+    }
+
+    #[test]
     fn the_page_lists_its_branches_in_sections() {
         let mut s = Snapshot { name: "t".into(), default: Some("origin/main".into()), ..Default::default() };
         s.branches.push(Branch { branch: "feat".into(), ts: 0, subject: "s".into(), author: "a".into(), ahead: Some(2), behind: Some(0),
@@ -343,7 +406,7 @@ mod tests {
             local_only: 2, dead: None, blocked: None });
         let c = components(&s, &Ui::default());
         let table = c.iter().find(|v| v["id"] == "table").unwrap();
-        assert_eq!(table["sections"][0]["title"], "Branches");
+        assert_eq!(table["sections"][0]["title"], "");
         assert_eq!(table["sections"][0]["rows"][0]["cells"][0]["text"], "feat");
     }
 }

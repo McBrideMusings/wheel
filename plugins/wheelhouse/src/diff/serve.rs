@@ -20,8 +20,8 @@ use crate::core::project::Origin;
 use crate::core::table;
 use crate::view::{View, MIME};
 
-pub const NAME: &str = "diff-native";
-const URI: &str = "a2ui://diff-native";
+pub const NAME: &str = "diff";
+const URI: &str = "a2ui://diff";
 const SURFACE: &str = "diff";
 /// The most hunk lines drawn for one file.
 const DRAWN: usize = 600;
