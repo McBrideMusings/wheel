@@ -789,20 +789,16 @@ impl<'a> Model<'a> {
         let focus = ui.view != "graph";
         let layout = self.layout(ui);
         let mut ids = vec![];
-        let mut bar = vec![p.button(
-            "graph.cross",
-            if focus { "Show in graph" } else { "Focus on selected" },
-            "graph_cross",
-            json!({}),
-            json!({ "disabled": !focus && ui.sel.is_none() }),
-        )];
+        let mut bar: Vec<String> = vec![];
         if focus {
             bar.push(p.button("graph.back", "‹ Back", "focus_back", json!({}), json!({ "disabled": ui.fhist.is_empty() })));
             p.choose("graph.depth", "/set_depth", &ui.depth.to_string(), vec![
                 json!({ "value": "1", "text": "1 hop" }), json!({ "value": "2", "text": "2 hops" }), json!({ "value": "3", "text": "3 hops" })], true, false);
             bar.push("graph.depth".into());
         }
-        ids.push(p.boxed("graph.bar", "h", bar, json!({ "spacing": 8, "padding": [10, 0, 4, 0] })));
+        if focus {
+            ids.push(p.boxed("graph.bar", "h", bar, json!({ "spacing": 8, "padding": [10, 0, 4, 0] })));
+        }
         let caption = layout["caption"].as_str().unwrap_or("");
         let tone = if layout["captionBad"].as_bool() == Some(true) { "bad" } else { "muted" };
         ids.push(p.label("graph.caption", caption, json!({ "tone": tone, "size": 12, "padding": [0, 2, 8, 2] })));
@@ -1176,7 +1172,7 @@ fn whole_scene(l: &Value, centre: bool) -> Value {
         let lane_name = lanes.get(lane[i]).and_then(|v| v["name"].as_str()).unwrap_or("");
         let tip = tip_bead(ids[i], st[i], titles[i], Some(format!("{lane_name} · layer {}", rank[i])));
         let one = |shape: Value, min: f64, max: f64| {
-            let mut v = json!({ "id": ids[i], "action": "graph_select", "doubleAction": "open_bead", "tip": tip,
+            let mut v = json!({ "id": ids[i], "action": "open_bead", "tip": tip,
                 "label": format!("{}, {}, {}", ids[i], WORDS[st[i]], titles[i]), "minZoom": min });
             v.as_object_mut().unwrap().extend(shape.as_object().unwrap().clone());
             if max.is_finite() {

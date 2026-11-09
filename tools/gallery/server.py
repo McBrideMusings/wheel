@@ -297,7 +297,7 @@ own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows c
 ])
 
 own = klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", [
-    ("Canvas", "Canvas", [("a display list with a camera and hit regions; needs a scene, not shown", secondary("Used by pages that draw graphs, such as the Beads dependency graph."))]),
+    ("Canvas", "Canvas", [("a display list with a camera and hit regions; needs a scene, not shown", secondary("Used by pages that draw graphs, such as the Beads dependency graph. A hit's tip grows to the height of its lines, and the hover outline clears when the page scrolls the canvas under a still pointer."))]),
 ])
 ONLY = sys.argv[2] if len(sys.argv) > 2 else None  # a class name shows that class alone
 page = col([

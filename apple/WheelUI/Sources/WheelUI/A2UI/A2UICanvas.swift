@@ -471,7 +471,11 @@ private struct CanvasStage: View {
             .onAppear { size = geo.size; reported = scene.sizeKnown; applyFocus(geo.size); report(geo.size.width) }
             .onChange(of: geo.size) { _, new in size = new; report(new.width) }
             .onChange(of: scene.focusKey) { _, _ in applyFocus(geo.size) }
-            .onChange(of: scene.fitKey) { _, _ in applyFocus(geo.size) }
+            .onChange(of: scene.fitKey) { _, _ in applyFocus(geo.size); hover = nil }
+            // The pointer position is only reported when the pointer moves. When the page scrolls the canvas under a still pointer,
+            // the stored position no longer matches the pointer, so the outline would ride along with the content; drop it until
+            // the next move.
+            .onGeometryChange(for: CGPoint.self, of: { $0.frame(in: .global).origin }) { _ in hover = nil }
         }
         .frame(height: height)
         .focusable()
@@ -528,6 +532,7 @@ private struct CanvasStage: View {
                 }
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 9).padding(.vertical, 5)
         .frame(maxWidth: 320, alignment: .leading)
         .background(.regularMaterial)

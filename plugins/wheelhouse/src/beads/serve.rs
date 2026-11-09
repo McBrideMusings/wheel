@@ -208,6 +208,7 @@ impl Server {
             if let Some(cur) = ui.detail.take() {
                 ui.hist.push(cur);
             }
+            ui.sel = Some(id.clone());
             ui.detail = Some(id);
             ui.ran = None;
         })
@@ -270,22 +271,6 @@ impl Server {
     fn graph_select(&self, meta: RequestMetaObject, Parameters(BeadId { id }): Parameters<BeadId>) -> CallToolResult {
         self.with(&meta, |_, ui| {
             ui.sel = if id.is_empty() || ui.sel.as_deref() == Some(&id) { None } else { Some(id) };
-        })
-    }
-
-    #[tool(description = "Show in graph from Focus, or Focus on selected from Graph", meta = ui_meta())]
-    fn graph_cross(&self, meta: RequestMetaObject) -> CallToolResult {
-        self.with(&meta, |snap, ui| {
-            if ui.view == "focus" {
-                let m = graph::Model::new(snap, ui);
-                if let Some(c) = m.focus_idx(ui) {
-                    ui.sel = Some(m.id_of(c).to_string());
-                }
-                ui.centre = true;
-                ui.view = "graph".into();
-            } else if ui.sel.is_some() {
-                ui.view = "focus".into();
-            }
         })
     }
 
