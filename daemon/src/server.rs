@@ -1477,6 +1477,21 @@ async fn handle(
                 }
             }
         }
+        ClientMsg::AgentSendNow { req, agent, turn } => {
+            match state
+                .resolve_agent(&agent)
+                .and_then(|a| a.agent.send_now(turn))
+            {
+                Ok(()) => {
+                    tracing::info!(%peer, %agent, turn, "agent send now");
+                    req.map(|req| ServerMsg::Ok { req })
+                }
+                Err(message) => {
+                    tracing::warn!(%peer, %agent, turn, %message, "agent send now failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
         ClientMsg::AgentClearQueue { req, agent } => {
             match state
                 .resolve_agent(&agent)

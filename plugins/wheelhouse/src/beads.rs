@@ -849,8 +849,11 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
         let count_id = p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("bar", "h", vec![status, kind, label, pri, sort, clear, count_id], json!({ "spacing": 8, "align": "center", "widths": ["flex", "flex", "flex", "flex", "flex", Value::Null, Value::Null], "padding": [4, 0, 0, 0] })));
-        // A Row, never a sideways-scrolling list: the five menus share the width and Clear and the count keep their size.
+        // Two groups, by proximity: what narrows the list (status, type, label, priority) and what shapes the result (sort, Clear,
+        // the count). Inside a group the gap is 6; the gap between groups is whatever width is left, never under 16.
+        let narrow = p.boxed("bar.narrow", "h", vec![status, kind, label, pri], json!({ "spacing": 6, "align": "center" }));
+        let shape = p.boxed("bar.shape", "h", vec![sort, clear, count_id], json!({ "spacing": 6, "align": "center" }));
+        page.push(p.boxed("bar", "h", vec![narrow, shape], json!({ "spacing": 16, "align": "center", "widths": ["flex", Value::Null], "padding": [4, 0, 0, 0] })));
         crate::core::layout::modify(&mut p.out, "bar", json!({ "frame": { "maxWidth": "infinity" } }));
         for id in ["filters.status", "filters.type", "filters.label", "filters.pri", "filters.sort"] {
             if let Some(c) = p.out.iter_mut().find(|c| c["id"] == id) {
@@ -1042,7 +1045,11 @@ mod tests {
         let find = c.iter().find(|x| x["id"] == "find").unwrap();
         assert_eq!(find["children"], json!(["search", "views"]));
         let bar = c.iter().find(|x| x["id"] == "bar").unwrap();
-        assert_eq!(bar["children"], json!(["filters.status", "filters.type", "filters.label", "filters.pri", "filters.sort", "filters.clear", "count"]));
+        assert_eq!(bar["children"], json!(["bar.narrow", "bar.shape"]));
+        let narrow = c.iter().find(|x| x["id"] == "bar.narrow").unwrap();
+        assert_eq!(narrow["children"], json!(["filters.status", "filters.type", "filters.label", "filters.pri"]), "what narrows the list sits together");
+        let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
+        assert_eq!(shape["children"], json!(["filters.sort", "filters.clear", "count"]), "sort, Clear and the count sit together");
         assert!(c.iter().all(|x| x["id"] != "chips"), "no filter is on, so no chips");
         let boxes: Vec<&Value> = c.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("kpi") && !i.contains('.') && i != "kpis")).collect();
         assert_eq!(boxes.len(), 4);

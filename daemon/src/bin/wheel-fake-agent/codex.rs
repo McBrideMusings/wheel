@@ -68,6 +68,11 @@ struct State {
     answers: Mutex<HashMap<u64, oneshot::Sender<String>>>,
     interrupted: AtomicBool,
     interrupt: Notify,
+    /// The turn running, for `turn/steer` to name.
+    current: Mutex<Option<String>>,
+    /// Messages sent with `turn/steer` that the turn has not taken in, with the id each was sent
+    /// under.
+    steered: Mutex<Vec<(String, String)>>,
 }
 
 fn home() -> PathBuf {
@@ -178,6 +183,8 @@ pub async fn main() {
         answers: Mutex::new(HashMap::new()),
         interrupted: AtomicBool::new(false),
         interrupt: Notify::new(),
+        current: Mutex::new(None),
+        steered: Mutex::new(Vec::new()),
     });
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -244,6 +251,28 @@ pub async fn main() {
                 let state = state.clone();
                 tokio::spawn(async move { run_turn(state, turn, prompt, policy).await });
             }
+            Some("turn/steer") => {
+                let running = state.current.lock().unwrap().clone();
+                if running.is_some() && params["expectedTurnId"].as_str() == running.as_deref() {
+                    let text: String = params["input"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|c| c["text"].as_str())
+                        .collect();
+                    let client_id = params["clientUserMessageId"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    state.steered.lock().unwrap().push((client_id, text));
+                    out.send(json!({"id": id, "result": {"turnId": running}}));
+                } else {
+                    out.send(json!({"id": id, "error": {
+                        "code": -32600,
+                        "message": "no active turn matches expectedTurnId",
+                    }}));
+                }
+            }
             Some("turn/interrupt") => {
                 state.interrupted.store(true, Ordering::SeqCst);
                 state.interrupt.notify_waiters();
@@ -306,6 +335,7 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
         "turn/started",
         json!({"threadId": thread, "turn": {"id": turn, "status": "inProgress", "items": []}}),
     );
+    *state.current.lock().unwrap() = Some(turn.clone());
     let user =
         json!({"type": "userMessage", "id": "user", "content": [{"type": "text", "text": prompt}]});
     out.notify("item/started", at(json!({"item": user})));
@@ -405,16 +435,26 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
     }
     if prompt.contains("work slowly") {
         for _ in 0..300 {
-            if state.interrupted.load(Ordering::SeqCst) {
+            if state.interrupted.load(Ordering::SeqCst) || !state.steered.lock().unwrap().is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+    // Messages steered into the turn are taken in before its reply, each under the id it came with.
+    let steered = std::mem::take(&mut *state.steered.lock().unwrap());
+    for (client_id, text) in &steered {
+        let item = json!({"type": "userMessage", "id": format!("steered-{client_id}"), "clientId": client_id, "content": [{"type": "text", "text": text}]});
+        out.notify("item/started", at(json!({"item": item})));
+        out.notify("item/completed", at(json!({"item": item})));
+    }
 
     let interrupted = state.interrupted.load(Ordering::SeqCst);
     if !interrupted {
         say(&format!("echo: {prompt}"));
+        for (_, text) in &steered {
+            say(&format!("echo: {text}"));
+        }
         let item =
             json!({"type": "agentMessage", "id": "reply", "text": "", "phase": "final_answer"});
         out.notify("item/started", at(json!({"item": item})));
@@ -429,6 +469,7 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
             at(json!({"item": {"type": "agentMessage", "id": "reply", "text": reply, "phase": "final_answer"}})),
         );
     }
+    *state.current.lock().unwrap() = None;
     let count = state.turns.fetch_add(1, Ordering::SeqCst) + 1;
     out.notify(
         "thread/tokenUsage/updated",

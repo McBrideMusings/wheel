@@ -172,6 +172,9 @@ struct UserMessage: View {
                 HStack(spacing: 8) {
                     Text("Queued").foregroundStyle(.secondary)
                     if queue.takeBackAvailable, let turn = row.turn {
+                        Button("Send now") { chat.sendNow(turn: turn) }
+                            .buttonStyle(.chat("queue", "Send this queued message now"))
+                            .help("Interrupt the running turn and send this message now (Control-Return sends a new message this way)")
                         Button("Edit") { chat.edit(turn: turn, text: text) }
                             .buttonStyle(.chat("queue", "Edit this queued message"))
                             .help("Take this message out of the queue and edit it in the composer")

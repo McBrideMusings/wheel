@@ -13,6 +13,7 @@ struct ProtocolTests {
         #expect(try ClientMsg.agentSend(req: nil, agent: "w5", text: "hi").json() == #"{"agent":"w5","op":"agent_send","text":"hi"}"#)
         #expect(try ClientMsg.agentCancel(req: 6, agent: "w5").json() == #"{"agent":"w5","op":"agent_cancel","req":6}"#)
         #expect(try ClientMsg.agentUnsend(req: 7, agent: "w5", turn: 3).json() == #"{"agent":"w5","op":"agent_unsend","req":7,"turn":3}"#)
+        #expect(try ClientMsg.agentSendNow(req: 9, agent: "w5", turn: 4).json() == #"{"agent":"w5","op":"agent_send_now","req":9,"turn":4}"#)
         #expect(try ClientMsg.agentClearQueue(req: 8, agent: "w5").json() == #"{"agent":"w5","op":"agent_clear_queue","req":8}"#)
         #expect(try ClientMsg.agentDetach(agent: "w5").json() == #"{"agent":"w5","op":"agent_detach"}"#)
     }

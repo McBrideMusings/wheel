@@ -584,6 +584,9 @@ final class PhoneModel {
             chat.sendUnsend = { [weak self, weak chat] turn in
                 if let chat { self?.unsend(chat, turn: turn) }
             }
+            chat.sendNow = { [weak self, weak chat] turn in
+                if let chat { self?.sendNow(chat, turn: turn) }
+            }
             chat.sendClearQueue = { [weak self, weak chat] in
                 if let chat { self?.clearQueue(chat) }
             }
@@ -650,6 +653,15 @@ final class PhoneModel {
         let req = client.req()
         agentReqs[req] = chat.name
         client.send(.agentUnsend(req: req, agent: chat.name, turn: turn))
+    }
+
+    func sendNow(_ chat: AgentChat, turn: UInt64) {
+        Log.info("send now \(chat.name) turn \(turn)")
+        chat.error = nil
+        guard let client else { return }
+        let req = client.req()
+        agentReqs[req] = chat.name
+        client.send(.agentSendNow(req: req, agent: chat.name, turn: turn))
     }
 
     func clearQueue(_ chat: AgentChat) {
