@@ -152,6 +152,9 @@ final class DebugServer {
         let method = requestLine.first.map(String.init) ?? "GET"
         let target = URLComponents(string: requestLine.count > 1 ? String(requestLine[1]) : "/") ?? URLComponents()
         let query = Dictionary((target.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, b in b })
+        if TestMode.hidden, ["/window/front", "/window/back", "/app/activate", "/input/mouse", "/input/key"].contains(target.path) {
+            return refuse("403 Forbidden", "this app is hidden for a check and never takes focus or input; use the debug routes (/reply/*, /key, /pane/*), or set WHEEL_VISIBLE=1 to watch")
+        }
         switch (method, target.path) {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),

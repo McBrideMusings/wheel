@@ -21,6 +21,10 @@ The gallery (`tools/gallery/server.py`, shown as the `gallery` artifact) draws e
 
 When the user asks for an ADR, write it to `docs/adr`, commit it and land it in the same turn, and say so in the report; its text in chat is the report, never a draft waiting for approval.
 
+## A GUI check never takes the person's screen, focus or keyboard
+
+The Debug Mac app started with `WHEEL_DEBUG_PORT` set runs hidden (`TestMode`, `apple/Mac/Sources/WheelApp.swift`): no Dock icon, never the active app, every window transparent and deaf to the pointer; its debug server refuses `/app/activate`, `/window/front`, `/window/back`, `/input/mouse` and `/input/key`. A check drives it through the other debug routes (`/key`, `/agent`, `/pane/*`, `/reply/*`), reads `GET /state` and draws with `POST /window/snapshot`. No check or agent command uses `osascript`, `CGEvent`, `cliclick`, `open` without `-g`, `screencapture` or `WHEEL_VISIBLE=1` (that one is for the person to watch a run). The local hook `.claude/hooks/no_gui_takeover.py` denies a Bash command, and any `.sh` it runs, that does. Checks that still use real input are listed under `wheel-eg4e.12`.
+
 ## Tracking
 
 Work is tracked in beads (`bd`, prefix `wheel`). `bd ready` shows what is unblocked.

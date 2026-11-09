@@ -80,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let server = DebugServer(model: model)
         server.start()
         debug = server
+        if TestMode.hidden { TestMode.hideWindows() }
         #endif
         model.start()
         model.openLaunchWindows()
@@ -197,3 +198,28 @@ struct WheelCommands: Commands {
         return held.indices.contains(index) ? model.spaceName(held[index]) : nil
     }
 }
+
+#if DEBUG
+/// An app started for a check (WHEEL_DEBUG_PORT set) never shows itself: no Dock icon, never the
+/// active app, every window fully transparent and deaf to the pointer, so a check cannot take the
+/// person's focus, draw over their screen or receive their typing. Window shots still draw the view
+/// hierarchy. `WHEEL_VISIBLE=1` turns it off for a person who wants to watch a run.
+enum TestMode {
+    static var hidden: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["WHEEL_DEBUG_PORT"] != nil && env["WHEEL_VISIBLE"] != "1"
+    }
+
+    @MainActor static func hideWindows() {
+        NSApp.setActivationPolicy(.accessory)
+        Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                for window in NSApp.windows where window.alphaValue != 0 || !window.ignoresMouseEvents {
+                    window.alphaValue = 0
+                    window.ignoresMouseEvents = true
+                }
+            }
+        }
+    }
+}
+#endif
