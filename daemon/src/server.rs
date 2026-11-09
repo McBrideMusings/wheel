@@ -434,10 +434,15 @@ impl AppState {
     /// The environment for the agent in `pane` of `space`: where `wheel` reaches this daemon, and a
     /// `PATH` that finds it. Empty when this daemon has no address to give.
     pub(crate) fn agent_env(&self, pane: &str) -> Vec<(String, String)> {
+        self.agent_env_for(Some(pane))
+    }
+
+    /// [`AppState::agent_env`] for an agent that may have no pane: with none, `WHEEL_PANE` is not set.
+    pub(crate) fn agent_env_for(&self, pane: Option<&str>) -> Vec<(String, String)> {
         let Some(control) = self.control.lock().unwrap().clone() else {
             return Vec::new();
         };
-        let mut env = crate::shell::env(&control, &self.instance_dir, Some(pane));
+        let mut env = crate::shell::env(&control, &self.instance_dir, pane);
         env.push(("WHEEL_AGENT_PANE".into(), "1".into()));
         env.push((
             "PATH".into(),
@@ -646,7 +651,7 @@ impl AppState {
             cwd: cwd.into(),
             home: self.agent_home("claude"),
             brief: Some(brief),
-            env: self.agent_env(name),
+            env: self.agent_env_for(None),
             restored: false,
             conversation: None,
             context: None,
@@ -656,8 +661,13 @@ impl AppState {
             permissions: AgentPermissions::default(),
             voice: true,
         };
+        // One lock holds the check and the insert, so two starts never leave a process unowned.
+        let mut agents = self.agents.lock().unwrap();
+        if agents.contains_key(name) {
+            return Ok(());
+        }
         let agent = Agent::start(name.into(), None, config, self.perms.clone(), self.global.clone());
-        self.agents.lock().unwrap().insert(name.into(), agent);
+        agents.insert(name.into(), agent);
         Ok(())
     }
 

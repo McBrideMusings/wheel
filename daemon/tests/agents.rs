@@ -5112,7 +5112,8 @@ async fn the_voice_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
     assert!(text.contains("tools=Bash"), "{text:?}");
     assert!(text.contains("mode=dontAsk"), "{text:?}");
     assert!(text.contains("model=haiku"), "{text:?}");
-    assert!(text.contains("Bash(wheel agent send:*)"), "{text:?}");
+    assert!(text.contains("Bash(wheel agent:*)") && text.contains("Bash(wheel perm:*)"), "{text:?}");
+    assert!(text.contains("setting-sources=[]"), "{text:?}");
     assert!(!text.contains("Bash(wheel:*)"), "{text:?}");
     assert!(text.contains(&format!("Your scope is the space {space_id}")), "{text:?}");
 
@@ -5129,6 +5130,35 @@ async fn the_voice_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
     loop {
         if let ServerMsg::Error { req: Some(74), message, .. } = recv(&mut ws).await {
             assert!(message.contains("no voice orchestrator is running"), "{message:?}");
+            break;
+        }
+    }
+}
+
+/// Closing a space ends its voice orchestrator, and a start for the closed space is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_space_ends_its_voice_orchestrator() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (space_id, _) = space(&url, "/tmp").await;
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(80), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::VoiceStarted { req: 80, .. } = recv(&mut ws).await {
+            break;
+        }
+    }
+    client_op(&mut ws, 81, ClientMsg::SpaceClose { req: Some(81), id: space_id.clone(), if_empty: false }).await;
+    send(&mut ws, ClientMsg::VoiceStop { req: Some(82), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(82), message, .. } = recv(&mut ws).await {
+            assert!(message.contains("no voice orchestrator is running"), "{message:?}");
+            break;
+        }
+    }
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(83), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(83), message, .. } = recv(&mut ws).await {
+            assert!(message.contains(&format!("no space {space_id}")), "{message:?}");
             break;
         }
     }

@@ -140,6 +140,9 @@ fn arguments(launch: &Launch) -> Vec<String> {
         // The orchestrator runs only the whitelisted `wheel` commands: Bash is its one tool, and
         // `dontAsk` refuses everything the list does not name instead of asking a person.
         args.extend(["--tools".into(), "Bash".into()]);
+        // No settings file is read, the person's or the project's: their allow rules and hooks
+        // would otherwise widen what this agent may run.
+        args.extend(["--setting-sources".into(), String::new()]);
         args.extend(["--allowedTools".into(), crate::voice::ALLOWED.join(",")]);
         args.extend(["--permission-mode".into(), "dontAsk".into()]);
     } else if launch.brief.is_some() {
