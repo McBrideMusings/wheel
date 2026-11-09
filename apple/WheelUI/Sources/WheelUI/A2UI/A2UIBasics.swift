@@ -238,14 +238,20 @@ struct A2UIPresentedModals: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(18)
                 }
                 // `actions` names components of the surface (buttons, a status line) drawn in the footer, left of Close.
-                let actions = (node.props["actions"]?.arrayValue ?? []).compactMap(\.stringValue)
+                // One that names no component is left out; a long row scrolls sideways so Close stays in view.
+                let actions = (node.props["actions"]?.arrayValue ?? []).compactMap(\.stringValue).compactMap { surface.node($0) }
                 if dismiss != nil || !actions.isEmpty {
                     Divider()
-                    HStack {
-                        Spacer()
-                        ForEach(actions, id: \.self) { id in
-                            if let action = surface.node(id) { A2UIChildView(node: action, surface: surface) }
+                    HStack(spacing: 8) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(Array(actions.enumerated()), id: \.offset) { _, action in A2UIChildView(node: action, surface: surface) }
+                            }
+                            .font(.system(size: 13))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                         }
+                        .defaultScrollAnchor(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
                         if dismiss != nil { Button("Close", action: close).keyboardShortcut(.cancelAction) }
                     }
                     .padding(10)
