@@ -1,5 +1,7 @@
 import AppKit
+import SwiftUI
 import WebKit
+import WheelUI
 import WheelKit
 
 /// `render_pane`: the daemon asks this window to draw one pane as a PNG (`wheel pane shot`). A web
@@ -39,6 +41,20 @@ extension AppModel {
         // A web pane on an A2UI server draws native controls, so its shot is the window's, not WebKit's.
         let native = a2uiPanes[pane]?.isNative == true
         let web = covered || native ? nil : webPanes[pane]?.view ?? browserPanes[pane]?.view
+        // A native page in a space no window shows has no mounted view to copy from, so its own view is
+        // hosted off screen at the size the pane last had and drawn from there.
+        if web == nil, native, !shownSpaces.contains(space.id), let a2ui = a2uiPanes[pane] {
+            let size = paneFrames[pane].map { CGSize(width: max($0.width, 320), height: max($0.height, 240)) } ?? CGSize(width: 480, height: 660)
+            let host = NSHostingView(rootView: A2UIPaneView(pane: a2ui).frame(width: size.width, height: size.height).background(Color(nsColor: .windowBackgroundColor)))
+            host.frame = CGRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { refuse("the pane could not be drawn off screen"); return }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { refuse("the drawing could not be encoded as a PNG"); return }
+            Log.info("render: drew \(pane) off screen, \(Int(size.width))x\(Int(size.height)) pt, its space \(space.id) is shown by no window")
+            answer(png)
+            return
+        }
         guard web != nil || shownSpaces.contains(space.id) else {
             refuse(RenderRefusal.notShown)
             return
