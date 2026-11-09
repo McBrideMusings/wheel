@@ -98,11 +98,14 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         wrote_text: false,
         pad_text: false,
         usage: None,
+        steered: HashMap::new(),
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
     Ok(DriverHandle {
         input: DriverInput(input),
         events: events_rx,
+        steers: true,
+        withdraws: false,
         _group: ProcessGroup(pid),
     })
 }
@@ -116,6 +119,8 @@ enum Pending {
     Thread,
     TurnStart,
     Interrupt,
+    /// `turn/steer` for the message of `turn`, which comes back as the `userMessage` item `id`.
+    Steer { turn: u64, id: String },
 }
 
 /// A question Codex asked and a person has not answered.
@@ -154,6 +159,9 @@ struct Driver {
     wrote_text: bool,
     /// The next reply text opens with a paragraph break.
     pad_text: bool,
+    /// Messages sent with `turn/steer` that Codex has not taken in, by the id they were sent
+    /// under, with their turn.
+    steered: HashMap<String, u64>,
     /// The conversation as the model last saw it.
     usage: Option<ContextUse>,
 }
@@ -258,6 +266,31 @@ impl Driver {
                 )
                 .await
             }
+            Input::Steer { turn, text } => {
+                let (Some(thread), Some(running), true) =
+                    (self.thread.clone(), self.turn.clone(), self.in_turn)
+                else {
+                    self.emit(DriverEvent::SteerRefused { turn });
+                    return Ok(());
+                };
+                // The id comes back on the `userMessage` item when Codex takes the message in.
+                let id = format!("wheel-steer-{turn}");
+                self.steered.insert(id.clone(), turn);
+                self.request(
+                    Pending::Steer { turn, id: id.clone() },
+                    "turn/steer",
+                    json!({
+                        "threadId": thread,
+                        "expectedTurnId": running,
+                        "clientUserMessageId": id,
+                        "input": [{"type": "text", "text": text, "text_elements": []}],
+                    }),
+                )
+                .await
+            }
+            // Codex has no way to take a steered message back (`withdraws` is false), and a
+            // steered message is already one it holds: nothing to do.
+            Input::Withdraw { .. } | Input::SendNow { .. } => Ok(()),
             Input::Cancel => {
                 if !self.in_turn || self.interrupted {
                     return Ok(());
@@ -349,6 +382,12 @@ impl Driver {
                     tracing::warn!(pid = self.pid, error = %said, "agent interrupt refused");
                     Ok(())
                 }
+                Pending::Steer { turn, id } => {
+                    tracing::warn!(pid = self.pid, turn, error = %said, "agent steer refused");
+                    self.steered.remove(&id);
+                    self.emit(DriverEvent::SteerRefused { turn });
+                    Ok(())
+                }
             };
         }
         let result = &message["result"];
@@ -418,7 +457,7 @@ impl Driver {
                 }
                 Ok(())
             }
-            Pending::Interrupt => Ok(()),
+            Pending::Interrupt | Pending::Steer { .. } => Ok(()),
         }
     }
 
@@ -529,6 +568,13 @@ impl Driver {
 
     fn item_started(&mut self, item: &Value) {
         match item["type"].as_str() {
+            Some("userMessage") => {
+                // A steered message comes back under the id it was sent with.
+                let turn = item["clientId"].as_str().and_then(|id| self.steered.remove(id));
+                if let Some(turn) = turn {
+                    self.emit(DriverEvent::Steered { turn });
+                }
+            }
             Some("agentMessage") => {
                 // A second message in a turn starts its own paragraph.
                 self.pad_text = self.wrote_text;

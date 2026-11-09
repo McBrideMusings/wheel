@@ -23,6 +23,7 @@ public enum ClientMsg: Sendable, Equatable {
     /// Take back the message of `turn` while the agent has not answered it; the daemon refuses once it has.
     case agentUnsend(req: UInt64?, agent: String, turn: UInt64)
     /// Take back every message still waiting in the queue.
+    case agentSendNow(req: UInt64?, agent: String, turn: UInt64)
     case agentClearQueue(req: UInt64?, agent: String)
     case permAnswer(req: UInt64?, id: String, choice: String)
     /// `session` names the session the space joins (id or name); with none, wheeld picks it.
@@ -237,6 +238,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "agent_cancel", "agent": agent]; put(req)
         case let .agentUnsend(req, agent, turn):
             o = ["op": "agent_unsend", "agent": agent, "turn": turn]; put(req)
+        case let .agentSendNow(req, agent, turn):
+            o = ["op": "agent_send_now", "agent": agent, "turn": turn]; put(req)
         case let .agentClearQueue(req, agent):
             o = ["op": "agent_clear_queue", "agent": agent]; put(req)
         case let .permAnswer(req, id, choice):

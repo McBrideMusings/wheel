@@ -243,6 +243,9 @@ public final class AgentChat: ObservableObject {
     /// (`agent_unsend`), or every queued one (`agent_clear_queue`).
     public var sendUnsend: (UInt64) -> Void = { _ in }
     public var sendClearQueue: () -> Void = {}
+    /// Ask the daemon to run a queued message now (`agent_send_now`): the running turn is
+    /// interrupted and the message goes first.
+    public var sendNow: (UInt64) -> Void = { _ in }
 
     /// Texts waiting for the daemon to confirm their message is taken back, by turn. They go to the
     /// composer on the `retract` event, so a message the agent answered first is never duplicated
@@ -263,6 +266,13 @@ public final class AgentChat: ObservableObject {
         guard queue.takeBackAvailable else { return }
         UILog.info("transcript \(name): remove queued turn \(turn)")
         sendUnsend(turn)
+    }
+
+    /// Run a queued message now instead of when the running turn ends.
+    public func sendNow(turn: UInt64) {
+        guard queue.takeBackAvailable else { return }
+        UILog.info("transcript \(name): send queued turn \(turn) now")
+        sendNow(turn)
     }
 
     public func clearQueue() {

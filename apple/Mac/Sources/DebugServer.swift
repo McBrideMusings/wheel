@@ -243,8 +243,9 @@ final class DebugServer {
                     }
                     chat.edit(turn: turn, text: text)
                 case let ("remove", turn?): chat.remove(turn: turn)
+                case let ("now", turn?): chat.sendNow(turn: turn)
                 case ("clear", _): chat.clearQueue()
-                default: return refuse("400 Bad Request", "action takes edit or remove with a turn, or clear")
+                default: return refuse("400 Bad Request", "action takes edit, remove or now with a turn, or clear")
                 }
             case "/agent/message":
                 // A pick from a message's right-click menu: `row` is the message's row id and

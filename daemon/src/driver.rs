@@ -135,6 +135,16 @@ pub enum DriverEvent {
     /// The agent began a turn no prompt of wheel's started, as Claude Code does when a subagent or
     /// a background task finishes. Its end arrives as `TurnEnd` or `TurnFailed`.
     TurnStart,
+    /// How many background tasks (a background command, a subagent) the agent has running now. The
+    /// agent sends the whole count each time it changes; it works on after its turn ends while
+    /// the count is above zero.
+    Background(usize),
+    /// The agent refused the message [`DriverInput::steer`] sent as `turn` (no turn was running to
+    /// take it, say); it was not taken in and goes back to the queue.
+    SteerRefused { turn: u64 },
+    /// The agent took in the message [`DriverInput::steer`] sent as `turn`: it joins the turn
+    /// running, or starts a turn of its own when that one had ended first.
+    Steered { turn: u64 },
     /// The running turn is over; `stop_reason` is `end_turn`, `cancelled` or the agent's own reason.
     TurnEnd { stop_reason: String },
     /// The running turn ended in an error.
@@ -146,6 +156,12 @@ pub enum DriverEvent {
 /// What an agent sends its agent process.
 pub(crate) enum Input {
     Prompt(String),
+    /// A message written while a turn runs, for an agent that takes input mid-turn.
+    Steer { turn: u64, text: String },
+    /// Take back steered messages the agent has not taken in yet.
+    Withdraw { turns: Vec<u64> },
+    /// Make a steered message the agent has not taken in yet interrupt the running turn.
+    SendNow { turn: u64 },
     Cancel,
     /// `choice` is the option id the person picked, or none when the request was withdrawn.
     Answer {
@@ -176,6 +192,27 @@ impl DriverInput {
         self.put(Input::Prompt(text))
     }
 
+    /// Hand the agent `text` while a turn runs, as its terminal does when a message is typed
+    /// mid-turn: the agent takes it in after the tool call it is on, into the same turn, and
+    /// answers both with one `TurnEnd`. It reports taking it in as `Steered { turn }`. Only for a
+    /// handle whose `steers` is true.
+    pub fn steer(&self, turn: u64, text: String) -> Result<(), String> {
+        self.put(Input::Steer { turn, text })
+    }
+
+    /// Take back the steered messages of `turns` the agent has not taken in; a turn it already
+    /// took in, or never got, is left as it is.
+    pub fn withdraw(&self, turns: Vec<u64>) -> Result<(), String> {
+        self.put(Input::Withdraw { turns })
+    }
+
+    /// Have the steered message of `turn` run at once, unless the agent already took it in: it
+    /// interrupts the running turn, as the agent's terminal does for a message sent with its force
+    /// key.
+    pub fn send_now(&self, turn: u64) -> Result<(), String> {
+        self.put(Input::SendNow { turn })
+    }
+
     /// Stop the running turn; it still ends with a `TurnEnd`.
     pub fn cancel(&self) -> Result<(), String> {
         self.put(Input::Cancel)
@@ -200,6 +237,13 @@ impl DriverInput {
 pub struct DriverHandle {
     pub input: DriverInput,
     pub events: mpsc::UnboundedReceiver<DriverEvent>,
+    /// Whether the agent takes a message while a turn runs ([`DriverInput::steer`]). Codex and pi
+    /// run one turn at a time, so a message for them waits in the queue until the turn ends.
+    pub steers: bool,
+    /// Whether a steered message the agent has not taken in yet can be taken back
+    /// ([`DriverInput::withdraw`]). Only then is a message steered the moment it is sent; without
+    /// it a message waits in the queue, where Remove and Edit work, until Send now steers it.
+    pub withdraws: bool,
     /// Kills the process group when the agent is dropped.
     pub(crate) _group: ProcessGroup,
 }

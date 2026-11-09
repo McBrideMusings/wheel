@@ -546,7 +546,7 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
+async fn a_queued_message_shows_at_once_and_starts_inside_the_running_turn() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = ready_agent(&url).await;
@@ -625,8 +625,10 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
         },
     )
     .await;
+    // The agent takes the second message into the turn running, so it starts inside turn 1 and
+    // both turns end together.
     let mut order = Vec::new();
-    while order.last() != Some(&"turn_end 2".to_string()) {
+    while !(order.contains(&"turn_end 1".to_string()) && order.contains(&"turn_end 2".to_string())) {
         if let ServerMsg::Agent { event, .. } = recv(&mut ws).await {
             match event.event {
                 AgentEvent::TurnStart { turn } => order.push(format!("turn_start {turn}")),
@@ -635,7 +637,7 @@ async fn a_queued_message_shows_at_once_and_starts_after_the_running_turn() {
             }
         }
     }
-    assert_eq!(order, ["turn_end 1", "turn_start 2", "turn_end 2"]);
+    assert_eq!(order, ["turn_start 2", "turn_end 2", "turn_end 1"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2137,6 +2139,200 @@ async fn a_message_is_taken_back_from_the_queue_or_before_the_agent_answers_it()
     assert!(
         matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
         "{waited:?}"
+    );
+}
+
+/// Read agent events from `ws` until the turn ends of every turn in `turns` have arrived; returns
+/// every event read, in order.
+async fn events_until_ended(ws: &mut Ws, turns: &[u64]) -> Vec<AgentEvent> {
+    let (mut seen, mut ended) = (Vec::new(), Vec::new());
+    while !turns.iter().all(|t| ended.contains(t)) {
+        if let ServerMsg::Agent { event, .. } = recv(ws).await {
+            if let AgentEvent::TurnEnd { turn, .. } = &event.event {
+                ended.push(*turn);
+            }
+            seen.push(event.event);
+        }
+    }
+    seen
+}
+
+/// Wait for the first thought of the turn running, so a message sent next arrives mid-turn.
+async fn until_thinking(ws: &mut Ws) {
+    loop {
+        if let ServerMsg::Agent {
+            event: StampedEvent {
+                event: AgentEvent::Thought { .. },
+                ..
+            },
+            ..
+        } = recv(ws).await
+        {
+            break;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_during_a_turn_goes_to_the_agent_and_joins_that_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (pane, agent) = agent_pane(&url, None).await;
+    attach(&mut ws, &agent, 1).await;
+    queue(&mut ws, &agent, "work slowly 3", 2).await;
+    until_thinking(&mut ws).await;
+    queue(&mut ws, &agent, "two", 3).await;
+    // The agent takes the message in after the step it is on: it starts under its own turn id
+    // inside the running turn, and both turns end together.
+    let events = events_until_ended(&mut ws, &[1, 2]).await;
+    let position = |wanted: &AgentEvent| events.iter().position(|e| e == wanted);
+    let start = position(&AgentEvent::TurnStart { turn: 2 }).expect("turn 2 started");
+    let reply = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: two")))
+        .expect("the agent answered the second message");
+    assert!(start < reply, "{events:?}");
+    let ends = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        .count();
+    assert_eq!(ends, 2, "{events:?}");
+    let waited = agent_wait(&mut ws, &pane, 10.0, 4).await;
+    assert!(
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_message_sent_now_interrupts_the_turn_and_runs_first() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (pane, agent) = agent_pane(&url, None).await;
+    let send_now = |turn, req| ClientMsg::AgentSendNow {
+        req: Some(req),
+        agent: agent.clone(),
+        turn,
+    };
+    attach(&mut ws, &agent, 1).await;
+    // Nothing is queued: refused.
+    let refused = ok_or_error(&mut ws, send_now(1, 2), 2).await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("no queued message")),
+        "{refused:?}"
+    );
+    queue(&mut ws, &agent, "work slowly 3000", 3).await;
+    until_thinking(&mut ws).await;
+    queue(&mut ws, &agent, "two", 4).await;
+    assert_eq!(ok_or_error(&mut ws, send_now(2, 5), 5).await, ServerMsg::Ok { req: 5 });
+    let events = events_until_ended(&mut ws, &[1, 2]).await;
+    let stopped = events.iter().any(
+        |e| matches!(e, AgentEvent::TurnEnd { turn: 1, stop_reason } if stop_reason == "cancelled"),
+    );
+    assert!(stopped, "turn 1 was interrupted: {events:?}");
+    let reply = events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: two")));
+    assert!(reply, "turn 2 ran: {events:?}");
+    let waited = agent_wait(&mut ws, &pane, 10.0, 6).await;
+    assert!(
+        matches!(waited, ServerMsg::AgentWaited { ready: true, .. }),
+        "{waited:?}"
+    );
+}
+
+/// Wait for turn `turn` to start, so a message sent next arrives mid-turn.
+async fn until_turn_start(ws: &mut Ws, turn: u64) {
+    loop {
+        if let ServerMsg::Agent {
+            event: StampedEvent {
+                event: AgentEvent::TurnStart { turn: t },
+                ..
+            },
+            ..
+        } = recv(ws).await
+        {
+            if t == turn {
+                break;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_during_a_pi_turn_joins_it_and_can_be_sent_now() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = pi_agent(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    // Steered into the running turn: pi takes it in after its tool call and both end together.
+    queue(&mut ws, &agent, "work slowly 3", 2).await;
+    until_turn_start(&mut ws, 1).await;
+    queue(&mut ws, &agent, "two", 3).await;
+    let events = events_until_ended(&mut ws, &[1, 2]).await;
+    let start = events.iter().position(|e| *e == AgentEvent::TurnStart { turn: 2 });
+    let echo = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: two")));
+    assert!(start.is_some() && echo.is_some() && start < echo, "{events:?}");
+    // Sent now: pi's queue is emptied, the turn aborted, and the message runs as a turn of its own.
+    queue(&mut ws, &agent, "work slowly 30", 4).await;
+    until_turn_start(&mut ws, 3).await;
+    queue(&mut ws, &agent, "three", 5).await;
+    let now = ClientMsg::AgentSendNow {
+        req: Some(6),
+        agent: agent.clone(),
+        turn: 4,
+    };
+    assert_eq!(ok_or_error(&mut ws, now, 6).await, ServerMsg::Ok { req: 6 });
+    let events = events_until_ended(&mut ws, &[3, 4]).await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { turn: 3, stop_reason } if stop_reason == "cancelled")),
+        "{events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: three"))),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_message_waits_in_the_queue_until_sent_now_and_is_then_steered_into_the_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let agent = start_agent_as(&url, &pane, None, Some("codex")).await;
+    attach(&mut ws, &agent, 1).await;
+    queue(&mut ws, &agent, "work slowly", 2).await;
+    until_turn_start(&mut ws, 1).await;
+    queue(&mut ws, &agent, "two", 3).await;
+    // Codex cannot give a steered message back, so this one is not handed over yet: it stays queued
+    // where Remove and Edit work.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let shown = attach(&mut ws, &agent, 4).await;
+    assert!(
+        !shown.contains(&AgentEvent::TurnStart { turn: 2 }),
+        "turn 2 waits: {shown:?}"
+    );
+    let now = ClientMsg::AgentSendNow {
+        req: Some(5),
+        agent: agent.clone(),
+        turn: 2,
+    };
+    assert_eq!(ok_or_error(&mut ws, now, 5).await, ServerMsg::Ok { req: 5 });
+    let events = events_until_ended(&mut ws, &[1, 2]).await;
+    assert!(events.contains(&AgentEvent::TurnStart { turn: 2 }), "{events:?}");
+    let said: String = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(said.contains("echo: two"), "turn 1 took the message in: {said:?}");
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "cancelled")),
+        "nothing was interrupted: {events:?}"
     );
 }
 

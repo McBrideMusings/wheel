@@ -80,6 +80,14 @@ struct Press {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct Changed {
+    /// The data model path the control writes: `/query` for the search field.
+    path: String,
+    /// What the control now holds.
+    value: Value,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Row {
     /// The run's id, as the row's path.
     path: String,
@@ -132,9 +140,8 @@ fn answer(dir: &str, ui: &Ui) -> CallToolResult {
     let runs = Runs::new(dir);
     let list = runs.list();
     let runners = config::list(&config::machine_file(), dir);
-    let logs: HashMap<String, String> = page::shown(&list, ui).into_iter()
-        .filter_map(|r| runs.log(&r.id, 0, Some(page::LOG_LINES)).ok().map(|(t, _)| (r.id.clone(), t))).collect();
-    let messages = page::update(page::components(&runners, &list, ui, &logs, crate::now()));
+    let log = ui.open.as_ref().and_then(|id| runs.log(id, 0, Some(page::LOG_LINES)).ok().map(|(t, _)| t));
+    let messages = page::update(page::components(&runners, &list, ui, log.as_deref(), crate::now()));
     CallToolResult::success(vec![ContentBlock::resource(ResourceContents::TextResourceContents {
         uri: page::URI.into(), mime_type: Some(page::MIME.into()), text: messages.to_string(), meta: None })])
 }
@@ -173,7 +180,7 @@ impl Server {
         self.with(&meta, |_, _| {})
     }
 
-    #[tool(description = "The Run button of a command: starts it and opens its log, or shows its confirm question first", meta = ui_meta())]
+    #[tool(description = "The Run button of a command: starts it (its row then offers Open), or shows its confirm question first", meta = ui_meta())]
     fn press_run(&self, meta: RequestMetaObject, Parameters(a): Parameters<Press>) -> CallToolResult {
         self.with(&meta, |dir, ui| {
             ui.problem = None;
@@ -182,10 +189,7 @@ impl Server {
                 return;
             };
             match Runs::new(dir).start(&runner, a.confirmed.as_deref(), None) {
-                Ok(s) => {
-                    ui.asking = None;
-                    ui.closed.remove(&s.record.id);
-                }
+                Ok(_) => ui.asking = None,
                 Err(StartError::Confirm(_)) => {
                     if a.confirmed.is_some() {
                         ui.problem = Some(format!("{} changed since it was asked about; answer again", a.name));
@@ -202,16 +206,32 @@ impl Server {
         self.with(&meta, |_, ui| ui.asking = None)
     }
 
-    #[tool(description = "Close a run's block on the page", meta = ui_meta())]
-    fn close_log(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
+    #[tool(description = "Open a run's log, filling the pane", meta = ui_meta())]
+    fn open_run(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.open = Some(path))
+    }
+
+    #[tool(description = "Back from a run's log to the list of commands", meta = ui_meta())]
+    fn close_log(&self, meta: RequestMetaObject) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.open = None)
+    }
+
+    #[tool(description = "Fold a group of commands shut, or open it again", meta = ui_meta())]
+    fn toggle_group(&self, meta: RequestMetaObject, Parameters(Row { path }): Parameters<Row>) -> CallToolResult {
         self.with(&meta, |_, ui| {
-            ui.closed.insert(path);
+            if !ui.folded.remove(&path) {
+                ui.folded.insert(path);
+            }
         })
     }
 
-    #[tool(description = "Show the next batch of older runs", meta = ui_meta())]
-    fn show_older(&self, meta: RequestMetaObject) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.more += 1)
+    #[tool(description = "A control on the page changed: the search field, at path /query", meta = ui_meta())]
+    fn data_changed(&self, meta: RequestMetaObject, Parameters(a): Parameters<Changed>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if a.path == "/query" {
+                ui.query = a.value.as_str().unwrap_or_default().to_string();
+            }
+        })
     }
 
     #[tool(description = "Stop a run from its block on the page", meta = ui_meta())]

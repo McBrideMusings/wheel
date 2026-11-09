@@ -192,7 +192,7 @@ fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run(
     host.request("resources/subscribe", json!({ "uri": uri }), json!({}));
 
     let (_, page) = page_call(&mut host, "get_runner", json!({}));
-    for want in ["Runner", "3 runners", "This project", "This machine", "echo restarted", "No runs yet."] {
+    for want in ["Commands", "slow", "restart", "tidy", "Run slow", "Run tidy"] {
         assert!(page.contains(want), "{want} missing from:\n{page}");
     }
 
@@ -203,10 +203,14 @@ fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run(
     let (_, page) = page_call(&mut host, "cancel_ask", json!({}));
     assert!(!page.contains("Ends every agent."), "{page}");
 
-    // A command without one starts at once, its log opens, and the page is announced as it grows.
+    // A command without one starts at once and its row offers Open; Open fills the pane with its log,
+    // and the page is announced as the log grows.
     host.announced.clear();
     let (_, page) = page_call(&mut host, "press_run", json!({ "name": "slow" }));
-    assert!(page.contains("running") && page.contains("slow"), "{page}");
+    assert!(page.contains("running") && page.contains("Open the log of slow"), "{page}");
+    let id = host.call("list_runs", json!({})).1[0]["id"].as_str().unwrap().to_string();
+    let (_, page) = page_call(&mut host, "open_run", json!({ "path": id }));
+    assert!(page.contains("Back to the commands") && page.contains("echo first-line"), "{page}");
     let end = Instant::now() + Duration::from_secs(15);
     let (mut saw_first, mut saw_second) = (false, false);
     while !saw_second {
@@ -230,6 +234,8 @@ fn the_page_lists_commands_asks_before_a_confirm_command_and_follows_a_live_run(
     // The question's Run button starts it; a stop ends a running run.
     let (_, page) = page_call(&mut host, "press_run", json!({ "name": "restart", "confirmed": "echo restarted" }));
     assert!(!page.contains("Ends every agent."), "starting it closes the question: {page}");
+    let (_, page) = page_call(&mut host, "close_log", json!({}));
+    assert!(page.contains("Open the last log of slow") && !page.contains("Back to the commands"), "{page}");
     let runs = host.call("list_runs", json!({})).1;
     assert!(runs.as_array().unwrap().iter().any(|r| r["name"] == "restart"), "{runs}");
     let _ = std::fs::remove_dir_all(&root);

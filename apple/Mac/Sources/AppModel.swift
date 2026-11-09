@@ -422,6 +422,8 @@ final class AppModel {
     /// Agent requests (a composer's send, an attach), by agent, so a failure shows under
     /// that agent's composer.
     @ObservationIgnored private var agentReqs: [UInt64: String] = [:]
+    /// The sends whose message runs now once the daemon names its turn (Control-Return).
+    @ObservationIgnored private var sendNowReqs: Set<UInt64> = []
     /// The attaches among `agentReqs`, and the agents whose attach the daemon refused (a restore
     /// keeps an agent's program unstarted until its program is found). Every client hears
     /// `agent_state_changed` and `agent_config`, attached or not, so the first one naming a
@@ -702,6 +704,9 @@ final class AppModel {
             chat.queue.takeBackAvailable = serverProtocol >= ServerProtocol.current
             chat.sendUnsend = { [weak self, weak chat] turn in
                 if let chat { self?.unsend(chat, turn: turn) }
+            }
+            chat.sendNow = { [weak self, weak chat] turn in
+                if let chat { self?.sendNow(chat, turn: turn) }
             }
             chat.sendClearQueue = { [weak self, weak chat] in
                 if let chat { self?.clearQueue(chat) }
@@ -995,8 +1000,9 @@ final class AppModel {
         case let .permResolved(id, choice):
             perms.removeAll { $0.id == id }
             Log.info("permission \(id) resolved: \(choice)")
-        case let .agentQueued(req, _, _):
+        case let .agentQueued(req, agent, turn):
             agentReqs[req] = nil
+            if sendNowReqs.remove(req) != nil { client.send(.agentSendNow(req: client.req(), agent: agent, turn: turn)) }
         case let .opened(req, pane, url):
             if openReqs.removeValue(forKey: req) != nil { browserPanes[pane]?.opened(url) }
         case let .ok(req):
@@ -1574,7 +1580,7 @@ final class AppModel {
     /// Send an agent's draft, the text in its composer, with the paths of its attached files after
     /// it. The draft and the chips clear once the message goes out; when it can't go out now (or a
     /// chip failed), nothing is sent and both stay in the box.
-    func send(_ chat: AgentChat) {
+    func send(_ chat: AgentChat, now: Bool = false) {
         let files = attachments(for: chat)
         guard files.ready else {
             chat.error = "A file could not be attached; remove it to send."
@@ -1592,6 +1598,7 @@ final class AppModel {
         chat.pinned = true
         let req = client.req()
         agentReqs[req] = chat.name
+        if now { sendNowReqs.insert(req) }
         // Sized, never the text, as the daemon logs it.
         Log.info("send to \(chat.name), \(text.count) chars, \(files.paths.count) attachments")
         client.send(.agentSend(req: req, agent: chat.name, text: text))
@@ -1612,6 +1619,14 @@ final class AppModel {
         let req = client.req()
         agentReqs[req] = chat.name
         client.send(.agentUnsend(req: req, agent: chat.name, turn: turn))
+    }
+
+    func sendNow(_ chat: AgentChat, turn: UInt64) {
+        Log.info("send now \(chat.name) turn \(turn)")
+        chat.error = nil
+        let req = client.req()
+        agentReqs[req] = chat.name
+        client.send(.agentSendNow(req: req, agent: chat.name, turn: turn))
     }
 
     func clearQueue(_ chat: AgentChat) {
