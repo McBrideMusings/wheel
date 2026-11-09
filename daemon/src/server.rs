@@ -623,6 +623,7 @@ impl AppState {
             restart: self.agent_timing.lock().unwrap().restart,
             model,
             permissions,
+            voice: false,
         };
         let agent = Agent::start(
             name.into(),
@@ -631,6 +632,31 @@ impl AppState {
             self.perms.clone(),
             self.global.clone(),
         );
+        self.agents.lock().unwrap().insert(name.into(), agent);
+        Ok(())
+    }
+
+    /// Start the voice orchestrator's agent `name` in `cwd` on `model`, with `brief` as its whole
+    /// instructions (`crate::voice`). It belongs to no pane.
+    pub(crate) fn spawn_voice_agent(&self, name: &str, cwd: &str, brief: String, model: &str) -> Result<(), String> {
+        let command = self.agent_ready("claude")?.command;
+        let config = AgentConfig {
+            agent: Harness::Claude,
+            command,
+            cwd: cwd.into(),
+            home: self.agent_home("claude"),
+            brief: Some(brief),
+            env: self.agent_env(name),
+            restored: false,
+            conversation: None,
+            context: None,
+            on_saved: None,
+            restart: self.agent_timing.lock().unwrap().restart,
+            model: Some(model.into()),
+            permissions: AgentPermissions::default(),
+            voice: true,
+        };
+        let agent = Agent::start(name.into(), None, config, self.perms.clone(), self.global.clone());
         self.agents.lock().unwrap().insert(name.into(), agent);
         Ok(())
     }
@@ -1373,6 +1399,20 @@ async fn handle(
             });
             None
         }
+        ClientMsg::VoiceStart { req, scope } => match state.voice_start(&scope) {
+            Ok(agent) => {
+                tracing::info!(%peer, %scope, %agent, "voice start");
+                req.map(|req| ServerMsg::VoiceStarted { req, scope, agent })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::VoiceStop { req, scope } => match state.voice_stop(&scope) {
+            Ok(()) => {
+                tracing::info!(%peer, %scope, "voice stop");
+                req.map(|req| ServerMsg::Ok { req })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
         ClientMsg::AgentCancel { req, agent } => {
             match state
                 .resolve_agent(&agent)

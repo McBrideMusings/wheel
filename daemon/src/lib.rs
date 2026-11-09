@@ -44,6 +44,7 @@ mod skills;
 mod submit;
 pub mod usage;
 mod views;
+mod voice;
 
 pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};

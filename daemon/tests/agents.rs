@@ -5071,3 +5071,65 @@ async fn a_cancel_stops_a_turn_the_agent_started_itself() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
+
+/// The voice orchestrator is an agent that belongs to no pane: `voice_start` names it, it runs on
+/// the fast model with the speech brief and the `wheel` whitelist and no other tool, a second start
+/// finds the same one, a scope that names no space is refused, and `voice_stop` ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_voice_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (space_id, _) = space(&url, "/tmp").await;
+
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(70), scope: "s-missing".into() }).await;
+    let refused = loop {
+        match recv(&mut ws).await {
+            ServerMsg::Error { req: Some(70), message, .. } => break message,
+            _ => {}
+        }
+    };
+    assert!(refused.contains("no space s-missing"), "{refused:?}");
+
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(71), scope: space_id.clone() }).await;
+    let agent = loop {
+        if let ServerMsg::VoiceStarted { req: 71, scope, agent } = recv(&mut ws).await {
+            assert_eq!(scope, space_id);
+            break agent;
+        }
+    };
+    assert_eq!(agent, format!("voice-{space_id}"));
+
+    send(&mut ws, ClientMsg::VoiceStart { req: Some(72), scope: space_id.clone() }).await;
+    let again = loop {
+        if let ServerMsg::VoiceStarted { req: 72, agent, .. } = recv(&mut ws).await {
+            break agent;
+        }
+    };
+    assert_eq!(again, agent, "a second start finds the running orchestrator");
+
+    attach_and_send(&mut ws, &agent, "show voice").await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("tools=Bash"), "{text:?}");
+    assert!(text.contains("mode=dontAsk"), "{text:?}");
+    assert!(text.contains("model=haiku"), "{text:?}");
+    assert!(text.contains("Bash(wheel agent send:*)"), "{text:?}");
+    assert!(!text.contains("Bash(wheel:*)"), "{text:?}");
+    assert!(text.contains(&format!("Your scope is the space {space_id}")), "{text:?}");
+
+    let panes = layout(&url).await;
+    assert!(!panes.to_string().contains(&agent), "no pane holds the orchestrator");
+
+    send(&mut ws, ClientMsg::VoiceStop { req: Some(73), scope: space_id.clone() }).await;
+    loop {
+        if let ServerMsg::Ok { req: 73 } = recv(&mut ws).await {
+            break;
+        }
+    }
+    send(&mut ws, ClientMsg::VoiceStop { req: Some(74), scope: space_id }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(74), message, .. } = recv(&mut ws).await {
+            assert!(message.contains("no voice orchestrator is running"), "{message:?}");
+            break;
+        }
+    }
+}
