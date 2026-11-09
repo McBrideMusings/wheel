@@ -137,7 +137,7 @@ layout = klass("Containers and layout", "Arrange other components.", [
 nav = klass("Navigation and presentation", "Switch between or reveal content.", [
     ("Tabs", "TabView", [("three tabs", put("Tabs", tabs=[{"title": "One", "child": txt("First pane")}, {"title": "Two", "child": txt("Second pane")}, {"title": "Three", "child": txt("Third pane")}]))]),
     ("Modal", "sheet", [("button opens content in a sheet with a title bar and Done (`title`)", put("Modal", title="Details", trigger=button(txt("Open")), content=col([txt("Modal title", "h3"), txt("The modal's content.")], modifiers=[{"padding": 20}]))),
-                        ("presented true: dims and covers its own pane only, with a card and Close; dismissAction is raised on close; not shown", secondary("Modal with presented=true and dismissAction, children are the card's content."))]),
+                        ("presented true: dims and covers its own pane only, with a card and Close; dismissAction is raised on close; actions (component ids) draw in the footer left of Close; not shown", secondary("Modal with presented=true, dismissAction and actions: [button ids], children are the card's content."))]),
 ])
 
 

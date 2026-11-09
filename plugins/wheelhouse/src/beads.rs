@@ -746,19 +746,18 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
         .scripts
         .iter()
         .filter(|s| wants(s, b))
-        .map(|s| p.button(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({ "style": "primary", "fill": true })))
+        .map(|s| p.button(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({ "style": "primary" })))
         .collect();
     let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
-    let mut parts = vec![body];
+    // The buttons sit in the card's footer beside Close, with the last run's result before them.
+    let mut footer = vec![];
     if !acts.is_empty() {
-        let mut col = vec![];
         if let Some(r) = &ui.ran {
-            col.push(p.label("d.ran", r, json!({ "tone": "ok", "weight": "semibold" })));
+            footer.push(p.label("d.ran", r, json!({ "tone": "ok", "weight": "semibold" })));
         }
-        col.extend(acts);
-        parts.push(p.boxed("d.acts", "v", col, json!({ "spacing": 8, "align": "start" })));
+        footer.extend(acts);
     }
-    p.put(json!({ "id": "detail", "component": "Modal", "presented": true, "dismissAction": "close_detail", "children": parts }));
+    p.put(json!({ "id": "detail", "component": "Modal", "presented": true, "dismissAction": "close_detail", "children": [body], "actions": footer }));
     Some("detail".into())
 }
 
@@ -1001,6 +1000,18 @@ mod tests {
         assert!(matches(&ui, &b1) && !matches(&ui, &b2));
         ui.f.insert("pri".into(), "low".into());
         assert!(!matches(&ui, &b1) && matches(&ui, &b2));
+    }
+
+    #[test]
+    fn a_beads_buttons_sit_in_the_detail_footer_not_its_body() {
+        let mut s = snap(vec![bead("a", |b| b.status = "in_progress".into())]);
+        s.scripts = vec![Script { name: "resume".into(), label: Some("Resume".into()), on: vec!["wip".into()], run: "true".into() }];
+        let mut ui = Ui::default();
+        ui.detail = Some("a".into());
+        let c = page_components(&s, &ui);
+        let modal = c.iter().find(|x| x["id"] == "detail").unwrap();
+        assert_eq!(modal["actions"], json!(["d.act.resume"]), "the button is a footer action beside Close");
+        assert_eq!(modal["children"], json!(["d.body"]), "the card's body holds only the facts");
     }
 
     #[test]

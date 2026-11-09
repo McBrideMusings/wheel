@@ -185,7 +185,7 @@ struct A2UITabs: View {
 }
 
 // MARK: Modal — `trigger` opens a sheet holding `content`. With `presented` the server opens it: it dims and covers its own pane
-// (A2UIPresentedModals, drawn by the pane over the page), and `dismissAction` is raised when it closes.
+// (A2UIPresentedModals, drawn by the pane over the page), `dismissAction` is raised when it closes, and `actions` (component ids) sit in the footer beside Close.
 struct A2UIModal: View {
     let node: ComponentNode
     let surface: SurfaceModel
@@ -237,9 +237,18 @@ struct A2UIPresentedModals: View {
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading).padding(18)
                 }
-                if dismiss != nil {
+                // `actions` names components of the surface (buttons, a status line) drawn in the footer, left of Close.
+                let actions = (node.props["actions"]?.arrayValue ?? []).compactMap(\.stringValue)
+                if dismiss != nil || !actions.isEmpty {
                     Divider()
-                    HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction) }.padding(10)
+                    HStack {
+                        Spacer()
+                        ForEach(actions, id: \.self) { id in
+                            if let action = surface.node(id) { A2UIChildView(node: action, surface: surface) }
+                        }
+                        if dismiss != nil { Button("Close", action: close).keyboardShortcut(.cancelAction) }
+                    }
+                    .padding(10)
                 }
             }
             .frame(maxWidth: 640, maxHeight: .infinity)
