@@ -59,9 +59,6 @@ struct AgentPane: View {
                 takeBack: { chat.takeBack() }
             )
             .padding(10)
-            // A swipe on the composer changes page, so it wears the swipe tint edge to edge.
-            .frame(maxWidth: .infinity)
-            .background(SwipeArea.tint)
         }
     }
 }

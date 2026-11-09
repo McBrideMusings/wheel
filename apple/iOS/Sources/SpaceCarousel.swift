@@ -137,8 +137,12 @@ struct SpaceCarousel: View {
         if case let .terminal(term, _) = pane.kind {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
+                // The surface draws its own opaque background, so the tint goes over it.
+                .overlay(SwipeArea.tint.allowsHitTesting(false))
         } else if case let .agent(agent, harness, _) = pane.kind, let chat = model.chats[agent] {
             AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat)
+                // Behind the page, so what scrolls sideways on its own fill (a code block) stays untinted.
+                .background(SwipeArea.tint)
         } else if let a2ui = model.a2uiPanes[pane.id], a2ui.isNative {
             A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
@@ -526,8 +530,9 @@ private struct Dots: View {
     }
 }
 
-/// The colour every area wears where a horizontal swipe changes the pane: the bar under the
-/// composer, and the composer itself.
+/// The colour every area wears where a horizontal swipe changes the pane: the agent and terminal
+/// pages, the terminal's key row, the composer and the dots bar. A web page is not tinted: its
+/// horizontal scrollers cannot be told from the rest of it.
 enum SwipeArea {
     static let tint = Color.accentColor.opacity(0.16)
 }
