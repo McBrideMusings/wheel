@@ -489,6 +489,15 @@ final class DebugServer {
             let copied = NSPasteboard.general.string(forType: .string) ?? ""
             Log.info("debug: pressed copy on reply \(row) of \(session), \(copied.count) characters")
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["pasteboard": copied])) ?? Data("{}".utf8))
+        case ("POST", "/reply/play"):
+            // Press the play button of reply `row`: it speaks that reply, or stops it when it is
+            // the one being read. Answers with the key being read afterwards.
+            guard let session = query["agent"], let row = query["row"].flatMap(Int.init) else {
+                return refuse("400 Bad Request", "agent and row are required")
+            }
+            guard ReplyCopyRegistry.shared.play(agent: session, row: row) else { return refuse("404 Not Found", "reply \(row) is not on screen") }
+            Log.info("debug: pressed play on reply \(row) of \(session)")
+            return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["playing": (ReadAloud.shared.playing as Any?) ?? NSNull()])) ?? Data("{}".utf8))
         case ("POST", "/code/copy"):
             // Press the copy button of the `index`-th code block on screen in an agent's
             // transcript (the order of `code_blocks` in the state) and answer with the pasteboard.
@@ -2173,7 +2182,7 @@ final class DebugServer {
                     } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
                     o["reads_aloud"] = chat?.readsAloud ?? NSNull()
-                    o["read_aloud"] = ["spoken": ReadAloud.shared.spokenCount, "last": ReadAloud.shared.lastSpoken] as [String: Any]
+                    o["read_aloud"] = ["spoken": ReadAloud.shared.spokenCount, "last": ReadAloud.shared.lastSpoken, "playing": (ReadAloud.shared.playing as Any?) ?? NSNull()] as [String: Any]
                     o["composer_drag_types"] = (NSApp.wheelWindow?.firstResponder as? NSTextView)?.registeredDraggedTypes.count ?? NSNull()
                     o["attachments"] = chat.map { chat in
                         model.attachments(for: chat).chips.map { ["name": $0.name, "detail": $0.detail, "thumbnail": $0.thumbnail != nil] as [String: Any] }

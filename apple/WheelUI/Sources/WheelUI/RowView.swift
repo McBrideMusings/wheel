@@ -347,6 +347,13 @@ public final class ReplyCopyRegistry {
     func set(_ text: String, agent: String, row: Int) { markdown[agent, default: [:]][row] = text }
     func forget(agent: String, row: Int) { markdown[agent]?[row] = nil }
 
+    /// Press the play button of reply `row`. False when that reply is not on screen.
+    public func play(agent: String, row: Int) -> Bool {
+        guard let text = markdown[agent]?[row] else { return false }
+        ReadAloud.shared.toggle(text, for: agent, key: "\(agent)#\(row)")
+        return true
+    }
+
     /// Press the copy button of reply `row`: its Markdown goes to the pasteboard. False when that
     /// reply is not on screen.
     public func press(agent: String, row: Int) -> Bool {
@@ -434,10 +441,10 @@ struct AgentText: View {
                 .chatLinkHover(reply.prose, id: id, chat: chat)
             // Only the end of a finished turn keeps a line for the button; an earlier reply shows it
             // over its own corner while the pointer is on it, so the parts of a turn stay close.
-            if copyable { copy }
+            if copyable { actions }
         }
         .overlay(alignment: .topTrailing) {
-            if hovering && !copyable { copy.offset(y: -2) }
+            if hovering && !copyable { actions.offset(y: -2) }
         }
         .onHover { hovering = $0 }
         .onAppear { ReplyCopyRegistry.shared.set(text, agent: chat.name, row: id) }
@@ -460,6 +467,27 @@ struct AgentText: View {
         // No pointer to hover with: a long press on any reply opens the message menu.
         .contextMenu { MessageMenuItems(chat: chat, row: id) }
         #endif
+    }
+
+    /// The copy button and, just right of it, the play button that speaks this reply or stops it.
+    private var actions: some View {
+        HStack(spacing: 6) {
+            copy
+            play
+        }
+    }
+
+    private var play: some View {
+        let key = "\(chat.name)#\(id)"
+        let speaking = ReadAloud.shared.playing == key
+        return Button {
+            ReadAloud.shared.toggle(text, for: chat.name, key: key)
+        } label: {
+            Image(systemName: speaking ? "stop.fill" : "speaker.wave.2").font(look.meta).frame(width: 18)
+        }
+        .buttonStyle(.chat("play", speaking ? "Stop reading this reply" : "Read this reply aloud"))
+        .foregroundStyle(.secondary)
+        .help(speaking ? "Stop reading this reply" : "Read this reply aloud")
     }
 
     private var copy: some View {
