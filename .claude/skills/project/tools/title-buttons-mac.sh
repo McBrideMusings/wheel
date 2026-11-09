@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# § 4 Title-row buttons in the Mac app (ADR-0036): a machine `[[title.button]]` draws at its end of
+# § 4 Title-row buttons in the Mac app (ADR-0037): a machine `[[title.button]]` draws at its end of
 # the row with the state its command printed, a `hidden` entry removes the built-in of that id, a
 # press runs the entry's command in the space's directory, and a state change moves no neighbour.
 # With WHEEL_SHOTS set it saves the window.

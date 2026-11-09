@@ -202,7 +202,7 @@ pub struct AppState {
     pub(crate) mcp: crate::mcp::Sessions,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
-    /// Each space's title-row buttons: the `state` output seen and the list clients were told (ADR-0036).
+    /// Each space's title-row buttons: the `state` output seen and the list clients were told (ADR-0037).
     pub(crate) title_buttons: Mutex<crate::title_buttons::Buttons>,
     /// The merged streams started since this daemon began, by space and group (ADR-0030).
     pub(crate) streams: crate::streams::Streams,

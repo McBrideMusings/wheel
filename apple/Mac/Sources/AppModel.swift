@@ -188,7 +188,7 @@ final class AppModel {
     let builtinsModel = BuiltinsModel()
     /// The usage strip and the Usage window: every coding agent's usage, from the daemon.
     let usage = UsageModel()
-    /// Each space's title-row buttons, merged and with their state, as wheeld last sent them (ADR-0036).
+    /// Each space's title-row buttons, merged and with their state, as wheeld last sent them (ADR-0037).
     private(set) var titleButtons: [String: [TitleButtonInfo]] = [:]
     @ObservationIgnored private var usageTimer: Timer?
     /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over that

@@ -1306,7 +1306,7 @@ pub enum ClientMsg {
         space: Option<String>,
     },
     /// The title-row buttons `[[title.button]]` entries define for `space`, this machine's file
-    /// merged with the space's by `id` (ADR-0036), each with the state its `state` command last
+    /// merged with the space's by `id` (ADR-0037), each with the state its `state` command last
     /// printed. Replies `title_buttons`; a change is pushed as `title_buttons_changed`.
     TitleButtonLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3534,7 +3534,7 @@ pub enum TitleSide {
 }
 
 /// One title-row button after the machine's and the project's `[[title.button]]` entries are
-/// merged by `id` (ADR-0036). `hidden` with no `command` removes a built-in button of that id.
+/// merged by `id` (ADR-0037). `hidden` with no `command` removes a built-in button of that id.
 /// `icon`, `tip`, `tint`, `badge` and `enabled` are what the last `state` output set over the
 /// entry's own `icon` and `tip`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

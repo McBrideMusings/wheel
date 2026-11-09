@@ -1,4 +1,4 @@
-//! Title-row buttons (ADR-0036): `[[title.button]]` entries in this machine's `wheel.toml` and the
+//! Title-row buttons (ADR-0037): `[[title.button]]` entries in this machine's `wheel.toml` and the
 //! space's, merged by `id`, with the state each entry's `state` command last printed.
 //!
 //! wheeld parses the entries, runs `state` on its `every` timer, runs `command` on a press, and

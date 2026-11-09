@@ -1,4 +1,4 @@
-# ADR-0036: Title-row buttons are `[[title.button]]` entries, merged by id
+# ADR-0037: Title-row buttons are `[[title.button]]` entries, merged by id
 
 The title row shows its built-in buttons plus every `[[title.button]]` entry of this machine's `wheel.toml` and the space's, merged by `id`: the project's entry replaces the machine's with the same `id` where it stood, any other is added at the end. Unlike the single-source zones of ADR-0034 and ADR-0035, the two files add to each other.
 

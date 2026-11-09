@@ -65,7 +65,7 @@ public enum ClientMsg: Sendable, Equatable {
     case agentHomes(req: UInt64?, agent: String, path: String?)
     /// The `[runner]` commands of `space`'s wheel.toml over this machine's; the daemon answers `runners`.
     case runnerLs(req: UInt64?, space: String?)
-    /// The title-row buttons of `space` (ADR-0036); the daemon answers `titleButtons`.
+    /// The title-row buttons of `space` (ADR-0037); the daemon answers `titleButtons`.
     case titleButtonLs(req: UInt64?, space: String)
     /// Press title-row button `id` of `space`: the daemon runs its command in the space's directory.
     case titleButtonPress(req: UInt64?, space: String, id: String)
@@ -866,7 +866,7 @@ public enum TitleSide: String, Sendable, Equatable, Decodable {
 }
 
 /// One title-row button after the machine's and the project's `[[title.button]]` entries are merged
-/// by id (ADR-0036). `hidden` removes the built-in button of that id; `icon`, `tip`, `tint`, `badge`
+/// by id (ADR-0037). `hidden` removes the built-in button of that id; `icon`, `tip`, `tint`, `badge`
 /// and `enabled` are what the entry set, over which its `state` command's last output.
 public struct TitleButtonInfo: Sendable, Equatable, Decodable, Identifiable {
     public let id: String

@@ -550,7 +550,7 @@ struct ProtocolTests {
         #expect(clients[1].windows.first?.pane == nil)
     }
 
-    /// ADR-0036: a space's merged title-row buttons, as the daemon sends them.
+    /// ADR-0037: a space's merged title-row buttons, as the daemon sends them.
     @Test func titleButtonsDecodeWithTheirState() throws {
         let json = #"{"ev":"title_buttons_changed","space":"s1","buttons":[{"id":"vpn","side":"right","icon":"lock.fill","tip":"VPN on","tint":"green","badge":"2","enabled":true,"has_command":true,"origin":"project"},{"id":"pin","side":"left","hidden":true,"enabled":true,"has_command":false,"origin":"machine"}]}"#
         guard case let .titleButtonsChanged(space, buttons) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }

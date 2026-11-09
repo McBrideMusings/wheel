@@ -88,7 +88,7 @@ struct TitleRow: View {
 }
 
 /// A title row button: a bare symbol that shows a rounded fill under the pointer and while pressed.
-/// A button a `[[title.button]]` entry defines (ADR-0036): an SF Symbol in the title row's own
+/// A button a `[[title.button]]` entry defines (ADR-0037): an SF Symbol in the title row's own
 /// button style, tinted and badged by what its `state` command printed. A press goes to wheeld,
 /// which runs the entry's `command`; an entry with no command is an indicator and draws the same
 /// slot without being a button. Icon-only and the badge an overlay, so a state change never moves

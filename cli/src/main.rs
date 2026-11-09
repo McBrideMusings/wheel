@@ -167,7 +167,7 @@ enum Command {
 #[derive(Subcommand)]
 enum TitleCommand {
     /// List the space's title-row buttons: this machine's `[[title.button]]` entries merged with
-    /// the project's by id, each with the state its `state` command last printed (ADR-0036).
+    /// the project's by id, each with the state its `state` command last printed (ADR-0037).
     Ls {
         /// The space; the space of the calling pane, else required.
         #[arg(long)]

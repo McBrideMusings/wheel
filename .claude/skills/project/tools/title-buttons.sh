@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# § 2e Title-row buttons (ADR-0036): `[[title.button]]` entries of this machine's wheel.toml and the
+# § 2e Title-row buttons (ADR-0037): `[[title.button]]` entries of this machine's wheel.toml and the
 # space's, merged by id; `state` output laid over the entry; `command` run on a press in the space's
 # directory; hidden entries; bad entries skipped; a list change pushed without a client asking.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
