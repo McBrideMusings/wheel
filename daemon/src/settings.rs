@@ -850,9 +850,10 @@ struct Runner {
     confirm: Option<String>,
 }
 
-/// The `[runner]` table of one `wheel.toml`, keyed by name: each value a command string, or a table
-/// with a `command` string and an optional `confirm` string. A file that is missing, unreadable or
-/// not TOML has none, and the last two are logged.
+/// The `[runner]` table of one `wheel.toml`, keyed by name. A value is a command string, or a table
+/// with a `command` string and an optional `confirm` string; a table with neither a command nor an
+/// entry's own fields is a group, and its entries are named by their dotted path (`walk_runners`). A
+/// file that is missing, unreadable or not TOML has none, and the last two are logged.
 fn runners(path: &Path) -> Vec<(String, Runner)> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -873,25 +874,44 @@ fn runners(path: &Path) -> Vec<(String, Runner)> {
             .filter(|s| !s.trim().is_empty())
             .map(String::from)
     };
-    runner
-        .iter()
-        .filter_map(|(name, value)| {
-            let runner = match value {
-                toml::Value::Table(t) => text(t.get("command")).map(|command| Runner {
-                    command,
-                    confirm: text(t.get("confirm")),
-                }),
-                other => text(Some(other)).map(|command| Runner {
-                    command,
-                    confirm: None,
-                }),
-            };
-            if runner.is_none() {
-                tracing::warn!(path = %path.display(), %name, kind = value.type_str(), "a [runner] entry is neither a non-empty command nor a table with one; it is ignored");
-            }
-            runner.map(|r| (name.clone(), r))
-        })
-        .collect()
+    let mut found = Vec::new();
+    walk_runners(path, runner, "", &text, &mut found);
+    found
+}
+
+/// The entries of one `[runner]` level, named by their dotted path. A table with a `command` is an
+/// entry; a table holding an entry's own fields (`confirm`, `requires`, `worktree`, `status`, `desc`,
+/// `name`) but no `command` is skipped; any other table is a group whose entries are named
+/// `<group>.<key>`.
+fn walk_runners(
+    path: &Path,
+    table: &toml::Table,
+    prefix: &str,
+    text: &dyn Fn(Option<&toml::Value>) -> Option<String>,
+    found: &mut Vec<(String, Runner)>,
+) {
+    for (key, value) in table {
+        let name = format!("{prefix}{key}");
+        let runner = match value {
+            toml::Value::Table(t) => match text(t.get("command")) {
+                Some(command) => Some(Runner { command, confirm: text(t.get("confirm")) }),
+                None => {
+                    let own = ["confirm", "requires", "worktree", "status", "desc", "name"];
+                    if own.iter().any(|k| t.contains_key(*k)) {
+                        tracing::warn!(path = %path.display(), %name, "a [runner] table has no command; it is ignored");
+                    } else {
+                        walk_runners(path, t, &format!("{name}."), text, found);
+                    }
+                    continue;
+                }
+            },
+            other => text(Some(other)).map(|command| Runner { command, confirm: None }),
+        };
+        match runner {
+            Some(r) => found.push((name, r)),
+            None => tracing::warn!(path = %path.display(), %name, kind = value.type_str(), "a [runner] entry is neither a non-empty command nor a table; it is ignored"),
+        }
+    }
 }
 
 /// What one `wheel.toml` sets. A file that is not there sets nothing, which is not a problem. A
@@ -1563,6 +1583,21 @@ mod tests {
             ]
         );
         assert!(super::runners(&dir.join("missing.toml")).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn runners_names_a_nested_entry_by_its_dotted_path() {
+        let dir = std::env::temp_dir().join(format!("wheel-runner-nested-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wheel.toml");
+        std::fs::write(
+            &path,
+            "[runner.wheel.dev.deploy]\ncommand = \"make deploy-dev\"\nname = \"Deploy\"\n\n[runner.proto.terrarium]\nbuild = \"bun run build\"\n\n[runner.lost]\nconfirm = \"x\"\n",
+        )
+        .unwrap();
+        let names: Vec<String> = super::runners(&path).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["proto.terrarium.build", "wheel.dev.deploy"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
