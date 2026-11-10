@@ -721,8 +721,12 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
     let v = p.label("d.f.up.v", &format!("{} ago", ago(&b.updated)), json!({}));
     c.push(fact(p, "up", "Updated", v));
     if !b.description.is_empty() {
-        let l = p.label("d.desc", &b.description, json!({ "size": 13 }));
-        c.push(p.boxed("d.desc.b", "v", vec![l], json!({ "padding": [10, 12], "fill": "soft", "radius": 8 })));
+        // Flat: a rule above and below the text, no raised box.
+        p.put(json!({ "id": "d.desc.t", "component": "Divider" }));
+        c.push("d.desc.t".into());
+        c.push(p.label("d.desc", &b.description, json!({ "size": 13 })));
+        p.put(json!({ "id": "d.desc.u", "component": "Divider" }));
+        c.push("d.desc.u".into());
     }
     let section = |p: &mut Page, key: &str, title: &str, next: Next<'a, '_>| -> String {
         let n = next(b).len();
