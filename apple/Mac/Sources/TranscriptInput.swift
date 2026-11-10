@@ -170,11 +170,6 @@ struct AgentTranscript: View {
     var agent: String? = nil
     var pane: String? = nil
 
-    private var intro: String? {
-        guard let agent, model.appearance(forAgent: chat.name).home == .transcript else { return nil }
-        return model.homeIntro(agent: chat.name, harness: agent)
-    }
-
     var body: some View {
         TranscriptView(
             chat: chat,
@@ -186,7 +181,6 @@ struct AgentTranscript: View {
                     uniquingKeysWith: { first, _ in first }),
                 count: model.perms.count),
             look: model.appearance(forAgent: chat.name),
-            intro: intro,
             conversations: pane.map { model.conversationActions(chat, pane: $0) }
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)

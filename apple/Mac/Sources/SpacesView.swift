@@ -994,9 +994,6 @@ struct AgentTitle: View {
                 Text(title).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
             }
             StatusDot(status: model.paneStatus(paneId), shown: model.statusDots)
-            if model.appearance(forAgent: chat.name).home == .header {
-                HomeLabel(agent: agent, home: model.shownHome(agent: chat.name, harness: agent))
-            }
         }
     }
 }
@@ -1053,7 +1050,7 @@ struct HomeLabel: View {
         .font(ChatFont.meta)
         .foregroundStyle(.tertiary)
         .layoutPriority(-1)
-        .help("\(AgentInfo.homeVariable(of: agent)) is \(home). Set by agent.\(agent).home; chat.agent.home places this text.")
+        .help("\(AgentInfo.homeVariable(of: agent)) is \(home). Set by agent.\(agent).home; chat.footer.items places this text.")
     }
 }
 

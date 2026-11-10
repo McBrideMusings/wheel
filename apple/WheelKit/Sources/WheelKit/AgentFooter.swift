@@ -36,6 +36,12 @@ public struct AgentFooter: Decodable, Equatable, Sendable {
         agents = try c.decodeIfPresent(UInt32.self, forKey: .agents) ?? 0
     }
 
+    /// The directory with the person's home folder written `~`, as the status line shows it.
+    public var shownDirectory: String {
+        let mine = NSHomeDirectory()
+        return directory == mine || directory.hasPrefix(mine + "/") ? "~" + directory.dropFirst(mine.count) : directory
+    }
+
     /// The running background tasks as the status line reads them, `1 shell · 2 agents`; nil when
     /// none run, so the line draws nothing at zero.
     public var backgroundText: String? {

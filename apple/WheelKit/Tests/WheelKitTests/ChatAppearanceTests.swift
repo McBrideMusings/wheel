@@ -58,10 +58,19 @@ import Testing
 }
 
 @Suite struct AgentHomeTests {
-    @Test func placementDefaultsToTheRowAndReadsTheSetting() {
-        #expect(ChatAppearance.standard.home == .row)
-        let set = SettingInfo(key: "chat.agent.home", value: "transcript", origin: .machine, default: "row", help: "")
-        #expect(ChatAppearance(settings: [set]).home == .transcript)
+    @Test func theFooterShowsTheDirectoryRelativeToTheHomeFolder() {
+        let mine = NSHomeDirectory()
+        #expect(AgentFooter(directory: mine + "/Projects/wheel").shownDirectory == "~/Projects/wheel")
+        #expect(AgentFooter(directory: mine).shownDirectory == "~")
+        #expect(AgentFooter(directory: "/srv/app").shownDirectory == "/srv/app")
+        #expect(AgentFooter(directory: mine + "x/y").shownDirectory == mine + "x/y")
+    }
+    @Test func footerItemsDefaultToTheCodingSetAndReadTheSettingInOrder() {
+        #expect(ChatAppearance.standard.footerItems == ["context", "background", "directory", "home", "branch", "changes"])
+        let set = SettingInfo(key: "chat.footer.items", value: "branch, directory", origin: .machine, default: "", help: "")
+        #expect(ChatAppearance(settings: [set]).footerItems == ["branch", "directory"])
+        let none = SettingInfo(key: "chat.footer.items", value: "", origin: .machine, default: "", help: "")
+        #expect(ChatAppearance(settings: [none]).footerItems.isEmpty)
     }
 
     @Test func theShownHomeIsTheSettingElseTheAgentsDefault() {

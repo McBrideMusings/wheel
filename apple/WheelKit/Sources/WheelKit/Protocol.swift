@@ -837,9 +837,10 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
     public var global: String { machine ?? `default` }
 }
 
-/// What a setting's value is: free text, one of a set of words, a number or a switch.
+/// What a setting's value is: free text, one of a set of words, a number, a switch, or some of a
+/// set of words in the person's order (`ordered`, with the words in `choices`).
 public enum SettingKind: String, Sendable, Equatable, Decodable {
-    case text, choice, int, float, bool
+    case text, choice, int, float, bool, ordered
 }
 
 /// Which layer a setting's value came from: this project's `wheel.toml` wins over this machine's,

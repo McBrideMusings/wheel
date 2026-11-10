@@ -19,7 +19,6 @@ public struct ChatAppearance: Sendable, Equatable {
     /// Where a list's bullet sits: just inside the text's edge, or right against the item's text.
     public enum ListBullet: String, Sendable, CaseIterable { case inset, hanging }
     /// Where the agent's home directory shows.
-    public enum HomePlacement: String, Sendable, CaseIterable { case row, header, transcript, off }
 
     public var family: Family = .system
     /// Points. Tool lines and times are drawn a step or two under it.
@@ -57,7 +56,9 @@ public struct ChatAppearance: Sendable, Equatable {
     public var lineNumbers = false
     /// What a file path, a pane id and a web link in a reply do.
     public var links = ChatLinkSettings()
-    public var home: HomePlacement = .row
+    /// What the line under the composer shows, in order: `chat.footer.items`.
+    public var footerItems: [String] = ChatAppearance.defaultFooterItems
+    public static let defaultFooterItems = ["context", "background", "directory", "home", "branch", "changes"]
     /// Draw an image a reply shows in the transcript; false leaves it a link.
     public var imagesInline = true
     /// The tallest an inline image may be, in points.
@@ -104,7 +105,7 @@ public struct ChatAppearance: Sendable, Equatable {
         if let v = value("chat.links.patterns") { links.patterns = ChatLinkPattern.parse(v) }
         if let v = value("chat.images.inline") { imagesInline = v == "true" }
         if let v = value("chat.images.max_height").flatMap(Double.init) { imageMaxHeight = v }
-        if let v = value("chat.agent.home").flatMap(HomePlacement.init(rawValue:)) { home = v }
+        if let v = value("chat.footer.items") { footerItems = v.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
     }
 
     /// Size of tool, reasoning and permission lines.

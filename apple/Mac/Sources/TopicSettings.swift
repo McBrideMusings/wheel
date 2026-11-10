@@ -155,11 +155,55 @@ private struct TopicSettingRow: View {
             .labelsHidden().fixedSize()
         case .int, .float:
             NumberField(value: value, minimum: setting.min, maximum: setting.max, whole: setting.kind == .int, commit: write)
+        case .ordered:
+            OrderedList(words: setting.choices, value: value, commit: write)
         case .text:
             TextField("", text: Binding(get: { settings.text(field).isEmpty ? value : settings.text(field) }, set: { settings.type(field, $0) }))
                 .onSubmit { model.saveSetting(field) }
                 .frame(width: 180)
         }
+    }
+}
+
+/// A setting that is some of a set of words in an order: each word has a switch, and a word that
+/// is on moves up or down. What is on, in this order, is the value.
+private struct OrderedList: View {
+    let words: [String]
+    let value: String
+    let commit: (String) -> Void
+
+    private var on: [String] { value.split(separator: ",").map(String.init).filter(words.contains) }
+    private var rows: [String] { on + words.filter { !on.contains($0) } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(rows, id: \.self) { word in
+                HStack(spacing: 6) {
+                    Toggle("", isOn: Binding(get: { on.contains(word) }, set: { set(word, on: $0) }))
+                        .toggleStyle(.checkbox).labelsHidden()
+                    Text(word).font(ChatFont.line).frame(width: 90, alignment: .leading)
+                    Button { move(word, by: -1) } label: { Image(systemName: "chevron.up") }
+                        .buttonStyle(.borderless).disabled(on.first == word || !on.contains(word))
+                        .accessibilityLabel("Move \(word) up")
+                    Button { move(word, by: 1) } label: { Image(systemName: "chevron.down") }
+                        .buttonStyle(.borderless).disabled(on.last == word || !on.contains(word))
+                        .accessibilityLabel("Move \(word) down")
+                }
+            }
+        }
+    }
+
+    private func set(_ word: String, on isOn: Bool) {
+        var list = on
+        if isOn { list.append(word) } else { list.removeAll { $0 == word } }
+        commit(list.joined(separator: ","))
+    }
+
+    private func move(_ word: String, by step: Int) {
+        var list = on
+        guard let i = list.firstIndex(of: word), list.indices.contains(i + step) else { return }
+        list.swapAt(i, i + step)
+        commit(list.joined(separator: ","))
     }
 }
 
