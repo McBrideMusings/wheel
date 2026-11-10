@@ -584,12 +584,16 @@ private struct CanvasScrollCatcher: NSViewRepresentable {
 
         func install() {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
-                guard let self, let win = self.view?.window, e.window === win, let content = win.contentView else { return e }
-                let p = CGPoint(x: e.locationInWindow.x, y: content.bounds.height - e.locationInWindow.y)
-                guard self.frame.contains(p) else { return e }
+                guard let self, let v = self.view, let win = v.window, e.window === win else { return e }
+                // The point in the stage's own coordinates, converted by the view that fills the stage: the window's content
+                // coordinates differ from the window's event coordinates by the title bar, so a point computed from the window is
+                // that far from the pointer.
+                let l = v.convert(e.locationInWindow, from: nil)
+                let p = CGPoint(x: l.x, y: v.isFlipped ? l.y : v.bounds.height - l.y)
+                guard v.bounds.contains(l) else { return e }
                 let k = e.hasPreciseScrollingDeltas ? 1.0 : 8.0
                 let boost = e.modifierFlags.contains(.control) ? 6.0 : 1.0
-                self.scroll(e.scrollingDeltaX * k, e.scrollingDeltaY * k * boost, CGPoint(x: p.x - self.frame.minX, y: p.y - self.frame.minY))
+                self.scroll(e.scrollingDeltaX * k, e.scrollingDeltaY * k * boost, p)
                 return nil
             }
         }

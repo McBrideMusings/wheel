@@ -541,17 +541,23 @@ struct PaneView: View {
     var body: some View {
         let _ = GridMetrics.shared.body(of: paneId)
         let _ = CrashGuard.mark(pane: paneId)
-        VStack(spacing: 0) {
-            PaneHeader(model: model, paneId: paneId, kind: kind, focused: focused)
-            Divider()
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if holdsPane { model.paneBodyFrames[paneId] = $0 } }
-                .overlay {
-                    if let palette = model.palettes[paneId] {
-                        PaletteOverlay(model: model, palette: palette, paneId: paneId, kind: kind)
+        // The pane is exactly the size the grid gives it. A control row wider than a narrow pane
+        // would otherwise make the pane's own view wider than its frame and draw it, ring
+        // included, over its neighbours; here the overflow is clipped by the pane's own outline.
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                PaneHeader(model: model, paneId: paneId, kind: kind, focused: focused)
+                Divider()
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if holdsPane { model.paneBodyFrames[paneId] = $0 } }
+                    .overlay {
+                        if let palette = model.palettes[paneId] {
+                            PaletteOverlay(model: model, palette: palette, paneId: paneId, kind: kind)
+                        }
                     }
-                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .background(.background)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if holdsPane { model.paneFrames[paneId] = $0 } }
