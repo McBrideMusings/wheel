@@ -2392,11 +2392,7 @@ impl AppState {
             .iter()
             .filter(|t| t.info().alive)
             .map(|t| {
-                let claimed = saved
-                    .iter()
-                    .filter(|(term, _)| **term != t.id)
-                    .map(|(_, agent)| agent.conversation.clone())
-                    .collect();
+                let claimed = self.claimed_agents(&t.id);
                 let reported = self.context_reports.lock().unwrap().get(&t.id).copied();
                 let reported_conversation = self.conversation_reports.lock().unwrap().get(&t.id).cloned();
                 let sample = crate::resume::sample(

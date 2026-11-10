@@ -319,8 +319,8 @@ impl AppState {
         });
     }
 
-    /// The agents terminal panes other than `term`'s have saved.
-    fn claimed_agents(&self, term: &str) -> HashSet<String> {
+    /// The conversations the chat panes and the terminal panes other than `term`'s have saved.
+    pub(crate) fn claimed_agents(&self, term: &str) -> HashSet<String> {
         let spaces = self.spaces.lock().unwrap();
         spaces
             .spaces
@@ -332,6 +332,10 @@ impl AppState {
                     agent: Some(agent),
                     ..
                 } if t != term => Some(agent.conversation.clone()),
+                PaneKind::Agent {
+                    conversation: Some(conversation),
+                    ..
+                } => Some(conversation.clone()),
                 _ => None,
             })
             .collect()
