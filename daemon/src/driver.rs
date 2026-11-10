@@ -26,20 +26,27 @@ pub enum Conversation {
     New(String),
     /// A past conversation the agent keeps.
     Resume(String),
+    /// A new conversation that copies `from` through its first `turns` turns (a turn is one
+    /// prompt and everything the agent did after it). The agent's own fork does the copying, and
+    /// the copy is the conversation under `id`, which Claude Code is told to use and Codex
+    /// replaces with the id it reports.
+    Fork { from: String, turns: usize, id: String },
 }
 
 impl Conversation {
     pub fn id(&self) -> &str {
         match self {
             Conversation::New(id) | Conversation::Resume(id) => id,
+            Conversation::Fork { from, .. } => from,
         }
     }
 
-    /// The same kind of start under the id the agent chose for it.
+    /// The same kind of start under the id the agent chose for it. A fork is under that id a
+    /// conversation of its own, which later starts resume.
     pub fn named(&self, id: String) -> Conversation {
         match self {
             Conversation::New(_) => Conversation::New(id),
-            Conversation::Resume(_) => Conversation::Resume(id),
+            Conversation::Resume(_) | Conversation::Fork { .. } => Conversation::Resume(id),
         }
     }
 }
@@ -81,7 +88,7 @@ pub fn check_permissions(
     let (modes, sandboxes): (Vec<&str>, Vec<&str>) = match agent {
         Harness::Claude => (crate::claude::start_modes(), Vec::new()),
         Harness::Codex => (crate::codex::policy_names(), CODEX_SANDBOXES.to_vec()),
-        Harness::Pi => (Vec::new(), Vec::new()),
+        Harness::Pi => (crate::pi::modes(), Vec::new()),
     };
     let check = |what: &str, value: Option<&str>, valid: &[&str]| match value {
         Some(_) if valid.is_empty() => Err(format!("{} has no {what}", agent.title())),

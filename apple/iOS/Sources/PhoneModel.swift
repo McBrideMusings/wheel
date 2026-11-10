@@ -592,6 +592,14 @@ final class PhoneModel {
             chat.sendClearQueue = { [weak self, weak chat] in
                 if let chat { self?.clearQueue(chat) }
             }
+            chat.sendFork = { [weak self, weak chat] turns in
+                if let chat { self?.fork(chat, turns: turns) }
+            }
+            chat.canFork = { [weak self, weak chat] in
+                guard let self, let chat else { return false }
+                return self.serverProtocol >= 28
+                    && AgentPanes.canFork(harness: AgentPanes.harness(ofAgent: chat.name, in: self.spaces))
+            }
             chats[name] = chat
             attach(chat)
         }
@@ -664,6 +672,16 @@ final class PhoneModel {
         let req = client.req()
         agentReqs[req] = chat.name
         client.send(.agentSendNow(req: req, agent: chat.name, turn: turn))
+    }
+
+    /// Fork the agent's conversation through `turns` turns into a new pane beside its own.
+    func fork(_ chat: AgentChat, turns: Int) {
+        Log.info("fork \(chat.name) through \(turns) turn(s)")
+        chat.error = nil
+        guard let client else { return }
+        let req = client.req()
+        agentReqs[req] = chat.name
+        client.send(.agentFork(req: req, agent: chat.name, turns: UInt32(turns)))
     }
 
     func clearQueue(_ chat: AgentChat) {

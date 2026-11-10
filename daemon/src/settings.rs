@@ -424,6 +424,9 @@ pub(crate) const PUSH_SERVER: &str = "push.apns.server";
 /// The key listing the folders the space browser starts from.
 pub(crate) const SPACES_ROOTS: &str = "spaces.roots";
 
+/// The key choosing whether a session closes itself when its last space leaves it.
+pub(crate) const SESSIONS_CLOSE_EMPTY: &str = "sessions.close_empty";
+
 /// The key holding the key bindings over the Mac app's own.
 pub(crate) const KEYBIND: &str = "keybind";
 
@@ -439,13 +442,14 @@ fn machine_only(id: &str) -> bool {
         || id.starts_with("logs.")
         || id.starts_with("push.")
         || id.starts_with("spaces.")
+        || id.starts_with("sessions.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 66] = [
+const KEYS: [Key; 67] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -589,6 +593,12 @@ const KEYS: [Key; 66] = [
         accepts: Accepts::Roots,
         default: "~",
         help: "The folders the new-space browser starts from, comma separated (~, ~/Projects, /srv/code). Unset, it is ~ plus the parent folder of every recent space. Read from this machine's file only.",
+    },
+    Key {
+        id: SESSIONS_CLOSE_EMPTY,
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Whether a session closes itself when its last space closes or moves to another session. The last session left never closes. A session made empty stays until a space joins it or someone closes it. Read from this machine's file only.",
     },
     Key {
         id: KEYBIND,
