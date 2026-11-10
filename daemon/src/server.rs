@@ -30,6 +30,8 @@ use crate::spaces::{Spaces, StartOptions};
 pub(crate) struct AgentStart {
     /// A conversation to resume.
     pub conversation: Option<String>,
+    /// A conversation to copy, and through how many turns.
+    pub fork: Option<(String, usize)>,
     /// The agent's configuration directory, when it is not the one `agent.<name>.home` names.
     pub home: Option<String>,
     pub context: Option<ContextUse>,
@@ -608,6 +610,7 @@ impl AppState {
     ) -> Result<(), String> {
         let AgentStart {
             conversation,
+            fork,
             home,
             context,
             model,
@@ -629,6 +632,7 @@ impl AppState {
             env: self.agent_env(pane),
             restored: conversation.is_some(),
             conversation,
+            fork,
             context,
             on_saved: Some(Arc::new({
                 let me = self.me.clone();
@@ -671,6 +675,7 @@ impl AppState {
             },
             restored: false,
             conversation: None,
+            fork: None,
             context: None,
             on_saved: None,
             restart: self.agent_timing.lock().unwrap().restart,
@@ -1562,6 +1567,29 @@ async fn handle(
         }
         ClientMsg::AgentConversationNew { req, agent } => {
             spawn_switch(state, out, req, agent, None, peer);
+            None
+        }
+        // On a task of its own, like `pane_start`: the fork's agent takes a while to come up.
+        ClientMsg::AgentFork { req, agent, turns } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match (req, state.pane_fork(&agent, turns as usize).await) {
+                    (Some(req), Ok(s)) => Some(ServerMsg::Started {
+                        req,
+                        pane: s.pane,
+                        agent: s.agent,
+                        state: s.state,
+                    }),
+                    (_, Ok(_)) => None,
+                    (req, Err(message)) => {
+                        tracing::warn!(%peer, %agent, turns, %message, "agent fork failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
             None
         }
         ClientMsg::AgentConversationResume { req, agent, id } => {

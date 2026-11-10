@@ -1253,6 +1253,16 @@ enum AgentCommand {
         agent: String,
         id: String,
     },
+    /// Fork an agent's conversation through its first `turns` turns into a new agent pane split
+    /// right of the agent's own, and print the new pane and agent. A turn is one prompt and what
+    /// the agent did after it. The agent's own conversation is untouched. Claude Code and Codex
+    /// fork; Pi fails.
+    Fork {
+        /// An agent pane's id or its agent name.
+        agent: String,
+        /// How many turns, counted from the start of the conversation, the fork keeps.
+        turns: u32,
+    },
     /// Print how full an agent's context window is: tokens used out of the window and the percent,
     /// or `unknown` while the agent has reported none. With no agent, one line per agent pane.
     Context {
@@ -5925,6 +5935,17 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Resume { agent, id }) => {
                 agent_switch(&mut conn, agent, Some(id)).await
+            }
+            Command::Agent(AgentCommand::Fork { agent, turns }) => {
+                let req = conn.req();
+                let msg = ClientMsg::AgentFork { req: Some(req), agent, turns };
+                // A real agent takes up to a minute to come up.
+                let reply = conn.call_within(msg, req, Duration::from_secs(120)).await?;
+                let ServerMsg::Started { pane, agent, .. } = reply else {
+                    return Err(Fail::Other(format!("unexpected reply {reply:?}")));
+                };
+                println!("{pane} {}", agent.unwrap_or_default());
+                Ok(())
             }
             Command::Agent(AgentCommand::Send {
                 agent,

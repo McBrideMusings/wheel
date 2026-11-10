@@ -201,8 +201,10 @@ enum Pending {
     Initialize,
     /// `model/list`, asked before the thread opens.
     Models,
-    /// `thread/start` or `thread/resume`.
+    /// `thread/start`, `thread/resume` or `thread/fork`.
     Thread,
+    /// `thread/read` of the conversation a fork copies, asked to learn which turn the fork ends at.
+    ForkRead { from: String, turns: usize },
     TurnStart,
     Interrupt,
     /// `turn/steer` for the message of `turn`, which comes back as the `userMessage` item `id`.
@@ -553,7 +555,9 @@ impl Driver {
         if let Some(error) = message.get("error") {
             let said = error["message"].as_str().unwrap_or("the agent refused");
             return match pending {
-                Pending::Initialize | Pending::Models | Pending::Thread => Err(said.to_string()),
+                Pending::Initialize | Pending::Models | Pending::Thread | Pending::ForkRead { .. } => {
+                    Err(said.to_string())
+                }
                 Pending::TurnStart => {
                     self.turn_failed(said.to_string());
                     Ok(())
@@ -614,8 +618,11 @@ impl Driver {
                     .ok_or("the agent opened a thread with no id")?
                     .to_string();
                 self.thread = Some(id.clone());
-                let history = matches!(self.launch.conversation, Conversation::Resume(_))
-                    .then(|| history(thread));
+                let history = matches!(
+                    self.launch.conversation,
+                    Conversation::Resume(_) | Conversation::Fork { .. }
+                )
+                .then(|| history(thread));
                 self.model = result["model"].as_str().unwrap_or_default().to_string();
                 self.effort = result["reasoningEffort"].as_str().map(String::from);
                 // A resumed thread keeps the sandbox it ran in unless the host chose one.
@@ -636,6 +643,21 @@ impl Driver {
                 });
                 Ok(())
             }
+            Pending::ForkRead { from, turns } => {
+                let held = result["thread"]["turns"].as_array().map_or(0, Vec::len);
+                if held < turns {
+                    return Err(format!("conversation {from} has {held} turn(s); a fork needs {turns}"));
+                }
+                let last = (held > turns)
+                    .then(|| result["thread"]["turns"][turns - 1]["id"].as_str().map(String::from))
+                    .flatten();
+                let mut params = self.thread_params();
+                params["threadId"] = json!(from);
+                if let Some(last) = last {
+                    params["lastTurnId"] = json!(last);
+                }
+                self.request(Pending::Thread, "thread/fork", params).await
+            }
             Pending::TurnStart => {
                 if let Some(turn) = result["turn"]["id"].as_str() {
                     self.turn = Some(turn.to_string());
@@ -651,6 +673,25 @@ impl Driver {
 
     /// Open the thread: `thread/start`, or `thread/resume` of the conversation the host names.
     async fn open_thread(&mut self) -> Result<(), String> {
+        let mut params = self.thread_params();
+        let method = match &self.launch.conversation {
+            Conversation::New(_) => "thread/start",
+            Conversation::Resume(id) => {
+                params["threadId"] = json!(id);
+                "thread/resume"
+            }
+            // The turn to end at is read from the conversation first.
+            Conversation::Fork { from, turns, .. } => {
+                let pending = Pending::ForkRead { from: from.clone(), turns: *turns };
+                let read = json!({"threadId": from, "includeTurns": true});
+                return self.request(pending, "thread/read", read).await;
+            }
+        };
+        self.request(Pending::Thread, method, params).await
+    }
+
+    /// What every `thread/start`, `thread/resume` and `thread/fork` carries.
+    fn thread_params(&self) -> Value {
         let mut params = json!({
             "cwd": self.launch.cwd.display().to_string(),
             "approvalPolicy": self.policy,
@@ -664,14 +705,7 @@ impl Driver {
         if let Some(model) = &self.launch.model {
             params["model"] = json!(model);
         }
-        let method = match &self.launch.conversation {
-            Conversation::New(_) => "thread/start",
-            Conversation::Resume(id) => {
-                params["threadId"] = json!(id);
-                "thread/resume"
-            }
-        };
-        self.request(Pending::Thread, method, params).await
+        params
     }
 
     async fn notification(&mut self, method: &str, params: &Value) -> Result<(), String> {

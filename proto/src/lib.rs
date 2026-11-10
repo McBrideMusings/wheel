@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1692,6 +1692,18 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         agent: String,
+    },
+    /// Fork the agent's conversation through its first `turns` turns (a turn is one prompt and
+    /// what the agent did after it) into a new agent pane split right of the agent's own, run by
+    /// the agent's own harness, model and permissions. The agent's own conversation is untouched.
+    /// Replies `started` with the new pane and agent once the fork's agent is ready or still
+    /// starting. Refused for Pi, which cannot fork at a turn, and for an agent with no
+    /// conversation yet. Needs a server at `PROTOCOL_VERSION` 28.
+    AgentFork {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        agent: String,
+        turns: u32,
     },
     /// Put the agent in a past conversation, named by the `id` a `conversations` entry carries.
     /// The agent replays it and that history becomes the transcript, which every attached client

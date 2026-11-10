@@ -477,7 +477,19 @@ struct AgentText: View {
         HStack(spacing: 6) {
             copy
             play
+            if chat.forkTurns(row: id) != nil { fork }
         }
+    }
+
+    private var fork: some View {
+        Button {
+            chat.fork(row: id)
+        } label: {
+            Image(systemName: "arrow.triangle.branch").font(look.meta)
+        }
+        .buttonStyle(.chat("fork", "Fork the conversation through this turn into a new pane"))
+        .foregroundStyle(.secondary)
+        .help("Fork the conversation through this turn into a new pane")
     }
 
     private var play: some View {
