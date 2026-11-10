@@ -53,6 +53,15 @@ func conversationName(_ info: ConversationInfo) -> String {
     return title.isEmpty ? "Untitled conversation" : title
 }
 
+/// A reply as a card shows it: the inline Markdown drawn (bold, italic, code, links) and the
+/// block marks a list item or heading starts with taken out. Text the parser refuses stays as
+/// written.
+func conversationReply(_ reply: String) -> AttributedString {
+    let text = reply.replacingOccurrences(of: #"^\s*(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)"#, with: "", options: .regularExpression)
+    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+    return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+}
+
 /// The day a conversation falls under in the popover's list.
 enum ConversationDay: Int, CaseIterable {
     case today, yesterday, lastWeek, earlier
@@ -226,7 +235,7 @@ struct ConversationRow: View {
                 }
             }
             if card {
-                Text(reply ?? " ")
+                Text(reply.map(conversationReply) ?? AttributedString(" "))
                     .font(look.meta)
                     .foregroundStyle(.secondary)
                     .lineLimit(2, reservesSpace: true)

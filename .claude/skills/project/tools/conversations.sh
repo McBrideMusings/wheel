@@ -26,7 +26,9 @@ C1=11111111-1111-4111-8111-111111111111
 C2=22222222-2222-4222-8222-222222222222
 C3=33333333-3333-4333-8333-333333333333
 claude_line "$C1" "fix the flaky restore test" >"$CP/$C1.jsonl"; touch -t 202611010900 "$CP/$C1.jsonl"
-claude_line "$C2" "add resume to the agent pane" >"$CP/$C2.jsonl"; touch -t 202611080900 "$CP/$C2.jsonl"
+claude_line "$C2" "add resume to the agent pane" >"$CP/$C2.jsonl"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"- **Bold** and `code`.\\n\\nA later paragraph."}]}}\n' >>"$CP/$C2.jsonl"
+touch -t 202611080900 "$CP/$C2.jsonl"
 claude_line "$C3" "why does deploy-client hang" >"$CP/$C3.jsonl"
 printf '{"type":"assistant","message":{"content":[{"type":"text","text":"  It hangs\\n  on the second rename.  "}]}}\n' >>"$CP/$C3.jsonl"
 touch -t 202611092000 "$CP/$C3.jsonl"
@@ -53,7 +55,7 @@ w pane start "$P3" agent >/dev/null
 # 1. The CLI lists them through the same op the app uses.
 listing() { w agent conversations "$1" --json 2>/dev/null | jq -r '[.[] | "\(.id)|\(.title)"] | join(",")'; }
 eq "claude lists the directory's three, newest first" "$(listing "$P1")" "$C3|why does deploy-client hang,$C2|add resume to the agent pane,$C1|fix the flaky restore test"
-eq "claude carries the last reply, whitespace collapsed, only where there is one" "$(w agent conversations "$P1" --json 2>/dev/null | jq -r '[.[] | .last_reply // "-"] | join(",")')" "It hangs on the second rename.,-,-"
+eq "claude carries the last reply: the first paragraph, whitespace collapsed, only where there is one" "$(w agent conversations "$P1" --json 2>/dev/null | jq -r '[.[] | .last_reply // "-"] | join(",")')" "It hangs on the second rename.,- **Bold** and \`code\`.,-"
 eq "a page of two is the two newest" "$(w agent conversations "$P1" --json --limit 2 2>/dev/null | jq -r '[.[].id] | join(",")')" "$C3,$C2"
 CURSOR="$(w agent conversations "$P1" --json --limit 2 2>/dev/null | jq -r '.[-1].updated_at')"
 eq "the page after it, by cursor, is the oldest" "$(w agent conversations "$P1" --json --before "$CURSOR" 2>/dev/null | jq -r '[.[].id] | join(",")')" "$C1"
