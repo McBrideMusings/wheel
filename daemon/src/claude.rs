@@ -1525,7 +1525,7 @@ pub fn conversations(home: &Path, cwd: &Path) -> Vec<ConversationInfo> {
 
 /// A time as an ISO 8601 UTC timestamp with microseconds, which sorts as text. Civil date from
 /// days after Howard Hinnant's `civil_from_days`.
-fn iso8601(at: std::time::SystemTime) -> String {
+pub(crate) fn iso8601(at: std::time::SystemTime) -> String {
     let at = at.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let (seconds, micros) = (at.as_secs(), at.subsec_micros());
     let (days, rest) = (seconds / 86_400, seconds % 86_400);

@@ -227,6 +227,9 @@ pub struct AppState {
     /// The agent panes' agents a restore kept as saved because their agent could not start,
     /// started once the login shell's PATH arrives.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
+    /// Conversations a switch is moving an agent into now, by id and the agent's name, so two
+    /// switches to one id cannot both pass the check that no other agent is in it.
+    pub(crate) switching_into: Mutex<std::collections::HashMap<String, String>>,
     /// The pane and space statuses last sent, so a change is sent once.
     pub(crate) statuses: Mutex<crate::status::StatusBook>,
     /// What the agent in each terminal says it is doing, by terminal id: the last report, kept
@@ -339,6 +342,7 @@ impl AppState {
                 problem: None,
             })),
             kept_agents: Mutex::new(Default::default()),
+            switching_into: Mutex::new(Default::default()),
             statuses: Mutex::new(Default::default()),
             reports: Mutex::new(Default::default()),
             context_reports: Mutex::new(Default::default()),
@@ -2760,7 +2764,25 @@ fn spawn_switch(
     let (state, out) = (state.clone(), out.clone());
     tokio::spawn(async move {
         let switched = match state.resolve_agent(&agent) {
-            Ok(found) => found.agent.switch_conversation(load.clone()).await,
+            Ok(found) => {
+                // Two agents writing one transcript would fork it.
+                let claimed = match load.as_deref() {
+                    Some(id) => state.claim_conversation(id, &found.agent).map(|()| id),
+                    None => Ok(""),
+                };
+                match claimed {
+                    Ok(id) => {
+                        let result = found.agent.switch_conversation(load.clone()).await;
+                        if !id.is_empty() {
+                            state.switching_into.lock().unwrap().remove(id);
+                        }
+                        result
+                    }
+                    Err(holder) => Err(format!(
+                        "agent {holder} is already in that conversation; resuming it here would fork it"
+                    )),
+                }
+            }
             Err(message) => Err(message),
         };
         let reply = match switched {

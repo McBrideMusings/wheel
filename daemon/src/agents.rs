@@ -41,6 +41,28 @@ fn phase(state: &AgentState) -> &'static str {
 }
 
 impl AppState {
+    /// Reserve conversation `id` for `asking`: Err with the other agent's name when another agent is
+    /// in it or is being moved into it. The caller removes the reservation from `switching_into`
+    /// once its switch has ended; by then a successful switch has set the agent's own id.
+    pub(crate) fn claim_conversation(&self, id: &str, asking: &Arc<Agent>) -> Result<(), String> {
+        let mut claims = self.switching_into.lock().unwrap();
+        if let Some(other) = claims.get(id).filter(|name| **name != asking.name) {
+            return Err(other.clone());
+        }
+        let held = self
+            .agents
+            .lock()
+            .unwrap()
+            .values()
+            .find(|a| !Arc::ptr_eq(a, asking) && a.conversation_id().as_deref() == Some(id))
+            .map(|a| a.name.clone());
+        if let Some(name) = held {
+            return Err(name);
+        }
+        claims.insert(id.to_string(), asking.name.clone());
+        Ok(())
+    }
+
     /// The agent `target` names: an agent pane's id, or an agent name.
     pub(crate) fn resolve_agent(&self, target: &str) -> Result<AgentRef, String> {
         let pane_agent = {

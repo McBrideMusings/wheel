@@ -168,6 +168,7 @@ struct AgentTranscript: View {
     @Environment(\.spaceShown) private var spaceShown
     let empty: String
     var agent: String? = nil
+    var pane: String? = nil
 
     private var intro: String? {
         guard let agent, model.appearance(forAgent: chat.name).home == .transcript else { return nil }
@@ -185,7 +186,8 @@ struct AgentTranscript: View {
                     uniquingKeysWith: { first, _ in first }),
                 count: model.perms.count),
             look: model.appearance(forAgent: chat.name),
-            intro: intro
+            intro: intro,
+            conversations: pane.map { model.conversationActions(chat, pane: $0) }
         )
         .environment(\.transcriptPlatform, TranscriptInput.platform)
         .environment(\.chatLinks, model.links)

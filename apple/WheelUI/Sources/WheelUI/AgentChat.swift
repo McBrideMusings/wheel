@@ -14,6 +14,14 @@ public final class QueueState: ObservableObject {
     @Published public var takeBackAvailable = true
 }
 
+/// Where a listing of an agent's conversations stands.
+public enum ConversationListing: Equatable {
+    case idle
+    case loading
+    case loaded([ConversationInfo])
+    case failed(String)
+}
+
 /// One attached agent's conversation: an agent pane's. Each is its own
 /// object so a pane redraws only for its own agent's events.
 @MainActor
@@ -60,6 +68,11 @@ public final class AgentChat: ObservableObject {
     /// A status the daemon holds over this agent, drawn as a dismissible banner above its
     /// composer: a conversation that would not reopen. Never part of the transcript.
     @Published public var notice: String?
+    /// The conversations the agent holds for its directory, as the last listing found them.
+    @Published public var conversationListing = ConversationListing.idle
+    /// The conversation a switch is changing to while it is in flight: a conversation's id, or ""
+    /// for a fresh one. nil when no switch is running.
+    @Published public var switchingTo: String?
     /// What the conversation is called, held by the daemon: its first
     /// message cut to one line. nil until it has a first message.
     @Published public var title: String?

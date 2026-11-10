@@ -788,19 +788,23 @@ impl Agent {
     /// the one the agent is in flagged. The store belongs to the directory rather than to wheel,
     /// so this lists whatever else ran the same harness there too.
     pub async fn conversations(&self) -> Result<Vec<ConversationInfo>, String> {
-        if self.harness != Harness::Claude {
-            return Err(format!(
-                "agent {} runs {}, which does not list its conversations here",
-                self.name,
-                self.harness.name()
-            ));
-        }
-        let home = claude::store(self.home.as_deref())
+        let home = self
+            .home
+            .clone()
+            .or_else(|| self.harness.daemon_home())
             .ok_or("no home directory to find the agent's conversations in")?;
-        let cwd = self.cwd.clone();
-        let mut listed = tokio::task::spawn_blocking(move || claude::conversations(&home, &cwd))
-            .await
-            .map_err(|e| e.to_string())?;
+        let (harness, cwd) = (self.harness, self.cwd.clone());
+        let mut listed = tokio::task::spawn_blocking(move || match harness {
+            Harness::Claude => claude::conversations(&home, &cwd),
+            Harness::Codex => crate::resume::codex_conversations(&home, &cwd.display().to_string()),
+            Harness::Pi => crate::resume::pi_conversations(
+                &home,
+                &cwd.display().to_string(),
+                std::env::var_os("PI_CODING_AGENT_SESSION_DIR").as_deref(),
+            ),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         // Read now rather than before the store was: a switch can land while a listing is in
         // flight, and the flag has to name the conversation the agent is in when the list is made.
         let current = self.conversation_id();

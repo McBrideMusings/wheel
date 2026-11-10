@@ -15,6 +15,7 @@ Until the MVP works end to end, the look is stock macOS: system materials, contr
 - Every agent pane has the same composer: a rounded box holding the text, attachments, `/` skills and send.
 - While an agent is working and the draft is empty, the composer's send button is a Stop square beside an "esc" hint, and Esc in the composer stops the turn; typing turns the button back into send, which queues the message. A pane's header has no Stop.
 - The controls the agent offers over itself — model, effort, permission mode — sit as a row of plain values under the composer, each opening a menu.
+- An agent pane's header has a conversations button (a clock) left of Info. It opens a popover: a search field, "New conversation", then every conversation the agent holds for the pane's directory, newest first, the current one ticked, each with how long ago it was last worked in, and a footer saying the list includes conversations started outside Wheel (ADR-0006). A row resumes that conversation. While a turn runs or a message is queued the rows stay in place, dimmed, with the tooltip "Stop the turn first", because wheeld refuses the switch then; wheeld also refuses a conversation another agent pane is in. An empty conversation shows the last three under its placeholder, in space reserved for them, and "Show all…" opens the same popover.
 - A new pane starts empty and asks what it shows; any pane can change kind from its title.
 
 ## Chat
