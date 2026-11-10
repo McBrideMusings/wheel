@@ -13,15 +13,18 @@ public struct TranscriptView: View {
     let look: ChatAppearance
     /// A line that opens the conversation, such as where the agent runs; nil for none.
     let intro: String?
+    /// What an empty conversation can do about past ones; nil leaves it showing only `empty`.
+    let conversations: ConversationActions?
     @Environment(\.transcriptPlatform) private var platform
     @Environment(\.spaceShown) private var spaceShown
 
-    public init(chat: AgentChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, intro: String? = nil) {
+    public init(chat: AgentChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, intro: String? = nil, conversations: ConversationActions? = nil) {
         self.chat = chat
         self.empty = empty
         self.permissions = permissions
         self.look = look
         self.intro = intro
+        self.conversations = conversations
     }
 
     /// Go to the last item while the view follows the end.
@@ -40,10 +43,13 @@ public struct TranscriptView: View {
         if chat.rows.isEmpty {
             // Outside the scroll view, so it sits in the middle of the space the transcript has
             // rather than pinned to the bottom of an empty scroll.
-            Text(empty)
-                .font(look.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            VStack(spacing: 12) {
+                Text(empty)
+                    .font(look.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                if let conversations { RecentConversations(chat: chat, actions: conversations) }
+            }
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .topLeading) {

@@ -322,6 +322,182 @@ fn pi_sessions(home: &Path, cwd: &str, env_dir: Option<&std::ffi::OsStr>) -> Vec
     found
 }
 
+/// The most conversations a listing returns: the newest. Listing reads each file's first line and
+/// a title, so an unbounded list would cost more with every conversation the machine has had.
+const LISTED: usize = 200;
+
+/// How many lines of a conversation file are read looking for its first prompt.
+const TITLE_LINES: usize = 400;
+
+/// A prompt as a title: its first non-empty line, cut to 200 characters.
+fn title_of(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.chars().take(200).collect())
+}
+
+/// The text of a message's content, whether it is a string or a list of blocks.
+fn content_text(content: &serde_json::Value) -> Option<String> {
+    match content {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(blocks) => blocks.iter().find_map(|b| b["text"].as_str().map(String::from)),
+        _ => None,
+    }
+}
+
+/// The first prompt in the first `TITLE_LINES` lines of `file` that `prompt` finds, as a title.
+fn first_prompt(file: &Path, prompt: impl Fn(&serde_json::Value) -> Option<String>) -> Option<String> {
+    use std::io::BufRead;
+    let lines = std::io::BufReader::new(std::fs::File::open(file).ok()?).lines();
+    lines
+        .take(TITLE_LINES)
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
+        .find_map(|entry| prompt(&entry).and_then(|t| title_of(&t)))
+}
+
+fn listing(
+    id: String,
+    cwd: &str,
+    title: Option<String>,
+    modified: std::time::SystemTime,
+) -> wheel_proto::ConversationInfo {
+    wheel_proto::ConversationInfo {
+        id,
+        cwd: cwd.to_string(),
+        title,
+        updated_at: Some(crate::claude::iso8601(modified)),
+        current: false,
+    }
+}
+
+/// The conversations Codex holds for `cwd`, newest first, titled after their first prompt. Codex
+/// files its transcripts by date, naming the directory in the first line of each; one made through
+/// a symlinked path names the resolved one, so either spelling matches. The store belongs to the
+/// directory, so this lists whatever else ran Codex there too (ADR-0006).
+pub(crate) fn codex_conversations(home: &Path, cwd: &str) -> Vec<wheel_proto::ConversationInfo> {
+    use std::io::BufRead;
+    let resolved = std::fs::canonicalize(cwd).map(|p| p.display().to_string()).unwrap_or_else(|_| cwd.to_string());
+    let newest_first = |dir: &Path| {
+        let mut names: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        names.sort();
+        names.reverse();
+        names
+    };
+    let mut found = Vec::new();
+    // Date directories sort newest first, so the walk stops once enough are found.
+    'walk: for year in newest_first(&home.join("sessions")) {
+        for month in newest_first(&year) {
+            for day in newest_first(&month) {
+                for file in newest_first(&day) {
+                    if found.len() >= LISTED {
+                        break 'walk;
+                    }
+                    let Some(Ok(first)) = std::fs::File::open(&file).ok().and_then(|f| std::io::BufReader::new(f).lines().next()) else {
+                        continue;
+                    };
+                    let Ok(meta) = serde_json::from_str::<serde_json::Value>(&first) else {
+                        continue;
+                    };
+                    let payload = &meta["payload"];
+                    let (Some(id), Some(at)) = (payload["id"].as_str(), payload["cwd"].as_str()) else {
+                        continue;
+                    };
+                    if at != cwd && at != resolved {
+                        continue;
+                    }
+                    let Ok(modified) = std::fs::metadata(&file).and_then(|m| m.modified()) else {
+                        continue;
+                    };
+                    // The brief and the project's instructions go in as user messages too; the
+                    // person's own prompt is the first one that is not a block of markup or of
+                    // instructions.
+                    let title = first_prompt(&file, |entry| {
+                        let p = &entry["payload"];
+                        (entry["type"] == "response_item" && p["type"] == "message" && p["role"] == "user")
+                            .then(|| content_text(&p["content"]))
+                            .flatten()
+                            .filter(|t| !t.starts_with('<') && !t.starts_with("# AGENTS.md"))
+                    });
+                    found.push((modified, listing(id.to_string(), cwd, title, modified)));
+                }
+            }
+        }
+    }
+    found.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    found.into_iter().map(|(_, info)| info).collect()
+}
+
+/// The conversations pi holds for `cwd`, newest first, titled after their first prompt.
+pub(crate) fn pi_conversations(
+    home: &Path,
+    cwd: &str,
+    env_dir: Option<&std::ffi::OsStr>,
+) -> Vec<wheel_proto::ConversationInfo> {
+    let mut files = pi_session_files(home, cwd, env_dir);
+    files.sort_by_key(|(_, _, at)| std::cmp::Reverse(*at));
+    files.truncate(LISTED);
+    let mut found: Vec<_> = files
+        .into_iter()
+        .map(|(id, path, modified)| {
+            let title = first_prompt(&path, |entry| {
+                let m = &entry["message"];
+                (entry["type"] == "message" && m["role"] == "user").then(|| content_text(&m["content"])).flatten()
+            });
+            (modified, listing(id, cwd, title, modified))
+        })
+        .collect();
+    found.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    found.into_iter().map(|(_, info)| info).collect()
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wheel-listing-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn write(path: &Path, lines: &[serde_json::Value]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        std::fs::write(path, text.join("\n")).unwrap();
+    }
+
+    #[test]
+    fn codex_lists_this_directorys_conversations_titled_by_the_first_real_prompt() {
+        let home = scratch("codex");
+        let day = home.join("sessions/2026/11/10");
+        let meta = |id: &str, cwd: &str| serde_json::json!({"type":"session_meta","payload":{"id":id,"cwd":cwd}});
+        let user = |text: &str| serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}});
+        write(&day.join("rollout-a.jsonl"), &[meta("a", "/work/x"), user("# AGENTS.md instructions\n\nbe nice"), user("<environment_context>"), user("fix the build\nplease")]);
+        write(&day.join("rollout-b.jsonl"), &[meta("b", "/work/other"), user("not mine")]);
+        write(&day.join("rollout-c.jsonl"), &[meta("c", "/work/x")]);
+        let listed = codex_conversations(&home, "/work/x");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut ids: Vec<_> = listed.iter().map(|c| (c.id.as_str(), c.title.as_deref())).collect();
+        ids.sort();
+        assert_eq!(ids, vec![("a", Some("fix the build")), ("c", None)]);
+        assert!(listed.iter().all(|c| c.cwd == "/work/x" && c.updated_at.is_some() && !c.current));
+    }
+
+    #[test]
+    fn pi_lists_this_directorys_conversations_titled_by_the_first_user_message() {
+        let home = scratch("pi");
+        let dir = pi_session_dir(&home, "/work/x", None);
+        let header = |id: &str, cwd: &str| serde_json::json!({"type":"session","id":id,"cwd":cwd});
+        let message = |role: &str, text: &str| serde_json::json!({"type":"message","message":{"role":role,"content":[{"type":"text","text":text}]}});
+        write(&dir.join("1_a.jsonl"), &[header("a", "/work/x"), message("system", "preamble"), message("user", "  list the files  ")]);
+        write(&dir.join("2_b.jsonl"), &[header("b", "/work/y"), message("user", "elsewhere")]);
+        let listed = pi_conversations(&home, "/work/x", None);
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].id.as_str(), listed[0].title.as_deref()), ("a", Some("list the files")));
+    }
+}
+
 /// The file pi keeps `conversation` in for `cwd`, if it keeps one.
 pub(crate) fn pi_session_file(home: &Path, cwd: &str, conversation: &str) -> Option<PathBuf> {
     pi_session_files(

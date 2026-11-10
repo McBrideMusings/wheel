@@ -1019,6 +1019,7 @@ final class DebugServer {
             case "desktop": model.desktopOverlay?.nsWindow
             case "little": model.layout.littles.first { $0.id.hasPrefix(query["window"] ?? "") }.flatMap { (model.windowHost as? WindowManager)?.littleWindow($0.id) }
             case "pairing": model.pairingPanel?.panel
+            case "popover": NSApp.windows.first { String(describing: type(of: $0)).contains("Popover") }
             default: wheelWindow(query["window"])
             }
             guard let window = sheet ? NSApp.windows.first(where: \.isSheet) : named else {
@@ -1570,6 +1571,8 @@ final class DebugServer {
             case "pop": model.toggleSite(pane, .popped)
             case "background": model.toggleSite(pane, .backgrounded)
             case "screenshot": model.copyPaneImage(pane)
+            case "conversations": model.conversationsPane = pane
+            case "conversations-close": model.conversationsPane = nil
             case "tray-open":
                 guard let space = model.space(holding: pane) else { return refuse("404 Not Found", "no pane \(pane)") }
                 model.setTrayOpen(space.id, true)
@@ -1578,6 +1581,18 @@ final class DebugServer {
             case "zoom" where model.zoomButton(for: pane).enabled: model.toggleZoom(pane)
             default: return refuse("409 Conflict", "no enabled header button \(button)")
             }
+        case ("POST", "/conversations/pick"):
+            // What a click on a row of the conversations list sends: `id=new` or a conversation's id.
+            guard let pane = query["pane"], let id = query["id"] else { return refuse("400 Bad Request", "pane and id are required") }
+            guard case let .agent(agent, _, _)? = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane })?.kind,
+                  let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane \(pane)") }
+            let actions = model.conversationActions(chat, pane: pane)
+            if id == "new" { actions.startNew() } else { actions.resume(id) }
+        case ("POST", "/conversations/load"):
+            guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
+            guard case let .agent(agent, _, _)? = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane })?.kind,
+                  let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane \(pane)") }
+            model.conversationActions(chat, pane: pane).load()
         case ("POST", "/space/menu"):
             // A pick from a space's context menu (tab or sidebar row), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
@@ -2200,6 +2215,19 @@ final class DebugServer {
                     o["error"] = chat?.error ?? NSNull()
                     o["notice"] = chat?.notice ?? NSNull()
                     o["title"] = chat?.title ?? NSNull()
+                    o["conversations"] = chat.map { chat -> [String: Any] in
+                        var listing: [String: Any] = ["popover_open": model.conversationsPane == pane.id, "switching_to": chat.switchingTo ?? NSNull()]
+                        switch chat.conversationListing {
+                        case .idle: listing["state"] = "idle"
+                        case .loading: listing["state"] = "loading"
+                        case let .failed(message): listing["state"] = "failed"; listing["message"] = message
+                        case let .loaded(all):
+                            listing["state"] = "loaded"
+                            listing["items"] = all.map { ["id": $0.id, "title": $0.title ?? NSNull(), "age": $0.age() ?? NSNull(), "current": $0.current] as [String: Any] }
+                        }
+                        listing["blocked"] = chat.isBusy || !chat.queued.isEmpty
+                        return listing
+                    } ?? NSNull()
                     o["context"] = contextJSON(chat?.context, pane: pane.id)
                     o["footer"] = chat?.footer.map { ["shells": Int($0.shells), "agents": Int($0.agents), "background_text": $0.backgroundText as Any, "branch": $0.branch as Any] } ?? NSNull()
                     o["request"] = model.perms.first { $0.agent == agent }?.id ?? NSNull()

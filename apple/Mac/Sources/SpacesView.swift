@@ -638,6 +638,9 @@ struct PaneMenuItems: View {
         if offered.contains(.browser), let browser = model.browserPanes[paneId], case .browser = kind {
             Menu("Browser") { BrowserMenu(model: model, paneId: paneId, browser: browser) }
         }
+        if offered.contains(.conversations), case .agent = kind {
+            Button("Conversations…") { model.conversationsPane = paneId }
+        }
         if offered.contains(.info) {
             Button("Pane Info") { model.requestPaneInfo(paneId); model.infoPane = paneId }
         }
@@ -734,6 +737,12 @@ struct PaneHeader: View {
         .popover(isPresented: Binding(get: { model.infoPane == paneId }, set: { if !$0, model.infoPane == paneId { model.infoPane = nil } }), arrowEdge: .bottom) {
             PaneInfoView(fields: model.paneInfo[paneId]).frame(width: 360)
         }
+        // The conversations list, from the header button, the ⋯ menu or the empty conversation's "Show all…".
+        .popover(isPresented: Binding(get: { model.conversationsPane == paneId }, set: { if !$0, model.conversationsPane == paneId { model.conversationsPane = nil } }), arrowEdge: .bottom) {
+            if case let .agent(agent, _, _) = kind, let chat = model.chats[agent] {
+                ConversationPicker(chat: chat, actions: model.conversationActions(chat, pane: paneId))
+            }
+        }
         // Dragging the header swaps this pane with another or docks it beside one; the grid
         // previews the result and the daemon changes the tree once the pointer is released.
         .gesture(
@@ -777,6 +786,9 @@ struct PaneHeader: View {
             if bar(.switchView, level), let view = otherView {
                 headerButton(view == .agent ? "bubble.left.and.text.bubble.right" : "terminal",
                              view == .agent ? "Show as Chat" : "Show in Terminal") { model.switchView(paneId, to: view) }
+            }
+            if bar(.conversations, level), case .agent = kind {
+                headerButton(HeaderControl.conversations.symbol, "Conversations") { model.conversationsPane = paneId }
             }
             if bar(.info, level) { PaneInfoButton(model: model, paneId: paneId) }
             if bar(.splitRight, level) { headerButton("square.split.2x1", "Split Right") { model.split(paneId, .right) } }
@@ -1055,7 +1067,7 @@ struct AgentBody: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            AgentTranscript(model: model, chat: chat, empty: "Give this agent a task.", agent: agent)
+            AgentTranscript(model: model, chat: chat, empty: "Give this agent a task.", agent: agent, pane: paneId)
             // Directly above the composer, where a person answering has their hands: this agent's
             // oldest waiting request.
             if let perm = model.perms.first(where: { $0.agent == chat.name }) {

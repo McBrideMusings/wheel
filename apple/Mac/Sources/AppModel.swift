@@ -141,6 +141,8 @@ final class AppModel {
     @ObservationIgnored var paneImageTimer: Task<Void, Never>?
     /// The pane whose info popover the ⋯ menu opened, when its ⓘ button is not in the header.
     var infoPane: String?
+    /// The agent pane whose conversations popover is open.
+    var conversationsPane: String?
     /// Where each window's grid is drawn, in its window's top-left space: a pane dragged out of its
     /// space is hit-tested against the space that window shows.
     @ObservationIgnored var gridFrames: [String: CGRect] = [:]
@@ -424,6 +426,10 @@ final class AppModel {
     /// Agent requests (a composer's send, an attach), by agent, so a failure shows under
     /// that agent's composer.
     @ObservationIgnored private var agentReqs: [UInt64: String] = [:]
+    /// The requests among `agentReqs` that list an agent's conversations, and the ones that
+    /// switch it, so an answer or a refusal changes only the state its own request set.
+    @ObservationIgnored private var listingReqs: Set<UInt64> = []
+    @ObservationIgnored private var switchReqs: Set<UInt64> = []
     /// The sends whose message runs now once the daemon names its turn (Control-Return).
     @ObservationIgnored private var sendNowReqs: Set<UInt64> = []
     /// The attaches among `agentReqs`, and the agents whose attach the daemon refused (a restore
@@ -958,7 +964,16 @@ final class AppModel {
             Log.info("agent \(agent) attached, \(events.count) events, \(config.count) config options, context \(context?.helpText ?? "unknown")")
         case let .conversation(req, agent, id):
             agentReqs[req] = nil
+            if switchReqs.remove(req) != nil {
+                chats[agent]?.switchingTo = nil
+                conversationsPane = nil
+            }
             Log.info("agent \(agent) is in conversation \(id)")
+        case let .conversations(req, agent, list):
+            agentReqs[req] = nil
+            listingReqs.remove(req)
+            chats[agent]?.conversationListing = .loaded(list)
+            Log.info("agent \(agent) holds \(list.count) conversations")
         case let .agentConfig(agent, options):
             attachAgainIfRefused(agent)
             guard let chat = chats[agent] else { return }
@@ -1048,6 +1063,8 @@ final class AppModel {
             }
             if let req, let agent = agentReqs.removeValue(forKey: req) {
                 chats[agent]?.error = message
+                if listingReqs.remove(req) != nil { chats[agent]?.conversationListing = .failed(message) }
+                if switchReqs.remove(req) != nil { chats[agent]?.switchingTo = nil }
                 if attachReqs.remove(req) != nil { refusedAttach.insert(agent) }
             }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
@@ -1641,6 +1658,46 @@ final class AppModel {
         let req = client.req()
         agentReqs[req] = chat.name
         client.send(.agentClearQueue(req: req, agent: chat.name))
+    }
+
+    /// What the conversation list does for `chat`, shown in `pane`: each sends one request and the
+    /// answer arrives in `handle` (`conversations`, `conversation`, or an error).
+    func conversationActions(_ chat: AgentChat, pane: String) -> ConversationActions {
+        ConversationActions(
+            load: { [weak self, weak chat] in
+                guard let self, let chat else { return }
+                guard self.connection == .connected else {
+                    chat.conversationListing = .failed("Not connected to wheeld.")
+                    return
+                }
+                chat.conversationListing = .loading
+                let req = self.client.req()
+                self.agentReqs[req] = chat.name
+                self.listingReqs.insert(req)
+                Log.info("conversations ask \(chat.name)")
+                self.client.send(.agentConversationLs(req: req, agent: chat.name))
+            },
+            startNew: { [weak self, weak chat] in
+                guard let self, let chat else { return }
+                self.switchConversation(chat, to: nil)
+            },
+            resume: { [weak self, weak chat] id in
+                guard let self, let chat else { return }
+                self.switchConversation(chat, to: id)
+            },
+            showAll: { [weak self] in self?.conversationsPane = pane }
+        )
+    }
+
+    private func switchConversation(_ chat: AgentChat, to id: String?) {
+        guard connection == .connected, chat.switchingTo == nil else { return }
+        chat.error = nil
+        chat.switchingTo = id ?? ""
+        let req = client.req()
+        agentReqs[req] = chat.name
+        switchReqs.insert(req)
+        Log.info("conversation switch \(chat.name) to \(id ?? "a new one")")
+        client.send(id.map { .agentConversationResume(req: req, agent: chat.name, id: $0) } ?? .agentConversationNew(req: req, agent: chat.name))
     }
 
     /// Change one of an agent's config options. The control redraws when the daemon broadcasts

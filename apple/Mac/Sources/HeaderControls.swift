@@ -4,7 +4,7 @@ import WheelKit
 
 /// A control a pane's header can draw as an icon button.
 enum HeaderControl: String, CaseIterable, Identifiable, Codable {
-    case browser, switchView, info, splitRight, splitDown, pop, background, zoom, screenshot, close
+    case browser, switchView, conversations, info, splitRight, splitDown, pop, background, zoom, screenshot, close
 
     var id: String { rawValue }
 
@@ -12,6 +12,7 @@ enum HeaderControl: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .browser: "Browser controls"
         case .switchView: "Chat / terminal switch"
+        case .conversations: "Conversations"
         case .info: "Pane info"
         case .splitRight: "Split right"
         case .splitDown: "Split down"
@@ -27,6 +28,7 @@ enum HeaderControl: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .browser: "ellipsis.circle"
         case .switchView: "bubble.left.and.text.bubble.right"
+        case .conversations: "clock.arrow.circlepath"
         case .info: "info.circle"
         case .splitRight: "square.split.2x1"
         case .splitDown: "square.split.1x2"
@@ -42,7 +44,7 @@ enum HeaderControl: String, CaseIterable, Identifiable, Codable {
     /// A control the header drops lands in the ⋯ menu instead.
     var dropLevel: Int {
         switch self {
-        case .browser, .info, .pop, .background, .screenshot: 1
+        case .browser, .conversations, .info, .pop, .background, .screenshot: 1
         case .switchView: 2
         case .splitRight, .splitDown: 3
         case .zoom: 4
@@ -55,6 +57,7 @@ enum HeaderControl: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .browser: kind == "browser"
         case .switchView: kind == "terminal" || kind == "agent"
+        case .conversations: kind == "agent"
         case .info, .splitRight, .splitDown: kind != "unknown"
         case .pop, .background, .zoom, .screenshot, .close: true
         }
