@@ -18,7 +18,6 @@ public struct ChatAppearance: Sendable, Equatable {
     public enum InlineCode: String, Sendable, CaseIterable { case box, tint, plain }
     /// Where a list's bullet sits: just inside the text's edge, or right against the item's text.
     public enum ListBullet: String, Sendable, CaseIterable { case inset, hanging }
-    /// Where the agent's home directory shows.
 
     public var family: Family = .system
     /// Points. Tool lines and times are drawn a step or two under it.
