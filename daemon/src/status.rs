@@ -46,7 +46,7 @@ struct SpaceStatus {
 pub(crate) fn pane_status(
     state: Option<&AgentState>,
     waiting: u32,
-    background: usize,
+    background: u32,
 ) -> Option<PaneStatus> {
     if waiting > 0 {
         return Some(PaneStatus::NeedsYou {
@@ -278,6 +278,7 @@ pub(crate) fn follow(state: Arc<AppState>) {
             match events.recv().await {
                 Ok(
                     ServerMsg::AgentStateChanged { .. }
+                    | ServerMsg::AgentFooter { .. }
                     | ServerMsg::PermRequested { .. }
                     | ServerMsg::PermResolved { .. }
                     | ServerMsg::Spaces { .. },

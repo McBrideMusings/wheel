@@ -378,6 +378,8 @@ final class PhoneModel {
             chats[agent]?.setConfig(options)
         case let .agentContext(agent, context):
             chats[agent]?.context = context
+        case let .agentFooter(agent, footer):
+            chats[agent]?.footer = footer
         case let .agentCommands(agent, commands):
             chats[agent]?.commands = Set(commands)
         case let .agentTitle(agent, title):

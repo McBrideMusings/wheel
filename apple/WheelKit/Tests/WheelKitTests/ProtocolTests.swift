@@ -480,6 +480,19 @@ struct ProtocolTests {
         #expect(cleared == nil)
     }
 
+    @Test func decodesTheFooterAndReadsItsBackgroundTasks() throws {
+        let json = #"{"ev":"agent_footer","agent":"w3","footer":{"directory":"/p","branch":"main","added":3,"removed":1,"shells":1,"agents":2}}"#
+        guard case let .agentFooter(agent, footer) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
+        #expect(agent == "w3")
+        #expect(footer.branch == "main")
+        #expect(footer.backgroundText == "1 shell · 2 agents")
+        #expect(AgentFooter(directory: "/p", shells: 3).backgroundText == "3 shells")
+        #expect(AgentFooter(directory: "/p", agents: 1).backgroundText == "1 agent")
+        #expect(AgentFooter(directory: "/p").backgroundText == nil)
+        guard case let .agentFooter(_, bare) = try ServerMsg.decode(#"{"ev":"agent_footer","agent":"w3","footer":{"directory":"/p"}}"#) else { Issue.record("wrong case"); return }
+        #expect(bare.shells == 0 && bare.agents == 0 && bare.branch == nil)
+    }
+
     @Test func decodesTheSlashCommandsAnAgentAccepts() throws {
         let json = #"{"ev":"agent_commands","agent":"w3","commands":["clear","compact","review"]}"#
         guard case let .agentCommands(agent, commands) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }

@@ -1224,6 +1224,10 @@ public enum ServerMsg: Sendable {
     /// The slash commands `agent`'s agent accepts, by name, once it has listed them; replaces the
     /// whole list. A composer offers only the commands in it.
     case agentCommands(agent: String, commands: [String])
+    /// What the status line under `agent`'s composer shows besides the context and controls: its
+    /// directory, branch, changes and the background tasks it has running. A client attaching is
+    /// told the current value right after `agentAttached`.
+    case agentFooter(agent: String, footer: AgentFooter)
     /// A status for the person over `agent` — a conversation that would not reopen — that is up
     /// (`notice` set) or has come down (nil). The daemon keeps it in memory only: it is never a
     /// transcript line, and a client attaching while it is up is sent it again.
@@ -1354,7 +1358,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
+        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1405,6 +1409,8 @@ extension ServerMsg: Decodable {
             self = .agentContext(agent: try c.decode(String.self, forKey: .agent), context: try c.decodeIfPresent(ContextUse.self, forKey: .context))
         case "agent_commands":
             self = .agentCommands(agent: try c.decode(String.self, forKey: .agent), commands: try c.decode([String].self, forKey: .commands))
+        case "agent_footer":
+            self = .agentFooter(agent: try c.decode(String.self, forKey: .agent), footer: try c.decode(AgentFooter.self, forKey: .footer))
         case "agent_notice":
             self = .agentNotice(agent: try c.decode(String.self, forKey: .agent), notice: try c.decodeIfPresent(String.self, forKey: .notice))
         case "toast":

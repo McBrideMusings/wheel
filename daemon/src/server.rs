@@ -3109,6 +3109,16 @@ fn forward_agent(
                     return;
                 }
             }
+            let footer = weak.upgrade().map(|s| s.footer());
+            if let Some(footer) = footer {
+                let up = ServerMsg::AgentFooter {
+                    agent: name.clone(),
+                    footer,
+                };
+                if out.send(up).await.is_err() {
+                    return;
+                }
+            }
             let title = weak.upgrade().and_then(|s| s.title());
             if let Some(title) = title {
                 let up = ServerMsg::AgentTitle {

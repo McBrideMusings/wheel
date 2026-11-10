@@ -566,6 +566,18 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         *turn.state.mode.lock().unwrap() = "plan".into();
         turn.out.send(json!({"type": "system", "subtype": "status", "status": null, "permissionMode": "plan", "session_id": turn.session}));
     }
+    if text.contains("start background") {
+        let tasks = json!([
+            {"task_type": "local_bash"},
+            {"task_type": "local_agent"},
+            {"task_type": "local_agent"},
+            {"task_type": "monitor", "ambient": true},
+        ]);
+        turn.out.send(json!({"type": "system", "subtype": "background_tasks_changed", "tasks": tasks, "session_id": turn.session}));
+    }
+    if text.contains("end background") {
+        turn.out.send(json!({"type": "system", "subtype": "background_tasks_changed", "tasks": [], "session_id": turn.session}));
+    }
     if text.contains("reflect") && !turn.think(&["pondering ", "the question"], 0).await {
         return out_of_time(turn);
     }

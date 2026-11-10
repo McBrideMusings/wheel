@@ -60,10 +60,80 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    #[test]
-    fn a_directory_outside_any_repository_is_its_own_primary() {
+    #[tokio::test]
+    async fn a_directory_outside_any_repository_is_its_own_primary() {
         let root = scratch("none");
         assert_eq!(primary(&root), root);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+/// The branch checked out in `dir` and the lines added and removed there against HEAD, untracked
+/// files not counted. None for the branch outside a repository or on a detached head; zeros when
+/// git cannot say.
+pub async fn changes(dir: &Path) -> (Option<String>, u32, u32) {
+    let git = |args: &'static [&'static str]| async move {
+        tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    // Outside a repository `git diff` compares two paths instead, so nothing runs there.
+    if git(&["rev-parse", "--is-inside-work-tree"]).await.is_none() {
+        return (None, 0, 0);
+    }
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"])
+        .await
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+    let (mut added, mut removed) = (0u32, 0u32);
+    for line in git(&["diff", "HEAD", "--numstat"]).await.unwrap_or_default().lines() {
+        let mut cols = line.split('\t');
+        added += cols.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+        removed += cols.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+    }
+    (branch, added, removed)
+}
+
+#[cfg(test)]
+mod changes_tests {
+    use super::changes;
+
+    #[tokio::test]
+    async fn a_repository_reports_its_branch_and_the_lines_changed_against_head() {
+        let dir = std::env::temp_dir().join(format!("wheel-footer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C").arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status().unwrap().success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "work"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.join("a.txt"), "one\nthree\nfour\n").unwrap();
+        let found = changes(&dir).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, (Some("work".into()), 2, 1));
+    }
+
+    #[tokio::test]
+    async fn a_directory_outside_a_repository_has_no_branch() {
+        let dir = std::env::temp_dir().join(format!("wheel-footer-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let found = changes(&dir).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, (None, 0, 0));
     }
 }

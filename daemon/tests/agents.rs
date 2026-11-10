@@ -962,6 +962,33 @@ async fn a_mode_change_folds_into_the_mode_option_and_not_the_transcript() {
     assert_eq!(mode_events(&url, &agent, 4).await, Vec::<String>::new());
 }
 
+/// The first footer broadcast for `agent` that counts `shells` and `agents`; earlier ones, such as
+/// the one sent when the agent starts, are skipped.
+async fn footer_counting(ws: &mut Ws, agent: &str, shells: u32, agents: u32) -> wheel_proto::AgentFooter {
+    loop {
+        if let ServerMsg::AgentFooter { agent: a, footer } = recv(ws).await {
+            if a == agent && (footer.shells, footer.agents) == (shells, agents) {
+                return footer;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn running_background_tasks_reach_clients_as_footer_counts_and_clear_at_zero() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+
+    attach_and_send(&mut ws, &agent, "start background").await;
+    // The ambient monitor in the agent's list is not work, so it is not counted.
+    footer_counting(&mut ws, &agent, 1, 2).await;
+    turn_text(&mut ws).await;
+
+    attach_and_send(&mut ws, &agent, "end background").await;
+    footer_counting(&mut ws, &agent, 0, 0).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_thought_streams_in_chunks_and_is_stored_whole() {
     let url = start_daemon().await;

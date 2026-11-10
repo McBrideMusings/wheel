@@ -55,6 +55,13 @@ struct ConfigRow: View {
             if model.appearance(forAgent: chat.name).home == .row {
                 HomeLabel(agent: agent, home: model.shownHome(agent: chat.name, harness: agent))
             }
+            if let text = chat.footer?.backgroundText {
+                Text(text)
+                    .font(ChatFont.meta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help("Background tasks the agent has running")
+            }
             Spacer(minLength: 0)
             ForEach(chat.config) { option in
                 ConfigControl(option: option) { value in

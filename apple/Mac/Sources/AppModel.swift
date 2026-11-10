@@ -968,6 +968,9 @@ final class AppModel {
             guard let chat = chats[agent] else { return }
             chat.context = context
             Log.info("agent \(agent) context: \(context?.helpText ?? "unknown")")
+        case let .agentFooter(agent, footer):
+            chats[agent]?.footer = footer
+            Log.info("agent \(agent) footer: \(footer.shells) shells, \(footer.agents) agents, branch \(footer.branch ?? "none")")
         case let .agentCommands(agent, commands):
             chats[agent]?.commands = Set(commands)
             Log.info("agent \(agent) accepts \(commands.count) slash commands")

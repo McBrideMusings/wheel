@@ -25,11 +25,12 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
-    AgentPermissions, ConfigKind, ConfigOption, ContextUse, ConversationInfo, ServerMsg,
+    AgentFooter, AgentPermissions, ConfigKind, ConfigOption, ContextUse, ConversationInfo, ServerMsg,
     AgentEvent, AgentState, StampedEvent, ToolContent,
 };
 
 use crate::driver::{self, DriverHandle, DriverEvent, DriverInput, Conversation, Launch};
+use crate::checkout;
 use crate::claude::{self, History};
 use crate::perms::Perms;
 use crate::resume::Harness;
@@ -148,9 +149,10 @@ struct Inner {
     answered: bool,
     /// The agent is in a turn it started itself, which has no `running` turn of wheel's.
     self_started: bool,
-    /// Background tasks the agent has running, as it last counted them. The agent is working on
-    /// while this is above zero, whatever its turn state; a new agent process starts at zero.
-    background: usize,
+    /// What the status line under the composer shows besides the context and controls. Its task
+    /// counts are the agent's own, as it last counted them: the agent is working on while either
+    /// is above zero, whatever its turn state, and a new agent process starts them at zero.
+    footer: AgentFooter,
     /// The running turn whose message was taken back after it started: it is being interrupted, its
     /// remaining events are dropped, and it ends without a `turn_end`.
     unsent: Option<u64>,
@@ -332,7 +334,10 @@ impl Agent {
                 running: None,
                 answered: false,
                 self_started: false,
-                background: 0,
+                footer: AgentFooter {
+                    directory: config.cwd.display().to_string(),
+                    ..AgentFooter::default()
+                },
                 unsent: None,
                 state: AgentState::Starting,
                 config: Vec::new(),
@@ -923,25 +928,55 @@ impl Agent {
     }
 
     /// How many background tasks the agent has running.
-    pub fn background(&self) -> usize {
-        self.inner.lock().unwrap().background
+    pub fn background(&self) -> u32 {
+        let footer = &self.inner.lock().unwrap().footer;
+        footer.shells + footer.agents
     }
 
-    /// Record the agent's background-task count. Anything that derives from the agent's state (a
-    /// pane's status) follows the state message, so a change sends the unchanged state again.
-    fn set_background(&self, count: usize) {
-        let state = {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.background == count {
-                return;
-            }
-            inner.background = count;
-            inner.state.clone()
-        };
-        tracing::info!(agent = %self.name, count, "background tasks");
-        let _ = self.global.send(ServerMsg::AgentStateChanged {
+    /// What the status line under the composer shows besides the context and controls.
+    pub fn footer(&self) -> AgentFooter {
+        self.inner.lock().unwrap().footer.clone()
+    }
+
+    /// Change the footer and tell every client; nothing is sent when it did not change. Under the
+    /// lock `attach` reads, for the reason `announce_config` gives.
+    fn update_footer(&self, change: impl FnOnce(&mut AgentFooter)) {
+        let mut inner = self.inner.lock().unwrap();
+        let mut footer = inner.footer.clone();
+        change(&mut footer);
+        if footer == inner.footer {
+            return;
+        }
+        inner.footer = footer.clone();
+        let _ = self.global.send(ServerMsg::AgentFooter {
             agent: self.name.clone(),
-            state,
+            footer,
+        });
+    }
+
+    /// Record the agent's background tasks.
+    fn set_background(&self, shells: u32, agents: u32) {
+        let now = self.footer();
+        if (now.shells, now.agents) != (shells, agents) {
+            tracing::info!(agent = %self.name, shells, agents, "background tasks");
+        }
+        self.update_footer(|footer| {
+            footer.shells = shells;
+            footer.agents = agents;
+        });
+    }
+
+    /// Read the branch and changes of the directory the agent works in, in a task of its own: the
+    /// agent's event loop never waits for git.
+    fn refresh_git(self: &Arc<Self>) {
+        let agent = self.clone();
+        tokio::spawn(async move {
+            let (branch, added, removed) = checkout::changes(&agent.cwd).await;
+            agent.update_footer(|footer| {
+                footer.branch = branch;
+                footer.added = added;
+                footer.removed = removed;
+            });
         });
     }
 
@@ -1152,7 +1187,7 @@ impl Agent {
 
     fn push_locked(&self, inner: &mut Inner, event: AgentEvent) {
         if inner.running.is_some()
-            && !matches!(event, AgentEvent::TurnStart { .. } | AgentEvent::Notice { .. })
+            && !matches!(event, AgentEvent::TurnStart { .. })
         {
             inner.answered = true;
         }
@@ -1472,8 +1507,9 @@ impl Agent {
         self.ready_this_run.store(true, Ordering::SeqCst);
         self.settle(Ok(()));
         // A new process has no background tasks, whatever the last one had.
-        self.set_background(0);
+        self.set_background(0, 0);
         self.set_state(idle(queue.len() + steered.len()));
+        self.refresh_git();
 
         // The turn the agent is working on.
         let mut running: Option<u64> = None;
@@ -1649,7 +1685,10 @@ impl Agent {
                     // Folded into the `mode` option so a client has one place to read the mode
                     // from.
                     Some(DriverEvent::Mode(mode)) => self.set_current_mode(&mode),
-                    Some(DriverEvent::Background(count)) => self.set_background(count),
+                    Some(DriverEvent::Background { shells, agents }) => {
+                        self.set_background(shells, agents);
+                        self.refresh_git();
+                    }
                     Some(DriverEvent::Commands(commands)) => self.set_commands(commands),
                     // The agent wrote nothing for the new conversation yet, so its id is not
                     // saved until a prompt reaches it, and the old transcript goes.
@@ -1712,6 +1751,7 @@ impl Agent {
                         self.inner.lock().unwrap().self_started = false;
                         perms.drop_agent(&self.name);
                         self.set_state(idle(queue.len() + steered.len()));
+                        self.refresh_git();
                     }
                     Some(DriverEvent::TurnEnd { stop_reason }) => {
                         if let Some(turn) = running.take() {
@@ -1725,6 +1765,7 @@ impl Agent {
                             }
                             self.end_turn(AgentEvent::TurnEnd { turn, stop_reason });
                             self.set_state(idle(queue.len() + steered.len()));
+                            self.refresh_git();
                         }
                     }
                     Some(DriverEvent::TurnFailed { message }) => {
@@ -1738,6 +1779,7 @@ impl Agent {
                             }
                             self.end_turn(AgentEvent::Error { turn: Some(turn), message });
                             self.set_state(idle(queue.len() + steered.len()));
+                            self.refresh_git();
                         }
                     }
                 },
@@ -1959,7 +2001,6 @@ fn event_bytes(event: &AgentEvent) -> usize {
     64 + match event {
         AgentEvent::User { text, .. }
         | AgentEvent::Text { text }
-        | AgentEvent::Notice { text }
         | AgentEvent::Thought { text } => text.len(),
         AgentEvent::ToolCall {
             title,
@@ -2026,7 +2067,7 @@ mod tests {
                 running: None,
                 answered: false,
                 self_started: false,
-                background: 0,
+                footer: AgentFooter::default(),
                 unsent: None,
                 state: AgentState::Ready,
                 config: Vec::new(),

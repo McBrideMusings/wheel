@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -2116,6 +2116,14 @@ pub enum ServerMsg {
         agent: String,
         commands: Vec<String>,
     },
+    /// Sent to every connection whenever what the status line under an agent's composer shows
+    /// besides its context and controls changes: the directory it works in, that directory's git
+    /// branch and changes, and the background tasks it has running. A connection that attaches is
+    /// told the current value right after `agent_attached`.
+    AgentFooter {
+        agent: String,
+        footer: AgentFooter,
+    },
     /// Sent to every connection when a client sent `notify`. Not repeated to a later connection. The Mac app shows it; the iOS app does not.
     Toast {
         id: String,
@@ -2592,6 +2600,7 @@ impl ServerMsg {
             | ServerMsg::AgentConfig { .. }
             | ServerMsg::AgentContext { .. }
             | ServerMsg::AgentCommands { .. }
+            | ServerMsg::AgentFooter { .. }
             | ServerMsg::AgentNotice { .. }
             | ServerMsg::Toast { .. }
             | ServerMsg::ToastClear { .. }
@@ -2788,11 +2797,6 @@ pub enum AgentEvent {
     },
     /// A chunk of the agent's reasoning, merged like `text` in the stored transcript.
     Thought {
-        text: String,
-    },
-    /// One line the agent's host wrote about the conversation, not the agent and not the person: a
-    /// background command that ended. It belongs to no turn and does not mean the agent answered.
-    Notice {
         text: String,
     },
     /// The agent's finished reply block reads `text`, which differs from the chunks it streamed
@@ -3366,6 +3370,29 @@ fn percent_encode(path: &str) -> String {
         }
     }
     out
+}
+
+/// What an agent's status line shows besides its context and controls. The daemon reads the
+/// directory from where the agent runs, the branch and changes from git there, and the background
+/// tasks from the agent's own list of them; clients only show it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentFooter {
+    /// The directory the agent works in.
+    pub directory: String,
+    /// The branch checked out there; none outside a repository or on a detached head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Lines added and removed against HEAD in the working tree, untracked files not counted.
+    #[serde(default)]
+    pub added: u32,
+    #[serde(default)]
+    pub removed: u32,
+    /// Background commands running.
+    #[serde(default)]
+    pub shells: u32,
+    /// Background subagents running.
+    #[serde(default)]
+    pub agents: u32,
 }
 
 /// How full an agent's context window is, as the agent last reported it: tokens in the

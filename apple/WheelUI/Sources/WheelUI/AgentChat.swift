@@ -66,6 +66,9 @@ public final class AgentChat: ObservableObject {
     /// How full the conversation's context window is, as the agent last reported it; nil while it
     /// has reported none, and the header then shows nothing.
     @Published public var context: ContextUse?
+    /// What the status line under the composer shows besides the context and controls; nil until
+    /// the daemon has sent it.
+    @Published public var footer: AgentFooter?
     /// The slash commands the agent accepts, by name; nil until it has listed them.
     @Published public var commands: Set<String>?
     /// What a composer's picker offers for `agent`: the commands the agent reported, each with the

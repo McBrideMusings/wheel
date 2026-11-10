@@ -2201,6 +2201,7 @@ final class DebugServer {
                     o["notice"] = chat?.notice ?? NSNull()
                     o["title"] = chat?.title ?? NSNull()
                     o["context"] = contextJSON(chat?.context, pane: pane.id)
+                    o["footer"] = chat?.footer.map { ["shells": Int($0.shells), "agents": Int($0.agents), "background_text": $0.backgroundText as Any, "branch": $0.branch as Any] } ?? NSNull()
                     o["request"] = model.perms.first { $0.agent == agent }?.id ?? NSNull()
                     o["config"] = chat.map { configJSON($0.config) } ?? NSNull()
                     o["transcript_redraws"] = chat.map { chat -> [String: Any] in
