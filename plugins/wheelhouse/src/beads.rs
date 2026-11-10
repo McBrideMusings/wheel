@@ -812,7 +812,9 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
                 json!({ "value": "list", "text": "List" }), json!({ "value": "epics", "text": "Epics" }),
                 json!({ "value": "deps", "text": "Depends on" }), json!({ "value": "unlocks", "text": "Unlocks" }),
                 json!({ "value": "focus", "text": "Focus" }), json!({ "value": "graph", "text": "Graph" })], true, false);
-        crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "maxWidth": "infinity" } }));
+        crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "minWidth": 120, "maxWidth": "infinity" } }));
+        // The views choice is offered its width before the search field, so the field shrinks to make room for the segmented control.
+        crate::core::layout::modify(&mut p.out, "views", json!({ "layoutPriority": 1 }));
         p.boxed("find", "h", vec!["search".into(), "views".into()], json!({ "spacing": 8, "align": "center", "widths": ["flex", Value::Null], "padding": [8, 0, 0, 0] }));
         // The row takes the page's full width, so the search field grows to the views choice.
         crate::core::layout::modify(&mut p.out, "find", json!({ "frame": { "maxWidth": "infinity" } }));

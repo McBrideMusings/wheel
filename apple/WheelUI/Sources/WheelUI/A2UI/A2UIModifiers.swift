@@ -166,6 +166,7 @@ struct A2UIModifiers: ViewModifier {
         case "lineLimit": if let n = arg.numberValue { return AnyView(v.lineLimit(Int(n))) }
         case "truncationMode":
             return AnyView(v.truncationMode(arg.stringValue == "head" ? .head : arg.stringValue == "middle" ? .middle : .tail))
+        case "layoutPriority": if let n = arg.numberValue { return AnyView(v.layoutPriority(n)) }
         case "fixedSize":
             if let d = arg.dictionaryValue {
                 return AnyView(v.fixedSize(horizontal: d["horizontal"]?.boolValue ?? false, vertical: d["vertical"]?.boolValue ?? false))
