@@ -2398,6 +2398,37 @@ async fn a_codex_message_waits_in_the_queue_until_sent_now_and_is_then_steered_i
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn send_now_interrupts_a_codex_turn_that_waits_on_a_permission() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    queue(&mut ws, &agent, "permission", 2).await;
+    perm_from(&mut ws, &agent).await;
+    // The turn is stopped on the request, so a message steered into it would never be read.
+    queue(&mut ws, &agent, "two", 3).await;
+    let now = ClientMsg::AgentSendNow {
+        req: Some(4),
+        agent: agent.clone(),
+        turn: 2,
+    };
+    assert_eq!(ok_or_error(&mut ws, now, 4).await, ServerMsg::Ok { req: 4 });
+    let events = events_until_ended(&mut ws, &[1, 2]).await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { turn: 1, stop_reason } if stop_reason == "cancelled")),
+        "{events:?}"
+    );
+    let said: String = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(said.contains("echo: two"), "{said:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_wait_on_an_agent_pane_reports_its_state_by_pane_id_or_agent_name() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
@@ -3969,7 +4000,7 @@ async fn a_codex_pane_streams_a_turn_with_its_home_and_the_brief() {
         text.contains("codex_home=") && text.contains("/codex-home"),
         "CODEX_HOME is the Codex home, not Claude's: {text:?}"
     );
-    assert!(text.contains("policy=untrusted"), "{text:?}");
+    assert!(text.contains("policy=on-request"), "{text:?}");
     let brief = text.split("brief: ").nth(1).unwrap_or("-");
     assert!(
         !brief.starts_with('-') && !brief.is_empty(),
@@ -4157,7 +4188,7 @@ async fn the_approval_policy_is_a_control_sent_with_each_codex_turn() {
     let mut ws = connect(&url).await;
     let agent = codex_agent(&url).await;
     let options = config_of(&mut ws, &agent, 90).await;
-    assert_eq!(current(&options, "mode"), "untrusted");
+    assert_eq!(current(&options, "mode"), "on-request");
     attach(&mut ws, &agent, 89).await;
     config_set_refused(&mut ws, &agent, 91, "mode", "yolo", "does not take yolo").await;
     send_config_set(&mut ws, &agent, 92, "mode", "never").await;
@@ -4964,6 +4995,59 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
         .collect();
     assert!(models.contains(&"fake-codex-mini"), "{models:?}");
     daemon.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_agent_pane_restarts_in_the_approval_policy_a_person_chose() {
+    let dir = Scratch::new("codex-pane-keeps-policy");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let mut ws = connect(&url).await;
+    let started = client_op(
+        &mut ws,
+        9340,
+        ClientMsg::PaneStart {
+            req: Some(9340),
+            pane,
+            kind: StartKind::Agent,
+            message: None,
+            agent: Some("codex".into()),
+            model: None,
+            permission_mode: None,
+            sandbox: None,
+        },
+    )
+    .await;
+    assert!(matches!(started, ServerMsg::Started { .. }), "{started:?}");
+    let agent = layout(&url).await["spaces"][0]["root"]["agent"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    attach(&mut ws, &agent, 41).await;
+    send_config_set(&mut ws, &agent, 42, "mode", "never").await;
+    let mut saved = serde_json::Value::Null;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        saved = serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+        if saved["spaces"][0]["root"]["permission_mode"] == "never" {
+            break;
+        }
+    }
+    assert_eq!(saved["spaces"][0]["root"]["permission_mode"], "never", "{saved}");
+    first.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (url, _, second) = start_daemon_with(fake, Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let agent = layout(&url).await["spaces"][0]["root"]["agent"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    attach(&mut ws, &agent, 43).await;
+    let text = reply(&mut ws, &agent, "show setup").await;
+    assert!(text.contains("policy=never"), "{text:?}");
+    second.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]
