@@ -25,7 +25,7 @@ A native macOS and iOS workspace for running coding agents across projects. Each
                                               └─ artifact server, permissions
 ```
 
-The clients hold no state the daemon lacks; they render what it sends ([ADR-0001](docs/adr/0001-native-swift-clients-over-a-rust-daemon.md)). Wheel runs only what its app bundle carries, plus the agent programs you already have installed ([ADR-0013](docs/adr/0013-wheel-runs-only-what-it-ships-or-names.md)). The decisions behind the design are in [`docs/adr/`](docs/adr), and the project's vocabulary is in [`docs/CONTEXT.md`](docs/CONTEXT.md).
+The clients hold no state the daemon lacks; they render what it sends ([ADR-0001](docs/adr/0001-native-clients-over-a-rust-daemon.md)). Wheel runs only what its app bundle carries, plus the agent programs you already have installed ([ADR-0013](docs/adr/0013-wheel-runs-only-what-it-ships-or-names.md)). The decisions behind the design are in [`docs/adr/`](docs/adr), and the project's vocabulary is in [`docs/CONTEXT.md`](docs/CONTEXT.md).
 
 | Directory | What's in it |
 | --- | --- |
