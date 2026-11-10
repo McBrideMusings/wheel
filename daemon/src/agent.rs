@@ -199,6 +199,8 @@ pub struct Agent {
     conversation_id: Mutex<Option<String>>,
     /// Set until the first agent process decides whether a restored agent resumes.
     restored: AtomicBool,
+    /// What `AgentConfig::fork` still has to do: the conversation to copy and through how many turns.
+    fork: Mutex<Option<(String, usize)>>,
     /// The conversation id the owner should save so the next start reloads it: one the agent holds
     /// on disk. It writes a conversation out when the first prompt reaches it, so a conversation
     /// that never took a turn cannot be loaded again, and saving its id would make the next start
@@ -247,6 +249,11 @@ pub struct AgentConfig {
     /// `conversation`, the pane's saved conversation, and its history becomes the transcript.
     pub restored: bool,
     pub conversation: Option<String>,
+    /// The agent starts as a copy of this conversation, through this many turns: its first
+    /// process forks it, and the id that process reports for the copy is the agent's conversation.
+    /// Cleared once a process is ready, so a start that fails forks again rather than opening
+    /// a new conversation.
+    pub fork: Option<(String, usize)>,
     /// Called each time the agent's saved state changes — a new conversation id worth saving, or
     /// a new context use — so its pane saves it.
     pub on_saved: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -355,7 +362,8 @@ impl Agent {
             stopped: AtomicBool::new(false),
             agent_pid: AtomicU32::new(0),
             conversation_id: Mutex::new(config.conversation.clone()),
-            restored: AtomicBool::new(config.restored),
+            restored: AtomicBool::new(config.restored || config.fork.is_some()),
+            fork: Mutex::new(config.fork.clone()),
             saved_id: Mutex::new(config.conversation.clone()),
             held: AtomicBool::new(false),
             ready_this_run: AtomicBool::new(false),
@@ -1409,10 +1417,50 @@ impl Agent {
             _ => None,
         };
         let started = tokio::time::Instant::now();
+        let fork = self.fork.lock().unwrap().clone();
         let (mut agent, options, conversation, reported) = match (
             &saved,
             history.is_some() || !reads_store,
         ) {
+            // The first process of a forked agent copies the conversation; the copy is read back
+            // under the id the agent reports for it.
+            _ if fork.is_some() => {
+                let (from, turns) = fork.clone().unwrap();
+                let conversation = Conversation::Fork {
+                    from,
+                    turns,
+                    id: claude::new_conversation_id(),
+                };
+                let mut agent = self.launch(config, conversation.clone())?;
+                let ready = wait_ready(&mut agent).await?;
+                // Claude Code copies into the id it was told; Codex names its own.
+                let id = match (&ready.conversation, &conversation) {
+                    (Some(id), _) => id.clone(),
+                    (None, Conversation::Fork { id, .. }) if config.agent == Harness::Claude => id.clone(),
+                    _ => return Err("the agent did not name the conversation it forked".into()),
+                };
+                if reads_store {
+                    // Claude Code writes the copy's transcript with its first message, so the
+                    // history is the source's, cut to the turns the fork keeps.
+                    if let (Some(home), Some((source, kept))) = (home.clone(), fork.clone()) {
+                        let cwd = config.cwd.clone();
+                        history = tokio::task::spawn_blocking(move || {
+                            claude::history(&home, &cwd, &source).map(|mut h| {
+                                h.turns.truncate(kept);
+                                h
+                            })
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    }
+                } else {
+                    history = ready.history;
+                }
+                if history.is_none() {
+                    return Err(format!("the conversation the fork copies could not be read for {id}"));
+                }
+                (agent, ready.options, conversation.named(id), ready.context)
+            }
             (Some(id), true) => {
                 let conversation = Conversation::Resume(id.clone());
                 // A driver that finds the conversation gone before starting its agent (pi's)
@@ -1458,6 +1506,7 @@ impl Agent {
         };
         let start_ms = started.elapsed().as_millis() as u64;
         self.restored.store(false, Ordering::SeqCst);
+        *self.fork.lock().unwrap() = None;
         self.set_config_options(options);
         // An agent that reports its context before it is ready (pi, on a resume) has the figure
         // shown before the first new turn; `Some(None)` clears a figure saved with the pane.
@@ -2090,6 +2139,7 @@ mod tests {
             agent_pid: AtomicU32::new(0),
             conversation_id: Mutex::new(None),
             restored: AtomicBool::new(false),
+            fork: Mutex::new(None),
             saved_id: Mutex::new(None),
             held: AtomicBool::new(false),
             ready_this_run: AtomicBool::new(false),

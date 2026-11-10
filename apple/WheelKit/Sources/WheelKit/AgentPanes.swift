@@ -17,6 +17,22 @@ public enum AgentPanes {
         return out
     }
 
+    /// The harness (`claude`, `codex`, `pi`) of the pane running `agent`; nil when no pane runs it.
+    public static func harness(ofAgent agent: String, in spaces: [SpaceInfo]) -> String? {
+        for space in spaces {
+            for pane in space.allPanes {
+                if case let .agent(name, harness, _) = pane.kind, name == agent { return harness }
+            }
+        }
+        return nil
+    }
+
+    /// Whether the harness can fork a conversation at a turn (`agent_fork`): Claude Code and
+    /// Codex can, Pi cannot.
+    public static func canFork(harness: String?) -> Bool {
+        harness == "claude" || harness == "codex"
+    }
+
     /// The home directory the pane running `agent` saved for itself; nil when it saved none or no
     /// pane runs the agent.
     public static func home(ofAgent agent: String, in spaces: [SpaceInfo]) -> String? {

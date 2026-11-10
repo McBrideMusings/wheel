@@ -642,6 +642,14 @@ pub struct StartOptions {
     pub permissions: AgentPermissions,
 }
 
+/// The conversation a forked agent copies, and where and under which account it was kept.
+struct ForkSource {
+    conversation: String,
+    turns: usize,
+    cwd: Option<String>,
+    home: Option<String>,
+}
+
 /// What `pane_start` returns: the pane, and for an agent its agent and state.
 #[derive(Debug, Serialize)]
 pub struct Started {
@@ -1603,7 +1611,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message, model, permissions)
+                .start_agent(space, &pane, &agent, message, model, permissions, None)
                 .await
                 .map(Some),
         };
@@ -1619,6 +1627,88 @@ impl AppState {
                 if split && !kept {
                     let _ = self.pane_close(&pane);
                 }
+                Err(e)
+            }
+        }
+    }
+
+    /// Fork agent `agent`'s conversation through its first `turns` turns into a new agent pane
+    /// split right of the agent's own, with the agent's harness, model, permissions and account.
+    /// The agent's own conversation goes on untouched. Refused for an agent whose harness cannot
+    /// fork, or that has no conversation yet; a pane made for this that fails to start is closed.
+    pub async fn pane_fork(&self, agent: &str, turns: usize) -> Result<Started, String> {
+        let (space, space_cwd, pane, agent, harness, model, permissions, place) = {
+            let spaces = self.spaces.lock().unwrap();
+            spaces
+                .spaces
+                .iter()
+                .find_map(|held| {
+                    space_panes(held).into_iter().find_map(|(pane, kind)| match kind {
+                        PaneKind::Agent {
+                            agent: a,
+                            harness,
+                            model,
+                            permissions,
+                            place,
+                            ..
+                        } if a == agent || pane == agent => Some((
+                            held.id.clone(),
+                            held.cwd.clone(),
+                            pane.to_string(),
+                            a.clone(),
+                            harness.clone(),
+                            model.clone(),
+                            permissions.as_deref().cloned().unwrap_or_default(),
+                            place.as_deref().cloned().unwrap_or_default(),
+                        )),
+                        _ => None,
+                    })
+                })
+                .ok_or_else(|| format!("no agent pane holds agent {agent}"))?
+        };
+        if Harness::parse(&harness) == Some(Harness::Pi) {
+            return Err("Pi cannot fork a conversation at a turn".into());
+        }
+        if turns == 0 {
+            return Err("a fork holds at least one turn".into());
+        }
+        let conversation = self
+            .agent(&agent)?
+            .conversation_id()
+            .ok_or_else(|| format!("agent {agent} has no conversation to fork yet"))?;
+        // Refused before a pane is made: Claude Code's transcript says at once whether it holds
+        // that many turns. Codex says so when its fork starts.
+        if Harness::parse(&harness) == Some(Harness::Claude) {
+            let home = crate::claude::store(place.home.as_deref().map(std::path::Path::new))
+                .or_else(|| self.agent_home("claude").map(std::path::PathBuf::from))
+                .ok_or("the agent's configuration directory is not known")?;
+            let cwd = place.cwd.clone().unwrap_or(space_cwd);
+            let source = conversation.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::claude::fork_point(&home, std::path::Path::new(&cwd), &source, turns)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+        }
+        let (new, _) = self.pane_split(&pane, Some(Dir::Right), None)?;
+        let source = ForkSource {
+            conversation,
+            turns,
+            cwd: place.cwd,
+            home: place.home,
+        };
+        match self
+            .start_agent(&space, &new, &harness, None, model, permissions, Some(source))
+            .await
+        {
+            Ok((started, state)) => Ok(Started {
+                pane: new,
+                agent: Some(started),
+                state: Some(state),
+            }),
+            // A fork that did not start is no use as an error pane: the pane goes with it.
+            Err((e, _)) => {
+                let _ = self.pane_close(&new);
                 Err(e)
             }
         }
@@ -1743,6 +1833,7 @@ impl AppState {
             (cwd.as_deref().unwrap_or(space_cwd), space_cwd),
             AgentStart {
                 conversation: saved.conversation,
+                fork: None,
                 home,
                 context: saved.context,
                 model: saved.model,
@@ -1792,27 +1883,37 @@ impl AppState {
         message: Option<String>,
         model: Option<String>,
         permissions: AgentPermissions,
+        fork: Option<ForkSource>,
     ) -> Result<(String, AgentState), (String, bool)> {
         // A second start on a pane whose first has not heard back from its agent would `install`
         // over that agent and end it, so it is refused; the claim is held through the wait for
         // the agent to be ready, because the second start of a double click lands in that wait.
         let _starting = StartClaim::take(&self.agent_starts, pane).map_err(|e| (e, false))?;
-        let cwd = {
+        let space_cwd = {
             let spaces = self.spaces.lock().unwrap();
             spaces.spaces[spaces.holding(pane).map_err(|e| (e, false))?]
                 .cwd
                 .clone()
         };
+        // A fork runs where the conversation it copies was kept, with the account that kept it.
+        let cwd = fork
+            .as_ref()
+            .and_then(|f| f.cwd.clone())
+            .unwrap_or_else(|| space_cwd.clone());
         let name = self.new_id('w');
-        let home = self
-            .shell_agent_home(harness, &cwd)
-            .await
-            .map_err(|e| (e, false))?;
+        let home = match &fork {
+            Some(fork) => fork.home.clone(),
+            None => self
+                .shell_agent_home(harness, &cwd)
+                .await
+                .map_err(|e| (e, false))?,
+        };
         self.spawn_agent(
             &name,
             (pane, harness),
-            (&cwd, &cwd),
+            (&cwd, &space_cwd),
             AgentStart {
+                fork: fork.as_ref().map(|f| (f.conversation.clone(), f.turns)),
                 home: home.clone(),
                 model: model.clone(),
                 permissions: permissions.clone(),
@@ -1828,7 +1929,7 @@ impl AppState {
             model,
             context: None,
             // The pane keeps the account it started in, so a restart finds its conversation there.
-            place: wheel_proto::AgentPlace::boxed(None, home),
+            place: wheel_proto::AgentPlace::boxed(fork.and_then(|f| f.cwd), home),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
             extra: Extra::default(),
         };

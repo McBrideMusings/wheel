@@ -40,6 +40,9 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     let mut args: Vec<String> = vec!["--mode".into(), "rpc".into()];
     match &launch.conversation {
         Conversation::New(id) => args.extend(["--session-id".into(), id.clone()]),
+        Conversation::Fork { .. } => {
+            return Err("pi cannot fork a conversation at a turn".into());
+        }
         Conversation::Resume(id) => {
             // pi files an agent under its working directory with links resolved.
             let cwd = std::fs::canonicalize(&launch.cwd)
