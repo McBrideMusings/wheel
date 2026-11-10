@@ -7324,6 +7324,88 @@ async fn an_mcp_server_over_stdio_lists_and_calls_its_tools() {
     mcp_session_works(&format!("mcp = {}\n", toml::Value::from(command)), "stdio").await;
 }
 
+/// A server process that exits by itself leaves a session the daemon must not reuse: the next
+/// tool list reconnects and answers on the first try, and a tool call answers on a new session or
+/// (when it raced the exit, and may already have run) reports the error and is never replayed.
+#[tokio::test]
+async fn an_mcp_server_that_exited_is_reconnected_not_reused() {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-exited-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let pids = base.join("pids");
+    let command = format!("echo $$ >> {}; exec {} stdio", pids.display(), mcp_example().display());
+    std::fs::write(
+        base.join("wheel.toml"),
+        format!("[artifacts.server]\nmcp = {}\n", toml::Value::from(command)),
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let started = || std::fs::read_to_string(&pids).unwrap().lines().count();
+    let kill_newest = || {
+        let text = std::fs::read_to_string(&pids).unwrap();
+        let pid = text.lines().last().unwrap().to_string();
+        assert!(std::process::Command::new("kill").args(["-9", &pid]).status().unwrap().success());
+    };
+
+    assert_eq!(mcp_tools(&mut ws, "server", &space).await.unwrap().len(), 2);
+    assert_eq!(started(), 1);
+
+    kill_newest();
+    assert_eq!(mcp_tools(&mut ws, "server", &space).await.unwrap().len(), 2);
+    assert_eq!(started(), 2, "the dead session was replaced by one new server");
+
+    kill_newest();
+    let args = Some(serde_json::json!({"text": "hi"}));
+    // The call answers on a new session when the daemon saw the exit first, and reports an error
+    // when the call raced it; either way the next call answers, and one server was started.
+    let said = match mcp_call(&mut ws, "server", &space, "echo", args.clone()).await {
+        Ok(said) => said,
+        Err(_) => mcp_call(&mut ws, "server", &space, "echo", args).await.unwrap(),
+    };
+    assert_eq!(said.content[0]["text"], "hi");
+    assert_eq!(started(), 3);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A resource read on a session whose server exited reconnects and answers on the first try.
+#[tokio::test]
+async fn an_mcp_resource_read_after_the_server_exited_reconnects() {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-read-exited-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let pids = base.join("pids");
+    let server = mcp_example().with_file_name("mcp_a2ui_test_server");
+    let command = format!("echo $$ >> {}; exec {} stdio", pids.display(), server.display());
+    std::fs::write(
+        base.join("wheel.toml"),
+        format!("[artifacts.notes]\nmcp = {}\n", toml::Value::from(command)),
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let read = |req| ClientMsg::ArtifactRead {
+        req: Some(req),
+        name: "notes".into(),
+        scope: None,
+        space: Some(space.clone()),
+        pane: None,
+        uri: "a2ui://notes".into(),
+    };
+    assert!(matches!(call(&mut ws, read(50)).await, ServerMsg::Resource { .. }));
+    let text = std::fs::read_to_string(&pids).unwrap();
+    let pid = text.lines().last().unwrap().to_string();
+    assert!(std::process::Command::new("kill").args(["-9", &pid]).status().unwrap().success());
+    let again = call(&mut ws, read(51)).await;
+    assert!(matches!(again, ServerMsg::Resource { .. }), "{again:?}");
+    assert_eq!(std::fs::read_to_string(&pids).unwrap().lines().count(), 2);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[tokio::test]
 async fn an_mcp_server_over_http_lists_and_calls_its_tools() {
     let port = std::net::TcpListener::bind("127.0.0.1:0")

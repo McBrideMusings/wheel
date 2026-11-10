@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,9 +42,22 @@ enum Def {
 }
 
 struct Session {
+    /// Which session this is, so a failed call drops the one it used and never a replacement.
+    id: u64,
     def: Def,
     service: RunningService<RoleClient, Watch>,
     subs: Subs,
+}
+
+/// The id of the next session opened.
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+impl Session {
+    /// Whether the server's end is gone: the session was closed or cancelled, or its transport
+    /// ended by itself (the child exited), which `RunningService::is_closed` does not report.
+    fn dead(&self) -> bool {
+        self.service.is_closed() || self.service.peer().is_transport_closed()
+    }
 }
 
 /// One subscribed resource: the project it is read for and the artifacts whose panes read it.
@@ -56,12 +70,13 @@ struct Sub {
 /// notification handler reads it to find the panes a change reaches.
 type Subs = Arc<Mutex<HashMap<String, Sub>>>;
 
-/// What a caller holds of a session: the peer, the project directory it asks for, and the key the
-/// session is held under, so a dead one can be dropped.
+/// What a caller holds of a session: the peer, the project directory it asks for, and the key and
+/// id the session is held under, so a dead one can be dropped.
 pub(crate) struct Conn {
     pub peer: Peer<RoleClient>,
     pub dir: String,
     key: String,
+    session: u64,
     name: String,
     shared: bool,
 }
@@ -113,9 +128,13 @@ fn project_uri(uri: &str, dir: &str) -> String {
     }
 }
 
-/// Whether a request failed because the server's end is gone.
+/// Whether a request failed because the server's end is gone: the transport was closed, or a
+/// write to it failed (a child that exited before the reader noticed).
 fn is_closed(e: &rmcp::ServiceError) -> bool {
-    matches!(e, rmcp::ServiceError::TransportClosed)
+    matches!(
+        e,
+        rmcp::ServiceError::TransportClosed | rmcp::ServiceError::TransportSend(_)
+    )
 }
 
 /// The sessions of every artifact. A shared server is keyed by its scope and what runs it, so
@@ -258,11 +277,11 @@ impl AppState {
         let slot = self.mcp.slot(&key);
         let mut held = slot.lock().await;
         if let Some(session) = held.as_mut() {
-            if session.def == def && !session.service.is_closed() {
+            if session.def == def && !session.dead() {
                 if shared {
                     self.mcp_unsubscribe_closed(session, artifact.scope()).await;
                 }
-                return Ok(Conn { peer: session.service.peer().clone(), dir: cwd, key, name: name.to_string(), shared });
+                return Ok(Conn { peer: session.service.peer().clone(), dir: cwd, key, session: session.id, name: name.to_string(), shared });
             }
         }
         // Dropping the old session ends its process, or its HTTP session, before the new one starts.
@@ -286,8 +305,9 @@ impl AppState {
             })??;
         tracing::info!(scope = artifact.scope().name(), %name, ?def, shared, "MCP session open");
         let peer = service.peer().clone();
-        *held = Some(Session { def, service, subs });
-        Ok(Conn { peer, dir: cwd, key, name: name.to_string(), shared })
+        let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+        *held = Some(Session { id, def, service, subs });
+        Ok(Conn { peer, dir: cwd, key, session: id, name: name.to_string(), shared })
     }
 
     /// Unsubscribe from the resources no pane reads any more: a resource stays while a pane of
@@ -359,9 +379,40 @@ impl AppState {
         }
     }
 
-    /// Drop the session under `key`: its process ends, and the next call starts a new one.
-    async fn mcp_evict(&self, key: &str) {
-        *self.mcp.slot(key).lock().await = None;
+    /// Drop the session `conn` used, so the next call starts a new one. A session another call
+    /// has already replaced stays.
+    async fn mcp_evict(&self, conn: &Conn) {
+        let slot = self.mcp.slot(&conn.key);
+        let mut held = slot.lock().await;
+        if held.as_ref().is_some_and(|s| s.id == conn.session) {
+            *held = None;
+        }
+    }
+
+    /// Artifact `name`'s connection and its tools. A session whose server's end went away
+    /// is replaced and the request made once more: listing tools changes nothing, so repeating it
+    /// is safe.
+    async fn mcp_connection_tools(
+        &self,
+        name: &str,
+        scope: Option<ArtifactScope>,
+        space: Option<&str>,
+    ) -> Result<(Conn, Vec<rmcp::model::Tool>), String> {
+        let mut retried = false;
+        loop {
+            let conn = self.mcp_peer(name, scope, space).await?;
+            match conn.list_tools().await {
+                Ok(tools) => return Ok((conn, tools)),
+                Err(e) if is_closed(&e) => {
+                    self.mcp_evict(&conn).await;
+                    if retried {
+                        return Err(format!("{name}: list tools: {e}"));
+                    }
+                    retried = true;
+                }
+                Err(e) => return Err(format!("{name}: list tools: {e}")),
+            }
+        }
     }
 
     async fn mcp_connect(
@@ -424,16 +475,7 @@ impl AppState {
         space: Option<&str>,
         _pane: Option<&str>,
     ) -> Result<Vec<McpTool>, String> {
-        let conn = self.mcp_peer(name, scope, space).await?;
-        let tools = match conn.list_tools().await {
-            Ok(t) => t,
-            Err(e) => {
-                if is_closed(&e) {
-                    self.mcp_evict(&conn.key).await;
-                }
-                return Err(format!("{name}: list tools: {e}"));
-            }
-        };
+        let (_, tools) = self.mcp_connection_tools(name, scope, space).await?;
         Ok(tools
             .into_iter()
             .map(|t| McpTool {
@@ -474,7 +516,7 @@ impl AppState {
             Ok(r) => r,
             Err(e) => {
                 if is_closed(&e) {
-                    self.mcp_evict(&conn.key).await;
+                    self.mcp_evict(&conn).await;
                 }
                 return Err(format!("{name}: call {tool}: {e}"));
             }
@@ -559,12 +601,8 @@ impl AppState {
         scope: Option<ArtifactScope>,
         space: Option<&str>,
     ) -> Result<serde_json::Value, String> {
-        let conn = self.mcp_peer(name, scope, space).await?;
+        let (conn, tools) = self.mcp_connection_tools(name, scope, space).await?;
         let peer = conn.peer.clone();
-        let tools = conn
-            .list_tools()
-            .await
-            .map_err(|e| format!("{name}: list tools: {e}"))?;
         let tools = tools
             .iter()
             .map(|t| serde_json::to_value(t).map_err(|e| format!("{name}: a tool: {e}")))
@@ -611,20 +649,27 @@ impl AppState {
         pane: Option<&str>,
         uri: &str,
     ) -> Result<serde_json::Value, String> {
-        let conn = self.mcp_peer(name, scope, space).await?;
-        let uri = &if conn.shared { project_uri(uri, &conn.dir) } else { uri.to_string() };
-        if conn.shared {
-            self.mcp_subscribe(&conn, uri).await;
-        }
-        let mut params = rmcp::model::ReadResourceRequestParams::new(uri.to_string());
-        params.meta = conn.meta(pane);
-        let read = match conn.peer.read_resource(params).await {
-            Ok(r) => r,
-            Err(e) => {
-                if is_closed(&e) {
-                    self.mcp_evict(&conn.key).await;
+        // A session whose server's end went away is replaced and the read made once more:
+        // reading changes nothing, so repeating it is safe.
+        let mut retried = false;
+        let (uri, read) = loop {
+            let conn = self.mcp_peer(name, scope, space).await?;
+            let uri = if conn.shared { project_uri(uri, &conn.dir) } else { uri.to_string() };
+            if conn.shared {
+                self.mcp_subscribe(&conn, &uri).await;
+            }
+            let mut params = rmcp::model::ReadResourceRequestParams::new(uri.clone());
+            params.meta = conn.meta(pane);
+            match conn.peer.read_resource(params).await {
+                Ok(read) => break (uri, read),
+                Err(e) if is_closed(&e) => {
+                    self.mcp_evict(&conn).await;
+                    if retried {
+                        return Err(format!("{name}: read {uri}: {e}"));
+                    }
+                    retried = true;
                 }
-                return Err(format!("{name}: read {uri}: {e}"));
+                Err(e) => return Err(format!("{name}: read {uri}: {e}")),
             }
         };
         serde_json::to_value(read).map_err(|e| format!("{name}: {uri}: {e}"))
@@ -663,11 +708,7 @@ impl AppState {
         initial: bool,
         person: bool,
     ) -> Result<McpToolResult, String> {
-        let conn = self.mcp_peer(name, scope, space).await?;
-        let tools = conn
-            .list_tools()
-            .await
-            .map_err(|e| format!("{name}: list tools: {e}"))?;
+        let (_, tools) = self.mcp_connection_tools(name, scope, space).await?;
         let listed = tools
             .iter()
             .find(|t| t.name == tool)
