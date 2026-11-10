@@ -182,7 +182,7 @@ public enum ClientMsg: Sendable, Equatable {
     /// the layer below is in force. Replies and tells every connection as `settingSet` does.
     case settingUnset(req: UInt64?, key: String, space: String?, machine: Bool)
     /// List the conversations the agent's program holds for its directory; replies `conversations`.
-    case agentConversationLs(req: UInt64?, agent: String)
+    case agentConversationLs(req: UInt64?, agent: String, limit: UInt32? = nil, before: String? = nil, beforeId: String? = nil)
     /// Put the agent in a fresh conversation; replies `conversation`, and every attached client
     /// is sent the new, empty transcript. Refused while a turn runs.
     case agentConversationNew(req: UInt64?, agent: String)
@@ -409,8 +409,11 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "setting_unset", "key": key]; put(req)
             if let space { o["space"] = space }
             if machine { o["machine"] = true }
-        case let .agentConversationLs(req, agent):
+        case let .agentConversationLs(req, agent, limit, before, beforeId):
             o = ["op": "agent_conversation_ls", "agent": agent]; put(req)
+            if let limit { o["limit"] = limit }
+            if let before { o["before"] = before }
+            if let beforeId { o["before_id"] = beforeId }
         case let .agentConversationNew(req, agent):
             o = ["op": "agent_conversation_new", "agent": agent]; put(req)
         case let .agentConversationResume(req, agent, id):
@@ -935,18 +938,22 @@ public struct ConversationInfo: Sendable, Equatable, Identifiable, Decodable {
     public let updatedAt: String?
     /// Whether the agent is in this conversation now.
     public let current: Bool
+    /// The last thing the agent said in it, cut short; nil when the agent's store gives none.
+    public let lastReply: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, cwd, title, current
         case updatedAt = "updated_at"
+        case lastReply = "last_reply"
     }
 
-    public init(id: String, cwd: String, title: String?, updatedAt: String?, current: Bool) {
+    public init(id: String, cwd: String, title: String?, updatedAt: String?, current: Bool, lastReply: String? = nil) {
         self.id = id
         self.cwd = cwd
         self.title = title
         self.updatedAt = updatedAt
         self.current = current
+        self.lastReply = lastReply
     }
 
     // Formatters are built once: a listing holds thousands of rows and each one asks for its date.
@@ -1255,7 +1262,7 @@ public enum ServerMsg: Sendable {
     /// The processes `spaceProcs` found, in pane order.
     case procs(req: UInt64, space: String, procs: [ProcInfo])
     /// The conversations an agent's program holds for its directory, newest first.
-    case conversations(req: UInt64, agent: String, conversations: [ConversationInfo])
+    case conversations(req: UInt64, agent: String, conversations: [ConversationInfo], more: Bool)
     /// The conversation an agent is in after a new or a resume: the agent's id for it.
     case conversation(req: UInt64, agent: String, id: String)
     case permRequested(PermInfo)
@@ -1366,7 +1373,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
+        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1439,7 +1446,8 @@ extension ServerMsg: Decodable {
                              login: try c.decodeIfPresent(PaneLogin.self, forKey: .login))
         case "conversations":
             self = .conversations(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
-                                  conversations: try c.decode([ConversationInfo].self, forKey: .conversations))
+                                  conversations: try c.decode([ConversationInfo].self, forKey: .conversations),
+                                  more: try c.decodeIfPresent(Bool.self, forKey: .more) ?? false)
         case "conversation":
             self = .conversation(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
                                  id: try c.decode(String.self, forKey: .id))

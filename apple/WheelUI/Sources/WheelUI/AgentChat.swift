@@ -70,6 +70,9 @@ public final class AgentChat: ObservableObject {
     @Published public var notice: String?
     /// The conversations the agent holds for its directory, as the last listing found them.
     @Published public var conversationListing = ConversationListing.idle
+    /// Whether older conversations than the listing holds remain, and whether the next page is on its way.
+    @Published public var conversationsMore = false
+    @Published public var conversationsLoadingMore = false
     /// The conversation a switch is changing to while it is in flight: a conversation's id, or ""
     /// for a fresh one. nil when no switch is running.
     @Published public var switchingTo: String?

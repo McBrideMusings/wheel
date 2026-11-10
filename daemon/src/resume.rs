@@ -367,7 +367,28 @@ fn listing(
         title,
         updated_at: Some(crate::claude::iso8601(modified)),
         current: false,
+        last_reply: None,
     }
+}
+
+/// The newest-first page of `items`, each `(updated_at, id, what)`: those after the cursor
+/// `before` (an `updated_at` and the id of the last row of the page before) in the order of
+/// `updated_at` then `id`, newest first, at most `limit` (0 is no limit), and whether more remain.
+/// A row with the same `updated_at` as the cursor is after it when its id sorts lower, so rows
+/// that share a time are neither skipped nor repeated across pages.
+pub(crate) fn select_page<T>(
+    mut items: Vec<(String, String, T)>,
+    limit: Option<usize>,
+    before: Option<(&str, Option<&str>)>,
+) -> (Vec<T>, bool) {
+    items.sort_by(|a, b| (&b.0, &b.1).cmp(&(&a.0, &a.1)));
+    if let Some((at, id)) = before {
+        items.retain(|(t, i, _)| t.as_str() < at || (t.as_str() == at && id.is_some_and(|id| i.as_str() < id)));
+    }
+    let limit = limit.filter(|n| *n > 0);
+    let more = limit.is_some_and(|n| items.len() > n);
+    items.truncate(limit.unwrap_or(usize::MAX));
+    (items.into_iter().map(|(_, _, what)| what).collect(), more)
 }
 
 /// The conversations Codex holds for `cwd`, newest first, titled after their first prompt. Codex
@@ -495,6 +516,79 @@ mod listing_tests {
         let _ = std::fs::remove_dir_all(&home);
         assert_eq!(listed.len(), 1);
         assert_eq!((listed[0].id.as_str(), listed[0].title.as_deref()), ("a", Some("list the files")));
+    }
+
+    #[test]
+    fn claude_pages_conversations_titled_by_ai_title_with_the_last_reply() {
+        let home = scratch("claude-page");
+        let dir = claude_project_dir(&home, "/work/x");
+        let user = |text: &str| serde_json::json!({"type":"user","message":{"role":"user","content":text}});
+        let said = |text: &str| serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}});
+        let tool = serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Bash","input":{}}]}});
+        let title = |t: &str| serde_json::json!({"type":"ai-title","aiTitle":t});
+        write(&dir.join("a.jsonl"), &[user("first prompt a"), said("old words"), title("Named A"), said("  last\n words  "), tool]);
+        write(&dir.join("b.jsonl"), &[user("first prompt b"), said("b says")]);
+        write(&dir.join("c.jsonl"), &[user("first prompt c"), said("c says")]);
+        for (name, secs) in [("a", 300), ("b", 200), ("c", 100)] {
+            let file = std::fs::File::options().write(true).open(dir.join(format!("{name}.jsonl"))).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 - secs)).unwrap();
+        }
+        let (first, more) = crate::claude::conversations(&home, std::path::Path::new("/work/x"), Some(2), None);
+        let last = first.last().unwrap();
+        let (rest, more_after) = crate::claude::conversations(&home, std::path::Path::new("/work/x"), Some(2), Some((last.updated_at.as_deref().unwrap(), Some(last.id.as_str()))));
+        let _ = std::fs::remove_dir_all(&home);
+        // Newest first: c (100s old), b, then a; the first page of two leaves one.
+        assert_eq!(first.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["c", "b"]);
+        assert!(more);
+        assert_eq!(first[0].title.as_deref(), Some("first prompt c"));
+        assert_eq!(first[0].last_reply.as_deref(), Some("c says"));
+        assert_eq!(rest.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a"]);
+        assert!(!more_after);
+        assert_eq!(rest[0].title.as_deref(), Some("Named A"));
+        assert_eq!(rest[0].last_reply.as_deref(), Some("last words"));
+    }
+
+    #[test]
+    fn a_long_claude_transcript_takes_its_newest_title_and_last_reply_from_its_end() {
+        let home = scratch("claude-long");
+        let dir = claude_project_dir(&home, "/work/x");
+        let said = |text: &str| serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}});
+        let title = |t: &str| serde_json::json!({"type":"ai-title","aiTitle":t});
+        let filler = "x".repeat(1000);
+        let mut long = vec![serde_json::json!({"type":"user","message":{"role":"user","content":"start"}}), said("from the start"), title("Old title")];
+        long.extend((0..300).map(|_| said(&filler)));
+        long.extend([title("Late title"), said("the end")]);
+        write(&dir.join("long.jsonl"), &long);
+        // Its last line is one entry larger than the tail read, so the tail holds nothing that parses.
+        let mut huge = vec![serde_json::json!({"type":"user","message":{"role":"user","content":"start"}}), said("from the start")];
+        huge.extend((0..300).map(|_| said(&filler)));
+        huge.push(serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Write","input":{"data":"y".repeat(200_000)}}]}}));
+        write(&dir.join("huge.jsonl"), &huge);
+        let (listed, _) = crate::claude::conversations(&home, std::path::Path::new("/work/x"), None, None);
+        let _ = std::fs::remove_dir_all(&home);
+        let by = |id: &str| listed.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(by("long").title.as_deref(), Some("Late title"));
+        assert_eq!(by("long").last_reply.as_deref(), Some("the end"));
+        assert_eq!(by("huge").last_reply, None);
+    }
+
+    #[test]
+    fn conversations_that_share_a_time_are_neither_skipped_nor_repeated_across_pages() {
+        let item = |id: &str, at: &str| (at.to_string(), id.to_string(), id.to_string());
+        let all = || vec![item("a", "t2"), item("b", "t2"), item("c", "t2"), item("d", "t1")];
+        let (first, more) = select_page(all(), Some(2), None);
+        assert_eq!(first, ["c", "b"]);
+        assert!(more);
+        let (second, more) = select_page(all(), Some(2), Some(("t2", Some("b"))));
+        assert_eq!(second, ["a", "d"]);
+        assert!(!more);
+        // Without the id the cursor is strict: the rest of its time is not listed again.
+        let (strict, _) = select_page(all(), None, Some(("t2", None)));
+        assert_eq!(strict, ["d"]);
+        // 0 is no limit, never an empty page that says more remain.
+        let (everything, more) = select_page(all(), Some(0), None);
+        assert_eq!(everything.len(), 4);
+        assert!(!more);
     }
 }
 

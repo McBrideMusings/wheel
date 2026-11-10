@@ -1522,49 +1522,119 @@ pub fn history(home: &Path, cwd: &Path, id: &str) -> Option<History> {
 
 /// How much of a transcript's start is read for its title.
 const TITLE_HEAD: usize = 256 * 1024;
+/// How much of a transcript's end is read for its last reply and its newest generated title.
+const REPLY_TAIL: usize = 128 * 1024;
+/// The longest last reply a listing carries, in characters.
+const REPLY_CHARS: usize = 300;
 
-/// The conversations the store holds for `cwd`, newest first: each titled after its first prompt
-/// and timed by its file. The store belongs to the directory, so this lists whatever else ran
-/// Claude Code there too (ADR-0006).
-pub fn conversations(home: &Path, cwd: &Path) -> Vec<ConversationInfo> {
-    use std::io::Read;
+/// The bytes of `path` from `from` to the end, or the first `len` bytes when `from` is 0 and the
+/// file is longer.
+fn read_span(path: &Path, from: u64, len: u64) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut bytes = Vec::new();
+    if let Ok(mut file) = std::fs::File::open(path) {
+        if file.seek(SeekFrom::Start(from)).is_ok() {
+            let _ = file.take(len).read_to_end(&mut bytes);
+        }
+    }
+    bytes
+}
+
+/// The text of an assistant entry that is the main thread's own words: its text blocks joined,
+/// whitespace collapsed, cut to `REPLY_CHARS`. None for a tool call, a side thread or no text.
+fn reply_text(entry: &Value) -> Option<String> {
+    if entry["type"] != "assistant" || entry["isSidechain"] == true {
+        return None;
+    }
+    let text = entry["message"]["content"]
+        .as_array()?
+        .iter()
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then(|| text.chars().take(REPLY_CHARS).collect())
+}
+
+/// One transcript's title, last reply and time. The title is the `ai-title` Claude Code wrote
+/// into it, the newest one when it wrote several, and the first prompt when it wrote none. A
+/// transcript longer than `TITLE_HEAD` is read from both ends; a shorter one is read once.
+fn conversation_info(path: &Path, id: &str, shown: &str, updated_at: String) -> ConversationInfo {
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let head = read_span(path, 0, TITLE_HEAD as u64);
+    let tail = if size > TITLE_HEAD as u64 {
+        read_span(path, size.saturating_sub(REPLY_TAIL as u64), REPLY_TAIL as u64)
+    } else {
+        Vec::new()
+    };
+    let entries = |bytes: &[u8]| -> Vec<Value> {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect()
+    };
+    let long = size > TITLE_HEAD as u64;
+    let (head, tail) = (entries(&head), entries(&tail));
+    // The end of the file when it was read separately, even when that end holds no entry that
+    // parses; the start only when it is the whole file.
+    let newest = if long { &tail } else { &head };
+    let ai_title = head
+        .iter()
+        .chain(tail.iter())
+        .rev()
+        .find_map(|e| (e["type"] == "ai-title").then(|| e["aiTitle"].as_str()).flatten())
+        .map(str::to_string);
+    let title = ai_title.or_else(|| {
+        head.iter()
+            .filter(|e| e["type"] == "user" && e["isSidechain"] != true)
+            .find_map(prompt_text)
+    });
+    let last_reply = newest.iter().rev().find_map(reply_text);
+    ConversationInfo {
+        id: id.to_string(),
+        cwd: shown.to_string(),
+        title,
+        updated_at: Some(updated_at),
+        current: false,
+        last_reply,
+    }
+}
+
+/// One page of the conversations the store holds for `cwd`, newest first: at most `limit` of
+/// those last worked in before `before` (an `updated_at` as `iso8601` writes it), and whether
+/// older ones remain. Only the page's files are opened; the rest are timed from their directory
+/// entries. The store belongs to the directory, so this lists whatever else ran Claude Code there
+/// too (ADR-0006).
+pub fn conversations(home: &Path, cwd: &Path, limit: Option<usize>, before: Option<(&str, Option<&str>)>) -> (Vec<ConversationInfo>, bool) {
     let dir = claude_project_dir(home, &store_cwd(cwd));
     let shown = cwd.display().to_string();
-    let mut found: Vec<(std::time::SystemTime, ConversationInfo)> = Vec::new();
+    let mut found: Vec<(String, String, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
             continue;
         };
         let modified = entry
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        let mut head = Vec::new();
-        if let Ok(file) = std::fs::File::open(&path) {
-            let _ = file.take(TITLE_HEAD as u64).read_to_end(&mut head);
-        }
-        let title = String::from_utf8_lossy(&head)
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|e| e["type"] == "user" && e["isSidechain"] != true)
-            .find_map(|e| prompt_text(&e));
-        found.push((
-            modified,
-            ConversationInfo {
-                id: id.to_string(),
-                cwd: shown.clone(),
-                title,
-                updated_at: Some(iso8601(modified)),
-                current: false,
-            },
-        ));
+        found.push((iso8601(modified), id, path));
     }
-    found.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
-    found.into_iter().map(|(_, info)| info).collect()
+    // Every file is timed from its directory entry; only the page's are opened.
+    let items = found
+        .into_iter()
+        .map(|(updated_at, id, path)| (updated_at.clone(), id.clone(), (updated_at, id, path)))
+        .collect();
+    let (page, more) = crate::resume::select_page(items, limit, before);
+    let page = page
+        .into_iter()
+        .map(|(updated_at, id, path)| conversation_info(&path, &id, &shown, updated_at))
+        .collect();
+    (page, more)
 }
 
 /// A time as an ISO 8601 UTC timestamp with microseconds, which sorts as text. Civil date from

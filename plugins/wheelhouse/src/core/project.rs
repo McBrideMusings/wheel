@@ -16,6 +16,8 @@ pub struct Origin {
     pub pane: String,
     /// The artifact (view) name, when the host names one.
     pub artifact: Option<String>,
+    /// The asking pane's data directory, when the host names one: where a button's command may keep its own files.
+    pub data: Option<String>,
 }
 
 impl Origin {
@@ -29,7 +31,7 @@ impl Origin {
             .or_else(|| std::env::var("WHEEL_SPACE_DIR").ok())
             .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
             .unwrap_or_default();
-        Origin { dir, pane: get("wheel/pane").unwrap_or_else(|| "default".into()), artifact: get("wheel/artifact") }
+        Origin { dir, pane: get("wheel/pane").unwrap_or_else(|| "default".into()), artifact: get("wheel/artifact"), data: get("wheel/data") }
     }
 }
 
@@ -54,7 +56,7 @@ mod tests {
     fn origin_reads_the_hosts_meta() {
         let m = json!({ "wheel/dir": "/p/a", "wheel/pane": "p7", "wheel/artifact": "beads" });
         let o = Origin::from_map(m.as_object().unwrap());
-        assert_eq!(o, Origin { dir: "/p/a".into(), pane: "p7".into(), artifact: Some("beads".into()) });
+        assert_eq!(o, Origin { dir: "/p/a".into(), pane: "p7".into(), artifact: Some("beads".into()), data: None });
     }
 
     #[test]

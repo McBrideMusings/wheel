@@ -1600,18 +1600,19 @@ async fn handle(
         }
         // On tasks of their own, never inline: each waits on the agent, which takes up to a minute
         // to load a conversation, and this connection has to keep reading frames meanwhile.
-        ClientMsg::AgentConversationLs { req, agent } => {
+        ClientMsg::AgentConversationLs { req, agent, limit, before, before_id } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let listed = match state.resolve_agent(&agent) {
-                    Ok(found) => found.agent.conversations().await,
+                    Ok(found) => found.agent.conversations(limit.map(|n| n as usize), before.map(|at| (at, before_id))).await,
                     Err(message) => Err(message),
                 };
                 let reply = match listed {
-                    Ok(conversations) => req.map(|req| ServerMsg::Conversations {
+                    Ok((conversations, more)) => req.map(|req| ServerMsg::Conversations {
                         req,
                         agent,
                         conversations,
+                        more,
                     }),
                     Err(message) => {
                         tracing::warn!(%peer, %message, "agent conversation ls failed");

@@ -439,6 +439,12 @@ final class AppModel {
     /// The requests among `agentReqs` that list an agent's conversations, and the ones that
     /// switch it, so an answer or a refusal changes only the state its own request set.
     @ObservationIgnored private var listingReqs: Set<UInt64> = []
+    /// Requests for the next page of a listing, whose answers add to it.
+    @ObservationIgnored private var moreReqs: Set<UInt64> = []
+    /// Which listing each request belongs to. A request for the newest page starts a new one, so
+    /// an answer from an earlier listing (a page of the old one, a slower first page) is dropped.
+    @ObservationIgnored private var listingOf: [UInt64: Int] = [:]
+    @ObservationIgnored private var listings: [String: Int] = [:]
     @ObservationIgnored private var switchReqs: Set<UInt64> = []
     /// The sends whose message runs now once the daemon names its turn (Control-Return).
     @ObservationIgnored private var sendNowReqs: Set<UInt64> = []
@@ -988,11 +994,28 @@ final class AppModel {
                 conversationsPane = nil
             }
             Log.info("agent \(agent) is in conversation \(id)")
-        case let .conversations(req, agent, list):
+        case let .conversations(req, agent, list, more):
             agentReqs[req] = nil
-            listingReqs.remove(req)
-            chats[agent]?.conversationListing = .loaded(list)
-            Log.info("agent \(agent) holds \(list.count) conversations")
+            let wasMore = moreReqs.contains(req)
+            guard listingOf.removeValue(forKey: req) == listings[agent] else {
+                listingReqs.remove(req)
+                moreReqs.remove(req)
+                Log.info("agent \(agent) listing answer dropped: a newer listing began")
+                return
+            }
+            if wasMore {
+                moreReqs.remove(req)
+                if case let .loaded(held)? = chats[agent]?.conversationListing {
+                    let known = Set(held.map(\.id))
+                    chats[agent]?.conversationListing = .loaded(held + list.filter { !known.contains($0.id) })
+                }
+                chats[agent]?.conversationsLoadingMore = false
+            } else {
+                listingReqs.remove(req)
+                chats[agent]?.conversationListing = .loaded(list)
+            }
+            chats[agent]?.conversationsMore = more
+            Log.info("agent \(agent) listed \(list.count) conversations, more: \(more)")
         case let .agentConfig(agent, options):
             attachAgainIfRefused(agent)
             guard let chat = chats[agent] else { return }
@@ -1085,6 +1108,8 @@ final class AppModel {
             if let req, let agent = agentReqs.removeValue(forKey: req) {
                 chats[agent]?.error = message
                 if listingReqs.remove(req) != nil { chats[agent]?.conversationListing = .failed(message) }
+                if moreReqs.remove(req) != nil, listingOf.removeValue(forKey: req) == listings[agent] { chats[agent]?.conversationsLoadingMore = false }
+                listingOf[req] = nil
                 if switchReqs.remove(req) != nil { chats[agent]?.switchingTo = nil }
                 if attachReqs.remove(req) != nil { refusedAttach.insert(agent) }
             }
@@ -1694,18 +1719,33 @@ final class AppModel {
     /// answer arrives in `handle` (`conversations`, `conversation`, or an error).
     func conversationActions(_ chat: AgentChat, pane: String) -> ConversationActions {
         ConversationActions(
-            load: { [weak self, weak chat] in
+            load: { [weak self, weak chat] limit in
                 guard let self, let chat else { return }
                 guard self.connection == .connected else {
                     chat.conversationListing = .failed("Not connected to wheeld.")
                     return
                 }
                 chat.conversationListing = .loading
+                chat.conversationsMore = false
+                chat.conversationsLoadingMore = false
                 let req = self.client.req()
                 self.agentReqs[req] = chat.name
                 self.listingReqs.insert(req)
-                Log.info("conversations ask \(chat.name)")
-                self.client.send(.agentConversationLs(req: req, agent: chat.name))
+                self.listings[chat.name, default: 0] += 1
+                self.listingOf[req] = self.listings[chat.name]
+                Log.info("conversations ask \(chat.name), \(limit) at most")
+                self.client.send(.agentConversationLs(req: req, agent: chat.name, limit: UInt32(limit)))
+            },
+            loadMore: { [weak self, weak chat] limit in
+                guard let self, let chat, self.connection == .connected, chat.conversationsMore, !chat.conversationsLoadingMore,
+                      case let .loaded(held) = chat.conversationListing, let last = held.last, let before = last.updatedAt else { return }
+                chat.conversationsLoadingMore = true
+                let req = self.client.req()
+                self.agentReqs[req] = chat.name
+                self.moreReqs.insert(req)
+                self.listingOf[req] = self.listings[chat.name]
+                Log.info("conversations ask \(chat.name) for \(limit) after \(before) \(last.id)")
+                self.client.send(.agentConversationLs(req: req, agent: chat.name, limit: UInt32(limit), before: before, beforeId: last.id))
             },
             startNew: { [weak self, weak chat] in
                 guard let self, let chat else { return }

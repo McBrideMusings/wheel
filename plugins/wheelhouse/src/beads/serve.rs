@@ -313,53 +313,15 @@ impl Server {
             return CallToolResult::error(vec![ContentBlock::text(format!("no button {script}"))]);
         };
         let log = std::env::temp_dir().join(format!("wheel-beads-{}-{}.log", sane(&b.id), sane(&sc.name)));
-        let file = match std::fs::File::create(&log) {
-            Ok(f) => f,
-            Err(e) => return CallToolResult::error(vec![ContentBlock::text(format!("{}: {e}", log.display()))]),
-        };
-        let mut command = Command::new("/bin/sh");
-        if pane != "default" {
-            command.env("WHEEL_PANE", &pane);
+        let label = sc.label.clone().unwrap_or_else(|| sc.name.clone());
+        let mut env = vec![("BEAD_ID", b.id.as_str()), ("BEAD_TITLE", &b.title), ("BEAD_TYPE", &b.kind), ("BEAD_REPO", &snap.name), ("BEAD_PATH", &snap.path)];
+        let data = Origin::of(&meta).data;
+        if let Some(d) = &data {
+            env.push(("WHEEL_DATA_DIR", d.as_str()));
         }
-        let spawned = command
-            .arg("-c")
-            .arg(&sc.run)
-            .current_dir(&snap.path)
-            .env("BEAD_ID", &b.id)
-            .env("BEAD_TITLE", &b.title)
-            .env("BEAD_TYPE", &b.kind)
-            .env("BEAD_REPO", &snap.name)
-            .env("BEAD_PATH", &snap.path)
-            .stdin(std::process::Stdio::null())
-            .stdout(file.try_clone().unwrap())
-            .stderr(file)
-            .spawn();
-        match spawned {
-            Ok(mut child) => {
-                // A script that fails at once says so; one still running after ten seconds is reported as started.
-                let started = std::time::Instant::now();
-                let status = loop {
-                    match child.try_wait() {
-                        Ok(Some(s)) => break Some(s),
-                        Ok(None) if started.elapsed() > std::time::Duration::from_secs(10) => break None,
-                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
-                        Err(_) => break None,
-                    }
-                };
-                if let Some(s) = status.filter(|s| !s.success()) {
-                    let text = std::fs::read_to_string(&log).unwrap_or_default();
-                    let tail: String = text.trim().lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
-                    return CallToolResult::error(vec![ContentBlock::text(format!("{} failed ({s}): {tail}", sc.label.as_deref().unwrap_or(&sc.name)))]);
-                }
-                if status.is_none() {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                }
-                let label = sc.label.clone().unwrap_or_else(|| sc.name.clone());
-                self.with(&meta, |_, ui| ui.ran = Some(format!("{label} started for {bead}. See the new pane.")))
-            }
-            Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("{script}: {e}"))]),
+        match crate::core::run::button(&label, &sc.run, &snap.path, &pane, &env, &log) {
+            Ok(()) => self.with(&meta, |_, ui| ui.ran = Some(format!("{label} started for {bead}. See the new pane."))),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
         }
     }
 }

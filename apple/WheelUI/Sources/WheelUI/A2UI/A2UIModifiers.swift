@@ -140,6 +140,7 @@ struct A2UIModifiers: ViewModifier {
             if let f = a2uiFont(arg) { return AnyView(v.font(f)) }
         case "fontWeight": return AnyView(v.fontWeight(fontWeight(arg.stringValue)))
         case "monospacedDigit": if arg.boolValue != false { return AnyView(v.monospacedDigit()) } else { return v }
+        case "tint": if let c = a2uiColor(arg.stringValue) { return AnyView(v.tint(c)) }
         case "foregroundStyle":
             if let c = a2uiColor(arg.stringValue) { return AnyView(v.foregroundStyle(c)) }
         case "background":

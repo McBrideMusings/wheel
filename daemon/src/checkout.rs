@@ -31,6 +31,20 @@ pub fn primary(dir: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
+/// Whether `dir` is the root of a linked git worktree: its own `.git` is a file that names a
+/// `<primary>/.git/worktrees/<name>` directory, which a primary checkout's `.git` folder never is.
+pub fn is_linked_worktree(dir: &Path) -> bool {
+    let Ok(pointer) = std::fs::read_to_string(dir.join(".git")) else {
+        return false;
+    };
+    pointer
+        .trim()
+        .strip_prefix("gitdir:")
+        .map(|g| Path::new(g.trim()))
+        .and_then(Path::parent)
+        .is_some_and(|p| p.file_name().is_some_and(|n| n == "worktrees"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +71,9 @@ mod tests {
         assert_eq!(primary(&tree), primary_dir);
         assert_eq!(primary(&tree.join("src")), primary_dir);
         assert_eq!(primary(&primary_dir), primary_dir);
+        assert!(is_linked_worktree(&tree));
+        assert!(!is_linked_worktree(&tree.join("src")));
+        assert!(!is_linked_worktree(&primary_dir));
         std::fs::remove_dir_all(&root).unwrap();
     }
 

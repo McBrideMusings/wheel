@@ -1592,7 +1592,7 @@ final class DebugServer {
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             guard case let .agent(agent, _, _)? = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane })?.kind,
                   let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane \(pane)") }
-            model.conversationActions(chat, pane: pane).load()
+            model.conversationActions(chat, pane: pane).load(Int(query["limit"] ?? "") ?? ConversationPaging.popover)
         case ("POST", "/space/menu"):
             // A pick from a space's context menu (tab or sidebar row), by the item id
             // `/state` lists under `space_menus`, in the window that holds the space.
@@ -2222,7 +2222,8 @@ final class DebugServer {
                         case let .failed(message): listing["state"] = "failed"; listing["message"] = message
                         case let .loaded(all):
                             listing["state"] = "loaded"
-                            listing["items"] = all.map { ["id": $0.id, "title": $0.title ?? NSNull(), "age": $0.age() ?? NSNull(), "current": $0.current] as [String: Any] }
+                            listing["items"] = all.map { ["id": $0.id, "title": $0.title ?? NSNull(), "last_reply": $0.lastReply ?? NSNull(), "age": $0.age() ?? NSNull(), "current": $0.current] as [String: Any] }
+                            listing["more"] = chat.conversationsMore
                         }
                         listing["blocked"] = chat.isBusy || !chat.queued.isEmpty
                         return listing

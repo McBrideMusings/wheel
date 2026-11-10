@@ -7,6 +7,12 @@ pub fn column(key: &str, label: &str, width: Value, tree: bool, wide: bool) -> V
     json!({ "key": key, "label": label, "width": width, "tree": tree, "wide": wide })
 }
 
+/// The column `c` made sortable: a click on its header sorts the rows by the cells' `sort` values.
+pub fn sortable(mut c: Value) -> Value {
+    c["sortable"] = json!(true);
+    c
+}
+
 /// A section of rows under a title (an empty title draws no header).
 pub fn section(title: &str, rows: Vec<Value>) -> Value {
     json!({ "title": title, "count": rows.len(), "rows": rows })

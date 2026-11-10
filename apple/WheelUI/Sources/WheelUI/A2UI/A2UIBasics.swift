@@ -57,7 +57,11 @@ func a2uiValue(_ node: ComponentNode, _ surface: SurfaceModel) -> AnyCodable? {
 struct A2UIText: View {
     let node: ComponentNode
     var body: some View {
-        let t = Text(node.props["text"]?.text ?? "")
+        // `markdown: true` reads the text as inline Markdown (bold, italic, code, links), as SwiftUI's own Text does.
+        let raw = node.props["text"]?.text ?? ""
+        let t = node.props["markdown"]?.boolValue == true
+            ? Text((try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(raw))
+            : Text(raw)
         switch node.props["variant"]?.stringValue {
         case "h1": t.font(.system(size: 28, weight: .bold))
         case "h2": t.font(.system(size: 20, weight: .bold))
@@ -223,7 +227,7 @@ struct A2UIModal: View {
     }
 }
 
-/// The presented Modals of a surface, drawn over the pane that shows it: a dimmed scrim and a card, so only that pane is covered.
+/// The presented Modals of a surface, drawn over the pane that shows it: a dimmed scrim and a card that takes the pane's width inside a margin, so only that pane is covered.
 struct A2UIPresentedModals: View {
     let surface: SurfaceModel
     var body: some View {
@@ -245,11 +249,12 @@ struct A2UIPresentedModals: View {
                     }
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                    .padding(.trailing, dismiss != nil ? 22 : 0)
                 }
                 // `actions` names components of the surface (buttons, a status line) drawn in the footer, left of Close.
                 // One that names no component is left out; a long row scrolls sideways so Close stays in view.
                 let actions = (node.props["actions"]?.arrayValue ?? []).compactMap(\.stringValue).compactMap { surface.node($0) }
-                if dismiss != nil || !actions.isEmpty {
+                if !actions.isEmpty {
                     Divider()
                     HStack(spacing: 8) {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -261,14 +266,21 @@ struct A2UIPresentedModals: View {
                         }
                         .defaultScrollAnchor(.trailing)
                         .fixedSize(horizontal: false, vertical: true)
-                        if dismiss != nil { Button("Close", action: close).keyboardShortcut(.cancelAction) }
                     }
                     .padding(10)
                 }
             }
-            .frame(maxWidth: 640, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(a2uiColor("controlBackground") ?? Color.gray.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
+            .overlay(alignment: .topTrailing) {
+                // Close is an icon in the corner, apart from the footer's buttons; a click on the dimmed pane and Esc close too.
+                if dismiss != nil {
+                    Button(action: close) { Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).padding(8).contentShape(Rectangle()) }
+                        .buttonStyle(.borderless).keyboardShortcut(.cancelAction).help("Close")
+                        .accessibilityLabel("Close").padding(6)
+                }
+            }
             .shadow(radius: 18)
             .padding(24)
         }

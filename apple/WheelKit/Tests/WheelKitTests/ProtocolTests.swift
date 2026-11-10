@@ -527,13 +527,16 @@ struct ProtocolTests {
 
     @Test func listsNewsAndResumesConversations() throws {
         #expect(try ClientMsg.agentConversationLs(req: 1, agent: "w1").json() == #"{"agent":"w1","op":"agent_conversation_ls","req":1}"#)
+        #expect(try ClientMsg.agentConversationLs(req: 1, agent: "w1", limit: 20, before: "2026-10-13T21:56:25.120000Z").json()
+            == #"{"agent":"w1","before":"2026-10-13T21:56:25.120000Z","limit":20,"op":"agent_conversation_ls","req":1}"#)
         #expect(try ClientMsg.agentConversationNew(req: 2, agent: "w1").json() == #"{"agent":"w1","op":"agent_conversation_new","req":2}"#)
         #expect(try ClientMsg.agentConversationResume(req: 3, agent: "w1", id: "c1").json() == #"{"agent":"w1","id":"c1","op":"agent_conversation_resume","req":3}"#)
-        guard case let .conversations(req, _, list) = try ServerMsg.decode(
-            #"{"ev":"conversations","req":1,"agent":"w1","conversations":[{"id":"c2","cwd":"/tmp","title":"hello","updated_at":"2026-10-13T21:56:25.120Z","current":true},{"id":"c1","cwd":"/tmp","current":false}]}"#
+        guard case let .conversations(req, _, list, more) = try ServerMsg.decode(
+            #"{"ev":"conversations","req":1,"agent":"w1","more":true,"conversations":[{"id":"c2","cwd":"/tmp","title":"hello","updated_at":"2026-10-13T21:56:25.120Z","current":true,"last_reply":"Done."},{"id":"c1","cwd":"/tmp","current":false}]}"#
         ) else { Issue.record("wrong case"); return }
         #expect(req == 1)
-        #expect(list == [ConversationInfo(id: "c2", cwd: "/tmp", title: "hello", updatedAt: "2026-10-13T21:56:25.120Z", current: true),
+        #expect(more)
+        #expect(list == [ConversationInfo(id: "c2", cwd: "/tmp", title: "hello", updatedAt: "2026-10-13T21:56:25.120Z", current: true, lastReply: "Done."),
                          ConversationInfo(id: "c1", cwd: "/tmp", title: nil, updatedAt: nil, current: false)])
         guard case let .conversation(_, _, id) = try ServerMsg.decode(#"{"ev":"conversation","req":3,"agent":"w1","id":"c1"}"#) else {
             Issue.record("wrong case"); return

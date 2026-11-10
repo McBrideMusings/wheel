@@ -84,7 +84,8 @@ pub(crate) struct Conn {
 impl Conn {
     /// `_meta` for a request to a shared server: the asking pane, its project and the artifact it
     /// shows, which is how one server tells its views apart.
-    fn meta(&self, pane: Option<&str>) -> Option<rmcp::model::RequestMetaObject> {
+    /// `data` is the asking pane's data directory (`wheel/data`), which a button that runs a command hands it as `WHEEL_DATA_DIR`.
+    fn meta(&self, pane: Option<&str>, data: Option<&std::path::Path>) -> Option<rmcp::model::RequestMetaObject> {
         if !self.shared {
             return None;
         }
@@ -93,6 +94,9 @@ impl Conn {
         map.insert("wheel/artifact".into(), self.name.clone().into());
         if let Some(pane) = pane {
             map.insert("wheel/pane".into(), pane.into());
+        }
+        if let Some(data) = data {
+            map.insert("wheel/data".into(), data.to_string_lossy().into_owned().into());
         }
         Some(rmcp::model::RequestMetaObject(rmcp::model::MetaObject(map)))
     }
@@ -106,7 +110,7 @@ impl Conn {
         let mut cursor = None;
         loop {
             let mut params = rmcp::model::PaginatedRequestParams::default().with_cursor(cursor);
-            params.meta = self.meta(None);
+            params.meta = self.meta(None, None);
             let result = self.peer.list_tools(Some(params)).await?;
             tools.extend(result.tools);
             cursor = result.next_cursor;
@@ -509,7 +513,7 @@ impl AppState {
         let conn = self.mcp_peer(name, scope, space).await?;
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = arguments;
-        params.meta = conn.meta(pane);
+        params.meta = conn.meta(pane, pane.and_then(|p| self.pane_data_dir(p).ok()).as_deref());
         // A call may have run before the server's end went away, so a dead session is dropped
         // and the error returned: the next call starts a new one.
         let result = match conn.peer.call_tool(params).await {
@@ -659,7 +663,7 @@ impl AppState {
                 self.mcp_subscribe(&conn, &uri).await;
             }
             let mut params = rmcp::model::ReadResourceRequestParams::new(uri.clone());
-            params.meta = conn.meta(pane);
+            params.meta = conn.meta(pane, pane.and_then(|p| self.pane_data_dir(p).ok()).as_deref());
             match conn.peer.read_resource(params).await {
                 Ok(read) => break (uri, read),
                 Err(e) if is_closed(&e) => {
