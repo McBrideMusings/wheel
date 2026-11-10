@@ -58,8 +58,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         let wanted = Set(model.layout.windows.map(\.id))
         for record in model.layout.windows {
             if let window = windows[record.id] {
-                let title = model.title(of: record)
-                if window.title != title { window.title = title }
+                Self.show(title: model.title(of: record), of: window)
                 Self.apply(pinned: record.pinned, to: window)
             } else {
                 open(record)
@@ -82,6 +81,11 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
             closing.insert(id)
             littles[id]?.close()
         }
+    }
+
+    /// The title the Window menu lists for a main window, whose own title stays empty so the system never draws it over the title row.
+    private static func show(title: String, of window: NSWindow) {
+        NSApp.changeWindowsItem(window, title: title, filename: false)
     }
 
     /// A pinned window floats above every unpinned window of any app and follows the person to every desktop.
@@ -155,17 +159,17 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
     }
 
     private func open(_ record: WindowRecord) {
-        let controller = NSHostingController(rootView: ContentView(model: model, settings: model.settings, windowID: record.id))
+        let controller = TitleRowHostingController(rootView: ContentView(model: model, settings: model.settings, windowID: record.id))
         // The window keeps the size the system saved for it; the content only sets its minimum.
         controller.sizingOptions = [.minSize]
         let window = NSWindow(contentViewController: controller)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.identifier = NSUserInterfaceItemIdentifier(Self.idPrefix + record.id)
-        window.title = model.title(of: record)
         window.isReleasedWhenClosed = false
-        // The content draws its own title row (`TitleRow`) under a transparent title bar; `title` is
-        // for the Window menu. The empty toolbar only gives the title bar its height, with the
-        // traffic lights centred in it.
+        // The content draws its own title row (`TitleRow`) under a transparent title bar, so the
+        // system's own title stays empty: the Window menu's entry is set by `show(title:)`. The empty
+        // toolbar only gives the title bar its height, with the traffic lights centred in it.
+        window.title = ""
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.toolbar = NSToolbar(identifier: "WheelTitleRow")
@@ -192,6 +196,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
         Log.info("screens at open: \(NSScreen.screens.map { "\($0.localizedName) \(NSStringFromRect($0.frame))" }.joined(separator: "; "))")
         Log.info("window \(record.id.prefix(8)) opened \(restored ? "at its saved frame" : "with no saved frame") \(NSStringFromRect(window.frame)) on \(window.screen?.localizedName ?? "no screen")")
         windows[record.id] = window
+        Self.show(title: model.title(of: record), of: window)
         putDisplacedBack()
         Self.apply(pinned: record.pinned, to: window)
         // `-g` launches and debug runs must not take the keyboard from whatever the person is using.

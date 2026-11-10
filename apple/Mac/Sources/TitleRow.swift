@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WheelKit
 
@@ -213,6 +214,20 @@ extension View {
         }
         // A button a `[[title.button]]` entry hides, or a space switch removes, leaves no frame behind.
         .onDisappear { model.titleButtonFrames[window]?[id] = nil }
+    }
+}
+
+/// The main window's hosting view. The title row sits in the title bar's strip, where AppKit takes a
+/// press on a view that reports `mouseDownCanMoveWindow` for a window drag (the window is not
+/// movable, so it only swallows the press); a tab's own gesture would never see it. The view reports
+/// false, so a press anywhere in the window reaches SwiftUI.
+final class TitleRowHostingView<Content: View>: NSHostingView<Content> {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+final class TitleRowHostingController<Content: View>: NSHostingController<Content> {
+    override func loadView() {
+        view = TitleRowHostingView(rootView: rootView)
     }
 }
 
