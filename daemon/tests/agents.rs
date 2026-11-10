@@ -1792,6 +1792,9 @@ async fn conversations_of(
         ClientMsg::AgentConversationLs {
             req: Some(req),
             agent: agent.into(),
+            limit: None,
+            before: None,
+            before_id: None,
         },
     )
     .await;

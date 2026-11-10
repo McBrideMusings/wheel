@@ -1239,6 +1239,15 @@ enum AgentCommand {
         /// Print them as JSON.
         #[arg(long)]
         json: bool,
+        /// List at most this many.
+        #[arg(long)]
+        limit: Option<u32>,
+        /// List only those after this one: its `updated_at`, as a listing prints it.
+        #[arg(long)]
+        before: Option<String>,
+        /// Its id, which orders conversations with the same `updated_at`.
+        #[arg(long)]
+        before_id: Option<String>,
     },
     /// Put an agent's pane in a fresh conversation and print the agent's id for it. Every
     /// client's transcript empties with it.
@@ -2812,13 +2821,16 @@ async fn agent_config(
 
 /// Print the conversations an agent's program holds for its directory, newest first, marking the
 /// one the agent is in with `*`.
-async fn agent_conversations(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fail> {
+async fn agent_conversations(conn: &mut Conn, agent: String, json: bool, limit: Option<u32>, before: Option<String>, before_id: Option<String>) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::Conversations { conversations, .. } = conn
+    let ServerMsg::Conversations { conversations, more, .. } = conn
         .call_within(
             ClientMsg::AgentConversationLs {
                 req: Some(req),
                 agent: agent.clone(),
+                limit,
+                before,
+                before_id,
             },
             req,
             Duration::from_secs(60),
@@ -2858,6 +2870,12 @@ async fn agent_conversations(conn: &mut Conn, agent: String, json: bool) -> Resu
             conversation.updated_at.as_deref().unwrap_or("-"),
             conversation.title.as_deref().unwrap_or("-")
         );
+        if let Some(reply) = &conversation.last_reply {
+            println!("    {reply}");
+        }
+    }
+    if more {
+        eprintln!("[older conversations remain: pass --before <the last updated_at above> --before-id <its id>]");
     }
     Ok(())
 }
@@ -5927,8 +5945,8 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Context { agent, json }) => {
                 agent_context(&mut conn, agent, json).await
             }
-            Command::Agent(AgentCommand::Conversations { agent, json }) => {
-                agent_conversations(&mut conn, agent, json).await
+            Command::Agent(AgentCommand::Conversations { agent, json, limit, before, before_id }) => {
+                agent_conversations(&mut conn, agent, json, limit, before, before_id).await
             }
             Command::Agent(AgentCommand::New { agent }) => {
                 agent_switch(&mut conn, agent, None).await

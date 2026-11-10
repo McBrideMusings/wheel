@@ -797,23 +797,32 @@ impl Agent {
         self.saved_id.lock().unwrap().clone()
     }
 
-    /// The conversations the agent's store holds for this agent's directory, newest first, with
-    /// the one the agent is in flagged. The store belongs to the directory rather than to wheel,
-    /// so this lists whatever else ran the same harness there too.
-    pub async fn conversations(&self) -> Result<Vec<ConversationInfo>, String> {
+    /// One page of the conversations the agent's store holds for this agent's directory, newest
+    /// first, with the one the agent is in flagged, and whether older ones remain: at most `limit`
+    /// of those last worked in before `before`. The store belongs to the directory rather than to
+    /// wheel, so this lists whatever else ran the same harness there too.
+    pub async fn conversations(&self, limit: Option<usize>, before: Option<(String, Option<String>)>) -> Result<(Vec<ConversationInfo>, bool), String> {
         let home = self
             .home
             .clone()
             .or_else(|| self.harness.daemon_home())
             .ok_or("no home directory to find the agent's conversations in")?;
         let (harness, cwd) = (self.harness, self.cwd.clone());
-        let mut listed = tokio::task::spawn_blocking(move || match harness {
-            Harness::Claude => claude::conversations(&home, &cwd),
-            Harness::Codex => crate::resume::codex_conversations(&home, &cwd.display().to_string()),
-            Harness::Pi => crate::resume::pi_conversations(
-                &home,
-                &cwd.display().to_string(),
-                std::env::var_os("PI_CODING_AGENT_SESSION_DIR").as_deref(),
+        let (mut listed, more) = tokio::task::spawn_blocking(move || match harness {
+            Harness::Claude => claude::conversations(&home, &cwd, limit, before.as_ref().map(|(at, id)| (at.as_str(), id.as_deref()))),
+            Harness::Codex => page(
+                crate::resume::codex_conversations(&home, &cwd.display().to_string()),
+                limit,
+                before.as_ref().map(|(at, id)| (at.as_str(), id.as_deref())),
+            ),
+            Harness::Pi => page(
+                crate::resume::pi_conversations(
+                    &home,
+                    &cwd.display().to_string(),
+                    std::env::var_os("PI_CODING_AGENT_SESSION_DIR").as_deref(),
+                ),
+                limit,
+                before.as_ref().map(|(at, id)| (at.as_str(), id.as_deref())),
             ),
         })
         .await
@@ -824,8 +833,8 @@ impl Agent {
         for info in &mut listed {
             info.current = current.as_deref() == Some(info.id.as_str());
         }
-        tracing::info!(agent = %self.name, cwd = %self.cwd.display(), listed = listed.len(), "conversations listed");
-        Ok(listed)
+        tracing::info!(agent = %self.name, cwd = %self.cwd.display(), listed = listed.len(), more, "conversations listed");
+        Ok((listed, more))
     }
 
     /// Put the agent in a fresh conversation, or in the past one `load` names, and return the
@@ -2099,6 +2108,17 @@ fn content_bytes(content: &[ToolContent]) -> usize {
             ToolContent::Unknown => 0,
         })
         .sum()
+}
+
+/// The page of a listing Codex or Pi built whole: unlike Claude's, theirs has opened every
+/// transcript by the time it is paged, so paging them bounds what a client holds, not what the
+/// daemon reads.
+fn page(list: Vec<ConversationInfo>, limit: Option<usize>, before: Option<(&str, Option<&str>)>) -> (Vec<ConversationInfo>, bool) {
+    let items = list
+        .into_iter()
+        .map(|c| (c.updated_at.clone().unwrap_or_default(), c.id.clone(), c))
+        .collect();
+    crate::resume::select_page(items, limit, before)
 }
 
 #[cfg(test)]

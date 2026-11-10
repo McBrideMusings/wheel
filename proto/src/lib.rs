@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1684,6 +1684,18 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         agent: String,
+        /// At most this many conversations; absent or 0 lists them all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        /// Only conversations after this one in the newest-first order: the `updated_at` of the
+        /// last row of the page before. Absent starts at the newest. Needs a server at
+        /// `PROTOCOL_VERSION` 31.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        /// The `id` of that last row, which orders conversations with the same `updated_at`.
+        /// Without it a conversation with the same time as `before` is not listed again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_id: Option<String>,
     },
     /// Put the agent in a fresh conversation. Replies `conversation` with the agent's id for it;
     /// the transcript empties and every attached client is sent the new one as a
@@ -1731,6 +1743,10 @@ pub struct ConversationInfo {
     pub updated_at: Option<String>,
     /// Whether this is the conversation the agent is in.
     pub current: bool,
+    /// The last thing the agent said in it, whitespace collapsed and cut to a few hundred
+    /// characters; None when the agent's store gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reply: Option<String>,
 }
 
 /// One control an agent offers over its own agent: which model it runs, how much it thinks,
@@ -2048,6 +2064,9 @@ pub enum ServerMsg {
         req: u64,
         agent: String,
         conversations: Vec<ConversationInfo>,
+        /// Whether older conversations remain after this page.
+        #[serde(default)]
+        more: bool,
     },
     /// The conversation an agent is in now, after a `agent_conversation_new` or
     /// `agent_conversation_resume`: the agent's own id for it.
