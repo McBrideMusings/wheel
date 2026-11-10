@@ -556,6 +556,7 @@ struct PaneView: View {
                             PaletteOverlay(model: model, palette: palette, paneId: paneId, kind: kind)
                         }
                     }
+                    .overlay { PaneRestoreCover(model: model, paneId: paneId, kind: kind) }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
@@ -1374,5 +1375,84 @@ struct EdgeBar: View {
             .offset(x: edge == .right ? size.width - thickness : 0, y: edge == .down ? size.height - thickness : 0)
             .allowsHitTesting(false)
             .zIndex(3)
+    }
+}
+
+
+/// What lies over a pane's content while wheeld is down or the pane's agent or terminal is starting
+/// again after a restart: the content dimmed and unreachable, a ring and one line saying which.
+struct PaneRestoreCover: View {
+    var model: AppModel
+    let paneId: String
+    let kind: PaneKind
+
+    var body: some View {
+        if model.connection != .connected {
+            RestoreShade(text: model.restartExpected ? "wheeld is restarting" : "wheeld is not connected", ring: model.restartExpected)
+        } else if model.restoringPanes.contains(paneId) {
+            switch kind {
+            case let .agent(agent, _, _):
+                if let chat = model.chats[agent] { AgentRestore(model: model, paneId: paneId, chat: chat) }
+            case let .terminal(term, _):
+                if let terminal = model.terminals[term] { TerminalRestore(model: model, paneId: paneId, terminal: terminal) }
+            default:
+                Color.clear.onAppear { model.restoringPanes.remove(paneId) }
+            }
+        }
+    }
+}
+
+private struct AgentRestore: View {
+    var model: AppModel
+    let paneId: String
+    @ObservedObject var chat: AgentChat
+
+    private var pending: Bool {
+        guard let state = chat.state else { return true }
+        if case .starting = state { return true }
+        return false
+    }
+
+    var body: some View {
+        Group {
+            if pending { RestoreShade(text: "Restoring conversation", ring: true) }
+        }
+        .onChange(of: pending, initial: true) { _, now in if !now { model.restoringPanes.remove(paneId) } }
+    }
+}
+
+private struct TerminalRestore: View {
+    var model: AppModel
+    let paneId: String
+    @ObservedObject var terminal: PaneTerminal
+
+    var body: some View {
+        Group {
+            if !terminal.attached { RestoreShade(text: "Reconnecting terminal", ring: true) }
+        }
+        .onChange(of: terminal.attached, initial: true) { _, now in if now { model.restoringPanes.remove(paneId) } }
+    }
+}
+
+/// The cover itself: the pane's colour at 78%, and on it one line in a capsule with a ring that turns while something is under way.
+private struct RestoreShade: View {
+    let text: String
+    let ring: Bool
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.background.opacity(0.78))
+            HStack(spacing: 8) {
+                if ring { ProgressView().controlSize(.small) }
+                Text(text).font(.system(size: 12.5, weight: .medium)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.separator))
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {}
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("pane.restore")
     }
 }

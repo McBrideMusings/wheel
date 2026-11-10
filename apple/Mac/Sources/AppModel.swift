@@ -276,6 +276,10 @@ final class AppModel {
     var serverProblem: String?
     /// wheeld said it is stopping and is expected back soon: the unreachable notice stays hidden.
     var restartExpected = false
+    /// Panes whose agent or terminal the app expects to see start again after wheeld came back: each
+    /// stays under the restoring cover until it is ready, and leaves this set then.
+    var restoringPanes: Set<String> = []
+    @ObservationIgnored var everConnected = false
     /// A rollback that runs when `deadline` passes, unless the person cancels it.
     var rollbackOffer: RollbackOffer?
     /// The server version a rollback put back; shown once wheeld answers again, until closed.
@@ -530,6 +534,16 @@ final class AppModel {
     /// The daemon's status at connect carries the whole layout; every terminal pane and every
     /// agent reattaches.
     private func connected(_ status: ServerMsg) {
+        // Not the first connection: wheeld restarted, so every agent and terminal it held starts again.
+        if everConnected {
+            restoringPanes = Set(spaces.flatMap(\.allPanes).filter { pane in
+                switch pane.kind {
+                case .terminal, .agent: true
+                default: false
+                }
+            }.map(\.id))
+        }
+        everConnected = true
         // Answers to the last connection's requests never come.
         agentReqs = [:]
         attachReqs = []
