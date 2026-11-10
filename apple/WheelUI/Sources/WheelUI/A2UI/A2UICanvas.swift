@@ -466,16 +466,15 @@ private struct CanvasStage: View {
             #if os(macOS)
             .background(CanvasScrollCatcher(frame: stageFrame) { dx, dy, p in
                 if scene.wheelPans { pan(dx, dy) } else { zoom(exp(dy * 0.0016), about: p) }
+                // A scroll moves the camera under a still pointer and macOS sends no hover event for it, so the outline and tip
+                // would stay on the hit under the pointer's old content. The scroll event carries the pointer's place: use it.
+                hover = p
             })
             #endif
             .onAppear { size = geo.size; reported = scene.sizeKnown; applyFocus(geo.size); report(geo.size.width) }
             .onChange(of: geo.size) { _, new in size = new; report(new.width) }
             .onChange(of: scene.focusKey) { _, _ in applyFocus(geo.size) }
-            .onChange(of: scene.fitKey) { _, _ in applyFocus(geo.size); hover = nil }
-            // The pointer position is only reported when the pointer moves. When the page scrolls the canvas under a still pointer,
-            // the stored position no longer matches the pointer, so the outline would ride along with the content; drop it until
-            // the next move.
-            .onGeometryChange(for: CGPoint.self, of: { $0.frame(in: .global).origin }) { _ in hover = nil }
+            .onChange(of: scene.fitKey) { _, _ in applyFocus(geo.size) }
         }
         .frame(height: height)
         .focusable()
