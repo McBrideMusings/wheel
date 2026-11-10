@@ -217,20 +217,6 @@ extension View {
     }
 }
 
-/// The main window's hosting view. The title row sits in the title bar's strip, where AppKit takes a
-/// press on a view that reports `mouseDownCanMoveWindow` for a window drag (the window is not
-/// movable, so it only swallows the press); a tab's own gesture would never see it. The view reports
-/// false, so a press anywhere in the window reaches SwiftUI.
-final class TitleRowHostingView<Content: View>: NSHostingView<Content> {
-    override var mouseDownCanMoveWindow: Bool { false }
-}
-
-final class TitleRowHostingController<Content: View>: NSHostingController<Content> {
-    override func loadView() {
-        view = TitleRowHostingView(rootView: rootView)
-    }
-}
-
 /// The title row's empty ground. The window is not movable by its title bar (a tab's drag would
 /// move it), so this view does what the title bar would: a drag moves the window, and a
 /// double-click does what System Settings › Desktop & Dock › "Double-click a window's title bar"

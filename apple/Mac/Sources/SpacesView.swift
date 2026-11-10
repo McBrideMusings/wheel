@@ -232,7 +232,7 @@ struct SpaceTab: View {
         SpaceTabFace(model: model, windowID: windowID, space: space, active: active, width: width, divided: divided)
             .opacity(model.isDragged(space.id) ? 0.4 : 1)
             .background { if model.paneIsOver(space: space.id) { PaneDropOutline(cornerRadius: 7) } }
-            .spacePressTarget(model, windowID: windowID, space: space.id)
+            .tabPressTarget(model, windowID: windowID, space: space.id)
             .contextMenu {
                 SpaceMenuItems(model: model, space: space.id, window: windowID)
                 Divider()

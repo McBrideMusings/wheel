@@ -100,6 +100,77 @@ struct SpaceMenuItems: View {
 }
 
 extension View {
+    /// A space tab in the title row: the same press as `spacePressTarget`, taken by an AppKit view
+    /// over the tab. A SwiftUI `DragGesture` in the title bar's strip never saw the press (AppKit
+    /// takes it for a window drag); a view that reports `mouseDownCanMoveWindow` false gets it, as
+    /// the title row's own ground does (`TitleBarGround`).
+    func tabPressTarget(_ model: AppModel, windowID: String, space: String) -> some View {
+        overlay { TabPressTarget(model: model, windowID: windowID, space: space, active: model.renamingSpace != space) }
+    }
+}
+
+private struct TabPressTarget: NSViewRepresentable {
+    var model: AppModel
+    let windowID: String
+    let space: String
+    /// False while the tab's rename field is up: the field takes its own clicks.
+    let active: Bool
+
+    func makeNSView(context: Context) -> TabPressView { TabPressView() }
+
+    func updateNSView(_ view: TabPressView, context: Context) {
+        view.model = model
+        view.windowID = windowID
+        view.space = space
+        view.takesPresses = active
+    }
+}
+
+private final class TabPressView: NSView {
+    var model: AppModel?
+    var windowID = ""
+    var space = ""
+    var takesPresses = true
+    private var downAt: NSPoint?
+    private var dragged = false
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// A right press (or control-click) is not this view's: it falls through to the tab's context menu.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard takesPresses else { return nil }
+        // The tab's close and back buttons sit in its last 28 points and take their own presses.
+        if convert(point, from: superview).x > bounds.width - 28 { return nil }
+        if let event = NSApp.currentEvent, event.type == .rightMouseDown || event.modifierFlags.contains(.control) { return nil }
+        return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let model, model.spaceDrag == nil else { return }
+        downAt = event.locationInWindow
+        dragged = false
+        model.notePress(space: space)
+        model.tapSpace(space, in: windowID)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let model, let downAt else { return }
+        if !dragged, hypot(event.locationInWindow.x - downAt.x, event.locationInWindow.y - downAt.y) >= 6 {
+            dragged = true
+            model.beginSpaceDrag(space, byPointer: true)
+        }
+        if dragged { model.moveSpaceDrag() }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if dragged { model?.endSpaceDrag() }
+        downAt = nil
+        dragged = false
+    }
+}
+
+extension View {
     /// A space's tab or sidebar row: one gesture owns the press. The mouse-down shows the space; a
     /// press that then moves 6 points drags the space, released over a sidebar, a
     /// window, the popover or the desktop. Releasing ends the drag here or, when the row's view is

@@ -159,7 +159,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WindowHost {
     }
 
     private func open(_ record: WindowRecord) {
-        let controller = TitleRowHostingController(rootView: ContentView(model: model, settings: model.settings, windowID: record.id))
+        let controller = NSHostingController(rootView: ContentView(model: model, settings: model.settings, windowID: record.id))
         // The window keeps the size the system saved for it; the content only sets its minimum.
         controller.sizingOptions = [.minSize]
         let window = NSWindow(contentViewController: controller)
