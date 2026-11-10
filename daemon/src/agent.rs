@@ -1524,7 +1524,10 @@ impl Agent {
                     Some(Cmd::SendNow { turn }) => {
                         if let Some(at) = queue.iter().position(|(t, _)| *t == turn) {
                             let held = queue.remove(at).expect("position is in range");
-                            if agent.steers && running.is_some() && !agent.withdraws {
+                            // A turn stopped on a permission request reads nothing until it is
+                            // answered, so a steered message would wait there: interrupt it.
+                            let blocked = perms.has_pending(&self.name);
+                            if agent.steers && running.is_some() && !agent.withdraws && !blocked {
                                 // Not interrupted: the agent takes the message into the turn, and
                                 // since it cannot give it back, it was kept here until now.
                                 tracing::info!(agent = %self.name, turn, "queued message steered now");
@@ -1540,6 +1543,19 @@ impl Agent {
                                 if agent.input.cancel().is_err() {
                                     return Err(exit_reason(&mut agent).await);
                                 }
+                            }
+                        } else if let Some(at) = steered
+                            .iter()
+                            .position(|(t, _)| *t == turn)
+                            .filter(|_| !agent.withdraws && perms.has_pending(&self.name))
+                        {
+                            // The agent holds it but its turn is stopped on a permission request:
+                            // end the turn, and the message goes again as the next one.
+                            let held = steered.remove(at);
+                            tracing::info!(agent = %self.name, turn, "steered message sent now: turn interrupted");
+                            queue.push_front(held);
+                            if agent.input.cancel().is_err() {
+                                return Err(exit_reason(&mut agent).await);
                             }
                         } else if steered.iter().any(|(t, _)| *t == turn) {
                             tracing::info!(agent = %self.name, turn, "steered message sent now");

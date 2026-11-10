@@ -167,6 +167,11 @@ impl Perms {
         self.events.subscribe()
     }
 
+    /// Whether a request of `agent` is waiting for an answer: its running turn is stopped on it.
+    pub fn has_pending(&self, agent: &str) -> bool {
+        self.pending.lock().unwrap().values().any(|p| p.info.agent == agent)
+    }
+
     pub fn list(&self) -> Vec<PermInfo> {
         let mut list: Vec<_> = self
             .pending
