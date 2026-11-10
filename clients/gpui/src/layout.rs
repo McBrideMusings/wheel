@@ -11,6 +11,10 @@ pub struct Leaf {
     pub kind: String,
     pub label: String,
     pub term: Option<String>,
+    /// A browser pane's page.
+    pub url: Option<String>,
+    /// An agent pane's agent.
+    pub agent: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tree {
@@ -42,6 +46,8 @@ pub fn parse(v: &Value) -> Tree {
             kind: text("kind").unwrap_or_else(|| "unknown".into()),
             label: text("name").or_else(|| text("url")).or_else(|| text("cwd")).unwrap_or_default(),
             term: text("term"),
+            url: text("url"),
+            agent: text("agent"),
         })
     }
 }
@@ -173,7 +179,7 @@ mod tests {
     #[test]
     fn unknown_kinds_survive_parsing() {
         let leaf = parse(&json!({"node":"pane","id":"p9","kind":"hologram"}));
-        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None }));
+        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, agent: None }));
     }
 
     #[test]

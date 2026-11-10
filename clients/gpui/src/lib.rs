@@ -2,6 +2,7 @@
 pub mod daemon;
 pub mod layout;
 pub mod native;
+pub mod transcript;
 pub mod view;
 
 use anyhow::Result;

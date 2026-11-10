@@ -99,6 +99,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     })?;
     let webs: Vec<&String> = native_panes.iter().filter(|p| p.1 == "web").map(|p| &p.0).collect();
     let terms: Vec<&String> = native_panes.iter().filter(|p| p.1 == "terminal").map(|p| &p.0).collect();
+    ensure!(native_panes.iter().any(|p| p.1 == "browser"), "the browser pane has no native view: {native_panes:?}");
     ensure!(webs.len() >= 2 && terms.len() >= 2, "fixture needs two web and two terminal panes: {native_panes:?}");
     // Each pane has its own view, loaded or replayed by the client itself.
     let loaded = wait(&native, "pages and terminals", |s| {

@@ -1,7 +1,8 @@
 //! The window's content: a header with the spaces, the active space's split tree drawn as
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
-//! terminal and first web pane. Every other kind is drawn as unimplemented.
-use crate::{daemon::{Endpoint, Event}, layout::*, native::Native};
+//! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
+//! what it can become; only a kind this build does not know is drawn as unimplemented.
+use crate::{daemon::{Endpoint, Event}, layout::*, native::Native, transcript::{Line, Transcript}};
 use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use serde_json::json;
 use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
@@ -25,6 +26,10 @@ pub struct Client {
     opened: HashMap<String, String>,
     placed: HashMap<String, ([f64; 4], bool)>,
     viewport: (f32, f32),
+    /// The conversation of every agent pane seen, by agent name, and the agents attached to on
+    /// this connection.
+    pub transcripts: HashMap<String, Transcript>,
+    attached: HashSet<String>,
     /// What the connection to wheeld is doing, shown at the right of the header.
     pub link: Link,
 }
@@ -52,7 +57,7 @@ impl Client {
     pub fn new(native: Rc<Native>, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_space: Option<String>) -> Self {
         Self {
             native, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), link: Link::Connecting,
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), attached: HashSet::new(), link: Link::Connecting,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -63,7 +68,12 @@ impl Client {
                     self.apply(spaces);
                     true
                 }
-                None => false,
+                None => {
+                    for (agent, t) in &mut self.transcripts {
+                        t.on_message(&message, agent);
+                    }
+                    false
+                }
             },
             Event::Up(endpoint) => {
                 // The daemon may have restarted: its terminals and its token are new, so every
@@ -77,6 +87,8 @@ impl Client {
                     }
                     self.opened.clear();
                     self.placed.clear();
+                    self.attached.clear();
+                    self.transcripts.clear();
                     // The layout we hold is the old daemon's: its terminal ids mean nothing to the
                     // new one. Nothing opens until the layout that follows this event arrives.
                     self.spaces.clear();
@@ -146,6 +158,21 @@ impl Client {
             self.overrides.insert(split.clone(), drag_ratio(*horizontal, *parent, x, y));
         }
     }
+    /// Attach to every agent pane's agent once per connection, so its transcript streams in.
+    fn sync_agents(&mut self, leaves: &[Placed]) {
+        for p in leaves {
+            if let Some(agent) = p.leaf.agent.as_ref().filter(|_| p.leaf.kind == "agent") {
+                if self.link == Link::Up && self.attached.insert(agent.clone()) {
+                    self.transcripts.entry(agent.clone()).or_default();
+                    self.send(json!({"op":"agent_attach","agent":agent}));
+                }
+            }
+        }
+    }
+    /// Turn an empty pane into `kind` (`terminal` or `browser`).
+    fn set_kind(&self, pane: &str, kind: &str) {
+        self.send(json!({"op":"pane_set_kind","pane":pane,"kind":kind}));
+    }
     /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views
     /// of panes no space has any more.
@@ -153,16 +180,18 @@ impl Client {
         self.native_panes.clear();
         for p in leaves {
             let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
-                ("web", _) => "web",
-                ("terminal", Some(_)) => "terminal",
+                ("web", _) => "web".to_owned(),
+                ("browser", _) => format!("browser:{}", p.leaf.url.clone().unwrap_or_default()),
+                ("terminal", Some(_)) => "terminal".to_owned(),
                 _ => continue,
             };
-            if self.opened.get(&p.leaf.id).map(String::as_str) != Some(kind) {
-                match &p.leaf.term {
-                    Some(term) => self.native.open_terminal(&p.leaf.id, term, &self.endpoint.ws),
-                    None => self.native.open_web(&p.leaf.id, &self.endpoint.artifact(&p.leaf.id)),
+            if self.opened.get(&p.leaf.id) != Some(&kind) {
+                match (&p.leaf.term, p.leaf.kind.as_str()) {
+                    (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, &self.endpoint.ws),
+                    (None, "browser") => self.native.open_web(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank")),
+                    (None, _) => self.native.open_web(&p.leaf.id, &self.endpoint.artifact(&p.leaf.id)),
                 }
-                self.opened.insert(p.leaf.id.clone(), kind.to_owned());
+                self.opened.insert(p.leaf.id.clone(), kind);
             }
             let rect = [f64::from(p.rect.x), f64::from(p.rect.y + TITLE), f64::from(p.rect.w), f64::from((p.rect.h - TITLE).max(1.))];
             if self.placed.get(&p.leaf.id) != Some(&(rect, false)) {
@@ -195,6 +224,7 @@ impl Render for Client {
         self.viewport = (f32::from(v.width), f32::from(v.height));
         let (leaves, dividers) = self.scene();
         self.sync_native(&leaves);
+        self.sync_agents(&leaves);
         let mut root = div().relative().size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if this.drag.is_some() {
@@ -230,7 +260,36 @@ impl Render for Client {
         for p in &leaves {
             let r = p.rect;
             let native = self.native_panes.contains(&p.leaf.id);
-            let body = if native { String::new() } else { format!("unimplemented: {} pane\n{}", p.leaf.kind, p.leaf.label) };
+            let id = p.leaf.id.clone();
+            let body = match p.leaf.kind.as_str() {
+                _ if native => div(),
+                "agent" => {
+                    let t = p.leaf.agent.as_ref().and_then(|a| self.transcripts.get(a));
+                    let mut col = div().flex().flex_col().gap_1().overflow_hidden().h(px((r.h - TITLE).max(1.)))
+                        .child(div().text_color(rgb(0x8fa89b)).child(format!("{} · {}", p.leaf.label, t.map(|t| t.state.as_str()).unwrap_or("connecting"))));
+                    for line in t.map(|t| t.lines.as_slice()).unwrap_or_default() {
+                        let (color, text) = match line {
+                            Line::User(x) => (0xe0b070, format!("> {x}")),
+                            Line::Reply(x) => (0xd9e8e1, x.clone()),
+                            Line::Thought(x) => (0x6f8a7c, x.clone()),
+                            Line::Tool { title, status, .. } => (0x8fa89b, format!("[{status}] {title}")),
+                            Line::Error(x) => (0xe07070, x.clone()),
+                        };
+                        col = col.child(div().text_color(rgb(color)).child(text));
+                    }
+                    col
+                }
+                "empty" => {
+                    let button = |label: &'static str, kind: &'static str, cx: &mut Context<Self>| {
+                        let id = id.clone();
+                        div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.set_kind(&id, kind)))
+                            .child(label)
+                    };
+                    div().flex().gap_2().child(button("Terminal", "terminal", cx)).child(button("Browser", "browser", cx))
+                }
+                other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
+            };
             root = root.child(
                 div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x17201c))
                     .border_1().border_color(rgb(0x2c3d34))
