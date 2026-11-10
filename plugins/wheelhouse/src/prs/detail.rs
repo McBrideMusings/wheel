@@ -186,11 +186,13 @@ pub struct Choices {
     /// `merge` or `close`: that button was pressed once and awaits a second press.
     pub confirm: Option<String>,
     pub ran: Option<String>,
+    /// The PR's details are still being read: the modal shows what the list holds and a spinner.
+    pub loading: bool,
 }
 
 impl Default for Choices {
     fn default() -> Self {
-        Choices { method: "squash".into(), agent: "default".into(), open: "pane".into(), confirm: None, ran: None }
+        Choices { method: "squash".into(), agent: "default".into(), open: "pane".into(), confirm: None, ran: None, loading: false }
     }
 }
 
@@ -221,6 +223,13 @@ pub fn modal(p: &mut Page, pr: &Pr, n: &Value, agents: &[String], buttons: &[But
     c.push(fact(p, "br", "Branch", v));
     let v = p.label("pr.f.au.v", &pr.author, json!({}));
     c.push(fact(p, "au", "Author", v));
+    if ch.loading {
+        c.push(p.label("pr.loading", "Loading details…", json!({ "symbol": "spinner", "tone": "muted", "size": 12 })));
+        if !pr.summary.is_empty() {
+            let t = p.label("pr.loading.t", &pr.summary, json!({ "size": 13, "tone": "muted" }));
+            c.push(p.boxed("pr.loading.b", "v", vec![t], json!({ "padding": [10, 12], "fill": "soft", "radius": 8, "align": "start" })));
+        }
+    } else {
     let assignees = names(n, "assignees", |a| login(a).map(String::from));
     let v = p.label("pr.f.as.v", &if assignees.is_empty() { "none".into() } else { assignees.join(", ") }, json!({ "tone": if assignees.is_empty() { "muted" } else { "fg" } }));
     c.push(fact(p, "as", "Assignee", v));
@@ -338,6 +347,8 @@ pub fn modal(p: &mut Page, pr: &Pr, n: &Value, agents: &[String], buttons: &[But
         c.push(p.boxed("pr.fl", "v", rows, json!({ "spacing": 3, "padding": [8, 0, 0, 0] })));
     }
 
+    }
+
     // Footer: the result of the last button, then every button, always in the same place: one that does not apply is
     // disabled, never missing. Merge and Close PR take two clicks: the first turns that button into Confirm.
     let body_id = p.boxed("pr.body", "v", c, json!({ "spacing": 12, "align": "start" }));
@@ -345,7 +356,7 @@ pub fn modal(p: &mut Page, pr: &Pr, n: &Value, agents: &[String], buttons: &[But
     if let Some(r) = &ch.ran {
         footer.push(p.label("pr.ran", r, json!({ "tone": "ok", "weight": "semibold" })));
     }
-    let open = state == "OPEN";
+    let open = state == "OPEN" && !ch.loading;
     let draft = n["isDraft"] == true;
     let mergeable = open && !draft && n["mergeable"] == "MERGEABLE";
     // The project's own buttons (wheel.toml) first, each with a terminal glyph; a button whose `on` does not match this PR is disabled.
@@ -368,8 +379,8 @@ pub fn modal(p: &mut Page, pr: &Pr, n: &Value, agents: &[String], buttons: &[But
         p.put(json!({ "id": "pr.sep", "component": "Divider", "axis": "vertical" }));
         footer.push("pr.sep".into());
     }
-    footer.push(p.button("pr.checkout", "Terminal on branch", "checkout_pr", json!({}), json!({ "help": "Switch this project's checkout to the PR's branch and open a terminal in a new pane" })));
-    footer.push(p.button("pr.worktree", "Agent in worktree", "worktree_pr", json!({}), json!({ "help": "Open the branch in its own worktree and start the agent chosen under Open with, in the place chosen under Open in" })));
+    footer.push(p.button("pr.checkout", "Terminal on branch", "checkout_pr", json!({}), json!({ "disabled": ch.loading, "help": "Switch this project's checkout to the PR's branch and open a terminal in a new pane" })));
+    footer.push(p.button("pr.worktree", "Agent in worktree", "worktree_pr", json!({}), json!({ "disabled": ch.loading, "help": "Open the branch in its own worktree and start the agent chosen under Open with, in the place chosen under Open in" })));
     footer.push(p.button("pr.draft", if draft { "Mark ready" } else { "Convert to draft" }, "toggle_draft", json!({}),
         json!({ "disabled": !open, "help": if draft { "Take this PR out of draft" } else { "Put this PR back into draft" } })));
     let asking = |what: &str| ch.confirm.as_deref() == Some(what);
@@ -641,5 +652,19 @@ mod tests {
         let again = worktree(work.to_str().unwrap(), 5, "feat/x", false).unwrap();
         assert_eq!(std::fs::canonicalize(&again).unwrap(), std::fs::canonicalize(&a).unwrap(), "the second call finds the first");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_pr_still_loading_shows_the_list_data_a_spinner_and_disabled_buttons() {
+        let pr = Pr { number: 7, title: "t".into(), author: "a".into(), branch: "b".into(), draft: false, mergeable: "MERGEABLE".into(), checks: "passing", review: "approved",
+            bucket: "mine", my: None, gaps: String::new(), updated: 0, url: "https://u".into(), fix: false, additions: 3, deletions: 1, files: 1, commits: 1, labels: vec![], reviewers: vec![],
+            next: String::new(), summary: "The start of the body".into(), issues: vec![] };
+        let mut p = Page { out: vec![] };
+        modal(&mut p, &pr, &Value::Null, &[], &[], &Choices { loading: true, ..Default::default() });
+        let has = |id: &str| p.out.iter().any(|c| c["id"] == id);
+        assert!(has("pr.loading") && has("pr.loading.t"), "a spinner and the list's description");
+        assert!(!has("pr.f.as.v"), "nothing the list lacks is shown as if it were known");
+        let disabled = |id: &str| p.out.iter().find(|c| c["id"] == id).unwrap()["modifiers"].to_string().contains("disabled");
+        assert!(disabled("pr.merge") && disabled("pr.worktree") && disabled("pr.draft"));
     }
 }

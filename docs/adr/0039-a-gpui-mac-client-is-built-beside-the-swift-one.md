@@ -1,0 +1,7 @@
+# ADR-0039: A GPUI Mac client is built beside the Swift one
+
+`clients/gpui` is a Rust and GPUI client for macOS that speaks the same WebSocket protocol as the SwiftUI clients. It is its own Cargo workspace, so the daemon's workspace and `Cargo.lock` never depend on GPUI and `wheeld` still depends on no client (ADR-0020). It embeds Wheel's real Ghostty terminal view and a WKWebView through a small Swift bridge, because neither has a Rust equivalent, and draws everything else itself: the space tabs, the split tree and its draggable dividers (the `split_ratio` op), and a labelled placeholder for each pane kind it does not draw yet.
+
+The SwiftUI Mac app stays the shipping client. The GPUI client replaces it only when it matches the Mac app's surface, including the A2UI page renderer (ADR-0031, ADR-0038), which is the largest piece not yet written; that replacement is a separate decision. Until then both ship from this repository and neither changes the other: `apple/` is untouched by the GPUI client's work, and the iOS app stays Swift.
+
+The evidence for building it is in beads `wheel-5cke` and `wheel-3mvm`: a replaceable Rust Wasm pane beside native views, native views kept live under a GPUI overlay with the overlay's area masked and hit-tested, real pointer, keyboard and clipboard events through AppKit responders, and a split tree drawn and resized against an unchanged `wheeld`. What those runs did not cover (a visible window, committed IME text in the terminal, one native view per pane) is the first work in epic `wheel-ilgy`.

@@ -157,12 +157,26 @@ impl Server {
         })
     }
 
-    #[tool(description = "Sort by a column from the Sort menu", meta = ui_meta())]
-    fn set_sort(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
+    #[tool(description = "Tick or untick one value of a filter; the key is `<filter>:<value>`", meta = ui_meta())]
+    fn toggle_filter(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
         self.with(&meta, |_, ui| {
-            if let Some(c) = COLS.iter().find(|c| c.key == value) {
-                ui.sort = (c.key.into(), !c.desc_first);
+            let Some((field, v)) = key.split_once(':') else { return };
+            if !["status", "type", "label", "pri"].contains(&field) {
+                return;
             }
+            let mut vals: Vec<String> = ui.values(field).iter().map(|x| x.to_string()).collect();
+            vals.retain(|x| x != v);
+            if value == "true" {
+                vals.push(v.to_string());
+            }
+            ui.f.insert(field.to_string(), vals.join(","));
+        })
+    }
+
+    #[tool(description = "Make a filter exclude its values instead of matching them", meta = ui_meta())]
+    fn set_not(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if value == "true" { ui.not.insert(key); } else { ui.not.remove(&key); }
         })
     }
 
@@ -180,6 +194,7 @@ impl Server {
         self.with(&meta, |_, ui| {
             ui.q.clear();
             ui.f.clear();
+            ui.not.clear();
         })
     }
 

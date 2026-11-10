@@ -49,6 +49,13 @@ impl Hub {
     fn tick(&self) -> Vec<String> {
         let due = self.watcher.lock().unwrap().tick();
         let mut changed = vec![];
+        // A page that finished work in the background is drawn again at once.
+        let subs = self.watcher.lock().unwrap().subscriptions();
+        for d in subs {
+            if self.registry.get(&d.view).is_some_and(|v| v.finished(&d.dir)) && !changed.contains(&d.uri) {
+                changed.push(d.uri);
+            }
+        }
         for d in due {
             if let Some(view) = self.registry.get(&d.view) {
                 if view.refresh(&d.dir) {
