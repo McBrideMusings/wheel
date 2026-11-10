@@ -52,9 +52,17 @@ struct ConfigRow: View {
             // `chat.footer.items` is the list and the order. A git item draws nothing outside a
             // repository, and a list that names an item twice or one this app does not know
             // draws it once or not at all.
-            ForEach(model.appearance(forAgent: chat.name).footerItems.uniqued(), id: \.self) { item in
-                footerItem(item)
+            //
+            // The items keep their order as their priority: when the row is too narrow the ones at
+            // the end are hidden whole and one "…" stands for them, never a squeezed fragment.
+            PriorityRow(spacing: 10) {
+                ForEach(model.appearance(forAgent: chat.name).footerItems.uniqued(), id: \.self) { item in
+                    footerItem(item).fixedSize()
+                }
+                Text("\u{2026}").font(ChatFont.meta).foregroundStyle(.secondary)
+                    .help("More items don't fit in this width")
             }
+            .clipped()
             Spacer(minLength: 0)
             ForEach(chat.config) { option in
                 ConfigControl(option: option) { value in
@@ -62,6 +70,56 @@ struct ConfigRow: View {
                 }
             }
         }
+    }
+}
+
+/// Places its children left to right at their own width while they fit, and hides the rest. Its
+/// last child is the stand-in "…": it shows, after the children that fit, only when some were
+/// hidden. A hidden child is placed outside the row, which clips it, so it draws nothing and a
+/// pointer never reaches it.
+struct PriorityRow: Layout {
+    var spacing: CGFloat
+
+    private func widths(_ subviews: Subviews) -> [CGFloat] {
+        subviews.map { $0.sizeThatFits(.unspecified).width }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let items = Array(subviews.dropLast())
+        let sizes = items.map { $0.sizeThatFits(.unspecified) }
+        let shown = sizes.filter { $0.width > 0 }
+        let ideal = shown.map(\.width).reduce(0, +) + spacing * CGFloat(Swift.max(shown.count - 1, 0))
+        let height = sizes.map(\.height).max() ?? 0
+        guard let proposed = proposal.width, proposed.isFinite else { return CGSize(width: ideal, height: height) }
+        return CGSize(width: Swift.min(proposed, ideal), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let marker = subviews.last else { return }
+        let items = Array(subviews.dropLast())
+        let sizes = items.map { $0.sizeThatFits(.unspecified) }
+        let markerWidth = marker.sizeThatFits(.unspecified).width
+        let present = items.indices.filter { sizes[$0].width > 0 }
+        func used(_ count: Int) -> CGFloat {
+            present.prefix(count).map { sizes[$0].width }.reduce(0, +) + spacing * CGFloat(Swift.max(count - 1, 0))
+        }
+        var keep = present.count
+        if used(keep) > bounds.width {
+            // Something has to go: drop from the end until what is left and the "…" fit.
+            while keep > 0 && used(keep) + (keep > 0 ? spacing : 0) + markerWidth > bounds.width { keep -= 1 }
+        }
+        let hidden = keep < present.count
+        let away = CGPoint(x: bounds.maxX + 10_000, y: bounds.minY)
+        var x = bounds.minX
+        for index in items.indices {
+            guard let slot = present.firstIndex(of: index), slot < keep else {
+                items[index].place(at: away, anchor: .topLeading, proposal: .unspecified)
+                continue
+            }
+            items[index].place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: .unspecified)
+            x += sizes[index].width + spacing
+        }
+        marker.place(at: hidden ? CGPoint(x: x, y: bounds.midY) : away, anchor: hidden ? .leading : .topLeading, proposal: .unspecified)
     }
 }
 
