@@ -1520,6 +1520,8 @@ async fn handle(
             match result {
                 Ok(()) => {
                     tracing::info!(%peer, %agent, %config, %value, "agent config set");
+                    // The mode is saved with the pane, so a restart keeps it.
+                    state.save_layout_soon();
                     req.map(|req| ServerMsg::Ok { req })
                 }
                 Err(message) => {

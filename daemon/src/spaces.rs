@@ -688,12 +688,8 @@ impl AppState {
                     *state = running.as_ref().map(|s| Box::new(s.state()));
                     *model = running.as_ref().and_then(|s| s.model());
                     *context = running.as_ref().and_then(|s| s.context());
-                    // The mode the agent is in now, which a person may have changed since the start.
                     if let Some(running) = &running {
-                        *permissions = {
-                            let p = running.permissions();
-                            AgentPermissions::boxed(p.permission_mode, p.sandbox)
-                        };
+                        *permissions = self.current_permissions(running);
                     }
                 }
             });
@@ -701,11 +697,33 @@ impl AppState {
         self.with_statuses(spaces)
     }
 
+    /// The permissions `running` is in now: the mode a person may have changed since the start.
+    fn current_permissions(&self, running: &crate::agent::Agent) -> Option<Box<AgentPermissions>> {
+        let p = running.permissions();
+        AgentPermissions::boxed(p.permission_mode, p.sandbox)
+    }
+
     /// Write the saved state — the layout and the id counter. The one place that touches the file.
+    /// Each running agent's pane is saved with the mode its agent is in now, so a restart starts
+    /// it there and not in the mode it was first started with.
     pub(crate) fn save_state(&self, spaces: &Spaces) {
         let Some(path) = self.state_file.lock().unwrap().clone() else {
             return;
         };
+        let mut spaces = spaces.clone();
+        for space in &mut spaces.spaces {
+            each_space_kind_mut(space, &mut |kind| {
+                if let PaneKind::Agent {
+                    agent, permissions, ..
+                } = kind
+                {
+                    if let Ok(running) = self.agent(agent) {
+                        *permissions = self.current_permissions(&running);
+                    }
+                }
+            });
+        }
+        let spaces = &spaces;
         let extra = self.saved_extra.lock().unwrap().clone();
         let recent = self.recent.lock().unwrap().clone();
         match save(
@@ -732,6 +750,12 @@ impl AppState {
         self.save_pending.store(false, Ordering::SeqCst);
         let spaces = self.spaces.lock().unwrap();
         self.save_state(&spaces);
+    }
+
+    /// [`AppState::save_soon`] from a caller that does not hold the spaces lock.
+    pub(crate) fn save_layout_soon(&self) {
+        let _spaces = self.spaces.lock().unwrap();
+        self.save_soon();
     }
 
     /// Save the layout a moment from now, coalescing whatever else asks in the meantime into one

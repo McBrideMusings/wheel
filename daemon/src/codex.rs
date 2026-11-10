@@ -37,6 +37,9 @@ const POLICIES: [(&str, &str); 3] = [
     ("never", "Never ask"),
 ];
 
+/// The policy a Codex agent starts in when none was chosen: the one Codex itself defaults to.
+const DEFAULT_POLICY: &str = "on-request";
+
 /// The names of the approval policies, for refusing one Codex does not have.
 pub(crate) fn policy_names() -> Vec<&'static str> {
     POLICIES.iter().map(|(v, _)| *v).collect()
@@ -78,7 +81,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         .permissions
         .permission_mode
         .clone()
-        .unwrap_or_else(|| POLICIES[0].0.into());
+        .unwrap_or_else(|| DEFAULT_POLICY.into());
     let driver = Driver {
         pid,
         stdin,
