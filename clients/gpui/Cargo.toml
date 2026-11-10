@@ -1,0 +1,33 @@
+# A Rust and GPUI client for wheeld. Its own workspace, so the daemon's workspace
+# and Cargo.lock never pull in GPUI (ADR-0020: the server depends on no client).
+[workspace]
+
+[package]
+name = "wheel-gpui"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "wheel_gpui"
+
+[[bin]]
+name = "wheel-gpui"
+path = "src/bin/wheel-gpui.rs"
+
+[[bin]]
+name = "wheel-gpui-check"
+path = "src/bin/check.rs"
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+futures = "0.3"
+raw-window-handle = "0.6"
+libloading = "0.8"
+tungstenite = "0.30"
+gpui = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", default-features = false, features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", features = ["font-kit", "test-support"] }
+
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+calloop = { git = "https://github.com/zed-industries/calloop" }
