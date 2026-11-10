@@ -2133,10 +2133,9 @@ final class DebugServer {
                         "density": look.density.rawValue, "quote_style": look.quoteStyle.rawValue,
                         "code_theme": look.codeTheme.rawValue, "code_font": look.codeFont.rawValue,
                         "code_size": look.codeSize, "code_wrap": look.codeWrap.rawValue,
-                        "code_line_numbers": look.lineNumbers, "agent_home": look.home.rawValue,
+                        "code_line_numbers": look.lineNumbers, "footer_items": look.footerItems,
                     ] as [String: Any]
-                    o["home"] = ["where": look.home.rawValue, "text": model.shownHome(agent: agent, harness: harness),
-                                 "intro": model.homeIntro(agent: agent, harness: harness),
+                    o["home"] = ["text": model.shownHome(agent: agent, harness: harness),
                                  "variable": AgentInfo.homeVariable(of: harness)] as [String: Any]
                     o["code_blocks"] = CodeBlockRegistry.shared.blocks(agent: agent).enumerated().map { index, block in
                         ["index": index, "language": block.language ?? NSNull(), "text": block.text, "text_unreadable": !block.readable, "drawn": block.drawn,

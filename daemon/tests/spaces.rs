@@ -3404,7 +3404,7 @@ async fn chat_font_size_resolves_per_layer_and_refuses_out_of_range() {
         "chat.paragraph_spacing",
         "chat.max_width",
         "chat.density",
-        "chat.agent.home",
+        "chat.footer.items",
         "code.theme",
         "code.line_numbers",
     ] {

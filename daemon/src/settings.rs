@@ -65,6 +65,9 @@ enum Accepts {
     /// Link patterns, a list of entries: [`crate::link_patterns`]. Stored as JSON, written in a
     /// file as an array of tables.
     Patterns,
+    /// Some of the given words, comma separated, each at most once, in the order the person
+    /// wants them; nothing for none.
+    Ordered(&'static [&'static str]),
 }
 
 impl Accepts {
@@ -94,6 +97,7 @@ impl Accepts {
             Accepts::Float(min, max) => float(value, min, max),
             Accepts::Bool => boolean(value),
             Accepts::Patterns => crate::link_patterns::take(value),
+            Accepts::Ordered(words) => ordered(value, words),
         }
     }
 
@@ -105,6 +109,7 @@ impl Accepts {
             Accepts::Int(..) => SettingKind::Int,
             Accepts::Float(..) => SettingKind::Float,
             Accepts::Bool => SettingKind::Bool,
+            Accepts::Ordered(_) => SettingKind::Ordered,
             _ => SettingKind::Text,
         }
     }
@@ -112,7 +117,9 @@ impl Accepts {
     /// The words a `Choice` takes, in the order a client lists them; none for any other kind.
     fn choices(self) -> Vec<String> {
         match self {
-            Accepts::Choice(words) => words.iter().map(|w| w.to_string()).collect(),
+            Accepts::Choice(words) | Accepts::Ordered(words) => {
+                words.iter().map(|w| w.to_string()).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -151,6 +158,21 @@ impl Accepts {
             _ => value.into(),
         }
     }
+}
+
+/// Some of `words` in the order given, each once.
+fn ordered(value: &str, words: &[&str]) -> Result<String, String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for entry in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let Some(word) = words.iter().find(|w| **w == entry) else {
+            return Err(format!("{entry:?} is not one of {}", words.join(", ")));
+        };
+        if seen.contains(word) {
+            return Err(format!("{entry:?} is listed twice"));
+        }
+        seen.push(word);
+    }
+    Ok(seen.join(","))
 }
 
 /// One of `words`.
@@ -777,10 +799,17 @@ const KEYS: [Key; 67] = [
         help: "The tallest an inline image may be, in points, 60 to 600.",
     },
     Key {
-        id: "chat.agent.home",
-        accepts: Accepts::Choice(&["row", "header", "transcript", "off"]),
-        default: "row",
-        help: "Where the agent's home directory shows: row, header, transcript or off.",
+        id: "chat.footer.items",
+        accepts: Accepts::Ordered(&[
+            "context",
+            "background",
+            "directory",
+            "home",
+            "branch",
+            "changes",
+        ]),
+        default: "context,background,directory,home,branch,changes",
+        help: "What the line under an agent's composer shows, left to right: context, background (running tasks), directory, home (the agent's config folder), branch and changes. Git items show only where the directory is a repository. The agent's model, effort and permission controls stay at the right.",
     },
     Key {
         id: "code.theme",
@@ -1564,6 +1593,18 @@ fn real_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ordered_keeps_the_order_and_refuses_unknown_and_repeated_words() {
+        let words = ["context", "directory", "branch"];
+        assert_eq!(
+            super::ordered(" branch, context ", &words).unwrap(),
+            "branch,context"
+        );
+        assert_eq!(super::ordered("", &words).unwrap(), "");
+        assert!(super::ordered("context,tokens", &words).unwrap_err().contains("tokens"));
+        assert!(super::ordered("branch,branch", &words).unwrap_err().contains("twice"));
+    }
+
     #[test]
     fn runners_reads_any_string_key_and_skips_the_rest() {
         let dir = std::env::temp_dir().join(format!("wheel-runner-{}", std::process::id()));

@@ -1823,7 +1823,8 @@ pub struct SettingInfo {
     pub project_file: Option<String>,
 }
 
-/// What a setting's value is: free text, one of a set of words, a number or a switch.
+/// What a setting's value is: free text, one of a set of words, a number, a switch, or some of a
+/// set of words in the order the person wants them.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingKind {
@@ -1833,6 +1834,9 @@ pub enum SettingKind {
     Int,
     Float,
     Bool,
+    /// A comma-separated list of the words in `choices`, each at most once; its order is the
+    /// setting.
+    Ordered,
 }
 
 /// Which of the three layers a setting's value came from. A project's `wheel.toml` wins over the

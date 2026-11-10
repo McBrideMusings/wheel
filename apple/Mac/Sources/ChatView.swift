@@ -49,18 +49,11 @@ struct ConfigRow: View {
         // Already in draw order: AgentChat.setConfig sorts once, so this and the state query
         // read the same list.
         HStack(spacing: 10) {
-            if let context = chat.context {
-                ContextMeter(model: model, paneId: paneId, context: context)
-            }
-            if model.appearance(forAgent: chat.name).home == .row {
-                HomeLabel(agent: agent, home: model.shownHome(agent: chat.name, harness: agent))
-            }
-            if let text = chat.footer?.backgroundText {
-                Text(text)
-                    .font(ChatFont.meta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help("Background tasks the agent has running")
+            // `chat.footer.items` is the list and the order. A git item draws nothing outside a
+            // repository, and a list that names an item twice or one this app does not know
+            // draws it once or not at all.
+            ForEach(model.appearance(forAgent: chat.name).footerItems.uniqued(), id: \.self) { item in
+                footerItem(item)
             }
             Spacer(minLength: 0)
             ForEach(chat.config) { option in
@@ -69,6 +62,60 @@ struct ConfigRow: View {
                 }
             }
         }
+    }
+}
+
+extension ConfigRow {
+    @ViewBuilder fileprivate func footerItem(_ item: String) -> some View {
+        switch item {
+        case "context":
+            if let context = chat.context {
+                ContextMeter(model: model, paneId: paneId, context: context)
+            } else {
+                // Before the agent's first usage report there is no reading; the slot still draws,
+                // empty, so the meter does not appear and push its neighbours along.
+                HStack(spacing: 6) {
+                    Capsule().fill(Color.primary.opacity(0.15)).frame(width: 28, height: 4)
+                    Text("0%").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                }
+                .fixedSize()
+                .help("The agent has not reported its context use yet")
+            }
+        case "background":
+            if let text = chat.footer?.backgroundText { footerText(text, help: "Background tasks the agent has running") }
+        case "directory":
+            if let footer = chat.footer {
+                footerText(footer.shownDirectory, help: "The directory the agent works in: \(footer.directory)", truncate: .middle)
+            }
+        case "home":
+            HomeLabel(agent: agent, home: model.shownHome(agent: chat.name, harness: agent))
+        case "branch":
+            if let branch = chat.footer?.branch { footerText("\u{2387} \(branch)", help: "The branch checked out in the directory", truncate: .middle) }
+        case "changes":
+            if let footer = chat.footer, footer.branch != nil, footer.added + footer.removed > 0 {
+                footerText("+\(footer.added) \u{2212}\(footer.removed)", help: "Lines added and removed against HEAD, untracked files not counted")
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func footerText(_ text: String, help: String, truncate: Text.TruncationMode = .tail) -> some View {
+        Text(text)
+            .font(ChatFont.meta)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(truncate)
+            .layoutPriority(-1)
+            .help(help)
+    }
+}
+
+private extension Array where Element: Hashable {
+    /// The elements in order, each once.
+    func uniqued() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
     }
 }
 

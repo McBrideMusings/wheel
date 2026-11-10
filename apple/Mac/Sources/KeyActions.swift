@@ -146,11 +146,6 @@ extension AppModel {
         AgentInfo.shownHome(own: AgentPanes.home(ofAgent: agent, in: spaces), of: harness, in: agents)
     }
 
-    /// The line that opens a transcript when `chat.agent.home` is `transcript`: the agent and its home.
-    func homeIntro(agent: String, harness: String) -> String {
-        "\(harness == "claude" ? "Claude Code" : AgentInfo.title(of: harness)) · \(shownHome(agent: agent, harness: harness))"
-    }
-
     /// The question a pane that runs a shell or an agent asks before it stops running it.
     private func endingQuestion(_ kind: PaneKind) -> (title: String, message: String)? {
         switch kind {

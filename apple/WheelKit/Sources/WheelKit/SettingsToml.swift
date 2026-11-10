@@ -26,7 +26,7 @@ public enum SettingsToml {
         switch kind {
         case .int, .float, .bool: value
         case .choice where Int(value) != nil: value
-        case .text, .choice:
+        case .text, .choice, .ordered:
             "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
     }
