@@ -239,6 +239,18 @@ struct SessionCard: View {
                 Spacer(minLength: 8)
                 Text("\(spaces.count) \(spaces.count == 1 ? "space" : "spaces")")
                     .font(.caption).foregroundStyle(.secondary)
+                Button { model.newWindow(session: session.id) } label: {
+                    Image(systemName: "macwindow.badge.plus").frame(width: 16)
+                }
+                .buttonStyle(.borderless)
+                .help("Open a new window showing \(session.name)")
+                .accessibilityLabel("New window in \(session.name)")
+                Button { model.askCloseSession(session, inAlert: true) } label: {
+                    Image(systemName: "xmark.circle").frame(width: 16)
+                }
+                .buttonStyle(.borderless)
+                .help("Close the \(session.name) session")
+                .accessibilityLabel("Close \(session.name) session")
             }
             .padding(.bottom, 4)
             if spaces.isEmpty {

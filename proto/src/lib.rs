@@ -1693,6 +1693,18 @@ pub enum ClientMsg {
         req: Option<u64>,
         agent: String,
     },
+    /// Fork the agent's conversation through its first `turns` turns (a turn is one prompt and
+    /// what the agent did after it) into a new agent pane split right of the agent's own, run by
+    /// the agent's own harness, model and permissions. The agent's own conversation is untouched.
+    /// Replies `started` with the new pane and agent once the fork's agent is ready or still
+    /// starting. Refused for Pi, which cannot fork at a turn, and for an agent with no
+    /// conversation yet. Needs a server at `PROTOCOL_VERSION` 28.
+    AgentFork {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        agent: String,
+        turns: u32,
+    },
     /// Put the agent in a past conversation, named by the `id` a `conversations` entry carries.
     /// The agent replays it and that history becomes the transcript, which every attached client
     /// is sent. A load that fails leaves the agent in the conversation it was already in.

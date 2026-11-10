@@ -170,7 +170,7 @@ pub(crate) fn words(command: &str) -> Vec<String> {
 }
 
 /// The arguments the driver adds after the command's own.
-fn arguments(launch: &Launch) -> Vec<String> {
+fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if launch.orchestrator {
         // The orchestrator runs only the whitelisted `wheel` commands: Bash is its one tool, and
@@ -210,6 +210,20 @@ fn arguments(launch: &Launch) -> Vec<String> {
     match &launch.conversation {
         Conversation::New(id) => args.extend(["--session-id".into(), id.clone()]),
         Conversation::Resume(id) => args.extend(["--resume".into(), id.clone()]),
+        // Claude Code copies the conversation into a new one under an id it reports. With a
+        // message to stop at, the copy ends there; without, it holds everything.
+        Conversation::Fork { from, id, .. } => {
+            args.extend([
+                "--resume".into(),
+                from.clone(),
+                "--fork-session".into(),
+                "--session-id".into(),
+                id.clone(),
+            ]);
+            if let Some(at) = fork_at {
+                args.extend(["--resume-session-at".into(), at.into()]);
+            }
+        }
     }
     if let Some(model) = &launch.model {
         args.extend(["--model".into(), model.clone()]);
@@ -222,13 +236,21 @@ fn arguments(launch: &Launch) -> Vec<String> {
 
 /// Start `claude --print` for `launch`.
 pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
+    let fork_at = match &launch.conversation {
+        Conversation::Fork { from, turns, .. } => {
+            let home = store(launch.config_dir.as_deref())
+                .ok_or("the agent's configuration directory is not known")?;
+            fork_point(&home, &launch.cwd, from, *turns)?
+        }
+        _ => None,
+    };
     let Process {
         pid,
         child,
         stdin,
         stdout,
         last_error,
-    } = driver::spawn(&launch, arguments(&launch), "CLAUDE_CONFIG_DIR")?;
+    } = driver::spawn(&launch, arguments(&launch, fork_at.as_deref()), "CLAUDE_CONFIG_DIR")?;
     let (input, inputs) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
     let driver = Driver {
@@ -1413,6 +1435,43 @@ fn prompt_text(entry: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// The message a fork of conversation `id` through its first `turns` turns stops at: the uuid of
+/// the last message before turn `turns + 1` starts. A turn is counted as `history` counts it, by
+/// the prompts the person wrote. None when the fork holds the whole conversation, because there is
+/// no turn after the `turns`th. An error when the conversation has fewer turns, or none.
+pub fn fork_point(home: &Path, cwd: &Path, id: &str, turns: usize) -> Result<Option<String>, String> {
+    if turns == 0 {
+        return Err("a fork holds at least one turn".into());
+    }
+    let text = std::fs::read_to_string(transcript(home, cwd, id))
+        .map_err(|e| format!("the agent keeps no conversation {id} for {}: {e}", cwd.display()))?;
+    let (mut seen, mut last) = (0usize, None::<String>);
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry["isSidechain"] == true {
+            continue;
+        }
+        let kind = entry["type"].as_str();
+        if kind == Some("user") && prompt_text(&entry).is_some() {
+            seen += 1;
+            if seen > turns {
+                return Ok(last);
+            }
+        }
+        if matches!(kind, Some("user" | "assistant")) {
+            if let Some(uuid) = entry["uuid"].as_str() {
+                last = Some(uuid.to_string());
+            }
+        }
+    }
+    if seen < turns {
+        return Err(format!("conversation {id} has {seen} turn(s); a fork needs {turns}"));
+    }
+    Ok(None)
+}
+
 /// True when the store holds no transcript for conversation `id`: the file is not there. A file
 /// that is there but cannot be read is not missing — that may pass.
 pub fn missing(home: &Path, cwd: &Path, id: &str) -> bool {
@@ -1585,6 +1644,65 @@ mod tests {
         assert_eq!(found.turns.len(), 1);
         assert_eq!(found.turns[0].0, "start the build");
         assert!(found.turns[0].1.is_empty());
+    }
+
+    #[test]
+    fn a_fork_point_is_the_last_message_before_the_next_prompt() {
+        use super::fork_point;
+        let home = std::env::temp_dir().join(format!("wheel-fork-{}", std::process::id()));
+        let cwd = std::path::Path::new("/work/proj");
+        let dir = crate::resume::claude_project_dir(&home, &super::store_cwd(cwd));
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = |kind: &str, uuid: &str, text: &str| match kind {
+            "user" => serde_json::json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": text}}),
+            _ => serde_json::json!({"type": "assistant", "uuid": uuid, "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}),
+        };
+        let lines = [
+            line("user", "u1", "one"),
+            line("assistant", "a1", "reply one"),
+            line("assistant", "a1b", "more of reply one"),
+            line("user", "u2", "two"),
+            line("assistant", "a2", "reply two"),
+        ];
+        let body: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        std::fs::write(dir.join("c1.jsonl"), body.join("\n")).unwrap();
+        let first = fork_point(&home, cwd, "c1", 1);
+        let all = fork_point(&home, cwd, "c1", 2);
+        let past = fork_point(&home, cwd, "c1", 3);
+        let none = fork_point(&home, cwd, "c1", 0);
+        std::fs::remove_dir_all(&home).unwrap();
+        assert_eq!(first, Ok(Some("a1b".to_string())));
+        assert_eq!(all, Ok(None));
+        assert!(past.unwrap_err().contains("has 2 turn(s)"));
+        assert!(none.is_err());
+    }
+
+    #[test]
+    fn a_fork_resumes_the_source_as_a_copy_stopped_at_the_message() {
+        use crate::driver::{Conversation, Launch};
+        let launch = |turns| Launch {
+            agent: crate::resume::Harness::Claude,
+            command: "claude".into(),
+            cwd: "/work/proj".into(),
+            config_dir: None,
+            brief: None,
+            env: Vec::new(),
+            conversation: Conversation::Fork { from: "src".into(), turns, id: "new".into() },
+            model: None,
+            permissions: Default::default(),
+            orchestrator: false,
+        };
+        let cut = super::arguments(&launch(1), Some("a1b"));
+        let at = cut.iter().position(|a| a == "--resume-session-at").unwrap();
+        assert_eq!(cut[at + 1], "a1b");
+        let resume = cut.iter().position(|a| a == "--resume").unwrap();
+        assert_eq!(cut[resume + 1], "src");
+        let named = cut.iter().position(|a| a == "--session-id").unwrap();
+        assert_eq!(cut[named + 1], "new");
+        assert!(cut.contains(&"--fork-session".to_string()));
+        let whole = super::arguments(&launch(2), None);
+        assert!(whole.contains(&"--fork-session".to_string()));
+        assert!(!whole.contains(&"--resume-session-at".to_string()));
     }
 
     #[test]

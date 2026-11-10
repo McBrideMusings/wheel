@@ -345,6 +345,43 @@ async fn a_close_if_empty_spares_a_space_something_started_in() {
     assert!(spaces.is_empty(), "a space holding one empty pane closes");
 }
 
+async fn sessions(ws: &mut Ws) -> Vec<wheel_proto::SessionInfo> {
+    match call(ws, ClientMsg::Status { req: Some(98) }).await {
+        ServerMsg::Status { sessions, .. } => sessions,
+        other => panic!("expected status, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_closes_itself_when_its_last_space_leaves_but_never_the_last_session() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let first = created(&mut ws, new_space("/tmp")).await;
+    let other = created(
+        &mut ws,
+        ClientMsg::SessionNew { req: Some(2), name: "other".into() },
+    )
+    .await;
+    // A session made empty stays: nothing has left it.
+    assert_eq!(sessions(&mut ws).await.len(), 2);
+
+    // Moving its last space to another session closes the one it left.
+    ok(
+        &mut ws,
+        ClientMsg::SessionMove { req: Some(3), space: first.clone(), session: other.clone(), index: None },
+    )
+    .await;
+    let held = sessions(&mut ws).await;
+    assert_eq!(held.len(), 1, "the emptied session closed: {held:?}");
+    assert_eq!(held[0].id, other);
+
+    // Closing the last space of the only session leaves that session.
+    ok(&mut ws, ClientMsg::SpaceClose { req: Some(4), id: first, if_empty: false }).await;
+    let held = sessions(&mut ws).await;
+    assert_eq!(held.len(), 1, "the last session stays: {held:?}");
+    assert!(held[0].spaces.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     let (url, _) = start_daemon(None).await;
@@ -7322,6 +7359,88 @@ async fn mcp_session_works(entry: &str, tag: &str) {
 async fn an_mcp_server_over_stdio_lists_and_calls_its_tools() {
     let command = format!("exec {} stdio", mcp_example().display());
     mcp_session_works(&format!("mcp = {}\n", toml::Value::from(command)), "stdio").await;
+}
+
+/// A server process that exits by itself leaves a session the daemon must not reuse: the next
+/// tool list reconnects and answers on the first try, and a tool call answers on a new session or
+/// (when it raced the exit, and may already have run) reports the error and is never replayed.
+#[tokio::test]
+async fn an_mcp_server_that_exited_is_reconnected_not_reused() {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-exited-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let pids = base.join("pids");
+    let command = format!("echo $$ >> {}; exec {} stdio", pids.display(), mcp_example().display());
+    std::fs::write(
+        base.join("wheel.toml"),
+        format!("[artifacts.server]\nmcp = {}\n", toml::Value::from(command)),
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let started = || std::fs::read_to_string(&pids).unwrap().lines().count();
+    let kill_newest = || {
+        let text = std::fs::read_to_string(&pids).unwrap();
+        let pid = text.lines().last().unwrap().to_string();
+        assert!(std::process::Command::new("kill").args(["-9", &pid]).status().unwrap().success());
+    };
+
+    assert_eq!(mcp_tools(&mut ws, "server", &space).await.unwrap().len(), 2);
+    assert_eq!(started(), 1);
+
+    kill_newest();
+    assert_eq!(mcp_tools(&mut ws, "server", &space).await.unwrap().len(), 2);
+    assert_eq!(started(), 2, "the dead session was replaced by one new server");
+
+    kill_newest();
+    let args = Some(serde_json::json!({"text": "hi"}));
+    // The call answers on a new session when the daemon saw the exit first, and reports an error
+    // when the call raced it; either way the next call answers, and one server was started.
+    let said = match mcp_call(&mut ws, "server", &space, "echo", args.clone()).await {
+        Ok(said) => said,
+        Err(_) => mcp_call(&mut ws, "server", &space, "echo", args).await.unwrap(),
+    };
+    assert_eq!(said.content[0]["text"], "hi");
+    assert_eq!(started(), 3);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A resource read on a session whose server exited reconnects and answers on the first try.
+#[tokio::test]
+async fn an_mcp_resource_read_after_the_server_exited_reconnects() {
+    let base = std::env::temp_dir().join(format!("wheel-mcp-read-exited-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inst")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let pids = base.join("pids");
+    let server = mcp_example().with_file_name("mcp_a2ui_test_server");
+    let command = format!("echo $$ >> {}; exec {} stdio", pids.display(), server.display());
+    std::fs::write(
+        base.join("wheel.toml"),
+        format!("[artifacts.notes]\nmcp = {}\n", toml::Value::from(command)),
+    )
+    .unwrap();
+    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let read = |req| ClientMsg::ArtifactRead {
+        req: Some(req),
+        name: "notes".into(),
+        scope: None,
+        space: Some(space.clone()),
+        pane: None,
+        uri: "a2ui://notes".into(),
+    };
+    assert!(matches!(call(&mut ws, read(50)).await, ServerMsg::Resource { .. }));
+    let text = std::fs::read_to_string(&pids).unwrap();
+    let pid = text.lines().last().unwrap().to_string();
+    assert!(std::process::Command::new("kill").args(["-9", &pid]).status().unwrap().success());
+    let again = call(&mut ws, read(51)).await;
+    assert!(matches!(again, ServerMsg::Resource { .. }), "{again:?}");
+    assert_eq!(std::fs::read_to_string(&pids).unwrap().lines().count(), 2);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[tokio::test]

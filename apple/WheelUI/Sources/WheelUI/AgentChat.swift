@@ -262,6 +262,10 @@ public final class AgentChat: ObservableObject {
     /// Ask the daemon to run a queued message now (`agent_send_now`): the running turn is
     /// interrupted and the message goes first.
     public var sendNow: (UInt64) -> Void = { _ in }
+    /// Fork the conversation through its first `n` turns into a new pane (`agent_fork`), and whether
+    /// this agent's harness and server can. The fork button is drawn only while `canFork` is true.
+    public var sendFork: (Int) -> Void = { _ in }
+    public var canFork: () -> Bool = { false }
 
     /// Texts waiting for the daemon to confirm their message is taken back, by turn. They go to the
     /// composer on the `retract` event, so a message the agent answered first is never duplicated

@@ -189,6 +189,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// Put the agent back in the past conversation `id`; replies `conversation`, and every
     /// attached client is sent its replayed transcript.
     case agentConversationResume(req: UInt64?, agent: String, id: String)
+    /// Fork the agent's conversation through its first `turns` turns into a new agent pane beside
+    /// its own. Replies `started` with the new pane and agent. Needs protocol 28; Pi cannot.
+    case agentFork(req: UInt64?, agent: String, turns: UInt32)
     /// This connection draws any pane it shows as a PNG, so the daemon may send it `renderPane`.
     /// Sent once per connection.
     case renderOffer
@@ -412,6 +415,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "agent_conversation_new", "agent": agent]; put(req)
         case let .agentConversationResume(req, agent, id):
             o = ["op": "agent_conversation_resume", "agent": agent, "id": id]; put(req)
+        case let .agentFork(req, agent, turns):
+            o = ["op": "agent_fork", "agent": agent, "turns": turns]; put(req)
         case let .spaceRename(req, space, name):
             o = ["op": "space_rename", "space": space, "name": name]; put(req)
         case let .sessionNew(req, name):
