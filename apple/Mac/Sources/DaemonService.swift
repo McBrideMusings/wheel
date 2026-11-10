@@ -101,6 +101,22 @@ final class DaemonService {
         return result.ok ? nil : result.line
     }
 
+    /// The version `rollback` would run: the script's answer when the agent is loaded and an
+    /// older version than Current is kept; nil, with the script's reason logged, when not.
+    func rollbackTarget() async -> String? {
+        let result = await run("rollbackable")
+        Log.info("daemon \(label): rollbackable: \(result.ok ? result.line : "no (\(result.line))")")
+        return result.ok ? result.line : nil
+    }
+
+    /// Put the older version back as Current and run it.
+    func rollback() async -> String? {
+        let result = await run("rollback")
+        status = result.ok ? "rolled back from the app" : "rollback failed: \(result.line)"
+        Log.info("daemon \(label): \(result.line)")
+        return result.ok ? nil : result.line
+    }
+
     /// End the server and keep launchd from loading it again.
     func stop() async -> String? {
         let result = await run("stop")

@@ -2488,6 +2488,9 @@ final class DebugServer {
                 "confirming": model.serverConfirming,
                 "restart_waiting": model.serverRestartWaiting,
                 "banner": model.serverBannerShown,
+                "restart_expected": model.restartExpected,
+                "rollback_offer": model.rollbackOffer.map { ["target": $0.target, "seconds_left": max(0, $0.deadline.timeIntervalSinceNow)] as [String: Any] } ?? NSNull(),
+                "rolled_back_to": model.rolledBackTo ?? NSNull(),
                 "disk_access": [
                     "screen": model.diskAccessScreenShown,
                     "server": model.serverDiskAccess.map { $0 as Any } ?? NSNull(),

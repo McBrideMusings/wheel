@@ -50,6 +50,8 @@ struct Toast: Identifiable {
     /// What closing it does besides hiding it; nil when it cannot be closed (it clears itself).
     var dismiss: (@MainActor () -> Void)?
     var closable = true
+    /// Draws a ring that empties over this span, beside the buttons.
+    var countdown: ClosedRange<Date>?
 }
 
 extension AppModel {
@@ -75,10 +77,20 @@ extension AppModel {
                     ? [ToastAction(id: "restart", title: "Restart Server") { [weak self] in self?.restartServer() }] : [],
                 dismiss: { [weak self] in self?.dismissServerBanner() }))
         }
-        if case let .unreachable(reason) = connection {
+        if let offer = rollbackOffer {
+            list.append(Toast(
+                id: "rollback", level: .warning, text: "Rolling back",
+                actions: [ToastAction(id: "cancel", title: "Cancel") { [weak self] in self?.cancelRollback() }],
+                closable: false, countdown: offer.range))
+        } else if case let .unreachable(reason) = connection, !restartExpected {
             list.append(Toast(
                 id: "unreachable", level: .warning,
                 text: "wheeld unreachable: \(reason). Retrying every 2 seconds.", closable: false))
+        }
+        if let target = rolledBackTo, connection == .connected {
+            list.append(Toast(
+                id: "rolled-back", level: .notice, text: "Rolled back to \(target)",
+                dismiss: { [weak self] in self?.rolledBackTo = nil }))
         }
         if let error = layoutError {
             list.append(Toast(id: "layout-error", level: .error, text: error, pane: Self.pane(named: error),
@@ -198,8 +210,9 @@ struct ToastView: View {
                 HStack(spacing: 10) {
                     badge
                     message.lineLimit(1)
+                    if let countdown = toast.countdown { ring(countdown) }
                     ForEach(toast.actions) { action in button(action.title, action.run) }
-                    copyButton(labelled: false)
+                    if toast.countdown == nil { copyButton(labelled: false) }
                     if toast.closable { closeButton }
                 }
                 .padding(.leading, 12).padding(.trailing, 7).padding(.vertical, 7)
@@ -228,6 +241,23 @@ struct ToastView: View {
         .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("toast.\(toast.id)")
+    }
+
+    /// A ring that empties as `span` runs out, with the whole seconds left inside it.
+    private func ring(_ span: ClosedRange<Date>) -> some View {
+        TimelineView(.animation) { context in
+            let total = span.upperBound.timeIntervalSince(span.lowerBound)
+            let left = max(0, span.upperBound.timeIntervalSince(context.date))
+            ZStack {
+                Circle().stroke(tint.opacity(0.18), lineWidth: 3)
+                Circle().trim(from: 0, to: total > 0 ? left / total : 0)
+                    .stroke(tint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("\(Int(left.rounded(.up)))").font(.system(size: 10, weight: .semibold)).monospacedDigit()
+            }
+            .frame(width: 24, height: 24)
+        }
+        .accessibilityIdentifier("toast.\(toast.id).countdown")
     }
 
     private var badge: some View {

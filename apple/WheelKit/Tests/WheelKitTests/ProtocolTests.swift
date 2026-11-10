@@ -452,6 +452,10 @@ struct ProtocolTests {
         #expect(gone == "n1")
     }
 
+    @Test func stoppingDecodes() throws {
+        guard case .stopping = try ServerMsg.decode(#"{"ev":"stopping"}"#) else { Issue.record("wrong case"); return }
+    }
+
     @Test func aTerminalPanesAgentCarriesItsContextUse() throws {
         let with = #"{"node":"pane","id":"p2","kind":"terminal","term":"t1","agent":{"name":"claude","conversation":"s","context":{"used":74100,"size":200000}}}"#
         guard case let .pane(_, .terminal(_, agent)) = try JSONDecoder().decode(Node.self, from: Data(with.utf8)) else { Issue.record("wrong case"); return }

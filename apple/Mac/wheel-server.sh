@@ -12,6 +12,9 @@
 #   wheel-server.sh restart   make this app's version Current and run it: the owner's step, it ends
 #                             every terminal and agent.
 #   wheel-server.sh stop      unload the agent and keep it from loading at login.
+#   wheel-server.sh rollbackable   print the version `rollback` would run and exit 0 when the agent
+#                             is loaded and an older version than Current is kept; else say why.
+#   wheel-server.sh rollback  make that older version Current and run it.
 #
 # The agent's plist is ~/Library/LaunchAgents/<label>.plist, so launchd loads it at login with no
 # app running, as the login item did before. It names .../Server/Current/<name>.app, a symlink that
@@ -61,6 +64,28 @@ point_current_here() {
   mv -fh "$ROOT/.Current.new" "$CURRENT"
 }
 
+# Keeps the version Current pointed at before this one, in `Previous`, so `rollback` has somewhere
+# to go. A restart onto the version that already is Current leaves it alone.
+remember_previous() {
+  local now
+  now="$(readlink "$CURRENT" 2>/dev/null || true)"
+  [ -n "$now" ] && [ "$now" != "Versions/$HASH" ] || return 0
+  ln -sfn "$now" "$ROOT/.Previous.new"
+  mv -fh "$ROOT/.Previous.new" "$ROOT/Previous"
+}
+
+# Prints the hash `rollback` would run; returns 1 and says why when it cannot.
+rollback_target() {
+  loaded || { echo "$LABEL is not loaded, so it was stopped, not restarted" >&2; return 1; }
+  local previous now
+  previous="$(readlink "$ROOT/Previous" 2>/dev/null || true)"
+  now="$(readlink "$CURRENT" 2>/dev/null || true)"
+  [ -n "$previous" ] || { echo "no earlier version is kept" >&2; return 1; }
+  [ -d "$ROOT/$previous/$NAME.app" ] || { echo "the earlier version $previous is gone" >&2; return 1; }
+  [ "$previous" != "$now" ] || { echo "the earlier version is the one that runs now" >&2; return 1; }
+  basename "$previous"
+}
+
 # Returns 0 when the plist on disk changed.
 write_plist() {
   local next="$PLIST.new"
@@ -102,6 +127,7 @@ case "${1:-}" in
     ;;
   restart)
     install_version
+    remember_previous
     point_current_here
     changed=0
     write_plist && changed=1
@@ -122,13 +148,23 @@ case "${1:-}" in
       say "$LABEL loaded, running $HASH"
     fi
     ;;
+  rollbackable)
+    rollback_target
+    ;;
+  rollback)
+    target="$(rollback_target)" || exit 1
+    ln -sfn "Versions/$target" "$ROOT/.Current.new"
+    mv -fh "$ROOT/.Current.new" "$CURRENT"
+    launchctl kickstart -k "$DOMAIN/$LABEL"
+    say "$LABEL rolled back to $target"
+    ;;
   stop)
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     launchctl disable "$DOMAIN/$LABEL"
     say "$LABEL stopped and disabled"
     ;;
   *)
-    echo "usage: wheel-server.sh start|restart|stop" >&2
+    echo "usage: wheel-server.sh start|restart|stop|rollbackable|rollback" >&2
     exit 2
     ;;
 esac

@@ -14,6 +14,10 @@ protocol ServerControl {
     func stop() async -> String?
     func start() async -> String?
     func restart() async -> String?
+    /// The server version a rollback would run, or nil when there is none to go back to.
+    func rollbackTarget() async -> String?
+    /// Run the earlier server version; nil when it started, else why not.
+    func rollback() async -> String?
 }
 
 @MainActor
@@ -24,6 +28,8 @@ struct LaunchAgentControl: ServerControl {
     func stop() async -> String? { await service.stop() }
     func start() async -> String? { await service.start() }
     func restart() async -> String? { await service.restart() }
+    func rollbackTarget() async -> String? { await service.rollbackTarget() }
+    func rollback() async -> String? { await service.rollback() }
 }
 
 @MainActor
@@ -59,6 +65,8 @@ struct CommandControl: ServerControl {
         if let failure = await stop() { return failure }
         return await start()
     }
+    func rollbackTarget() async -> String? { nil }
+    func rollback() async -> String? { "This server was started by something other than Wheel." }
 }
 
 /// The server as the menu bar header reports it.
@@ -163,13 +171,17 @@ extension AppModel {
         serverConfirming = false
         guard let control = serverControl, control.unavailable == nil else { return }
         Log.info("server: stop asked for; \(spaces.count) spaces")
+        serverStopAsked = true
+        abandonRestart()
         Task {
             if let failure = await control.stop() {
+                serverStopAsked = false
                 serverProblem = failure
                 Log.info("server: stop failed: \(failure)")
                 return
             }
             serverProblem = nil
+            serverStopAsked = false
             serverStoppedByMenu = true
             Prefs.store.set(true, forKey: "serverStopped")
             Log.info("server: stopped from the menu")
@@ -205,5 +217,105 @@ extension AppModel {
             Prefs.store.set(false, forKey: "serverStopped")
             Log.info("server: started from the menu")
         }
+    }
+}
+
+/// What the "Rolling back" notice counts down to.
+struct RollbackOffer: Equatable {
+    let target: String
+    let range: ClosedRange<Date>
+    var deadline: Date { range.upperBound }
+}
+
+extension AppModel {
+    /// How long a wheeld that said it is stopping has to answer again before the app offers a
+    /// rollback, and how long the person has to cancel that rollback.
+    static let restartWindow: TimeInterval = 10
+    static let rollbackCountdown: TimeInterval = 10
+
+    /// wheeld sent `stopping`: it is restarting, or stopping for good. A stop the app asked for
+    /// is the second; anything else is taken as a restart and the app waits for the socket to
+    /// come back instead of calling it a crash.
+    func serverStopping() {
+        guard !serverStopAsked, !serverStoppedByMenu else {
+            Log.info("server: wheeld is stopping; a stop was asked for, so it is not expected back")
+            return
+        }
+        Log.info("server: wheeld is stopping; waiting \(Int(Self.restartWindow)) s for it to answer again")
+        expectRestart()
+    }
+
+    private func expectRestart() {
+        restartExpected = true
+        restartTask?.cancel()
+        restartTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.restartWindow))
+            guard !Task.isCancelled else { return }
+            await self?.restartOverdue()
+        }
+    }
+
+    /// The window ended and wheeld is still down: offer to put the earlier version back, if there is one.
+    private func restartOverdue() async {
+        guard connection != .connected else { return }
+        Log.info("server: wheeld did not answer again within \(Int(Self.restartWindow)) s")
+        guard let control = serverControl, control.unavailable == nil else {
+            restartExpected = false
+            return
+        }
+        let target = await control.rollbackTarget()
+        guard connection != .connected, !Task.isCancelled else { return }
+        restartExpected = false
+        guard let target else {
+            Log.info("server: no earlier version to roll back to")
+            return
+        }
+        Log.info("server: rolling back to \(target) in \(Int(Self.rollbackCountdown)) s unless cancelled")
+        let now = Date()
+        rollbackOffer = RollbackOffer(target: target, range: now...now.addingTimeInterval(Self.rollbackCountdown))
+        rollbackTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.rollbackCountdown))
+            guard !Task.isCancelled else { return }
+            await self?.runRollback(to: target)
+        }
+    }
+
+    func cancelRollback() {
+        Log.info("server: rollback cancelled")
+        rollbackTask?.cancel()
+        rollbackOffer = nil
+    }
+
+    private func runRollback(to target: String) async {
+        guard connection != .connected, let control = serverControl else { return }
+        // The offer ends before the script runs: Cancel cannot stop a rollback that has begun.
+        rollbackOffer = nil
+        expectRestart()
+        let failure = await control.rollback()
+        if let failure {
+            Log.info("server: rollback to \(target) failed: \(failure)")
+            serverProblem = failure
+            abandonRestart()
+            return
+        }
+        Log.info("server: rolled back to \(target)")
+        rolledBackTo = target
+    }
+
+    /// Nothing is expected back any more: a stop was asked for, or a rollback failed.
+    func abandonRestart() {
+        restartExpected = false
+        rollbackOffer = nil
+        restartTask?.cancel()
+        rollbackTask?.cancel()
+    }
+
+    /// wheeld answers again: whatever was waiting on it is over.
+    func serverAnswered() {
+        if restartExpected || rollbackOffer != nil { Log.info("server: wheeld answers again") }
+        restartExpected = false
+        rollbackOffer = nil
+        restartTask?.cancel()
+        rollbackTask?.cancel()
     }
 }

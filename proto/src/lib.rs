@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -2134,6 +2134,11 @@ pub enum ServerMsg {
     },
     /// Sent to every connection when a client sent `notify_clear`.
     ToastClear { id: String },
+    /// Sent to every connection when wheeld receives SIGTERM or SIGINT, before it exits: the
+    /// connection is about to close because wheeld is stopping, not because it crashed. Whoever
+    /// stopped it (a restart, a stop, a logout) is not said; a client that expects a restart
+    /// waits for the socket to come back.
+    Stopping,
     /// Sent to every connection when an agent's notice goes up (`notice` set) or comes down
     /// (unset), and to a connection right after it attaches while one is up. A notice is a
     /// status for the person — a conversation that would not reopen — held in the daemon's
@@ -2604,6 +2609,7 @@ impl ServerMsg {
             | ServerMsg::AgentNotice { .. }
             | ServerMsg::Toast { .. }
             | ServerMsg::ToastClear { .. }
+            | ServerMsg::Stopping
             | ServerMsg::AgentTitle { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::OrchestratorLease { .. }

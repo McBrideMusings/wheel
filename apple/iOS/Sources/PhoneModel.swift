@@ -390,7 +390,7 @@ final class PhoneModel {
             Log.info("pane \(pane) info (\(kind)): \(fields.count) fields")
         case let .toast(id, level, _, _):
             Log.info("toast \(id) (\(level)) not shown: the phone has no toast surface")
-        case .toastClear:
+        case .toastClear, .stopping:
             break
         case let .agentNotice(agent, notice):
             chats[agent]?.notice = notice

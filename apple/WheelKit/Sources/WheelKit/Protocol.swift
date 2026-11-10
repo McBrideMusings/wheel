@@ -1237,6 +1237,8 @@ public enum ServerMsg: Sendable {
     case toast(id: String, level: String, text: String, pane: String?)
     /// The toast `id` is taken down.
     case toastClear(id: String)
+    /// wheeld received SIGTERM or SIGINT and is about to close this connection; it did not crash.
+    case stopping
     /// What `agent`'s conversation is called — its first
     /// message cut to one line — or nil once it has none. The daemon holds it, and a client
     /// attaching while one is set is sent it again.
@@ -1418,6 +1420,8 @@ extension ServerMsg: Decodable {
                           text: try c.decode(String.self, forKey: .text), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "toast_clear":
             self = .toastClear(id: try c.decode(String.self, forKey: .id))
+        case "stopping":
+            self = .stopping
         case "agent_title":
             self = .agentTitle(agent: try c.decode(String.self, forKey: .agent), title: try c.decodeIfPresent(String.self, forKey: .title))
         case "procs":

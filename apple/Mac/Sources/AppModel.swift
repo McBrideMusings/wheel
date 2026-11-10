@@ -274,6 +274,16 @@ final class AppModel {
     }
     /// Why the last stop or start did not work.
     var serverProblem: String?
+    /// wheeld said it is stopping and is expected back soon: the unreachable notice stays hidden.
+    var restartExpected = false
+    /// A rollback that runs when `deadline` passes, unless the person cancels it.
+    var rollbackOffer: RollbackOffer?
+    /// The server version a rollback put back; shown once wheeld answers again, until closed.
+    var rolledBackTo: String?
+    /// A stop the app asked for is under way, so `stopping` is not a restart.
+    @ObservationIgnored var serverStopAsked = false
+    @ObservationIgnored var restartTask: Task<Void, Never>?
+    @ObservationIgnored var rollbackTask: Task<Void, Never>?
     /// When the connected server started, from the uptime in its status.
     @ObservationIgnored private(set) var serverStarted: Date?
     @ObservationIgnored var serverControl: ServerControl?
@@ -472,6 +482,7 @@ final class AppModel {
         client.appLog = Log.file
         client.onConnection = { [weak self] state in
             self?.connection = state
+            if state == .connected { self?.serverAnswered() }
             if state != .connected { self?.usage.disconnected() }
             if state != .connected { self?.links.forget() }
             // A start sent to a daemon this app lost gets no answer, so its pane is free again.
@@ -1002,6 +1013,8 @@ final class AppModel {
             post(Toast(id: "notify:\(id)", level: ToastLevel(rawValue: level) ?? .notice, text: text, pane: pane, dismiss: nil))
         case let .toastClear(id):
             removeToast("notify:\(id)")
+        case .stopping:
+            serverStopping()
         case let .agentNotice(agent, notice):
             guard let chat = chats[agent] else { return }
             chat.notice = notice

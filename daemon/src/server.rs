@@ -121,6 +121,11 @@ pub struct AppState {
     pub(crate) push: crate::push::Push,
     /// A device id whose pairing was just revoked; its connections close.
     pub(crate) revoked: broadcast::Sender<String>,
+    /// Told once, when wheeld receives SIGTERM or SIGINT: every connection sends its client
+    /// `stopping` and closes. See [`AppState::announce_stopping`].
+    stopping: broadcast::Sender<()>,
+    /// One token per open websocket connection; `announce_stopping` waits for them all to drop.
+    connections: tokio_util::task::TaskTracker,
     /// The Mac app that owns the windows, once it has attached (ADR-0014).
     pub(crate) mac_apps: crate::mac_windows::MacApps,
     /// What each connected client's windows show, as the clients reported it (ADR-0022).
@@ -249,6 +254,29 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Tell every connected client that wheeld is stopping and wait until each connection has
+    /// written that and closed, for at most two seconds: a client that sees the socket drop right
+    /// after `stopping` knows a stop or restart is under way, not a crash.
+    pub fn open_connections(&self) -> usize {
+        self.connections.len()
+    }
+
+    pub async fn announce_stopping(&self) {
+        let started = Instant::now();
+        // Closed before the broadcast: a connection that opens in between sees `is_closed` and
+        // tells its own client, so none misses `stopping`.
+        self.connections.close();
+        let told = self.stopping.send(()).unwrap_or(0);
+        match tokio::time::timeout(Duration::from_secs(2), self.connections.wait()).await {
+            Ok(()) => tracing::info!(
+                clients = told,
+                ms = started.elapsed().as_millis() as u64,
+                "told every client wheeld is stopping"
+            ),
+            Err(_) => tracing::warn!(clients = told, "some clients did not take `stopping` in 2 s; stopping anyway"),
+        }
+    }
+
     /// `warden` is the program a refresh starts as its warden ([`crate::refresh::WARDEN_ARG`]):
     /// the `wheeld` binary.
     pub fn new(
@@ -284,12 +312,15 @@ impl AppState {
         let (global, _) = broadcast::channel(1024);
         let devices = crate::devices::Devices::load(&instance_dir);
         let (revoked, _) = broadcast::channel(16);
+        let (stopping, _) = broadcast::channel(1);
         let logship = crate::logship::Logship::new(&instance_dir, &log_path);
         Arc::new_cyclic(|me| AppState {
             logship,
             started: Instant::now(),
             devices,
             revoked,
+            stopping,
+            connections: Default::default(),
             push: Default::default(),
             mac_apps: Default::default(),
             views: Default::default(),
@@ -1027,6 +1058,9 @@ async fn connection(
         Caller::Local => tracing::debug!(%peer, ?caller, "ws connect"),
         Caller::Device(_) => tracing::info!(%peer, ?caller, "ws connect"),
     }
+    let _open = state.connections.token();
+    let mut stopping = state.stopping.subscribe();
+    let mut stopped = false;
     let (mut sink, mut stream) = socket.split();
     let (out, mut out_rx) = mpsc::channel::<ServerMsg>(OUTBOX);
     let device = match &caller {
@@ -1062,10 +1096,16 @@ async fn connection(
         while let Some(msg) = out_rx.recv().await {
             let text = serde_json::to_string(&msg).expect("server messages serialize");
             if sink.send(Message::Text(text.into())).await.is_err() {
-                break;
+                return;
             }
         }
+        let _ = sink.close().await;
     });
+    // wheeld began stopping before this connection opened: tell this client too.
+    if state.connections.is_closed() {
+        let _ = out.send(ServerMsg::Stopping).await;
+        stopped = true;
+    }
     // Every connection sees permission requests and agent state changes, attached or not.
     let mut global = state.global.subscribe();
     let global_out = out.clone();
@@ -1099,12 +1139,18 @@ async fn connection(
     // One output stream per terminal and agent on this connection; attaching again replaces it.
     let mut forwards: HashMap<String, JoinHandle<()>> = HashMap::new();
 
-    loop {
+    while !stopped {
         let frame = tokio::select! {
             frame = stream.next() => match frame {
                 Some(Ok(frame)) => frame,
                 _ => break,
             },
+            // wheeld is stopping: the client is told, then the connection closes below.
+            _ = stopping.recv() => {
+                let _ = out.send(ServerMsg::Stopping).await;
+                stopped = true;
+                break;
+            }
             // Any revocation: the device is gone from the store when it was this one's.
             _ = revoked.recv(), if device.is_some() => {
                 if device.as_deref().is_some_and(|id| state.devices.name(id).is_none()) {
@@ -1164,8 +1210,10 @@ async fn connection(
         }
     }
 
+    let mut ended = Vec::new();
     for (_, task) in forwards {
         task.abort();
+        ended.push(task);
     }
     state.renderers.gone(peer);
     state.mac_apps.gone(peer);
@@ -1174,7 +1222,18 @@ async fn connection(
     state.release_sizes(peer, None);
     state.orchestrator_gone(peer);
     global_task.abort();
-    writer.abort();
+    if stopped {
+        // Every sender of `out` must be gone for the writer to see the channel close, so that it
+        // writes what is queued (`stopping` first among it) and closes the socket.
+        ended.push(global_task);
+        for task in ended {
+            let _ = task.await;
+        }
+        drop(out);
+        let _ = writer.await;
+    } else {
+        writer.abort();
+    }
     if let Some(id) = &device {
         state.devices.closed(id);
         state.devices_changed();
