@@ -81,7 +81,7 @@ pub fn check_permissions(
     let (modes, sandboxes): (Vec<&str>, Vec<&str>) = match agent {
         Harness::Claude => (crate::claude::start_modes(), Vec::new()),
         Harness::Codex => (crate::codex::policy_names(), CODEX_SANDBOXES.to_vec()),
-        Harness::Pi => (Vec::new(), Vec::new()),
+        Harness::Pi => (crate::pi::modes(), Vec::new()),
     };
     let check = |what: &str, value: Option<&str>, valid: &[&str]| match value {
         Some(_) if valid.is_empty() => Err(format!("{} has no {what}", agent.title())),

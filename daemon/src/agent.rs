@@ -1031,8 +1031,20 @@ impl Agent {
         let started = self.permissions.lock().unwrap().clone();
         AgentPermissions {
             permission_mode: self.permission_mode().or(started.permission_mode),
-            sandbox: started.sandbox,
+            sandbox: self.sandbox().or(started.sandbox),
         }
+    }
+
+    /// The sandbox the running agent is in: the current value of its `sandbox` option.
+    fn sandbox(&self) -> Option<String> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .config
+            .iter()
+            .find_map(|option| match (&option.kind, option.id.as_str()) {
+                (ConfigKind::Select { current, .. }, "sandbox") => Some(current.clone()),
+                _ => None,
+            })
     }
 
     /// The permission mode the running agent is in: the current value of its `mode` option.

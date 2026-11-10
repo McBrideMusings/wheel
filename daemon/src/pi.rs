@@ -18,7 +18,11 @@
 //! (`extension_ui_request`), which become permission requests; a dialog asking for typed text is
 //! cancelled, since a permission card has nowhere to type.
 //!
-//! The one control is `thinking`, the reasoning level, among the levels the model offers.
+//! The controls are `model` (`get_available_models`, `set_model`), `thinking`, the reasoning level
+//! among the levels the model offers, and `mode`, what pi may do without asking. pi asks for
+//! nothing itself, so `mode` is Wheel's own extension (`shell/pi-permissions.ts`): it asks through
+//! a confirm dialog before a tool runs, and takes its mode as the command `/wheel-permissions`,
+//! which pi runs without a model turn.
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,6 +38,29 @@ use crate::driver::{
 };
 use crate::claude::History;
 use crate::resume::{self, Harness};
+
+/// The permission modes pi's `mode` control offers, with their names, in order. `never` is what
+/// pi does with no extension: every tool runs.
+const MODES: [(&str, &str); 3] = [
+    ("ask", "Ask before every change"),
+    ("edits", "Ask before commands"),
+    ("never", "Never ask"),
+];
+
+/// The names of pi's permission modes, for refusing one pi does not have.
+pub(crate) fn modes() -> Vec<&'static str> {
+    MODES.iter().map(|(v, _)| *v).collect()
+}
+
+/// Where the permission extension is, when Wheel wrote one for this launch.
+fn permissions_extension(launch: &Launch) -> Option<std::path::PathBuf> {
+    let dir = launch
+        .env
+        .iter()
+        .find(|(key, _)| key == "WHEEL_HOOKS_DIR")
+        .map(|(_, dir)| dir)?;
+    Some(std::path::Path::new(dir).join("pi-permissions.ts")).filter(|path| path.is_file())
+}
 
 /// Start `pi --mode rpc` for `launch`.
 pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
@@ -61,6 +88,15 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     if let Some(model) = &launch.model {
         args.extend(["--model".into(), model.clone()]);
     }
+    let extension = permissions_extension(&launch);
+    if let Some(path) = &extension {
+        args.extend(["-e".into(), path.display().to_string()]);
+    }
+    let mode = launch
+        .permissions
+        .permission_mode
+        .clone()
+        .unwrap_or_else(|| "never".into());
     let Process {
         pid,
         child,
@@ -78,6 +114,10 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         next_request: 1,
         pending: HashMap::new(),
         conversation: None,
+        gated: extension.is_some(),
+        mode,
+        model: String::new(),
+        models: Vec::new(),
         thinking: String::new(),
         levels: Vec::new(),
         in_turn: false,
@@ -98,6 +138,30 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         withdraws: true,
         _group: ProcessGroup(pid),
     })
+}
+
+/// A model as `provider/id`, the one value `--model` and the `model` control share.
+fn model_value(model: &Value) -> String {
+    format!(
+        "{}/{}",
+        model["provider"].as_str().unwrap_or_default(),
+        model["id"].as_str().unwrap_or_default()
+    )
+}
+
+/// The thinking levels in a `get_available_thinking_levels` answer.
+fn levels(data: &Value) -> Vec<String> {
+    data["levels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l.as_str().map(String::from))
+        .collect()
+}
+
+/// The prompt that runs the permission extension's command: pi answers it `handled`, with no turn.
+fn permissions_command(mode: &str) -> Value {
+    json!({"type": "prompt", "message": format!("/wheel-permissions {mode}")})
 }
 
 /// A command this side sent pi, waiting for its response.
@@ -133,6 +197,27 @@ enum Pending {
         level: String,
         reply: oneshot::Sender<Result<Vec<ConfigOption>, String>>,
     },
+    /// `get_available_models`, asked before the agent is ready.
+    Models,
+    /// The `/wheel-permissions` command that puts the starting mode in force; the agent is ready
+    /// once it answers, with `history` when it was resumed.
+    StartMode {
+        history: Option<History>,
+    },
+    /// The `/wheel-permissions` command for a mode a person picked.
+    Mode {
+        mode: String,
+        reply: oneshot::Sender<Result<Vec<ConfigOption>, String>>,
+    },
+    /// `set_model`, for a model a person picked.
+    Model {
+        model: String,
+        reply: oneshot::Sender<Result<Vec<ConfigOption>, String>>,
+    },
+    /// The thinking levels the new model offers, asked after `set_model`.
+    ModelLevels {
+        reply: oneshot::Sender<Result<Vec<ConfigOption>, String>>,
+    },
 }
 
 /// A message sent with `steer` that pi has not taken in.
@@ -159,6 +244,14 @@ struct Driver {
     pending: HashMap<String, Pending>,
     /// pi's id for the agent, from `get_state`.
     conversation: Option<String>,
+    /// The model in force, as `provider/id`.
+    model: String,
+    /// The models pi offers, as `provider/id` with their names.
+    models: Vec<(String, String)>,
+    /// Wheel's permission extension is loaded, so pi has a `mode` control.
+    gated: bool,
+    /// The permission mode in force.
+    mode: String,
     /// The thinking level in force.
     thinking: String,
     /// The thinking levels the model offers.
@@ -314,27 +407,49 @@ impl Driver {
                 self.write(line).await
             }
             Input::SetOption { id, value, reply } => {
-                if id != "thinking" {
-                    let _ = reply.send(Err(format!("the agent has no option {id}")));
+                let valid: Vec<String> = match id.as_str() {
+                    "thinking" => self.levels.clone(),
+                    "model" => self.models.iter().map(|(v, _)| v.clone()).collect(),
+                    "mode" if self.gated => modes().into_iter().map(String::from).collect(),
+                    _ => {
+                        let _ = reply.send(Err(format!("the agent has no option {id}")));
+                        return Ok(());
+                    }
+                };
+                if !valid.contains(&value) {
+                    let _ = reply.send(Err(format!("{id} does not take {value}; it takes {valid:?}")));
                     return Ok(());
                 }
-                if !self.levels.contains(&value) {
-                    let _ = reply.send(Err(format!(
-                        "{id} does not take {value}; it takes {:?}",
-                        self.levels
-                    )));
-                    return Ok(());
+                match id.as_str() {
+                    "thinking" => {
+                        self.request(
+                            Pending::Thinking { level: value.clone(), reply },
+                            json!({"type": "set_thinking_level", "level": value}),
+                        )
+                        .await
+                    }
+                    "model" => {
+                        let (provider, model_id) = value.split_once('/').unwrap_or_default();
+                        let command = json!({"type": "set_model", "provider": provider, "modelId": model_id});
+                        self.request(Pending::Model { model: value, reply }, command).await
+                    }
+                    _ => {
+                        let command = permissions_command(&value);
+                        self.request(Pending::Mode { mode: value, reply }, command).await
+                    }
                 }
-                self.request(
-                    Pending::Thinking {
-                        level: value.clone(),
-                        reply,
-                    },
-                    json!({"type": "set_thinking_level", "level": value}),
-                )
-                .await
             }
         }
+    }
+
+    /// Put the starting permission mode in force, then the agent is ready.
+    async fn start_mode(&mut self, history: Option<History>) -> Result<(), String> {
+        if !self.gated {
+            self.ready(history);
+            return Ok(());
+        }
+        let command = permissions_command(&self.mode);
+        self.request(Pending::StartMode { history }, command).await
     }
 
     async fn output(&mut self, line: &str) -> Result<(), String> {
@@ -377,6 +492,7 @@ impl Driver {
                 }
                 self.conversation = data["sessionId"].as_str().map(String::from);
                 self.thinking = data["thinkingLevel"].as_str().unwrap_or("off").to_string();
+                self.model = model_value(&data["model"]);
                 tracing::info!(pid = self.pid, agent = ?self.conversation, model = %data["model"]["id"], provider = %data["model"]["provider"], thinking = %self.thinking, "agent initialized");
                 self.request(
                     Pending::Levels,
@@ -388,18 +504,75 @@ impl Driver {
                 if let Some(e) = error {
                     return Err(e);
                 }
-                self.levels = data["levels"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|l| l.as_str().map(String::from))
-                    .collect();
+                self.levels = levels(data);
+                self.request(Pending::Models, json!({"type": "get_available_models"}))
+                    .await
+            }
+            Pending::Models => {
+                // A refused list leaves the pane without a model control, not without an agent.
+                match error {
+                    Some(e) => tracing::warn!(pid = self.pid, error = %e, "asking the agent for its models failed"),
+                    None => {
+                        self.models = data["models"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|m| (model_value(m), m["name"].as_str().unwrap_or_default().to_string()))
+                            .collect();
+                    }
+                }
                 if matches!(self.launch.conversation, Conversation::Resume(_)) {
                     return self
                         .request(Pending::Messages, json!({"type": "get_messages"}))
                         .await;
                 }
-                self.ready(None);
+                self.start_mode(None).await
+            }
+            Pending::StartMode { history } => {
+                if let Some(e) = error {
+                    return Err(format!("setting the permission mode failed: {e}"));
+                }
+                self.ready(history);
+                Ok(())
+            }
+            Pending::Mode { mode, reply } => {
+                let answer = match error {
+                    Some(e) => Err(e),
+                    None => {
+                        self.mode = mode.clone();
+                        Ok(self.options())
+                    }
+                };
+                tracing::info!(pid = self.pid, option = "mode", value = %mode, ok = answer.is_ok(), "agent option set");
+                let _ = reply.send(answer);
+                Ok(())
+            }
+            Pending::Model { model, reply } => match error {
+                Some(e) => {
+                    tracing::info!(pid = self.pid, option = "model", value = %model, ok = false, "agent option set");
+                    let _ = reply.send(Err(e));
+                    Ok(())
+                }
+                None => {
+                    self.model = model;
+                    // The levels a model offers belong to it.
+                    self.request(
+                        Pending::ModelLevels { reply },
+                        json!({"type": "get_available_thinking_levels"}),
+                    )
+                    .await
+                }
+            },
+            Pending::ModelLevels { reply } => {
+                let answer = match error {
+                    Some(e) => Err(e),
+                    None => {
+                        self.levels = levels(data);
+                        Ok(self.options())
+                    }
+                };
+                tracing::info!(pid = self.pid, option = "model", value = %self.model, ok = answer.is_ok(), "agent option set");
+                let _ = reply.send(answer);
                 Ok(())
             }
             Pending::Messages => {
@@ -420,8 +593,7 @@ impl Driver {
                 } else {
                     self.emit(DriverEvent::Context(context_use(data)));
                 }
-                self.ready(Some(history));
-                Ok(())
+                self.start_mode(Some(history)).await
             }
             Pending::Prompt => {
                 if let Some(e) = error {
@@ -511,7 +683,7 @@ impl Driver {
                     Some(e) => Err(e),
                     None => {
                         self.thinking = level.clone();
-                        Ok(vec![self.thinking_option()])
+                        Ok(self.options())
                     }
                 };
                 tracing::info!(pid = self.pid, option = "thinking", value = %level, ok = answer.is_ok(), "agent option set");
@@ -576,10 +748,48 @@ impl Driver {
     fn ready(&self, history: Option<History>) {
         tracing::info!(pid = self.pid, agent = ?self.conversation, levels = ?self.levels, resumed = history.is_some(), turns = history.as_ref().map_or(0, |h| h.turns.len()), "agent ready");
         self.emit(DriverEvent::Ready {
-            options: vec![self.thinking_option()],
+            options: self.options(),
             conversation: self.conversation.clone(),
             history,
         });
+    }
+
+    /// The controls the agent offers: its model, its thinking level and, with Wheel's extension
+    /// loaded, what it may do without asking.
+    fn options(&self) -> Vec<ConfigOption> {
+        let select = |id: &str, name: &str, category: &str, current: &str, choices: Vec<ConfigChoice>| ConfigOption {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+            category: Some(category.into()),
+            kind: ConfigKind::Select { current: current.into(), choices },
+        };
+        let mut options = Vec::new();
+        if !self.models.is_empty() {
+            let choices = self
+                .models
+                .iter()
+                .map(|(value, name)| ConfigChoice {
+                    value: value.clone(),
+                    name: if name.is_empty() { value.clone() } else { name.clone() },
+                    description: None,
+                })
+                .collect();
+            options.push(select("model", "Model", "model", &self.model, choices));
+        }
+        options.push(self.thinking_option());
+        if self.gated {
+            let choices = MODES
+                .iter()
+                .map(|(value, name)| ConfigChoice {
+                    value: (*value).into(),
+                    name: (*name).into(),
+                    description: None,
+                })
+                .collect();
+            options.push(select("mode", "Approvals", "mode", &self.mode, choices));
+        }
+        options
     }
 
     /// The `thinking` control with the level in force chosen.
@@ -702,7 +912,7 @@ impl Driver {
             "thinking_level_changed" => {
                 if let Some(level) = record["level"].as_str() {
                     self.thinking = level.to_string();
-                    self.emit(DriverEvent::Options(vec![self.thinking_option()]));
+                    self.emit(DriverEvent::Options(self.options()));
                 }
             }
             "agent_settled" => {

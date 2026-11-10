@@ -40,6 +40,80 @@ const POLICIES: [(&str, &str); 3] = [
 /// The policy a Codex agent starts in when none was chosen: the one Codex itself defaults to.
 const DEFAULT_POLICY: &str = "on-request";
 
+/// The sandboxes the `sandbox` control offers, in order: the value `thread/start` takes, its name,
+/// and the `type` of the `sandboxPolicy` a turn carries (which a thread's answer names it by).
+const SANDBOXES: [(&str, &str, &str); 3] = [
+    ("read-only", "Read-only", "readOnly"),
+    ("workspace-write", "Edit the workspace", "workspaceWrite"),
+    ("danger-full-access", "Full access", "dangerFullAccess"),
+];
+
+/// The sandbox a Codex agent starts in when none was chosen: the one Codex itself defaults to.
+const DEFAULT_SANDBOX: &str = "workspace-write";
+
+/// One model `model/list` names.
+struct ModelInfo {
+    id: String,
+    name: String,
+    description: String,
+    hidden: bool,
+    /// The reasoning efforts the model takes, each with what it means, and the one it starts on.
+    efforts: Vec<(String, String)>,
+    default_effort: String,
+}
+
+impl ModelInfo {
+    fn parse(m: &Value) -> Option<Self> {
+        let id = m["model"].as_str().or_else(|| m["id"].as_str())?.to_string();
+        Some(Self {
+            name: m["displayName"].as_str().unwrap_or(&id).to_string(),
+            description: m["description"].as_str().unwrap_or_default().to_string(),
+            hidden: m["hidden"].as_bool().unwrap_or(false),
+            efforts: m["supportedReasoningEfforts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| {
+                    Some((
+                        e["reasoningEffort"].as_str()?.to_string(),
+                        e["description"].as_str().unwrap_or_default().to_string(),
+                    ))
+                })
+                .collect(),
+            default_effort: m["defaultReasoningEffort"].as_str().unwrap_or_default().to_string(),
+            id,
+        })
+    }
+}
+
+/// A `select` control.
+fn select(
+    id: &str,
+    name: &str,
+    category: Option<&str>,
+    current: &str,
+    choices: Vec<ConfigChoice>,
+) -> ConfigOption {
+    ConfigOption {
+        id: id.into(),
+        name: name.into(),
+        description: None,
+        category: category.map(Into::into),
+        kind: ConfigKind::Select {
+            current: current.into(),
+            choices,
+        },
+    }
+}
+
+fn choice(value: &str, name: &str, description: Option<&str>) -> ConfigChoice {
+    ConfigChoice {
+        value: value.into(),
+        name: name.into(),
+        description: description.filter(|d| !d.is_empty()).map(Into::into),
+    }
+}
+
 /// The names of the approval policies, for refusing one Codex does not have.
 pub(crate) fn policy_names() -> Vec<&'static str> {
     POLICIES.iter().map(|(v, _)| *v).collect()
@@ -47,23 +121,24 @@ pub(crate) fn policy_names() -> Vec<&'static str> {
 
 /// The `mode` control with `current` chosen.
 fn mode_option(current: &str) -> ConfigOption {
-    ConfigOption {
-        id: "mode".into(),
-        name: "Approvals".into(),
-        description: None,
-        category: Some("mode".into()),
-        kind: ConfigKind::Select {
-            current: current.into(),
-            choices: POLICIES
-                .iter()
-                .map(|(value, name)| ConfigChoice {
-                    value: (*value).into(),
-                    name: (*name).into(),
-                    description: None,
-                })
-                .collect(),
-        },
-    }
+    select(
+        "mode",
+        "Approvals",
+        Some("mode"),
+        current,
+        POLICIES.iter().map(|(v, n)| choice(v, n, None)).collect(),
+    )
+}
+
+/// The `sandbox` control with `current` chosen.
+fn sandbox_option(current: &str) -> ConfigOption {
+    select(
+        "sandbox",
+        "Sandbox",
+        Some("sandbox"),
+        current,
+        SANDBOXES.iter().map(|(v, n, _)| choice(v, n, None)).collect(),
+    )
 }
 
 /// Start `codex app-server` for `launch`.
@@ -82,12 +157,20 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         .permission_mode
         .clone()
         .unwrap_or_else(|| DEFAULT_POLICY.into());
+    let sandbox = launch
+        .permissions
+        .sandbox
+        .clone()
+        .unwrap_or_else(|| DEFAULT_SANDBOX.into());
     let driver = Driver {
         pid,
         stdin,
         events,
         launch,
-        listed: Vec::new(),
+        models: Vec::new(),
+        model: String::new(),
+        effort: None,
+        sandbox,
         next_request: 1,
         pending: HashMap::new(),
         thread: None,
@@ -116,7 +199,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
 /// A request this side sent Codex, waiting for its answer.
 enum Pending {
     Initialize,
-    /// `model/list`, asked before the thread opens when the host chose a model.
+    /// `model/list`, asked before the thread opens.
     Models,
     /// `thread/start` or `thread/resume`.
     Thread,
@@ -152,8 +235,14 @@ struct Driver {
     stdin: tokio::process::ChildStdin,
     events: mpsc::UnboundedSender<DriverEvent>,
     launch: Launch,
-    /// The models `model/list` has named so far.
-    listed: Vec<String>,
+    /// The models `model/list` has named.
+    models: Vec<ModelInfo>,
+    /// The model each turn runs, from the thread's answer until a person picks another.
+    model: String,
+    /// The reasoning effort each turn runs at; None leaves the model's own.
+    effort: Option<String>,
+    /// The sandbox each turn runs in, by the name `thread/start` takes.
+    sandbox: String,
     next_request: u64,
     pending: HashMap<u64, Pending>,
     thread: Option<String>,
@@ -271,16 +360,21 @@ impl Driver {
                 self.turn = None;
                 self.wrote_text = false;
                 self.pad_text = false;
-                self.request(
-                    Pending::TurnStart,
-                    "turn/start",
-                    json!({
-                        "threadId": thread,
-                        "input": [{"type": "text", "text": text, "text_elements": []}],
-                        "approvalPolicy": self.policy,
-                    }),
-                )
-                .await
+                let mut params = json!({
+                    "threadId": thread,
+                    "input": [{"type": "text", "text": text, "text_elements": []}],
+                    "approvalPolicy": self.policy,
+                });
+                if !self.model.is_empty() {
+                    params["model"] = json!(self.model);
+                }
+                if let Some(effort) = &self.effort {
+                    params["effort"] = json!(effort);
+                }
+                if let Some((_, _, kind)) = SANDBOXES.iter().find(|(v, _, _)| *v == self.sandbox) {
+                    params["sandboxPolicy"] = json!({"type": kind});
+                }
+                self.request(Pending::TurnStart, "turn/start", params).await
             }
             Input::Steer { turn, text } => {
                 let (Some(thread), Some(running), true) =
@@ -333,20 +427,87 @@ impl Driver {
                     .await
             }
             Input::SetOption { id, value, reply } => {
-                let answer = if id != "mode" {
-                    Err(format!("the agent has no option {id}"))
-                } else if !POLICIES.iter().any(|(v, _)| *v == value) {
-                    let offered: Vec<&str> = POLICIES.iter().map(|(v, _)| *v).collect();
-                    Err(format!("{id} does not take {value}; it takes {offered:?}"))
-                } else {
-                    self.policy = value.clone();
-                    Ok(vec![mode_option(&value)])
-                };
+                let answer = self.set_option(&id, &value);
                 tracing::info!(pid = self.pid, option = %id, %value, ok = answer.is_ok(), "agent option set");
                 let _ = reply.send(answer);
                 Ok(())
             }
         }
+    }
+
+    /// Change the control `id` to `value`, answering with the controls as they stand. Each applies
+    /// from the next turn: they travel with every `turn/start`.
+    fn set_option(&mut self, id: &str, value: &str) -> Result<Vec<ConfigOption>, String> {
+        let refuse = |valid: Vec<&str>| format!("{id} does not take {value}; it takes {valid:?}");
+        match id {
+            "mode" => {
+                if !POLICIES.iter().any(|(v, _)| *v == value) {
+                    return Err(refuse(policy_names()));
+                }
+                self.policy = value.into();
+            }
+            "sandbox" => {
+                if !SANDBOXES.iter().any(|(v, _, _)| *v == value) {
+                    return Err(refuse(SANDBOXES.iter().map(|(v, _, _)| *v).collect()));
+                }
+                self.sandbox = value.into();
+            }
+            "model" => {
+                let Some(model) = self.models.iter().find(|m| m.id == value) else {
+                    return Err(refuse(self.models.iter().filter(|m| !m.hidden).map(|m| m.id.as_str()).collect()));
+                };
+                // An effort the new model lacks falls back to the model's own.
+                if !self.effort.as_ref().is_some_and(|e| model.efforts.iter().any(|(v, _)| v == e)) {
+                    self.effort = Some(model.default_effort.clone()).filter(|e| !e.is_empty());
+                }
+                self.model = value.into();
+            }
+            "effort" => {
+                let efforts = self.current_model().map(|m| &m.efforts[..]).unwrap_or_default();
+                if !efforts.iter().any(|(v, _)| v == value) {
+                    return Err(refuse(efforts.iter().map(|(v, _)| v.as_str()).collect()));
+                }
+                self.effort = Some(value.into());
+            }
+            _ => return Err(format!("the agent has no option {id}")),
+        }
+        Ok(self.options())
+    }
+
+    fn current_model(&self) -> Option<&ModelInfo> {
+        self.models.iter().find(|m| m.id == self.model)
+    }
+
+    /// The controls: the model, how hard it reasons, what it may do without asking, and the sandbox
+    /// it runs commands in.
+    fn options(&self) -> Vec<ConfigOption> {
+        let mut options = Vec::new();
+        if !self.model.is_empty() {
+            let mut choices: Vec<ConfigChoice> = self
+                .models
+                .iter()
+                .filter(|m| !m.hidden || m.id == self.model)
+                .map(|m| choice(&m.id, &m.name, Some(&m.description)))
+                .collect();
+            if !choices.iter().any(|c| c.value == self.model) {
+                choices.insert(0, choice(&self.model, &self.model, None));
+            }
+            options.push(select("model", "Model", Some("model"), &self.model, choices));
+        }
+        if let (Some(model), Some(effort)) = (self.current_model(), &self.effort) {
+            if !model.efforts.is_empty() {
+                options.push(select(
+                    "effort",
+                    "Effort",
+                    Some("thought_level"),
+                    effort,
+                    model.efforts.iter().map(|(v, d)| choice(v, v, Some(d))).collect(),
+                ));
+            }
+        }
+        options.push(mode_option(&self.policy));
+        options.push(sandbox_option(&self.sandbox));
+        options
     }
 
     /// Ask Codex to stop the running turn, once it has named it.
@@ -415,38 +576,34 @@ impl Driver {
                 tracing::info!(pid = self.pid, agent = %result["userAgent"], home = %result["codexHome"], "agent initialized");
                 self.write(json!({"method": "initialized"})).await?;
                 // `thread/start` takes any model name and fails only at the first turn, so a model
-                // the host chose is checked against the list the agent offers first.
-                match self.launch.model {
-                    Some(_) => {
-                        self.request(
-                            Pending::Models,
-                            "model/list",
-                            json!({"includeHidden": true}),
-                        )
-                        .await
-                    }
-                    None => self.open_thread().await,
-                }
+                // the host chose is checked against the list, which also fills the model control.
+                self.request(
+                    Pending::Models,
+                    "model/list",
+                    json!({"includeHidden": true}),
+                )
+                .await
             }
             Pending::Models => {
-                let model = self.launch.model.clone().unwrap_or_default();
-                let page = result["data"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|m| m["model"].as_str().or_else(|| m["id"].as_str()))
-                    .map(String::from);
-                self.listed.extend(page);
-                // The list comes in pages; the model may be on a later one.
-                if !self.listed.contains(&model) {
-                    if let Some(cursor) = result["nextCursor"].as_str() {
-                        let params = json!({"includeHidden": true, "cursor": cursor});
-                        return self.request(Pending::Models, "model/list", params).await;
+                self.models.extend(
+                    result["data"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(ModelInfo::parse),
+                );
+                // The list comes in pages.
+                if let Some(cursor) = result["nextCursor"].as_str() {
+                    let params = json!({"includeHidden": true, "cursor": cursor});
+                    return self.request(Pending::Models, "model/list", params).await;
+                }
+                if let Some(model) = &self.launch.model {
+                    if !self.models.iter().any(|m| m.id == *model) {
+                        let offered: Vec<&str> = self.models.iter().map(|m| m.id.as_str()).collect();
+                        return Err(format!(
+                            "the agent does not know the model {model}; it offers {offered:?}"
+                        ));
                     }
-                    return Err(format!(
-                        "the agent does not know the model {model}; it offers {:?}",
-                        self.listed
-                    ));
                 }
                 self.open_thread().await
             }
@@ -459,9 +616,21 @@ impl Driver {
                 self.thread = Some(id.clone());
                 let history = matches!(self.launch.conversation, Conversation::Resume(_))
                     .then(|| history(thread));
-                tracing::info!(pid = self.pid, thread = %id, model = %result["model"], resumed = history.is_some(), turns = history.as_ref().map_or(0, |h| h.turns.len()), "agent ready");
+                self.model = result["model"].as_str().unwrap_or_default().to_string();
+                self.effort = result["reasoningEffort"].as_str().map(String::from);
+                // A resumed thread keeps the sandbox it ran in unless the host chose one.
+                if self.launch.permissions.sandbox.is_none() {
+                    if let Some(name) = SANDBOXES
+                        .iter()
+                        .find(|(_, _, kind)| result["sandbox"]["type"] == *kind)
+                        .map(|(value, _, _)| *value)
+                    {
+                        self.sandbox = name.to_string();
+                    }
+                }
+                tracing::info!(pid = self.pid, thread = %id, model = %self.model, effort = ?self.effort, sandbox = %self.sandbox, resumed = history.is_some(), turns = history.as_ref().map_or(0, |h| h.turns.len()), "agent ready");
                 self.emit(DriverEvent::Ready {
-                    options: vec![mode_option(&self.policy)],
+                    options: self.options(),
                     conversation: Some(id),
                     history,
                 });
