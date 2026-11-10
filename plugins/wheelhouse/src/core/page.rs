@@ -87,12 +87,6 @@ impl Page {
         id.to_string()
     }
 
-    /// A choice of one among `options` that is always the menu, however few the options.
-    pub fn choose_menu(&mut self, id: &str, path: &str, selected: &str, options: impl Into<Value>, disabled: bool) -> String {
-        self.bind(path, json!([selected]));
-        self.pick(id, path, &options.into(), Some("menu"), disabled, json!([]))
-    }
-
     /// One `ChoicePicker` over the value `choose` (or the caller's own `bind`) put at `path`: `style` is its `displayStyle`
     /// (chips draws a segmented control, menu a menu), and `modifiers` are added after `disabled`.
     pub fn pick(&mut self, id: &str, path: &str, options: &Value, style: Option<&str>, disabled: bool, modifiers: Value) -> String {

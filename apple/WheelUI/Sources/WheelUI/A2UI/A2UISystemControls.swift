@@ -57,9 +57,7 @@ struct A2UIMenuView: View {
     var body: some View {
         // `keepOpen` leaves the menu open after an item is chosen, for ticking several (SwiftUI's menuActionDismissBehavior).
         Menu(node.string("title") ?? "") { kids(node, surface).environment(\.a2uiInMenu, true) }
-            #if os(iOS)
             .menuActionDismissBehavior(node.bool("keepOpen") == true ? .disabled : .automatic)
-            #endif
     }
 }
 

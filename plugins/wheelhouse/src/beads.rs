@@ -329,6 +329,8 @@ struct Ui {
     view: String,
     q: String,
     f: BTreeMap<String, String>,
+    /// The filters (by key) whose values are excluded rather than matched.
+    not: HashSet<String>,
     hide: bool,
     sort: (String, bool),
     collapsed: HashSet<String>,
@@ -356,6 +358,7 @@ impl Default for Ui {
             view: "list".into(),
             q: String::new(),
             f: BTreeMap::new(),
+            not: HashSet::new(),
             hide: true,
             sort: ("status".into(), true),
             collapsed: HashSet::new(),
@@ -414,20 +417,14 @@ fn matches(ui: &Ui, b: &Bead) -> bool {
     if ui.hide && ui.filter("status").is_empty() && kind == "done" {
         return false;
     }
-    let any_of = |key: &str, f: &dyn Fn(&str) -> bool| {
+    // A filter holds some values: the bead matches when it has one of them, or, for an excluded filter, none of them.
+    let test = |key: &str, f: &dyn Fn(&str) -> bool| {
         let v = ui.values(key);
-        v.is_empty() || v.iter().any(|x| f(x))
+        v.is_empty() || v.iter().any(|x| f(x)) != ui.not.contains(key)
     };
-    if !any_of("status", &|s| kind == s) || !any_of("type", &|t| b.kind == t) || !any_of("label", &|l| b.labels.iter().any(|x| x == l)) {
+    let pri = b.priority.map(|p| p.to_string());
+    if !test("status", &|s| kind == s) || !test("type", &|t| b.kind == t) || !test("label", &|l| b.labels.iter().any(|x| x == l)) || !test("pri", &|d| pri.as_deref() == Some(d)) {
         return false;
-    }
-    match ui.filter("pri") {
-        "" => {}
-        "urgent" if !b.priority.is_some_and(|p| p <= 1) => return false,
-        "low" if !b.priority.is_some_and(|p| p >= 3) => return false,
-        "urgent" | "low" => {}
-        d if b.priority.map(|p| p.to_string()).as_deref() != Some(d) => return false,
-        _ => {}
     }
     let hay = haystack(b);
     ui.q.to_lowercase().split_whitespace().all(|w| hay.contains(w))
@@ -824,73 +821,58 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         crate::core::layout::modify(&mut p.out, "find", json!({ "frame": { "maxWidth": "infinity" } }));
         page.push("find".to_string());
 
-        // The filters are one row of menus, each starting at "Any": status, type, label, priority and sort, then Clear and the count.
-        let counted = |any: &str, f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<Value> {
+        // The filters are one row of menus, each starting at "Any": status, type, label and priority, then the count.
+        // Each filter is a menu that stays open while values are ticked; its title says what it holds. "Is not" excludes the ticked values.
+        let menu = |p: &mut Page, key: &str, name: &str, opts: Vec<(String, String)>| -> String {
+            let held = ui.values(key);
+            let neg = ui.not.contains(key);
+            let shown = |v: &str| if key == "pri" { format!("P{v}") } else { v.to_string() };
+            let title = if held.is_empty() { format!("Any {name}") } else {
+                format!("{}{}: {}", name[..1].to_uppercase() + &name[1..], if neg { " not" } else { "" }, held.iter().map(|v| shown(v)).collect::<Vec<_>>().join(", "))
+            };
+            let mut kids = vec![];
+            p.bind(&format!("/set_not/{key}"), json!(neg));
+            p.put(json!({ "id": format!("filters.{key}.not"), "component": "CheckBox", "label": "Is not", "value": { "path": format!("/set_not/{key}") } }));
+            p.put(json!({ "id": format!("filters.{key}.div"), "component": "Divider" }));
+            kids.push(format!("filters.{key}.not"));
+            kids.push(format!("filters.{key}.div"));
+            for (v, text) in opts {
+                let path = format!("/toggle_filter/{key}:{v}");
+                let id = format!("filters.{key}.{v}");
+                p.bind(&path, json!(held.contains(&v.as_str())));
+                p.put(json!({ "id": id, "component": "CheckBox", "label": text, "value": { "path": path } }));
+                kids.push(id);
+            }
+            let id = format!("filters.{key}");
+            p.put(json!({ "id": id, "component": "Menu", "title": title, "keepOpen": true, "children": kids }));
+            id
+        };
+        let counted = |f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<(String, String)> {
             let mut c: BTreeMap<String, usize> = BTreeMap::new();
             for v in all.iter().flat_map(|b| f(b)) {
                 *c.entry(v).or_default() += 1;
             }
             let mut v: Vec<(String, usize)> = c.into_iter().collect();
             v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            let mut out = vec![json!({ "value": "", "text": any })];
-            out.extend(v.into_iter().map(|(k, n)| json!({ "value": k, "text": format!("{k}  {n}") })));
-            out
+            v.into_iter().map(|(k, n)| (k.clone(), format!("{k}  {n}"))).collect()
         };
-        let first = |key: &str| ui.values(key).first().copied().unwrap_or("").to_string();
-        let mut status_opts = vec![json!({ "value": "", "text": "Any status" })];
-        status_opts.extend(KINDS.iter().map(|k| json!({ "value": k, "text": k })));
-        let status = p.choose_menu("filters.status", "/set_filter/status", &first("status"), status_opts, false);
-        let kind = p.choose_menu("filters.type", "/set_filter/type", &first("type"), counted("Any type", &|b| vec![b.kind.clone()]), false);
-        let label = p.choose_menu("filters.label", "/set_filter/label", &first("label"), counted("Any label", &|b| b.labels.clone()), false);
-        let urgent = all.iter().filter(|b| b.priority.is_some_and(|p| p <= 1)).count();
-        let low = all.iter().filter(|b| b.priority.is_some_and(|p| p >= 3)).count();
-        let p2 = all.iter().filter(|b| b.priority == Some(2)).count();
-        let pri = p.choose_menu("filters.pri", "/set_filter/pri", ui.filter("pri"), vec![
-            json!({ "value": "", "text": "Any priority" }), json!({ "value": "urgent", "text": format!("P0 to P1  {urgent}") }),
-            json!({ "value": "2", "text": format!("P2  {p2}") }), json!({ "value": "low", "text": format!("P3 and lower  {low}") })], false);
-        let sorts: Vec<Value> = COLS.iter().map(|c| json!({ "value": c.key, "text": format!("Sort: {}", c.label) })).collect();
-        let sort = p.choose_menu("filters.sort", "/set_sort", &ui.sort.0.to_string(), sorts, ui.custom());
-        let clear = p.button("filters.clear", "Clear", "clear", json!({}), json!({ "style": "link" }));
+        let status = menu(&mut p, "status", "status", KINDS.iter().map(|k| (k.to_string(), k.to_string())).collect());
+        let kind = menu(&mut p, "type", "type", counted(&|b| vec![b.kind.clone()]));
+        let label = menu(&mut p, "label", "label", counted(&|b| b.labels.clone()));
+        let pri_opts = (0..=4).map(|n| (n.to_string(), format!("P{n}  {}", all.iter().filter(|b| b.priority == Some(n)).count()))).collect();
+        let pri = menu(&mut p, "pri", "priority", pri_opts);
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
         let count_id = p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        // Two groups, by proximity: what narrows the list (status, type, label, priority) and what shapes the result (sort, Clear,
-        // the count). Inside a group the gap is 6; the gap between groups is whatever width is left, never under 16.
+        // Two groups, by proximity: what narrows the list (status, type, label, priority) and the count. Inside a group the gap
+        // is 6; the gap between groups is whatever width is left, never under 16. Sorting is the column headers' job.
         let narrow = p.boxed("bar.narrow", "h", vec![status, kind, label, pri], json!({ "spacing": 6, "align": "center" }));
-        let shape = p.boxed("bar.shape", "h", vec![sort, clear, count_id], json!({ "spacing": 6, "align": "center" }));
+        // Clear keeps its place whether or not a filter is on: it is hidden, not removed, so the count never moves.
+        let active = !ui.q.is_empty() || !ui.values("status").is_empty() || !ui.values("type").is_empty() || !ui.values("label").is_empty() || !ui.values("pri").is_empty();
+        let clear = p.button("filters.clear", "Clear", "clear", json!({}), json!({ "style": "link", "disabled": !active, "hideOff": true }));
+        let shape = p.boxed("bar.shape", "h", vec![clear, count_id], json!({ "spacing": 6, "align": "center" }));
         page.push(p.boxed("bar", "h", vec![narrow, shape], json!({ "spacing": 16, "align": "center", "widths": ["flex", Value::Null], "padding": [4, 0, 0, 0] })));
         crate::core::layout::modify(&mut p.out, "bar", json!({ "frame": { "maxWidth": "infinity" } }));
-
-        // Active filters, each one a button that removes it.
-        let mut chips: Vec<String> = vec![];
-        let mut chip = |p: &mut Page, text: &str, tool: &str, ctx: Value| {
-            let id = format!("chip{}", chips.len());
-            p.button(&id, &format!("{text}  ×"), tool, ctx, json!({ "style": "link" }));
-            crate::core::layout::modify(&mut p.out, &format!("{id}.t"), json!({ "font": { "size": 12, "weight": "regular", "design": "default" } }));
-            crate::core::layout::modify(&mut p.out, &id, json!({ "padding": { "horizontal": 8, "vertical": 3 } }));
-            crate::core::layout::modify(&mut p.out, &id, json!({ "overlay": { "stroke": "tint", "cornerRadius": 12 } }));
-            chips.push(id);
-        };
-        for key in ["status", "type", "label"] {
-            let vals = ui.values(key);
-            for v in &vals {
-                let rest: Vec<&str> = vals.iter().copied().filter(|x| x != v).collect();
-                chip(&mut p, v, "set_filter", json!({ "key": key, "value": rest.join(",") }));
-            }
-        }
-        match ui.filter("pri") {
-            "" => {}
-            "urgent" => chip(&mut p, "P0 to P1", "set_filter", json!({ "key": "pri", "value": "" })),
-            "low" => chip(&mut p, "P3 and lower", "set_filter", json!({ "key": "pri", "value": "" })),
-            d => chip(&mut p, &format!("P{d}"), "set_filter", json!({ "key": "pri", "value": "" })),
-        }
-        if !ui.q.is_empty() {
-            chip(&mut p, &format!("“{}”", ui.q), "set_query", json!({ "value": "" }));
-        }
-        if !chips.is_empty() {
-            p.put(json!({ "id": "chips", "component": "List", "direction": "horizontal", "spacing": 6, "children": chips, "modifiers": [{ "padding": [4, 0, 0, 0] }] }));
-            page.push("chips".to_string());
-        }
 
         if ui.custom() {
             let parts = graph::Model::new(snap, ui).components(&mut p, ui);
@@ -1006,9 +988,16 @@ mod tests {
         ui.f.insert("label".into(), "client,mac".into());
         assert!(matches(&ui, &b1) && matches(&ui, &b2));
         ui.f.insert("label".into(), "".into());
-        ui.f.insert("pri".into(), "urgent".into());
+        ui.f.insert("pri".into(), "0,1,2".into());
         assert!(matches(&ui, &b1) && !matches(&ui, &b2));
-        ui.f.insert("pri".into(), "low".into());
+        ui.f.insert("pri".into(), "3".into());
+        assert!(!matches(&ui, &b1) && matches(&ui, &b2));
+        ui.not.insert("pri".into());
+        assert!(matches(&ui, &b1) && !matches(&ui, &b2), "an excluded filter keeps what has none of its values");
+        ui.f.insert("pri".into(), "".into());
+        ui.not.clear();
+        ui.f.insert("label".into(), "client".into());
+        ui.not.insert("label".into());
         assert!(!matches(&ui, &b1) && matches(&ui, &b2));
     }
 
@@ -1025,15 +1014,21 @@ mod tests {
     }
 
     #[test]
-    fn an_active_filter_is_a_chip_that_removes_it() {
+    fn a_filter_is_a_menu_of_ticks_titled_with_what_it_holds() {
         let s = snap(vec![bead("a", |_| {})]);
         let mut ui = Ui::default();
-        ui.f.insert("label".into(), "client,mac".into());
+        ui.f.insert("pri".into(), "0,1".into());
+        ui.not.insert("pri".into());
         let c = page_components(&s, &ui);
-        let chip = c.iter().find(|x| x["id"] == "chip0").expect("a chip for client");
-        assert_eq!(chip["action"]["event"]["context"], json!({ "key": "label", "value": "mac" }));
-        let label = c.iter().find(|x| x["id"] == "filters.label").expect("the label menu");
-        assert_eq!(label["value"]["path"], "/set_filter/label");
+        let menu = c.iter().find(|x| x["id"] == "filters.pri").expect("the priority menu");
+        assert_eq!(menu["component"], "Menu");
+        assert_eq!(menu["title"], "Priority not: P0, P1");
+        assert_eq!(menu["keepOpen"], true);
+        let tick = c.iter().find(|x| x["id"] == "filters.pri.1").expect("a tick for P1");
+        assert_eq!(tick["value"]["path"], "/toggle_filter/pri:1");
+        assert!(c.iter().all(|x| x["id"] != "chips"), "the menus show their own state, so there are no chips");
+        let clear = c.iter().find(|x| x["id"] == "filters.clear").unwrap();
+        assert!(!clear.to_string().contains("\"opacity\":0"), "Clear is shown while a filter is on");
     }
 
     #[test]
@@ -1047,14 +1042,14 @@ mod tests {
         let views = c.iter().find(|x| x["id"] == "views").unwrap();
         assert_eq!((views["component"].as_str(), &views["children"]), (Some("ViewThatFits"), &json!(["views.seg", "views.menu"])), "the views choice is the segmented control, then the menu");
         let style = |id: &str| c.iter().find(|x| x["id"] == id).map(|x| x["displayStyle"].clone());
-        assert_eq!((style("views.seg"), style("views.menu"), style("filters.pri")), (Some(json!("chips")), Some(json!("menu")), Some(json!("menu"))));
+        assert_eq!((style("views.seg"), style("views.menu")), (Some(json!("chips")), Some(json!("menu"))));
+        assert_eq!(c.iter().find(|x| x["id"] == "filters.pri").map(|x| x["component"].clone()), Some(json!("Menu")), "a filter is a menu of ticks");
         let bar = c.iter().find(|x| x["id"] == "bar").unwrap();
         assert_eq!(bar["children"], json!(["bar.narrow", "bar.shape"]));
         let narrow = c.iter().find(|x| x["id"] == "bar.narrow").unwrap();
         assert_eq!(narrow["children"], json!(["filters.status", "filters.type", "filters.label", "filters.pri"]), "what narrows the list sits together");
         let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
-        assert_eq!(shape["children"], json!(["filters.sort", "filters.clear", "count"]), "sort, Clear and the count sit together");
-        assert!(c.iter().all(|x| x["id"] != "chips"), "no filter is on, so no chips");
+        assert_eq!(shape["children"], json!(["filters.clear", "count"]), "Clear and the count sit together");
         let boxes: Vec<&Value> = c.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("kpi") && !i.contains('.') && i != "kpis")).collect();
         assert_eq!(boxes.len(), 4);
         assert!(boxes.iter().all(|b| b["component"] == "Button" && b["action"]["event"]["name"] == "set_filter"), "each box is a status filter");
