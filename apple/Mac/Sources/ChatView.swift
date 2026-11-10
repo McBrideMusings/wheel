@@ -71,6 +71,15 @@ extension ConfigRow {
         case "context":
             if let context = chat.context {
                 ContextMeter(model: model, paneId: paneId, context: context)
+            } else {
+                // Before the agent's first usage report there is no reading; the slot still draws,
+                // empty, so the meter does not appear and push its neighbours along.
+                HStack(spacing: 6) {
+                    Capsule().fill(Color.primary.opacity(0.15)).frame(width: 28, height: 4)
+                    Text("0%").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                }
+                .fixedSize()
+                .help("The agent has not reported its context use yet")
             }
         case "background":
             if let text = chat.footer?.backgroundText { footerText(text, help: "Background tasks the agent has running") }
