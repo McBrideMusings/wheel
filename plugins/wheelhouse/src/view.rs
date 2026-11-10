@@ -66,6 +66,12 @@ pub trait View: Send + Sync {
         false
     }
 
+    /// Work the page started in the background for project `dir` has finished, so the page should be drawn again; true once
+    /// per finish.
+    fn finished(&self, _dir: &str) -> bool {
+        false
+    }
+
     /// Re-read project `dir`; true when the page now differs.
     fn refresh(&self, dir: &str) -> bool;
 }

@@ -393,6 +393,11 @@ fn shared_pulls(dir: &str, repo: &str, force: bool) -> Result<(i64, Vec<Value>),
     Ok((when, nodes))
 }
 
+/// One PR in full when a read of it is younger than [`SHARE`]; never asks GitHub.
+pub fn cached_detail(repo: &str, number: i64) -> Option<Value> {
+    CACHE.lock().unwrap().details.get(&(repo.to_string(), number)).filter(|(at, _)| at.elapsed() < SHARE).map(|(_, v)| v.clone())
+}
+
 /// One PR in full, shared the same way.
 pub fn shared_detail(dir: &str, repo: &str, number: i64, force: bool) -> Result<Value, String> {
     let arrived = Instant::now();

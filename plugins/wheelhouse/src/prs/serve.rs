@@ -38,6 +38,8 @@ struct Ui {
 struct Shared {
     projects: HashMap<String, Snapshot>,
     panes: HashMap<String, Ui>,
+    /// Projects whose pane finished loading a PR in the background and so need a redraw.
+    done: std::collections::HashSet<String>,
 }
 
 impl Shared {
@@ -232,29 +234,37 @@ impl Server {
     fn select_pr(&self, meta: RequestMetaObject, Parameters(Number { id }): Parameters<Number>) -> CallToolResult {
         let o = Origin::of(&meta);
         let n: Option<i64> = id.parse().ok();
-        let (repo, open) = {
+        // Answer at once with what the list holds. A PR read in the last 30 seconds opens complete; otherwise the modal
+        // opens with a spinner and a thread reads the rest, then asks for a redraw.
+        let (repo, load) = {
             let mut s = self.shared.lock().unwrap();
             let repo = s.project(&o.dir).repo.clone();
+            let cached = repo.as_deref().zip(n).and_then(|(r, n)| cached_detail(r, n));
             let ui = s.panes.entry(o.pane.clone()).or_default();
             let open = ui.sel != n;
             ui.sel = if open { n } else { None };
-            ui.detail = None;
-            ui.ch = detail::Choices { method: ui.ch.method.clone(), agent: ui.ch.agent.clone(), open: ui.ch.open.clone(), ..Default::default() };
-            (repo, open)
+            ui.detail = if open { cached.clone() } else { None };
+            ui.ch = detail::Choices { method: ui.ch.method.clone(), agent: ui.ch.agent.clone(), open: ui.ch.open.clone(), loading: open && cached.is_none(), ..Default::default() };
+            (repo, open && (cached.is_none() || ui.agents.is_empty()))
         };
-        if let (true, Some(repo), Some(n)) = (open, repo, n) {
-            // Read outside the lock: it takes a second.
-            let node = shared_detail(&o.dir, &repo, n, false).ok();
-            if let Some(d) = &node {
-                detail::prefetch_images(&o.dir, d);
-            }
-            let agents = detail::agent_names(&o.dir);
-            let mut s = self.shared.lock().unwrap();
-            let ui = s.panes.entry(o.pane.clone()).or_default();
-            if ui.sel == Some(n) {
-                ui.detail = node;
-                ui.agents = agents;
-            }
+        if let (true, Some(repo), Some(n)) = (load, repo, n) {
+            let (shared, dir, pane) = (self.shared.clone(), o.dir.clone(), o.pane.clone());
+            std::thread::spawn(move || {
+                let node = shared_detail(&dir, &repo, n, false).ok();
+                if let Some(d) = &node {
+                    detail::prefetch_images(&dir, d);
+                }
+                let agents = detail::agent_names(&dir);
+                let mut s = shared.lock().unwrap();
+                if let Some(ui) = s.panes.get_mut(&pane).filter(|u| u.sel == Some(n)) {
+                    if node.is_some() {
+                        ui.detail = node;
+                    }
+                    ui.agents = agents;
+                    ui.ch.loading = false;
+                }
+                s.done.insert(dir);
+            });
         }
         self.with(&meta, |_| {})
     }
@@ -417,6 +427,10 @@ impl View for PrsView {
 
     fn close(&self, dir: &str) {
         self.server.shared.lock().unwrap().projects.remove(dir);
+    }
+
+    fn finished(&self, dir: &str) -> bool {
+        self.server.shared.lock().unwrap().done.remove(dir)
     }
 
     fn refresh(&self, dir: &str) -> bool {
