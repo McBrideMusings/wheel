@@ -152,6 +152,11 @@ struct A2UIModifiers: ViewModifier {
                                        alignment: alignment(d["alignment"]?.stringValue))
                     .frame(width: length(d["width"]), height: length(d["height"]), alignment: alignment(d["alignment"]?.stringValue)))
             }
+        case "layoutPriority": if let n = arg.numberValue { return AnyView(v.layoutPriority(n)) }
+        case "fixedSize":
+            // true fixes both axes; {horizontal, vertical} fixes the ones named.
+            if let d = arg.dictionaryValue { return AnyView(v.fixedSize(horizontal: d["horizontal"]?.boolValue ?? false, vertical: d["vertical"]?.boolValue ?? false)) }
+            if arg.boolValue == true { return AnyView(v.fixedSize()) } else { return v }
         case "overlay":
             if let d = arg.dictionaryValue, let c = a2uiColor(d["stroke"]?.stringValue) {
                 let r = d["cornerRadius"]?.numberValue ?? 0

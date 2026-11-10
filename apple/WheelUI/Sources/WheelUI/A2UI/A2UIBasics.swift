@@ -378,7 +378,6 @@ struct A2UIChoicePicker: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @State private var filter = ""
-    @Environment(\.a2uiPane) private var pane
     @Environment(\.a2uiInForm) private var inForm
     var body: some View {
         let path = a2uiPath(of: node.instance, in: surface)
@@ -415,23 +414,12 @@ struct A2UIChoicePicker: View {
                 } else {
                     VStack(alignment: .leading) { ForEach(options, id: \.value) { o in toggle(o, selected, path, chip: false) } }
                 }
-            } else if node.props["displayStyle"]?.stringValue == "menu" || (node.props["displayStyle"]?.stringValue != "chips" && options.count > 4) {
-                // A menu is as wide as its widest option and takes a width from the page's frame modifier, so a row of menus can share its width.
+            } else if node.props["displayStyle"]?.stringValue == "chips" {
+                // Chips draw the segmented control at its natural width; a page that wants a menu when it does not fit sends a ViewThatFits.
+                Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.segmented).labelsHidden()
+            } else {
+                // Any other style draws the menu, as wide as its widest option; a frame modifier gives it a width.
                 Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.menu).labelsHidden()
-            } else if node.props["displayStyle"]?.stringValue == "chips" || options.count <= 4 {
-                // A narrow pane gets the menu, which is one control wide. A wider one gets the segmented control when it fits the width
-                // it is given and the menu when it does not, so it never runs off the pane.
-                if pane.width < 640 {
-                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
-                        .pickerStyle(.menu).labelsHidden().fixedSize()
-                } else {
-                ViewThatFits(in: .horizontal) {
-                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
-                        .pickerStyle(.segmented).labelsHidden().fixedSize(horizontal: true, vertical: false)
-                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
-                        .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
-                }
-                }
             }
         }
         }

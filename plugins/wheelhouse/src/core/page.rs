@@ -72,15 +72,33 @@ impl Page {
         id.to_string()
     }
 
-    /// A choice of one among `options` ({value, text}); `path` is `/<tool>` or `/<tool>/<key>`. A few options draw as a segmented
-    /// control (`chips`), more as a menu.
+    /// A choice of one among `options` ({value, text}); `path` is `/<tool>` or `/<tool>/<key>`. With `chips`, or with four options
+    /// or fewer, the choice is a `ViewThatFits` of the segmented control, then the menu: the segmented control while it fits the
+    /// width it is given, the menu when it does not. More options are the menu. `disabled` goes on the component named `id`.
     pub fn choose(&mut self, id: &str, path: &str, selected: &str, options: impl Into<Value>, chips: bool, disabled: bool) -> String {
+        let options: Value = options.into();
+        let fits = chips || options.as_array().is_some_and(|o| o.len() <= 4);
+        self.pick(id, path, selected, options, fits, disabled)
+    }
+
+    /// A choice of one among `options` that is always the menu, however few the options.
+    pub fn choose_menu(&mut self, id: &str, path: &str, selected: &str, options: impl Into<Value>, disabled: bool) -> String {
+        self.pick(id, path, selected, options.into(), false, disabled)
+    }
+
+    fn pick(&mut self, id: &str, path: &str, selected: &str, options: Value, chips: bool, disabled: bool) -> String {
         self.bind(path, json!([selected]));
-        let options: Vec<Value> = options.into().as_array().cloned().unwrap_or_default().iter().map(|o| json!({ "label": o["text"], "value": o["value"] })).collect();
-        let mut v = json!({ "id": id, "component": "ChoicePicker", "variant": "mutuallyExclusive", "options": options, "value": { "path": path } });
-        if chips {
-            v["displayStyle"] = json!("chips");
-        }
+        let options: Vec<Value> = options.as_array().cloned().unwrap_or_default().iter().map(|o| json!({ "label": o["text"], "value": o["value"] })).collect();
+        let picker = |id: &str, style: &str, modifiers: Value| {
+            json!({ "id": id, "component": "ChoicePicker", "variant": "mutuallyExclusive", "displayStyle": style, "options": options, "value": { "path": path }, "modifiers": modifiers })
+        };
+        let mut v = if chips {
+            self.put(picker(&format!("{id}.seg"), "chips", json!([{ "fixedSize": { "horizontal": true, "vertical": false } }])));
+            self.put(picker(&format!("{id}.menu"), "menu", json!([{ "frame": { "maxWidth": "infinity", "alignment": "leading" } }])));
+            json!({ "id": id, "component": "ViewThatFits", "axes": "horizontal", "children": [format!("{id}.seg"), format!("{id}.menu")] })
+        } else {
+            picker(id, "menu", json!([]))
+        };
         if disabled {
             v["modifiers"] = json!([{ "disabled": true }]);
         }

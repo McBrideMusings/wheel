@@ -834,17 +834,17 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let first = |key: &str| ui.values(key).first().copied().unwrap_or("").to_string();
         let mut status_opts = vec![json!({ "value": "", "text": "Any status" })];
         status_opts.extend(KINDS.iter().map(|k| json!({ "value": k, "text": k })));
-        let status = p.choose("filters.status", "/set_filter/status", &first("status"), status_opts, false, false);
-        let kind = p.choose("filters.type", "/set_filter/type", &first("type"), counted("Any type", &|b| vec![b.kind.clone()]), false, false);
-        let label = p.choose("filters.label", "/set_filter/label", &first("label"), counted("Any label", &|b| b.labels.clone()), false, false);
+        let status = p.choose_menu("filters.status", "/set_filter/status", &first("status"), status_opts, false);
+        let kind = p.choose_menu("filters.type", "/set_filter/type", &first("type"), counted("Any type", &|b| vec![b.kind.clone()]), false);
+        let label = p.choose_menu("filters.label", "/set_filter/label", &first("label"), counted("Any label", &|b| b.labels.clone()), false);
         let urgent = all.iter().filter(|b| b.priority.is_some_and(|p| p <= 1)).count();
         let low = all.iter().filter(|b| b.priority.is_some_and(|p| p >= 3)).count();
         let p2 = all.iter().filter(|b| b.priority == Some(2)).count();
-        let pri = p.choose("filters.pri", "/set_filter/pri", ui.filter("pri"), vec![
+        let pri = p.choose_menu("filters.pri", "/set_filter/pri", ui.filter("pri"), vec![
             json!({ "value": "", "text": "Any priority" }), json!({ "value": "urgent", "text": format!("P0 to P1  {urgent}") }),
-            json!({ "value": "2", "text": format!("P2  {p2}") }), json!({ "value": "low", "text": format!("P3 and lower  {low}") })], false, false);
+            json!({ "value": "2", "text": format!("P2  {p2}") }), json!({ "value": "low", "text": format!("P3 and lower  {low}") })], false);
         let sorts: Vec<Value> = COLS.iter().map(|c| json!({ "value": c.key, "text": format!("Sort: {}", c.label) })).collect();
-        let sort = p.choose("filters.sort", "/set_sort", &ui.sort.0.to_string(), sorts, false, ui.custom());
+        let sort = p.choose_menu("filters.sort", "/set_sort", &ui.sort.0.to_string(), sorts, ui.custom());
         let clear = p.button("filters.clear", "Clear", "clear", json!({}), json!({ "style": "link" }));
         let (tbl, shown, total) = table(&ix, ui);
         let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
@@ -855,11 +855,6 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let shape = p.boxed("bar.shape", "h", vec![sort, clear, count_id], json!({ "spacing": 6, "align": "center" }));
         page.push(p.boxed("bar", "h", vec![narrow, shape], json!({ "spacing": 16, "align": "center", "widths": ["flex", Value::Null], "padding": [4, 0, 0, 0] })));
         crate::core::layout::modify(&mut p.out, "bar", json!({ "frame": { "maxWidth": "infinity" } }));
-        for id in ["filters.status", "filters.type", "filters.label", "filters.pri", "filters.sort"] {
-            if let Some(c) = p.out.iter_mut().find(|c| c["id"] == id) {
-                c["displayStyle"] = json!("menu");
-            }
-        }
 
         // Active filters, each one a button that removes it.
         let mut chips: Vec<String> = vec![];
@@ -1044,6 +1039,10 @@ mod tests {
         assert_eq!(page[..4], ["kpis", "find", "bar", "table.b"].map(Value::from), "boxes, search with the views choice, the filter menus with Clear and the count, the table");
         let find = c.iter().find(|x| x["id"] == "find").unwrap();
         assert_eq!(find["children"], json!(["search", "views"]));
+        let views = c.iter().find(|x| x["id"] == "views").unwrap();
+        assert_eq!((views["component"].as_str(), &views["children"]), (Some("ViewThatFits"), &json!(["views.seg", "views.menu"])), "the views choice is the segmented control, then the menu");
+        let style = |id: &str| c.iter().find(|x| x["id"] == id).map(|x| x["displayStyle"].clone());
+        assert_eq!((style("views.seg"), style("views.menu"), style("filters.pri")), (Some(json!("chips")), Some(json!("menu")), Some(json!("menu"))));
         let bar = c.iter().find(|x| x["id"] == "bar").unwrap();
         assert_eq!(bar["children"], json!(["bar.narrow", "bar.shape"]));
         let narrow = c.iter().find(|x| x["id"] == "bar.narrow").unwrap();

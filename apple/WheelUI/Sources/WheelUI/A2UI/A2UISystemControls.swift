@@ -299,6 +299,16 @@ struct A2UIVSplitViewView: View {
     }
 }
 
+// MARK: ViewThatFits(in:) — children are the alternatives in order; the first that fits `axes` (horizontal, vertical; both when absent) is drawn
+struct A2UIViewThatFitsView: View {
+    let node: ComponentNode
+    let surface: SurfaceModel
+    var body: some View {
+        let axes: Axis.Set = switch node.string("axes") { case "horizontal": .horizontal; case "vertical": .vertical; default: [.horizontal, .vertical] }
+        ViewThatFits(in: axes) { kids(node, surface) }
+    }
+}
+
 // MARK: Toolbar — SwiftUI's `.toolbar` modifier on children[0]; the other children are its items: `placement` (automatic, principal, primaryAction, navigation, cancellationAction, confirmationAction)
 struct A2UIToolbarView: View {
     let node: ComponentNode
