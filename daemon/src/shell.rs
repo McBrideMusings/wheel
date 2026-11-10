@@ -21,6 +21,7 @@ const CLAUDE_PLUGIN_HOOKS: &str = include_str!("shell/claude-plugin/hooks/hooks.
 const CLAUDE_SETTINGS: &str = include_str!("shell/claude-settings.json");
 const CODEX_HOOKS: &str = include_str!("shell/codex-hooks.json");
 const PI_STATUS: &str = include_str!("shell/pi-status.ts");
+const PI_PERMISSIONS: &str = include_str!("shell/pi-permissions.ts");
 
 /// Where the `wheel` command finds this daemon.
 #[derive(Clone, Debug, PartialEq)]
@@ -232,6 +233,11 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
         0o644,
     )?;
     write(&hooks(instance_dir).join("pi-status.ts"), PI_STATUS, 0o644)?;
+    write(
+        &hooks(instance_dir).join("pi-permissions.ts"),
+        PI_PERMISSIONS,
+        0o644,
+    )?;
     let bin = bin(instance_dir);
     write(
         &bin.join("claude"),

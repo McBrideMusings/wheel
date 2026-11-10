@@ -345,6 +345,43 @@ async fn a_close_if_empty_spares_a_space_something_started_in() {
     assert!(spaces.is_empty(), "a space holding one empty pane closes");
 }
 
+async fn sessions(ws: &mut Ws) -> Vec<wheel_proto::SessionInfo> {
+    match call(ws, ClientMsg::Status { req: Some(98) }).await {
+        ServerMsg::Status { sessions, .. } => sessions,
+        other => panic!("expected status, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_closes_itself_when_its_last_space_leaves_but_never_the_last_session() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let first = created(&mut ws, new_space("/tmp")).await;
+    let other = created(
+        &mut ws,
+        ClientMsg::SessionNew { req: Some(2), name: "other".into() },
+    )
+    .await;
+    // A session made empty stays: nothing has left it.
+    assert_eq!(sessions(&mut ws).await.len(), 2);
+
+    // Moving its last space to another session closes the one it left.
+    ok(
+        &mut ws,
+        ClientMsg::SessionMove { req: Some(3), space: first.clone(), session: other.clone(), index: None },
+    )
+    .await;
+    let held = sessions(&mut ws).await;
+    assert_eq!(held.len(), 1, "the emptied session closed: {held:?}");
+    assert_eq!(held[0].id, other);
+
+    // Closing the last space of the only session leaves that session.
+    ok(&mut ws, ClientMsg::SpaceClose { req: Some(4), id: first, if_empty: false }).await;
+    let held = sessions(&mut ws).await;
+    assert_eq!(held.len(), 1, "the last session stays: {held:?}");
+    assert!(held[0].spaces.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
     let (url, _) = start_daemon(None).await;

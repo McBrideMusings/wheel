@@ -18,7 +18,7 @@ use wheel_proto::{
 use crate::pty::Term;
 use crate::resume::Harness;
 use crate::server::{AgentStart, AppState, Owner};
-use crate::settings::{page, HOMEPAGE, PLACEMENT};
+use crate::settings::{page, HOMEPAGE, PLACEMENT, SESSIONS_CLOSE_EMPTY};
 
 /// A pane's place in `AppState::agent_starts` while its agent starts; dropping it frees the pane.
 struct StartClaim<'a> {
@@ -990,14 +990,19 @@ impl AppState {
         session: &str,
         index: Option<usize>,
     ) -> Result<(), String> {
+        let close_empty = self.closes_empty_sessions();
         let mut spaces = self.spaces.lock().unwrap();
         let space = spaces.spaces[spaces.index(space)?].id.clone();
         let to = spaces.session_index(session)?;
+        let from = spaces.session_holding(&space);
         spaces.detach(&space);
         let held = &mut spaces.sessions[to].spaces;
         let at = index.unwrap_or(held.len()).min(held.len());
         held.insert(at, space.clone());
         tracing::info!(%space, session = %spaces.sessions[to].id, at, "space moved to a session");
+        if close_empty {
+            self.close_if_empty(&mut spaces, from);
+        }
         self.changed(&spaces);
         Ok(())
     }
@@ -1037,6 +1042,7 @@ impl AppState {
 
     /// Close a space and every pane in it. With `if_empty`, only while it holds one empty pane.
     pub fn space_close(&self, id: &str, if_empty: bool) -> Result<(), String> {
+        let close_empty = self.closes_empty_sessions();
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
         let held = &spaces.spaces[index];
@@ -1054,9 +1060,28 @@ impl AppState {
             tracing::info!(space = %id, "space close refused: it no longer holds just one empty pane");
             return Err(format!("space {id} is no longer empty; not closed"));
         }
+        let session = spaces.session_holding(id);
         self.close_locked(&mut spaces, index);
+        if close_empty {
+            self.close_if_empty(&mut spaces, session);
+        }
         self.changed(&spaces);
         Ok(())
+    }
+
+    /// Whether `sessions.close_empty` is on. Read before the spaces lock is taken.
+    fn closes_empty_sessions(&self) -> bool {
+        self.setting(SESSIONS_CLOSE_EMPTY, None).is_ok_and(|v| v == "true")
+    }
+
+    /// Drop the session at `index` when it holds no space, unless it is the last one, which
+    /// stays so there is always a session for a new space to join.
+    fn close_if_empty(&self, spaces: &mut Spaces, index: Option<usize>) {
+        let Some(index) = index else { return };
+        if spaces.sessions.len() > 1 && spaces.sessions[index].spaces.is_empty() {
+            let gone = spaces.sessions.remove(index);
+            tracing::info!(session = %gone.id, name = %gone.name, "empty session closed");
+        }
     }
 
     /// Remove the space at `index` and end what its panes showed. The caller holds the lock and
