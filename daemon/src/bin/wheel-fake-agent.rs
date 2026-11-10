@@ -1084,7 +1084,7 @@ fn control(out: &Out, state: &State, message: &Value) {
                 .map(|(value, resolved, name)| json!({"value": value, "resolvedModel": resolved, "displayName": name, "description": format!("{name} model")}))
                 .collect();
             success(
-                json!({"models": models, "current_permission_mode": *state.mode.lock().unwrap(), "claude_code_version": "fake"}),
+                json!({"models": models, "commands": [{"name": "clear", "description": "", "argumentHint": ""}, {"name": "compact", "description": "", "argumentHint": ""}, {"name": "review", "description": "", "argumentHint": ""}], "current_permission_mode": *state.mode.lock().unwrap(), "claude_code_version": "fake"}),
             );
         }
         Some("set_permission_mode") => {
