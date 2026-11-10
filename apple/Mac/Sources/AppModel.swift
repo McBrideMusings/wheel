@@ -279,7 +279,6 @@ final class AppModel {
     /// Panes whose agent or terminal the app expects to see start again after wheeld came back: each
     /// stays under the restoring cover until it is ready, and leaves this set then.
     var restoringPanes: Set<String> = []
-    @ObservationIgnored var everConnected = false
     /// A rollback that runs when `deadline` passes, unless the person cancels it.
     var rollbackOffer: RollbackOffer?
     /// The server version a rollback put back; shown once wheeld answers again, until closed.
@@ -533,17 +532,27 @@ final class AppModel {
 
     /// The daemon's status at connect carries the whole layout; every terminal pane and every
     /// agent reattaches.
-    private func connected(_ status: ServerMsg) {
-        // Not the first connection: wheeld restarted, so every agent and terminal it held starts again.
-        if everConnected {
-            restoringPanes = Set(spaces.flatMap(\.allPanes).filter { pane in
-                switch pane.kind {
-                case .terminal, .agent: true
-                default: false
-                }
-            }.map(\.id))
+    /// Every agent and terminal pane of the layout the new server sent waits under the restoring cover
+    /// until its agent reports a state or its terminal attaches. A chat kept from before the restart
+    /// forgets its state, so it does not read as ready while the new server has not answered.
+    private func markRestoring() {
+        var panes: Set<String> = []
+        for pane in spaces.flatMap(\.allPanes) {
+            switch pane.kind {
+            case let .agent(agent, _, _):
+                panes.insert(pane.id)
+                chats[agent]?.state = nil
+            case .terminal:
+                panes.insert(pane.id)
+            default:
+                break
+            }
         }
-        everConnected = true
+        restoringPanes = panes
+        Log.info("server: restarted; \(panes.count) panes restoring")
+    }
+
+    private func connected(_ status: ServerMsg) {
         // Answers to the last connection's requests never come.
         agentReqs = [:]
         attachReqs = []
@@ -572,12 +581,15 @@ final class AppModel {
             settings.hostAccess = host
             serverHost = host
             showLogShipping(logs)
+            let startedBefore = serverStarted
             serverStarted = Date().addingTimeInterval(-Double(uptime))
             serverProtocol = protocolVersion
             logServerSource()
             self.perms = perms
             reportedViews = [:]
             apply(spaces, sessions: sessions)
+            // A server that started after the one this app last saw: its agents and terminals start again.
+            if let startedBefore, let now = serverStarted, now.timeIntervalSince(startedBefore) > 1 { markRestoring() }
         }
         // A palette open across a reconnect lists again, against the layout the new daemon sent.
         for pane in palettes.keys { askArtifacts(pane) }
@@ -1125,7 +1137,13 @@ final class AppModel {
                 if moreReqs.remove(req) != nil, listingOf.removeValue(forKey: req) == listings[agent] { chats[agent]?.conversationsLoadingMore = false }
                 listingOf[req] = nil
                 if switchReqs.remove(req) != nil { chats[agent]?.switchingTo = nil }
-                if attachReqs.remove(req) != nil { refusedAttach.insert(agent) }
+                if attachReqs.remove(req) != nil {
+                    refusedAttach.insert(agent)
+                    // Refused: the pane will not restore, so it must not wait under the cover.
+                    for pane in spaces.flatMap(\.allPanes) {
+                        if case let .agent(name, _, _) = pane.kind, name == agent { restoringPanes.remove(pane.id) }
+                    }
+                }
             }
             if let req, let open = openReqs.removeValue(forKey: req) { browserPanes[open.pane]?.refused(typed: open.text, message) }
             if let req { splitArtifacts[req] = nil; startingPanes[req] = nil }

@@ -551,12 +551,12 @@ struct PaneView: View {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if holdsPane { model.paneBodyFrames[paneId] = $0 } }
+                    .overlay { PaneRestoreCover(model: model, paneId: paneId, kind: kind) }
                     .overlay {
                         if let palette = model.palettes[paneId] {
                             PaletteOverlay(model: model, palette: palette, paneId: paneId, kind: kind)
                         }
                     }
-                    .overlay { PaneRestoreCover(model: model, paneId: paneId, kind: kind) }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
@@ -1388,7 +1388,7 @@ struct PaneRestoreCover: View {
 
     var body: some View {
         if model.connection != .connected {
-            RestoreShade(text: model.restartExpected ? "wheeld is restarting" : "wheeld is not connected", ring: model.restartExpected)
+            RestoreShade(text: model.restartExpected ? "wheeld is restarting" : "wheeld is not connected", ring: model.restartExpected, blocks: true)
         } else if model.restoringPanes.contains(paneId) {
             switch kind {
             case let .agent(agent, _, _):
@@ -1415,7 +1415,7 @@ private struct AgentRestore: View {
 
     var body: some View {
         Group {
-            if pending { RestoreShade(text: "Restoring conversation", ring: true) }
+            if pending { RestoreShade(text: "Restoring conversation", ring: true, blocks: false) }
         }
         .onChange(of: pending, initial: true) { _, now in if !now { model.restoringPanes.remove(paneId) } }
     }
@@ -1428,7 +1428,7 @@ private struct TerminalRestore: View {
 
     var body: some View {
         Group {
-            if !terminal.attached { RestoreShade(text: "Reconnecting terminal", ring: true) }
+            if !terminal.attached { RestoreShade(text: "Reconnecting terminal", ring: true, blocks: false) }
         }
         .onChange(of: terminal.attached, initial: true) { _, now in if now { model.restoringPanes.remove(paneId) } }
     }
@@ -1438,6 +1438,9 @@ private struct TerminalRestore: View {
 private struct RestoreShade: View {
     let text: String
     let ring: Bool
+    /// True while wheeld is down: the pane is read-only. After it answers the cover only dims, so a
+    /// pane whose attach never completes is still reachable.
+    let blocks: Bool
 
     var body: some View {
         ZStack {
@@ -1451,6 +1454,7 @@ private struct RestoreShade: View {
             .overlay(Capsule().strokeBorder(.separator))
         }
         .contentShape(Rectangle())
+        .allowsHitTesting(blocks)
         .onTapGesture {}
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("pane.restore")
