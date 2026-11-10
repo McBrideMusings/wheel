@@ -4838,12 +4838,11 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_client_is_told_which_slash_commands_the_agent_accepts_when_it_attaches() {
+async fn a_client_is_told_which_slash_commands_the_agent_accepts_before_any_message() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = ready_agent(&url).await;
     attach(&mut ws, &agent, 799).await;
-    agent_reply(&mut ws, &agent, "first").await;
 
     let mut late = connect(&url).await;
     send(

@@ -1002,6 +1002,12 @@ impl Driver {
                     conversation: None,
                     history: None,
                 });
+                // After Ready, which drops events before it: the `init` message that also lists commands arrives only with the first prompt,
+                // so a fresh pane's composer would have no skill picker until a message is sent.
+                if let Some(commands) = answer["commands"].as_array() {
+                    let names = commands.iter().filter_map(|c| c["name"].as_str().map(String::from));
+                    self.emit(DriverEvent::Commands(names.collect()));
+                }
             }
             Pending::Interrupt => {}
             Pending::SetOption { id, value, reply } => {
