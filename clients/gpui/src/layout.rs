@@ -103,6 +103,14 @@ pub fn place(tree: &Tree, rect: Rect, overrides: &HashMap<String, f64>, leaves: 
     }
 }
 
+/// Every pane of a tree, in layout order.
+pub fn leaves_of(tree: &Tree) -> Vec<&Leaf> {
+    match tree {
+        Tree::Pane(leaf) => vec![leaf],
+        Tree::Split { a, b, .. } => leaves_of(a).into_iter().chain(leaves_of(b)).collect(),
+    }
+}
+
 /// The ratio a pointer at `(x, y)` asks of a split, within the daemon's 0.1 to 0.9 range.
 pub fn drag_ratio(horizontal: bool, parent: Rect, x: f32, y: f32) -> f64 {
     let ratio = if horizontal { (x - parent.x) / (parent.w - GAP) } else { (y - parent.y) / (parent.h - GAP) };

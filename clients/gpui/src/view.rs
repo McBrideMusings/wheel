@@ -4,7 +4,7 @@
 use crate::{daemon::Endpoint, layout::*, native::Native};
 use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use serde_json::json;
-use std::{collections::HashMap, rc::Rc, sync::mpsc};
+use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
 pub const HEADER: f32 = 34.0;
@@ -19,10 +19,11 @@ pub struct Client {
     /// Ratios being dragged, until the daemon confirms them in its next layout.
     overrides: HashMap<String, f64>,
     drag: Option<(String, bool, Rect)>,
-    /// Panes drawn by the native views: (web, terminal).
-    pub native_panes: (Option<String>, Option<String>),
-    attached_term: Option<String>,
-    loaded_web: Option<String>,
+    /// Panes drawn by the native views in the space shown, in layout order.
+    pub native_panes: Vec<String>,
+    /// Every pane that has a native view, with its kind, and where it was last placed.
+    opened: HashMap<String, String>,
+    placed: HashMap<String, ([f64; 4], bool)>,
     viewport: (f32, f32),
 }
 
@@ -30,7 +31,7 @@ impl Client {
     pub fn new(native: Rc<Native>, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_space: Option<String>) -> Self {
         Self {
             native, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            native_panes: (None, None), attached_term: None, loaded_web: None, viewport: (1200., 720.),
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.),
         }
     }
     /// The daemon's layout replaces ours, dragged ratios included.
@@ -76,33 +77,45 @@ impl Client {
             self.overrides.insert(split.clone(), drag_ratio(*horizontal, *parent, x, y));
         }
     }
-    /// Point the native views at the panes they draw: attach the terminal and load the page
-    /// when the pane changes, move each view onto its pane's body.
+    /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
+    /// put each on its pane's body, hide the views of panes in other spaces, and close the views
+    /// of panes no space has any more.
     fn sync_native(&mut self, leaves: &[Placed]) {
-        let web = leaves.iter().find(|p| p.leaf.kind == "web");
-        let term = leaves.iter().find(|p| p.leaf.kind == "terminal");
-        self.native_panes = (web.map(|p| p.leaf.id.clone()), term.map(|p| p.leaf.id.clone()));
-        let term_id = term.and_then(|p| p.leaf.term.clone());
-        if term_id != self.attached_term {
-            if let Some(id) = &term_id {
-                self.native.call(json!({"op":"attach_term","id":id,"url":self.endpoint.ws}));
-            }
-            self.attached_term = term_id;
-        }
-        if self.native_panes.0 != self.loaded_web {
-            if let Some(pane) = &self.native_panes.0 {
-                self.native.call(json!({"op":"load","url":self.endpoint.artifact(pane)}));
-            }
-            self.loaded_web = self.native_panes.0.clone();
-        }
-        for (index, placed) in [(0, web), (1, term)] {
-            unsafe {
-                match placed {
-                    Some(p) => (self.native.layout)(index, f64::from(p.rect.x), f64::from(p.rect.y + TITLE), f64::from(p.rect.w), f64::from((p.rect.h - TITLE).max(1.))),
-                    None => (self.native.layout)(index, 0., 0., 1., 1.),
+        self.native_panes.clear();
+        for p in leaves {
+            let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
+                ("web", _) => "web",
+                ("terminal", Some(_)) => "terminal",
+                _ => continue,
+            };
+            if self.opened.get(&p.leaf.id).map(String::as_str) != Some(kind) {
+                match &p.leaf.term {
+                    Some(term) => self.native.open_terminal(&p.leaf.id, term, &self.endpoint.ws),
+                    None => self.native.open_web(&p.leaf.id, &self.endpoint.artifact(&p.leaf.id)),
                 }
+                self.opened.insert(p.leaf.id.clone(), kind.to_owned());
             }
-            self.native.call(json!({"op":"slot","index":index,"hidden":placed.is_none()}));
+            let rect = [f64::from(p.rect.x), f64::from(p.rect.y + TITLE), f64::from(p.rect.w), f64::from((p.rect.h - TITLE).max(1.))];
+            if self.placed.get(&p.leaf.id) != Some(&(rect, false)) {
+                self.native.place(&p.leaf.id, rect, false);
+                self.placed.insert(p.leaf.id.clone(), (rect, false));
+            }
+            self.native_panes.push(p.leaf.id.clone());
+        }
+        let shown: HashSet<&String> = self.native_panes.iter().collect();
+        for (id, (rect, hidden)) in self.placed.clone() {
+            if !shown.contains(&id) && !hidden {
+                self.native.place(&id, rect, true);
+                self.placed.insert(id, (rect, true));
+            }
+        }
+        let alive: HashSet<&str> = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).map(|l| l.id.as_str()).collect();
+        for id in self.opened.keys().cloned().collect::<Vec<_>>() {
+            if !alive.contains(id.as_str()) {
+                self.native.close(&id);
+                self.opened.remove(&id);
+                self.placed.remove(&id);
+            }
         }
     }
 }
@@ -113,7 +126,6 @@ impl Render for Client {
         self.viewport = (f32::from(v.width), f32::from(v.height));
         let (leaves, dividers) = self.scene();
         self.sync_native(&leaves);
-        let native_ids = [self.native_panes.0.clone(), self.native_panes.1.clone()];
         let mut root = div().relative().size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if this.drag.is_some() {
@@ -145,7 +157,7 @@ impl Render for Client {
         root = root.child(header);
         for p in &leaves {
             let r = p.rect;
-            let native = native_ids.iter().any(|id| id.as_deref() == Some(&p.leaf.id));
+            let native = self.native_panes.contains(&p.leaf.id);
             let body = if native { String::new() } else { format!("unimplemented: {} pane\n{}", p.leaf.kind, p.leaf.label) };
             root = root.child(
                 div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x17201c))

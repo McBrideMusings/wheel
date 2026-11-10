@@ -63,17 +63,23 @@ def fixture():
             cli('pane', 'kind', term_pane, 'terminal')
             browser = cli('pane', 'split', term_pane, 'down').splitlines()[-1]
             cli('pane', 'kind', browser, 'browser', '--page', 'about:blank')
-            empty = cli('pane', 'split', web, 'down').splitlines()[-1]
+            term2_pane = cli('pane', 'split', web, 'down').splitlines()[-1]
+            cli('pane', 'kind', term2_pane, 'terminal')
+            web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
+            cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-html')
 
-            def find(node, kind):
+            def terminals(node):
                 if node.get('node') == 'pane':
-                    return node if node.get('kind') == kind else None
-                return find(node['a'], kind) or find(node['b'], kind)
-            term = find(tree(space)['root'], 'terminal')['term']
-            cli('term', 'send', term, "stty -echo; printf '\\033[2J\\033[H\\033[32mterminal-%s\\033[0m\\r\\n' $((6*7)); while IFS= read -r line; do printf 'PTY:%s\\r\\n' \"$line\"; done", '--enter')
-            cli('term', 'read', term, '--until', 'terminal-42', '--timeout', '10')
-            env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'))
-            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, empty=empty),
+                    return [node] if node.get('kind') == 'terminal' else []
+                return terminals(node['a']) + terminals(node['b'])
+            markers = {}
+            for n, node in enumerate(terminals(tree(space)['root'])):
+                marker = f'terminal-{42 + n}'
+                markers[node['id']] = marker
+                cli('term', 'send', node['term'], "stty -echo; printf '\\033[2J\\033[H\\033[32m%s\\033[0m\\r\\n' " + marker + "; while IFS= read -r line; do printf 'PTY:%s\\r\\n' \"$line\"; done", '--enter')
+                cli('term', 'read', node['term'], '--until', marker, '--timeout', '10')
+            env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers))
+            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2),
                         saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: daemon.poll() is None)
             yield env, info
         finally:

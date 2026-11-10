@@ -12,7 +12,6 @@ use std::{
 pub struct Native {
     _library: libloading::Library,
     pub attach: unsafe extern "C" fn(*mut c_void, i32),
-    pub layout: unsafe extern "C" fn(i32, f64, f64, f64, f64),
     pub command: unsafe extern "C" fn(*const c_char) -> *mut c_char,
     pub free: unsafe extern "C" fn(*mut c_void),
 }
@@ -28,7 +27,6 @@ impl Native {
             let library = libloading::Library::new(&path).with_context(|| format!("loading {}", path.display()))?;
             Ok(Rc::new(Self {
                 attach: *library.get(b"wheel_native_attach")?,
-                layout: *library.get(b"wheel_native_layout")?,
                 command: *library.get(b"wheel_native_command")?,
                 free: *library.get(b"wheel_native_free")?,
                 _library: library,
@@ -51,5 +49,20 @@ impl Native {
     }
     pub fn status(&self) -> Value {
         self.call(json!({"op":"status"}))
+    }
+    /// Show an artifact page in a WKWebView for `pane`; opening it again with a new URL navigates.
+    pub fn open_web(&self, pane: &str, url: &str) {
+        self.call(json!({"op":"open","pane":pane,"kind":"web","url":url}));
+    }
+    /// Show terminal `term` in a Ghostty view for `pane`, streamed over the daemon socket `ws`.
+    pub fn open_terminal(&self, pane: &str, term: &str, ws: &str) {
+        self.call(json!({"op":"open","pane":pane,"kind":"terminal","term":term,"ws":ws}));
+    }
+    /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin).
+    pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool) {
+        self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden}));
+    }
+    pub fn close(&self, pane: &str) {
+        self.call(json!({"op":"close","pane":pane}));
     }
 }
