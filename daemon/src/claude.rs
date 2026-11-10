@@ -1524,7 +1524,7 @@ pub fn history(home: &Path, cwd: &Path, id: &str) -> Option<History> {
 const TITLE_HEAD: usize = 256 * 1024;
 /// How much of a transcript's end is read for its last reply and its newest generated title.
 const REPLY_TAIL: usize = 128 * 1024;
-/// The longest last reply a listing carries, in characters.
+/// The longest last reply a listing carries, in characters, before the cut.
 const REPLY_CHARS: usize = 300;
 
 /// The bytes of `path` from `from` to the end, or the first `len` bytes when `from` is 0 and the
@@ -1540,8 +1540,48 @@ fn read_span(path: &Path, from: u64, len: u64) -> Vec<u8> {
     bytes
 }
 
-/// The text of an assistant entry that is the main thread's own words: its text blocks joined,
-/// whitespace collapsed, cut to `REPLY_CHARS`. None for a tool call, a side thread or no text.
+/// The start of an agent's reply for a card: its first paragraph with the whitespace collapsed.
+/// A paragraph longer than `REPLY_CHARS` is cut at the last sentence end after its first hundred
+/// characters, else at the last space, and any Markdown marker the cut left open (a backtick, a
+/// `**`, a link) is dropped with the text after it, so a client that renders the Markdown never
+/// meets half of one.
+fn reply_excerpt(text: &str) -> String {
+    let first = text.split("\n\n").map(str::trim).find(|p| !p.is_empty()).unwrap_or("");
+    let collapsed = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= REPLY_CHARS {
+        return collapsed;
+    }
+    let cut: String = collapsed.chars().take(REPLY_CHARS).collect();
+    let sentence = cut
+        .char_indices()
+        .filter(|&(i, c)| i >= 100 && matches!(c, '.' | '!' | '?') && (i + 1 == cut.len() || cut[i + 1..].starts_with(' ')))
+        .map(|(i, _)| i + 1)
+        .last();
+    let end = sentence.or_else(|| cut.rfind(' ')).unwrap_or(cut.len());
+    let mut out = cut[..end].trim_end().to_string();
+    loop {
+        let before = out.len();
+        if out.matches('`').count() % 2 == 1 {
+            out.truncate(out.rfind('`').unwrap_or(0));
+        }
+        if out.matches("**").count() % 2 == 1 {
+            out.truncate(out.rfind("**").unwrap_or(0));
+        }
+        if let Some(open) = out.rfind('[') {
+            if !(out[open..].contains("](") && out[open..].contains(')')) {
+                out.truncate(open);
+            }
+        }
+        out.truncate(out.trim_end().len());
+        if out.len() == before {
+            break;
+        }
+    }
+    format!("{out}…")
+}
+
+/// The text of an assistant entry that is the main thread's own words: its text blocks joined and
+/// cut by `reply_excerpt`. None for a tool call, a side thread or no text.
 fn reply_text(entry: &Value) -> Option<String> {
     if entry["type"] != "assistant" || entry["isSidechain"] == true {
         return None;
@@ -1552,9 +1592,9 @@ fn reply_text(entry: &Value) -> Option<String> {
         .filter(|b| b["type"] == "text")
         .filter_map(|b| b["text"].as_str())
         .collect::<Vec<_>>()
-        .join(" ");
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!text.is_empty()).then(|| text.chars().take(REPLY_CHARS).collect())
+        .join("\n\n");
+    let excerpt = reply_excerpt(&text);
+    (!excerpt.is_empty()).then_some(excerpt)
 }
 
 /// One transcript's title, last reply and time. The title is the `ai-title` Claude Code wrote
@@ -1659,7 +1699,7 @@ pub(crate) fn iso8601(at: std::time::SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_task_notification, prompt_text, words, Rest, Streamed};
+    use super::{is_task_notification, prompt_text, reply_excerpt, words, Rest, Streamed};
     use serde_json::json;
 
     fn user(content: &str) -> serde_json::Value {
@@ -1668,6 +1708,28 @@ mod tests {
 
     fn notification(status: &str, summary: &str) -> String {
         format!("<task-notification>\n<task-id>b1</task-id>\n<status>{status}</status>\n<summary>{summary}</summary>\n</task-notification>")
+    }
+
+    #[test]
+    fn a_reply_card_takes_the_first_paragraph_and_never_a_half_open_marker() {
+        // The first paragraph only, whitespace collapsed, short enough to keep whole.
+        assert_eq!(reply_excerpt("Done.\n  It hangs\non the rename.\n\n- one\n- two"), "Done. It hangs on the rename.");
+        // Longer than the cut: ends at a sentence, not mid-word.
+        let sentence = "The reconnect loop never stops because the timer is not cleared after a drop. ";
+        let long = sentence.repeat(6);
+        let cut = reply_excerpt(&long);
+        assert!(cut.ends_with(".…"), "{cut}");
+        assert!(cut.chars().count() <= 302, "{cut}");
+        // A bold marker the cut would leave open goes, with what follows it.
+        let bold = format!("{} **Bead `wheel-t42o`:** it lists what to check in the running app and then some more words follow here", "x".repeat(280));
+        let cut = reply_excerpt(&bold);
+        assert!(!cut.contains("**") && !cut.contains('`'), "{cut}");
+        // An open link and an open code span go too.
+        let link = format!("{} see [the docs](https://example.com/a/very/long/path/that/keeps/going/and/going", "y ".repeat(140));
+        let cut = reply_excerpt(&link);
+        assert!(!cut.contains('[') && !cut.contains("]("), "{cut}");
+        let code = format!("{} run `cargo test -p wheeld --lib resume and then more words that run on forever", "z ".repeat(140));
+        assert!(!reply_excerpt(&code).contains('`'));
     }
 
     #[test]
