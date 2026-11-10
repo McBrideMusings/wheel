@@ -53,6 +53,49 @@ pub fn gh(dir: &str, args: &[&str]) -> Result<String, String> {
     text("gh", dir, args)
 }
 
+/// Run a page button's shell command `sh` in `dir` with `env` set (and `WHEEL_PANE` when `pane` names a
+/// pane), its output in `log`. A command that fails at once is an error carrying the tail of its output;
+/// one still running after ten seconds counts as started and is left to finish.
+pub fn button(label: &str, sh: &str, dir: &str, pane: &str, env: &[(&str, &str)], log: &std::path::Path) -> Result<(), String> {
+    let file = std::fs::File::create(log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let mut command = Command::new("/bin/sh");
+    if pane != "default" {
+        command.env("WHEEL_PANE", pane);
+    }
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let mut child = command
+        .arg("-c")
+        .arg(sh)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(file.try_clone().map_err(|e| e.to_string())?)
+        .stderr(file)
+        .spawn()
+        .map_err(|e| format!("{label}: {e}"))?;
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if started.elapsed() > std::time::Duration::from_secs(10) => break None,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(_) => break None,
+        }
+    };
+    if let Some(s) = status.filter(|s| !s.success()) {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        let tail: String = text.trim().lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
+        return Err(format!("{label} failed ({s}): {tail}"));
+    }
+    if status.is_none() {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

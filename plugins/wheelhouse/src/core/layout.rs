@@ -59,6 +59,9 @@ fn text(id: &str, text: &str, e: &Value) -> Value {
     if !m.is_empty() {
         v["modifiers"] = json!(m);
     }
+    if e["markdown"] == true {
+        v["markdown"] = json!(true);
+    }
     v
 }
 

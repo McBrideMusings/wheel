@@ -67,7 +67,7 @@ pub async fn run(args: Args, agents: Agents) -> anyhow::Result<()> {
                 a.insert("model".into(), v.into());
             }
             let pane = pane.or_else(|| std::env::var("WHEEL_PANE").ok()).ok_or_else(|| anyhow::anyhow!("give --pane or run in a Wheel pane"))?;
-            let origin = Origin { dir, pane, artifact: None };
+            let origin = Origin { dir, pane, artifact: None, data: None };
             let result = agents.spawn(&origin, &a);
             let text = serde_json::to_value(&result.content[0])?["text"].as_str().unwrap_or("").to_string();
             if result.is_error == Some(true) {

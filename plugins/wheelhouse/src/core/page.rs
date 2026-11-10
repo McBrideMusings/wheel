@@ -108,6 +108,12 @@ impl Page {
                 mods.push(json!({ "opacity": 0 }));
             }
         }
+        if let Some(t) = extra["tint"].as_str() {
+            mods.push(json!({ "tint": t }));
+        }
+        if let Some(t) = extra["tone"].as_str() {
+            mods.push(json!({ "foregroundStyle": t }));
+        }
         if extra["fill"] == true {
             mods.push(json!({ "frame": { "maxWidth": "infinity" } }));
         }

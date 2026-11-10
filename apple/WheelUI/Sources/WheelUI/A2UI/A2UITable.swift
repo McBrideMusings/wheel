@@ -2,7 +2,9 @@ import SwiftUI
 
 // MARK: Table — SwiftUI's Table of rows under section titles (ADR-0029: it knows nothing of what the rows are)
 // column {key, label, width|null, tree, wide}; section {title, count, rows}; row {id, path, depth, kids, collapsed, dim, sel,
-// cells [{key, text, tone, mono, chip}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
+// cells [{key, text, sort, tone, mono, chip}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
+// A column with `sortable: true` sorts the rows of each section when its header is clicked, by each cell's `sort` (a number or a
+// string) or its `text`; the rows stay in the page's order until a header is clicked, and a column without it never sorts.
 // Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
 // menu item's own `action` with its `context`.
 struct A2UITableView: View {
@@ -17,14 +19,41 @@ struct A2UITableView: View {
         let row: [String: AnyCodable]
     }
 
+    /// Orders two rows by one column's cells: numbers by value, text the way Finder does.
+    private struct CellSort: SortComparator {
+        typealias Compared = Line
+        var key: String
+        var order: SortOrder = .forward
+
+        private static func value(_ row: [String: AnyCodable], _ key: String) -> (Double?, String) {
+            let cell = (row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.first { $0["key"]?.stringValue == key } ?? [:]
+            if let n = cell["sort"]?.numberValue { return (n, "") }
+            return (nil, cell["sort"]?.stringValue ?? cell["text"]?.stringValue ?? "")
+        }
+
+        func rows(_ a: [String: AnyCodable], _ b: [String: AnyCodable]) -> ComparisonResult {
+            if key.isEmpty { return .orderedSame }
+            let (x, y) = (Self.value(a, key), Self.value(b, key))
+            var result: ComparisonResult = .orderedSame
+            if let m = x.0, let n = y.0 { result = m < n ? .orderedAscending : m > n ? .orderedDescending : .orderedSame }
+            else { result = x.1.localizedStandardCompare(y.1) }
+            return order == .forward ? result : (result == .orderedAscending ? .orderedDescending : result == .orderedDescending ? .orderedAscending : .orderedSame)
+        }
+
+        func compare(_ a: Line, _ b: Line) -> ComparisonResult { rows(a.row, b.row) }
+    }
+
+    @State private var sortOrder: [CellSort] = []
+
     private func fire(_ name: String, _ context: [String: AnyCodable]) {
         surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
     }
 
-    private static func lines(_ sections: [[String: AnyCodable]]) -> [Line] {
+    private static func lines(_ sections: [[String: AnyCodable]], sort: CellSort?) -> [Line] {
         var lines: [Line] = []
         for (si, sec) in sections.enumerated() {
-            let rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+            var rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+            if let sort { rows.sort { sort.rows($0, $1) == .orderedAscending } }
             if let title = sec["title"]?.stringValue, !title.isEmpty {
                 lines.append(Line(id: "s\(si)", title: "\(title)  \(Int(sec["count"]?.numberValue ?? 0))", row: [:]))
             }
@@ -38,7 +67,7 @@ struct A2UITableView: View {
         let narrow = pane.width < 640
         let cols = (p["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.filter { !(narrow && $0["wide"]?.boolValue == true) }
         let sections = (p["sections"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let lines = Self.lines(sections)
+        let lines = Self.lines(sections, sort: sortOrder.first)
         let rowAction = p["rowAction"]?.stringValue ?? ""
         let foldAction = p["foldAction"]?.stringValue ?? ""
         let selected = Binding<String?>(
@@ -62,11 +91,24 @@ struct A2UITableView: View {
     private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<String?>, rowAction: String, foldAction: String) -> some View {
         let first = cols.first?["key"]?.stringValue ?? ""
         #if os(macOS)
-        Table(lines, selection: selected) {
-            TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
-                TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: first) }
-                    // A column with a width starts at it and can be dragged wider or narrower; one without fills what is left.
-                    .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: nil)
+        // A table with a sortable column shows sort arrows on every header; one without draws plain headers and never sorts.
+        Group {
+            if cols.contains(where: { $0["sortable"]?.boolValue == true }) {
+                Table(lines, selection: selected, sortOrder: $sortOrder) {
+                    TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
+                        // A column that is not sortable compares every pair as equal, so its header changes nothing.
+                        TableColumn(c["label"]?.stringValue ?? "", sortUsing: CellSort(key: c["sortable"]?.boolValue == true ? c["key"]?.stringValue ?? "" : "")) { line in cell(line, c, foldAction, first: first) }
+                            // A column with a width starts at it and can be dragged wider or narrower; one without fills what is left.
+                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: nil)
+                    }
+                }
+            } else {
+                Table(lines, selection: selected) {
+                    TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
+                        TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: first) }
+                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: nil)
+                    }
+                }
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in

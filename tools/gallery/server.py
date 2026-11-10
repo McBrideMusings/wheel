@@ -99,7 +99,7 @@ icons = lambda names: row([put("Icon", name=s) for s in names], justify="start")
 
 # ============================================================ classes
 content = klass("Content", "Static text and images. Apple's guidelines call read-only text a label: SwiftUI Text, AppKit NSTextField.", [
-    ("Text", "Text", [(v, txt(("Heading " + v[1]) if v.startswith("h") else v.capitalize() if v == "body" else "Caption", v)) for v in ("h1", "h2", "h3", "h4", "h5", "body", "caption")]),
+    ("Text", "Text", [(v, txt(("Heading " + v[1]) if v.startswith("h") else v.capitalize() if v == "body" else "Caption", v)) for v in ("h1", "h2", "h3", "h4", "h5", "body", "caption")] + [("markdown: true reads inline Markdown (bold, italic, code, links)", txt("A **bold** word, an *italic* one, `code` and a [link](https://example.com).", markdown=True))]),
     ("Icon", "Image(systemName:)", [("SF Symbol names", icons(["play.fill", "stop.fill", "xmark", "checkmark.circle.fill", "xmark.circle.fill", "gearshape"])),
                                       ("material names", icons(["check", "close", "add", "delete", "edit", "home"]))]),
     ("Image, Video, AudioPlayer", "Image, VideoPlayer", [("each needs a URL; not shown", secondary("Image variants: icon, avatar, smallFeature, mediumFeature, largeFeature, header"))]),
@@ -138,7 +138,7 @@ layout = klass("Containers and layout", "Arrange other components.", [
 nav = klass("Navigation and presentation", "Switch between or reveal content.", [
     ("Tabs", "TabView", [("three tabs", put("Tabs", tabs=[{"title": "One", "child": txt("First pane")}, {"title": "Two", "child": txt("Second pane")}, {"title": "Three", "child": txt("Third pane")}]))]),
     ("Modal", "sheet", [("button opens content in a sheet with a title bar and Done (`title`)", put("Modal", title="Details", trigger=button(txt("Open")), content=col([txt("Modal title", "h3"), txt("The modal's content.")], modifiers=[{"padding": 20}]))),
-                        ("presented true: dims and covers its own pane only, with a card and Close; dismissAction is raised on close; actions (component ids) draw in the footer left of Close; not shown", secondary("Modal with presented=true, dismissAction and actions: [button ids], children are the card's content."))]),
+                        ("presented true: dims its own pane and draws a card as wide as the pane inside a 24 pt margin, with a Close icon in the top right corner (a click on the dimmed pane and Esc close it too; the footer holds only actions); dismissAction is raised on close; actions (component ids) draw in the footer left of Close; not shown", secondary("Modal with presented=true, dismissAction and actions: [button ids], children are the card's content."))]),
 ])
 
 
@@ -255,6 +255,7 @@ mrows = [col([row([mcell(secondary(t, "caption", modifiers=[{"fontWeight": "semi
          mrow("clipShape", "{cornerRadius}", mod("clipped, radius 12", {"padding": 10}, {"background": "controlBackground"}, {"clipShape": {"cornerRadius": 12}})),
          mrow("opacity", "0 to 1", mod("faded", {"opacity": 0.4})),
          mrow("disabled", "true", put("Button", child=txt("Disabled button"), action=act(), modifiers=[{"disabled": True}])),
+         mrow("tint", "a colour name", put("Button", child=txt("Confirm"), variant="primary", action=act(), modifiers=[{"tint": "green"}])),
          mrow("help, accessibilityLabel", "a string", put("Button", child=put("Icon", name="play.fill"), action=act(), modifiers=[{"help": "Run build"}, {"accessibilityLabel": "Run build"}])),
          mrow("(unknown name)", "draws a red marker", mod("bad modifier", {"frobnicate": 1}))]
 modifiers = boxed("Modifiers", "A modifiers list on any component; each entry is a SwiftUI modifier by its SwiftUI name.", mrows)
@@ -288,11 +289,11 @@ system = klass("SwiftUI controls", "Standard controls the library lacks, named a
 ])
 
 own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu.", [
-    ("Table", "Table", [("one section, two rows; every column divider can be dragged (a column with a width starts at it, at least 40 pt); with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
-                                                       columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False}],
+    ("Table", "Table", [("one section, two rows; a column with sortable: true sorts the rows of each section when its header is clicked, by each cell's sort (a number or a string) or its text, and the rows keep the page's order until a header is clicked; every column divider can be dragged (a column with a width starts at it, at least 40 pt); with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
+                                                       columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": True, "sortable": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False, "sortable": True}],
                                                        sections=[{"title": "Ready", "count": 2, "rows": [
-                                                           {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True}, {"key": "title", "text": "First row"}]},
-                                                           {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True}, {"key": "title", "text": "Second row", "tone": "ok"}]}]}],
+                                                           {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True, "sort": 1}, {"key": "title", "text": "First row"}]},
+                                                           {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True, "sort": 2}, {"key": "title", "text": "Second row", "tone": "ok"}]}]}],
                                                        sort={"key": "id", "asc": True}, empty="None", modifiers=[{"frame": {"height": 160}}]))]),
 ])
 

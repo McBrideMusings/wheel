@@ -1009,6 +1009,10 @@ impl AppState {
 
     /// Put `dir` at the top of the recent list, dropping its older row and the rows past the limit.
     fn record_recent(&self, dir: &str) {
+        // A linked worktree is a place work happens, not a project to come back to.
+        if crate::checkout::is_linked_worktree(Path::new(dir)) {
+            return;
+        }
         let opened_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
@@ -2307,6 +2311,8 @@ impl AppState {
         }
         *self.saved_extra.lock().unwrap() = extra;
         tracing::info!(rows = recent.len(), "space recent restored");
+        let mut recent = recent;
+        recent.retain(|r| !crate::checkout::is_linked_worktree(Path::new(&r.dir)));
         *self.recent.lock().unwrap() = recent;
         let (mut respawned, mut agents) = (0, 0);
         let mut resumed_conversations = std::collections::HashSet::new();

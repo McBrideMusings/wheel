@@ -1,6 +1,10 @@
 //! The PRs view's data: every open PR of the project's GitHub repo, bucketed the way admin's PRs
 //! tab buckets them (internal/gh/gh.go): mine, needs me, waiting on others, other.
 
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 use serde_json::Value;
 
@@ -8,10 +12,13 @@ use crate::beads::epoch;
 use crate::core::run;
 
 pub mod cli;
+pub mod detail;
+pub mod markdown;
 pub mod serve;
 
 const QUERY: &str = "query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:25,after:$after,orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{
-number title headRefName isDraft mergeable updatedAt reviewDecision url additions deletions changedFiles
+number title bodyText headRefName isDraft mergeable updatedAt reviewDecision url additions deletions changedFiles
+closingIssuesReferences(first:3){nodes{number}}
 author{login __typename}
 assignees(first:10){nodes{login}}
 reviewRequests(first:10){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}
@@ -49,6 +56,12 @@ pub struct Pr {
     pub commits: i64,
     pub labels: Vec<String>,
     pub reviewers: Vec<String>,
+    /// What has to happen next, in a few words.
+    pub next: String,
+    /// The start of the description, one line.
+    pub summary: String,
+    /// The issues the PR closes.
+    pub issues: Vec<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -58,6 +71,11 @@ pub struct Snapshot {
     pub me: Option<String>,
     pub prs: Vec<Pr>,
     pub error: Option<String>,
+    /// When GitHub was asked for these PRs (Unix seconds).
+    pub fetched: i64,
+    /// The project's `[prs.buttons]`; the CLI does not print them.
+    #[serde(skip)]
+    pub buttons: Vec<detail::Button>,
 }
 
 fn login(a: &Value) -> Option<&str> {
@@ -246,6 +264,9 @@ pub fn convert(n: &Value, me: &str) -> Pr {
     let review = author_class(n);
     // Any PR with red checks or conflicts needs a fix; review feedback only counts on mine.
     let fix = checks == "failing" || n["mergeable"] == "CONFLICTING" || (bucket == "mine" && matches!(review, "changes-requested" | "needs-response"));
+    let next = next_step(n, bucket, my, checks, review, fix);
+    let summary: String = n["bodyText"].as_str().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
+    let issues = nodes(n, "closingIssuesReferences").iter().filter_map(|i| i["number"].as_i64()).collect();
     let num = |k: &str| n[k].as_i64().unwrap_or(0);
     let text = |k: &str| n[k].as_str().unwrap_or("").to_string();
     Pr {
@@ -257,7 +278,71 @@ pub fn convert(n: &Value, me: &str) -> Pr {
             let x = &r["requestedReviewer"];
             login(x).or_else(|| x["slug"].as_str()).map(String::from)
         }).collect(),
+        next, summary, issues,
     }
+}
+
+/// What has to happen to this PR next, from the viewer's side.
+fn next_step(n: &Value, bucket: &str, my: Option<&str>, checks: &str, review: &str, fix: bool) -> String {
+    let words = if n["isDraft"] == true {
+        "Mark ready"
+    } else if n["mergeable"] == "CONFLICTING" {
+        "Resolve conflicts"
+    } else if checks == "failing" {
+        "Fix failing checks"
+    } else if bucket == "mine" && review == "changes-requested" {
+        "Address requested changes"
+    } else if bucket == "mine" && review == "needs-response" {
+        "Reply to comments"
+    } else if checks == "pending" {
+        "Wait for checks"
+    } else if bucket == "mine" && review == "approved" {
+        "Merge"
+    } else if bucket == "mine" && !has_reviewer(n) {
+        "Request a review"
+    } else if bucket == "mine" {
+        "Waiting on a reviewer"
+    } else {
+        match my {
+            Some("not-reviewed") => "Review",
+            Some("updated") => "Re-review",
+            Some("replied") => "Reply",
+            Some("approved") => "Approved: waiting on author",
+            Some("changes") => "Waiting on author",
+            _ if fix => "Waiting on author",
+            _ => "Waiting on author",
+        }
+    };
+    words.to_string()
+}
+
+/// How long a read of a repo's PRs, or of one PR, is shared by every pane and project asking for it.
+const SHARE: Duration = Duration::from_secs(30);
+
+/// What GitHub said, kept for every pane and every directory of the same repo: one read of the repo's PRs
+/// serves them all, and one PR's details are read once however many panes show it.
+#[derive(Default)]
+struct Cache {
+    /// Project directory -> `owner/name`.
+    repos: HashMap<String, String>,
+    me: Option<String>,
+    /// `owner/name` -> when it was read, the Unix second, the PR nodes.
+    nodes: HashMap<String, (Instant, i64, Vec<Value>)>,
+    details: HashMap<(String, i64), (Instant, Value)>,
+}
+
+static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Mutex::default);
+/// One gate per repo: a caller that waits at it finds the read the one before it made, and does not make its own.
+static GATES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
+
+fn gate(repo: &str) -> Arc<Mutex<()>> {
+    GATES.lock().unwrap().entry(repo.to_string()).or_default().clone()
+}
+
+/// Whether an entry read at `at` serves a caller that arrived at `arrived`: always one read after the caller came
+/// (it asked for fresh data and someone just got it), otherwise one younger than [`SHARE`] unless `force`.
+fn serves(at: Instant, arrived: Instant, force: bool) -> bool {
+    at >= arrived || (!force && at.elapsed() < SHARE)
 }
 
 fn pulls(dir: &str, repo: &str) -> Result<Vec<Value>, String> {
@@ -287,31 +372,96 @@ fn pulls(dir: &str, repo: &str) -> Result<Vec<Value>, String> {
         if attempt == 3 || !all.iter().any(|n| n["mergeable"] == "UNKNOWN") {
             return Ok(all);
         }
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::thread::sleep(Duration::from_secs(3));
     }
     unreachable!()
 }
 
-/// Read project `dir`'s open PRs. A failure is in `error`, never a panic.
+/// The repo's PR nodes and when they were read: the shared read when one serves, else a new one.
+fn shared_pulls(dir: &str, repo: &str, force: bool) -> Result<(i64, Vec<Value>), String> {
+    let arrived = Instant::now();
+    let g = gate(repo);
+    let _turn = g.lock().unwrap();
+    if let Some((at, when, nodes)) = CACHE.lock().unwrap().nodes.get(repo) {
+        if serves(*at, arrived, force) {
+            return Ok((*when, nodes.clone()));
+        }
+    }
+    let nodes = pulls(dir, repo)?;
+    let when = crate::core::page::now();
+    CACHE.lock().unwrap().nodes.insert(repo.to_string(), (Instant::now(), when, nodes.clone()));
+    Ok((when, nodes))
+}
+
+/// One PR in full, shared the same way.
+pub fn shared_detail(dir: &str, repo: &str, number: i64, force: bool) -> Result<Value, String> {
+    let arrived = Instant::now();
+    let g = gate(repo);
+    let _turn = g.lock().unwrap();
+    let key = (repo.to_string(), number);
+    if let Some((at, v)) = CACHE.lock().unwrap().details.get(&key) {
+        if serves(*at, arrived, force) {
+            return Ok(v.clone());
+        }
+    }
+    let v = detail::fetch(dir, repo, number)?;
+    CACHE.lock().unwrap().details.insert(key, (Instant::now(), v.clone()));
+    Ok(v)
+}
+
+fn repo_of(dir: &str) -> Result<String, String> {
+    if let Some(r) = CACHE.lock().unwrap().repos.get(dir) {
+        return Ok(r.clone());
+    }
+    let r = run::gh(dir, &["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]).map_err(|e| format!("{dir} is not a GitHub repository: {e}"))?;
+    let r = r.trim().to_string();
+    CACHE.lock().unwrap().repos.insert(dir.to_string(), r.clone());
+    Ok(r)
+}
+
+fn viewer(dir: &str) -> Result<String, String> {
+    if let Some(m) = CACHE.lock().unwrap().me.clone() {
+        return Ok(m);
+    }
+    let m = run::gh(dir, &["api", "user", "-q", ".login"]).map_err(|e| format!("gh api user failed: {e}"))?.trim().to_string();
+    CACHE.lock().unwrap().me = Some(m.clone());
+    Ok(m)
+}
+
+/// Read project `dir`'s open PRs, from what another pane or project of the same repo read in the last 30 seconds
+/// when that serves. A failure is in `error`, never a panic.
 pub fn collect(dir: &str) -> Snapshot {
+    collect_with(dir, false)
+}
+
+/// As [`collect`]; `force` asks GitHub again unless a read began after this call did.
+pub fn collect_with(dir: &str, force: bool) -> Snapshot {
     let mut s = Snapshot { name: crate::core::project::name_of(dir), ..Default::default() };
-    let repo = match run::gh(dir, &["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]) {
-        Ok(r) => r.trim().to_string(),
+    let (buttons, problem) = detail::buttons(dir);
+    s.buttons = buttons;
+    let repo = match repo_of(dir) {
+        Ok(r) => r,
         Err(e) => {
-            s.error = Some(format!("{dir} is not a GitHub repository: {e}"));
+            s.error = Some(e);
             return s;
         }
     };
-    let me = match run::gh(dir, &["api", "user", "-q", ".login"]) {
-        Ok(m) => m.trim().to_string(),
+    let me = match viewer(dir) {
+        Ok(m) => m,
         Err(e) => {
-            s.error = Some(format!("gh api user failed: {e}"));
+            s.error = Some(e);
             return s;
         }
     };
-    match pulls(dir, &repo) {
-        Ok(nodes) => s.prs = nodes.iter().map(|n| convert(n, &me)).collect(),
+    match shared_pulls(dir, &repo, force) {
+        Ok((when, nodes)) => {
+            s.fetched = when;
+            s.prs = nodes.iter().map(|n| convert(n, &me)).collect();
+        }
         Err(e) => s.error = Some(e.chars().take(300).collect()),
+    }
+    if s.error.is_none() {
+        s.error = problem;
     }
     s.repo = Some(repo);
     s.me = Some(me);
@@ -331,6 +481,29 @@ mod tests {
             "commits": { "totalCount": 1, "nodes": [{ "commit": { "committedDate": "2026-11-01T00:00:00Z", "statusCheckRollup": { "state": "SUCCESS" } } }] } });
         f(&mut n);
         n
+    }
+
+    #[test]
+    fn a_read_serves_later_callers_for_thirty_seconds_and_a_forced_one_only_if_it_began_after_the_call() {
+        let now = Instant::now();
+        let old = now - Duration::from_secs(40);
+        assert!(serves(now, now, false), "a fresh read serves");
+        assert!(!serves(old, now, false), "a read older than 30s does not");
+        assert!(serves(now - Duration::from_secs(5), now, false));
+        assert!(!serves(now - Duration::from_secs(5), now, true), "a forced call wants a read that began after it arrived");
+        assert!(serves(now + Duration::from_millis(1), now, true), "one that did is shared");
+    }
+
+    #[test]
+    fn the_next_step_follows_the_pr_and_who_is_looking() {
+        let step = |author: &str, f: &dyn Fn(&mut Value)| convert(&node(author, |n| f(n)), "me").next;
+        assert_eq!(step("me", &|n| n["isDraft"] = json!(true)), "Mark ready");
+        assert_eq!(step("me", &|n| n["mergeable"] = json!("CONFLICTING")), "Resolve conflicts");
+        assert_eq!(step("me", &|n| n["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = json!("FAILURE")), "Fix failing checks");
+        assert_eq!(step("me", &|n| n["reviewDecision"] = json!("APPROVED")), "Merge");
+        assert_eq!(step("you", &|n| n["reviewRequests"]["nodes"] = json!([{ "requestedReviewer": { "login": "me" } }])), "Review");
+        let p = convert(&node("me", |n| { n["bodyText"] = json!("A  long\n description"); n["closingIssuesReferences"] = json!({ "nodes": [{ "number": 12 }] }); }), "me");
+        assert_eq!((p.summary.as_str(), p.issues), ("A long description", vec![12]));
     }
 
     #[test]
