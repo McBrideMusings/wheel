@@ -185,7 +185,7 @@ fn components(dir: &str, agents: &[agents::Agent], ui: &Ui, mode: Mode) -> Vec<V
     t["id"] = json!("table");
     p.put(t);
     page.push(p.boxed("table.b", "v", vec!["table".into()], json!({ "padding": [12, 0, 0, 0] })));
-    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16], "fillHeight": true }));
     p.out
 }
 

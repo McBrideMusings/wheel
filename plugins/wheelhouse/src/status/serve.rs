@@ -102,7 +102,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         p.put(t);
         page.push(p.boxed("table.b", "v", vec!["table".into()], json!({ "padding": [18, 0, 0, 0] })));
     }
-    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16], "fillHeight": true }));
     p.out
 }
 

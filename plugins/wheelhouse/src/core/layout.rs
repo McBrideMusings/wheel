@@ -123,7 +123,7 @@ pub fn modify(out: &mut [Value], id: &str, modifier: Value) {
 
 /// A `Row` (`axis` "h") or `Column` of `children`. `extra`: `spacing`, `padding`, `margin`, `widths` (a number, "flex" or null per
 /// child), `border`, `fill`, `radius`, `edge` (top or bottom rule), `dividers`, `align`, `justify`, `wrap` (a row that scrolls
-/// sideways), `mono`.
+/// sideways), `mono`, `fillHeight` (a column also fills the height left over, content at the top).
 pub fn boxed(out: &mut Vec<Value>, id: &str, axis: &str, children: Vec<String>, e: &Value) -> String {
     let horizontal = axis == "h";
     let mut kids = children;
@@ -157,6 +157,19 @@ pub fn boxed(out: &mut Vec<Value>, id: &str, axis: &str, children: Vec<String>, 
     let outlined = e.get("border").is_some() || e.get("fill").is_some();
     let radius = e["radius"].as_f64().unwrap_or(if outlined { 8.0 } else { 0.0 });
     let mut m = vec![];
+    if !horizontal {
+        // A column fills its parent's width because the page says so; the client forces nothing. `fillHeight` also takes the
+        // height left over and keeps the content at the top.
+        let frame = match (e["align"].as_str(), e["fillHeight"] == true) {
+            (Some("end"), false) => json!({ "maxWidth": "infinity", "alignment": "trailing" }),
+            (Some("center"), false) => json!({ "maxWidth": "infinity", "alignment": "center" }),
+            (_, false) => json!({ "maxWidth": "infinity", "alignment": "leading" }),
+            (Some("end"), true) => json!({ "maxWidth": "infinity", "maxHeight": "infinity", "alignment": "topTrailing" }),
+            (Some("center"), true) => json!({ "maxWidth": "infinity", "maxHeight": "infinity", "alignment": "top" }),
+            (_, true) => json!({ "maxWidth": "infinity", "maxHeight": "infinity", "alignment": "topLeading" }),
+        };
+        m.push(json!({ "frame": frame }));
+    }
     if e["mono"] == true {
         m.push(json!({ "font": { "size": 13, "design": "monospaced" } }));
     }

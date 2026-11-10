@@ -190,7 +190,7 @@ pub fn components(runners: &[Runner], runs: &[Record], ui: &Ui, log: Option<&str
         None => list_view(&mut p, &mut page, runners, runs, ui, at),
     }
 
-    p.boxed("page", "v", page, json!({ "align": "start", "padding": [20, 20, 40, 20], "spacing": 14 }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [20, 20, 40, 20], "spacing": 14, "fillHeight": true }));
     // Every column stretches, so rows fill the pane and every button sits at the right edge.
     for c in p.out.iter_mut().filter(|c| c["component"] == "Column") {
         c["align"] = json!("stretch");

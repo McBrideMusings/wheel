@@ -112,7 +112,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             page.push(p.boxed("pr", "v", kids, json!({ "spacing": 3 })));
         }
     }
-    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16], "fillHeight": true }));
     p.out
 }
 

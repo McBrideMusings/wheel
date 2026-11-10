@@ -910,7 +910,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
             }
         }
     }
-    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
+    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16], "fillHeight": true }));
     p.out
 }
 

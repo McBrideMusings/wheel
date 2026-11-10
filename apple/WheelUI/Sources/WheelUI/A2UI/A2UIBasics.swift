@@ -127,7 +127,6 @@ struct A2UIStack: View {
                 HStack(alignment: vertical(node.props["align"]?.stringValue), spacing: spacing) { content(kids, justify) }
             } else {
                 VStack(alignment: horizontalAlign(node.props["align"]?.stringValue), spacing: spacing) { content(kids, justify) }
-                    .frame(maxWidth: .infinity, alignment: frameAlignment(node.props["align"]?.stringValue))
             }
         }
     }
@@ -139,15 +138,11 @@ struct A2UIStack: View {
             if i > 0 && justify == "spaceBetween" || i > 0 && justify == "spaceEvenly" || i > 0 && justify == "spaceAround" { Spacer(minLength: 0) }
             A2UIChildView(node: k, surface: surface)
         }
-        // The spacer that keeps a start-aligned stack at the top gives way to a Table, which takes the height left over.
-        // Only the page column gets it: in a card or a box a spacer made the stack take height and stretched it.
-        let pinsTop = horizontal || node.instance.id == "page"
-        if pinsTop && (justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround") { Spacer(minLength: 0).layoutPriority(-1) }
+        if horizontal && (justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround") { Spacer(minLength: 0).layoutPriority(-1) }
     }
 
     private func vertical(_ a: String?) -> VerticalAlignment { a == "start" ? .top : a == "end" ? .bottom : .center }
     private func horizontalAlign(_ a: String?) -> HorizontalAlignment { a == "center" ? .center : a == "end" ? .trailing : .leading }
-    private func frameAlignment(_ a: String?) -> Alignment { a == "center" ? .center : a == "end" ? .trailing : .leading }
 }
 
 // MARK: List — `direction` (vertical, horizontal)

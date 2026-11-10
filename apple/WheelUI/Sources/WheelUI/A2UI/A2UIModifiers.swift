@@ -5,7 +5,7 @@ import SwiftUI
 //   [{"font": {"size": 12, "weight": "semibold", "design": "monospaced"}}, {"foregroundStyle": "green"}, {"padding": 12}]
 // font: a text style name ("caption") or {size, weight, design}; fontWeight; monospacedDigit; foregroundStyle and background: a
 // colour name; padding: n | [v, h] | [top, right, bottom, left] | {horizontal|vertical|top|bottom|leading|trailing: n};
-// frame: {width, height, minWidth, maxWidth, minHeight, maxHeight ("infinity" or n), alignment}; overlay: {stroke: colour,
+// frame: {width, height, minWidth, maxWidth, minHeight, maxHeight ("infinity" or n), alignment (leading, trailing, top, bottom, center, topLeading, topTrailing, bottomLeading, bottomTrailing)}; overlay: {stroke: colour,
 // cornerRadius}; clipShape: {cornerRadius}; opacity; lineLimit; multilineTextAlignment; textSelection; textCase; tracking; help;
 // disabled, accessibilityLabel. A name this does not map draws a visible marker, never nothing.
 
@@ -116,6 +116,10 @@ private func alignment(_ name: String?) -> Alignment {
     case "top": return .top
     case "bottom": return .bottom
     case "center": return .center
+    case "topLeading": return .topLeading
+    case "topTrailing": return .topTrailing
+    case "bottomLeading": return .bottomLeading
+    case "bottomTrailing": return .bottomTrailing
     default: return .leading
     }
 }

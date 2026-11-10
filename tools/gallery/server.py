@@ -26,7 +26,10 @@ def put(component, children=None, **props):
     return cid
 
 
-def col(children, **p):
+def col(children, fill=True, **p):
+    """A Column. A VStack takes only the width of its content, so the page says `frame maxWidth infinity` when it wants the width."""
+    if fill:
+        p["modifiers"] = [{"frame": {"maxWidth": "infinity", "alignment": "leading"}}] + p.get("modifiers", [])
     return put("Column", children, **p)
 
 
@@ -129,7 +132,7 @@ inputs = klass("Selection and input", "Values the person sets.", [
 
 layout = klass("Containers and layout", "Arrange other components.", [
     ("Row", "HStack", [("justify " + j, row([txt("one"), txt("two"), txt("three")], justify=j)) for j in ("start", "center", "end", "spaceBetween", "spaceEvenly")] + [("spacing 24", row([txt("one"), txt("two"), txt("three")], justify="start", spacing=24))]),
-    ("Column", "VStack", [("align " + a, col([txt("short"), txt("a longer line")], align=a)) for a in ("start", "center", "end")] + [("in a row beside a Table: keeps its own height", row([col([txt("128", "h4"), secondary("Ready")], align="start", modifiers=[{"padding": [7, 8]}, {"overlay": {"stroke": "separator", "cornerRadius": 8}}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}]) for _ in range(2)], justify="start"))]),
+    ("Column", "VStack", [("align " + a + " (content width; a page adds frame maxWidth infinity to fill)", col([txt("short"), txt("a longer line")], align=a, fill=False)) for a in ("start", "center", "end")] + [("in a row beside a Table: keeps its own height", row([col([txt("128", "h4"), secondary("Ready")], align="start", modifiers=[{"padding": [7, 8]}, {"overlay": {"stroke": "separator", "cornerRadius": 8}}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}]) for _ in range(2)], justify="start"))]),
     ("List", "List", [("vertical", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="vertical")), ("horizontal", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="horizontal"))]),
     ("Card", "GroupBox", [("one child", put("Card", child=col([txt("Inside a card", "h4"), secondary("Body text")], align="start", modifiers=[{"padding": 12}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}])))]),
     ("Divider", "Divider", [("horizontal", col([txt("above"), put("Divider", axis="horizontal"), txt("below")], align="start")), ("vertical", row([txt("left"), put("Divider", axis="vertical"), txt("right")], justify="start"))]),
@@ -250,7 +253,7 @@ mrows = [col([row([mcell(secondary(t, "caption", modifiers=[{"fontWeight": "semi
          mrow("foregroundStyle", "primary, secondary, tertiary, red, orange, yellow, green, mint, teal, cyan, blue, indigo, purple, pink, brown, gray, black, white, tint", row([mod(c, {"foregroundStyle": c}) for c in ("red", "orange", "green", "blue", "purple", "tint")], justify="start")),
          mrow("background", "a colour name, or separator, windowBackground, controlBackground, textBackground", mod("controlBackground", {"padding": 8}, {"background": "controlBackground"})),
          mrow("padding", "n, [vertical, horizontal], [top, right, bottom, left], {horizontal, vertical, top, ...}", col([mod("padding 12", {"padding": 12}, {"overlay": {"stroke": "separator"}}), mod("[4, 16]", {"padding": [4, 16]}, {"overlay": {"stroke": "separator"}})], align="start")),
-         mrow("frame", "{width, height, minWidth, maxWidth, alignment}; maxWidth may be infinity", mod("width 120", {"frame": {"width": 120, "alignment": "leading"}}, {"overlay": {"stroke": "separator"}})),
+         mrow("frame", "{width, height, minWidth, maxWidth, minHeight, maxHeight, alignment incl. topLeading}; max sizes may be infinity", mod("width 120", {"frame": {"width": 120, "alignment": "leading"}}, {"overlay": {"stroke": "separator"}})),
          mrow("overlay", "{stroke: colour, cornerRadius}", mod("outlined, radius 8", {"padding": 10}, {"overlay": {"stroke": "separator", "cornerRadius": 8}})),
          mrow("clipShape", "{cornerRadius}", mod("clipped, radius 12", {"padding": 10}, {"background": "controlBackground"}, {"clipShape": {"cornerRadius": 12}})),
          mrow("opacity", "0 to 1", mod("faded", {"opacity": 0.4})),
