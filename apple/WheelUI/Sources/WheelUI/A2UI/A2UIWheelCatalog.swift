@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
 let wheelA2UIExtensions: Set<String> = ["Table", "Canvas", "Unsupported",
-    "ProgressView", "Gauge", "Menu", "Link", "Form", "Section", "LabeledContent", "Grid", "GridRow", "Stepper", "ColorPicker", "Popover", "Alert", "ConfirmationDialog", "NavigationSplitView", "NavigationStack", "HSplitView", "VSplitView", "Toolbar", "Chart", "Map", "ShareLink", "PasteButton"]
+    "ProgressView", "Gauge", "Menu", "Link", "Form", "Section", "LabeledContent", "Grid", "GridRow", "Stepper", "ColorPicker", "Popover", "Alert", "ConfirmationDialog", "NavigationSplitView", "NavigationStack", "ViewThatFits", "HSplitView", "VSplitView", "Toolbar", "Chart", "Map", "ShareLink", "PasteButton"]
 
 // The palette is the system's own semantic colours, so a page follows light and dark and the
 // person's accent colour like any native window.
@@ -59,6 +59,7 @@ struct WheelA2UICatalog {
         case "ConfirmationDialog": A2UIConfirmationDialogView(node: node, surface: surface)
         case "NavigationSplitView": A2UINavigationSplitViewView(node: node, surface: surface)
         case "NavigationStack": A2UINavigationStackView(node: node, surface: surface)
+        case "ViewThatFits": A2UIViewThatFitsView(node: node, surface: surface)
         case "HSplitView": A2UIHSplitViewView(node: node, surface: surface)
         case "VSplitView": A2UIVSplitViewView(node: node, surface: surface)
         case "Toolbar": A2UIToolbarView(node: node, surface: surface)

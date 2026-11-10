@@ -395,7 +395,7 @@ mod tests {
         let table = c.iter().find(|v| v["id"] == "table").unwrap();
         assert_eq!(table["sections"][0]["title"], "Stashes");
         assert_eq!(table["sections"][0]["rows"][0]["cells"][1]["text"], "On main: wip");
-        assert!(c.iter().any(|v| v["id"] == "views" && v["modifiers"][0]["disabled"] == true));
+        assert!(c.iter().any(|v| v["id"] == "views.seg" && v["modifiers"][0]["disabled"] == true));
     }
 
     #[test]

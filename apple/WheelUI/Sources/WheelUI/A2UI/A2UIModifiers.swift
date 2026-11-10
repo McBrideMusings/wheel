@@ -5,8 +5,9 @@ import SwiftUI
 //   [{"font": {"size": 12, "weight": "semibold", "design": "monospaced"}}, {"foregroundStyle": "green"}, {"padding": 12}]
 // font: a text style name ("caption") or {size, weight, design}; fontWeight; monospacedDigit; foregroundStyle and background: a
 // colour name; padding: n | [v, h] | [top, right, bottom, left] | {horizontal|vertical|top|bottom|leading|trailing: n};
-// frame: {width, height, minWidth, maxWidth, minHeight, maxHeight ("infinity" or n), alignment}; overlay: {stroke: colour,
-// cornerRadius}; clipShape: {cornerRadius}; opacity; lineLimit; multilineTextAlignment; textSelection; textCase; tracking; help;
+// frame: {width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight ("infinity" or n), alignment};
+// fixedSize: true | {horizontal, vertical}; overlay: {stroke: colour,
+// cornerRadius}; clipShape: {cornerRadius}; opacity; lineLimit; truncationMode (head, middle, tail); multilineTextAlignment; textSelection; textCase; tracking; help;
 // disabled, accessibilityLabel. A name this does not map draws a visible marker, never nothing.
 
 /// The colour a modifier's colour name means.
@@ -147,8 +148,8 @@ struct A2UIModifiers: ViewModifier {
             if let e = a2uiPadding(arg) { return AnyView(v.padding(e)) }
         case "frame":
             if let d = arg.dictionaryValue {
-                return AnyView(v.frame(minWidth: length(d["minWidth"]), idealWidth: nil, maxWidth: length(d["maxWidth"]),
-                                       minHeight: length(d["minHeight"]), idealHeight: nil, maxHeight: length(d["maxHeight"]),
+                return AnyView(v.frame(minWidth: length(d["minWidth"]), idealWidth: length(d["idealWidth"]), maxWidth: length(d["maxWidth"]),
+                                       minHeight: length(d["minHeight"]), idealHeight: length(d["idealHeight"]), maxHeight: length(d["maxHeight"]),
                                        alignment: alignment(d["alignment"]?.stringValue))
                     .frame(width: length(d["width"]), height: length(d["height"]), alignment: alignment(d["alignment"]?.stringValue)))
             }
@@ -162,6 +163,13 @@ struct A2UIModifiers: ViewModifier {
         case "disabled": if arg.boolValue == true { return AnyView(v.disabled(true)) } else { return v }
         case "opacity": if let n = arg.numberValue { return AnyView(v.opacity(n)) }
         case "lineLimit": if let n = arg.numberValue { return AnyView(v.lineLimit(Int(n))) }
+        case "truncationMode":
+            return AnyView(v.truncationMode(arg.stringValue == "head" ? .head : arg.stringValue == "middle" ? .middle : .tail))
+        case "fixedSize":
+            if let d = arg.dictionaryValue {
+                return AnyView(v.fixedSize(horizontal: d["horizontal"]?.boolValue ?? false, vertical: d["vertical"]?.boolValue ?? false))
+            }
+            if arg.boolValue == true { return AnyView(v.fixedSize()) } else { return v }
         case "multilineTextAlignment":
             return AnyView(v.multilineTextAlignment(arg.stringValue == "trailing" ? .trailing : arg.stringValue == "center" ? .center : .leading))
         case "textSelection": if arg.boolValue == true { return AnyView(v.textSelection(.enabled)) } else { return v }

@@ -87,15 +87,20 @@ struct A2UIFormView: View {
     }
 }
 
-// MARK: Section(_ title:) { content } — `title`, or `header` and `footer` text
+// MARK: Section(_ title:) { content } — `title` text, or Section { content } header: { } footer: { } with `header` and `footer`
+// each a component's id (a List with `pinnedViews` keeps the header at its top while the rows scroll)
 struct A2UISectionView: View {
     let node: ComponentNode
     let surface: SurfaceModel
     var body: some View {
-        if let header = node.string("header"), let footer = node.string("footer") {
-            Section { kids(node, surface) } header: { Text(header) } footer: { Text(footer) }
-        } else if let header = node.string("header") {
-            Section { kids(node, surface) } header: { Text(header) }
+        let header = node.string("header").flatMap { surface.node($0) }
+        let footer = node.string("footer").flatMap { surface.node($0) }
+        if header != nil || footer != nil {
+            Section { kids(node, surface) } header: {
+                if let header { A2UIChildView(node: header, surface: surface) }
+            } footer: {
+                if let footer { A2UIChildView(node: footer, surface: surface) }
+            }
         } else {
             Section(node.string("title") ?? "") { kids(node, surface) }
         }
@@ -253,6 +258,21 @@ struct A2UIConfirmationDialogView: View {
             .confirmationDialog(node.string("title") ?? "", isPresented: presentedBinding(node, surface), titleVisibility: .visible) {
                 A2UIPresentedButtons(node: node, surface: surface)
             } message: { Text(node.string("message") ?? "") }
+    }
+}
+
+// MARK: ViewThatFits(in:) { content } — `in` (horizontal, vertical; both when absent): the first child whose ideal size fits the
+// space it is offered on those axes, else the last
+struct A2UIViewThatFitsView: View {
+    let node: ComponentNode
+    let surface: SurfaceModel
+    var body: some View {
+        let axes: Axis.Set = switch node.string("in") {
+        case "horizontal": .horizontal
+        case "vertical": .vertical
+        default: [.horizontal, .vertical]
+        }
+        ViewThatFits(in: axes) { kids(node, surface) }
     }
 }
 

@@ -150,23 +150,32 @@ struct A2UIStack: View {
     private func frameAlignment(_ a: String?) -> Alignment { a == "center" ? .center : a == "end" ? .trailing : .leading }
 }
 
-// MARK: List — `direction` (vertical, horizontal)
+// MARK: List — `direction` (vertical, horizontal); a vertical one takes LazyVStack's `pinnedViews` (["sectionHeaders",
+// "sectionFooters"]: a Section child's header stays at the top while its rows scroll) and ScrollViewReader's `scrollTo` (a child's
+// id: the list scrolls it to the top whenever the value changes)
 struct A2UIList: View {
     let node: ComponentNode
     let surface: SurfaceModel
     var body: some View {
         let horizontal = node.props["direction"]?.stringValue == "horizontal"
-        ScrollView(horizontal ? .horizontal : .vertical) {
-            if horizontal {
-                HStack(spacing: node.props["spacing"]?.numberValue.map { CGFloat($0) } ?? 8) { items }
-            } else {
-                LazyVStack(alignment: .leading, spacing: node.props["spacing"]?.numberValue.map { CGFloat($0) } ?? 8) { items }
+        let spacing = node.props["spacing"]?.numberValue.map { CGFloat($0) } ?? 8
+        let names = (node.props["pinnedViews"]?.arrayValue ?? []).compactMap(\.stringValue)
+        let pinned: PinnedScrollableViews = [names.contains("sectionHeaders") ? .sectionHeaders : [], names.contains("sectionFooters") ? .sectionFooters : []]
+        let target = node.props["scrollTo"]?.stringValue
+        ScrollViewReader { proxy in
+            ScrollView(horizontal ? .horizontal : .vertical) {
+                if horizontal {
+                    HStack(spacing: spacing) { items }
+                } else {
+                    LazyVStack(alignment: .leading, spacing: spacing, pinnedViews: pinned) { items }
+                }
             }
+            .onChange(of: target, initial: true) { _, id in if let id { proxy.scrollTo(id, anchor: .top) } }
         }
         .fixedSize(horizontal: false, vertical: horizontal)
     }
     private var items: some View {
-        ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface) }
+        ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface).id(k.instance.id) }
     }
 }
 
@@ -378,7 +387,6 @@ struct A2UIChoicePicker: View {
     let node: ComponentNode
     let surface: SurfaceModel
     @State private var filter = ""
-    @Environment(\.a2uiPane) private var pane
     @Environment(\.a2uiInForm) private var inForm
     var body: some View {
         let path = a2uiPath(of: node.instance, in: surface)
@@ -415,23 +423,12 @@ struct A2UIChoicePicker: View {
                 } else {
                     VStack(alignment: .leading) { ForEach(options, id: \.value) { o in toggle(o, selected, path, chip: false) } }
                 }
-            } else if node.props["displayStyle"]?.stringValue == "menu" || (node.props["displayStyle"]?.stringValue != "chips" && options.count > 4) {
-                // A menu is as wide as its widest option and takes a width from the page's frame modifier, so a row of menus can share its width.
+            } else if node.props["displayStyle"]?.stringValue == "chips" {
+                // A segmented control, at every width: a page that wants a menu when it does not fit sends a `ViewThatFits` of both.
+                Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.segmented).labelsHidden()
+            } else {
+                // Any other style draws the menu. Its width is the page's: a `frame` or `fixedSize` modifier.
                 Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }.pickerStyle(.menu).labelsHidden()
-            } else if node.props["displayStyle"]?.stringValue == "chips" || options.count <= 4 {
-                // A narrow pane gets the menu, which is one control wide. A wider one gets the segmented control when it fits the width
-                // it is given and the menu when it does not, so it never runs off the pane.
-                if pane.width < 640 {
-                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
-                        .pickerStyle(.menu).labelsHidden().fixedSize()
-                } else {
-                ViewThatFits(in: .horizontal) {
-                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
-                        .pickerStyle(.segmented).labelsHidden().fixedSize(horizontal: true, vertical: false)
-                    Picker(title, selection: single) { ForEach(options, id: \.value) { Text($0.label).tag($0.value) } }
-                        .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
-                }
-                }
             }
         }
         }

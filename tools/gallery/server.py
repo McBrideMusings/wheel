@@ -118,8 +118,9 @@ inputs = klass("Selection and input", "Values the person sets.", [
     ("ChoicePicker", "Picker", [("mutuallyExclusive", put("ChoicePicker", label="Filter", options=OPTS, value=["b"], variant="mutuallyExclusive")),
                                 ("multipleSelection", put("ChoicePicker", label="Filter", options=OPTS, value=["a", "c"], variant="multipleSelection")),
                                 ("displayStyle checkbox", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="checkbox")),
-                                ("displayStyle chips: a segmented control that becomes a menu when the width is too small for it", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="chips")),
-                                ("displayStyle menu: always a menu, as wide as its widest option, and it takes a width from a frame modifier", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="mutuallyExclusive", displayStyle="menu")),
+                                ("displayStyle chips: one toggle button per option (several can be on)", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="multipleSelection", displayStyle="chips")),
+                                ("mutuallyExclusive, displayStyle chips: a segmented control at every width; a page wanting a menu when it does not fit sends a ViewThatFits of both", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="mutuallyExclusive", displayStyle="chips")),
+                                ("displayStyle menu, or no style: a menu, as wide as its widest option; a frame or fixedSize modifier sets its width", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="mutuallyExclusive", displayStyle="menu")),
                                 ("filterable", put("ChoicePicker", label="Filter", options=OPTS, value=["a"], variant="mutuallyExclusive", filterable=True))]),
     ("Slider", "Slider", [("min 0, max 10, value 4", put("Slider", label="Volume", value=4, min=0, max=10))]),
     ("DateTimeInput", "DatePicker", [("date", put("DateTimeInput", label="Due", value="2026-11-06", enableDate=True, enableTime=False)),
@@ -127,10 +128,25 @@ inputs = klass("Selection and input", "Values the person sets.", [
                                       ("date and time", put("DateTimeInput", label="When", value="2026-11-06T14:30:00", enableDate=True, enableTime=True))]),
 ])
 
+def pinned_list():
+    secs = [put("Section", [txt(f"{f} line {i}", modifiers=[{"font": {"size": 11, "design": "monospaced"}}]) for i in range(1, 9)],
+                header=row([txt(f, modifiers=[{"fontWeight": "semibold"}])], justify="start", modifiers=[{"padding": [4, 8]}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}, {"background": "controlBackground"}]))
+            for f in ("a.rs", "b.rs", "c.rs")]
+    return put("List", secs, spacing=0, pinnedViews=["sectionHeaders"], scrollTo=secs[1], modifiers=[{"frame": {"height": 140}}])
+
+
 layout = klass("Containers and layout", "Arrange other components.", [
     ("Row", "HStack", [("justify " + j, row([txt("one"), txt("two"), txt("three")], justify=j)) for j in ("start", "center", "end", "spaceBetween", "spaceEvenly")] + [("spacing 24", row([txt("one"), txt("two"), txt("three")], justify="start", spacing=24))]),
     ("Column", "VStack", [("align " + a, col([txt("short"), txt("a longer line")], align=a)) for a in ("start", "center", "end")] + [("in a row beside a Table: keeps its own height", row([col([txt("128", "h4"), secondary("Ready")], align="start", modifiers=[{"padding": [7, 8]}, {"overlay": {"stroke": "separator", "cornerRadius": 8}}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}]) for _ in range(2)], justify="start"))]),
-    ("List", "List", [("vertical", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="vertical")), ("horizontal", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="horizontal"))]),
+    ("List", "List", [("vertical", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="vertical")), ("horizontal", put("List", [txt("alpha"), txt("beta"), txt("gamma")], direction="horizontal")),
+                      ("pinnedViews sectionHeaders, scrollTo: each Section's header stays at the top while its rows scroll; scrollTo names the child scrolled to the top when it changes (here the second section)",
+                       pinned_list())]),
+    ("ViewThatFits", "ViewThatFits", [("in horizontal: the first child whose ideal width fits; the first here has idealWidth 640, so it shows only when the space is at least 640 pt",
+                                       put("ViewThatFits", [txt("At least 640 pt across: this one", modifiers=[{"frame": {"minWidth": 640, "idealWidth": 640, "maxWidth": "infinity", "alignment": "leading"}}, {"padding": 8}, {"overlay": {"stroke": "green"}}]),
+                                                            txt("Under 640 pt: this one", modifiers=[{"padding": 8}, {"overlay": {"stroke": "orange"}}])], **{"in": "horizontal"})),
+                                      ("a row with a segmented control, then the same row with a menu: which one shows depends on the width alone when the neighbour has a fixed width",
+                                       put("ViewThatFits", [row([put("ChoicePicker", label="Scope", options=OPTS, value=["a"], variant="mutuallyExclusive", displayStyle="chips", modifiers=[{"fixedSize": {"horizontal": True}}]), txt("3 files  +12 −4", modifiers=[{"monospacedDigit": True}, {"frame": {"width": 160, "alignment": "trailing"}}])], justify="spaceBetween"),
+                                                            row([put("ChoicePicker", label="Scope", options=OPTS, value=["a"], variant="mutuallyExclusive", displayStyle="menu", modifiers=[{"fixedSize": True}]), txt("3 files  +12 −4", modifiers=[{"monospacedDigit": True}, {"frame": {"width": 160, "alignment": "trailing"}}])], justify="spaceBetween")], **{"in": "horizontal"}))]),
     ("Card", "GroupBox", [("one child", put("Card", child=col([txt("Inside a card", "h4"), secondary("Body text")], align="start", modifiers=[{"padding": 12}, {"frame": {"maxWidth": "infinity", "alignment": "leading"}}])))]),
     ("Divider", "Divider", [("horizontal", col([txt("above"), put("Divider", axis="horizontal"), txt("below")], align="start")), ("vertical", row([txt("left"), put("Divider", axis="vertical"), txt("right")], justify="start"))]),
 ])
@@ -250,7 +266,9 @@ mrows = [col([row([mcell(secondary(t, "caption", modifiers=[{"fontWeight": "semi
          mrow("foregroundStyle", "primary, secondary, tertiary, red, orange, yellow, green, mint, teal, cyan, blue, indigo, purple, pink, brown, gray, black, white, tint", row([mod(c, {"foregroundStyle": c}) for c in ("red", "orange", "green", "blue", "purple", "tint")], justify="start")),
          mrow("background", "a colour name, or separator, windowBackground, controlBackground, textBackground", mod("controlBackground", {"padding": 8}, {"background": "controlBackground"})),
          mrow("padding", "n, [vertical, horizontal], [top, right, bottom, left], {horizontal, vertical, top, ...}", col([mod("padding 12", {"padding": 12}, {"overlay": {"stroke": "separator"}}), mod("[4, 16]", {"padding": [4, 16]}, {"overlay": {"stroke": "separator"}})], align="start")),
-         mrow("frame", "{width, height, minWidth, maxWidth, alignment}; maxWidth may be infinity", mod("width 120", {"frame": {"width": 120, "alignment": "leading"}}, {"overlay": {"stroke": "separator"}})),
+         mrow("frame", "{width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight, alignment}; a max may be infinity; an ideal is the size a ViewThatFits measures", mod("width 120", {"frame": {"width": 120, "alignment": "leading"}}, {"overlay": {"stroke": "separator"}})),
+         mrow("fixedSize", "true, or {horizontal, vertical}", row([mod("keeps its whole width", {"fixedSize": True}, {"overlay": {"stroke": "separator"}}), mod("squeezed", {"lineLimit": 1}, {"frame": {"width": 50}}, {"overlay": {"stroke": "separator"}})], justify="start")),
+         mrow("truncationMode", "head, middle, tail (with lineLimit)", mod("plugins/wheelhouse/src/diff/serve.rs", {"lineLimit": 1}, {"truncationMode": "head"}, {"frame": {"width": 160, "alignment": "leading"}})),
          mrow("overlay", "{stroke: colour, cornerRadius}", mod("outlined, radius 8", {"padding": 10}, {"overlay": {"stroke": "separator", "cornerRadius": 8}})),
          mrow("clipShape", "{cornerRadius}", mod("clipped, radius 12", {"padding": 10}, {"background": "controlBackground"}, {"clipShape": {"cornerRadius": 12}})),
          mrow("opacity", "0 to 1", mod("faded", {"opacity": 0.4})),
@@ -269,7 +287,7 @@ system = klass("SwiftUI controls", "Standard controls the library lacks, named a
     ("Gauge", "Gauge", [("linearCapacity", put("Gauge", title="Disk", value=40, min=0, max=100)), ("accessoryCircular", put("Gauge", title="CPU", value=70, min=0, max=100, style="accessoryCircular"))]),
     ("Menu", "Menu", [("children are items", put("Menu", [mi("Copy"), put("Divider"), mi("Delete")], title="Actions")), ("keepOpen: stays open while items are ticked (iOS only; a Mac menu closes after each tick)", put("Menu", [put("CheckBox", label="One", value=True), put("CheckBox", label="Two", value=False)], title="Pick several", keepOpen=True))]),
     ("Link", "Link", [("title, destination", put("Link", title="Apple", destination="https://apple.com"))]),
-    ("Form, Section", "Form, Section", [("grouped", put("Form", [put("Section", [put("Stepper", title="Count", value=3, min=0, max=10)], title="Counts")], style="grouped"))]),
+    ("Form, Section", "Form, Section", [("grouped", put("Form", [put("Section", [put("Stepper", title="Count", value=3, min=0, max=10)], title="Counts")], style="grouped")), ("header and footer: component ids drawn as the Section's header and footer views", put("Form", [put("Section", [put("Stepper", title="Count", value=3, min=0, max=10)], header=row([put("Icon", name="number"), txt("Counts")], justify="start"), footer=secondary("Between 0 and 10", "caption"))], style="grouped"))]),
     ("LabeledContent", "LabeledContent", [("value", put("LabeledContent", title="Branch", value="main")), ("children as content", put("LabeledContent", [txt("custom")], title="Child"))]),
     ("Grid, GridRow", "Grid, GridRow", [("two rows", put("Grid", [put("GridRow", [txt("a"), txt("b")]), put("GridRow", [txt("c"), txt("d")])], horizontalSpacing=16))]),
     ("Stepper", "Stepper", [("min 0, max 10, step 1", put("Stepper", title="Count", value=4, min=0, max=10, step=1))]),
