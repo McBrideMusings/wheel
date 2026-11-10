@@ -12,6 +12,10 @@ public final class QueueState: ObservableObject {
     /// Whether the server can take a sent message back (`agent_unsend`); an older one cannot, and
     /// Edit, Remove and Clear queue are not shown.
     @Published public var takeBackAvailable = true
+    /// Queued turns whose Send now was clicked and the daemon has not yet run: the row says so at
+    /// once, since the harness takes a moment to stop the running turn. Cleared when the message
+    /// leaves the queue or the daemon refuses.
+    @Published public internal(set) var sendingNow: Set<UInt64> = []
 }
 
 /// Where a listing of an agent's conversations stands.
@@ -64,7 +68,9 @@ public final class AgentChat: ObservableObject {
     public private(set) var rowUpdates = 0
     /// The last thing the daemon refused for this agent, shown under its composer until the
     /// next send or attach.
-    @Published public var error: String?
+    @Published public var error: String? {
+        didSet { if error != nil, !queue.sendingNow.isEmpty { queue.sendingNow = [] } }
+    }
     /// A status the daemon holds over this agent, drawn as a dismissible banner above its
     /// composer: a conversation that would not reopen. Never part of the transcript.
     @Published public var notice: String?
@@ -255,6 +261,8 @@ public final class AgentChat: ObservableObject {
     private func syncQueue() {
         let next = transcript.queuedMessages
         if next != queue.queued { queue.queued = next }
+        let waiting = queue.sendingNow.intersection(next.map(\.turn))
+        if waiting != queue.sendingNow { queue.sendingNow = waiting }
         if transcript.unansweredTurn != queue.unansweredTurn { queue.unansweredTurn = transcript.unansweredTurn }
     }
 
@@ -295,7 +303,14 @@ public final class AgentChat: ObservableObject {
     public func sendNow(turn: UInt64) {
         guard queue.takeBackAvailable else { return }
         UILog.info("transcript \(name): send queued turn \(turn) now")
+        queue.sendingNow.insert(turn)
         sendNow(turn)
+    }
+
+    /// Show a queued turn as sending now when the send-now request was made by the model (the
+    /// composer's Control-Return) rather than by the row's button.
+    public func markSendingNow(turn: UInt64) {
+        queue.sendingNow.insert(turn)
     }
 
     public func clearQueue() {

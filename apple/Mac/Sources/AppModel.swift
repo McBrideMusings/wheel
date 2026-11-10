@@ -1093,7 +1093,10 @@ final class AppModel {
             Log.info("permission \(id) resolved: \(choice)")
         case let .agentQueued(req, agent, turn):
             agentReqs[req] = nil
-            if sendNowReqs.remove(req) != nil { client.send(.agentSendNow(req: client.req(), agent: agent, turn: turn)) }
+            if sendNowReqs.remove(req) != nil {
+                chats[agent]?.markSendingNow(turn: turn)
+                client.send(.agentSendNow(req: client.req(), agent: agent, turn: turn))
+            }
         case let .opened(req, pane, url):
             if openReqs.removeValue(forKey: req) != nil { browserPanes[pane]?.opened(url) }
         case let .ok(req):
