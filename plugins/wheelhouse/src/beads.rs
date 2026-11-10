@@ -822,7 +822,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         page.push("find".to_string());
 
         // The filters are one row of menus, each starting at "Any": status, type, label and priority, then the count.
-        // Each filter is a menu that stays open while values are ticked; its title says what it holds. "Is not" excludes the ticked values.
+        // Each filter is a popover of ticks; its title says what it holds. "Is not" excludes the ticked values.
         let menu = |p: &mut Page, key: &str, name: &str, opts: Vec<(String, String)>| -> String {
             let held = ui.values(key);
             let neg = ui.not.contains(key);
@@ -843,8 +843,11 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
                 p.put(json!({ "id": id, "component": "CheckBox", "label": text, "value": { "path": path } }));
                 kids.push(id);
             }
+            // A Mac menu closes after each tick, so the ticks sit in a popover, which stays open until it is dismissed.
             let id = format!("filters.{key}");
-            p.put(json!({ "id": id, "component": "Menu", "title": title, "keepOpen": true, "children": kids }));
+            let trigger = p.label(&format!("filters.{key}.title"), &format!("{title} ⌄"), json!({ "size": 12 }));
+            let content = p.boxed(&format!("filters.{key}.ticks"), "v", kids, json!({ "spacing": 6, "align": "start" }));
+            p.put(json!({ "id": id, "component": "Popover", "children": [trigger, content] }));
             id
         };
         let counted = |f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<(String, String)> {
@@ -1014,16 +1017,16 @@ mod tests {
     }
 
     #[test]
-    fn a_filter_is_a_menu_of_ticks_titled_with_what_it_holds() {
+    fn a_filter_is_a_popover_of_ticks_titled_with_what_it_holds() {
         let s = snap(vec![bead("a", |_| {})]);
         let mut ui = Ui::default();
         ui.f.insert("pri".into(), "0,1".into());
         ui.not.insert("pri".into());
         let c = page_components(&s, &ui);
         let menu = c.iter().find(|x| x["id"] == "filters.pri").expect("the priority menu");
-        assert_eq!(menu["component"], "Menu");
-        assert_eq!(menu["title"], "Priority not: P0, P1");
-        assert_eq!(menu["keepOpen"], true);
+        assert_eq!(menu["component"], "Popover");
+        let title = c.iter().find(|x| x["id"] == "filters.pri.title").expect("the trigger text");
+        assert_eq!(title["text"], "Priority not: P0, P1 ⌄");
         let tick = c.iter().find(|x| x["id"] == "filters.pri.1").expect("a tick for P1");
         assert_eq!(tick["value"]["path"], "/toggle_filter/pri:1");
         assert!(c.iter().all(|x| x["id"] != "chips"), "the menus show their own state, so there are no chips");
@@ -1043,7 +1046,7 @@ mod tests {
         assert_eq!((views["component"].as_str(), &views["children"]), (Some("ViewThatFits"), &json!(["views.seg", "views.menu"])), "the views choice is the segmented control, then the menu");
         let style = |id: &str| c.iter().find(|x| x["id"] == id).map(|x| x["displayStyle"].clone());
         assert_eq!((style("views.seg"), style("views.menu")), (Some(json!("chips")), Some(json!("menu"))));
-        assert_eq!(c.iter().find(|x| x["id"] == "filters.pri").map(|x| x["component"].clone()), Some(json!("Menu")), "a filter is a menu of ticks");
+        assert_eq!(c.iter().find(|x| x["id"] == "filters.pri").map(|x| x["component"].clone()), Some(json!("Popover")), "a filter is a popover of ticks");
         let bar = c.iter().find(|x| x["id"] == "bar").unwrap();
         assert_eq!(bar["children"], json!(["bar.narrow", "bar.shape"]));
         let narrow = c.iter().find(|x| x["id"] == "bar.narrow").unwrap();
