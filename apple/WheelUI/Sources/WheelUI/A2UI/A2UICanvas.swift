@@ -399,6 +399,9 @@ private struct CanvasStage: View {
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { v in
+                                // macOS sends no hover events while a button is held, so a drag that pans the camera leaves the
+                                // hover point where the press began and the outline stays on whatever passes under that old point.
+                                hover = v.location
                                 if dragFrom == nil { dragFrom = c; dragMoved = false }
                                 if abs(v.translation.width) + abs(v.translation.height) > 4 { dragMoved = true }
                                 if dragMoved, var d = dragFrom {
@@ -428,6 +431,7 @@ private struct CanvasStage: View {
                             .onChanged { v in
                                 let f = v.magnification / lastMagnify
                                 lastMagnify = v.magnification
+                                hover = v.startLocation
                                 zoom(f, about: v.startLocation)
                             }
                             .onEnded { _ in lastMagnify = 1 }
