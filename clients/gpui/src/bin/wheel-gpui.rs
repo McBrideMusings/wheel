@@ -5,7 +5,7 @@
 use anyhow::{Result, bail};
 use futures::StreamExt as _;
 use std::path::PathBuf;
-use wheel_gpui::{daemon::*, layout::parse_spaces, native::Native, open_window};
+use wheel_gpui::{daemon::*, native::Native, open_window};
 
 fn main() -> Result<()> {
     let (mut url, mut token_file, mut space) = (default_url(), default_token_file(), None);
@@ -30,17 +30,15 @@ fn main() -> Result<()> {
         cx.spawn(async move |cx| {
             let result: Result<()> = async {
                 let native = Native::load()?;
-                let mut connection = Connection::open(&endpoint)?;
+                let mut connection = Connection::open(endpoint.clone());
                 let window = open_window(cx, &native, connection.send.clone(), endpoint, space, false)?;
-                while let Some(message) = connection.incoming.next().await {
-                    if let Some(spaces) = parse_spaces(&message) {
-                        window.update(cx, |client, _, cx| {
-                            client.apply(spaces);
-                            cx.notify();
-                        })?;
-                    }
+                while let Some(event) = connection.incoming.next().await {
+                    window.update(cx, |client, _, cx| {
+                        client.on_event(event);
+                        cx.notify();
+                    })?;
                 }
-                bail!("the connection to wheeld closed")
+                bail!("the connection thread ended")
             }
             .await;
             if let Err(error) = result {

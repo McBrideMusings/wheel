@@ -62,6 +62,10 @@ impl Native {
     pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool) {
         self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden}));
     }
+    /// Drop the bridge's daemon socket, so the next terminal opened connects anew.
+    pub fn disconnect(&self) {
+        self.call(json!({"op":"disconnect"}));
+    }
     pub fn close(&self, pane: &str) {
         self.call(json!({"op":"close","pane":pane}));
     }

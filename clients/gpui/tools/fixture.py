@@ -40,22 +40,42 @@ def fixture():
         def tree(space):
             return next(s for s in json.loads(cli('status', '--json'))['spaces'] if s['id'] == space)
 
-        log = open(root / 'daemon.log', 'w')
-        daemon = subprocess.Popen([str(root / 'wheeld'), '--listen', f'127.0.0.1:{port}', '--support-dir', str(root / 'support'),
-            '--machine-file', str(root / 'machine.toml'), '--log-dir', str(root / 'logs')], env=env, stdout=log, stderr=log)
-        try:
+        log = open(root / 'daemon.log', 'a')
+        running = []
+
+        def start():
+            daemon = subprocess.Popen([str(root / 'wheeld'), '--listen', f'127.0.0.1:{port}', '--support-dir', str(root / 'support'),
+                '--machine-file', str(root / 'machine.toml'), '--log-dir', str(root / 'logs')], env=env, stdout=log, stderr=log)
+            running.append(daemon)
             for _ in range(100):
                 if daemon.poll() is not None:
                     raise RuntimeError(f'fixture daemon exited: {daemon.returncode}')
                 if token.exists():
                     try:
                         with socket.create_connection(('127.0.0.1', port), .1):
-                            break
+                            return daemon
                     except OSError:
                         pass
                 time.sleep(.1)
-            else:
-                raise TimeoutError('fixture daemon did not start')
+            raise TimeoutError('fixture daemon did not start')
+
+        def stop():
+            daemon = running[-1]
+            daemon.terminate()
+            try:
+                daemon.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                daemon.kill()
+                daemon.wait()
+
+        def restart(down_for=0.0):
+            """Stop the daemon, wait `down_for` seconds with nothing listening, start it again on the same port and support dir."""
+            stop()
+            time.sleep(down_for)
+            return start().pid
+
+        daemon = start()
+        try:
             space = cli('space', 'new', str(project)).splitlines()[-1]
             web = tree(space)['root']['id']
             cli('pane', 'kind', web, 'web', '--artifact', 'fixture-html')
@@ -80,13 +100,8 @@ def fixture():
                 cli('term', 'read', node['term'], '--until', marker, '--timeout', '10')
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2),
-                        saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: daemon.poll() is None)
+                        saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
             yield env, info
         finally:
-            daemon.terminate()
-            try:
-                daemon.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                daemon.kill()
-                daemon.wait()
+            stop()
             log.close()

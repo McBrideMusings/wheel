@@ -56,6 +56,8 @@ final class Slot: NSView {
     var mouseNumber = 0
     var mouseTarget: NSView?
     var snapshotsPending = 0
+    var termOutputs = 0
+    var sends: [String] = []
 
     init(root: NSView, hidden: Bool) {
         self.root = root
@@ -81,11 +83,13 @@ final class Slot: NSView {
         let previous = sendTask
         sendTask = Task { @MainActor in
             await previous?.value
-            do { try await socket.send(.string(string)) } catch { errors.append(error.localizedDescription) }
+            sends.append((value["op"] as? String ?? "?") + " " + (value["id"] as? String ?? ""))
+            do { try await socket.send(.string(string)) } catch { errors.append("send \(value["op"] as? String ?? "?"): " + error.localizedDescription) }
         }
     }
     func receive() {
         guard let socket else { return }
+        let dead = socket
         Task { @MainActor in
             do {
                 let message = try await socket.receive()
@@ -94,10 +98,14 @@ final class Slot: NSView {
                 if let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                    value["ev"] as? String == "term_output", let term = value["id"] as? String,
                    let encoded = value["data"] as? String, let bytes = Data(base64Encoded: encoded) {
+                    termOutputs += 1
                     for host in panes.values where host.termID == term { host.session?.receive(bytes) }
                 }
                 receive()
-            } catch { errors.append(error.localizedDescription) }
+            } catch {
+                errors.append(error.localizedDescription)
+                if self.socket === dead { self.socket = nil }
+            }
         }
     }
 
@@ -192,6 +200,11 @@ final class Slot: NSView {
         switch value["op"] as? String {
         case "open": open(value)
         case "close": close(value["pane"] as! String)
+        case "disconnect":
+            // Sends queued behind a socket that is gone never finish; the next socket starts a new chain.
+            socket?.cancel(with: .goingAway, reason: nil)
+            socket = nil
+            sendTask = nil
         case "place": place(value)
         case "focus":
             let host = panes[value["pane"] as! String]
@@ -271,7 +284,8 @@ final class Slot: NSView {
             "snapshots_pending": snapshotsPending,
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
             "key_window": root.window?.isKeyWindow ?? false, "visible": root.window?.isVisible ?? false,
-            "app_active": NSApp.isActive, "native_subviews": root.subviews.count]
+            "app_active": NSApp.isActive, "native_subviews": root.subviews.count,
+            "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends]
         var panesOut: [String: Any] = [:]
         for (id, host) in panes {
             let f = host.slot.frame

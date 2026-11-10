@@ -1,7 +1,7 @@
 //! The window's content: a header with the spaces, the active space's split tree drawn as
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal and first web pane. Every other kind is drawn as unimplemented.
-use crate::{daemon::Endpoint, layout::*, native::Native};
+use crate::{daemon::{Endpoint, Event}, layout::*, native::Native};
 use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use serde_json::json;
 use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
@@ -25,13 +25,76 @@ pub struct Client {
     opened: HashMap<String, String>,
     placed: HashMap<String, ([f64; 4], bool)>,
     viewport: (f32, f32),
+    /// What the connection to wheeld is doing, shown at the right of the header.
+    pub link: Link,
+}
+
+/// The state of the connection to wheeld.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Link {
+    Connecting,
+    Up,
+    Down(String),
+    Incompatible { server: u32, client: u32 },
+}
+impl Link {
+    pub fn banner(&self) -> String {
+        match self {
+            Link::Up => String::new(),
+            Link::Connecting => "connecting to wheeld".into(),
+            Link::Down(_) => "wheeld is not reachable, reconnecting".into(),
+            Link::Incompatible { server, client } => format!("wheeld speaks protocol {server}, this client needs {client}: restart wheeld"),
+        }
+    }
 }
 
 impl Client {
     pub fn new(native: Rc<Native>, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_space: Option<String>) -> Self {
         Self {
             native, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.),
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), link: Link::Connecting,
+        }
+    }
+    /// Take one thing the connection reported. Returns true when it was a layout.
+    pub fn on_event(&mut self, event: Event) -> bool {
+        match event {
+            Event::Message(message) => match crate::layout::parse_spaces(&message) {
+                Some(spaces) => {
+                    self.apply(spaces);
+                    true
+                }
+                None => false,
+            },
+            Event::Up(endpoint) => {
+                // The daemon may have restarted: its terminals and its token are new, so every
+                // native view is closed, the bridge's socket dropped, and the views open again
+                // against the new endpoint and layout.
+                if self.link != Link::Connecting {
+                    // The socket goes first: a detach sent down a dead socket never finishes.
+                    self.native.disconnect();
+                    for id in self.opened.keys().cloned().collect::<Vec<_>>() {
+                        self.native.close(&id);
+                    }
+                    self.opened.clear();
+                    self.placed.clear();
+                    // The layout we hold is the old daemon's: its terminal ids mean nothing to the
+                    // new one. Nothing opens until the layout that follows this event arrives.
+                    self.spaces.clear();
+                    self.overrides.clear();
+                    self.drag = None;
+                }
+                self.endpoint = endpoint;
+                self.link = Link::Up;
+                false
+            }
+            Event::Down(reason) => {
+                self.link = Link::Down(reason);
+                false
+            }
+            Event::Incompatible { server, client } => {
+                self.link = Link::Incompatible { server, client };
+                false
+            }
         }
     }
     /// The daemon's layout replaces ours, dragged ratios included.
@@ -62,13 +125,19 @@ impl Client {
         }
         self.space().and_then(|s| find(&s.root, split))
     }
+    /// Frames go out only while the link is up; the connection drops any others.
+    fn send(&self, frame: serde_json::Value) {
+        if self.link == Link::Up {
+            let _ = self.out.send(frame.to_string());
+        }
+    }
     pub fn request_status(&self, req: u64) {
-        let _ = self.out.send(json!({"op":"status","req":req}).to_string());
+        self.send(json!({"op":"status","req":req}));
     }
     fn end_drag(&mut self) {
         if let Some((split, _, _)) = self.drag.take() {
             if let Some(ratio) = self.overrides.get(&split) {
-                let _ = self.out.send(json!({"op":"split_ratio","split":split,"ratio":ratio}).to_string());
+                self.send(json!({"op":"split_ratio","split":split,"ratio":ratio}));
             }
         }
     }
@@ -155,6 +224,9 @@ impl Render for Client {
             );
         }
         root = root.child(header);
+        // Always drawn, so the header's controls stay where they are; empty while connected.
+        root = root.child(div().absolute().right(px(10.)).top(px(6.)).h(px(HEADER - 8.)).w(px(420.)).flex().justify_end().items_center()
+            .text_color(rgb(0xe0b070)).child(self.link.banner()));
         for p in &leaves {
             let r = p.rect;
             let native = self.native_panes.contains(&p.leaf.id);

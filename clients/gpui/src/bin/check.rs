@@ -1,13 +1,15 @@
 //! Hidden regression check for the client, driven by tools/check.py against a fixture wheeld:
 //! layout from the daemon, one native view per web and terminal pane on its pane, separate
 //! terminal sessions, keyboard focus following a click, a divider drag with NSEvents the GPUI
-//! view receives, the daemon keeping the ratio, and following another client's change.
+//! view receives, the daemon keeping the ratio, following another client's change, and surviving
+//! a wheeld restart: the link reads down, comes back up on its own, and every native view is
+//! opened again on the new daemon.
 //! The window is never visible, key or active.
 use anyhow::{Result, ensure};
 use gpui::AsyncApp;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
-use wheel_gpui::{daemon::*, layout::{Rect, parse_spaces}, native::Native, open_window, view::{Client, TITLE}};
+use wheel_gpui::{daemon::*, layout::Rect, native::Native, open_window, view::{Client, Link, TITLE}};
 
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
@@ -40,6 +42,9 @@ async fn shot(native: &Native, directory: &std::path::Path, cx: &mut AsyncApp) -
     wait(native, "WK snapshots", |s| s["snapshots_pending"] == 0, cx).await?;
     Ok(())
 }
+fn identity(status: &Value, pane: &str) -> String {
+    status["panes"][pane]["view_identity"].as_str().unwrap_or_default().to_owned()
+}
 fn frame(status: &Value, pane: &str) -> [f64; 4] {
     let f = &status["panes"][pane]["frame_top"];
     [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(-1.))
@@ -57,12 +62,12 @@ fn last_grid(status: &Value, pane: &str) -> Value {
 async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
     let end = std::time::Instant::now() + Duration::from_millis(ms);
     while std::time::Instant::now() < end {
-        while let Ok(message) = connection.incoming.try_recv() {
-            if let Some(spaces) = parse_spaces(&message) {
-                window.update(cx, |c, _, cx| {
-                    c.apply(spaces);
-                    cx.notify();
-                })?;
+        while let Ok(event) = connection.incoming.try_recv() {
+            if window.update(cx, |c, _, cx| {
+                let layout = c.on_event(event);
+                cx.notify();
+                layout
+            })? {
                 *layouts += 1;
             }
         }
@@ -74,7 +79,7 @@ async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window:
 async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let native = Native::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
-    let mut connection = Connection::open(&endpoint)?;
+    let mut connection = Connection::open(endpoint.clone());
     let window = open_window(cx, &native, connection.send.clone(), endpoint, std::env::var("WHEEL_CLIENT_SPACE").ok(), true)?;
     let markers: Value = serde_json::from_str(&std::env::var("WHEEL_CLIENT_MARKERS")?)?;
     let mut layouts = 0usize;
@@ -164,6 +169,57 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let external_status = native.status();
     draw(window, Some(output.join("client-external.png")), cx)?;
     shot(&native, &output.join("external"), cx).await?;
+    // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
+    // the restart when it sees the request file.
+    let (request, done) = (output.join("restart.request"), output.join("restart.done"));
+    let _ = std::fs::remove_file(&done);
+    let status_before_restart = native.status();
+    let identities_before: Vec<(String, String)> = native_panes.iter().map(|(id, _)| (id.clone(), identity(&status_before_restart, id))).collect();
+    let layouts_before_restart = layouts;
+    std::fs::write(&request, "1.5")?;
+    let (mut saw_down, mut down_reason, mut up_again) = (false, String::new(), false);
+    let mut banner_while_down = String::new();
+    for _ in 0..400 {
+        pump(&mut connection, 50, &mut layouts, window, cx).await?;
+        let (link, banner) = window.update(cx, |c, _, _| (c.link.clone(), c.link.banner()))?;
+        if let Link::Down(reason) = &link {
+            saw_down = true;
+            down_reason = reason.clone();
+            banner_while_down = banner;
+        }
+        if saw_down && link == Link::Up && done.exists() {
+            up_again = true;
+            break;
+        }
+    }
+    ensure!(saw_down, "the client never reported wheeld down");
+    ensure!(up_again, "the client did not come back up after the restart (layouts {layouts})");
+    draw(window, None, cx)?;
+    pump(&mut connection, 800, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    ensure!(layouts > layouts_before_restart, "no layout after the restart");
+    wait(&native, "native views on the restarted daemon", |s| {
+        webs.iter().all(|w| s["panes"][w.as_str()]["loads"].as_array().is_some_and(|a| !a.is_empty()))
+            && terms.iter().all(|t| s["panes"][t.as_str()]["pixels"] == true)
+    }, cx).await?;
+    // A new PTY answers keys typed through the reopened view: only the shell's output holds 42.
+    native.call(json!({"op":"pty","pane":terms[0],"text":"echo RECONNECTED-$((6*7))\r"}));
+    let typed_after = match wait(&native, "a restarted terminal answering", |s| viewport(s, terms[0]).contains("RECONNECTED-42"), cx).await {
+        Ok(s) => s,
+        Err(error) => {
+            let term = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| &p.leaf.id == terms[0]).and_then(|p| p.leaf.term))?;
+            let cli = std::env::var("WHEEL_CLIENT_CLI")?;
+            let read = std::process::Command::new(&cli)
+                .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "term", "read", term.as_deref().unwrap_or("?")])
+                .output()?;
+            anyhow::bail!("{error:#}\ndaemon term {term:?} reads: {}{}", String::from_utf8_lossy(&read.stdout), String::from_utf8_lossy(&read.stderr));
+        }
+    };
+    draw(window, Some(output.join("client-reconnected.png")), cx)?;
+    let identities_after: Vec<(String, String)> = native_panes.iter().map(|(id, _)| (id.clone(), identity(&typed_after, id))).collect();
+    ensure!(identities_before.iter().zip(&identities_after).all(|(a, b)| a.1 != b.1), "a native view survived the restart: {identities_before:?} {identities_after:?}");
+    let banner_after = window.update(cx, |c, _, _| c.link.banner())?;
+    ensure!(banner_after.is_empty(), "banner still shown after reconnect: {banner_after}");
     let final_status = native.status();
     ensure!(final_status["visible"] == false && final_status["key_window"] == false && final_status["app_active"] == false, "check took screen/focus");
     let per_pane = |s: &Value| -> Value {
@@ -178,6 +234,9 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "drag": {"split": split, "from": start, "to": moved, "parent": [parent.x, parent.y, parent.w, parent.h],
             "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved},
         "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
+        "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
+            "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
+            "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     }))
 }
