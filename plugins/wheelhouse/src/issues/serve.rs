@@ -3,7 +3,7 @@
 //! Each pane keeps its search, filter, open issue and new-issue draft; each subscribed project keeps
 //! one snapshot, re-read every two minutes and after each write.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +27,9 @@ struct Ui {
     q: String,
     show: String,
     sel: Option<i64>,
+    /// The rows the person selected (a click, a shift-click range, a ⌘-click); the list actions take them
+    /// when any of them is listed, else the whole narrowed list.
+    selected: BTreeSet<String>,
     title: String,
     notice: Option<(bool, String)>,
     /// The column the table is sorted by, and whether ascending; a header click sets it.
@@ -35,7 +38,7 @@ struct Ui {
 
 impl Default for Ui {
     fn default() -> Self {
-        Ui { q: String::new(), show: "open".into(), sel: None, title: String::new(), notice: None, sort: ("updated".into(), false) }
+        Ui { q: String::new(), show: "open".into(), sel: None, selected: BTreeSet::new(), title: String::new(), notice: None, sort: ("updated".into(), false) }
     }
 }
 
@@ -62,6 +65,13 @@ fn listed<'a>(s: &'a Snapshot, ui: &Ui) -> Vec<&'a Issue> {
         if asc { o } else { o.reverse() }
     });
     rows
+}
+
+/// The numbers the list actions (Copy IDs, the project's list buttons) take, as bare numbers: the
+/// selected rows that are listed now, in the order shown, or every listed row when none of the
+/// selection is listed.
+fn ids(s: &Snapshot, ui: &Ui) -> Vec<String> {
+    table::taken(listed(s, ui).iter().map(|i| i.number.to_string()).collect(), &ui.selected)
 }
 
 #[derive(Default)]
@@ -162,23 +172,11 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             json!({ "value": "open", "text": "Open" }), json!({ "value": "closed", "text": "Closed" }),
             json!({ "value": "all", "text": "All" })], true, false);
         let sorted = listed(s, ui);
-        let n = sorted.len();
-        let count = p.label("count", &format!("{n} of {}", s.issues.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        // The listed numbers as one string (bare numbers, the form the selector table and `iterate` take), and the project's
-        // `[issues.list.<name>]` buttons over the same numbers. Each keeps its slot: with no rows they are disabled.
-        let numbers: Vec<String> = sorted.iter().map(|i| i.number.to_string()).collect();
-        let mut acts = vec!["search".into(), "views".into()];
-        acts.push(p.copy_button("list.copy", "Copy ids", &numbers.join(" "),
-            json!({ "style": "link", "disabled": n == 0, "help": format!("Copy the {n} listed issue numbers, space separated") })));
-        for sc in &s.scripts {
-            acts.push(p.button(&format!("list.{}", sc.name), sc.label(), "run_list_script", json!({ "script": sc.name }),
-                json!({ "style": "link", "disabled": n == 0, "help": format!("{} over the {n} listed issues", sc.label()) })));
-        }
-        acts.push(count);
-        let mut widths = vec![json!("flex"), Value::Null];
-        widths.extend(std::iter::repeat_n(Value::Null, acts.len() - 3));
-        widths.push(json!(96));
-        page.push(p.boxed("tools", "h", acts, json!({ "spacing": 8, "align": "center", "widths": widths, "trailing": 1 })));
+        // Copy IDs gives bare numbers, the form the selector table and `iterate` take; the buttons are the project's
+        // `[issues.list.<name>]` ones.
+        let actions = crate::core::buttons::actions(&mut p, &s.scripts, &ids(s, ui), sorted.len(), "issue numbers", "issues");
+        page.push(p.boxed("tools", "h", vec!["search".into(), "views".into(), actions],
+            json!({ "spacing": 8, "align": "center", "widths": ["flex", null, null] })));
         let columns: Vec<Value> = vec![
             table::column("number", "#", json!(60), false, false), table::column("title", "Title", json!("flex"), false, true),
             table::column("state", "State", json!(80), false, false), table::column("labels", "Labels", json!(160), false, true),
@@ -186,8 +184,9 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             table::column("updated", "Updated", json!(70), false, false),
         ].into_iter().map(table::sortable).collect();
         let sections = vec![table::section("", sorted.iter().map(|i| row(i, ui, at)).collect())];
-        let mut t = table::component(columns, sections, "select_issue", "select_issue", "set_sort", (&ui.sort.0, ui.sort.1),
+        let t = table::component(columns, sections, "select_issue", "select_issue", "set_sort", (&ui.sort.0, ui.sort.1),
             if s.issues.is_empty() { "No issues on GitHub." } else { "Nothing matches the search." });
+        let mut t = table::selectable(t, "select_rows", &ui.selected.iter().cloned().collect::<Vec<_>>());
         t["id"] = json!("table");
         p.put(t);
         page.push(p.boxed("table.b", "v", vec!["table".into()], json!({})));
@@ -235,6 +234,13 @@ struct IssueId {
     id: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct Rows {
+    /// The numbers of the rows selected now, every one of them; empty clears the selection.
+    #[serde(deserialize_with = "crate::core::table::ids")]
+    ids: Vec<String>,
+}
+
 #[derive(Clone)]
 struct Server {
     tool_router: ToolRouter<Self>,
@@ -279,12 +285,12 @@ impl Server {
 
     #[tool(description = "Search the issues", meta = ui_meta())]
     fn set_query(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.q = value)
+        self.with(&meta, |_, ui| { ui.q = value; ui.selected.clear(); })
     }
 
     #[tool(description = "Show open, closed or all issues", meta = ui_meta())]
     fn set_show(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.show = value)
+        self.with(&meta, |_, ui| { ui.show = value; ui.selected.clear(); })
     }
 
     #[tool(description = "Sort the table by a column, ascending or not", meta = ui_meta())]
@@ -303,7 +309,7 @@ impl Server {
             let mut s = self.shared.lock().unwrap();
             let snap = s.project(&o.dir).clone();
             let ui = s.panes.entry(o.pane.clone()).or_default();
-            let numbers: Vec<String> = listed(&snap, ui).iter().map(|i| i.number.to_string()).collect();
+            let numbers = ids(&snap, ui);
             (snap, numbers)
         };
         let mut env = vec![("ISSUE_REPO", snap.name.as_str()), ("ISSUE_PATH", o.dir.as_str())];
@@ -317,12 +323,14 @@ impl Server {
         }
     }
 
-    #[tool(description = "Open an issue's panel, or close it by choosing it again", meta = ui_meta())]
+    #[tool(description = "Select rows of the list: the list actions take them instead of the whole list", meta = ui_meta())]
+    fn select_rows(&self, meta: RequestMetaObject, Parameters(Rows { ids }): Parameters<Rows>) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.selected = ids.into_iter().collect())
+    }
+
+    #[tool(description = "Open an issue's panel (a double-click or Return on its row)", meta = ui_meta())]
     fn select_issue(&self, meta: RequestMetaObject, Parameters(IssueId { id }): Parameters<IssueId>) -> CallToolResult {
-        self.with(&meta, |_, ui| {
-            let n = id.parse().ok();
-            ui.sel = if ui.sel == n { None } else { n };
-        })
+        self.with(&meta, |_, ui| ui.sel = id.parse().ok())
     }
 
     #[tool(description = "Close the open issue's panel", meta = ui_meta())]
@@ -461,9 +469,22 @@ mod tests {
         let c = components(&s, &ui);
         assert_eq!(copied(&c), "12 7", "open issues, newest update first, as bare numbers");
         let tools = c.iter().find(|x| x["id"] == "tools").unwrap();
-        assert_eq!(tools["children"], json!(["search", "views", "list.copy", "list.iterate", "count"]));
+        assert_eq!(tools["children"], json!(["search", "views", "list.actions"]), "search, the views and the Actions chip");
+        let title = |c: &[Value]| c.iter().find(|x| x["id"] == "list.actions.title").unwrap()["text"].as_str().unwrap().to_string();
+        assert_eq!(title(&c), "2 listed · Actions ⌄");
+        assert_eq!(c.iter().find(|x| x["id"] == "list.actions.menu").unwrap()["children"], json!(["list.copy", "list.iterate"]), "Copy IDs, then the list button");
+        assert_eq!(c.iter().find(|x| x["id"] == "list.iterate.t").unwrap()["text"], "Iterate  2");
         let table = c.iter().find(|x| x["id"] == "table").unwrap();
         assert_eq!((table["sortAction"].as_str(), &table["sort"]), (Some("set_sort"), &json!({ "key": "updated", "asc": false })));
+        assert_eq!((table["selectAction"].as_str(), &table["selected"]), (Some("select_rows"), &json!([])));
+        ui.selected = ["7".to_string(), "3".to_string()].into_iter().collect();
+        let c = components(&s, &ui);
+        assert_eq!(copied(&c), "7", "the selected rows that are listed; the closed one is not shown");
+        assert_eq!(title(&c), "1 selected of 2 · Actions ⌄");
+        ui.selected = ["3".to_string()].into_iter().collect();
+        let c = components(&s, &ui);
+        assert_eq!(copied(&c), "12 7", "a selection with no listed row means the whole list");
+        ui.selected.clear();
         ui.sort = ("number".into(), true);
         let c = components(&s, &ui);
         assert_eq!(copied(&c), "7 12", "a header click's sort orders the numbers");

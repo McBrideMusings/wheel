@@ -25,6 +25,36 @@ pub fn asc<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     })
 }
 
+/// The table `t` with a selection the page owns: the rows whose ids are in `selected` draw selected,
+/// a click or a shift-click raises `select_action` with `{ids}` (the rows selected now, every one of
+/// them) and a double-click or Return raises the table's `rowAction`. Without it a plain click raises
+/// `rowAction`.
+pub fn selectable(mut t: Value, select_action: &str, selected: &[String]) -> Value {
+    t["selectAction"] = json!(select_action);
+    t["selected"] = json!(selected);
+    t
+}
+
+/// The ids the list actions take: the `selected` ones among `listed`, in the order shown, or every
+/// listed id when none of the selection is listed.
+pub fn taken(listed: Vec<String>, selected: &std::collections::BTreeSet<String>) -> Vec<String> {
+    let picked: Vec<String> = listed.iter().filter(|id| selected.contains(id.as_str())).cloned().collect();
+    if picked.is_empty() { listed } else { picked }
+}
+
+/// A list of ids as a tool argument: an array of strings from the client's Table, or one string of
+/// ids separated by commas or spaces from a caller that only has strings (the Debug app's
+/// `/a2ui/action`, the command line).
+pub fn ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Ids { V(Vec<String>), S(String) }
+    Ok(match <Ids as serde::Deserialize>::deserialize(d)? {
+        Ids::V(v) => v,
+        Ids::S(s) => s.split([',', ' ']).filter(|x| !x.is_empty()).map(str::to_string).collect(),
+    })
+}
+
 /// A section of rows under a title (an empty title draws no header).
 pub fn section(title: &str, rows: Vec<Value>) -> Value {
     json!({ "title": title, "count": rows.len(), "rows": rows })
@@ -67,5 +97,20 @@ mod tests {
         assert_eq!(t["sections"][0]["count"], 1);
         assert_eq!(t["columns"][0]["key"], "id");
         assert_eq!(t["sort"]["asc"], true);
+        let t = selectable(t, "pick", &["a".into()]);
+        assert_eq!(t["selectAction"], "pick");
+        assert_eq!(t["selected"], json!(["a"]));
+    }
+
+    #[test]
+    fn ids_come_as_an_array_or_one_string() {
+        #[derive(serde::Deserialize)]
+        struct P { #[serde(deserialize_with = "ids")] ids: Vec<String> }
+        let p: P = serde_json::from_value(json!({ "ids": ["a", "b"] })).unwrap();
+        assert_eq!(p.ids, vec!["a", "b"]);
+        let p: P = serde_json::from_value(json!({ "ids": "a,b c" })).unwrap();
+        assert_eq!(p.ids, vec!["a", "b", "c"]);
+        let p: P = serde_json::from_value(json!({ "ids": "" })).unwrap();
+        assert!(p.ids.is_empty());
     }
 }

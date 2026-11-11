@@ -2,7 +2,7 @@
 //! filters, sort, trees) and its drawing as A2UI. The same logic serves the command line
 //! (`cli`) and a host's pane over MCP (`serve`).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -340,6 +340,9 @@ struct Ui {
     sort: (String, bool),
     /// What the last list button did, shown once at the top of the page.
     said: Option<String>,
+    /// The rows the person selected in the list (a click, a shift-click range, a ⌘-click); the list
+    /// actions take them when any of them is listed, else the whole narrowed list.
+    selected: BTreeSet<String>,
 }
 
 impl Default for Ui {
@@ -362,6 +365,7 @@ impl Default for Ui {
             centre: false,
             sort: ("status".into(), true),
             said: None,
+            selected: BTreeSet::new(),
         }
     }
 }
@@ -543,8 +547,14 @@ fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
 /// The ids of the beads the page lists now, in the order shown: what the search, filters, view and
 /// sort leave, without epics and milestones (an id list is for working leaves, and an epic's id
 /// would stand for its children twice).
-fn ids(ix: &Ix, ui: &Ui) -> Vec<String> {
+fn listed(ix: &Ix, ui: &Ui) -> Vec<String> {
     build(ix, ui).into_iter().filter(|r| r.b.kind != "epic" && r.b.kind != "milestone").map(|r| r.b.id.clone()).collect()
+}
+
+/// The ids the list actions (Copy IDs, the project's list buttons) take: the selected rows that are
+/// listed now, in the order shown, or every listed row when none of the selection is listed.
+fn ids(ix: &Ix, ui: &Ui) -> Vec<String> {
+    table::taken(listed(ix, ui), &ui.selected)
 }
 
 // ───────────────────────────── A2UI ─────────────────────────────
@@ -599,11 +609,10 @@ fn row_json(ix: &Ix, ui: &Ui, r: &RowOut, cols: &[&Col]) -> Value {
         "cells": cells, "menu": menu(ix, b) })
 }
 
-fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
+fn table(ix: &Ix, ui: &Ui) -> Value {
     let rows = build(ix, ui);
     let cols: Vec<&Col> = COLS.iter().collect();
     let total = ix.snap.beads.iter().filter(|b| b.kind != "epic" && b.kind != "milestone").count();
-    let shown = rows.len();
     let sections: Vec<Value> = vec![table::section("", rows.iter().map(|r| row_json(ix, ui, r, &cols)).collect())];
     let columns: Vec<Value> = cols
         .iter()
@@ -621,7 +630,7 @@ fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
         (&ui.sort.0, ui.sort.1),
         if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." },
     );
-    (v, shown, total)
+    table::selectable(v, "select_rows", &ui.selected.iter().cloned().collect::<Vec<_>>())
 }
 
 
@@ -881,28 +890,15 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let label = menu(&mut p, "label", "label", counted(&|b| b.labels.clone()));
         let pri_opts = (0..=4).map(|n| (n.to_string(), format!("P{n}  {}", all.iter().filter(|b| b.priority == Some(n)).count()))).collect();
         let pri = menu(&mut p, "pri", "priority", pri_opts);
-        let (tbl, shown, total) = table(&ix, ui);
-        let count = if ui.view == "list" || ui.custom() { format!("{shown} of {total}") } else { format!("{shown} rows") };
-        let count_id = p.label("count", &count, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
+        let tbl = table(&ix, ui);
         // Two groups, by proximity: what narrows the list (status, type, label, priority) and the count. Inside a group the gap
         // is 6; the gap between groups is whatever width is left, never under 16. Sorting is the column headers' job.
         let narrow = p.boxed("bar.narrow", "h", vec![status, kind, label, pri], json!({ "spacing": 6, "align": "center" }));
         // Clear keeps its place whether or not a filter is on: it is hidden, not removed, so the count never moves.
         let active = !ui.q.is_empty() || !ui.values("status").is_empty() || !ui.values("type").is_empty() || !ui.values("label").is_empty() || !ui.values("pri").is_empty();
         let clear = p.button("filters.clear", "Clear", "clear", json!({}), json!({ "style": "link", "disabled": !active, "hideOff": true }));
-        // The listed ids as one string, and the project's list buttons over the same ids. Each keeps its slot: with no rows
-        // the buttons are disabled, not removed.
-        let listed = ids(&ix, ui);
-        let n = listed.len();
-        let mut acts = vec![clear];
-        acts.push(p.copy_button("list.copy", "Copy ids", &listed.join(" "),
-            json!({ "style": "link", "disabled": n == 0, "help": format!("Copy the {n} listed ids, space separated") })));
-        for s in &snap.scripts {
-            acts.push(p.button(&format!("list.{}", s.name), s.label(), "run_list_script", json!({ "script": s.name }),
-                json!({ "style": "link", "disabled": n == 0, "help": format!("{} over the {n} listed beads", s.label()) })));
-        }
-        acts.push(count_id);
-        let shape = p.boxed("bar.shape", "h", acts, json!({ "spacing": 10, "align": "center" }));
+        let actions = crate::core::buttons::actions(&mut p, &snap.scripts, &ids(&ix, ui), listed(&ix, ui).len(), "ids", "beads");
+        let shape = p.boxed("bar.shape", "h", vec![clear, actions], json!({ "spacing": 10, "align": "center" }));
         page.push(p.boxed("bar", "h", vec![narrow, shape], json!({ "spacing": 16, "align": "center", "widths": ["flex", Value::Null], "padding": [4, 0, 0, 0] })));
         crate::core::layout::modify(&mut p.out, "bar", json!({ "frame": { "maxWidth": "infinity" } }));
 
@@ -1050,10 +1046,26 @@ mod tests {
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "t-1 t-2", "the open leaves in the page's order; the epic and the closed bead are not listed");
         let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
-        assert_eq!(shape["children"], json!(["filters.clear", "list.copy", "list.iterate-list", "count"]), "the list button joins Copy ids");
+        assert_eq!(shape["children"], json!(["filters.clear", "list.actions"]), "Clear and the Actions chip");
+        let title = |c: &[Value]| c.iter().find(|x| x["id"] == "list.actions.title").unwrap()["text"].as_str().unwrap().to_string();
+        assert_eq!(title(&c), "2 listed · Actions ⌄");
+        assert_eq!(c.iter().find(|x| x["id"] == "list.actions").unwrap()["component"], "Popover", "the chip is a popover like the filters");
+        assert_eq!(c.iter().find(|x| x["id"] == "list.actions.menu").unwrap()["children"], json!(["list.copy", "list.iterate-list"]), "Copy IDs, then the list button");
+        assert_eq!(c.iter().find(|x| x["id"] == "list.iterate-list.t").unwrap()["text"], "Iterate  2", "a list button carries its count");
         assert!(!disabled(&c, "list.copy") && !disabled(&c, "list.iterate-list"));
         let table = c.iter().find(|x| x["id"] == "table").unwrap();
         assert_eq!((table["sortAction"].as_str(), &table["sort"]), (Some("set_sort"), &json!({ "key": "status", "asc": true })), "a header click reaches the page");
+        assert_eq!((table["selectAction"].as_str(), &table["selected"]), (Some("select_rows"), &json!([])), "a click reaches the page as the selection");
+        ui.selected = ["t-2".to_string(), "t-9".to_string()].into_iter().collect();
+        let c = page_components(&s, &ui);
+        assert_eq!(copied(&c), "t-2", "a selection narrows the ids to the selected rows that are listed");
+        assert_eq!(title(&c), "1 selected of 2 · Actions ⌄");
+        assert_eq!(c.iter().find(|x| x["id"] == "list.iterate-list.t").unwrap()["text"], "Iterate  1");
+        assert_eq!(c.iter().find(|x| x["id"] == "table").unwrap()["selected"].as_array().unwrap().len(), 2, "the table is told the selection");
+        ui.selected = ["t-9".to_string()].into_iter().collect();
+        let c = page_components(&s, &ui);
+        assert_eq!(copied(&c), "t-1 t-2", "a selection with no listed row means the whole list");
+        ui.selected.clear();
         ui.sort = ("title".into(), false);
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "t-1 t-2");
@@ -1113,7 +1125,7 @@ mod tests {
         let s = snap(vec![bead("a", |_| {})]);
         let c = page_components(&s, &Ui::default());
         let page = c.iter().find(|x| x["id"] == "page").unwrap()["children"].as_array().unwrap().clone();
-        assert_eq!(page[..4], ["kpis", "find", "bar", "table.b"].map(Value::from), "boxes, search with the views choice, the filter menus with Clear and the count, the table");
+        assert_eq!(page[..4], ["kpis", "find", "bar", "table.b"].map(Value::from), "boxes, search with the views choice, the filter menus with Clear and the Actions chip, the table");
         let find = c.iter().find(|x| x["id"] == "find").unwrap();
         assert_eq!(find["children"], json!(["search", "views"]));
         let views = c.iter().find(|x| x["id"] == "views").unwrap();
@@ -1126,7 +1138,7 @@ mod tests {
         let narrow = c.iter().find(|x| x["id"] == "bar.narrow").unwrap();
         assert_eq!(narrow["children"], json!(["filters.status", "filters.type", "filters.label", "filters.pri"]), "what narrows the list sits together");
         let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
-        assert_eq!(shape["children"], json!(["filters.clear", "list.copy", "count"]), "Clear, the list actions and the count sit together");
+        assert_eq!(shape["children"], json!(["filters.clear", "list.actions"]), "Clear and the Actions chip sit together");
         let boxes: Vec<&Value> = c.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("kpi") && !i.contains('.') && i != "kpis")).collect();
         assert_eq!(boxes.len(), 4);
         assert!(boxes.iter().all(|b| b["component"] == "Button" && b["action"]["event"]["name"] == "set_filter"), "each box is a status filter");

@@ -111,6 +111,13 @@ struct ListScript {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct Rows {
+    /// The ids of the rows selected now, every one of them; empty clears the selection.
+    #[serde(deserialize_with = "crate::core::table::ids")]
+    ids: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Press {
     /// The bead's id.
     bead: String,
@@ -155,18 +162,20 @@ impl Server {
             if ["list", "epics", "deps", "unlocks", "focus", "graph"].contains(&value.as_str()) {
                 ui.view = value;
                 ui.collapsed.clear();
+                ui.selected.clear();
             }
         })
     }
 
     #[tool(description = "Search the beads", meta = ui_meta())]
     fn set_query(&self, meta: RequestMetaObject, Parameters(Query { q }): Parameters<Query>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.q = q)
+        self.with(&meta, |_, ui| { ui.q = q; ui.selected.clear(); })
     }
 
     #[tool(description = "Set one filter", meta = ui_meta())]
     fn set_filter(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
         self.with(&meta, |_, ui| {
+            ui.selected.clear();
             if ["status", "type", "label", "pri"].contains(&key.as_str()) {
                 ui.f.insert(key, value);
             }
@@ -176,6 +185,7 @@ impl Server {
     #[tool(description = "Tick or untick one value of a filter; the key is `<filter>:<value>`", meta = ui_meta())]
     fn toggle_filter(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
         self.with(&meta, |_, ui| {
+            ui.selected.clear();
             let Some((field, v)) = key.split_once(':') else { return };
             if !["status", "type", "label", "pri"].contains(&field) {
                 return;
@@ -192,6 +202,7 @@ impl Server {
     #[tool(description = "Make a filter exclude its values instead of matching them", meta = ui_meta())]
     fn set_not(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
         self.with(&meta, |_, ui| {
+            ui.selected.clear();
             if value == "true" { ui.not.insert(key); } else { ui.not.remove(&key); }
         })
     }
@@ -232,6 +243,7 @@ impl Server {
             ui.q.clear();
             ui.f.clear();
             ui.not.clear();
+            ui.selected.clear();
         })
     }
 
@@ -242,6 +254,11 @@ impl Server {
                 ui.collapsed.insert(path);
             }
         })
+    }
+
+    #[tool(description = "Select rows of the list: the list actions take them instead of the whole list", meta = ui_meta())]
+    fn select_rows(&self, meta: RequestMetaObject, Parameters(Rows { ids }): Parameters<Rows>) -> CallToolResult {
+        self.with(&meta, |_, ui| ui.selected = ids.into_iter().collect())
     }
 
     #[tool(description = "Open a bead from the list", meta = ui_meta())]

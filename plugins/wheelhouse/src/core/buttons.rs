@@ -4,6 +4,10 @@
 
 use std::path::PathBuf;
 
+use serde_json::json;
+
+use super::page::Page;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub name: String,
@@ -55,6 +59,26 @@ pub fn run_list(scripts: &[Script], name: &str, ids: &[String], var: &str, env: 
     let log = std::env::temp_dir().join(format!("wheel-{what}-list-{safe}.log"));
     crate::core::run::button(sc.label(), &sc.run, dir, pane, &all, &log)?;
     Ok(format!("{} started over {} {what}. See the new pane.", sc.label(), ids.len()))
+}
+
+/// The list actions as one chip drawn like the filters, with id `list.actions`: its title counts the
+/// rows the actions take, `took` of the `listed` rows ("12 listed" or "3 selected of 12"), and its
+/// popover holds Copy IDs (the ids space separated, `copied` naming them in its help) then the
+/// project's list buttons, each with that count, over `rows`. Each keeps its slot: with no rows the
+/// buttons are disabled, not removed.
+pub fn actions(p: &mut Page, scripts: &[Script], took: &[String], listed: usize, copied: &str, rows: &str) -> String {
+    let n = took.len();
+    let (title, what) = if n < listed { (format!("{n} selected of {listed} · Actions ⌄"), "selected") } else { (format!("{n} listed · Actions ⌄"), "listed") };
+    let mut menu = vec![p.copy_button("list.copy", "Copy IDs", &took.join(" "),
+        json!({ "style": "link", "disabled": n == 0, "help": format!("Copy the {n} {what} {copied}, space separated") }))];
+    for s in scripts {
+        menu.push(p.button(&format!("list.{}", s.name), &format!("{}  {n}", s.label()), "run_list_script", json!({ "script": s.name }),
+            json!({ "style": "link", "disabled": n == 0, "help": format!("{} over the {n} {what} {rows}", s.label()) })));
+    }
+    let trigger = p.label("list.actions.title", &title, json!({ "size": 12, "tabular": true }));
+    let content = p.boxed("list.actions.menu", "v", menu, json!({ "spacing": 6, "align": "start" }));
+    p.put(json!({ "id": "list.actions", "component": "Popover", "children": [trigger, content] }));
+    "list.actions".into()
 }
 
 #[cfg(test)]

@@ -308,7 +308,7 @@ system = klass("SwiftUI controls", "Standard controls the library lacks, named a
     ("PasteButton", "PasteButton", [("raises action with text", put("PasteButton", action="act"))]),
 ])
 
-own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu.", [
+own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu; the page may own the sort and the selection.", [
     ("Table", "Table", [("one section, two rows; a column with sortable: true sorts the rows of each section when its header is clicked, by each cell's sort (a number or a string) or its text, and the rows keep the page's order until a header is clicked; every column divider can be dragged (a column with a width starts at it, at least 40 pt); with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title", put("Table", rowAction="act", foldAction="act",
                                                        columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": True, "sortable": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False, "sortable": True}],
                                                        sections=[{"title": "Ready", "count": 2, "rows": [
@@ -320,7 +320,14 @@ own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows c
                                                        sections=[{"title": "", "count": 2, "rows": [
                                                            {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True, "sort": 2}, {"key": "title", "text": "Sent first by the page"}]},
                                                            {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True, "sort": 1}, {"key": "title", "text": "Sent second"}]}]}],
-                                                       sort={"key": "id", "asc": False}, empty="None", modifiers=[{"frame": {"height": 160}}]))]),
+                                                       sort={"key": "id", "asc": False}, empty="None", modifiers=[{"frame": {"height": 160}}])),
+                        ("selectAction and selected: the page owns the selection; the rows whose ids are in selected draw selected, a click, a shift-click range, a ⌘-click, a click on empty ground or Escape raises selectAction with {ids} (every row selected now), and a double-click or Return raises rowAction with the row's {id}; without selectAction a plain click raises rowAction", put("Table", rowAction="act", foldAction="act", sortAction="act", selectAction="act", selected=["a", "c"],
+                                                       columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": False, "sortable": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False, "sortable": True}],
+                                                       sections=[{"title": "", "count": 3, "rows": [
+                                                           {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True, "sort": 1}, {"key": "title", "text": "Selected by the page"}]},
+                                                           {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True, "sort": 2}, {"key": "title", "text": "Not selected"}]},
+                                                           {"id": "c", "path": "c", "depth": 0, "cells": [{"key": "id", "text": "c-3", "mono": True, "sort": 3}, {"key": "title", "text": "Selected by the page"}]}]}],
+                                                       sort={"key": "id", "asc": True}, empty="None", modifiers=[{"frame": {"height": 160}}]))]),
 ])
 
 own = klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", [
