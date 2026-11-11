@@ -165,12 +165,12 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         let n = sorted.len();
         let count = p.label("count", &format!("{n} of {}", s.issues.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
         // The listed numbers as one string (bare numbers, the form the selector table and `iterate` take), and the project's
-        // `[issues.buttons]` with `on = ["list"]` over the same numbers. Each keeps its slot: with no rows they are disabled.
+        // `[issues.list.<name>]` buttons over the same numbers. Each keeps its slot: with no rows they are disabled.
         let numbers: Vec<String> = sorted.iter().map(|i| i.number.to_string()).collect();
         let mut acts = vec!["search".into(), "views".into()];
         acts.push(p.copy_button("list.copy", "Copy ids", &numbers.join(" "),
             json!({ "style": "link", "disabled": n == 0, "help": format!("Copy the {n} listed issue numbers, space separated") })));
-        for sc in s.scripts.iter().filter(|sc| sc.on_list()) {
+        for sc in &s.scripts {
             acts.push(p.button(&format!("list.{}", sc.name), sc.label(), "run_list_script", json!({ "script": sc.name }),
                 json!({ "style": "link", "disabled": n == 0, "help": format!("{} over the {n} listed issues", sc.label()) })));
         }
@@ -225,7 +225,7 @@ struct Sort {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ListScript {
-    /// The button's name in `[issues.buttons.<name>]`, one with `on = ["list"]`.
+    /// The button's name in `[issues.list.<name>]`.
     script: String,
 }
 
@@ -454,7 +454,7 @@ mod tests {
         let mut b = issue(12, "open");
         b.updated = 20;
         let mut s = Snapshot { name: "t".into(), issues: vec![a, b, issue(3, "closed")], ..Default::default() };
-        s.scripts = vec![crate::core::buttons::Script { name: "iterate".into(), label: Some("Iterate".into()), on: vec!["list".into()], run: "true".into() }];
+        s.scripts = vec![crate::core::buttons::Script { name: "iterate".into(), label: Some("Iterate".into()), run: "true".into() }];
         let copied = |c: &[Value]| c.iter().find(|x| x["id"] == "list.copy").unwrap()["action"]["copy"]["text"].as_str().unwrap().to_string();
         let disabled = |c: &[Value], id: &str| c.iter().find(|x| x["id"] == id).unwrap()["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["disabled"] == true));
         let mut ui = Ui::default();

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # § Wheelhouse list actions (wheel-xxp1): the Beads page's Copy ids button carries the ids the
 # page lists now, in the order shown; a header click reaches the page (set_sort) and re-orders
-# both the rows and the ids; a project's `[beads.buttons.<name>]` with `on = ["list"]` shows in
-# the bar and runs with BEAD_IDS; a row button never shows as a list button. Drives the real
+# both the rows and the ids; a project's `[beads.list.<name>]` shows in the bar and runs with
+# BEAD_IDS; a per-bead `[beads.buttons.*]` table is obsolete and never a list button. Drives the real
 # `wheel` against this script's own daemon through `artifact call`. Needs `cargo build -p
 # wheelhouse -p wheeld -p wheel-cli`, bd, jq. No app.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -23,16 +23,14 @@ PROJ="$SCR/proj"; mkdir -p "$PROJ"
 A="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="Alpha") | .id')"
 B="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="Beta") | .id')"
 E="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="An epic") | .id')"
-# A list button that records what it was given, and a row button that must never show in the bar.
+# A list button that records what it was given, and the per-bead tables the page must not flag.
 cat >"$PROJ/wheel.toml" <<EOF
-[beads.buttons.record]
+[beads.list.record]
 label = "Record"
-on = ["list"]
 run = 'printf "%s|%s|%s" "\$BEAD_IDS" "\$BEAD_REPO" "\$WHEEL_PANE" > "$SCR/record.txt"'
-[beads.buttons.one]
-label = "One"
-on = ["ready"]
-run = "true"
+[beads.task]
+start.label = "One"
+start.run = "true"
 EOF
 
 SP="$(w space new "$PROJ")"
@@ -50,6 +48,7 @@ rows() { printf %s "$1" | jq -r '[.. | objects | select(.id? == "table")][0].sec
 shape() { printf %s "$1" | jq -r '[.. | objects | select(.id? == "bar.shape")][0].children | join(" ")'; }
 
 PAGE="$(call get_beads)"
+eq "the page shows no problem box" "$(printf %s "$PAGE" | jq -r '[.. | objects | select(.id? == "problem0.t")][0].text // ""')" ""
 eq "the bar holds Clear, Copy ids, the list button and the count" "$(shape "$PAGE")" "filters.clear list.copy list.record count"
 eq "Copy ids holds the two open leaves and not the epic" "$(copied "$PAGE")" "$(rows "$PAGE")"
 check "the copied ids are the leaves" test "$(copied "$PAGE" | tr ' ' '\n' | sort | tr '\n' ' ')" = "$(printf '%s\n%s\n' "$A" "$B" | sort | tr '\n' ' ')"
@@ -68,7 +67,7 @@ check "the list button reports what it started" has_text "$OUT" "Record started 
 poll 5 test -s "$SCR/record.txt"
 eq "the script got the ids in the shown order, the repo and the pane" "$(cat "$SCR/record.txt")" "$A $B|proj|$PANE"
 OUT="$(call run_list_script '{"script":"one"}')"
-check "a row button is refused as a list button" has_text "$OUT" "no list button one"
+check "a button the project did not write is refused" has_text "$OUT" "no list button one"
 
 PAGE="$(call set_query '{"q":"nothing-here"}')"
 eq "an empty list copies nothing" "$(copied "$PAGE")" ""

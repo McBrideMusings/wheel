@@ -21,7 +21,7 @@ PROJ="$SCR/proj"; mkdir -p "$PROJ"
   && bd create "Beta" -t task -p 1 -l cli >/dev/null 2>&1)
 A="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="Alpha") | .id')"
 B="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="Beta") | .id')"
-printf '[beads.buttons.iterate-list]\nlabel = "Iterate"\non = ["list"]\nrun = "true"\n' >"$PROJ/wheel.toml"
+printf '[beads.list.iterate-list]\nlabel = "Iterate"\nrun = "true"\n' >"$PROJ/wheel.toml"
 printf '[artifacts.beads]\nmcp = "exec %s serve"\nshared = true\ntitle = "Beads"\n' "$HOUSE" >>"$INST/wheel.toml"
 
 SP="$(w space new "$PROJ")"

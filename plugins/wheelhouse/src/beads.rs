@@ -44,7 +44,7 @@ struct Snapshot {
     name: String,
     path: String,
     buttons: buttons::Buttons,
-    /// The list buttons, `[beads.buttons.<name>]` with `on = ["list"]`, over every bead the page lists.
+    /// The list buttons, `[beads.list.<name>]`, over every bead the page lists.
     scripts: Vec<Script>,
     /// Each bead's button now, by bead id; `fill_acts` sets it.
     acts: HashMap<String, buttons::Act>,
@@ -68,7 +68,7 @@ fn collect(path: &str) -> Snapshot {
         return snap;
     }
     snap.has_repo = true;
-    // The per-bead button (`[beads.task]`, `[beads.epic]`) and the list buttons (`[beads.buttons.<name>]` with `on = ["list"]`).
+    // The per-bead button (`[beads.task]`, `[beads.epic]`) and the list buttons (`[beads.list.<name>]`).
     let (b, problems) = buttons::read(&path);
     snap.buttons = b;
     let (s, more) = crate::core::buttons::scripts(&path, "beads");
@@ -897,7 +897,7 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let mut acts = vec![clear];
         acts.push(p.copy_button("list.copy", "Copy ids", &listed.join(" "),
             json!({ "style": "link", "disabled": n == 0, "help": format!("Copy the {n} listed ids, space separated") })));
-        for s in snap.scripts.iter().filter(|s| s.on_list()) {
+        for s in &snap.scripts {
             acts.push(p.button(&format!("list.{}", s.name), s.label(), "run_list_script", json!({ "script": s.name }),
                 json!({ "style": "link", "disabled": n == 0, "help": format!("{} over the {n} listed beads", s.label()) })));
         }
@@ -1042,8 +1042,7 @@ mod tests {
             bead("t-4", |b| { b.priority = Some(0); b.title = "d".into(); b.status = "closed".into(); }),
         ]);
         s.scripts = vec![
-            Script { name: "iterate-list".into(), label: Some("Iterate".into()), on: vec!["list".into()], run: "true".into() },
-            Script { name: "implement".into(), label: None, on: vec!["ready".into()], run: "true".into() },
+            Script { name: "iterate-list".into(), label: Some("Iterate".into()), run: "true".into() },
         ];
         let copied = |c: &[Value]| c.iter().find(|x| x["id"] == "list.copy").unwrap()["action"]["copy"]["text"].as_str().unwrap().to_string();
         let disabled = |c: &[Value], id: &str| c.iter().find(|x| x["id"] == id).unwrap()["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["disabled"] == true));
@@ -1051,7 +1050,7 @@ mod tests {
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "t-1 t-2", "the open leaves in the page's order; the epic and the closed bead are not listed");
         let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
-        assert_eq!(shape["children"], json!(["filters.clear", "list.copy", "list.iterate-list", "count"]), "only the list button joins Copy ids");
+        assert_eq!(shape["children"], json!(["filters.clear", "list.copy", "list.iterate-list", "count"]), "the list button joins Copy ids");
         assert!(!disabled(&c, "list.copy") && !disabled(&c, "list.iterate-list"));
         let table = c.iter().find(|x| x["id"] == "table").unwrap();
         assert_eq!((table["sortAction"].as_str(), &table["sort"]), (Some("set_sort"), &json!({ "key": "status", "asc": true })), "a header click reaches the page");

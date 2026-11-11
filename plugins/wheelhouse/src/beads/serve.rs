@@ -106,7 +106,7 @@ struct Sort {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ListScript {
-    /// The button's name in `[beads.buttons.<name>]`, one with `on = ["list"]`.
+    /// The button's name in `[beads.list.<name>]`.
     script: String,
 }
 
