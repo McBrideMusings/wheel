@@ -997,7 +997,7 @@ final class AppModel {
             Log.info("devices: \(devices.map { "\($0.id) \($0.name) connected=\($0.connected)" }.joined(separator: ", "))")
         case let .usage(_, board), let .usageChanged(board):
             usage.received(board)
-            Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable):accounts=\($0.accounts.map { "\($0.name)/\($0.usage.kind.rawValue)" }.joined(separator: "+"))" }.joined(separator: ",")) pins=\(board.pins.joined(separator: ","))")
+            Log.info("usage board agents=\(board.agents.map { "\($0.id):shown=\($0.shown):readable=\($0.readable):accounts=\($0.accounts.map { "\($0.name)/\($0.usage.kind.rawValue)" }.joined(separator: "+"))" }.joined(separator: ",")) meters=\(board.meters.map(\.text).joined(separator: ",")) labels=\(board.labels.joined(separator: ","))")
         case let .agentStateChanged(agent, state):
             chats[agent]?.state = state
             attachAgainIfRefused(agent)
@@ -1828,13 +1828,21 @@ final class AppModel {
         client.send(.usage(req: client.req(), dueOnly: dueOnly))
     }
 
-    /// Pin or unpin a usage row (`<agent>:<limit>`) on the strip: write the `usage.pins` setting
-    /// machine-wide; the daemon's `usageChanged` brings the new board back.
-    func togglePin(_ row: String) {
+    /// Give `window` of every `agent` login the strip level `level` (nil: off): write the
+    /// `usage.meters` setting machine-wide; the daemon's `usageChanged` brings the new board back.
+    func setMeter(agent: String, window: String, level: UsageMeterLevel?) {
         guard connection == .connected else { return }
-        let value = usage.board.pins(toggling: row)
-        Log.info("usage pin \(row) -> usage.pins = \(value)")
-        client.send(.settingSet(req: nil, key: "usage.pins", value: value, space: nil, machine: true))
+        let value = usage.board.metersSetting(agent: agent, window: window, level: level)
+        Log.info("usage meter \(agent):\(window) \(level?.rawValue ?? "off") -> usage.meters = \(value)")
+        client.send(.settingSet(req: nil, key: "usage.meters", value: value, space: nil, machine: true))
+    }
+
+    /// Turn a strip label on or off: write the `usage.labels` setting machine-wide.
+    func toggleUsageLabel(_ label: UsageLabel) {
+        guard connection == .connected else { return }
+        let value = usage.board.labelsSetting(toggling: label)
+        Log.info("usage label \(label.rawValue) -> usage.labels = \(value)")
+        client.send(.settingSet(req: nil, key: "usage.labels", value: value, space: nil, machine: true))
     }
 
     /// Show or hide an agent's usage: write the `usage.agents` setting machine-wide.

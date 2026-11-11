@@ -1269,7 +1269,7 @@ public enum ServerMsg: Sendable {
     case permResolved(id: String, choice: String)
     /// The usage board, in reply to `usage`.
     case usage(req: UInt64, board: UsageBoard)
-    /// The usage board changed: a reading was taken or the agents or pins settings were written;
+    /// The usage board changed: a reading was taken or the agents, meters or labels settings were written;
     /// sent to every connection.
     case usageChanged(board: UsageBoard)
     /// How remote clients reach the daemon, in reply to `remoteInfo`.

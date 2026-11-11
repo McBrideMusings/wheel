@@ -1064,6 +1064,16 @@ async fn config_watch_prints_each_kind_of_settings_broadcast_and_times_out_witho
 
 struct FixedUsage(Result<wheeld::usage::RawUsage, wheeld::usage::UsageFailure>);
 
+fn window(id: &str, pct: f64, resets_at: Option<&str>, length_secs: u64) -> wheel_proto::UsageWindow {
+    wheel_proto::UsageWindow {
+        id: id.into(),
+        label: id.into(),
+        pct,
+        resets_at: resets_at.map(String::from),
+        length_secs: Some(length_secs),
+    }
+}
+
 impl wheeld::usage::UsageSource for FixedUsage {
     fn read(&self) -> Vec<wheeld::usage::LoginRead> {
         vec![wheeld::usage::LoginRead {
@@ -1079,27 +1089,27 @@ impl wheeld::usage::UsageSource for FixedUsage {
 async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
     let fresh =
         daemon_with_agents_reading(Some(Arc::new(FixedUsage(Ok(wheeld::usage::RawUsage {
-            session_pct: 42.0,
-            session_resets_at: Some("2026-10-17T20:00:00Z".into()),
-            weekly_pct: 7.5,
-            weekly_resets_at: None,
+            windows: vec![
+                window("5h", 42.0, Some("2026-10-17T20:00:00Z"), 18_000),
+                window("weekly", 7.5, None, 604_800),
+            ],
             ..Default::default()
         })))))
         .await;
     let out = ok(&fresh, &["usage"]).await;
-    assert!(out.contains("account: .claude"), "{out}");
+    assert!(out.contains("account: .claude (claude)"), "{out}");
     assert!(
-        out.contains("5-hour: 42% (resets 2026-10-17T20:00:00Z)"),
+        out.contains("5h: 42% (resets 2026-10-17T20:00:00Z, 18000 s)"),
         "{out}"
     );
-    assert!(out.contains("weekly: 7.5% (resets -)"), "{out}");
+    assert!(out.contains("weekly: 7.5% (resets -, 604800 s)"), "{out}");
     assert!(
         out.contains("source: oauth/usage via Claude Code logins"),
         "{out}"
     );
     assert!(out.contains("age: 0 s"), "{out}");
-    // The strip's rows: the default pins. Codex is listed, and the stub gives it no login.
-    assert!(out.contains("strip: claude .claude session 42%"), "{out}");
+    // The strip's rows: the default meters. Codex is listed, and the stub gives it no login.
+    assert!(out.contains("strip: claude .claude 5h 42%"), "{out}");
     assert!(out.contains("strip: claude .claude weekly 7.5%"), "{out}");
     assert!(!out.contains("agent: codex not shown"), "{out}");
     assert!(out.contains("strip: codex not detected: no Codex login on this Mac"), "{out}");
@@ -1111,7 +1121,7 @@ async fn usage_prints_the_reading_and_exits_3_when_it_is_missing() {
     let o = wheel(&missing, &["usage"]).await;
     assert_eq!(o.status.code(), Some(3), "{o:?}");
     assert!(
-        stdout(&o).starts_with("account: .claude\nmissing: signed out\n"),
+        stdout(&o).starts_with("account: .claude (claude)\nmissing: signed out\n"),
         "{o:?}"
     );
 }
@@ -1438,7 +1448,7 @@ impl wheeld::usage::UsageSource for TwoLogins {
             name: name.into(),
             dirs: vec![format!("/logins/{name}").into()],
             result: Ok(wheeld::usage::RawUsage {
-                weekly_pct,
+                windows: vec![window("weekly", weekly_pct, None, 604_800)],
                 ..Default::default()
             }),
         };
@@ -1459,7 +1469,7 @@ async fn pane_info_reports_the_weekly_limit_of_the_panes_login() {
         let json: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(json["login"]["dir"], dir, "{json}");
         assert_eq!(
-            json["login"]["account"]["usage"]["reading"]["weekly_pct"],
+            json["login"]["account"]["usage"]["reading"]["windows"][0]["pct"],
             weekly.trim_end_matches('%').parse::<f64>().unwrap(),
             "{json}"
         );

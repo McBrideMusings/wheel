@@ -3,7 +3,7 @@ import WheelKit
 import WheelUI
 
 /// What the usage strip and the Usage window show: the daemon's board, which it sends on connect,
-/// after each reading and whenever the agents or pins settings change.
+/// after each reading and whenever the agents, meters or labels settings change.
 @MainActor
 final class UsageModel: ObservableObject {
     @Published private(set) var board = UsageBoard()
@@ -27,21 +27,27 @@ final class UsageModel: ObservableObject {
     func disconnected() { loaded = false }
 }
 
-/// A bar, a percent and a tag: one pinned row in the strip.
+/// One metered window in the strip: a bar, a percent and the window's id; at the `full` level
+/// the bar carries the pace tick and the reset clock follows.
 private struct StripBar: View {
-    let row: UsageRow
+    let row: UsageStripRow
     let stale: Bool
 
     var body: some View {
+        let window = row.window
+        let full = row.level == .full
         HStack(spacing: 6) {
-            UsageBar(pct: row.pct, stale: stale).frame(width: 104, height: 7)
-            Text(UsageText.percent(row.pct)).font(.callout.monospacedDigit())
+            UsageBar(pct: window.pct, stale: stale, pace: full ? window.pace() : nil).frame(width: 104, height: 7)
+            Text(UsageText.percent(window.pct)).font(.callout.monospacedDigit())
                 .frame(width: 36, alignment: .trailing)
-            Text(row.tag).font(.callout).foregroundStyle(.secondary)
+            Text(window.id).font(.callout).foregroundStyle(.secondary)
+            if full, let clock = UsageText.resetClock(window.resetsAt) {
+                Text(clock).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            }
         }
         .fixedSize()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(row.label) \(UsageText.percent(row.pct))\(stale ? ", stale" : "")")
+        .accessibilityLabel("\(window.label) \(UsageText.percent(window.pct))\(stale ? ", stale" : "")\(full ? UsageText.resets(window.resetsAt).map { ", \($0)" } ?? "" : "")")
     }
 }
 
@@ -201,17 +207,40 @@ private extension View {
     }
 }
 
-/// One account in the strip: mark, name, pinned bars, and why when it has none or they are stale.
-private struct StripAccount: View {
+/// One account in the strip: mark, the labels `usage.labels` names, its metered bars, and why when
+/// it has none or they are stale.
+struct StripAccount: View {
     let board: UsageBoard
     let agent: UsageAgent
     let account: UsageAccount
+
+    /// The labels the strip prints beside `account`'s mark, in `usage.labels` order, each with
+    /// its text: the billing chip, the login folder (only when the agent has two or more logins)
+    /// and the email. The view draws this list and the debug server reports it.
+    static func labels(board: UsageBoard, agent: UsageAgent, account: UsageAccount) -> [(UsageLabel, String)] {
+        board.labels.compactMap { name in
+            guard let label = UsageLabel(rawValue: name) else { return nil }
+            let text: String? = switch label {
+            case .billing: account.usage.reading?.billing
+            case .folder: board.printsFolder(of: agent) ? account.name : nil
+            case .email: account.usage.reading?.email
+            }
+            return text.map { (label, $0) }
+        }
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             UsageIcon(agent: agent.id).foregroundStyle(.secondary)
                 .accessibilityLabel(agent.name)
-            Text(account.name).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            ForEach(Self.labels(board: board, agent: agent, account: account), id: \.0) { label, text in
+                if label == .billing {
+                    Text(text).font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule()).lineLimit(1)
+                } else {
+                    Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
             if let note = account.missingNote {
                 // The reason's first clause ("signed out", "no login in the Keychain"); the hover has the rest.
                 Text(note.split(separator: ":").first.map(String.init) ?? note)
@@ -233,7 +262,7 @@ private struct StripAccount: View {
         if account.isStale {
             return "Stale, read \(UsageText.age(account.usage.ageSecs ?? 0)) ago: \(account.usage.why ?? "")"
         }
-        return [agent.name, account.name, account.usage.reading?.plan].compactMap { $0 }.joined(separator: " · ")
+        return [agent.name, account.name, account.usage.reading?.billing].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -265,7 +294,7 @@ struct UsageWindow: View {
             }
             .padding(16)
         }
-        .frame(width: 400, height: 480)
+        .frame(width: 540, height: 520)
         .background(Color(nsColor: .windowBackgroundColor))
         .toolbar {
             ToolbarItemGroup {
@@ -297,8 +326,8 @@ private struct UsageCard: View {
                     Text(agent.name)
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if let plan = account.usage.reading?.plan {
-                    Text(plan).font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
+                if let billing = account.usage.reading?.billing {
+                    Text(billing).font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
                         .background(.quaternary, in: Capsule())
                 }
                 Spacer()
@@ -318,20 +347,31 @@ private struct UsageCard: View {
                     Label("Stale, read \(UsageText.age(account.usage.ageSecs ?? 0)) ago: \(account.usage.why ?? "")",
                           systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange)
                 }
-                ForEach(account.rows(agent: agent.id)) { row in
+                // One row per window the reading carries; the picker sets the strip's meter for
+                // this window of every login of the agent (ADR-0034).
+                ForEach(account.usage.reading?.windows ?? []) { window in
                     HStack(spacing: 8) {
-                        Text(row.label).frame(width: 96, alignment: .leading)
-                        UsageBar(pct: row.pct, stale: account.isStale).frame(height: 7)
-                        Text(UsageText.percent(row.pct)).font(.body.monospacedDigit()).frame(width: 40, alignment: .trailing)
-                        Text(UsageText.resets(row.resetsAt) ?? "").font(.caption).foregroundStyle(.secondary)
+                        Text(window.label).frame(width: 96, alignment: .leading)
+                        UsageBar(pct: window.pct, stale: account.isStale, pace: window.pace()).frame(height: 7)
+                        Text(UsageText.percent(window.pct)).font(.body.monospacedDigit()).frame(width: 40, alignment: .trailing)
+                        Text(UsageText.resets(window.resetsAt) ?? "").font(.caption).foregroundStyle(.secondary)
                             .frame(width: 70, alignment: .leading)
-                        Button { model.togglePin(row.id) } label: {
-                            Image(systemName: usage.board.isPinned(row.id) ? "pin.fill" : "pin")
+                        Picker("Strip", selection: Binding(
+                            get: { usage.board.level(agent: agent.id, window: window.id)?.rawValue ?? "off" },
+                            set: { model.setMeter(agent: agent.id, window: window.id, level: UsageMeterLevel(rawValue: $0)) }
+                        )) {
+                            Text("Off").tag("off")
+                            Text("Meter").tag("meter")
+                            Text("Full").tag("full")
                         }
-                        .buttonStyle(.borderless)
-                        .help(usage.board.isPinned(row.id) ? "Take off the strip, for every \(agent.name) account" : "Pin to the strip, for every \(agent.name) account")
-                        .accessibilityLabel("\(usage.board.isPinned(row.id) ? "Unpin" : "Pin") \(row.label)")
+                        .pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(width: 140)
+                        .help("What the strip draws for \(window.label), for every \(agent.name) login: nothing, the bar and percentage, or those with the pace tick and reset time")
+                        .accessibilityLabel("\(window.label) in the strip")
                     }
+                }
+                if account.usage.reading?.windows.isEmpty == true {
+                    Text("No rate-limit window: \(account.usage.reading?.billing ?? "no plan limits").")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
                 Divider()
                 if let r = account.usage.reading {
@@ -349,6 +389,32 @@ private struct UsageCard: View {
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5))
+    }
+}
+
+/// Settings' Usage labels block: what the strip prints beside each login's bars (`usage.labels`).
+struct UsageLabelsSettings: View {
+    var model: AppModel
+    @ObservedObject var usage: UsageModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Usage labels").font(ChatFont.body).fontWeight(.semibold)
+            VStack(spacing: 0) {
+                ForEach(Array(UsageLabel.allCases.enumerated()), id: \.element) { index, label in
+                    if index > 0 { Divider() }
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Toggle(label.title, isOn: Binding(get: { usage.board.shows(label) }, set: { _ in model.toggleUsageLabel(label) }))
+                        Spacer()
+                        Text(label == .folder ? "only when an agent has two or more logins" : "")
+                            .font(ChatFont.line).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                }
+            }
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
+        }
     }
 }
 

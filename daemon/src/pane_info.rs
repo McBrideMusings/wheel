@@ -76,9 +76,16 @@ impl AppState {
                     .as_ref()
                     .and_then(|l| l.account.as_ref())
                     .map(|a| match &a.usage.reading {
-                        Some(r) => match &r.weekly_resets_at {
-                            Some(at) => format!("{}% (resets {at})", r.weekly_pct.round()),
-                            None => format!("{}%", r.weekly_pct.round()),
+                        // Only the weekly window; an API-billed login or one with other windows has none.
+                        Some(r) => match r.windows.iter().find(|w| w.id == "weekly") {
+                            Some(w) => match &w.resets_at {
+                                Some(at) => format!("{}% (resets {at})", w.pct.round()),
+                                None => format!("{}%", w.pct.round()),
+                            },
+                            None => match &r.billing {
+                                Some(b) => format!("no weekly window ({b})"),
+                                None => "no weekly window".into(),
+                            },
                         },
                         None => a.usage.why.clone().unwrap_or_else(|| "no reading".into()),
                     })

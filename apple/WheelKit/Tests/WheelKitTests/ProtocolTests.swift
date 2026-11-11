@@ -403,10 +403,10 @@ struct ProtocolTests {
     }
 
     @Test func paneInfoCarriesTheLoginAndItsAccount() throws {
-        let json = #"{"ev":"pane_info","req":4,"pane":"p2","kind":"agent","fields":[{"label":"Directory","value":"/w"}],"login":{"dir":"/h/.claude-work","account":{"id":"ab12cd34","name":".claude-work","dirs":["/h/.claude-work"],"usage":{"kind":"fresh","reading":{"session_pct":1,"weekly_pct":71,"read_at":5},"source":"s"}}}}"#
+        let json = #"{"ev":"pane_info","req":4,"pane":"p2","kind":"agent","fields":[{"label":"Directory","value":"/w"}],"login":{"dir":"/h/.claude-work","account":{"id":"ab12cd34","name":".claude-work","dirs":["/h/.claude-work"],"usage":{"kind":"fresh","reading":{"windows":[{"id":"weekly","label":"Weekly","pct":71,"length_secs":604800}],"read_at":5},"source":"s"}}}}"#
         guard case let .paneInfo(_, _, _, _, login) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
         #expect(login?.dir == "/h/.claude-work")
-        #expect(login?.account?.usage.reading?.weeklyPct == 71)
+        #expect(login?.account?.usage.reading?.window("weekly")?.pct == 71)
         guard case let .paneInfo(_, _, _, _, none) = try ServerMsg.decode(#"{"ev":"pane_info","req":4,"pane":"p2","kind":"web","fields":[]}"#) else { Issue.record("wrong case"); return }
         #expect(none == nil)
     }

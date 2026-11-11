@@ -54,6 +54,10 @@ enum Accepts {
     /// A font family name of letters, digits, spaces and `-_.,+&'()`, or nothing for the
     /// terminal's own font.
     Font,
+    /// `usage.meters` entries: `<agent>:<window>:<meter|full>`, comma separated, or nothing.
+    Meters,
+    /// `usage.labels` entries: `billing`, `folder`, `email`, comma separated, or nothing.
+    Labels,
     /// One of a fixed set of words.
     Choice(&'static [&'static str]),
     /// A whole number between the two bounds, inclusive.
@@ -92,6 +96,8 @@ impl Accepts {
             Accepts::Roots => roots(value),
             Accepts::Keybind => crate::keybind::take(value),
             Accepts::Font => font(value),
+            Accepts::Meters => crate::usage::meters_in(value).map(|_| list_trimmed(value)),
+            Accepts::Labels => crate::usage::labels_in(value).map(|l| l.join(",")),
             Accepts::Choice(words) => choice(value, words),
             Accepts::Int(min, max) => int(value, min, max),
             Accepts::Float(min, max) => float(value, min, max),
@@ -241,6 +247,16 @@ fn list(value: &str) -> Result<String, String> {
         )),
         None => Ok(entries.join(",")),
     }
+}
+
+/// A comma list with its entries trimmed and the empty ones dropped.
+fn list_trimmed(value: &str) -> String {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A font family name, or nothing.
@@ -449,7 +465,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 67] = [
+const KEYS: [Key; 68] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -475,10 +491,16 @@ const KEYS: [Key; 67] = [
         help: "The coding agents the usage strip and the Usage window show, comma separated (claude, codex). An agent wheel cannot read usage for is listed there as not detected or unreadable. Read from this machine's file only.",
     },
     Key {
-        id: crate::usage::PINS_KEY,
-        accepts: Accepts::List,
-        default: "claude:session,claude:weekly,codex:session,codex:weekly",
-        help: "The usage rows pinned to the strip, comma separated as agent:limit (claude:session, claude:weekly, claude:opus, codex:session, codex:weekly). Read from this machine's file only.",
+        id: crate::usage::METERS_KEY,
+        accepts: Accepts::Meters,
+        default: crate::usage::METERS_DEFAULT,
+        help: "The windows the usage strip draws, comma separated as agent:window:level in strip order, for every login of that agent: the level is meter (bar and percentage) or full (bar, percentage, pace tick and reset time), and a window not listed is off (claude:5h:meter, claude:weekly:full, claude:weekly-fable:meter, codex:weekly:meter). The window ids come from each reading: wheel usage lists them. Read from this machine's file only.",
+    },
+    Key {
+        id: crate::usage::LABELS_KEY,
+        accepts: Accepts::Labels,
+        default: "folder",
+        help: "What the usage strip prints beside each login's bars, comma separated: billing (the plan or billing kind), folder (the login folder, printed only when the agent has two or more logins), email. Read from this machine's file only.",
     },
     Key {
         id: "agent.claude.command",

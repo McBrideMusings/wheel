@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 31;
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -2017,7 +2017,7 @@ pub enum ServerMsg {
         address: String,
         paired: bool,
     },
-    /// The usage board changed: a reading was taken, or the agents or pins settings were written.
+    /// The usage board changed: a reading was taken, or the agents, meters or labels settings were written.
     /// Sent to every connection.
     UsageChanged {
         board: UsageBoard,
@@ -3456,24 +3456,18 @@ impl ContextUse {
     }
 }
 
-/// One reading of an account's Claude usage. Percentages are of the plan's limit, 0 to 100 and over.
+/// One reading of an account's usage: every rate-limit window the provider's answer carried, and
+/// none it left out (protocol 32). Percentages are of the plan's limit, 0 to 100 and over.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageReading {
-    pub session_pct: f64,
-    /// When the 5-hour window resets, as the usage endpoint wrote it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_resets_at: Option<String>,
-    pub weekly_pct: f64,
-    /// When the 7-day window resets, as the usage endpoint wrote it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub weekly_resets_at: Option<String>,
-    /// The per-model weekly limits the account has (e.g. Fable), in the order the endpoint
-    /// listed them.
+    /// The windows in the order the provider listed them: an idle Claude account has no 5-hour
+    /// window, a Codex Pro Lite account has one weekly window.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_limits: Vec<UsageLimit>,
-    /// The plan's name, e.g. `Max 20x`; None when the profile could not be read.
+    pub windows: Vec<UsageWindow>,
+    /// What pays for the account: the plan's name (`Max 20x`, `Plus`), or the billing kind when
+    /// no plan limits apply (`API billing`, `Bedrock`, `Vertex`, `API`); None when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan: Option<String>,
+    pub billing: Option<String>,
     /// Whether extra usage (paid use past the plan's limits) is on; None when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_usage: Option<bool>,
@@ -3484,16 +3478,40 @@ pub struct UsageReading {
     pub read_at: u64,
 }
 
-/// One limit besides the 5-hour and weekly ones.
+/// One rate-limit window of a reading. Its id names the window in `usage.meters`
+/// (`<agent>:<id>:<meter|full>`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UsageLimit {
-    /// The pin id's second half, e.g. `opus`.
+pub struct UsageWindow {
+    /// Named by the window's length (`5h`, `weekly`, `3d`), with a model-scoped limit's model
+    /// after it (`weekly-fable`).
     pub id: String,
-    /// What a row calls it, e.g. `Weekly Opus`.
+    /// What a row calls it: `5-hour`, `Weekly`, `Weekly Fable`.
     pub label: String,
     pub pct: f64,
+    /// When the window resets, RFC 3339 as the provider wrote it; None when it gave none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
+    /// The window's length in seconds; None when the provider gave none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_secs: Option<u64>,
+}
+
+/// How much of one window the strip draws, from `usage.meters`; a window not listed is off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageMeterLevel {
+    /// The bar and its percentage.
+    Meter,
+    /// The bar, its percentage, the pace tick and the reset time.
+    Full,
+}
+
+/// One `usage.meters` entry: a window of every login of one harness, and how much of it to draw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageMeter {
+    pub agent: String,
+    pub window: String,
+    pub level: UsageMeterLevel,
 }
 
 fn default_harness() -> String {
@@ -3792,12 +3810,16 @@ pub struct UsageAccount {
     pub usage: UsageInfo,
 }
 
-/// Everything the usage strip and window show: the agents and the pinned rows.
+/// Everything the usage strip and window show: the agents, the metered windows and the labels.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageBoard {
     pub agents: Vec<UsageAgent>,
-    /// `<agent>:<limit>` ids from the `usage.pins` setting, in the order the strip shows them.
-    pub pins: Vec<String>,
+    /// The `usage.meters` setting's entries, in the order the strip draws them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub meters: Vec<UsageMeter>,
+    /// The `usage.labels` setting's entries: `billing`, `folder`, `email`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
 }
 
 /// How far a usage reading can be trusted.
