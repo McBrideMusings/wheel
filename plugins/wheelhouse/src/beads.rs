@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::core::page::{cell, Page};
 use crate::core::table;
 
+pub mod buttons;
 pub mod cli;
 pub mod graph;
 pub mod serve;
@@ -37,19 +38,13 @@ struct Bead {
     epic: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct Script {
-    name: String,
-    label: Option<String>,
-    on: Vec<String>,
-    run: String,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Snapshot {
     name: String,
     path: String,
-    scripts: Vec<Script>,
+    buttons: buttons::Buttons,
+    /// Each bead's button now, by bead id; `fill_acts` sets it.
+    acts: HashMap<String, buttons::Act>,
     beads: Vec<Bead>,
     error: Option<String>,
     problems: Vec<String>,
@@ -58,31 +53,6 @@ struct Snapshot {
 
 fn bd(path: &str, args: &[&str]) -> Result<Vec<Value>, String> {
     crate::core::run::bd(path, args)
-}
-
-fn scripts(path: &str) -> (Vec<Script>, Vec<String>) {
-    let file = PathBuf::from(path).join("wheel.toml");
-    let Ok(text) = std::fs::read_to_string(&file) else { return (vec![], vec![]) };
-    let doc: toml_edit::DocumentMut = match text.parse() {
-        Ok(t) => t,
-        Err(e) => return (vec![], vec![format!("{}: {e}", file.display())]),
-    };
-    let mut out = vec![];
-    if let Some(buttons) = doc.get("beads").and_then(|b| b.get("buttons")).and_then(|b| b.as_table_like()) {
-        for (name, s) in buttons.iter() {
-            out.push(Script {
-                name: name.to_string(),
-                label: s.get("label").and_then(|v| v.as_str()).map(String::from),
-                on: s
-                    .get("on")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default(),
-                run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            });
-        }
-    }
-    (out, vec![])
 }
 
 /// The beads of the project in `path`: what `bd` lists, which are ready, and the buttons the
@@ -95,8 +65,8 @@ fn collect(path: &str) -> Snapshot {
         return snap;
     }
     snap.has_repo = true;
-    let (s, problems) = scripts(&path);
-    snap.scripts = s;
+    let (b, problems) = buttons::read(&path);
+    snap.buttons = b;
     snap.problems = problems;
     let load = || -> Result<Vec<Bead>, String> {
         let all = bd(&path, &["list", "--all"])?;
@@ -202,6 +172,32 @@ fn kind_of(b: &Bead) -> &'static str {
 
 const KINDS: [&str; 6] = ["in progress", "ready", "blocked", "open", "deferred", "done"];
 
+/// Set each bead's button from the records and the panes open now. When the panes cannot be listed, a bead
+/// with a record shows its button disabled and says so, rather than guessing its pane is gone.
+fn fill_acts(snap: &mut Snapshot) {
+    let records = buttons::recorded_all(&buttons::records_file(), &snap.path);
+    let panes = buttons::open_panes(&snap.path);
+    let live = panes.clone().unwrap_or_default();
+    snap.acts = snap
+        .beads
+        .iter()
+        .filter_map(|b| {
+            let mut act = buttons::decide(&snap.buttons, &b.status, groups(b), records.get(&b.id), &live)?;
+            if let (Err(e), Some(_)) = (&panes, records.get(&b.id)) {
+                if act.state != buttons::State::Closed {
+                    act.disabled = true;
+                    act.help = e.clone();
+                }
+            }
+            if buttons::pressed(&snap.path, &b.id) {
+                act.disabled = true;
+                act.help = "Starting; wait for the pane".into();
+            }
+            Some((b.id.clone(), act))
+        })
+        .collect();
+}
+
 fn krank(k: &str) -> usize {
     KINDS.iter().position(|x| *x == k).unwrap_or(3)
 }
@@ -221,21 +217,6 @@ fn is_open(b: &Bead) -> bool {
 
 fn groups(b: &Bead) -> bool {
     b.epic || b.kind == "epic" || b.kind == "milestone"
-}
-
-fn idle(b: &Bead) -> bool {
-    b.status != "closed" && !(b.status == "open" && !b.blocked_by.is_empty())
-}
-
-fn wants(s: &Script, b: &Bead) -> bool {
-    s.on.iter().any(|k| match k.as_str() {
-        "ready" => b.ready && b.status == "open",
-        "wip" => b.status == "in_progress",
-        "epic" => groups(b) && idle(b),
-        "milestone" => b.kind == "milestone" && idle(b),
-        "blocked" => b.status == "open" && !b.ready,
-        _ => false,
-    })
 }
 
 /// Seconds since the Unix epoch of an RFC 3339 UTC time such as `2026-10-30T01:07:41Z`.
@@ -548,11 +529,11 @@ pub(crate) fn sane(s: &str) -> String {
 
 fn menu(ix: &Ix, b: &Bead) -> Vec<Value> {
     ix.snap
-        .scripts
-        .iter()
-        .filter(|s| wants(s, b))
-        .map(|s| json!({ "label": s.label.as_deref().unwrap_or(&s.name), "action": "run_script",
-            "context": { "bead": b.id, "script": s.name } }))
+        .acts
+        .get(&b.id)
+        .filter(|a| !a.disabled)
+        .map(|a| json!({ "label": a.label, "action": "press", "context": { "bead": b.id } }))
+        .into_iter()
         .collect()
 }
 
@@ -741,10 +722,16 @@ fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
     }
     let acts: Vec<String> = ix
         .snap
-        .scripts
-        .iter()
-        .filter(|s| wants(s, b))
-        .map(|s| p.button(&format!("d.act.{}", sane(&s.name)), s.label.as_deref().unwrap_or(&s.name), "run_script", json!({ "bead": b.id, "script": s.name }), json!({ "style": "primary" })))
+        .acts
+        .get(&b.id)
+        .map(|a| {
+            let mut extra = json!({ "style": "primary", "disabled": a.disabled });
+            if !a.help.is_empty() {
+                extra["help"] = json!(a.help);
+            }
+            p.button("d.act", &a.label, "press", json!({ "bead": b.id }), extra)
+        })
+        .into_iter()
         .collect();
     let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
     // The buttons sit in the card's footer beside Close, with the last run's result before them.
@@ -1005,12 +992,15 @@ mod tests {
     #[test]
     fn a_beads_buttons_sit_in_the_detail_footer_not_its_body() {
         let mut s = snap(vec![bead("a", |b| b.status = "in_progress".into())]);
-        s.scripts = vec![Script { name: "resume".into(), label: Some("Resume".into()), on: vec!["wip".into()], run: "true".into() }];
+        s.acts.insert(
+            "a".into(),
+            buttons::Act { state: buttons::State::Saved, label: "Resume".into(), disabled: false, help: String::new() },
+        );
         let mut ui = Ui::default();
         ui.detail = Some("a".into());
         let c = page_components(&s, &ui);
         let modal = c.iter().find(|x| x["id"] == "detail").unwrap();
-        assert_eq!(modal["actions"], json!(["d.act.resume"]), "the button is a footer action beside Close");
+        assert_eq!(modal["actions"], json!(["d.act"]), "the button is a footer action beside Close");
         assert_eq!(modal["children"], json!(["d.body"]), "the card's body holds only the facts");
     }
 

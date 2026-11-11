@@ -10,6 +10,7 @@ use rmcp::handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wra
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, MetaObject, RequestMetaObject, ResourceContents, Tool};
 use rmcp::{schemars, service::RequestContext, tool, tool_router, ErrorData, RoleServer};
 
+use super::buttons::State;
 use super::*;
 use crate::core::project::Origin;
 use crate::view::{View, MIME};
@@ -95,11 +96,9 @@ struct BeadId {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct RunScript {
+struct Press {
     /// The bead's id.
     bead: String,
-    /// The button's name in `[beads.buttons.<name>]`.
-    script: String,
 }
 
 #[derive(Clone)]
@@ -112,8 +111,9 @@ impl Server {
     /// Change the asking pane's state and answer with its page.
     fn with(&self, meta: &RequestMetaObject, f: impl FnOnce(&Snapshot, &mut Ui)) -> CallToolResult {
         let (dir, pane) = origin(meta);
+        let mut snap = self.shared.lock().unwrap().project(&dir).snap.clone();
+        super::fill_acts(&mut snap);
         let mut s = self.shared.lock().unwrap();
-        let snap = s.project(&dir).snap.clone();
         let ui = s.panes.entry(pane).or_default();
         ui.centre = false;
         graph::Model::new(&snap, ui).trim(ui);
@@ -308,26 +308,59 @@ impl Server {
         })
     }
 
-    #[tool(description = "Run a bead's button", meta = ui_meta())]
-    fn run_script(&self, meta: RequestMetaObject, Parameters(RunScript { bead, script }): Parameters<RunScript>) -> CallToolResult {
+    #[tool(description = "Press a bead's button: focus its pane, resume it or start it, as its state says", meta = ui_meta())]
+    fn press(&self, meta: RequestMetaObject, Parameters(Press { bead }): Parameters<Press>) -> CallToolResult {
         let (dir, pane) = origin(&meta);
-        let snap = self.shared.lock().unwrap().project(&dir).snap.clone();
+        let mut snap = self.shared.lock().unwrap().project(&dir).snap.clone();
+        super::fill_acts(&mut snap);
         let Some(b) = snap.beads.iter().find(|b| b.id == bead) else {
             return CallToolResult::error(vec![ContentBlock::text(format!("no bead {bead}"))]);
         };
-        let Some(sc) = snap.scripts.iter().find(|x| x.name == script) else {
-            return CallToolResult::error(vec![ContentBlock::text(format!("no button {script}"))]);
+        let Some(act) = snap.acts.get(&bead).cloned().filter(|a| !a.disabled) else {
+            return CallToolResult::error(vec![ContentBlock::text(format!("{bead} has no button to press"))]);
         };
-        let log = std::env::temp_dir().join(format!("wheel-beads-{}-{}.log", sane(&b.id), sane(&sc.name)));
-        let label = sc.label.clone().unwrap_or_else(|| sc.name.clone());
+        if let State::Live(p) = &act.state {
+            return match crate::core::run::text("wheel", &snap.path, &["pane", "focus", p]) {
+                Ok(_) => self.with(&meta, |_, ui| ui.ran = Some(format!("Focused {p} for {bead}."))),
+                Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
+            };
+        }
+        let epic = super::groups(b);
+        let Some(run) = buttons::command(&snap.buttons, epic, &act.state) else {
+            return CallToolResult::error(vec![ContentBlock::text(format!("{bead} has no command for {}", act.label))]);
+        };
+        let log = std::env::temp_dir().join(format!("wheel-beads-{}.log", sane(&b.id)));
+        let conversation = buttons::recorded(&buttons::records_file(), &snap.path, &bead).map(|r| r.conversation).unwrap_or_default();
         let mut env = vec![("BEAD_ID", b.id.as_str()), ("BEAD_TITLE", &b.title), ("BEAD_TYPE", &b.kind), ("BEAD_REPO", &snap.name), ("BEAD_PATH", &snap.path)];
+        if act.state == State::Saved {
+            env.push(("CONVERSATION", conversation.as_str()));
+        }
         let data = Origin::of(&meta).data;
         if let Some(d) = &data {
             env.push(("WHEEL_DATA_DIR", d.as_str()));
         }
-        match crate::core::run::button(&label, &sc.run, &snap.path, &pane, &env, &log) {
-            Ok(()) => self.with(&meta, |_, ui| ui.ran = Some(format!("{label} started for {bead}. See the new pane."))),
-            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
+        if !buttons::claim(&snap.path, &bead) {
+            return CallToolResult::error(vec![ContentBlock::text(format!("{bead} is already starting"))]);
+        }
+        let (path, id) = (snap.path.clone(), bead.clone());
+        let remember = move |started: Option<String>| {
+            if let Some(pane) = started.filter(|p| !p.is_empty()) {
+                let conversation = buttons::conversation_of(&path, &pane).unwrap_or_else(|e| {
+                    eprintln!("beads: {id}: {e}");
+                    String::new()
+                });
+                if let Err(e) = buttons::record(&buttons::records_file(), &path, &id, buttons::Record { pane, conversation }) {
+                    eprintln!("beads: could not record {id}: {e}");
+                }
+            }
+            buttons::release(&path, &id);
+        };
+        match crate::core::run::button_then(&act.label, run, &snap.path, &pane, &env, &log, remember) {
+            Ok(()) => self.with(&meta, |_, ui| ui.ran = Some(format!("{} started for {bead}. See the new pane.", act.label))),
+            Err(e) => {
+                buttons::release(&snap.path, &bead);
+                CallToolResult::error(vec![ContentBlock::text(e)])
+            }
         }
     }
 }
