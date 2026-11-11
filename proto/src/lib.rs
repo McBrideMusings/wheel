@@ -3874,8 +3874,9 @@ pub enum PaneKind {
     Browser { url: String, extra: Extra },
     /// An agent, named `agent`, that the pane owns: it ends when the pane closes
     /// or changes kind. `agent` names the agent it runs (a key of the `agent.<name>.command`
-    /// settings); `conversation` is that agent's own id for the conversation, saved so a
-    /// restarted daemon can load it. `state` is the agent's state, filled in only in the
+    /// settings); `conversation` is that agent's own id for the conversation, saved once it is
+    /// on disk so a restarted daemon can load it; the listing (`status`) carries the id the
+    /// running agent is in even before then. `state` is the agent's state, filled in only in the
     /// layout listing (`status`): never saved, and never in the layout
     /// broadcast, where `agent_state_changed` carries it. `place` is where the agent runs when
     /// that is not the space's directory with the daemon's own Claude config directory.

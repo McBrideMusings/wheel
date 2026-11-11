@@ -685,6 +685,7 @@ impl AppState {
             each_space_kind_mut(space, &mut |kind| {
                 if let PaneKind::Agent {
                     agent,
+                    conversation,
                     state,
                     model,
                     context,
@@ -696,6 +697,11 @@ impl AppState {
                     *state = running.as_ref().map(|s| Box::new(s.state()));
                     *model = running.as_ref().and_then(|s| s.model());
                     *context = running.as_ref().and_then(|s| s.context());
+                    // The saved id stays empty until the conversation is on disk; a reader asking
+                    // now wants the one the agent is in, as `pane info` reports it.
+                    if let Some(live) = running.as_ref().and_then(|s| s.conversation_id()) {
+                        *conversation = Some(live);
+                    }
                     if let Some(running) = &running {
                         *permissions = self.current_permissions(running);
                     }

@@ -4856,9 +4856,18 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
+    // Nothing is saved yet, but the listing already names the conversation the agent is in, so
+    // a reader polling `status` for the new id sees it before the first prompt.
+    let listed = layout(&url).await["spaces"][0]["root"]["conversation"]
+        .as_str()
+        .map(ToString::to_string)
+        .expect("the listing names the fresh conversation");
+    assert_ne!(listed, first);
+
     agent_reply(&mut ws, &agent, "after the clear").await;
     let second = saved_conversation(&state_file).expect("the new conversation is saved");
     assert_ne!(second, first);
+    assert_eq!(second, listed, "the saved id is the one the listing named");
     // The saved id is the one the agent wrote its transcript under, so a restart can reopen it.
     let held = conversations_of(&mut ws, &agent, 900).await;
     assert!(
