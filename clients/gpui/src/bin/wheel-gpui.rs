@@ -1,7 +1,9 @@
 //! Wheel's GPUI client: connect to wheeld, show its spaces, and resize panes by dragging.
 //!
 //! `wheel-gpui [--url ws://127.0.0.1:7420/ws] [--token-file PATH] [--space ID] [--hidden]`
-//! Defaults match the `wheel` CLI: `WHEEL_URL` and `WHEEL_TOKEN_FILE`, else the local daemon.
+//! Defaults match the Mac app: the wheeld this bundle carries (`Resources/WheelDaemon.plist`,
+//! which the app copies out and runs as a launch agent at launch) unless `WHEEL_URL` names another
+//! daemon, then `WHEEL_URL` and `WHEEL_TOKEN_FILE` as the `wheel` CLI reads them, else the local daemon.
 //! `WHEEL_DEBUG_PORT` starts the debug server (`debug.rs`) on that port; `--hidden` (or
 //! `WHEEL_HIDDEN=1`) opens the window in test mode: never shown, never key, never active.
 use anyhow::{Result, bail};
@@ -9,21 +11,31 @@ use std::path::PathBuf;
 use wheel_gpui::{daemon::*, native::Bridge, open_window};
 
 fn main() -> Result<()> {
-    let (mut url, mut token_file, mut space) = (default_url(), default_token_file(), None);
+    let (mut url, mut token_file, mut space) = (None::<String>, std::env::var_os("WHEEL_TOKEN_FILE").map(PathBuf::from), None);
     let mut hidden = std::env::var("WHEEL_HIDDEN").is_ok_and(|v| v == "1");
     let debug_port = std::env::var("WHEEL_DEBUG_PORT").ok().map(|p| p.parse::<u16>().map_err(|_| anyhow::anyhow!("WHEEL_DEBUG_PORT must be a port number, not {p:?}"))).transpose()?;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| anyhow::anyhow!("{name} needs a value"));
         match arg.as_str() {
-            "--url" => url = value("--url")?,
-            "--token-file" => token_file = PathBuf::from(value("--token-file")?),
+            "--url" => url = Some(value("--url")?),
+            "--token-file" => token_file = Some(PathBuf::from(value("--token-file")?)),
             "--space" => space = Some(value("--space")?),
             "--hidden" => hidden = true,
             other => bail!("unknown argument {other}; usage: wheel-gpui [--url URL] [--token-file PATH] [--space ID] [--hidden]"),
         }
     }
-    let endpoint = Endpoint::new(&url, &token_file)?;
+    // The bundled wheeld only when neither `--url` nor `WHEEL_URL` names another daemon: a window
+    // over another daemon never registers or restarts this bundle's launch agent.
+    let service = (url.is_none() && std::env::var_os("WHEEL_URL").is_none()).then(wheel_gpui::server::Service::bundled).flatten();
+    let endpoint = match service {
+        Some(service) => {
+            eprintln!("wheel-gpui: this app carries {} ({} on {}), source {}", service.label, service.instance, service.listen, service.bundled_source.as_deref().unwrap_or("none recorded"));
+            Endpoint::for_service(service, token_file.clone())?
+        }
+        None => Endpoint::new(&url.unwrap_or_else(default_url), &token_file.unwrap_or_else(default_token_file))?,
+    };
+    let token_file = endpoint.token_file().to_path_buf();
     let debug = debug_port.map(|port| wheel_gpui::debug::start(port, &token_file)).transpose()?;
     if let Some(debug) = &debug {
         eprintln!("wheel-gpui: debug state at http://127.0.0.1:{}/state", debug.port);

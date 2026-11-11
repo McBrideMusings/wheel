@@ -154,13 +154,21 @@ pub struct Client {
     pub procs: crate::procs::Procs,
     /// The protocol the connected wheeld speaks, from its last `status`; None before it answered.
     pub server_protocol: Option<u32>,
-    /// How this client stops and starts wheeld.
+    /// How this client stops and starts wheeld: the launch agent of the wheeld it carries, or commands.
     pub server_control: crate::server::Control,
-    /// A restart is running on its thread; its outcome (None when it worked) waits here for the next render.
-    server_restarting: bool,
-    server_result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
-    /// Why the last restart did not work.
+    /// The command running on its thread now, if one is; outcomes wait in `server_ops` for the next tick.
+    pub server_busy: Option<crate::server::Op>,
+    server_ops: std::sync::Arc<std::sync::Mutex<Vec<toasts::ServerOutcome>>>,
+    /// Why the last restart, start or rollback did not work.
     pub server_problem: Option<String>,
+    /// What the last registration or restart did (DaemonService.status), for `/state` and the log.
+    pub service_status: String,
+    /// The restart window and the rollback after a wheeld that said it is stopping.
+    pub server_watch: crate::server::Watch,
+    /// The source line last logged, so one connection logs it once.
+    server_source_logged: Option<String>,
+    /// When the connected wheeld started (unix ms), from its `status` uptime.
+    pub server_started: Option<u64>,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -249,9 +257,9 @@ impl Link {
 impl Client {
     #[allow(clippy::too_many_arguments)]
     pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
-        let server_control = crate::server::Control::from_env();
+        let server_control = crate::server::Control::for_service(endpoint.service.clone());
         let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
-        Self {
+        let mut client = Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
@@ -262,23 +270,28 @@ impl Client {
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None,
             posted: vec![], toast_sources, layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
-            server_protocol: None, server_control, server_restarting: false, server_result: std::sync::Arc::default(), server_problem: None,
-        }
+            server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
+            server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
+        };
+        client.register_server();
+        client
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
     pub fn on_event(&mut self, event: Event) -> bool {
         match event {
             Event::Message(message) => match crate::layout::parse_layout(&message) {
                 Some(layout) => {
-                    if let ServerMsg::Status { agents, perms, protocol, .. } = message.as_ref() {
+                    if let ServerMsg::Status { agents, perms, protocol, uptime_secs, .. } = message.as_ref() {
                         if self.server_protocol != Some(*protocol) {
                             self.log(format!("server protocol {protocol}, this app's {}", crate::daemon::PROTOCOL));
                         }
                         self.server_protocol = Some(*protocol);
+                        self.server_started = Some(settings::now_ms().saturating_sub(uptime_secs * 1000));
                         self.agents = agents.clone();
                         self.perms = perms.clone();
                         self.rebuild_keymap();
                         self.on_settings_status(message.as_ref());
+                        self.note_server_source();
                     }
                     // A `status` reply carries every status; a `spaces` broadcast carries none.
                     self.apply(layout, matches!(message.as_ref(), ServerMsg::Spaces { .. }));
@@ -382,6 +395,13 @@ impl Client {
                             }
                             return false;
                         }
+                        // wheeld is restarting, or stopping for good: a stop this app asked for is
+                        // the second; anything else is waited for instead of being called a crash.
+                        ServerMsg::Stopping => {
+                            let line = self.server_watch.stopping(settings::now_ms());
+                            self.log(line);
+                            return false;
+                        }
                         _ => {}
                     }
                     for (agent, t) in &mut self.transcripts {
@@ -436,10 +456,15 @@ impl Client {
                 }
                 self.endpoint = endpoint;
                 self.link = Link::Up;
-                // A new connection is a new server as far as the notice knows: closing it for one
-                // older wheeld does not silence it for the next.
+                if self.server_watch.answered() {
+                    self.log("server: wheeld answers again".into());
+                }
+                // The notice follows the next `status`; closing it stays closed for the same key
+                // (the bundled hash, else the protocol), as the Swift app keeps `serverBannerDismissed`.
                 self.toast_sources.server_updated = None;
-                self.toast_sources.server_update_dismissed = None;
+                self.server_source_logged = None;
+                // The last connection's host says nothing about this wheeld until its `status`.
+                self.settings.host = None;
                 // This window draws its panes as PNGs for `wheel pane shot` and runs `wheel pane
                 // eval|dom|record` in its browser panes: wheeld may send it `render_pane` and `inspect_pane`.
                 self.send(&ClientMsg::RenderOffer {});
@@ -462,7 +487,7 @@ impl Client {
                 }
                 self.link = Link::Incompatible { server, client };
                 self.server_protocol = Some(server);
-                self.toast_sources.server_updated = Some(server);
+                self.toast_sources.server_updated = Some(crate::server::banner_key(self.bundled_source(), self.server_protocol));
                 // A window that was up on a newer wheeld shows nothing of it: the older one's
                 // layout is not read, so the old one's panes would be stale. The next `Up` applies
                 // a layout again.
@@ -1330,7 +1355,7 @@ impl Render for Client {
         if let Some(path) = self.pending_open.take() {
             cx.open_url(&format!("file://{}", file_url_path(&path)));
         }
-        self.poll_server(cx);
+        self.tick_server(cx);
         if matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(div().absolute().left_0().top(px(HEADER)).w(px(w)).h(px(h - HEADER)).flex().justify_center().items_center()
                 .child(div().w(px(420.)).child(self.server_box(cx))));

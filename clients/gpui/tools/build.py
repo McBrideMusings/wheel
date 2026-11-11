@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Build the client: the Rust binaries, the Swift bridge, and `target/app/Wheel GPUI.app`.
+"""Build the client: the Rust binaries, the Swift bridge, the bundled server, and `target/app/Wheel GPUI.app`.
 
 The bridge links Wheel's already-built release objects (GhosttyTerminal, WheelKit, WheelUI and what they use) from DerivedData, so
 build the Mac app first (`make deploy-client` or a Release xcodebuild). WHEEL_NATIVE_PRODUCTS
-selects another product directory. CARGO_TARGET_DIR is honoured.
+selects another product directory. CARGO_TARGET_DIR is honoured for the client's own crates.
+
+The server goes in the same way as the Mac app's: `apple/Mac/embed-wheeld.sh`, the Xcode build
+phase, run with the variables Xcode would set, builds the repo's release wheeld, `wheel` and
+`wheel-runner` (into the repo's own target directory) and puts `Contents/Helpers/Wheel
+Server.wheelserver`, `Helpers/wheel`, `Helpers/wheel-runner`, `Resources/wheel-server.sh` and
+`Resources/WheelDaemon.plist` in the bundle, so this app registers and restarts the same
+`com.piercemakes.wheel.daemon` the Mac app does (CLAUDE.md, "Deploying Wheel from inside Wheel").
 """
 import os, pathlib, plistlib, shutil, subprocess
 
@@ -42,4 +49,8 @@ for bundle in products.glob('*.bundle'):
 (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
     CFBundleExecutable='wheel-gpui', CFBundleIdentifier='com.piercemakes.wheel.gpui', CFBundleName='Wheel GPUI',
     CFBundlePackageType='APPL', NSHighResolutionCapable=True)))
+bundle = contents.parent
+subprocess.run(['bash', str(repo / 'apple/Mac/embed-wheeld.sh')], check=True, env=dict(os.environ,
+    CONFIGURATION='Release', SRCROOT=str(repo / 'apple'), TARGET_BUILD_DIR=str(bundle.parent),
+    CONTENTS_FOLDER_PATH=f'{bundle.name}/Contents', EXPANDED_CODE_SIGN_IDENTITY='-'))
 print(contents.parent)

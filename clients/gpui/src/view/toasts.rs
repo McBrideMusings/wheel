@@ -5,6 +5,14 @@ use super::*;
 use super::settings::{BOX, DIM, LINE, PANEL, TEXT, button, checkbox, click, now_ms};
 use crate::{pairing::{self, Pairing}, toasts::{Act, Dismiss, LIMIT, Level, Toast, stack}};
 
+/// What a server command's thread hands back: the command, the version a rollback ran, and the
+/// script's last line or why it failed.
+pub struct ServerOutcome {
+    pub op: crate::server::Op,
+    pub target: Option<String>,
+    pub result: Result<String, String>,
+}
+
 impl Client {
     // MARK: Notices
 
@@ -33,7 +41,11 @@ impl Client {
         match &toast.dismiss {
             Dismiss::Posted => {}
             Dismiss::ClientUpdate(stamp) => self.toast_sources.client_update_dismissed = Some(*stamp),
-            Dismiss::ServerUpdate(protocol) => self.toast_sources.server_update_dismissed = Some(*protocol),
+            Dismiss::ServerUpdate(key) => {
+                self.toast_sources.server_update_dismissed = Some(key.clone());
+                self.log(format!("server banner dismissed for {key}"));
+            }
+            Dismiss::RolledBack => self.server_watch.rolled_back_to = None,
             Dismiss::AgentNotice(agent) => self.send(&ClientMsg::AgentNoticeDismiss { req: None, agent: agent.clone() }),
             Dismiss::LayoutError => self.toast_sources.layout_error = None,
         }
@@ -43,6 +55,10 @@ impl Client {
         match act {
             Act::Relaunch => self.relaunch_client(),
             Act::RestartServer => self.restart_server(),
+            Act::CancelRollback => {
+                self.log("server: rollback cancelled".into());
+                self.server_watch.cancel_rollback();
+            }
             Act::FocusPane(pane) => self.show_pane(pane),
             Act::ClosePane(pane) => self.ask_close_pane(pane),
         }
@@ -99,32 +115,150 @@ impl Client {
 
     // MARK: The server
 
+    /// The source hash of the wheeld this app carries; None for a bare binary or another daemon.
+    pub fn bundled_source(&self) -> Option<&str> {
+        self.server_control.service().and_then(|s| s.bundled_source.as_deref())
+    }
+    /// The running wheeld's source hash, from its `status`; None before it answered one.
+    pub fn running_source(&self) -> Option<&str> {
+        self.settings.host.as_ref().map(|h| h.source.as_str())
+    }
+    /// A newer server is installed and waits for a restart (AppModel.serverRestartWaiting). The
+    /// app never restarts it itself (ADR-0020); the notice, Settings and Restart Server follow this.
+    pub fn restart_waiting(&self) -> bool {
+        crate::server::restart_waiting(self.link == Link::Up, self.running_source(), self.bundled_source(), self.server_protocol, crate::daemon::PROTOCOL)
+    }
+    /// What a dismissed notice is about (AppModel.serverBannerKey).
+    fn server_banner_key(&self) -> String {
+        crate::server::banner_key(self.bundled_source(), self.server_protocol)
+    }
+    /// The header's word and dot colour for the server (AppModel.serverStatus).
+    pub fn server_status_word(&self) -> crate::server::Status {
+        let link = match self.link {
+            Link::Connecting => crate::server::LinkKind::Connecting,
+            Link::Up | Link::Incompatible { .. } => crate::server::LinkKind::Connected,
+            Link::Down(_) => crate::server::LinkKind::Unreachable,
+        };
+        let remote = self.settings.devices.info.as_ref().map(|i| crate::server::Remote { problem: i.problem.is_some(), listening: i.listen.is_some() });
+        crate::server::status(link, self.restart_waiting() || matches!(self.link, Link::Incompatible { .. }), remote)
+    }
+    /// After each `status`: the notice follows whether a restart waits, and one line per connection
+    /// says whether the running server is the bundled one (AppModel.logServerSource).
+    pub fn note_server_source(&mut self) {
+        let waiting = self.restart_waiting();
+        self.toast_sources.server_updated = waiting.then(|| self.server_banner_key());
+        if let Some(service) = self.server_control.service() {
+            let line = crate::server::source_line(&service.label, self.running_source(), self.bundled_source(), waiting);
+            if self.server_source_logged.as_deref() != Some(&line) {
+                self.server_source_logged = Some(line.clone());
+                self.log(line);
+            }
+        }
+    }
+    /// Copy this app's server out of the bundle and load its launch agent unless one runs
+    /// (DaemonService.register): once per process, at launch, as the Swift app does. A running
+    /// server is never touched (ADR-0020).
+    pub fn register_server(&mut self) {
+        static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if self.server_control.service().is_some() && !REGISTERED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.run_server_op(crate::server::Op::Start, None);
+        }
+    }
     /// Restart wheeld from what is installed, in one click (ServerControl.swift `restartServer`).
-    /// The commands run on a thread; the next render reads how they ended.
+    /// The command runs on a thread; the next tick reads how it ended.
     pub fn restart_server(&mut self) {
-        if !self.server_control.available() || self.server_restarting {
+        if !self.server_control.available() || self.server_busy.is_some() {
             return;
         }
         self.log(format!("server: restart asked for; {} spaces", self.spaces.len()));
-        self.server_restarting = true;
-        let (control, slot) = (self.server_control.clone(), self.server_result.clone());
+        self.run_server_op(crate::server::Op::Restart, None);
+    }
+    /// Run `op` on a thread; `target` is the version a rollback runs, for its log line. One
+    /// command at a time: every caller checks `server_busy` first.
+    fn run_server_op(&mut self, op: crate::server::Op, target: Option<String>) {
+        debug_assert!(self.server_busy.is_none(), "a server command is already running");
+        self.server_busy = Some(op);
+        let (control, slot) = (self.server_control.clone(), self.server_ops.clone());
         std::thread::spawn(move || {
-            *slot.lock().unwrap() = Some(control.restart());
+            let result = control.run(op);
+            slot.lock().unwrap().push(ServerOutcome { op, target, result });
         });
     }
-    /// Each render: a finished restart is read into the model, and a running one keeps the window redrawing.
-    pub fn poll_server(&mut self, cx: &mut Context<Self>) {
-        let done = self.server_result.lock().unwrap().take();
-        if let Some(outcome) = done {
-            self.server_restarting = false;
-            match &outcome {
-                Ok(()) => self.log("server: restarted from the app".into()),
-                Err(failure) => self.log(format!("server: restart failed: {failure}")),
+    /// A finished command, read into the model (the Swift completion handlers of DaemonService
+    /// and ServerControl).
+    fn finish_server_op(&mut self, done: ServerOutcome, now: u64, connected: bool) {
+        use crate::server::Op;
+        let ServerOutcome { op, target, result } = done;
+        let label = self.server_control.service().map(|s| s.label.clone()).unwrap_or_else(|| "server".into());
+        let line = result.as_ref().map(String::as_str).unwrap_or_else(|why| why.as_str()).to_owned();
+        match op {
+            Op::Start => {
+                self.service_status = match &result {
+                    Ok(l) if l.is_empty() => "started".into(),
+                    Ok(l) => l.clone(),
+                    Err(why) => format!("start failed: {why}"),
+                };
+                self.log(format!("daemon {label}: {line}"));
+                self.server_problem = result.err();
             }
-            self.server_problem = outcome.err();
+            Op::Restart => {
+                self.service_status = match &result { Ok(_) => "restarted from the app".into(), Err(f) => format!("restart failed: {f}") };
+                match &result {
+                    Ok(l) if l.is_empty() => {}
+                    Ok(_) => self.log(format!("daemon {label}: {line}")),
+                    Err(_) => {}
+                }
+                self.log(match &result { Ok(_) => "server: restarted from the app".into(), Err(f) => format!("server: restart failed: {f}") });
+                self.server_problem = result.err();
+            }
+            Op::RollbackTarget => {
+                self.log(format!("daemon {label}: rollbackable: {}", match &result { Ok(t) => t.clone(), Err(why) => format!("no ({why})") }));
+                if let Some(line) = self.server_watch.target_answered(now, result, connected) {
+                    self.log(line);
+                }
+            }
+            Op::Rollback => {
+                let target = target.unwrap_or_default();
+                self.service_status = match &result { Ok(_) => "rolled back from the app".into(), Err(f) => format!("rollback failed: {f}") };
+                self.server_problem = result.as_ref().err().cloned();
+                let line = self.server_watch.rollback_ended(&target, result);
+                self.log(line);
+            }
         }
-        if self.server_restarting {
+    }
+    /// Each render and each timer: finished commands are read into the model, the restart window
+    /// and the rollback countdown advance (only between commands, so one script runs at a time),
+    /// the notices follow, and a timer is armed for the next deadline or while a command runs.
+    pub fn tick_server(&mut self, cx: &mut Context<Self>) {
+        use crate::server::{Op, Step};
+        let now = now_ms();
+        let connected = self.link == Link::Up;
+        let done: Vec<ServerOutcome> = self.server_ops.lock().unwrap().drain(..).collect();
+        for outcome in done {
+            self.server_busy = None;
+            self.finish_server_op(outcome, now, connected);
+        }
+        if self.server_busy.is_none() {
+            let (step, log) = self.server_watch.tick(now, connected, self.server_control.available());
+            for line in log {
+                self.log(line);
+            }
+            match step {
+                Some(Step::AskRollbackTarget) => self.run_server_op(Op::RollbackTarget, None),
+                Some(Step::Rollback(target)) => self.run_server_op(Op::Rollback, Some(target)),
+                None => {}
+            }
+        }
+        self.toast_sources.rollback_offer = self.server_watch.rollback_offer.clone();
+        self.toast_sources.rolled_back_to = if connected { self.server_watch.rolled_back_to.clone() } else { None };
+        self.toast_sources.unreachable = match &self.link {
+            Link::Down(reason) if !self.server_watch.restart_expected => Some(reason.clone()),
+            _ => None,
+        };
+        if self.server_busy.is_some() || self.server_watch.rollback_offer.is_some() {
             self.redraw_in(200, cx);
+        } else if let Some(due) = self.server_watch.next_due() {
+            self.redraw_in(due.saturating_sub(now).max(1), cx);
         }
     }
     /// Settings › General's Server box and the window's notice while a restart waits
@@ -132,9 +266,9 @@ impl Client {
     /// why the last restart did not work.
     pub(super) fn server_box(&self, cx: &mut Context<Self>) -> gpui::Div {
         let mut col = div().flex().flex_col().gap_2().p(px(10.)).rounded_md().bg(rgb(BOX)).border_1().border_color(rgb(LINE))
-            .child(div().text_color(rgb(0xff9f0a)).child(crate::server::UPDATED));
+            .child(div().text_color(rgb(crate::server::ORANGE)).child(crate::server::UPDATED));
         if self.server_control.available() {
-            col = col.child(div().flex().child(button(if self.server_restarting { "Restarting…" } else { "Restart Server" }, click(cx, |this| {
+            col = col.child(div().flex().child(button(if self.server_busy == Some(crate::server::Op::Restart) { "Restarting…" } else { "Restart Server" }, click(cx, |this| {
                 this.restart_server();
             }))));
         }
@@ -395,6 +529,17 @@ fn toast_view(toast: Toast, width: f32, cx: &mut Context<Client>) -> gpui::State
     let id = toast.id.clone();
     let base = div().id(gpui::ElementId::Name(format!("toast.{id}").into())).max_w(px(460f32.min(width - 28.))).bg(rgb(0x1d2823)).border_1().border_color(rgb(0x3d5247)).text_color(rgb(0xd9e8e1)).shadow_lg()
         .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()));
+    if let Some((from, deadline)) = toast.countdown {
+        // The bar empties from the left as the deadline nears; the seconds left say the same.
+        let now = now_ms().clamp(from, deadline);
+        let left = ((deadline - now) as f32 / 1000.).ceil() as u64;
+        let fraction = if deadline > from { (deadline - now) as f32 / (deadline - from) as f32 } else { 0. };
+        return base.w(px(460f32.min(width - 28.))).rounded_lg().pl(px(12.)).pr(px(8.)).py(px(10.)).flex().items_start().gap(px(10.)).child(badge)
+            .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_2()
+                .child(div().flex().justify_between().child(toast.text.clone()).child(div().text_xs().text_color(rgb(0x9fb3aa)).child(format!("{left} s"))))
+                .child(div().w_full().h(px(4.)).rounded_full().bg(rgba(0xffffff1a)).child(div().h_full().w(gpui::relative(fraction)).rounded_full().bg(rgb(tint))))
+                .child(actions.child(copy)));
+    }
     if toast.compact() {
         let mut row = base.rounded_full().pl(px(12.)).pr(px(7.)).py(px(7.)).flex().items_center().gap(px(10.)).child(badge).child(div().whitespace_nowrap().overflow_hidden().child(toast.text.clone())).child(actions).child(copy);
         if toast.closable {

@@ -16,17 +16,31 @@ pub struct Endpoint {
     pub token: String,
     url: String,
     token_file: PathBuf,
+    /// The bundled wheeld this endpoint names, when it came from the bundle and not from a URL:
+    /// the window's server control is its launch agent (`crate::server::Control::for_service`).
+    pub service: Option<crate::server::Service>,
 }
 impl Endpoint {
     /// `url` is the daemon's WebSocket URL; the token comes from `token_file`.
     pub fn new(url: &str, token_file: &PathBuf) -> Result<Self> {
         let token = std::fs::read_to_string(token_file).with_context(|| format!("reading {}", token_file.display()))?.trim().to_owned();
-        Ok(Self { ws: format!("{url}?token={token}"), token, url: url.to_owned(), token_file: token_file.clone() })
+        Ok(Self { ws: format!("{url}?token={token}"), token, url: url.to_owned(), token_file: token_file.clone(), service: None })
+    }
+    /// The bundled service's endpoint; `token_file` overrides the service's own (`WHEEL_TOKEN_FILE`).
+    pub fn for_service(service: crate::server::Service, token_file: Option<PathBuf>) -> Result<Self> {
+        let mut endpoint = Self::new(&service.url(), &token_file.unwrap_or_else(|| service.token_file()))?;
+        endpoint.service = Some(service);
+        Ok(endpoint)
+    }
+    pub fn token_file(&self) -> &std::path::Path {
+        &self.token_file
     }
     /// The same endpoint with the token file read again: wheeld writes a new token when it
     /// starts without one, so a reconnect must not reuse the old text.
     pub fn reread(&self) -> Result<Self> {
-        Self::new(&self.url, &self.token_file)
+        let mut endpoint = Self::new(&self.url, &self.token_file)?;
+        endpoint.service = self.service.clone();
+        Ok(endpoint)
     }
 }
 

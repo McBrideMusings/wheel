@@ -1710,16 +1710,32 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let status_before_restart = native.status();
     let identities_before: Vec<(String, String)> = native_panes.iter().map(|(id, _)| (id.clone(), identity(&status_before_restart, id))).collect();
     let layouts_before_restart = layouts;
+    // The server lifecycle (wheel-ynjo.3): the fixture wheeld is one this app did not install, so
+    // the control is the commands kind, the word over it reads Running, and no source line is
+    // logged (there is no bundled source to compare). A terminated wheeld sends `stopping` first:
+    // the client expects it back for 10 s, with no "unreachable" notice meanwhile, and says so when
+    // it answers again.
+    let log_lines = |c: &Client, prefix: &str| -> Vec<String> { c.toast_log.iter().filter(|l| l.starts_with(prefix)).cloned().collect() };
+    let (control_kind, word_before, control_log): (String, String, Vec<String>) = window.update(cx, |c, _, _| (c.server_control.kind().into(), c.server_status_word().word, log_lines(c, "daemon ")))?;
+    ensure!(control_kind == "commands" && word_before == "Running", "over the fixture wheeld the control is {control_kind} and the word {word_before}");
+    ensure!(control_log.is_empty(), "a bundled-server line over the fixture wheeld: {control_log:?}");
     std::fs::write(&request, "1.5")?;
     let (mut saw_down, mut down_reason, mut up_again) = (false, String::new(), false);
     let mut banner_while_down = String::new();
+    let (mut expected_while_down, mut unreachable_while_expected, mut word_while_down) = (false, false, String::new());
     for _ in 0..400 {
         pump(&mut connection, 50, &mut layouts, window, cx).await?;
-        let (link, banner) = window.update(cx, |c, _, _| (c.link.clone(), c.link.banner()))?;
+        let (link, banner, expected, unreachable, word) = window.update(cx, |c, _, cx| {
+            c.tick_server(cx);
+            (c.link.clone(), c.link.banner(), c.server_watch.restart_expected, c.toasts().iter().any(|t| t.id == "unreachable"), c.server_status_word().word)
+        })?;
         if let Link::Down(reason) = &link {
             saw_down = true;
             down_reason = reason.clone();
             banner_while_down = banner;
+            expected_while_down |= expected;
+            unreachable_while_expected |= expected && unreachable;
+            word_while_down = word;
         }
         if saw_down && link == Link::Up && done.exists() {
             up_again = true;
@@ -1728,6 +1744,14 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(saw_down, "the client never reported wheeld down");
     ensure!(up_again, "the client did not come back up after the restart (layouts {layouts})");
+    let (expected_after, server_log): (bool, Vec<String>) = window.update(cx, |c, _, _| (c.server_watch.restart_expected, log_lines(c, "server: wheeld")))?;
+    ensure!(expected_while_down, "wheeld's `stopping` did not put the client in its restart window: {server_log:?}");
+    ensure!(!unreachable_while_expected, "an unreachable notice showed while a restart was expected");
+    ensure!(word_while_down == "Stopped", "the word while wheeld was down reads {word_while_down}");
+    ensure!(server_log.iter().any(|l| l == "server: wheeld is stopping; waiting 10 s for it to answer again") && server_log.iter().any(|l| l == "server: wheeld answers again"), "the restart window's log reads {server_log:?}");
+    ensure!(!expected_after, "a restart is still expected after wheeld answered again");
+    let server_lifecycle_report = json!({"control": control_kind, "word_before": word_before, "word_while_down": word_while_down, "expected_while_down": expected_while_down,
+        "unreachable_while_expected": unreachable_while_expected, "expected_after": expected_after, "log": server_log});
     draw(window, None, cx)?;
     pump(&mut connection, 800, &mut layouts, window, cx).await?;
     draw(window, None, cx)?;
@@ -1781,6 +1805,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "notices": notices_report,
         "debug": debug_report,
         "server_updated": server_updated_report,
+        "server_lifecycle": server_lifecycle_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},

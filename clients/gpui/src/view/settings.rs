@@ -355,6 +355,9 @@ impl Client {
                 if client.redraw_due == Some(due) {
                     client.redraw_due = None;
                 }
+                // The server's window and countdown run on this timer, not only on a draw: an
+                // occluded or hidden window still rolls back on time.
+                client.tick_server(cx);
                 cx.notify();
             });
         })
@@ -702,6 +705,9 @@ impl Client {
         if layer == Layer::Global {
             match topic {
                 Topic::General => {
+                    if self.restart_waiting() {
+                        form = form.child(titled("Server", self.server_box(cx)));
+                    }
                     form = form.child(self.command_line_box(cx)).child(self.folder_access_box()).child(self.status_dots_box(cx));
                 }
                 Topic::Agents => form = form.child(self.agents_box()),
