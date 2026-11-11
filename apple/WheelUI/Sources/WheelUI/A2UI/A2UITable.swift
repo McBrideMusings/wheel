@@ -8,7 +8,10 @@ import SwiftUI
 // Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
 // menu item's own `action` with its `context`. With a `sortAction` the page owns the order: the header arrow shows the table's
 // `sort` {key, asc}, a header click raises `sortAction` with the new {key, asc} and the rows stay in the page's order until the
-// page sends them sorted; without one a header click sorts the rows here.
+// page sends them sorted; without one a header click sorts the rows here. With a `selectAction` the page owns the selection
+// too: the rows whose ids are in `selected` draw selected, a click, a shift-click range, a ⌘-click, a click on empty ground
+// or Escape raises `selectAction` with {ids} (every row selected now), and a double-click or Return raises `rowAction` with
+// the row's {id}; without one a plain click raises `rowAction`.
 struct A2UITableView: View {
     let node: ComponentNode
     let surface: SurfaceModel
@@ -73,12 +76,27 @@ struct A2UITableView: View {
         let lines = Self.lines(sections, sort: sortAction.isEmpty ? sortOrder.first : nil)
         let rowAction = p["rowAction"]?.stringValue ?? ""
         let foldAction = p["foldAction"]?.stringValue ?? ""
-        let selected = Binding<String?>(
-            get: { nil },
-            set: { id in
-                guard let id, let line = lines.first(where: { $0.id == id }), line.title == nil else { return }
-                fire(rowAction, ["id": .string(line.row["id"]?.stringValue ?? "")])
+        let selectAction = p["selectAction"]?.stringValue ?? ""
+        let rowId = { (line: Line) in line.row["id"]?.stringValue ?? "" }
+        // The Table selects by line id (a row's path); the page names rows by id.
+        let pageSelected = Set((p["selected"]?.arrayValue ?? []).compactMap { $0.stringValue })
+        let selected = Binding<Set<String>>(
+            get: { selectAction.isEmpty ? [] : Set(lines.filter { $0.title == nil && pageSelected.contains(rowId($0)) }.map(\.id)) },
+            set: { picked in
+                let rows = lines.filter { $0.title == nil && picked.contains($0.id) }
+                if selectAction.isEmpty {
+                    guard let line = rows.first else { return }
+                    fire(rowAction, ["id": .string(rowId(line))])
+                } else {
+                    let ids = Set(rows.map(rowId))
+                    guard ids != pageSelected else { return }
+                    fire(selectAction, ["ids": .array(ids.sorted().map { .string($0) })])
+                }
             })
+        let open = { (ids: Set<String>) in
+            guard !selectAction.isEmpty, let line = lines.first(where: { ids.contains($0.id) && $0.title == nil }) else { return }
+            fire(rowAction, ["id": .string(rowId(line))])
+        }
         // With a sortAction the header arrow reads the page's `sort` and a click only tells the page; the rows never
         // re-order here. Without one the table keeps its own order in `sortOrder`.
         let pageSort = p["sort"]?.dictionaryValue
@@ -90,7 +108,7 @@ struct A2UITableView: View {
                 guard let s = new.first, (s.key, s.order == .forward) != (pageKey, pageAsc) else { return }
                 fire(sortAction, ["key": .string(s.key), "asc": .bool(s.order == .forward)])
             })
-        grid(lines, cols, selected: selected, order: order, rowAction: rowAction, foldAction: foldAction)
+        grid(lines, cols, selected: selected, order: order, rowAction: rowAction, foldAction: foldAction, open: open)
         .overlay {
             if lines.isEmpty { Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary) }
         }
@@ -102,7 +120,7 @@ struct A2UITableView: View {
 
     /// The Mac draws SwiftUI's Table. On a phone a Table shows only its first column, so a List of one-line rows draws the same cells.
     @ViewBuilder
-    private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<String?>, order: Binding<[CellSort]>, rowAction: String, foldAction: String) -> some View {
+    private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<Set<String>>, order: Binding<[CellSort]>, rowAction: String, foldAction: String, open: @escaping (Set<String>) -> Void) -> some View {
         let first = cols.first?["key"]?.stringValue ?? ""
         #if os(macOS)
         // A table with a sortable column shows sort arrows on every header; one without draws plain headers and never sorts.
@@ -131,7 +149,9 @@ struct A2UITableView: View {
                     Button(item["label"]?.stringValue ?? "") { fire(item["action"]?.stringValue ?? "", item["context"]?.dictionaryValue ?? [:]) }
                 }
             }
-        }
+        } primaryAction: { ids in open(ids) }
+        // Escape clears a selection the page owns.
+        .onExitCommand { if !selected.wrappedValue.isEmpty { selected.wrappedValue = [] } }
         #else
         List(lines) { line in
             if let title = line.title {

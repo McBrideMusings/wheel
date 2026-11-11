@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# § Wheelhouse list actions in the Mac app (wheel-xxp1): the Beads page's Copy ids button, pressed
-# by id through the hidden Debug app's `/a2ui/action`, puts the listed ids on the pasteboard; a sort
-# the page is told (`set_sort`) redraws the rows in the page's order, with no sorting in the client.
+# § Wheelhouse list actions in the Mac app (wheel-xxp1, wheel-vq4c): the Beads page's Copy IDs
+# button (inside the Actions chip's popover), pressed by id through the hidden Debug app's
+# `/a2ui/action`, puts the listed ids on the pasteboard; a sort the page is told (`set_sort`)
+# redraws the rows in the page's order, with no sorting in the client; a selection the page is told
+# (`select_rows`, as the Table's click raises it) narrows Copy IDs to the selected rows.
 # Saves and restores the person's pasteboard around the press. Needs `make build-client`,
 # `cargo build -p wheelhouse -p wheeld -p wheel-cli`, bd, jq. Writes a picture of the page to
 # $WHEEL_SHOT when that is set.
@@ -18,10 +20,12 @@ export WHEEL_URL="ws://127.0.0.1:$PORT/ws" WHEEL_TOKEN_FILE="$INST/token"
 PROJ="$SCR/proj"; mkdir -p "$PROJ"
 (cd "$PROJ" && bd init --prefix lm --quiet >/dev/null 2>&1 \
   && bd create "Alpha" -t task -p 3 -l cli >/dev/null 2>&1 \
-  && bd create "Beta" -t task -p 1 -l cli >/dev/null 2>&1)
+  && bd create "Beta" -t task -p 1 -l cli >/dev/null 2>&1 \
+  && bd create "Gamma" -t task -p 2 -l cli >/dev/null 2>&1)
 A="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="Alpha") | .id')"
 B="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="Beta") | .id')"
-printf '[beads.buttons.iterate-list]\nlabel = "Iterate"\non = ["list"]\nrun = "true"\n' >"$PROJ/wheel.toml"
+G="$(cd "$PROJ" && bd list --json | jq -r '.[] | select(.title=="Gamma") | .id')"
+printf '[beads.list.iterate-list]\nlabel = "Iterate"\nrun = "true"\n' >"$PROJ/wheel.toml"
 printf '[artifacts.beads]\nmcp = "exec %s serve"\nshared = true\ntitle = "Beads"\n' "$HOUSE" >>"$INST/wheel.toml"
 
 SP="$(w space new "$PROJ")"
@@ -37,7 +41,7 @@ BEFORE="$(pbpaste 2>/dev/null || true)"
 sleep 1
 check "Copy ids can be pressed by id" app_post "/a2ui/action?pane=$PANE&id=list.copy"
 sleep 0.5
-eq "the pasteboard holds the two listed ids" "$(pbpaste | tr ' ' '\n' | sort | tr '\n' ' ')" "$(printf '%s\n%s\n' "$A" "$B" | sort | tr '\n' ' ')"
+eq "the pasteboard holds the three listed ids" "$(pbpaste | tr ' ' '\n' | sort | tr '\n' ' ')" "$(printf '%s\n%s\n%s\n' "$A" "$B" "$G" | sort | tr '\n' ' ')"
 check "a component the page lacks is refused" sh -c "! curl -sf -X POST -H 'Authorization: Bearer $(TOKEN)' 'http://127.0.0.1:$DEBUG_PORT/a2ui/action?pane=$PANE&id=nothing' >/dev/null"
 printf %s "$BEFORE" | pbcopy
 
@@ -46,10 +50,27 @@ app_post "/a2ui/action?pane=$PANE&name=set_sort&key=pri&asc=true" >/dev/null
 sleep 1
 app_post "/a2ui/action?pane=$PANE&id=list.copy" >/dev/null
 sleep 0.5
-eq "after a sort the pasteboard holds the ids in the page's new order" "$(pbpaste)" "$B $A"
+eq "after a sort the pasteboard holds the ids in the page's new order" "$(pbpaste)" "$B $G $A"
 printf %s "$BEFORE" | pbcopy
 if [ -n "${WHEEL_SHOT:-}" ]; then
-  app_post "/window/snapshot?path=$WHEEL_SHOT" >/dev/null && echo "picture: $WHEEL_SHOT"
+  app_post "/window/snapshot?path=${WHEEL_SHOT%.png}-rest.png" >/dev/null && echo "picture: ${WHEEL_SHOT%.png}-rest.png"
 fi
+
+# Two rows selected, as the Table's click raises it; Copy IDs narrows to them, in the page's order.
+app_post "/a2ui/action?pane=$PANE&name=select_rows&ids=$A,$G" >/dev/null
+sleep 1
+app_post "/a2ui/action?pane=$PANE&id=list.copy" >/dev/null
+sleep 0.5
+eq "with two rows selected the pasteboard holds those two" "$(pbpaste)" "$G $A"
+printf %s "$BEFORE" | pbcopy
+if [ -n "${WHEEL_SHOT:-}" ]; then
+  app_post "/window/snapshot?path=${WHEEL_SHOT%.png}-selected.png" >/dev/null && echo "picture: ${WHEEL_SHOT%.png}-selected.png"
+fi
+app_post "/a2ui/action?pane=$PANE&name=select_rows&ids=" >/dev/null
+sleep 1
+app_post "/a2ui/action?pane=$PANE&id=list.copy" >/dev/null
+sleep 0.5
+eq "clearing the selection copies the whole list again" "$(pbpaste)" "$B $G $A"
+printf %s "$BEFORE" | pbcopy
 
 finish
