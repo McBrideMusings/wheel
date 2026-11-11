@@ -3,11 +3,12 @@
 #   install-app.sh release   Release build, installed as /Applications/Wheel.app
 #   install-app.sh dev       Debug build with the .dev bundle id and the AppIconDev icon,
 #                            installed as /Applications/Wheel Dev.app
-# The running app is stopped only for the two renames that swap the bundles, then relaunched.
-# wheeld is left running: it runs from a copy in Application Support, outside the bundle, so the stop
-# never reaches it, and the app offers a server restart itself when the bundled one differs
-# (ADR-0020). Output also goes to ~/Library/Logs/wheel/deploy-<variant>.log, which keeps the
-# record when the pane that ran this goes away with the app.
+# tools/swap-app.sh puts the built bundle in place: the running app is stopped only for the two
+# renames that swap the bundles, then relaunched. wheeld is left running: it runs from a copy in
+# Application Support, outside the bundle, so the stop never reaches it, and the app offers a
+# server restart itself when the bundled one differs (ADR-0020). Output also goes to
+# ~/Library/Logs/wheel/deploy-<variant>.log, which keeps the record when the pane that ran this
+# goes away with the app.
 set -euo pipefail
 
 VARIANT="${1:-}"
@@ -44,17 +45,6 @@ SETTINGS+=(COMPILATION_CACHING=YES CODE_SIGN_IDENTITY="$IDENTITY" CODE_SIGN_STYL
 # build-client` leaves for the checks.
 # `.noindex` keeps Spotlight from importing the build products.
 DERIVED="$ROOT/DerivedData-deploy-$VARIANT.noindex"
-LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-WORK="$(dirname "$DEST")/.$(basename "$DEST").installing.noindex"
-STAGED="$WORK/new/$(basename "$DEST")"
-PREVIOUS="$WORK/previous/$(basename "$DEST")"
-cleanup_work() {
-  rm -rf "$WORK"
-  "$LSREGISTER" -u "$STAGED" 2>/dev/null || true
-  "$LSREGISTER" -u "$PREVIOUS" 2>/dev/null || true
-}
-# One exit handler for every run: it removes the staging folder.
-trap cleanup_work EXIT
 
 ( cd "$ROOT" && xcodegen generate --spec apple/project.yml --project apple )
 BUILD_LOG="$LOG_DIR/deploy-$VARIANT-xcodebuild.log"
@@ -87,58 +77,4 @@ if [ "$VARIANT" = dev ]; then
   say "renamed and signed"
 fi
 
-# Staged with ditto (a signed bundle depends on its exact symlinks) in a hidden .noindex folder
-# beside the destination, which Spotlight does not list, while the old app still runs.
-rm -rf "$WORK"
-mkdir -p "$(dirname "$STAGED")" "$(dirname "$PREVIOUS")"
-ditto "$APP" "$STAGED"
-say "staged $STAGED"
-
-# Only processes whose executable lies inside the installed bundle stop.
-running_from() {
-  ps -Ao pid=,comm= | awk -v prefix="$DEST/" '{ pid = $1; sub(/^[ \t]*[0-9]+[ \t]+/, ""); if (index($0, prefix) == 1) print pid }'
-}
-wait_gone() {
-  local tenths="$1"
-  while [ "$tenths" -gt 0 ]; do
-    [ -z "$(running_from)" ] && return 0
-    sleep 0.1
-    tenths=$((tenths - 1))
-  done
-  [ -z "$(running_from)" ]
-}
-PIDS="$(running_from | tr '\n' ' ')"
-if [ -n "$PIDS" ]; then
-  say "stopping $(basename "$DEST") (pids: $PIDS)"
-  # shellcheck disable=SC2086 # one word per pid
-  kill -TERM $PIDS 2>/dev/null || true
-  if ! wait_gone 50; then
-    say "$(basename "$DEST") ignored SIGTERM, sending SIGKILL"
-    # shellcheck disable=SC2046 # one word per pid
-    kill -KILL $(running_from) 2>/dev/null || true
-    wait_gone 20 || true
-  fi
-fi
-
-if [ -e "$DEST" ]; then
-  mv "$DEST" "$PREVIOUS"
-fi
-if ! mv "$STAGED" "$DEST"; then
-  [ -e "$PREVIOUS" ] && mv "$PREVIOUS" "$DEST"
-  say "could not swap in the new bundle; the previous one is back"
-  exit 1
-fi
-touch "$DEST"
-"$LSREGISTER" -f "$DEST" || true
-say "installed $DEST"
-
-# Relaunched with only what a Finder launch carries, so the app does not start as a client of
-# the pane that ran this (WHEEL_URL, WHEEL_PANE and the rest).
-LAUNCH_ENV=()
-while IFS='=' read -r key value; do
-  case "$key" in
-    HOME | USER | LOGNAME | SHELL | PATH | TMPDIR | LANG | __CF_USER_TEXT_ENCODING | LC_*) LAUNCH_ENV+=("$key=$value") ;;
-  esac
-done < <(env)
-env -i "${LAUNCH_ENV[@]}" open "$DEST"
-say "launched $DEST"
+bash "$ROOT/tools/swap-app.sh" "$APP" "$DEST"

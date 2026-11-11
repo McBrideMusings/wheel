@@ -1,14 +1,20 @@
 # The GPUI client. Not part of the daemon's workspace or `make deploy-client`.
-.PHONY: build test check run help
+.PHONY: build build-dev test check run deploy deploy-dev help
 
 help:
-	@echo "build  build the binaries, the Swift bridge and target/app/Wheel GPUI.app"
-	@echo "test   unit tests (layout)"
-	@echo "check  hidden regression check against a fixture wheeld (no window shown)"
-	@echo "run    open the client on screen against a fixture wheeld"
+	@echo "build       build the binaries, the Swift bridge and target/app/Wheel GPUI.app"
+	@echo "build-dev   the same as target/app/Wheel GPUI Dev.app (DEV icon, .gpui.dev id, Wheel Dev's daemon)"
+	@echo "test        unit tests (layout)"
+	@echo "check       hidden regression check against a fixture wheeld (no window shown)"
+	@echo "run         show the client against a fixture wheeld"
+	@echo "deploy      build and install /Applications/Wheel GPUI.app; wheeld keeps running"
+	@echo "deploy-dev  build and install /Applications/Wheel GPUI Dev.app beside it"
 
 build:
-	python3 tools/build.py
+	python3 tools/build.py release
+
+build-dev:
+	python3 tools/build.py dev
 
 test:
 	cargo +stable test --manifest-path Cargo.toml --lib
@@ -18,3 +24,9 @@ check: build
 
 run: build
 	python3 tools/run.py
+
+deploy:
+	bash tools/install.sh release
+
+deploy-dev:
+	bash tools/install.sh dev

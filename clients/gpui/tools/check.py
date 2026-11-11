@@ -30,6 +30,18 @@ def bundled_server():
     return dict(server=str(server), label=info['Label'], instance=info['Instance'], listen=info['Listen'], source=source, signed=True, icon=(server / 'Contents/Resources/ServerIcon.icns').exists())
 
 
+def app_bundle():
+    """The app bundle as `tools/build.py release` makes it: its plist, its icon and its signature."""
+    plist = plistlib.loads((contents / 'Info.plist').read_bytes())
+    verified = subprocess.run(['codesign', '--verify', '--strict', str(contents.parent)], capture_output=True, text=True)
+    signer = subprocess.run(['codesign', '--display', '--verbose=2', str(contents.parent)], capture_output=True, text=True).stderr
+    assert plist['CFBundleIdentifier'] == 'com.piercemakes.wheel.gpui' and plist['CFBundleName'] == 'Wheel GPUI', plist
+    assert (contents / 'Resources' / f"{plist['CFBundleIconFile']}.icns").exists(), 'no app icon'
+    assert verified.returncode == 0, f'codesign --verify of the app: {verified.stderr}'
+    return dict(bundle_id=plist['CFBundleIdentifier'], name=plist['CFBundleName'], category=plist['LSApplicationCategoryType'],
+                icon=plist['CFBundleIconFile'], signed=True, authority=next((l.split('=', 1)[1] for l in signer.splitlines() if l.startswith('Authority=')), 'ad hoc'))
+
+
 with fixture() as (env, info):
     env.update(WHEEL_CLIENT_RESULTS=str(out), WHEEL_GPUI_BRIDGE=str(app / 'libWheelGpuiBridge.dylib'),
                # What Restart Server runs for a wheeld the client did not install: the check reads the two files.
@@ -64,8 +76,9 @@ with fixture() as (env, info):
     report = json.loads((out / 'report.json').read_text())
     assert hashlib.sha256(host.read_bytes()).hexdigest() == digest
     bundled = bundled_server()
+    app_info = app_bundle()
     report.update(daemon_pid=info['daemon_pid'], panes=info['panes'], saved_tree_after=info['saved_tree'](),
-                  daemon_alive_after_client_exit=info['daemon_alive'](), host_sha256=digest, bundled_server=bundled)
+                  daemon_alive_after_client_exit=info['daemon_alive'](), host_sha256=digest, bundled_server=bundled, app_bundle=app_info)
     (out / 'report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False))
-    print(json.dumps(dict(host_pid=report['host_pid'], daemon_pid=report['daemon_pid'], restarted_daemon_pid=info['restarted_daemon_pid'], restart=report['restart']['saw_down'], server_updated=report['server_updated'], server_lifecycle=report['server_lifecycle'], bundled_server=report['bundled_server'], layouts=report['layouts_received'],
+    print(json.dumps(dict(host_pid=report['host_pid'], daemon_pid=report['daemon_pid'], restarted_daemon_pid=info['restarted_daemon_pid'], restart=report['restart']['saw_down'], server_updated=report['server_updated'], server_lifecycle=report['server_lifecycle'], bundled_server=report['bundled_server'], app_bundle=report['app_bundle'], layouts=report['layouts_received'],
                           ratio_saved=report['drag']['ratio_saved_by_wheeld'], markdown=report['markdown'], footer=report['footer'], status=report['status'], web=report['web'], browser=report['browser'], commands=report['commands']['panes'], settings={k: report['settings'][k] for k in ['typed_saved', 'cli_write_seen', 'cleared_to', 'refusal']} | dict(chat=report['settings']['chat']['written'], project=report['settings']['project']['value'], builtins=len(report['settings']['builtins']), devices=report['settings']['devices']), pages={k: (v['state'], v['components'], v['png_bytes']) for k, v in report['pages']['pages'].items()}), indent=2))
