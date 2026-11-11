@@ -167,7 +167,7 @@ pub fn locked(option: &ConfigOption, busy: bool) -> bool {
 
 /// What a locked control says when the pointer rests on it.
 pub fn locked_help(option: &ConfigOption) -> String {
-    format!("{} can be changed when this turn ends. The agent takes it only at the start of a turn.", option.name)
+    format!("{} can be changed when the turn ends. The agent takes it only at the start of a turn.", option.name)
 }
 
 #[cfg(test)]
@@ -228,6 +228,6 @@ mod tests {
         assert!(locked(&option(true), true));
         assert!(!locked(&option(true), false));
         assert!(!locked(&option(false), true));
-        assert_eq!(locked_help(&option(true)), "Approvals can be changed when this turn ends. The agent takes it only at the start of a turn.");
+        assert_eq!(locked_help(&option(true)), "Approvals can be changed when the turn ends. The agent takes it only at the start of a turn.");
     }
 }

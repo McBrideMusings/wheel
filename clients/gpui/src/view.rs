@@ -304,6 +304,13 @@ impl Client {
                             scroll.scroll_to_bottom();
                         }
                     }
+                    // A menu open on a control that just locked closes, so it does not come back on
+                    // its own when the turn ends.
+                    if let Some((agent, id)) = &self.menu
+                        && self.transcripts.get(agent).is_some_and(|t| t.config.iter().any(|o| &o.id == id && footer::locked(o, t.busy())))
+                    {
+                        self.menu = None;
+                    }
                     false
                 }
             },
@@ -1385,12 +1392,14 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, items: Vec<(Strin
         let locked = t.is_some_and(|t| footer::locked(option, t.busy()));
         let settable = !choices.is_empty() && !locked;
         let (agent_id, option_id) = (agent.to_owned(), option.id.clone());
-        let mut control = div().id(gpui::SharedString::from(format!("config-{agent}-{}", option.id))).relative().flex().items_center().px_1().rounded_sm().bg(rgb(0x22302a)).text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
+        let mut control = div().relative().flex().items_center().px_1().rounded_sm().bg(rgb(0x22302a)).text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
             .child(footer::control_text(option))
             .child(recorded(agent, &option.id, controls));
+        // Only a locked control carries an id, which its tooltip needs: shown, never pressed.
         if locked {
             let tip = footer::locked_help(option);
-            control = control.tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into());
+            right = right.child(control.id(gpui::SharedString::from(format!("config-{agent}-{}", option.id))).tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into()));
+            continue;
         }
         if settable {
             control = control.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {

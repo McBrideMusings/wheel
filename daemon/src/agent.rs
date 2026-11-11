@@ -1718,7 +1718,7 @@ impl Agent {
                         // running turn while the value shown said it had, so it is refused until
                         // the turn ends. Any other takes effect inside the running turn, which is
                         // exactly when a mode or model change is worth making.
-                        match self.next_turn_option(&option).filter(|_| running.is_some() || unprompted) {
+                        match self.next_turn_option(&option).filter(|_| running.is_some() || unprompted || !steered.is_empty()) {
                             Some(name) => {
                                 tracing::info!(agent = %self.name, option = %option, turn = ?running, "agent option refused mid-turn");
                                 let _ = reply.send(Err(format!(

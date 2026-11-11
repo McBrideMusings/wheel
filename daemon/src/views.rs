@@ -309,21 +309,38 @@ impl AppState {
                     continue;
                 }
                 // An option the agent takes only at a turn's start is refused while one runs, so
-                // the restore waits on the agent's events for the turn to end.
+                // the restore waits on the agent's events for the turn to end and tries again.
+                // A value the person picked meanwhile wins over the carried one.
                 let mut attached = agent.attach();
+                let current = |options: &[wheel_proto::ConfigOption]| {
+                    options.iter().find(|o| o.id == config).and_then(|o| match &o.kind {
+                        wheel_proto::ConfigKind::Select { current, .. } => Some(current.clone()),
+                        _ => None,
+                    })
+                };
                 let next_turn = attached.config.iter().any(|o| o.id == config && o.next_turn);
-                while next_turn && matches!(agent.state(), wheel_proto::AgentState::Busy { .. }) {
-                    if let Err(tokio::sync::broadcast::error::RecvError::Closed) = attached.rx.recv().await {
+                let before = current(&attached.config);
+                loop {
+                    while next_turn && matches!(agent.state(), wheel_proto::AgentState::Busy { .. }) {
+                        if let Err(tokio::sync::broadcast::error::RecvError::Closed) = attached.rx.recv().await {
+                            break;
+                        }
+                    }
+                    if next_turn && current(&agent.attach().config) != before {
+                        tracing::info!(%pane, %config, %value, "option changed while the turn ran; the carried value is dropped");
                         break;
                     }
-                }
-                match agent.set_config(config.clone(), value.clone()).await {
-                    Ok(()) => {
-                        tracing::info!(%pane, %config, %value, "agent view takes the option the pane had")
+                    match agent.set_config(config.clone(), value.clone()).await {
+                        Ok(()) => {
+                            tracing::info!(%pane, %config, %value, "agent view takes the option the pane had");
+                        }
+                        // A turn started between the wait and the set: wait for that one too.
+                        Err(_) if next_turn && matches!(agent.state(), wheel_proto::AgentState::Busy { .. }) => continue,
+                        Err(e) => {
+                            tracing::warn!(%pane, %config, %value, error = %e, "could not restore the option the pane had");
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!(%pane, %config, %value, error = %e, "could not restore the option the pane had")
-                    }
+                    break;
                 }
             }
         });

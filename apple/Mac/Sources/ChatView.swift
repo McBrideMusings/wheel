@@ -248,7 +248,7 @@ struct ConfigControl: View {
         .chatControl("config", "Change \(option.name)")
         .disabled(locked)
         .help(locked
-            ? "\(option.name) can be changed when this turn ends. The agent takes it only at the start of a turn."
+            ? "\(option.name) can be changed when the turn ends. The agent takes it only at the start of a turn."
             : option.description.map { "\(option.name): \($0)" } ?? option.name)
     }
 }
