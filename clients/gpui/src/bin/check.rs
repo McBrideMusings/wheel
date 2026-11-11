@@ -11,7 +11,7 @@ use anyhow::{Result, ensure};
 use gpui::AsyncApp;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
-use wheel_gpui::{daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, view::{Client, Link, TITLE}};
+use wheel_gpui::{daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Link, TITLE}};
 
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
@@ -242,6 +242,75 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let external_status = native.status();
     draw(window, Some(output.join("client-external.png")), cx)?;
     shot(&native, &output.join("external"), cx).await?;
+    // The agent pane: a message typed into its composer reaches wheeld, and the fake agent's
+    // turns come back as rows: tool calls with their statuses, a thought, an edit's path.
+    let agent_pane = std::env::var("WHEEL_CLIENT_AGENT_PANE")?;
+    let agent_name = std::env::var("WHEEL_CLIENT_AGENT")?;
+    let agent_rect = rects.iter().find(|r| r.0 == agent_pane).map(|r| r.1).ok_or_else(|| anyhow::anyhow!("no agent pane {agent_pane} in the layout"))?;
+    let agent_body = [f64::from(agent_rect.x + agent_rect.w / 2.), f64::from(agent_rect.y + agent_rect.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":agent_body}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":agent_body}));
+    tick(cx, 300).await;
+    ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(agent_pane.as_str()), "clicking the agent pane did not focus it");
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
+    let attached = rows(cx)?;
+    ensure!(attached.0 == "ready", "the agent pane did not attach to a ready agent: state {:?}", attached.0);
+    async fn type_line(native: &Native, text: &str, cx: &mut AsyncApp) {
+        for ch in text.chars() {
+            native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+            tick(cx, 15).await;
+        }
+        native.call(json!({"op":"post_key","text":"\r","code":36}));
+    }
+    type_line(&native, "show tools", cx).await;
+    let mut tool_rows = 0usize;
+    let mut failed_rows = 0usize;
+    let mut thought_rows = 0usize;
+    let mut sent_row = false;
+    let mut turn_state = String::new();
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (state, rows) = rows(cx)?;
+        sent_row = rows.iter().any(|r| matches!(&r.kind, Kind::User { text, queued: false } if text == "show tools"));
+        tool_rows = rows.iter().filter(|r| matches!(r.kind, Kind::Tool { .. })).count();
+        failed_rows = rows.iter().filter(|r| matches!(&r.kind, Kind::Tool { status, .. } if status == "failed")).count();
+        thought_rows = rows.iter().filter(|r| matches!(r.kind, Kind::Thought(_))).count();
+        turn_state = state;
+        if sent_row && tool_rows >= 11 && turn_state == "ready" && rows.iter().all(|r| !r.open) {
+            break;
+        }
+    }
+    ensure!(sent_row && tool_rows == 11 && failed_rows == 1 && thought_rows == 1 && turn_state == "ready",
+        "show tools turn: sent_row={sent_row} tool_rows={tool_rows} failed_rows={failed_rows} thought_rows={thought_rows} state={turn_state}");
+    let cli_path = std::env::var("WHEEL_CLIENT_CLI")?;
+    let read = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "read", &agent_pane])
+        .output()?;
+    let read_text = String::from_utf8_lossy(&read.stdout).to_string();
+    let sent_seen_by_wheeld = read_text.contains("show tools");
+    ensure!(sent_seen_by_wheeld, "wheeld's transcript lacks the typed message: {read_text}{}", String::from_utf8_lossy(&read.stderr));
+    let rows_before_diff = rows(cx)?.1.len();
+    type_line(&native, "diff", cx).await;
+    let mut diff_paths: Vec<String> = vec![];
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (state, rows) = rows(cx)?;
+        // Only the diff turn's rows: the earlier turn edited files of its own.
+        diff_paths = rows.iter().skip(rows_before_diff).filter_map(|r| match &r.kind { Kind::Tool { content, .. } => Some(ToolRow::diff_paths(content)), _ => None }).flatten().collect();
+        if !diff_paths.is_empty() && state == "ready" {
+            break;
+        }
+    }
+    ensure!(diff_paths == ["src/a.rs"], "the diff turn's edited path: {diff_paths:?}");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-agent.png")), cx)?;
+    let state_after = rows(cx)?.0;
+    let agent_report = json!({"pane": agent_pane, "agent": agent_name, "sent_seen_by_wheeld": sent_seen_by_wheeld, "tool_rows": tool_rows, "failed_rows": failed_rows,
+        "thought_rows": thought_rows, "diff_paths": diff_paths, "state_after": state_after, "rows_total": rows(cx)?.1.len()});
+    // Back to the terminal, so the focus checks below start where they did.
+    native.call(json!({"op":"post_mouse","kind":"down","point":click}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":click}));
+    tick(cx, 300).await;
     // Sessions and windows. The fixture holds two sessions; this window shows the first.
     let (first_session, first_space) = shown(window, cx)?;
     let (second_session, second_space) = (std::env::var("WHEEL_CLIENT_SECOND_SESSION")?, std::env::var("WHEEL_CLIENT_SECOND_SPACE")?);
@@ -371,11 +440,22 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved},
         "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
         "sessions_windows": sessions_windows,
+        "agent": agent_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     }))
+}
+
+/// The ANSI keyboard's key code for a character GPUI reads back from `keyCode`.
+fn keycode(ch: char) -> u16 {
+    match ch {
+        'a' => 0, 's' => 1, 'd' => 2, 'f' => 3, 'h' => 4, 'g' => 5, 'z' => 6, 'x' => 7, 'c' => 8, 'v' => 9, 'b' => 11, 'q' => 12, 'w' => 13, 'e' => 14,
+        'r' => 15, 'y' => 16, 't' => 17, '1' => 18, '2' => 19, '3' => 20, '4' => 21, '6' => 22, '5' => 23, '=' => 24, '9' => 25, '7' => 26, '-' => 27,
+        '8' => 28, '0' => 29, ']' => 30, 'o' => 31, 'u' => 32, '[' => 33, 'i' => 34, 'p' => 35, 'l' => 37, 'j' => 38, '\'' => 39, 'k' => 40, ';' => 41,
+        '\\' => 42, ',' => 43, '/' => 44, 'n' => 45, 'm' => 46, '.' => 47, ' ' => 49, other => panic!("no key code for {other:?}: add it to keycode()"),
+    }
 }
 
 fn main() -> Result<()> {
