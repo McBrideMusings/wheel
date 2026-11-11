@@ -667,7 +667,8 @@ impl Client {
         match &self.link {
             Link::Up => {}
             Link::Down(reason) => return notice(&format!("wheeld unreachable: {reason}. Retrying every 2 seconds."), Some("Settings live in the daemon; they show here once it answers.")),
-            _ => return notice("Connecting to wheeld…", Some("Settings live in the daemon; they show here once it answers.")),
+            Link::Incompatible { .. } => return self.server_box(cx),
+            Link::Connecting => return notice("Connecting to wheeld…", Some("Settings live in the daemon; they show here once it answers.")),
         }
         if let Some(error) = &self.settings.list_error {
             return notice(error, None);

@@ -11,6 +11,9 @@
 //! wheeld's layout following, a failed load shown and cleared, every plugin page (Beads with its
 //! Canvas graph, Issues, Repo, Runner and the whole component gallery) drawn by WheelUI's A2UI
 //! renderer in one pane of a session on this repository, and surviving
+//! an older wheeld (the fixture daemon behind a proxy that lowers the protocol number in its
+//! `status`): a second window shows only "The server was updated." with Restart Server, whose
+//! click runs the stop and start commands, and surviving
 //! a wheeld restart: the link reads down, comes back up on its own, and every native view is
 //! opened again on the new daemon.
 //! The window is never visible, key or active.
@@ -1647,6 +1650,61 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
         "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
     drop(debug);
+    // An older wheeld (wheel-ynjo.2): the fixture daemon behind a proxy that lowers the protocol
+    // number in its `status` by one. The window over it never comes up: it shows the notice with
+    // Restart Server, whose click runs `WHEEL_SERVER_STOP` then `WHEEL_SERVER_START`.
+    let proxy = OlderProxy::start(&format!("{}?token={}", default_url(), std::fs::read_to_string(default_token_file())?.trim()), PROTOCOL - 1)?;
+    let older = Endpoint::new(&proxy.url, &default_token_file())?;
+    let mut older_connection = Connection::open(older.clone());
+    let older_window = cx.update(|app| wheel_gpui::create_window(app, &bridge, older_connection.send.clone(), older, None, None, true))?;
+    let mut older_layouts = 0usize;
+    let mut older_link = Link::Connecting;
+    for _ in 0..100 {
+        pump(&mut older_connection, 100, &mut older_layouts, older_window, cx).await?;
+        older_link = older_window.update(cx, |c, _, _| c.link.clone())?;
+        if matches!(older_link, Link::Incompatible { .. }) {
+            break;
+        }
+    }
+    ensure!(older_link == (Link::Incompatible { server: PROTOCOL - 1, client: PROTOCOL }), "the window over the older wheeld read {older_link:?}");
+    ensure!(older_layouts == 0, "a layout came through from the older wheeld");
+    draw(older_window, None, cx)?;
+    let (older_banner, older_toasts, older_state) = older_window.update(cx, |c, _, _| (c.link.banner(), c.toasts(), c.state_json()))?;
+    ensure!(older_banner == "The server was updated.", "the banner over the older wheeld reads {older_banner:?}");
+    let server_toast = older_toasts.iter().find(|t| t.id == "server-update").cloned().ok_or_else(|| anyhow::anyhow!("no server-update notice over the older wheeld: {older_toasts:?}"))?;
+    let server_toast_actions: Vec<&str> = server_toast.actions.iter().map(|a| a.title).collect();
+    ensure!(server_toast.text == "The server was updated." && server_toast_actions == ["Restart Server"], "the server notice reads {server_toast:?}");
+    let older_view = json!({"server_protocol": older_state["server_protocol"], "connection": older_state["connection"], "spaces": older_state["spaces"]});
+    ensure!(older_view == json!({"server_protocol": {"version": PROTOCOL - 1, "client": PROTOCOL}, "connection": "incompatible", "spaces": []}), "the older window's state reads {older_view}");
+    draw(older_window, Some(output.join("client-server-updated.png")), cx)?;
+    let (stop_file, start_file) = (output.join("server.stop"), output.join("server.start"));
+    older_window.update(cx, |c, _, _| c.run_toast_action(&server_toast.actions[0].act))?;
+    let mut restart_log = None;
+    for _ in 0..50 {
+        pump(&mut older_connection, 100, &mut older_layouts, older_window, cx).await?;
+        draw(older_window, None, cx)?;
+        restart_log = older_window.update(cx, |c, _, _| c.toast_log.iter().rev().find(|l| l.starts_with("server: restart")).cloned())?;
+        if restart_log.as_deref() == Some("server: restarted from the app") {
+            break;
+        }
+    }
+    ensure!(restart_log.as_deref() == Some("server: restarted from the app"), "Restart Server ended with {restart_log:?}");
+    ensure!(stop_file.exists() && start_file.exists(), "Restart Server did not run both commands: stop {} start {}", stop_file.exists(), start_file.exists());
+    older_window.update(cx, |c, _, _| c.dismiss_toast(&server_toast))?;
+    let (after_dismiss, older_log): (Vec<String>, Vec<String>) = older_window.update(cx, |c, _, _| (c.toasts().iter().map(|t| t.id.clone()).collect(), c.toast_log.iter().filter(|l| l.starts_with("server")).cloned().collect()))?;
+    ensure!(after_dismiss.is_empty(), "the server notice stayed after its close: {after_dismiss:?}");
+    older_window.update(cx, |_, w, _| w.remove_window())?;
+    drop(older_connection);
+    let proxy_port = proxy.port;
+    let proxy_frames = proxy.stop();
+    ensure!(proxy_frames >= 1, "the proxy rewrote no status reply: the older window never met the lowered protocol");
+    // The first window, on the fixture wheeld itself, has nothing to offer.
+    let (main_state, main_toasts) = window.update(cx, |c, _, _| (c.state_json(), c.toasts()))?;
+    ensure!(main_state["server_protocol"] == json!({"version": PROTOCOL, "client": PROTOCOL}), "the fixture wheeld's protocol reads {}", main_state["server_protocol"]);
+    ensure!(!main_toasts.iter().any(|t| t.id == "server-update"), "a server notice over the fixture wheeld: {main_toasts:?}");
+    let server_updated_report = json!({"proxy_port": proxy_port, "proxy_frames_rewritten": proxy_frames, "server_protocol": older_state["server_protocol"], "connection": older_state["connection"],
+        "banner": older_banner, "toast": {"text": server_toast.text, "actions": server_toast_actions}, "restart_log": restart_log, "stop_ran": stop_file.exists(), "start_ran": start_file.exists(),
+        "after_dismiss": after_dismiss, "log": older_log, "main_server_protocol": main_state["server_protocol"]});
     let (request, done) = (output.join("restart.request"), output.join("restart.done"));
     let _ = std::fs::remove_file(&done);
     let status_before_restart = native.status();
@@ -1722,11 +1780,79 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "settings": settings_report,
         "notices": notices_report,
         "debug": debug_report,
+        "server_updated": server_updated_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     }))
+}
+
+/// The fixture wheeld as an older one: a loopback WebSocket in front of it that passes every frame
+/// through and writes `protocol` in each `status` reply down to `protocol`. The rest of the reply
+/// is the real wheeld's, so the client meets exactly what an older daemon's number looks like.
+struct OlderProxy {
+    url: String,
+    port: u16,
+    rewritten: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl OlderProxy {
+    fn start(upstream: &str, protocol: u32) -> Result<Self> {
+        use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let (rewritten, stop) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+        let (count, stopping, upstream) = (rewritten.clone(), stop.clone(), upstream.to_owned());
+        listener.set_nonblocking(true)?;
+        std::thread::spawn(move || {
+            while !stopping.load(Ordering::Relaxed) {
+                let Ok((stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                let Ok(mut client) = tungstenite::accept(stream) else { continue };
+                let Ok((mut server, _)) = tungstenite::connect(&upstream) else { continue };
+                client.get_mut().set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+                if let tungstenite::stream::MaybeTlsStream::Plain(s) = server.get_mut() {
+                    s.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+                }
+                let timed_out = |e: &tungstenite::Error| matches!(e, tungstenite::Error::Io(io) if matches!(io.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut));
+                'session: while !stopping.load(Ordering::Relaxed) {
+                    match client.read() {
+                        Ok(m @ tungstenite::Message::Text(_)) => { if server.send(m).is_err() { break 'session; } }
+                        Ok(tungstenite::Message::Close(_)) => break 'session,
+                        Ok(_) => {}
+                        Err(e) if timed_out(&e) => {}
+                        Err(_) => break 'session,
+                    }
+                    match server.read() {
+                        Ok(tungstenite::Message::Text(t)) => {
+                            let mut frame: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
+                            if frame["ev"] == "status" {
+                                frame["protocol"] = json!(protocol);
+                                count.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if client.send(tungstenite::Message::text(frame.to_string())).is_err() { break 'session; }
+                        }
+                        Ok(tungstenite::Message::Close(_)) => break 'session,
+                        Ok(_) => {}
+                        Err(e) if timed_out(&e) => {}
+                        Err(_) => break 'session,
+                    }
+                }
+                let _ = client.close(None);
+                let _ = server.close(None);
+            }
+        });
+        Ok(Self { url: format!("ws://127.0.0.1:{port}/ws"), port, rewritten, stop })
+    }
+    /// End the proxy; how many `status` replies it rewrote.
+    fn stop(self) -> usize {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.rewritten.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Unix milliseconds now.

@@ -15,6 +15,7 @@ pub mod native;
 pub mod pairing;
 pub mod palette;
 pub mod procs;
+pub mod server;
 pub mod settings;
 pub mod status;
 pub mod toasts;

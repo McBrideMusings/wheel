@@ -49,6 +49,8 @@ impl Level {
 pub enum Act {
     /// Start the installed app and quit this one.
     Relaunch,
+    /// Stop wheeld and start it again from what is installed (`crate::server::Control`).
+    RestartServer,
     FocusPane(String),
     ClosePane(String),
 }
@@ -67,6 +69,8 @@ pub enum Dismiss {
     Posted,
     /// Remember the installed stamp, so the same install is not offered again.
     ClientUpdate(u64),
+    /// Remember the older server's protocol, so the same server is not offered again.
+    ServerUpdate(u32),
     /// Take the agent's notice down on every client (`agent_notice_dismiss`), then drop it.
     AgentNotice(String),
     /// Forget the last layout error.
@@ -107,13 +111,19 @@ pub struct Sources {
     pub client_installed: Option<u64>,
     /// The stamp whose notice was closed.
     pub client_update_dismissed: Option<u64>,
+    /// wheeld speaks an older protocol than this client: that protocol, while a restart waits.
+    pub server_updated: Option<u32>,
+    /// The protocol whose notice was closed.
+    pub server_update_dismissed: Option<u32>,
+    /// The client has commands to restart wheeld with: the notice gets Restart Server.
+    pub server_restart_available: bool,
     /// wheeld's last refusal of a layout op this window sent.
     pub layout_error: Option<String>,
 }
 
-/// Every notice now, in the order they stack from the top: the client update, the daemon's last
-/// refusal, then what was posted (`notify` toasts and agents' notices). A notice about a pane that
-/// exists gets Focus pane and Close pane after its own buttons.
+/// Every notice now, in the order they stack from the top: the client update, the server update,
+/// the daemon's last refusal, then what was posted (`notify` toasts and agents' notices). A notice
+/// about a pane that exists gets Focus pane and Close pane after its own buttons.
 pub fn stack(sources: &Sources, posted: &[Toast], pane_exists: impl Fn(&str) -> bool) -> Vec<Toast> {
     let mut list = vec![];
     if let Some(installed) = sources.client_installed
@@ -126,6 +136,19 @@ pub fn stack(sources: &Sources, posted: &[Toast], pane_exists: impl Fn(&str) -> 
             actions: vec![Action { id: "relaunch", title: "Relaunch Wheel", act: Act::Relaunch }],
             pane: None,
             dismiss: Dismiss::ClientUpdate(installed),
+            closable: true,
+        });
+    }
+    if let Some(protocol) = sources.server_updated
+        && Some(protocol) != sources.server_update_dismissed
+    {
+        list.push(Toast {
+            id: "server-update".into(),
+            level: Level::Notice,
+            text: crate::server::UPDATED.into(),
+            actions: if sources.server_restart_available { vec![Action { id: "restart", title: "Restart Server", act: Act::RestartServer }] } else { vec![] },
+            pane: None,
+            dismiss: Dismiss::ServerUpdate(protocol),
             closable: true,
         });
     }
@@ -188,15 +211,25 @@ mod tests {
     #[test]
     fn stacks_in_order_and_adds_pane_buttons() {
         let posted = vec![Toast::posted("notify:a".into(), Level::Notice, "hi".into(), Some("p1".into()))];
-        let sources = Sources { client_installed: Some(5), client_update_dismissed: None, layout_error: Some("no such pane p7".into()) };
+        let sources = Sources { client_installed: Some(5), client_update_dismissed: None, server_updated: Some(32), server_update_dismissed: None, server_restart_available: true, layout_error: Some("no such pane p7".into()) };
         let list = stack(&sources, &posted, |p| p == "p1");
-        assert_eq!(list.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["client-update", "layout-error", "notify:a"]);
-        assert_eq!(list[1].pane.as_deref(), Some("p7"));
-        assert!(list[1].actions.is_empty(), "a pane that is gone gets no buttons");
-        assert_eq!(list[2].actions.iter().map(|a| a.title).collect::<Vec<_>>(), ["Focus pane", "Close pane"]);
-        assert!(!list[2].compact(), "two buttons make a card");
-        let dismissed = Sources { client_update_dismissed: Some(5), ..sources };
+        assert_eq!(list.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["client-update", "server-update", "layout-error", "notify:a"]);
+        assert_eq!((list[1].text.as_str(), list[1].actions[0].title), ("The server was updated.", "Restart Server"));
+        assert_eq!(list[2].pane.as_deref(), Some("p7"));
+        assert!(list[2].actions.is_empty(), "a pane that is gone gets no buttons");
+        assert_eq!(list[3].actions.iter().map(|a| a.title).collect::<Vec<_>>(), ["Focus pane", "Close pane"]);
+        assert!(!list[3].compact(), "two buttons make a card");
+        let dismissed = Sources { client_update_dismissed: Some(5), server_update_dismissed: Some(32), ..sources };
         assert_eq!(stack(&dismissed, &[], |_| false).len(), 1);
+    }
+
+    #[test]
+    fn a_server_update_without_commands_has_no_button() {
+        let sources = Sources { server_updated: Some(32), ..Sources::default() };
+        let list = stack(&sources, &[], |_| false);
+        assert_eq!(list.len(), 1);
+        assert!(list[0].actions.is_empty());
+        assert!(list[0].compact(), "the bare notice is a pill");
     }
 
     #[test]

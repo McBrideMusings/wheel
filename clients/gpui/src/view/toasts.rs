@@ -33,6 +33,7 @@ impl Client {
         match &toast.dismiss {
             Dismiss::Posted => {}
             Dismiss::ClientUpdate(stamp) => self.toast_sources.client_update_dismissed = Some(*stamp),
+            Dismiss::ServerUpdate(protocol) => self.toast_sources.server_update_dismissed = Some(*protocol),
             Dismiss::AgentNotice(agent) => self.send(&ClientMsg::AgentNoticeDismiss { req: None, agent: agent.clone() }),
             Dismiss::LayoutError => self.toast_sources.layout_error = None,
         }
@@ -41,6 +42,7 @@ impl Client {
     pub fn run_toast_action(&mut self, act: &Act) {
         match act {
             Act::Relaunch => self.relaunch_client(),
+            Act::RestartServer => self.restart_server(),
             Act::FocusPane(pane) => self.show_pane(pane),
             Act::ClosePane(pane) => self.ask_close_pane(pane),
         }
@@ -93,6 +95,53 @@ impl Client {
             _ => return false,
         }
         true
+    }
+
+    // MARK: The server
+
+    /// Restart wheeld from what is installed, in one click (ServerControl.swift `restartServer`).
+    /// The commands run on a thread; the next render reads how they ended.
+    pub fn restart_server(&mut self) {
+        if !self.server_control.available() || self.server_restarting {
+            return;
+        }
+        self.log(format!("server: restart asked for; {} spaces", self.spaces.len()));
+        self.server_restarting = true;
+        let (control, slot) = (self.server_control.clone(), self.server_result.clone());
+        std::thread::spawn(move || {
+            *slot.lock().unwrap() = Some(control.restart());
+        });
+    }
+    /// Each render: a finished restart is read into the model, and a running one keeps the window redrawing.
+    pub fn poll_server(&mut self, cx: &mut Context<Self>) {
+        let done = self.server_result.lock().unwrap().take();
+        if let Some(outcome) = done {
+            self.server_restarting = false;
+            match &outcome {
+                Ok(()) => self.log("server: restarted from the app".into()),
+                Err(failure) => self.log(format!("server: restart failed: {failure}")),
+            }
+            self.server_problem = outcome.err();
+        }
+        if self.server_restarting {
+            self.redraw_in(200, cx);
+        }
+    }
+    /// Settings › General's Server box and the window's notice while a restart waits
+    /// (ServerSourceSettings): the words, Restart Server when the client has commands for it, and
+    /// why the last restart did not work.
+    pub(super) fn server_box(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut col = div().flex().flex_col().gap_2().p(px(10.)).rounded_md().bg(rgb(BOX)).border_1().border_color(rgb(LINE))
+            .child(div().text_color(rgb(0xff9f0a)).child(crate::server::UPDATED));
+        if self.server_control.available() {
+            col = col.child(div().flex().child(button(if self.server_restarting { "Restarting…" } else { "Restart Server" }, click(cx, |this| {
+                this.restart_server();
+            }))));
+        }
+        if let Some(problem) = &self.server_problem {
+            col = col.child(div().text_xs().text_color(rgb(0xff453a)).child(problem.clone()));
+        }
+        col
     }
 
     // MARK: The client on disk

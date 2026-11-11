@@ -152,6 +152,15 @@ pub struct Client {
     pub toast_log: Vec<String>,
     /// The process card and the lists behind it.
     pub procs: crate::procs::Procs,
+    /// The protocol the connected wheeld speaks, from its last `status`; None before it answered.
+    pub server_protocol: Option<u32>,
+    /// How this client stops and starts wheeld.
+    pub server_control: crate::server::Control,
+    /// A restart is running on its thread; its outcome (None when it worked) waits here for the next render.
+    server_restarting: bool,
+    server_result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    /// Why the last restart did not work.
+    pub server_problem: Option<String>,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -232,7 +241,7 @@ impl Link {
             Link::Up => String::new(),
             Link::Connecting => "connecting to wheeld".into(),
             Link::Down(_) => "wheeld is not reachable, reconnecting".into(),
-            Link::Incompatible { server, client } => format!("wheeld speaks protocol {server}, this client needs {client}: restart wheeld"),
+            Link::Incompatible { .. } => crate::server::UPDATED.into(),
         }
     }
 }
@@ -240,6 +249,8 @@ impl Link {
 impl Client {
     #[allow(clippy::too_many_arguments)]
     pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
+        let server_control = crate::server::Control::from_env();
+        let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
@@ -249,8 +260,9 @@ impl Client {
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None,
-            posted: vec![], toast_sources: crate::toasts::Sources::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
+            posted: vec![], toast_sources, layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
+            server_protocol: None, server_control, server_restarting: false, server_result: std::sync::Arc::default(), server_problem: None,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -258,7 +270,11 @@ impl Client {
         match event {
             Event::Message(message) => match crate::layout::parse_layout(&message) {
                 Some(layout) => {
-                    if let ServerMsg::Status { agents, perms, .. } = message.as_ref() {
+                    if let ServerMsg::Status { agents, perms, protocol, .. } = message.as_ref() {
+                        if self.server_protocol != Some(*protocol) {
+                            self.log(format!("server protocol {protocol}, this app's {}", crate::daemon::PROTOCOL));
+                        }
+                        self.server_protocol = Some(*protocol);
                         self.agents = agents.clone();
                         self.perms = perms.clone();
                         self.rebuild_keymap();
@@ -420,6 +436,10 @@ impl Client {
                 }
                 self.endpoint = endpoint;
                 self.link = Link::Up;
+                // A new connection is a new server as far as the notice knows: closing it for one
+                // older wheeld does not silence it for the next.
+                self.toast_sources.server_updated = None;
+                self.toast_sources.server_update_dismissed = None;
                 // This window draws its panes as PNGs for `wheel pane shot` and runs `wheel pane
                 // eval|dom|record` in its browser panes: wheeld may send it `render_pane` and `inspect_pane`.
                 self.send(&ClientMsg::RenderOffer {});
@@ -434,7 +454,20 @@ impl Client {
                 false
             }
             Event::Incompatible { server, client } => {
+                // The link is not up: wheeld's frames may lack fields this build reads. What needs
+                // the newer server is the whole layout, so the window shows the notice and Restart
+                // Server (Swift: serverRestartWaiting) until wheeld answers at this protocol.
+                if self.link != (Link::Incompatible { server, client }) {
+                    self.log(format!("server protocol {server}, this app's {client}: restart offered"));
+                }
                 self.link = Link::Incompatible { server, client };
+                self.server_protocol = Some(server);
+                self.toast_sources.server_updated = Some(server);
+                // A window that was up on a newer wheeld shows nothing of it: the older one's
+                // layout is not read, so the old one's panes would be stale. The next `Up` applies
+                // a layout again.
+                self.spaces.clear();
+                self.sessions.clear();
                 false
             }
         }
@@ -1157,7 +1190,7 @@ impl Render for Client {
                 cx.notify();
             }));
         let chips = self.header_chips();
-        if !chips.iter().any(|c| matches!(c.hit, Hit::Space(_))) {
+        if !chips.iter().any(|c| matches!(c.hit, Hit::Space(_))) && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(div().absolute().left(px(header::MARGIN)).top(px(header::SPACES_Y)).child("waiting for wheeld"));
         }
         self.controls.borrow_mut().clear();
@@ -1296,6 +1329,11 @@ impl Render for Client {
         }
         if let Some(path) = self.pending_open.take() {
             cx.open_url(&format!("file://{}", file_url_path(&path)));
+        }
+        self.poll_server(cx);
+        if matches!(self.link, Link::Incompatible { .. }) {
+            root = root.child(div().absolute().left_0().top(px(HEADER)).w(px(w)).h(px(h - HEADER)).flex().justify_center().items_center()
+                .child(div().w(px(420.)).child(self.server_box(cx))));
         }
         if self.settings_open {
             self.poll_settings(cx);
