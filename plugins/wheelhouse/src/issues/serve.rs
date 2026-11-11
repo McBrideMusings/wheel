@@ -29,12 +29,39 @@ struct Ui {
     sel: Option<i64>,
     title: String,
     notice: Option<(bool, String)>,
+    /// The column the table is sorted by, and whether ascending; a header click sets it.
+    sort: (String, bool),
 }
 
 impl Default for Ui {
     fn default() -> Self {
-        Ui { q: String::new(), show: "open".into(), sel: None, title: String::new(), notice: None }
+        Ui { q: String::new(), show: "open".into(), sel: None, title: String::new(), notice: None, sort: ("updated".into(), false) }
     }
+}
+
+const COLS: [&str; 7] = ["number", "title", "state", "labels", "who", "author", "updated"];
+
+fn compare(key: &str, a: &Issue, b: &Issue) -> std::cmp::Ordering {
+    match key {
+        "number" => a.number.cmp(&b.number),
+        "title" => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+        "state" => a.state.cmp(&b.state),
+        "labels" => a.labels.join(",").to_lowercase().cmp(&b.labels.join(",").to_lowercase()),
+        "who" => a.assignees.join(",").to_lowercase().cmp(&b.assignees.join(",").to_lowercase()),
+        "author" => a.author.to_lowercase().cmp(&b.author.to_lowercase()),
+        _ => a.updated.cmp(&b.updated),
+    }
+}
+
+/// The issues the page lists now, in the order shown: what the search, the state choice and the sort leave.
+fn listed<'a>(s: &'a Snapshot, ui: &Ui) -> Vec<&'a Issue> {
+    let mut rows: Vec<&Issue> = s.issues.iter().filter(|i| shown(i, ui)).collect();
+    let (key, asc) = (&ui.sort.0, ui.sort.1);
+    rows.sort_by(|a, b| {
+        let o = compare(key, a, b).then(a.number.cmp(&b.number));
+        if asc { o } else { o.reverse() }
+    });
+    rows
 }
 
 #[derive(Default)]
@@ -117,7 +144,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let mut page = vec![];
     let t = p.runs("title", json!([{ "text": format!("Issues · {}", s.name), "size": 20, "weight": "bold" }]), json!({}));
     page.push(p.boxed("head", "h", vec![t], json!({ "padding": [0, 0, 12, 0] })));
-    for (n, e) in s.error.iter().enumerate() {
+    for (n, e) in s.error.iter().chain(s.problems.iter()).enumerate() {
         let l = p.label(&format!("problem{n}.t"), e, json!({ "tone": "bad" }));
         page.push(p.boxed(&format!("problem{n}"), "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
     }
@@ -134,13 +161,24 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         p.choose("views", "/set_show", &ui.show, vec![
             json!({ "value": "open", "text": "Open" }), json!({ "value": "closed", "text": "Closed" }),
             json!({ "value": "all", "text": "All" })], true, false);
-        let rows: Vec<&Issue> = s.issues.iter().filter(|i| shown(i, ui)).collect();
-        let count = p.label("count", &format!("{} of {}", rows.len(), s.issues.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("tools", "h", vec!["search".into(), "views".into(), count],
-            json!({ "spacing": 8, "align": "center", "widths": ["flex", null, 96], "trailing": 1 })));
-        // The newest update first until a header is clicked.
-        let mut sorted = rows.clone();
-        sorted.sort_by(|a, b| b.updated.cmp(&a.updated).then(b.number.cmp(&a.number)));
+        let sorted = listed(s, ui);
+        let n = sorted.len();
+        let count = p.label("count", &format!("{n} of {}", s.issues.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
+        // The listed numbers as one string (bare numbers, the form the selector table and `iterate` take), and the project's
+        // `[issues.buttons]` with `on = ["list"]` over the same numbers. Each keeps its slot: with no rows they are disabled.
+        let numbers: Vec<String> = sorted.iter().map(|i| i.number.to_string()).collect();
+        let mut acts = vec!["search".into(), "views".into()];
+        acts.push(p.copy_button("list.copy", "Copy ids", &numbers.join(" "),
+            json!({ "style": "link", "disabled": n == 0, "help": format!("Copy the {n} listed issue numbers, space separated") })));
+        for sc in s.scripts.iter().filter(|sc| sc.on_list()) {
+            acts.push(p.button(&format!("list.{}", sc.name), sc.label(), "run_list_script", json!({ "script": sc.name }),
+                json!({ "style": "link", "disabled": n == 0, "help": format!("{} over the {n} listed issues", sc.label()) })));
+        }
+        acts.push(count);
+        let mut widths = vec![json!("flex"), Value::Null];
+        widths.extend(std::iter::repeat_n(Value::Null, acts.len() - 3));
+        widths.push(json!(96));
+        page.push(p.boxed("tools", "h", acts, json!({ "spacing": 8, "align": "center", "widths": widths, "trailing": 1 })));
         let columns: Vec<Value> = vec![
             table::column("number", "#", json!(60), false, false), table::column("title", "Title", json!("flex"), false, true),
             table::column("state", "State", json!(80), false, false), table::column("labels", "Labels", json!(160), false, true),
@@ -148,7 +186,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             table::column("updated", "Updated", json!(70), false, false),
         ].into_iter().map(table::sortable).collect();
         let sections = vec![table::section("", sorted.iter().map(|i| row(i, ui, at)).collect())];
-        let mut t = table::component(columns, sections, "select_issue", "select_issue", ("updated", false),
+        let mut t = table::component(columns, sections, "select_issue", "select_issue", "set_sort", (&ui.sort.0, ui.sort.1),
             if s.issues.is_empty() { "No issues on GitHub." } else { "Nothing matches the search." });
         t["id"] = json!("table");
         p.put(t);
@@ -174,6 +212,21 @@ fn answer(s: &Snapshot, ui: &Ui) -> CallToolResult {
 struct Value1 {
     /// The new value.
     value: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct Sort {
+    /// A column key.
+    key: String,
+    /// Ascending when true.
+    #[serde(deserialize_with = "crate::core::table::asc")]
+    asc: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ListScript {
+    /// The button's name in `[issues.buttons.<name>]`, one with `on = ["list"]`.
+    script: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -232,6 +285,36 @@ impl Server {
     #[tool(description = "Show open, closed or all issues", meta = ui_meta())]
     fn set_show(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
         self.with(&meta, |_, ui| ui.show = value)
+    }
+
+    #[tool(description = "Sort the table by a column, ascending or not", meta = ui_meta())]
+    fn set_sort(&self, meta: RequestMetaObject, Parameters(Sort { key, asc }): Parameters<Sort>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if COLS.contains(&key.as_str()) {
+                ui.sort = (key, asc);
+            }
+        })
+    }
+
+    #[tool(description = "Run one of the project's list buttons over the issues the page lists now", meta = ui_meta())]
+    fn run_list_script(&self, meta: RequestMetaObject, Parameters(ListScript { script }): Parameters<ListScript>) -> CallToolResult {
+        let o = Origin::of(&meta);
+        let (snap, numbers) = {
+            let mut s = self.shared.lock().unwrap();
+            let snap = s.project(&o.dir).clone();
+            let ui = s.panes.entry(o.pane.clone()).or_default();
+            let numbers: Vec<String> = listed(&snap, ui).iter().map(|i| i.number.to_string()).collect();
+            (snap, numbers)
+        };
+        let mut env = vec![("ISSUE_REPO", snap.name.as_str()), ("ISSUE_PATH", o.dir.as_str())];
+        if let Some(d) = &o.data {
+            env.push(("WHEEL_DATA_DIR", d.as_str()));
+        }
+        let result = crate::core::buttons::run_list(&snap.scripts, &script, &numbers, "ISSUE_NUMBERS", &env, &o.dir, &o.pane, "issues");
+        match result {
+            Ok(said) => self.with(&meta, |_, ui| ui.notice = Some((true, said))),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
+        }
     }
 
     #[tool(description = "Open an issue's panel, or close it by choosing it again", meta = ui_meta())]
@@ -362,6 +445,34 @@ mod tests {
         ui.sel = Some(7);
         let c = components(&s, &ui);
         assert!(c.iter().any(|v| v["id"] == "d.close" && v["action"]["event"]["name"] == "close_issue"));
+    }
+
+    #[test]
+    fn copy_ids_holds_the_listed_numbers_in_the_sorted_order_and_a_list_button_follows_them() {
+        let mut a = issue(7, "open");
+        a.updated = 10;
+        let mut b = issue(12, "open");
+        b.updated = 20;
+        let mut s = Snapshot { name: "t".into(), issues: vec![a, b, issue(3, "closed")], ..Default::default() };
+        s.scripts = vec![crate::core::buttons::Script { name: "iterate".into(), label: Some("Iterate".into()), on: vec!["list".into()], run: "true".into() }];
+        let copied = |c: &[Value]| c.iter().find(|x| x["id"] == "list.copy").unwrap()["action"]["copy"]["text"].as_str().unwrap().to_string();
+        let disabled = |c: &[Value], id: &str| c.iter().find(|x| x["id"] == id).unwrap()["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["disabled"] == true));
+        let mut ui = Ui::default();
+        let c = components(&s, &ui);
+        assert_eq!(copied(&c), "12 7", "open issues, newest update first, as bare numbers");
+        let tools = c.iter().find(|x| x["id"] == "tools").unwrap();
+        assert_eq!(tools["children"], json!(["search", "views", "list.copy", "list.iterate", "count"]));
+        let table = c.iter().find(|x| x["id"] == "table").unwrap();
+        assert_eq!((table["sortAction"].as_str(), &table["sort"]), (Some("set_sort"), &json!({ "key": "updated", "asc": false })));
+        ui.sort = ("number".into(), true);
+        let c = components(&s, &ui);
+        assert_eq!(copied(&c), "7 12", "a header click's sort orders the numbers");
+        ui.show = "all".into();
+        let c = components(&s, &ui);
+        assert_eq!(copied(&c), "3 7 12");
+        ui.q = "nothing-here".into();
+        let c = components(&s, &ui);
+        assert!(disabled(&c, "list.copy") && disabled(&c, "list.iterate"), "an empty list keeps the buttons in place, disabled");
     }
 
     #[test]

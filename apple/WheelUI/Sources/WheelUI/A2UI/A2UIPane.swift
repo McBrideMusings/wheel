@@ -92,6 +92,14 @@ public final class A2UIPane {
         surface?.dispatchAction(name: name, sourceComponentId: "debug", context: context.mapValues { .string($0) })
     }
 
+    /// Press the component `id` as its button would: a copy goes to the pasteboard, an event to the page. False when the
+    /// page has no such component.
+    public func press(component id: String) -> Bool {
+        guard let surface, let c = surface.components[id] else { return false }
+        surface.activate(c)
+        return true
+    }
+
     /// Ask the daemon whether the artifact's server links an A2UI layout.
     public func start() {
         state = .probing

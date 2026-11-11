@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::core::buttons::Script;
 use crate::core::page::{cell, Page};
 use crate::core::table;
 
@@ -37,14 +38,6 @@ struct Bead {
     epic: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct Script {
-    name: String,
-    label: Option<String>,
-    on: Vec<String>,
-    run: String,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Snapshot {
     name: String,
@@ -60,31 +53,6 @@ fn bd(path: &str, args: &[&str]) -> Result<Vec<Value>, String> {
     crate::core::run::bd(path, args)
 }
 
-fn scripts(path: &str) -> (Vec<Script>, Vec<String>) {
-    let file = PathBuf::from(path).join("wheel.toml");
-    let Ok(text) = std::fs::read_to_string(&file) else { return (vec![], vec![]) };
-    let doc: toml_edit::DocumentMut = match text.parse() {
-        Ok(t) => t,
-        Err(e) => return (vec![], vec![format!("{}: {e}", file.display())]),
-    };
-    let mut out = vec![];
-    if let Some(buttons) = doc.get("beads").and_then(|b| b.get("buttons")).and_then(|b| b.as_table_like()) {
-        for (name, s) in buttons.iter() {
-            out.push(Script {
-                name: name.to_string(),
-                label: s.get("label").and_then(|v| v.as_str()).map(String::from),
-                on: s
-                    .get("on")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default(),
-                run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            });
-        }
-    }
-    (out, vec![])
-}
-
 /// The beads of the project in `path`: what `bd` lists, which are ready, and the buttons the
 /// project writes in its wheel.toml.
 fn collect(path: &str) -> Snapshot {
@@ -95,7 +63,7 @@ fn collect(path: &str) -> Snapshot {
         return snap;
     }
     snap.has_repo = true;
-    let (s, problems) = scripts(&path);
+    let (s, problems) = crate::core::buttons::scripts(&path, "beads");
     snap.scripts = s;
     snap.problems = problems;
     let load = || -> Result<Vec<Bead>, String> {
@@ -348,6 +316,10 @@ struct Ui {
     cw: f64,
     /// Graph should centre on the selected bead when it is drawn.
     centre: bool,
+    /// The column the flat list is sorted by, and whether ascending; a header click sets it.
+    sort: (String, bool),
+    /// What the last list button did, shown once at the top of the page.
+    said: Option<String>,
 }
 
 impl Default for Ui {
@@ -368,6 +340,8 @@ impl Default for Ui {
             more: None,
             cw: 900.0,
             centre: false,
+            sort: ("status".into(), true),
+            said: None,
         }
     }
 }
@@ -485,9 +459,15 @@ fn flat<'a>(n: &Node<'a>, parent: &str, ui: &Ui, out: &mut Vec<RowOut<'a>>) {
 /// The rows a view shows, as the page's table builds them: a flat sorted list, or a tree
 /// flattened with a depth and cut at the collapsed paths.
 fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
-    // The page's own order; a click on a column header of the flat list re-sorts it in the client.
+    // Trees keep the page's own order; the flat list follows the sort a header click chose, so the
+    // page, the copied ids and a list button all see the rows the screen shows.
     let by = |a: &Bead, b: &Bead| compare(ix, "status", a, b);
     if ui.view == "list" || ui.custom() {
+        let (key, asc) = (&ui.sort.0, ui.sort.1);
+        let by = |a: &Bead, b: &Bead| {
+            let o = compare(ix, key, a, b).then_with(|| compare(ix, "status", a, b));
+            if asc { o } else { o.reverse() }
+        };
         let mut v: Vec<&Bead> = ix
             .snap
             .beads
@@ -538,6 +518,13 @@ fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
         flat(n, "", ui, &mut out);
     }
     out
+}
+
+/// The ids of the beads the page lists now, in the order shown: what the search, filters, view and
+/// sort leave, without epics and milestones (an id list is for working leaves, and an epic's id
+/// would stand for its children twice).
+fn ids(ix: &Ix, ui: &Ui) -> Vec<String> {
+    build(ix, ui).into_iter().filter(|r| r.b.kind != "epic" && r.b.kind != "milestone").map(|r| r.b.id.clone()).collect()
 }
 
 // ───────────────────────────── A2UI ─────────────────────────────
@@ -609,7 +596,9 @@ fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
         sections,
         "select_bead",
         "toggle_path",
-        ("status", true),
+        // A tree has no sortable column, so it carries no sort action and no header arrow.
+        if ui.view == "list" || ui.custom() { "set_sort" } else { "" },
+        (&ui.sort.0, ui.sort.1),
         if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." },
     );
     (v, shown, total)
@@ -801,6 +790,10 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         let l = p.label(&format!("problem{i}.t"), pr, json!({ "tone": "bad" }));
         page.push(p.boxed(&format!("problem{i}"), "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
     }
+    if let Some(said) = &ui.said {
+        let l = p.label("said.t", said, json!({ "tone": "ok" }));
+        page.push(p.boxed("said", "v", vec![l], json!({ "border": "ok", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
+    }
 
     if !snap.has_repo {
         page.push(p.label("none", "This space has no .beads directory, so there is nothing to list.", json!({ "tone": "muted" })));
@@ -871,7 +864,19 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
         // Clear keeps its place whether or not a filter is on: it is hidden, not removed, so the count never moves.
         let active = !ui.q.is_empty() || !ui.values("status").is_empty() || !ui.values("type").is_empty() || !ui.values("label").is_empty() || !ui.values("pri").is_empty();
         let clear = p.button("filters.clear", "Clear", "clear", json!({}), json!({ "style": "link", "disabled": !active, "hideOff": true }));
-        let shape = p.boxed("bar.shape", "h", vec![clear, count_id], json!({ "spacing": 6, "align": "center" }));
+        // The listed ids as one string, and the project's list buttons over the same ids. Each keeps its slot: with no rows
+        // the buttons are disabled, not removed.
+        let listed = ids(&ix, ui);
+        let n = listed.len();
+        let mut acts = vec![clear];
+        acts.push(p.copy_button("list.copy", "Copy ids", &listed.join(" "),
+            json!({ "style": "link", "disabled": n == 0, "help": format!("Copy the {n} listed ids, space separated") })));
+        for s in snap.scripts.iter().filter(|s| s.on_list()) {
+            acts.push(p.button(&format!("list.{}", s.name), s.label(), "run_list_script", json!({ "script": s.name }),
+                json!({ "style": "link", "disabled": n == 0, "help": format!("{} over the {n} listed beads", s.label()) })));
+        }
+        acts.push(count_id);
+        let shape = p.boxed("bar.shape", "h", acts, json!({ "spacing": 10, "align": "center" }));
         page.push(p.boxed("bar", "h", vec![narrow, shape], json!({ "spacing": 16, "align": "center", "widths": ["flex", Value::Null], "padding": [4, 0, 0, 0] })));
         crate::core::layout::modify(&mut p.out, "bar", json!({ "frame": { "maxWidth": "infinity" } }));
 
@@ -1003,6 +1008,49 @@ mod tests {
     }
 
     #[test]
+    fn copy_ids_holds_the_listed_ids_in_the_shown_order_and_list_buttons_follow_them() {
+        let mut s = snap(vec![
+            bead("t-1", |b| { b.priority = Some(3); b.title = "c".into(); }),
+            bead("t-2", |b| { b.priority = Some(1); b.title = "a".into(); }),
+            bead("t-3", |b| { b.priority = Some(2); b.title = "b".into(); b.kind = "epic".into(); }),
+            bead("t-4", |b| { b.priority = Some(0); b.title = "d".into(); b.status = "closed".into(); }),
+        ]);
+        s.scripts = vec![
+            Script { name: "iterate-list".into(), label: Some("Iterate".into()), on: vec!["list".into()], run: "true".into() },
+            Script { name: "implement".into(), label: None, on: vec!["ready".into()], run: "true".into() },
+        ];
+        let copied = |c: &[Value]| c.iter().find(|x| x["id"] == "list.copy").unwrap()["action"]["copy"]["text"].as_str().unwrap().to_string();
+        let disabled = |c: &[Value], id: &str| c.iter().find(|x| x["id"] == id).unwrap()["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["disabled"] == true));
+        let mut ui = Ui::default();
+        let c = page_components(&s, &ui);
+        assert_eq!(copied(&c), "t-1 t-2", "the open leaves in the page's order; the epic and the closed bead are not listed");
+        let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
+        assert_eq!(shape["children"], json!(["filters.clear", "list.copy", "list.iterate-list", "count"]), "only the list button joins Copy ids");
+        assert!(!disabled(&c, "list.copy") && !disabled(&c, "list.iterate-list"));
+        let table = c.iter().find(|x| x["id"] == "table").unwrap();
+        assert_eq!((table["sortAction"].as_str(), &table["sort"]), (Some("set_sort"), &json!({ "key": "status", "asc": true })), "a header click reaches the page");
+        ui.sort = ("title".into(), false);
+        let c = page_components(&s, &ui);
+        assert_eq!(copied(&c), "t-1 t-2");
+        ui.sort = ("title".into(), true);
+        let c = page_components(&s, &ui);
+        assert_eq!(copied(&c), "t-2 t-1", "the sort a header chose orders the ids");
+        ui.view = "epics".into();
+        let c = page_components(&s, &ui);
+        assert_eq!(c.iter().find(|x| x["id"] == "table").unwrap()["sortAction"], "", "a tree view has no sort action");
+        ui.view = "list".into();
+        let c = page_components(&s, &ui);
+        let rows = c.iter().find(|x| x["id"] == "table").unwrap()["sections"][0]["rows"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(rows, ["t-2", "t-1"], "and the table's rows come in the same order");
+        ui.q = "nothing-here".into();
+        let c = page_components(&s, &ui);
+        assert_eq!(copied(&c), "");
+        assert!(disabled(&c, "list.copy") && disabled(&c, "list.iterate-list"), "an empty list keeps the buttons in place, disabled");
+        let ix = Ix::new(&s);
+        assert!(menu(&ix, &s.beads[0]).iter().all(|m| m["context"]["script"] != "iterate-list"), "a list button is never a row's button");
+    }
+
+    #[test]
     fn a_beads_buttons_sit_in_the_detail_footer_not_its_body() {
         let mut s = snap(vec![bead("a", |b| b.status = "in_progress".into())]);
         s.scripts = vec![Script { name: "resume".into(), label: Some("Resume".into()), on: vec!["wip".into()], run: "true".into() }];
@@ -1050,7 +1098,7 @@ mod tests {
         let narrow = c.iter().find(|x| x["id"] == "bar.narrow").unwrap();
         assert_eq!(narrow["children"], json!(["filters.status", "filters.type", "filters.label", "filters.pri"]), "what narrows the list sits together");
         let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
-        assert_eq!(shape["children"], json!(["filters.clear", "count"]), "Clear and the count sit together");
+        assert_eq!(shape["children"], json!(["filters.clear", "list.copy", "count"]), "Clear, the list actions and the count sit together");
         let boxes: Vec<&Value> = c.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("kpi") && !i.contains('.') && i != "kpis")).collect();
         assert_eq!(boxes.len(), 4);
         assert!(boxes.iter().all(|b| b["component"] == "Button" && b["action"]["event"]["name"] == "set_filter"), "each box is a status filter");

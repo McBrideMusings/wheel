@@ -180,7 +180,7 @@ fn components(dir: &str, agents: &[agents::Agent], ui: &Ui, mode: Mode) -> Vec<V
             table::column("note", "Doing", json!("flex"), false, true), table::column("status", "State", json!(96), false, false),
         ],
     };
-    let mut t = table::component(columns, sections, "noop", "noop", ("status", true),
+    let mut t = table::component(columns, sections, "noop", "noop", "", ("status", true),
         match mode { Mode::Implement => "No agent is running in this project.", Mode::Swarm => "No workers: start an agent above." });
     t["id"] = json!("table");
     p.put(t);

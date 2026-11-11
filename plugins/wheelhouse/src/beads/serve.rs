@@ -95,6 +95,21 @@ struct BeadId {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct Sort {
+    /// A column key.
+    key: String,
+    /// Ascending when true.
+    #[serde(deserialize_with = "crate::core::table::asc")]
+    asc: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ListScript {
+    /// The button's name in `[beads.buttons.<name>]`, one with `on = ["list"]`.
+    script: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RunScript {
     /// The bead's id.
     bead: String,
@@ -116,6 +131,7 @@ impl Server {
         let snap = s.project(&dir).snap.clone();
         let ui = s.panes.entry(pane).or_default();
         ui.centre = false;
+        ui.said = None;
         graph::Model::new(&snap, ui).trim(ui);
         f(&snap, ui);
         answer(&snap, ui)
@@ -178,6 +194,36 @@ impl Server {
         self.with(&meta, |_, ui| {
             if value == "true" { ui.not.insert(key); } else { ui.not.remove(&key); }
         })
+    }
+
+    #[tool(description = "Sort the list by a column, ascending or not", meta = ui_meta())]
+    fn set_sort(&self, meta: RequestMetaObject, Parameters(Sort { key, asc }): Parameters<Sort>) -> CallToolResult {
+        self.with(&meta, |_, ui| {
+            if COLS.iter().any(|c| c.key == key) {
+                ui.sort = (key, asc);
+            }
+        })
+    }
+
+    #[tool(description = "Run one of the project's list buttons over the beads the page lists now", meta = ui_meta())]
+    fn run_list_script(&self, meta: RequestMetaObject, Parameters(ListScript { script }): Parameters<ListScript>) -> CallToolResult {
+        let (dir, pane) = origin(&meta);
+        let (snap, listed) = {
+            let mut s = self.shared.lock().unwrap();
+            let snap = s.project(&dir).snap.clone();
+            let ui = s.panes.entry(pane.clone()).or_default();
+            let listed = ids(&Ix::new(&snap), ui);
+            (snap, listed)
+        };
+        let mut env = vec![("BEAD_REPO", snap.name.as_str()), ("BEAD_PATH", snap.path.as_str())];
+        let data = Origin::of(&meta).data;
+        if let Some(d) = &data {
+            env.push(("WHEEL_DATA_DIR", d.as_str()));
+        }
+        match crate::core::buttons::run_list(&snap.scripts, &script, &listed, "BEAD_IDS", &env, &snap.path, &pane, "beads") {
+            Ok(said) => self.with(&meta, |_, ui| ui.said = Some(said)),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
+        }
     }
 
     #[tool(description = "Clear the search and the filters", meta = ui_meta())]

@@ -174,7 +174,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             ].into_iter()
                 // A stash's age is only text ("3 days ago"), so the When column keeps the page's order.
                 .map(|c| if c["key"] == "when" { c } else { table::sortable(c) }).collect();
-            table::component(columns, sections, "select_branch", "select_branch", ("when", false),
+            table::component(columns, sections, "select_branch", "select_branch", "", ("when", false),
                 if s.stashes.is_empty() && s.commits.is_empty() { "No stashes or commits." } else { "Nothing matches the search." })
         } else {
             let sections = vec![table::section("", shown.iter().map(|b| row(b, ui, at)).collect())];
@@ -184,7 +184,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
                 table::column("pr", "PR", json!(60), false, false), table::column("ci", "Checks", json!(84), false, false),
                 table::column("state", "State", json!(150), false, true), table::column("updated", "Updated", json!(70), false, false),
             ].into_iter().map(table::sortable).collect();
-            table::component(columns, sections, "select_branch", "select_branch", ("updated", false),
+            table::component(columns, sections, "select_branch", "select_branch", "", ("updated", false),
                 if s.branches.is_empty() { "No branches besides the default." } else { "Nothing matches the search." })
         };
         t["id"] = json!("table");

@@ -288,20 +288,30 @@ struct A2UIPresentedModals: View {
     }
 }
 
-// MARK: Button — `child`, `variant` (default, primary, borderless), `action` {event: {name, context}}
+// MARK: Button — `child`, `variant` (default, primary, borderless), `action` {event: {name, context}} calls the page's tool;
+// `action` {copy: {text}} puts the text on the pasteboard in the client and calls no tool (a button holding both copies
+// only). After a copy a tick is drawn over the label for 1.5 s; the label keeps its width, so nothing beside it moves.
 struct A2UIButton: View {
     let node: ComponentNode
     let surface: SurfaceModel
+    /// How many copies this button made; each one restarts the tick.
+    @State private var copies = 0
+    @State private var copied = false
     var body: some View {
         let button = Button {
-            guard let event = node.props["action"]?.dictionaryValue?["event"]?.dictionaryValue, let name = event["name"]?.stringValue else { return }
-            var context: [String: AnyCodable] = [:]
-            for (k, v) in event["context"]?.dictionaryValue ?? [:] {
-                if let p = v.dictionaryValue?["path"]?.stringValue, v.dictionaryValue?.count == 1 { context[k] = surface.get(p) ?? .null } else { context[k] = v }
-            }
-            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+            if surface.activate(node.instance) { copies += 1 }
         } label: {
-            if let c = node.children.first { A2UIChildView(node: c, surface: surface) }
+            if let c = node.children.first {
+                A2UIChildView(node: c, surface: surface)
+                    .opacity(copied ? 0 : 1)
+                    .overlay { if copied { Image(systemName: "checkmark").accessibilityLabel("Copied") } }
+            }
+        }
+        .task(id: copies) {
+            guard copies > 0 else { return }
+            copied = true
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if !Task.isCancelled { copied = false }
         }
         switch node.props["variant"]?.stringValue {
         case "primary": button.buttonStyle(.borderedProminent)

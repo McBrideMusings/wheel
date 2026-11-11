@@ -170,6 +170,24 @@ public final class SurfaceModel {
 
     // MARK: what a control does
 
+    /// Does what pressing `instance` does: its `action` {copy: {text}} goes to the pasteboard (true), its
+    /// {event: {name, context}} is raised to the page (false). A context value `{path}` is read from the data model.
+    @discardableResult
+    public func activate(_ instance: ComponentInstance) -> Bool {
+        let action = instance.properties["action"]?.dictionaryValue
+        if let text = action?["copy"]?.dictionaryValue?["text"]?.stringValue {
+            copyToPasteboard(text)
+            return true
+        }
+        guard let event = action?["event"]?.dictionaryValue, let name = event["name"]?.stringValue else { return false }
+        var context: [String: AnyCodable] = [:]
+        for (k, v) in event["context"]?.dictionaryValue ?? [:] {
+            if let p = v.dictionaryValue?["path"]?.stringValue, v.dictionaryValue?.count == 1 { context[k] = get(p) ?? .null } else { context[k] = v }
+        }
+        dispatchAction(name: name, sourceComponentId: instance.id, context: context)
+        return false
+    }
+
     /// A control raising an action (a Button).
     public func dispatchAction(name: String, sourceComponentId: String, context: [String: AnyCodable] = [:]) {
         onAction?(A2UIAction(name: name, sourceComponentId: sourceComponentId, context: context))

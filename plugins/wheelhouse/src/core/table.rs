@@ -13,22 +13,36 @@ pub fn sortable(mut c: Value) -> Value {
     c
 }
 
+/// `asc` of a sort as a tool argument: a bool from a header click, or the words `true`/`false` from a
+/// caller that only has strings (the Debug app's `/a2ui/action`, the command line).
+pub fn asc<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Asc { B(bool), S(String) }
+    Ok(match <Asc as serde::Deserialize>::deserialize(d)? {
+        Asc::B(b) => b,
+        Asc::S(s) => s != "false" && s != "0" && !s.is_empty(),
+    })
+}
+
 /// A section of rows under a title (an empty title draws no header).
 pub fn section(title: &str, rows: Vec<Value>) -> Value {
     json!({ "title": title, "count": rows.len(), "rows": rows })
 }
 
-/// A Table: `columns`, `sections`, the tool a row's click and a fold's click call, the sort and
-/// the words shown with no rows.
+/// A Table: `columns`, `sections`, the tools a row's click, a fold's click and a header's click
+/// call, the sort the rows are in and the words shown with no rows. With a `sortAction` the client
+/// never re-orders the rows itself: it tells the page `{key, asc}` and the page sends them sorted.
 pub fn component(
     columns: Vec<Value>,
     sections: Vec<Value>,
     row_action: &str,
     fold_action: &str,
+    sort_action: &str,
     sort: (&str, bool),
     empty: &str,
 ) -> Value {
-    json!({ "component": "Table", "rowAction": row_action, "foldAction": fold_action, "columns": columns,
+    json!({ "component": "Table", "rowAction": row_action, "foldAction": fold_action, "sortAction": sort_action, "columns": columns,
         "sort": { "key": sort.0, "asc": sort.1 }, "sections": sections, "empty": empty })
 }
 
@@ -43,11 +57,13 @@ mod tests {
             vec![section("Ready", vec![json!({ "id": "a" })])],
             "select",
             "fold",
+            "sort",
             ("id", true),
             "none",
         );
         assert_eq!(t["component"], "Table");
         assert_eq!(t["rowAction"], "select");
+        assert_eq!(t["sortAction"], "sort");
         assert_eq!(t["sections"][0]["count"], 1);
         assert_eq!(t["columns"][0]["key"], "id");
         assert_eq!(t["sort"]["asc"], true);

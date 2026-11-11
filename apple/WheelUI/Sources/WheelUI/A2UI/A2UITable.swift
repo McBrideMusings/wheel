@@ -6,7 +6,9 @@ import SwiftUI
 // A column with `sortable: true` sorts the rows of each section when its header is clicked, by each cell's `sort` (a number or a
 // string) or its `text`; the rows stay in the page's order until a header is clicked, and a column without it never sorts.
 // Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
-// menu item's own `action` with its `context`.
+// menu item's own `action` with its `context`. With a `sortAction` the page owns the order: the header arrow shows the table's
+// `sort` {key, asc}, a header click raises `sortAction` with the new {key, asc} and the rows stay in the page's order until the
+// page sends them sorted; without one a header click sorts the rows here.
 struct A2UITableView: View {
     let node: ComponentNode
     let surface: SurfaceModel
@@ -67,7 +69,8 @@ struct A2UITableView: View {
         let narrow = pane.width < 640
         let cols = (p["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.filter { !(narrow && $0["wide"]?.boolValue == true) }
         let sections = (p["sections"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let lines = Self.lines(sections, sort: sortOrder.first)
+        let sortAction = p["sortAction"]?.stringValue ?? ""
+        let lines = Self.lines(sections, sort: sortAction.isEmpty ? sortOrder.first : nil)
         let rowAction = p["rowAction"]?.stringValue ?? ""
         let foldAction = p["foldAction"]?.stringValue ?? ""
         let selected = Binding<String?>(
@@ -76,7 +79,18 @@ struct A2UITableView: View {
                 guard let id, let line = lines.first(where: { $0.id == id }), line.title == nil else { return }
                 fire(rowAction, ["id": .string(line.row["id"]?.stringValue ?? "")])
             })
-        grid(lines, cols, selected: selected, rowAction: rowAction, foldAction: foldAction)
+        // With a sortAction the header arrow reads the page's `sort` and a click only tells the page; the rows never
+        // re-order here. Without one the table keeps its own order in `sortOrder`.
+        let pageSort = p["sort"]?.dictionaryValue
+        let pageKey = pageSort?["key"]?.stringValue ?? ""
+        let pageAsc = pageSort?["asc"]?.boolValue ?? true
+        let order = sortAction.isEmpty ? $sortOrder : Binding<[CellSort]>(
+            get: { [CellSort(key: pageKey, order: pageAsc ? .forward : .reverse)] },
+            set: { new in
+                guard let s = new.first, (s.key, s.order == .forward) != (pageKey, pageAsc) else { return }
+                fire(sortAction, ["key": .string(s.key), "asc": .bool(s.order == .forward)])
+            })
+        grid(lines, cols, selected: selected, order: order, rowAction: rowAction, foldAction: foldAction)
         .overlay {
             if lines.isEmpty { Text(p["empty"]?.stringValue ?? "Nothing matches the search and filters.").foregroundStyle(.secondary) }
         }
@@ -88,13 +102,13 @@ struct A2UITableView: View {
 
     /// The Mac draws SwiftUI's Table. On a phone a Table shows only its first column, so a List of one-line rows draws the same cells.
     @ViewBuilder
-    private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<String?>, rowAction: String, foldAction: String) -> some View {
+    private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<String?>, order: Binding<[CellSort]>, rowAction: String, foldAction: String) -> some View {
         let first = cols.first?["key"]?.stringValue ?? ""
         #if os(macOS)
         // A table with a sortable column shows sort arrows on every header; one without draws plain headers and never sorts.
         Group {
             if cols.contains(where: { $0["sortable"]?.boolValue == true }) {
-                Table(lines, selection: selected, sortOrder: $sortOrder) {
+                Table(lines, selection: selected, sortOrder: order) {
                     TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                         // A column that is not sortable compares every pair as equal, so its header changes nothing.
                         TableColumn(c["label"]?.stringValue ?? "", sortUsing: CellSort(key: c["sortable"]?.boolValue == true ? c["key"]?.stringValue ?? "" : "")) { line in cell(line, c, foldAction, first: first) }

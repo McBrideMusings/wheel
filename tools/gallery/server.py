@@ -107,6 +107,7 @@ content = klass("Content", "Static text and images. Apple's guidelines call read
 
 controls = klass("Buttons", "Run an action. The label is a child component.", [
     ("Button", "Button", [("variant default", button(txt("Default"))), ("variant primary", button(txt("Primary"), "primary")), ("variant borderless", button(txt("Borderless"), "borderless")),
+                          ("action copy {text}: puts the text on the pasteboard in the client, calls no tool, shows a tick for 1.5 s", put("Button", child=txt("Copy ids"), action={"copy": {"text": "a-1 b-2"}}, variant="borderless")),
                           ("label is an Icon", button(put("Icon", name="play.fill"))),
                           ("label is Icon and Text", button(row([put("Icon", name="play.fill"), txt("Run build")], justify="start")))]),
 ])
@@ -313,7 +314,13 @@ own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows c
                                                        sections=[{"title": "Ready", "count": 2, "rows": [
                                                            {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True, "sort": 1}, {"key": "title", "text": "First row"}]},
                                                            {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True, "sort": 2}, {"key": "title", "text": "Second row", "tone": "ok"}]}]}],
-                                                       sort={"key": "id", "asc": True}, empty="None", modifiers=[{"frame": {"height": 160}}]))]),
+                                                       sort={"key": "id", "asc": True}, empty="None", modifiers=[{"frame": {"height": 160}}])),
+                        ("sortAction: the page owns the order; the header arrow shows sort {key, asc}, a click raises sortAction with the new {key, asc} and the rows stay as sent until the page replies", put("Table", rowAction="act", foldAction="act", sortAction="act",
+                                                       columns=[{"key": "id", "label": "ID", "width": 80, "tree": False, "wide": False, "sortable": True}, {"key": "title", "label": "Title", "width": None, "tree": False, "wide": False, "sortable": True}],
+                                                       sections=[{"title": "", "count": 2, "rows": [
+                                                           {"id": "b", "path": "b", "depth": 0, "cells": [{"key": "id", "text": "b-2", "mono": True, "sort": 2}, {"key": "title", "text": "Sent first by the page"}]},
+                                                           {"id": "a", "path": "a", "depth": 0, "cells": [{"key": "id", "text": "a-1", "mono": True, "sort": 1}, {"key": "title", "text": "Sent second"}]}]}],
+                                                       sort={"key": "id", "asc": False}, empty="None", modifiers=[{"frame": {"height": 160}}]))]),
 ])
 
 own = klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", [

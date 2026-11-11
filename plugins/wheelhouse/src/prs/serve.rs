@@ -118,7 +118,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             table::column("checks", "Checks", json!(84), false, false), table::column("review", "Review", json!(130), false, true),
             table::column("issue", "Issue", json!(70), false, false), table::column("gaps", "Gaps", json!(80), false, false),
             table::column("updated", "Updated", json!(70), false, false)].into_iter().map(table::sortable).collect();
-        let mut t = table::component(columns, sections, "select_pr", "select_pr", ("updated", false),
+        let mut t = table::component(columns, sections, "select_pr", "select_pr", "", ("updated", false),
             if s.prs.is_empty() { "No open PRs." } else { "Nothing matches the search." });
         t["id"] = json!("table");
         p.put(t);

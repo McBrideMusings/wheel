@@ -3,6 +3,7 @@
 //! project's files changed, and the Table component. Nothing here knows what a bead or a diff is.
 
 pub mod agents;
+pub mod buttons;
 pub mod git;
 pub mod layout;
 pub mod page;

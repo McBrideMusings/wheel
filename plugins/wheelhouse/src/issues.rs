@@ -27,6 +27,10 @@ pub struct Snapshot {
     pub name: String,
     pub issues: Vec<Issue>,
     pub error: Option<String>,
+    /// The buttons the project writes under `[issues.buttons]` in its wheel.toml.
+    pub scripts: Vec<crate::core::buttons::Script>,
+    /// What was wrong with the wheel.toml, shown on the page without hiding the issues.
+    pub problems: Vec<String>,
 }
 
 const FIELDS: &str = "number,title,state,labels,assignees,author,body,url,updatedAt";
@@ -73,6 +77,9 @@ pub fn close(dir: &str, number: i64) -> Result<(), String> {
 
 pub fn collect(dir: &str) -> Snapshot {
     let mut s = Snapshot { name: crate::core::project::name_of(dir), ..Default::default() };
+    let (scripts, problems) = crate::core::buttons::scripts(dir, "issues");
+    s.scripts = scripts;
+    s.problems = problems;
     match list(dir) {
         Ok(i) => s.issues = i,
         Err(e) => s.error = Some(e),

@@ -210,7 +210,7 @@ fn file_rows(scope: &Scope, sel: Option<&File>, wide: bool) -> Vec<Value> {
 /// under a header that stays at the top while its file is read.
 fn wide_layout(p: &mut Page, scope: &Scope, sel: Option<&File>) -> String {
     let columns = vec![table::column("status", "", json!(28), false, false), table::column("path", "File", Value::Null, false, false)];
-    let mut t = table::component(columns, vec![table::section("", file_rows(scope, sel, true))], "select_file", "select_file", ("path", true), "No files.");
+    let mut t = table::component(columns, vec![table::section("", file_rows(scope, sel, true))], "select_file", "select_file", "", ("path", true), "No files.");
     t["id"] = json!("files.w");
     p.put(t);
     let side = p.boxed("side.w", "v", vec!["files.w".into()], json!({ "spacing": 0 }));
@@ -267,7 +267,7 @@ fn wide_layout(p: &mut Page, scope: &Scope, sel: Option<&File>) -> String {
 fn narrow_layout(p: &mut Page, scope: &Scope, sel: Option<&File>) -> String {
     let columns = vec![table::column("status", "", json!(28), false, false), table::column("path", "File", Value::Null, false, false),
         table::column("size", "Size", json!(78), false, false), table::column("add", "+", json!(44), false, false), table::column("del", "−", json!(44), false, false)];
-    let mut t = table::component(columns, vec![table::section("", file_rows(scope, sel, false))], "select_file", "select_file", ("path", true), clean(scope));
+    let mut t = table::component(columns, vec![table::section("", file_rows(scope, sel, false))], "select_file", "select_file", "", ("path", true), clean(scope));
     t["id"] = json!("files.n");
     // Seven rows of 24 pt under a 28 pt header.
     t["modifiers"] = json!([{ "frame": { "height": 28.0 + 24.0 * TABLE_ROWS } }]);

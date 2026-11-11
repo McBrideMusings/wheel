@@ -97,7 +97,7 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
             table::column("id", "Epic", json!(110), false, false), table::column("title", "Title", json!("flex"), false, true),
             table::column("progress", "Done", json!(70), false, false), table::column("ready", "Ready", json!(90), false, false),
         ];
-        let mut t = table::component(columns, vec![table::section("Epics", rows)], "none", "none", ("id", true), "No epics.");
+        let mut t = table::component(columns, vec![table::section("Epics", rows)], "none", "none", "", ("id", true), "No epics.");
         t["id"] = json!("table");
         p.put(t);
         page.push(p.boxed("table.b", "v", vec!["table".into()], json!({ "padding": [18, 0, 0, 0] })));

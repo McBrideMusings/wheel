@@ -107,6 +107,15 @@ impl Page {
     /// A library `Button` whose label is a `Text` (or an `Icon` when `extra` has `icon`). `extra`: `style` link or
     /// plain draws it borderless, primary draws it prominent, `fill` stretches it across, `disabled` disables it (`hideOff` also hides it), `help` is its hover text.
     pub fn button(&mut self, id: &str, text: &str, name: &str, context: Value, extra: Value) -> String {
+        self.control(id, text, json!({ "event": { "name": name, "context": context } }), extra)
+    }
+
+    /// A Button that puts `copied` on the clipboard when pressed; the client does it, no tool is called.
+    pub fn copy_button(&mut self, id: &str, text: &str, copied: &str, extra: Value) -> String {
+        self.control(id, text, json!({ "copy": { "text": copied } }), extra)
+    }
+
+    fn control(&mut self, id: &str, text: &str, action: Value, extra: Value) -> String {
         let child = match extra["icon"].as_str() {
             Some(i) => {
                 self.put(json!({ "id": format!("{id}.i"), "component": "Icon", "name": i }));
@@ -137,7 +146,7 @@ impl Page {
             mods.push(json!({ "help": h }));
             mods.push(json!({ "accessibilityLabel": h }));
         }
-        let mut v = json!({ "id": id, "component": "Button", "child": child, "action": { "event": { "name": name, "context": context } } });
+        let mut v = json!({ "id": id, "component": "Button", "child": child, "action": action });
         match extra["style"].as_str() {
             Some("link" | "plain") => v["variant"] = json!("borderless"),
             Some("primary") => v["variant"] = json!("primary"),

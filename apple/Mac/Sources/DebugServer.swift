@@ -1535,10 +1535,16 @@ final class DebugServer {
             if let open { model.setSidebar(open: open) }
             if let space = query["space"] { model.focus(space: space) }
         case ("POST", "/a2ui/action"):
-            // An A2UI button's action, raised without a pointer: `name` is the action event's name,
-            // and every other query item is a string in its context.
-            guard let pane = query["pane"], let name = query["name"] else { return refuse("400 Bad Request", "pane and name are required") }
+            // An A2UI button's action, raised without a pointer: `id` presses the component with that id as its
+            // button would (a copy fills the pasteboard, an event reaches the page); else `name` is the action
+            // event's name, and every other query item is a string in its context.
+            guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
             guard let a2ui = model.a2uiPanes[pane], a2ui.surface != nil else { return refuse("404 Not Found", "pane \(pane) draws no A2UI surface") }
+            if let id = query["id"] {
+                guard a2ui.press(component: id) else { return refuse("404 Not Found", "pane \(pane) has no component \(id)") }
+                break
+            }
+            guard let name = query["name"] else { return refuse("400 Bad Request", "id or name is required") }
             a2ui.press(name, context: query.filter { $0.key != "pane" && $0.key != "name" })
         case ("POST", "/context/toggle"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
