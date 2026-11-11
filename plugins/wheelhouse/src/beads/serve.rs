@@ -180,15 +180,6 @@ impl Server {
         })
     }
 
-    #[tool(description = "Sort by a column header: the same column again reverses it", meta = ui_meta())]
-    fn sort_by(&self, meta: RequestMetaObject, Parameters(Key { key }): Parameters<Key>) -> CallToolResult {
-        self.with(&meta, |_, ui| {
-            if let Some(c) = COLS.iter().find(|c| c.key == key) {
-                ui.sort = if ui.sort.0 == key { (key, !ui.sort.1) } else { (key, !c.desc_first) };
-            }
-        })
-    }
-
     #[tool(description = "Clear the search and the filters", meta = ui_meta())]
     fn clear(&self, meta: RequestMetaObject) -> CallToolResult {
         self.with(&meta, |_, ui| {
