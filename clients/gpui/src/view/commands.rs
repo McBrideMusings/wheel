@@ -23,6 +23,8 @@ pub enum Pending {
     CloseSpace(String),
     SetKind(String, NewPaneKind),
     StartAgent(String, String),
+    /// Remove an installed built-in artifact: its folder and its entry go.
+    RemoveBuiltin(String),
 }
 
 /// The requests the open palette has out, so their answers are told apart.
@@ -105,7 +107,8 @@ impl Client {
             | "resize-left" | "resize-right" | "resize-up" | "resize-down" | "equalize-splits" => self.many_panes(),
             "previous-space" | "next-space" => spaces() > 1,
             "last-space" => spaces() > 0,
-            "settings" | "usage" | "rename-window" | "toggle-sidebar" | "mode-spaces" | "mode-desk" | "zoom-pane" | "switch-view" => false,
+            "settings" => true,
+            "usage" | "rename-window" | "toggle-sidebar" | "mode-spaces" | "mode-desk" | "zoom-pane" | "switch-view" => false,
             other => {
                 if let Some(n) = other.strip_prefix("space-").and_then(|n| n.parse::<usize>().ok()) {
                     return spaces() >= n;
@@ -146,6 +149,7 @@ impl Client {
             && !matches!(id.as_str(), "close-pane" | "close-space")
             && self.command_palette.is_none()
             && !self.shortcuts_open
+            && !self.settings_open
             && self.confirmation.is_none()
         {
             self.native.focus(&held);
@@ -180,6 +184,7 @@ impl Client {
             "close-window" => self.close_window_requested = true,
             "command-palette" => self.open_command_palette(Mode::Root),
             "shortcuts" => self.toggle_shortcuts(),
+            "settings" => self.toggle_settings(),
             "split-right" | "split-down" => {
                 if let Some(pane) = focused {
                     let dir = if id == "split-right" { Dir::Right } else { Dir::Down };
@@ -420,12 +425,22 @@ impl Client {
         let name = capitalized(agent);
         self.confirm(title, format!("{message} The pane then runs {name}."), format!("Start {name}"), run);
     }
+    /// Settings › Artifacts › Remove asks first: the folder goes, and with it any edit made there.
+    pub fn ask_remove_builtin(&mut self, name: &str, edited: &[String]) {
+        let message = if edited.is_empty() {
+            "Its folder and its entry go. Panes showing it show nothing until it is installed again.".to_owned()
+        } else {
+            format!("Its folder goes, with your edits to {}.", edited.join(", "))
+        };
+        self.confirm(&format!("Remove “{name}”?"), message, "Remove".into(), Pending::RemoveBuiltin(name.to_owned()));
+    }
     fn run_pending(&mut self, run: Pending) {
         match run {
             Pending::ClosePane(pane) => self.send(&ClientMsg::PaneClose { req: None, pane }),
             Pending::CloseSpace(id) => self.send(&ClientMsg::SpaceClose { req: None, id, if_empty: false }),
             Pending::SetKind(pane, kind) => self.set_kind(&pane, kind),
             Pending::StartAgent(pane, agent) => self.send(&ClientMsg::PaneStart { req: None, pane, kind: StartKind::Agent, message: None, agent: Some(agent), model: None, permission_mode: None, sandbox: None }),
+            Pending::RemoveBuiltin(name) => self.remove_builtin(&name),
         }
     }
 
@@ -670,8 +685,8 @@ impl Client {
     }
     /// Tell the bridge where the window-wide overlay is, so the native views leave it a hole and
     /// the GPUI view takes the keyboard while one is open.
-    fn sync_overlay(&mut self) {
-        let open = self.command_palette.is_some() || self.shortcuts_open || self.confirmation.is_some();
+    pub(super) fn sync_overlay(&mut self) {
+        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some();
         if open {
             let (w, h) = self.viewport;
             self.native.call(serde_json::json!({"op": "overlay", "open": true, "rect": [0., 0., f64::from(w), f64::from(h)]}));

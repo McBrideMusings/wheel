@@ -1095,6 +1095,275 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "sheet_groups": sheet.iter().map(|g| json!({"name": g.0, "rows": g.1.len()})).collect::<Vec<_>>(), "rebound_key": moved_key,
         "panes": {"before": panes_before.len(), "after_split": after_split.len(), "after_run": after_run.len(), "after_rebind": after_rebind.len(), "after_close": after_close.len()},
         "confirmation": {"title": asked.title, "message": asked.message, "button": asked.button}, "actions": window.update(cx, |c, _, _| c.actions_log.clone())?});
+    // The Settings window (SettingsWindow.swift and its tabs): ⌘, opens it over the window with
+    // the daemon's rows; a field typed and typed_saved reaches wheeld's wheel.toml and `wheel config`
+    // reads it; a write from another client (the CLI here) shows in the open window; the Chat
+    // page's controls, search and toml; a project's own file; the built-ins, guidance, keys and
+    // devices pages; Esc closes it.
+    use wheel_gpui::settings::{Layer, Tab, Topic};
+    let config_get = |key: &str, space: Option<&str>| -> Result<String> {
+        let mut args = vec!["get", key];
+        if let Some(space) = space {
+            args.extend(["--space", space]);
+        }
+        let out = config(&args)?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    // A typed character that needs Shift on a Mac keyboard (`:`, an uppercase letter) is posted with it.
+    let type_text = |native: &Native, text: &str| {
+        for ch in text.chars() {
+            let shifted = ch.is_ascii_uppercase() || ":\"<>?{}|~!@#$%^&*()_+".contains(ch);
+            native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch),"shift":shifted}));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    post(&native, ',', true);
+    let mut settings_loaded = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        settings_loaded = window.update(cx, |c, _, _| c.settings_open && c.settings.loaded)?;
+        if settings_loaded {
+            break;
+        }
+    }
+    ensure!(settings_loaded, "⌘, opened no Settings window or it never loaded: (open, actions) {:?}", window.update(cx, |c, _, _| (c.settings_open, c.actions_log.clone()))?);
+    let (tab_at_open, global_file, project_at_open, rows_per_topic) = window.update(cx, |c, _, _| {
+        let per_topic: Vec<(String, usize)> = Topic::ALL.iter().map(|t| (t.title().to_owned(), c.settings.settings_in(Layer::Global, *t).len())).collect();
+        (c.settings.tab, c.settings.file(Layer::Global), c.settings.project.clone(), per_topic)
+    })?;
+    ensure!(tab_at_open == Tab::General && global_file.as_deref().is_some_and(|f| f.ends_with(".toml")), "the window opened on {tab_at_open:?} with machine file {global_file:?}");
+    ensure!(rows_per_topic.iter().all(|(_, n)| *n > 0), "a topic has no rows: {rows_per_topic:?}");
+    ensure!(project_at_open.as_deref() == Some(std::env::var("WHEEL_CLIENT_SPACE")?.as_str()), "the Project tab starts on {project_at_open:?}, not the shown space");
+    // The status reply filled the General page's boxes.
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.host.is_some() && c.settings.log_shipping.is_some())? {
+            break;
+        }
+    }
+    let (folder_title, logs_title, command_line_state) = window.update(cx, |c, _, _| (c.settings.host.as_ref().map(wheel_gpui::settings::folder_access_title), wheel_gpui::settings::log_shipping_title(c.settings.log_shipping.as_ref()), c.settings.command_line.state.clone()))?;
+    ensure!(folder_title.is_some(), "the General page never heard wheeld's status");
+    draw(window, Some(output.join("client-settings-general.png")), cx)?;
+    // A text field: typed, typed_saved with Return, read back by `wheel config get`.
+    let homepage = window.update(cx, |c, _, _| c.settings.field(Layer::Global, "browser.homepage"))?;
+    let homepage_before = config_get("browser.homepage", None)?;
+    window.update(cx, |c, _, _| c.edit_setting(homepage.clone()))?;
+    type_text(&native, "https://typed.test");
+    draw(window, None, cx)?;
+    let (typed_text, typed_dirty) = window.update(cx, |c, _, _| (c.settings.text(&homepage), c.settings.dirty(&homepage)))?;
+    ensure!(typed_text == "https://typed.test" && typed_dirty, "typing into the field left {typed_text:?} (dirty {typed_dirty})");
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut typed_saved = String::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.stored(&homepage).as_deref() == Some("https://typed.test") && c.settings.drafts.is_empty() && c.settings.saving.is_empty())? {
+            typed_saved = config_get("browser.homepage", None)?;
+            break;
+        }
+    }
+    ensure!(typed_saved == "https://typed.test", "Return did not save the field: wheel config get reads {typed_saved:?}, model {:?}", window.update(cx, |c, _, _| (c.settings.stored(&homepage), c.settings.refusals.clone(), c.settings.drafts.clone()))?);
+    // Another client writes: the window shows the new value without being asked.
+    let other = config(&["set", "browser.homepage", "https://other.test", "--machine"])?;
+    ensure!(other.status.success(), "config set from the CLI failed: {}", String::from_utf8_lossy(&other.stderr));
+    let mut seen_other = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen_other = window.update(cx, |c, _, _| c.settings.stored(&homepage))?;
+        if seen_other.as_deref() == Some("https://other.test") {
+            break;
+        }
+    }
+    ensure!(seen_other.as_deref() == Some("https://other.test"), "the CLI's write never reached the window: {seen_other:?}");
+    // A refused value shows under the field and stays in it.
+    let int_field = window.update(cx, |c, _, _| c.settings.settings.iter().find(|s| matches!(s.kind, wheel_proto::SettingKind::Int | wheel_proto::SettingKind::Float)).map(|s| c.settings.field(Layer::Global, &s.key)))?
+        .ok_or_else(|| anyhow::anyhow!("the daemon lists no number key to refuse a word for"))?;
+    window.update(cx, |c, _, _| c.edit_setting(int_field.clone()))?;
+    type_text(&native, "big");
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut refusal = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        refusal = window.update(cx, |c, _, _| c.settings.refusals.get(&int_field).cloned())?;
+        if refusal.is_some() {
+            break;
+        }
+    }
+    ensure!(refusal.is_some(), "wheeld accepted `big` for {}, or the refusal never showed", int_field.key);
+    window.update(cx, |c, _, _| c.settings.revert(&int_field))?;
+    // The clear button: the key leaves the file and the default is back.
+    window.update(cx, |c, _, _| c.clear_setting(&homepage))?;
+    let mut cleared = String::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.stored(&homepage).is_none() && c.settings.saving.is_empty())? {
+            cleared = config_get("browser.homepage", None)?;
+            break;
+        }
+    }
+    ensure!(cleared == homepage_before, "clearing left wheel config get at {cleared:?}, was {homepage_before:?}");
+    // The Chat page: a switch written by its control, the search, the count and the toml.
+    window.update(cx, |c, _, _| c.settings_tab(Tab::Chat))?;
+    let chat_bool = window.update(cx, |c, _, _| c.settings.settings_in(Layer::Global, Topic::Chat).into_iter().find(|s| s.kind == wheel_proto::SettingKind::Bool).map(|s| (s.key.clone(), s.value.clone())))?;
+    let (bool_key, bool_before) = chat_bool.ok_or_else(|| anyhow::anyhow!("the Chat topic lists no switch"))?;
+    let flipped = if bool_before == "true" { "false" } else { "true" };
+    let bool_field = window.update(cx, |c, _, _| c.settings.field(Layer::Global, &bool_key))?;
+    window.update(cx, |c, _, _| c.write_control(&bool_field, flipped.to_owned()))?;
+    let mut bool_after = String::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.stored(&bool_field).as_deref() == Some(flipped))? {
+            bool_after = config_get(&bool_key, None)?;
+            break;
+        }
+    }
+    ensure!(bool_after == flipped, "the switch for {bool_key} did not write {flipped}: config get {bool_after:?}");
+    let (chat_changed, chat_toml) = window.update(cx, |c, _, _| {
+        c.settings.page_mut(Topic::Chat).show_toml = true;
+        (c.settings.topic_changed(Topic::Chat).len(), c.settings.topic_toml(Topic::Chat))
+    })?;
+    ensure!(chat_changed >= 1 && chat_toml.contains(&format!("= {flipped}")), "the Chat footer counts {chat_changed} changed and the toml reads {chat_toml:?}");
+    window.update(cx, |c, _, _| c.settings_edit = Some(wheel_gpui::view::SettingsEdit::Search(Topic::Chat)))?;
+    for ch in "font".chars() {
+        post(&native, ch, false);
+        tick(cx, 20).await;
+    }
+    draw(window, Some(output.join("client-settings-chat.png")), cx)?;
+    let (chat_query, chat_rows, chat_all) = window.update(cx, |c, _, _| (c.settings.page(Topic::Chat).query.clone(), c.settings.topic_rows(Topic::Chat).iter().map(|s| s.key.clone()).collect::<Vec<_>>(), c.settings.settings_in(Layer::Global, Topic::Chat).len()))?;
+    ensure!(chat_query == "font" && !chat_rows.is_empty() && chat_rows.len() < chat_all, "searching `font` on Chat left query {chat_query:?} and rows {chat_rows:?} of {chat_all}");
+    // Reset all over two set keys: two unsets in flight, both answered, both gone from the file.
+    let (second_field, second_value) = window.update(cx, |c, _, _| c.settings.settings_in(Layer::Global, Topic::Chat).into_iter().filter(|s| s.key != bool_key).find_map(|s| match s.kind {
+        wheel_proto::SettingKind::Bool => Some((c.settings.field(Layer::Global, &s.key), if s.value == "true" { "false".to_owned() } else { "true".to_owned() })),
+        wheel_proto::SettingKind::Choice => s.choices.iter().find(|ch| **ch != s.value).map(|ch| (c.settings.field(Layer::Global, &s.key), ch.clone())),
+        _ => None,
+    }))?.ok_or_else(|| anyhow::anyhow!("the Chat topic lists no second switch or choice"))?;
+    window.update(cx, |c, _, _| {
+        c.settings_edit = None;
+        c.settings.page_mut(Topic::Chat).query.clear();
+        c.write_control(&second_field, second_value.clone());
+    })?;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.stored(&second_field).is_some() && c.settings.saving.is_empty())? {
+            break;
+        }
+    }
+    ensure!(window.update(cx, |c, _, _| c.settings.stored(&second_field).as_deref() == Some(second_value.as_str()))?, "writing {second_value} to {} did not land: refusals {:?}", second_field.key, window.update(cx, |c, _, _| c.settings.refusals.clone())?);
+    let reset_keys: Vec<String> = window.update(cx, |c, _, _| c.settings.topic_changed(Topic::Chat).iter().map(|s| s.key.clone()).collect())?;
+    ensure!(reset_keys.len() >= 2, "Reset all needs two set keys, has {reset_keys:?}");
+    window.update(cx, |c, _, _| {
+        for key in &reset_keys {
+            let field = c.settings.field(Layer::Global, key);
+            c.clear_setting(&field);
+        }
+    })?;
+    let mut reset_left = reset_keys.len();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        reset_left = window.update(cx, |c, _, _| c.settings.topic_changed(Topic::Chat).len())?;
+        if reset_left == 0 && window.update(cx, |c, _, _| c.settings.saving.is_empty())? {
+            break;
+        }
+    }
+    ensure!(reset_left == 0 && config_get(&bool_key, None)? == bool_before, "Reset all left {reset_left} keys set; {bool_key} reads {:?}", config_get(&bool_key, None)?);
+    // The Project tab: the fixture's space, its own wheel.toml, a value written there.
+    window.update(cx, |c, _, _| c.settings_tab(Tab::Project))?;
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    let project_space = std::env::var("WHEEL_CLIENT_SPACE")?;
+    let (project_file, project_topics) = window.update(cx, |c, _, _| (c.settings.file(Layer::Project), Topic::ALL.iter().filter(|t| !c.settings.settings_in(Layer::Project, **t).is_empty()).map(|t| t.title()).collect::<Vec<_>>()))?;
+    ensure!(project_file.as_deref().is_some_and(|f| f.ends_with("wheel.toml")) && project_topics.contains(&"General"), "the Project tab shows file {project_file:?} and topics {project_topics:?}");
+    let project_field = window.update(cx, |c, _, _| c.settings.field(Layer::Project, "browser.homepage"))?;
+    ensure!(project_field.project.as_deref() == Some(project_space.as_str()), "the project field names {:?}", project_field.project);
+    window.update(cx, |c, _, _| c.edit_setting(project_field.clone()))?;
+    type_text(&native, "https://project.test");
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut project_value = String::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.stored(&project_field).as_deref() == Some("https://project.test"))? {
+            project_value = config_get("browser.homepage", Some(&project_space))?;
+            break;
+        }
+    }
+    ensure!(project_value == "https://project.test", "the project's value did not land: config get --space reads {project_value:?}");
+    let machine_value_under_project = config_get("browser.homepage", None)?;
+    ensure!(machine_value_under_project == homepage_before, "writing the project's file changed the machine's value to {machine_value_under_project:?}");
+    draw(window, Some(output.join("client-settings-project.png")), cx)?;
+    window.update(cx, |c, _, _| c.clear_setting(&project_field))?;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.stored(&project_field).is_none() && c.settings.saving.is_empty())? {
+            break;
+        }
+    }
+    ensure!(config_get("browser.homepage", Some(&project_space))? == homepage_before, "clearing the project's value did not bring the layer below back");
+    // Artifacts: the built-ins wheeld carries.
+    window.update(cx, |c, _, _| c.settings_tab(Tab::Artifacts))?;
+    let mut builtins = Vec::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.builtins.loaded)? {
+            builtins = window.update(cx, |c, _, _| c.settings.builtins.builtins.iter().map(|b| json!({"name": b.name, "shipped": b.shipped_version, "installed": b.installed_version, "action": format!("{:?}", wheel_gpui::settings::builtin_action(b))})).collect())?;
+            break;
+        }
+    }
+    ensure!(!builtins.is_empty(), "the Artifacts tab listed no built-ins: {:?}", window.update(cx, |c, _, _| c.settings.builtins.clone())?);
+    draw(window, Some(output.join("client-settings-artifacts.png")), cx)?;
+    // Guidance: the brief and the files, and Open in Editor answered with the path (not launched here).
+    window.update(cx, |c, _, _| c.settings_tab(Tab::Guidance))?;
+    let mut guidance_segments = Vec::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.settings.guidance.loaded())? {
+            guidance_segments = window.update(cx, |c, _, _| c.settings.guidance.segments().iter().map(|s| json!({"id": s.id, "bytes": s.text.len()})).collect())?;
+            break;
+        }
+    }
+    ensure!(guidance_segments.len() >= 2, "the Guidance tab never loaded: {:?}", window.update(cx, |c, _, _| c.settings.guidance.error.clone())?);
+    window.update(cx, |c, _, _| c.open_guidance_file(None))?;
+    let mut guidance_opened = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        guidance_opened = window.update(cx, |c, _, _| c.settings.opened_file.clone())?;
+        if guidance_opened.is_some() {
+            break;
+        }
+    }
+    ensure!(guidance_opened.as_ref().is_some_and(|(_, how)| how == "not launched"), "Open in Editor on a hidden window: {guidance_opened:?}");
+    draw(window, Some(output.join("client-settings-guidance.png")), cx)?;
+    // Keys: the keybind field and the actions table; Devices: what wheeld says about remote access.
+    window.update(cx, |c, _, _| c.settings_tab(Tab::Keys))?;
+    draw(window, None, cx)?;
+    let keys_rows = window.update(cx, |c, _, _| c.settings.settings_in(Layer::Global, Topic::Keys).iter().map(|s| s.key.clone()).collect::<Vec<_>>())?;
+    ensure!(keys_rows == ["keybind"], "the Keys page lists {keys_rows:?}");
+    window.update(cx, |c, _, _| c.settings_tab(Tab::Devices))?;
+    let mut devices_known = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        devices_known = window.update(cx, |c, _, _| c.settings.devices.info.is_some())?;
+        if devices_known {
+            break;
+        }
+    }
+    ensure!(devices_known, "the Devices tab never heard remote_info");
+    let qr_rows = window.update(cx, |c, _, _| c.native().call(json!({"op":"qr","text":"{\"url\":\"wss://127.0.0.1:7430/ws\"}"}))["rows"].as_array().map(|r| r.len()).unwrap_or(0))?;
+    ensure!(qr_rows >= 21, "the bridge's qr op drew {qr_rows} rows");
+    let devices_state = window.update(cx, |c, _, _| json!({"listen": c.settings.devices.info.as_ref().and_then(|i| i.listen.clone()), "unavailable": c.settings.devices.unavailable(), "paired": c.settings.devices.paired.len(), "qr_rows": qr_rows}))?;
+    draw(window, Some(output.join("client-settings-devices.png")), cx)?;
+    // Esc closes the window and the keyboard goes back.
+    native.call(json!({"op":"post_key","text":"\u{1b}","code":53}));
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if !window.update(cx, |c, _, _| c.settings_open)? {
+            break;
+        }
+    }
+    ensure!(!window.update(cx, |c, _, _| c.settings_open)?, "Esc left the Settings window open");
+    let settings_report = json!({"rows_per_topic": rows_per_topic, "machine_file": global_file, "project_file": project_file, "folder_access": folder_title, "log_shipping": logs_title, "command_line": command_line_state,
+        "typed_saved": typed_saved, "cli_write_seen": seen_other, "refusal": refusal, "cleared_to": cleared, "chat": {"switch": bool_key, "written": bool_after, "changed": chat_changed, "toml": chat_toml, "query": chat_query, "rows": chat_rows, "all": chat_all, "reset_keys": reset_keys},
+        "project": {"space": project_space, "value": project_value, "machine_unchanged": machine_value_under_project, "topics": project_topics}, "builtins": builtins, "guidance": {"segments": guidance_segments, "opened": guidance_opened},
+        "devices": devices_state});
     // Closing the second window above left `native_panes` as the first window's views; the
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
@@ -1171,6 +1440,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "browser": browser_report,
         "pages": pages_report,
         "commands": commands_report,
+        "settings": settings_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},

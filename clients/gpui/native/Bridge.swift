@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreImage
 import WebKit
 import IOSurface
 import QuartzCore
@@ -564,6 +565,21 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let hit = root.hitTest(root.convert(point, to: root.superview))
             let owner = panes.values.first { host in hit.map { $0 === host.content || $0.isDescendant(of: host.content) } ?? false }
             return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": owner?.id ?? NSNull()]
+        case "qr":
+            // The modules of a QR code for `text`, one row per line of "1"s (dark) and "0"s, with
+            // CoreImage's one-module quiet zone; what the Devices page draws as cells.
+            let text = value["text"] as? String ?? ""
+            guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return ["rows": []] }
+            filter.setValue(Data(text.utf8), forKey: "inputMessage")
+            filter.setValue("M", forKey: "inputCorrectionLevel")
+            guard let image = filter.outputImage, let cg = CIContext().createCGImage(image, from: image.extent) else { return ["rows": []] }
+            let (w, h) = (cg.width, cg.height)
+            var pixels = [UInt8](repeating: 0, count: w * h)
+            guard let context = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return ["rows": []] }
+            context.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            // CoreGraphics draws with its origin at the bottom: the first row in memory is the last line.
+            let rows: [String] = (0..<h).reversed().map { y in String((0..<w).map { pixels[y * w + $0] < 128 ? "1" : "0" }) }
+            return ["rows": rows]
         case "snapshot":
             let directory = value["directory"] as! String
             snapshotsPending = 0

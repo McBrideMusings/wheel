@@ -11,6 +11,7 @@ pub mod layout;
 pub mod markdown;
 pub mod native;
 pub mod palette;
+pub mod settings;
 pub mod status;
 pub mod transcript;
 pub mod view;

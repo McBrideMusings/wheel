@@ -4,7 +4,9 @@
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod commands;
+mod settings;
 pub use commands::{Confirmation, Pending};
+pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, prelude::*, px, rgb, rgba};
 use wheel_proto::{AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
@@ -113,6 +115,20 @@ pub struct Client {
     pub actions_log: Vec<String>,
     /// Close Window ran: the next render removes the window.
     close_window_requested: bool,
+    /// The Settings window (⌘,) is over the window, and what it shows.
+    pub settings_open: bool,
+    pub settings: crate::settings::Model,
+    settings_reqs: SettingsReqs,
+    /// What the keyboard types into while the Settings window is open.
+    pub settings_edit: Option<SettingsEdit>,
+    /// What the bundled `wheel install` printed, from the thread that ran it, until the next render reads it.
+    command_line_result: std::sync::Arc<std::sync::Mutex<Option<(i32, String)>>>,
+    /// The QR modules last drawn for a pairing payload.
+    qr_cache: Option<(String, Vec<String>)>,
+    /// A file the Settings window opens for editing at the next render, which has the app to open it with.
+    pending_open: Option<String>,
+    /// A one-shot redraw timer is pending (the Settings window's countdown or running command).
+    redraw_armed: bool,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -209,6 +225,7 @@ impl Client {
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
+            settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_armed: false,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -219,13 +236,14 @@ impl Client {
                     if let ServerMsg::Status { agents, .. } = message.as_ref() {
                         self.agents = agents.clone();
                         self.rebuild_keymap();
+                        self.on_settings_status(message.as_ref());
                     }
                     // A `status` reply carries every status; a `spaces` broadcast carries none.
                     self.apply(layout, matches!(message.as_ref(), ServerMsg::Spaces { .. }));
                     true
                 }
                 None => {
-                    if self.on_palette_reply(message.as_ref()) {
+                    if self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -378,6 +396,7 @@ impl Client {
                 // The dots and the footer follow two settings; a later change arrives as a broadcast.
                 self.send(&ClientMsg::SettingsLs { req: None, space: None });
                 self.ask_space_settings();
+                self.settings_reconnected();
                 false
             }
             Event::Down(reason) => {
@@ -835,6 +854,16 @@ impl Client {
             }
             return self.command_palette_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control, cx);
         }
+        // The Settings window takes every key while it is open, except its own chord, which closes it.
+        if self.settings_open {
+            if (k.modifiers.platform || k.modifiers.control) && let Some(chord) = crate::keymap::KeyChord::from_keystroke(k) && self.keymap.action(&chord) == Some("settings") {
+                self.close_settings();
+                return true;
+            }
+            if self.confirmation.is_none() {
+                return self.settings_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control, cx);
+            }
+        }
         // The sheet's own chord closes it, as the Swift app's toggle does.
         if self.shortcuts_open && let Some(chord) = crate::keymap::KeyChord::from_keystroke(k) && self.keymap.action(&chord) == Some("shortcuts") {
             self.close_shortcuts();
@@ -1206,6 +1235,13 @@ impl Render for Client {
             let groups = self.shortcut_sheet();
             root = root.child(commands::shortcut_sheet_overlay(&groups, w, h, cx));
         }
+        if let Some(path) = self.pending_open.take() {
+            cx.open_url(&format!("file://{}", file_url_path(&path)));
+        }
+        if self.settings_open {
+            self.poll_settings(cx);
+            root = root.child(self.settings_overlay(w, h, cx));
+        }
         if let Some(c) = &self.confirmation {
             root = root.child(commands::confirmation_overlay(c, w, h, cx));
         }
@@ -1215,6 +1251,20 @@ impl Render for Client {
 
 /// The artifact palette over one pane's body: the body dims, and a search field above a grouped
 /// list sits inside the pane's bounds (ArtifactPaletteView.swift). A press on the dim closes it.
+/// A file path as the path of a `file://` URL: every byte outside the unreserved set and `/` is
+/// percent-encoded, so a folder with a space or a `#` opens.
+fn file_url_path(path: &str) -> String {
+    let mut out = String::new();
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 fn palette_overlay(pane: &str, palette: &Palette, width: f32, height: f32, cx: &mut Context<Client>) -> gpui::Div {
     let narrow = width < 420.;
     let compact = height < 340.;
