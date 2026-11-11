@@ -5,7 +5,7 @@
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, header::{self, Hit}, layout::*, native::{Bridge, Native}, transcript::{Line, Transcript}};
 use gpui::{App, Context, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
-use serde_json::json;
+use wheel_proto::{ClientMsg, NewPaneKind};
 use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
@@ -204,7 +204,7 @@ impl Client {
         if now.0.is_none() && now.1.is_none() || self.reported.as_ref() == Some(&now) {
             return;
         }
-        self.send(json!({"op":"view","window":self.window_id,"session":now.0,"space":now.1,"pane":now.2}));
+        self.send(&ClientMsg::View { req: None, window: self.window_id.clone(), session: now.0.clone(), space: now.1.clone(), pane: now.2.clone() });
         self.reported = Some(now);
     }
     /// Open another window over its own connection, showing what this one shows.
@@ -234,18 +234,18 @@ impl Client {
         self.space().and_then(|s| find(&s.root, split))
     }
     /// Frames go out only while the link is up; the connection drops any others.
-    fn send(&self, frame: serde_json::Value) {
+    fn send(&self, message: &ClientMsg) {
         if self.link == Link::Up {
-            let _ = self.out.send(frame.to_string());
+            let _ = self.out.send(crate::daemon::frame(message));
         }
     }
     pub fn request_status(&self, req: u64) {
-        self.send(json!({"op":"status","req":req}));
+        self.send(&ClientMsg::Status { req: Some(req) });
     }
     fn end_drag(&mut self) {
         if let Some((split, _, _)) = self.drag.take() {
             if let Some(ratio) = self.overrides.get(&split) {
-                self.send(json!({"op":"split_ratio","split":split,"ratio":ratio}));
+                self.send(&ClientMsg::SplitRatio { req: None, split: split.clone(), ratio: *ratio });
             }
         }
     }
@@ -260,7 +260,7 @@ impl Client {
             if let Some(agent) = p.leaf.agent.as_ref().filter(|_| p.leaf.kind == "agent") {
                 if self.link == Link::Up && self.attached.insert(agent.clone()) {
                     self.transcripts.entry(agent.clone()).or_default();
-                    self.send(json!({"op":"agent_attach","agent":agent}));
+                    self.send(&ClientMsg::AgentAttach { req: None, agent: agent.clone() });
                 }
             }
         }
@@ -296,14 +296,14 @@ impl Client {
             Typed::Nothing => false,
             Typed::Edited => true,
             Typed::Send(text) => {
-                self.send(json!({"op":"agent_send","agent":agent,"text":text}));
+                self.send(&ClientMsg::AgentSend { req: None, agent: agent.clone(), text });
                 true
             }
         }
     }
     /// Turn an empty pane into `kind` (`terminal` or `browser`).
-    fn set_kind(&self, pane: &str, kind: &str) {
-        self.send(json!({"op":"pane_set_kind","pane":pane,"kind":kind}));
+    fn set_kind(&self, pane: &str, kind: NewPaneKind) {
+        self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind, artifact: None, scope: None, url: None });
     }
     /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views
@@ -424,13 +424,13 @@ impl Render for Client {
                     col.child(div().text_color(rgb(0xe0b070)).child(format!("> {}", p.leaf.agent.as_ref().and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or(""))))
                 }
                 "empty" => {
-                    let button = |label: &'static str, kind: &'static str, cx: &mut Context<Self>| {
+                    let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
                         let id = id.clone();
                         div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.set_kind(&id, kind)))
                             .child(label)
                     };
-                    div().flex().gap_2().child(button("Terminal", "terminal", cx)).child(button("Browser", "browser", cx))
+                    div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(button("Browser", NewPaneKind::Browser, cx))
                 }
                 other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
             };

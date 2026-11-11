@@ -6118,6 +6118,7 @@ dependencies = [
  "gpui_platform",
  "libloading",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "tungstenite",
  "wheel-proto",

@@ -1,6 +1,6 @@
 //! wheeld's split tree (`Node` in proto/src/lib.rs) and its placement into rectangles.
-use serde_json::Value;
 use std::collections::HashMap;
+use wheel_proto::{Node, PaneKind, ServerMsg, SessionInfo, SpaceInfo};
 
 /// Width or height of a divider between two panes, in points.
 pub const GAP: f32 = 6.0;
@@ -8,6 +8,8 @@ pub const GAP: f32 = 6.0;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Leaf {
     pub id: String,
+    /// The kind's wire name (`empty`, `terminal`, `web`, `browser`, `agent`, or one this build
+    /// does not know).
     pub kind: String,
     pub label: String,
     pub term: Option<String>,
@@ -32,26 +34,53 @@ pub struct Space {
     pub root: Tree,
 }
 
-pub fn parse(v: &Value) -> Tree {
-    let text = |k: &str| v[k].as_str().map(str::to_owned);
-    if v["node"] == "split" {
-        Tree::Split {
-            id: text("id").unwrap_or_default(),
-            horizontal: v["axis"] == "horizontal",
-            ratio: v["ratio"].as_f64().unwrap_or(0.5),
-            a: Box::new(parse(&v["a"])),
-            b: Box::new(parse(&v["b"])),
+/// The daemon's split tree as the view draws it.
+impl From<&Node> for Tree {
+    fn from(node: &Node) -> Self {
+        match node {
+            Node::Split { id, axis, ratio, a, b } => Tree::Split {
+                id: id.clone(),
+                horizontal: *axis == wheel_proto::Axis::Horizontal,
+                ratio: *ratio,
+                a: Box::new(Tree::from(a.as_ref())),
+                b: Box::new(Tree::from(b.as_ref())),
+            },
+            Node::Pane { id, kind, .. } => {
+                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None };
+                match kind {
+                    PaneKind::Empty { .. } => leaf.kind = "empty".into(),
+                    PaneKind::Terminal { term, cwd, .. } => {
+                        leaf.kind = "terminal".into();
+                        leaf.term = Some(term.clone());
+                        leaf.label = cwd.clone().unwrap_or_default();
+                    }
+                    PaneKind::Web { artifact, .. } => {
+                        leaf.kind = "web".into();
+                        leaf.label = artifact.name().to_owned();
+                        leaf.scope = Some(scope_name(artifact.scope()));
+                    }
+                    PaneKind::Browser { url, .. } => {
+                        leaf.kind = "browser".into();
+                        leaf.label = url.clone();
+                        leaf.url = Some(url.clone());
+                    }
+                    PaneKind::Agent { agent, .. } => {
+                        leaf.kind = "agent".into();
+                        leaf.agent = Some(agent.clone());
+                    }
+                    PaneKind::Unknown(pane) => leaf.kind = pane.kind().to_owned(),
+                }
+                Tree::Pane(leaf)
+            }
         }
-    } else {
-        Tree::Pane(Leaf {
-            id: text("id").unwrap_or_default(),
-            kind: text("kind").unwrap_or_else(|| "unknown".into()),
-            label: text("name").or_else(|| text("url")).or_else(|| text("cwd")).unwrap_or_default(),
-            term: text("term"),
-            url: text("url"),
-            scope: text("scope"),
-            agent: text("agent"),
-        })
+    }
+}
+
+/// An artifact scope's wire name (`project`, `machine`).
+fn scope_name(scope: wheel_proto::ArtifactScope) -> String {
+    match scope {
+        wheel_proto::ArtifactScope::Project => "project".into(),
+        wheel_proto::ArtifactScope::Machine => "machine".into(),
     }
 }
 
@@ -71,24 +100,21 @@ pub struct Layout {
     pub sessions: Vec<Session>,
 }
 
-/// The layout in a `status` reply or a `spaces` broadcast.
-pub fn parse_layout(message: &Value) -> Option<Layout> {
-    if !matches!(message["ev"].as_str(), Some("status" | "spaces")) {
-        return None;
+impl Layout {
+    fn new(spaces: &[SpaceInfo], sessions: &[SessionInfo]) -> Self {
+        Self {
+            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), root: Tree::from(&s.root) }).collect(),
+            sessions: sessions.iter().map(|s| Session { id: s.id.clone(), name: s.name.clone(), spaces: s.spaces.clone() }).collect(),
+        }
     }
-    let text = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_owned();
-    Some(Layout {
-        spaces: message["spaces"].as_array().into_iter().flatten()
-            .map(|s| Space { id: text(s, "id"), name: text(s, "name"), root: parse(&s["root"]) })
-            .collect(),
-        sessions: message["sessions"].as_array().into_iter().flatten()
-            .map(|s| Session {
-                id: text(s, "id"),
-                name: text(s, "name"),
-                spaces: s["spaces"].as_array().into_iter().flatten().filter_map(|i| i.as_str().map(str::to_owned)).collect(),
-            })
-            .collect(),
-    })
+}
+
+/// The layout in a `status` reply or a `spaces` broadcast.
+pub fn parse_layout(message: &ServerMsg) -> Option<Layout> {
+    match message {
+        ServerMsg::Status { spaces, sessions, .. } | ServerMsg::Spaces { spaces, sessions } => Some(Layout::new(spaces, sessions)),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -151,11 +177,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A tree as wheeld sends it, read through the proto crate.
+    fn node(wire: serde_json::Value) -> Tree {
+        Tree::from(&serde_json::from_value::<Node>(wire).unwrap())
+    }
     fn tree() -> Tree {
-        parse(&json!({"node":"split","id":"x1","axis":"horizontal","ratio":0.5,
-            "a":{"node":"pane","id":"p1","kind":"web","name":"page"},
+        node(json!({"node":"split","id":"x1","axis":"horizontal","ratio":0.5,
+            "a":{"node":"pane","id":"p1","kind":"web","scope":"project","name":"page"},
             "b":{"node":"split","id":"x2","axis":"vertical","ratio":0.25,
-                "a":{"node":"pane","id":"p2","kind":"terminal","term":"t1"},
+                "a":{"node":"pane","id":"p2","kind":"terminal","term":"t1","cwd":"/tmp"},
                 "b":{"node":"pane","id":"p3","kind":"browser","url":"about:blank"}}}))
     }
     fn scene(overrides: &HashMap<String, f64>) -> (Vec<Placed>, Vec<Divider>) {
@@ -174,6 +204,16 @@ mod tests {
         assert_eq!(dividers.len(), 2);
         assert_eq!(dividers[0].rect, Rect { x: 500., y: 10., w: GAP, h: 506. });
         assert_eq!(dividers[1].rect, Rect { x: 506., y: 135., w: 500., h: GAP });
+    }
+
+    #[test]
+    fn every_kind_keeps_what_the_view_draws() {
+        let leaves: Vec<_> = leaves_of(&tree()).into_iter().cloned().collect();
+        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None });
+        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None });
+        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None });
+        let agent = node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}));
+        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()) }));
     }
 
     #[test]
@@ -201,17 +241,28 @@ mod tests {
 
     #[test]
     fn unknown_kinds_survive_parsing() {
-        let leaf = parse(&json!({"node":"pane","id":"p9","kind":"hologram"}));
+        let leaf = node(json!({"node":"pane","id":"p9","kind":"hologram"}));
         assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None }));
     }
 
     #[test]
-    fn the_layout_comes_from_status_and_broadcast_only() {
-        let spaces = json!({"ev":"spaces","spaces":[{"id":"s1","name":"wheel","root":{"node":"pane","id":"p1","kind":"empty"}}],
+    fn a_spaces_broadcast_round_trips_and_gives_the_layout() {
+        let wire = json!({"ev":"spaces","spaces":[{"id":"s1","name":"wheel","cwd":"/w","root":{"node":"pane","id":"p1","kind":"empty"}}],
             "sessions":[{"id":"n1","name":"Main","spaces":["s1"]}]});
-        let layout = parse_layout(&spaces).unwrap();
+        let message: ServerMsg = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), wire);
+        let layout = parse_layout(&message).unwrap();
         assert_eq!(layout.spaces[0].name, "wheel");
         assert_eq!(layout.sessions, [Session { id: "n1".into(), name: "Main".into(), spaces: vec!["s1".into()] }]);
-        assert!(parse_layout(&json!({"ev":"term_output"})).is_none());
+    }
+
+    #[test]
+    fn the_layout_comes_from_status_and_broadcast_only() {
+        let status = crate::daemon::tests::status_frame(wheel_proto::PROTOCOL_VERSION);
+        let message: ServerMsg = serde_json::from_str(&status).unwrap();
+        assert!(matches!(&message, ServerMsg::Status { protocol, .. } if *protocol == wheel_proto::PROTOCOL_VERSION));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&serde_json::to_string(&message).unwrap()).unwrap()["spaces"], serde_json::from_str::<serde_json::Value>(&status).unwrap()["spaces"]);
+        assert_eq!(parse_layout(&message).unwrap().spaces[0].id, "s1");
+        assert!(parse_layout(&ServerMsg::SpaceFocused { space: "s1".into(), pane: None }).is_none());
     }
 }
