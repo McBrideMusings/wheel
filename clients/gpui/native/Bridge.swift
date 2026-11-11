@@ -54,6 +54,10 @@ final class Slot: NSView {
     /// A web pane on an artifact whose MCP server speaks A2UI draws that page natively (ADR-0031,
     /// ADR-0038): the same `A2UIPane` and `A2UIPaneView` the Swift Mac app uses.
     var page: A2UIPane?
+    /// The artifact the page belongs to, as `<scope>/<name>`, and the space directory it was opened
+    /// for: its store and scheme handler are bound to both, so another of either is another view.
+    var artifact: String?
+    var cwd: String?
     var pageView: NSHostingView<A2UIPaneView>?
     var pageShown: Bool { page?.isNative == true }
     /// A browser pane: WheelUI's model, the one the Swift Mac app shows under its chrome. Here the
@@ -187,13 +191,16 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func open(_ value: [String: Any]) {
         let id = value["pane"] as! String
         let kind = value["kind"] as! String
-        if let existing = panes[id], existing.kind == kind {
+        let artifact = (value["artifact"] as? String).map { "\(value["scope"] as? String ?? "")/\($0)" }
+        if let existing = panes[id], existing.kind == kind, existing.artifact == artifact, existing.cwd == value["cwd"] as? String {
             if kind == "web", let url = value["url"] as? String, url != existing.url { existing.url = url; existing.web?.load(URLRequest(url: URL(string: url)!)) }
             if kind == "browser", let url = value["url"] as? String { existing.browser?.daemonSays(url) }
             return
         }
         close(id)
         let host = PaneHost(id: id, kind: kind)
+        host.artifact = artifact
+        host.cwd = value["cwd"] as? String
         root.addSubview(host.slot)
         if kind == "browser" {
             // The model reports the pages it lands on, asks what typed text means and relays the
@@ -463,6 +470,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "browser": browser(value)
         case "render": render(value)
         case "inspect": inspect(value)
+        case "page_set":
+            // A value written into a native page's data model at `path`, as one of its controls
+            // would write it (a picker's choice, a field's text), for a check that has no pointer.
+            guard let pane = value["pane"] as? String, let surface = panes[pane]?.page?.surface, let path = value["path"] as? String,
+                  let data = try? JSONSerialization.data(withJSONObject: value["value"] ?? NSNull(), options: .fragmentsAllowed),
+                  let written = try? JSONDecoder().decode(WheelUI.AnyCodable.self, from: data) else { return ["ok": false] }
+            surface.set(path, written)
         case "disconnect":
             // Sends queued behind a socket that is gone never finish; the next socket starts a new chain.
             socket?.cancel(with: .goingAway, reason: nil)
@@ -577,7 +591,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             } else if host.kind == "web" {
                 entry["loads"] = host.loads; entry["url"] = host.url ?? ""; entry["reloads"] = host.reloads
                 entry["status"] = host.status ?? NSNull(); entry["store"] = host.store?.uuidString ?? ""; entry["text"] = host.text ?? ""
-                if let page = host.page { entry["page"] = ["state": page.stateName, "native": host.pageShown, "notice": page.notice ?? "", "unsupported": page.unsupported] }
+                if let page = host.page {
+                    entry["page"] = ["state": page.stateName, "native": host.pageShown, "notice": page.notice ?? "", "unsupported": page.unsupported,
+                                     "artifact": host.artifact ?? "", "types": Set(page.surface?.components.values.map(\.type) ?? []).sorted(),
+                                     "components": page.surface?.components.count ?? 0, "diagnostics": page.diagnostics]
+                }
             }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["writes"] = host.writes
                    entry["pixels"] = host.terminal?.layer?.contents != nil }

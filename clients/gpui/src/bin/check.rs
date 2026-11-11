@@ -8,7 +8,9 @@
 //! pointer and copied with Command-C, and surviving
 //! a browser pane sent to a file page by `wheel pane page`, serving `wheel pane console`, `eval`,
 //! `dom`, `shot` and `record`, its address field typed into and its back button pressed with
-//! wheeld's layout following, a failed load shown and cleared, and surviving
+//! wheeld's layout following, a failed load shown and cleared, every plugin page (Beads with its
+//! Canvas graph, Issues, Repo, Runner and the whole component gallery) drawn by WheelUI's A2UI
+//! renderer in one pane of a session on this repository, and surviving
 //! a wheeld restart: the link reads down, comes back up on its own, and every native view is
 //! opened again on the new daemon.
 //! The window is never visible, key or active.
@@ -147,6 +149,21 @@ async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window:
         tick(cx, 50).await;
     }
     Ok(())
+}
+
+/// Wait until a page's component count has held for a second: its data replies can follow its layout.
+async fn settle(page_of: &impl Fn(&Value) -> Value, native: &Native, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
+    let (mut last, mut held) = (u64::MAX, 0);
+    for _ in 0..150 {
+        pump(connection, 200, layouts, window, cx).await?;
+        let count = page_of(&native.status())["components"].as_u64().unwrap_or(0);
+        held = if count == last { held + 1 } else { 0 };
+        if held >= 5 {
+            return Ok(());
+        }
+        last = count;
+    }
+    anyhow::bail!("the page's components never settled: {}", page_of(&native.status()))
 }
 
 async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
@@ -636,7 +653,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     let failure = window.update(cx, |c, _, _| c.palette(&new_pane).and_then(|p| p.failure().map(str::to_owned)))?;
-    ensure!(listed == ["project/fixture-html", "project/fixture-page"], "the palette listed {listed:?} (failure {failure:?})");
+    // The project's two artifacts, then the fixture's machine artifacts by name.
+    let page_names: Vec<String> = serde_json::from_str(&std::env::var("WHEEL_CLIENT_PAGE_NAMES")?)?;
+    let mut machine_names = page_names.clone();
+    machine_names.sort();
+    let want: Vec<String> = ["project/fixture-html", "project/fixture-page"].map(String::from).into_iter().chain(machine_names.iter().map(|n| format!("machine/{n}"))).collect();
+    ensure!(listed == want, "the palette listed {listed:?} (failure {failure:?})");
     for ch in "html".chars() {
         native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
         tick(cx, 30).await;
@@ -644,7 +666,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     draw(window, None, cx)?;
     let (query, filtered, footer_text) = window.update(cx, |c, _, _| c.palette(&new_pane).map(|p| (p.query.clone(), p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), p.footer())).unwrap_or_default())?;
     ensure!(query == "html" && filtered == ["project/fixture-html"], "typing html left query {query:?} and rows {filtered:?}");
-    ensure!(footer_text == "1 of 2", "the palette's footer reads {footer_text:?}");
+    ensure!(footer_text == format!("1 of {}", want.len()), "the palette's footer reads {footer_text:?}");
     draw(window, Some(output.join("client-palette.png")), cx)?;
     native.call(json!({"op":"post_key","text":"\r","code":36}));
     let mut kind_after = None;
@@ -814,6 +836,66 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "eval": {"sum": eval_out, "title": eval_title, "throw_error": eval_throw_err}, "dom_h1": dom_out, "dom_bytes": dom_all.len(),
         "shot_bytes": shot_bytes.len(), "shot_h1_bytes": element_bytes.len(), "shot_none_error": none_err, "record": {"bytes": movie_bytes, "printed": record_out},
         "typed": {"draft": typed_draft, "moved_to_two": on_two, "back_to_one": back_on_one}, "failure": failure, "cleared": cleared, "logs": browser_logs});
+    // Plugin pages: a session on this repository holds one web pane, moved by `wheel pane kind`
+    // through every machine artifact the fixture serves. Each is drawn by WheelUI's A2UI renderer
+    // (the Swift app's own view), reaches `ready` with every component in the catalog, and is
+    // pictured from the view's pixels. The Beads page's Graph view, chosen by writing its picker's
+    // value into the page's data model, draws the dependency graph with Wheel's Canvas component.
+    let (pages_session, pages_pane) = (std::env::var("WHEEL_CLIENT_PAGES_SESSION")?, std::env::var("WHEEL_CLIENT_PAGES_PANE")?);
+    click_chip(window, Hit::Session(pages_session.clone()), cx).await?;
+    ensure!(shown(window, cx)?.0.as_deref() == Some(pages_session.as_str()), "clicking the Pages session shows {:?}", shown(window, cx)?);
+    let pages_dir = output.join("pages");
+    let mut pages_report = serde_json::Map::new();
+    let page_of = |s: &Value| s["panes"][pages_pane.as_str()]["page"].clone();
+    let has_canvas = |page: &Value| page["types"].as_array().is_some_and(|t| t.iter().any(|t| t == "Canvas"));
+    for (n, name) in page_names.iter().enumerate() {
+        if n > 0 {
+            let (ok, _, err) = run_pumped(&["pane", "kind", &pages_pane, "web", "--artifact", name, "--scope", "machine"], &mut connection, &mut layouts, window, cx).await?;
+            ensure!(ok, "pane kind {name}: {err}");
+        }
+        let artifact = format!("machine/{name}");
+        let drew_natively = |page: &Value| page["artifact"] == artifact.as_str() && page["native"] == true && page["state"] == "ready";
+        let mut page = Value::Null;
+        for _ in 0..300 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            page = page_of(&native.status());
+            if drew_natively(&page) && page["components"].as_u64().unwrap_or(0) > 0 {
+                break;
+            }
+        }
+        ensure!(drew_natively(&page), "the {name} page never drew natively: {page}");
+        ensure!(page["unsupported"].as_array().is_some_and(|u| u.is_empty()), "the {name} page asked for components the client lacks: {page}");
+        settle(&page_of, &native, &mut connection, &mut layouts, window, cx).await?;
+        draw(window, Some(output.join(format!("client-page-{name}.png"))), cx)?;
+        shot(&native, &pages_dir.join(name), cx).await?;
+        let png = pages_dir.join(name).join(format!("{pages_pane}-page.png"));
+        let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+        ensure!(bytes > 5000, "the {name} page's picture is missing or blank: {} ({bytes} bytes)", png.display());
+        let mut graph = Value::Null;
+        if name == "beads" {
+            // The views picker binds `/set_view` to an array holding the chosen value (wheelhouse's `Page::choose`).
+            let set = native.call(json!({"op":"page_set","pane":pages_pane,"path":"/set_view","value":["graph"]}));
+            ensure!(set["ok"] != false, "the bridge refused to write /set_view into the Beads page: {set}");
+            for _ in 0..300 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                graph = page_of(&native.status());
+                if has_canvas(&graph) {
+                    break;
+                }
+            }
+            ensure!(has_canvas(&graph), "the Beads Graph view drew no Canvas: {graph}");
+            settle(&page_of, &native, &mut connection, &mut layouts, window, cx).await?;
+            shot(&native, &pages_dir.join("beads-graph"), cx).await?;
+        }
+        let page = page_of(&native.status());
+        pages_report.insert(name.clone(), json!({"state": page["state"], "components": page["components"], "types": page["types"], "notice": page["notice"],
+            "png_bytes": bytes, "graph_types": graph["types"]}));
+    }
+    let pages_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == pages_pane).map(|p| [p.rect.x, p.rect.y, p.rect.w, p.rect.h]))?;
+    let pages_report = json!({"pane": pages_pane, "rect": pages_rect, "pages": pages_report});
+    click_chip(window, Hit::Session(first_session.clone().unwrap()), cx).await?;
+    ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the pages did not come back");
+    wait(&native, "the first space's views shown after the pages", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     // Closing the second window above left `native_panes` as the first window's views; the
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
@@ -888,6 +970,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "status": status_report,
         "web": web_report,
         "browser": browser_report,
+        "pages": pages_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},

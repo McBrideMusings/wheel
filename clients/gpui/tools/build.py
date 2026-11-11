@@ -11,7 +11,8 @@ here = pathlib.Path(__file__).resolve().parent
 client = here.parent
 repo = client.parents[1]
 products = pathlib.Path(os.environ.get('WHEEL_NATIVE_PRODUCTS', repo / 'DerivedData-deploy-release.noindex/Build/Products/Release'))
-headers = repo / 'DerivedData/SourcePackages/artifacts/libghostty-spm/libghostty/GhosttyKit.xcframework/macos-arm64_x86_64/Headers'
+# The libghostty headers come from the same build as the objects linked: <derived data>/Build/Products/Release.
+headers = products.parents[2] / 'SourcePackages/artifacts/libghostty-spm/libghostty/GhosttyKit.xcframework/macos-arm64_x86_64/Headers'
 target = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', client / 'target'))
 contents = client / 'target/app/Wheel GPUI.app/Contents'
 (contents / 'MacOS').mkdir(parents=True, exist_ok=True)

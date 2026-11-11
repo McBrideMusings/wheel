@@ -1,14 +1,37 @@
 """A throwaway wheeld with a six-pane space, for running and checking the GPUI client.
 
-The daemon and `wheel` are copied out of the installed Wheel.app and ad-hoc signed, so an
-unrelated client install cannot stop them. Nothing here touches the real wheeld.
+Every program it runs is the repository's own debug build, from the same proto crate the client is
+built with (an installed Wheel.app can speak an older protocol, which the client refuses). wheeld and
+`wheel` are copied out and ad-hoc signed, so a rebuild cannot stop them. Nothing here touches the
+real wheeld.
 """
-import contextlib, json, os, pathlib, shutil, socket, subprocess, tempfile, time
+import contextlib, json, os, pathlib, shlex, shutil, socket, subprocess, tempfile, time
 
-DAEMON = '/Applications/Wheel.app/Contents/Helpers/Wheel Server.wheelserver/Contents/MacOS/wheeld'
-# The agent pane runs the daemon's scripted stand-in for Claude Code (`daemon/src/bin/wheel-fake-agent.rs`):
-# the same stream-json wire, no model calls. Built by `cargo build -p wheeld --bin wheel-fake-agent`.
-FAKE_AGENT = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', pathlib.Path(__file__).resolve().parents[3] / 'target')) / 'debug/wheel-fake-agent'
+REPO = pathlib.Path(__file__).resolve().parents[3]
+# The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
+TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
+BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse -p wheel-runner'
+# The plugin pages the check opens in the GPUI client, served as the machine artifacts they are on a
+# real machine: wheelhouse for Beads, Issues and Repo, wheel-runner for Runner, and the component
+# gallery whole. They read the space they are opened in, which is this repository.
+PAGES = ['beads', 'issues', 'repo', 'runner', 'gallery']
+
+
+def built(name):
+    """The debug build of `name` under `TARGET`; the agent pane's `wheel-fake-agent` is the
+    daemon's scripted stand-in for Claude Code (the same stream-json wire, no model calls)."""
+    path = TARGET / 'debug' / name
+    if not path.exists():
+        raise FileNotFoundError(f'{path} is missing: run `{BUILD}` in the repo')
+    return path
+
+
+def machine_artifacts(gallery):
+    """The machine file's artifact entries for `PAGES`, each a shared MCP server pane."""
+    wheelhouse = f'{shlex.quote(str(built("wheelhouse")))} serve'
+    serve = dict(beads=wheelhouse, issues=wheelhouse, repo=wheelhouse, runner=f'{shlex.quote(str(built("wheel-runner")))} serve',
+                 gallery=f'python3 {shlex.quote(str(gallery))} v17')
+    return ''.join(f'[artifacts.{name}]\nmcp = {json.dumps(serve[name])}\nshared = true\npane = true\ntitle = {json.dumps(name.title())}\n\n' for name in PAGES)
 
 
 def html_page(title):
@@ -46,14 +69,14 @@ def fixture():
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
         gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
         (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n')
-        (root / 'machine.toml').write_text('')
+        (root / 'machine.toml').write_text(machine_artifacts(gallery))
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
         url = f'ws://127.0.0.1:{port}/ws'
         token = root / 'support/token'
-        shutil.copy2(os.environ.get('WHEEL_FIXTURE_DAEMON', DAEMON), root / 'wheeld')
-        shutil.copy2(shutil.which('wheel'), root / 'wheel')
+        for executable in ['wheeld', 'wheel']:
+            shutil.copy2(built(executable), root / executable)
         for executable in ['wheeld', 'wheel']:
             subprocess.run(['codesign', '--force', '--sign', '-', str(root / executable)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
@@ -110,10 +133,7 @@ def fixture():
             cli('pane', 'kind', term2_pane, 'terminal')
             web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
             cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
-            fake_agent = pathlib.Path(os.environ.get('WHEEL_FIXTURE_FAKE_AGENT', FAKE_AGENT))
-            if not fake_agent.exists():
-                raise FileNotFoundError(f'{fake_agent} is missing: run `cargo build -p wheeld --bin wheel-fake-agent` in the repo')
-            cli('config', 'set', 'agent.claude.command', str(fake_agent), '--machine')
+            cli('config', 'set', 'agent.claude.command', str(built('wheel-fake-agent')), '--machine')
             agent_pane = cli('pane', 'split', browser, 'down').splitlines()[-1]
             started = json.loads(cli('pane', 'start', agent_pane, 'agent', '--agent', 'claude'))
 
@@ -132,6 +152,13 @@ def fixture():
             second_session = cli('session', 'new', 'Second').splitlines()[-1]
             second_space = cli('space', 'new', str(second_dir), '--name', 'other', '--session', second_session).splitlines()[-1]
             env.update(WHEEL_CLIENT_SECOND_SESSION=second_session, WHEEL_CLIENT_SECOND_SPACE=second_space)
+            # A third session holds one space on this repository with one web pane, which the check
+            # moves through every page in `PAGES`.
+            pages_session = cli('session', 'new', 'Pages').splitlines()[-1]
+            pages_space = cli('space', 'new', os.environ.get('WHEEL_FIXTURE_PAGES_DIR', str(REPO)), '--name', 'pages', '--session', pages_session).splitlines()[-1]
+            pages_pane = tree(pages_space)['root']['id']
+            cli('pane', 'kind', pages_pane, 'web', '--artifact', PAGES[0], '--scope', 'machine')
+            env.update(WHEEL_CLIENT_PAGES_SESSION=pages_session, WHEEL_CLIENT_PAGES_PANE=pages_pane, WHEEL_CLIENT_PAGE_NAMES=json.dumps(PAGES))
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
                        WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page), WHEEL_CLIENT_PAGES=str(pages))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),

@@ -936,6 +936,8 @@ impl Client {
                     (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                 }
                 self.opened.insert(p.leaf.id.clone(), kind);
+                // A view opened in place of another starts unplaced, so it is placed below.
+                self.placed.remove(&p.leaf.id);
             }
             // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
             // card while a load has failed.

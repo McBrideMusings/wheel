@@ -20,7 +20,7 @@ with fixture() as (env, info):
     with (out / 'host.log').open('w') as log:
         process = subprocess.Popen([str(host)], env=env, stdout=log, stderr=log)
         try:
-            deadline = time.time() + 240
+            deadline = time.time() + 420
             while process.poll() is None:
                 if time.time() > deadline:
                     process.kill()
@@ -44,4 +44,4 @@ with fixture() as (env, info):
                   daemon_alive_after_client_exit=info['daemon_alive'](), host_sha256=digest)
     (out / 'report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False))
     print(json.dumps(dict(host_pid=report['host_pid'], daemon_pid=report['daemon_pid'], restarted_daemon_pid=info['restarted_daemon_pid'], restart=report['restart']['saw_down'], layouts=report['layouts_received'],
-                          ratio_saved=report['drag']['ratio_saved_by_wheeld'], markdown=report['markdown'], footer=report['footer'], status=report['status'], web=report['web'], browser=report['browser']), indent=2))
+                          ratio_saved=report['drag']['ratio_saved_by_wheeld'], markdown=report['markdown'], footer=report['footer'], status=report['status'], web=report['web'], browser=report['browser'], pages={k: (v['state'], v['components'], v['png_bytes']) for k, v in report['pages']['pages'].items()}), indent=2))
