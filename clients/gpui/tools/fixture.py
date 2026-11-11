@@ -11,6 +11,14 @@ DAEMON = '/Applications/Wheel.app/Contents/Helpers/Wheel Server.wheelserver/Cont
 FAKE_AGENT = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', pathlib.Path(__file__).resolve().parents[3] / 'target')) / 'debug/wheel-fake-agent'
 
 
+def html_page(title):
+    """The HTML artifact's page under `title`; the check rewrites it to see the pane reload."""
+    return f'''<!doctype html><html><meta charset="utf-8"><title>{title}</title>
+<style>body{{background:#e9eee8;color:#1c3027;font:18px/1.6 system-ui;padding:22px}}</style>
+<h1>{title}</h1><p>Served by the fixture wheeld into the client's WKWebView pane.</p>
+<script src=".wheel/client.js"></script><script>wheel.set('seen', {{ok: true, title: document.title}})</script></html>'''
+
+
 @contextlib.contextmanager
 def fixture():
     """Yield (env, info). `env` carries WHEEL_URL, WHEEL_TOKEN_FILE and WHEEL_CLIENT_SPACE."""
@@ -22,11 +30,10 @@ def fixture():
         project = root / 'project'
         page = project / 'html'
         page.mkdir(parents=True)
-        (page / 'index.html').write_text('''<!doctype html><html><meta charset="utf-8"><title>Fixture artifact</title>
-<style>body{background:#e9eee8;color:#1c3027;font:18px/1.6 system-ui;padding:22px}</style>
-<h1>HTML artifact</h1><p>Served by the fixture wheeld into the client's WKWebView pane.</p></html>''')
+        # The page calls the daemon through `.wheel/client.js`: `wheel artifact state <pane> seen` reads what it stored.
+        (page / 'index.html').write_text(html_page('Fixture artifact'))
         gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\n')
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n')
         (root / 'machine.toml').write_text('')
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
@@ -114,7 +121,7 @@ def fixture():
             second_space = cli('space', 'new', str(second_dir), '--name', 'other', '--session', second_session).splitlines()[-1]
             env.update(WHEEL_CLIENT_SECOND_SESSION=second_session, WHEEL_CLIENT_SECOND_SPACE=second_space)
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
-                       WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'])
+                       WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),
                         saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
             yield env, info

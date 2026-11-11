@@ -37,6 +37,8 @@ pub enum Tree {
 pub struct Space {
     pub id: String,
     pub name: String,
+    /// The space's directory: a project artifact's page store is keyed by it.
+    pub cwd: String,
     pub root: Tree,
     /// The highest status among its panes, as the daemon computed it.
     pub status: Option<PaneStatus>,
@@ -113,7 +115,7 @@ pub struct Layout {
 impl Layout {
     fn new(spaces: &[SpaceInfo], sessions: &[SessionInfo]) -> Self {
         Self {
-            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), root: Tree::from(&s.root), status: s.status.clone() }).collect(),
+            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone() }).collect(),
             sessions: sessions.iter().map(|s| Session { id: s.id.clone(), name: s.name.clone(), spaces: s.spaces.clone() }).collect(),
         }
     }

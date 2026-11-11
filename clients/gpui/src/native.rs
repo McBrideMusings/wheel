@@ -75,9 +75,15 @@ impl Native {
         self.call(json!({"op":"open","pane":pane,"kind":"web","url":url}));
     }
     /// Show an artifact for `pane`: the bridge draws its A2UI page when the artifact's MCP server
-    /// speaks A2UI (ADR-0031, ADR-0038), and the page at `url` in a WKWebView otherwise.
-    pub fn open_artifact(&self, pane: &str, url: &str, name: &str, scope: &str, space: Option<&str>, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"web","url":url,"artifact":name,"scope":scope,"space":space,"ws":ws}));
+    /// speaks A2UI (ADR-0031, ADR-0038), and otherwise its page in a WKWebView under the client's
+    /// own `wheel-page` scheme, fetched from the daemon at `ws` and kept in the store of the
+    /// artifact in the space at `cwd`.
+    pub fn open_artifact(&self, pane: &str, name: &str, scope: &str, space: Option<&str>, cwd: &str, ws: &str) {
+        self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws}));
+    }
+    /// A file in `pane`'s folder changed: open its page again.
+    pub fn reload(&self, pane: &str) {
+        self.call(json!({"op":"reload","pane":pane}));
     }
     /// Show terminal `term` in a Ghostty view for `pane`, streamed over the daemon socket `ws`.
     pub fn open_terminal(&self, pane: &str, term: &str, ws: &str) {

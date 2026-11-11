@@ -42,6 +42,14 @@ final class Slot: NSView {
     var termID: String?
     var url: String?
     var loads: [String] = []
+    /// An artifact page: the address under `WebPanes.scheme` it opens at, how many times a
+    /// `pane_reload` opened it again, the HTTP status of the last document, the store its
+    /// browser storage lives in, and its visible text after the last load.
+    var pageURL: URL?
+    var reloads = 0
+    var status: Int?
+    var store: UUID?
+    var text: String?
     /// A web pane on an artifact whose MCP server speaks A2UI draws that page natively (ADR-0031,
     /// ADR-0038): the same `A2UIPane` and `A2UIPaneView` the Swift Mac app uses.
     var page: A2UIPane?
@@ -60,6 +68,8 @@ final class Slot: NSView {
     var socket: URLSessionWebSocketTask?
     /// The connection the A2UI pages talk over, started with the first page and dropped with `disconnect`.
     var pageClient: DaemonClient?
+    /// Where the daemon is and the token it wants, for every artifact page's scheme handler.
+    let pageDaemon = PageDaemon()
     var sendTask: Task<Void, Never>?
     var errors: [String] = []
     var overlay: CGRect?
@@ -159,13 +169,31 @@ final class Slot: NSView {
         let host = PaneHost(id: id, kind: kind)
         root.addSubview(host.slot)
         if kind == "web" {
-            let web = WKWebView(frame: .zero)
+            let config = WKWebViewConfiguration()
+            let artifact = (value["artifact"] as? String).flatMap { name in (value["scope"] as? String).flatMap(ArtifactScope.init(rawValue:)).map { ArtifactRef(scope: $0, name: name) } }
+            if let artifact {
+                // An artifact's page, as the Swift Mac app opens it (WebPane.swift): its own browser
+                // storage, one store per artifact, and its address under the client's scheme, which
+                // `PageSchemeHandler` fetches from the daemon with the token in a header.
+                let store = WebPanes.store(cwd: value["cwd"] as? String ?? "", artifact: artifact)
+                host.store = store
+                config.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)
+                if let ws = value["ws"] as? String { daemonAddress(ws) }
+                let handler = PageSchemeHandler(pane: id, daemon: pageDaemon)
+                handler.onDocument = { [weak host] code in host?.status = code }
+                config.setURLSchemeHandler(handler, forURLScheme: WebPanes.scheme)
+            }
+            let web = WKWebView(frame: .zero, configuration: config)
             web.navigationDelegate = self
             host.web = web
             host.slot.addSubview(web)
-            if let url = value["url"] as? String { host.url = url; web.load(URLRequest(url: URL(string: url)!)) }
-            if let name = value["artifact"] as? String, let scope = (value["scope"] as? String).flatMap(ArtifactScope.init(rawValue:)),
-               let client = pages(value["ws"] as! String) {
+            if artifact != nil, let page = WebPanes.pageURL(pane: id) {
+                host.pageURL = page
+                host.url = page.absoluteString
+                web.load(URLRequest(url: page))
+            } else if let url = value["url"] as? String { host.url = url; web.load(URLRequest(url: URL(string: url)!)) }
+            if let artifact, let client = pages(value["ws"] as! String) {
+                let (name, scope) = (artifact.name, artifact.scope)
                 let page = A2UIPane(pane: id, artifact: ArtifactRef(scope: scope, name: name), space: value["space"] as? String,
                                     send: { [weak client] in client?.send($0) }, nextReq: { [weak client] in client?.req() ?? 0 })
                 let view = NSHostingView(rootView: A2UIPaneView(pane: page))
@@ -200,6 +228,20 @@ final class Slot: NSView {
             send(["op": "term_attach", "id": term])
         }
         panes[id] = host
+    }
+    /// A file in the pane's folder changed. Opens the address again rather than `WKWebView.reload()`,
+    /// which does nothing when the first load never committed (the daemon was down).
+    func reload(_ id: String) {
+        guard let host = panes[id], let page = host.pageURL else { return }
+        host.reloads += 1
+        host.web?.load(URLRequest(url: page))
+    }
+    /// The daemon's address and token for the scheme handler, from the socket address a pane was given.
+    func daemonAddress(_ ws: String) {
+        guard var parts = URLComponents(string: ws), let token = parts.queryItems?.first(where: { $0.name == "token" })?.value else { return }
+        parts.queryItems = nil
+        pageDaemon.url = parts.url
+        pageDaemon.token = token
     }
     func close(_ id: String) {
         guard let host = panes.removeValue(forKey: id) else { return }
@@ -246,7 +288,22 @@ final class Slot: NSView {
         host.slot.cut(overlay)
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        panes.values.first { $0.web === webView }?.loads.append(webView.title ?? "")
+        guard let host = panes.values.first(where: { $0.web === webView }) else { return }
+        host.loads.append(webView.title ?? "")
+        webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak host] result, _ in
+            MainActor.assumeIsolated { host?.text = result as? String }
+        }
+    }
+    /// An artifact page stays inside its pane's folder on the daemon; a link anywhere else opens in
+    /// the default browser (WebPane.swift's rules). A browser pane's view navigates freely.
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+        guard let host = panes.values.first(where: { $0.web === webView }), let page = host.pageURL else { return .allow }
+        guard let target = action.request.url else { return .cancel }
+        if WebPanes.allowsInlineFrame(target, isMainFrame: action.targetFrame?.isMainFrame ?? true) { return .allow }
+        let path = URLComponents(url: target, resolvingAgainstBaseURL: false)?.path ?? target.path
+        if target.scheme == page.scheme, target.host == page.host, target.port == page.port, path.hasPrefix("/artifacts/\(host.id)/") { return .allow }
+        if action.navigationType == .linkActivated { NSWorkspace.shared.open(target) }
+        return .cancel
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) { errors.append(error.localizedDescription) }
 
@@ -277,6 +334,7 @@ final class Slot: NSView {
         switch value["op"] as? String {
         case "open": open(value)
         case "close": close(value["pane"] as! String)
+        case "reload": reload(value["pane"] as! String)
         case "disconnect":
             // Sends queued behind a socket that is gone never finish; the next socket starts a new chain.
             socket?.cancel(with: .goingAway, reason: nil)
@@ -382,7 +440,8 @@ final class Slot: NSView {
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
                 "view_identity": String(describing: Unmanaged.passUnretained(host.content).toOpaque())]
             if host.kind == "web" {
-                entry["loads"] = host.loads; entry["url"] = host.url ?? ""
+                entry["loads"] = host.loads; entry["url"] = host.url ?? ""; entry["reloads"] = host.reloads
+                entry["status"] = host.status ?? NSNull(); entry["store"] = host.store?.uuidString ?? ""; entry["text"] = host.text ?? ""
                 if let page = host.page { entry["page"] = ["state": page.stateName, "native": host.pageShown, "notice": page.notice ?? "", "unsupported": page.unsupported] }
             }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["writes"] = host.writes
