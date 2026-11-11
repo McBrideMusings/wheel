@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # § Wheelhouse Issues and Project views (wheel-cmbu.4): two artifacts served by the one
-# `wheelhouse serve` process, writing through bd. An item created from the Issues page is in
-# `bd list`; updating and closing it changes `bd show`; the Project page shows the vision and an
-# edit persists to docs/CONTEXT.md; two spaces see their own project. Needs
+# `wheelhouse serve` process. The Issues page reads GitHub through gh and shows none of the beads;
+# the Project page shows the vision and an edit persists to docs/CONTEXT.md; two spaces see their
+# own project. Needs
 # `cargo build -p wheelhouse -p wheeld -p wheel-cli`, bd, git. No app.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -35,28 +35,10 @@ call() { w artifact call "$1" "$2" ${4:+"$4"} --scope machine --space "$3" 2>&1;
 has() { printf %s "$1" | grep -q -- "$2"; }
 hasnt() { ! has "$1" "$2"; }
 
-I1="$(call issues get_issues "$SP1")"
+# Issues reads GitHub through gh, never the beads: a project with no GitHub remote shows gh's error, not its items.
 I2="$(call issues get_issues "$SP2")"
-check "the Issues page of the second space lists its own item" has "$I2" "Only in two"
-check "the first space's Issues page holds nothing of the second project" hasnt "$I1" "Only in two"
-
-call issues set_draft "$SP1" '{"value":"Made from the page"}' >/dev/null
-OUT="$(call issues create_issue "$SP1")"
-check "creating from the page lists the new item on it" has "$OUT" "Made from the page"
-check "the new item is in bd list" has "$(cd "$ONE" && bd list --json 2>&1)" "Made from the page"
-ID="$(cd "$ONE" && bd list --json | jget 0.id)"
-
-call issues select_issue "$SP1" "{\"id\":\"$ID\"}" >/dev/null
-call issues set_field "$SP1" '{"key":"status","value":"in_progress"}' >/dev/null
-check "updating the status from the page shows in bd show" has "$(cd "$ONE" && bd show "$ID" --json 2>&1)" '"in_progress"'
-call issues set_field "$SP1" '{"key":"priority","value":"0"}' >/dev/null
-check "updating the priority from the page shows in bd show" has "$(cd "$ONE" && bd show "$ID" --json 2>&1)" '"priority": 0'
-OUT="$(call issues close_issue "$SP1")"
-check "closing from the page shows in bd show" has "$(cd "$ONE" && bd show "$ID" --json 2>&1)" '"closed"'
-check "a closed item leaves the Open list" hasnt "$OUT" '"text":"Made from the page"'
-call issues select_issue "$SP1" "{\"id\":\"$ID\"}" >/dev/null
-OUT="$(call issues set_field "$SP1" '{"key":"status","value":"bogus"}')"
-check "an unknown status is refused" has "$OUT" "status must be one of"
+check "the Issues page names the gh failure for a project with no GitHub remote" has "$I2" "gh issue list failed"
+check "the Issues page lists none of the project's beads" hasnt "$I2" "Only in two"
 
 P1="$(call project get_project "$SP1")"
 check "the Project page shows the vision of its own project" has "$P1" "The vision of one."

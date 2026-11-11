@@ -310,19 +310,18 @@ struct Col {
     label: &'static str,
     width: Option<f64>,
     tree: bool,
-    desc_first: bool,
     /// Shown only when the pane is wide.
     wide: bool,
 }
 
 const COLS: [Col; 7] = [
-    Col { key: "id", label: "ID", width: Some(56.0), tree: false, desc_first: false, wide: true },
-    Col { key: "title", label: "Title", width: None, tree: true, desc_first: false, wide: false },
-    Col { key: "type", label: "Type", width: Some(56.0), tree: false, desc_first: false, wide: true },
-    Col { key: "unlocks", label: "Unlocks", width: Some(28.0), tree: false, desc_first: true, wide: true },
-    Col { key: "status", label: "Status", width: Some(84.0), tree: false, desc_first: false, wide: false },
-    Col { key: "pri", label: "Priority", width: Some(24.0), tree: false, desc_first: false, wide: false },
-    Col { key: "updated", label: "Updated", width: Some(30.0), tree: false, desc_first: true, wide: true },
+    Col { key: "id", label: "ID", width: Some(56.0), tree: false, wide: true },
+    Col { key: "title", label: "Title", width: None, tree: true, wide: false },
+    Col { key: "type", label: "Type", width: Some(56.0), tree: false, wide: true },
+    Col { key: "unlocks", label: "Unlocks", width: Some(28.0), tree: false, wide: true },
+    Col { key: "status", label: "Status", width: Some(84.0), tree: false, wide: false },
+    Col { key: "pri", label: "Priority", width: Some(24.0), tree: false, wide: false },
+    Col { key: "updated", label: "Updated", width: Some(30.0), tree: false, wide: true },
 ];
 
 struct Ui {
@@ -332,7 +331,6 @@ struct Ui {
     /// The filters (by key) whose values are excluded rather than matched.
     not: HashSet<String>,
     hide: bool,
-    sort: (String, bool),
     collapsed: HashSet<String>,
     detail: Option<String>,
     hist: Vec<String>,
@@ -360,7 +358,6 @@ impl Default for Ui {
             f: BTreeMap::new(),
             not: HashSet::new(),
             hide: true,
-            sort: ("status".into(), true),
             collapsed: HashSet::new(),
             detail: None,
             hist: vec![],
@@ -488,10 +485,8 @@ fn flat<'a>(n: &Node<'a>, parent: &str, ui: &Ui, out: &mut Vec<RowOut<'a>>) {
 /// The rows a view shows, as the page's table builds them: a flat sorted list, or a tree
 /// flattened with a depth and cut at the collapsed paths.
 fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
-    let by = |a: &Bead, b: &Bead| {
-        let o = compare(ix, &ui.sort.0, a, b);
-        if ui.sort.1 { o } else { o.reverse() }
-    };
+    // The page's own order; a click on a column header of the flat list re-sorts it in the client.
+    let by = |a: &Bead, b: &Bead| compare(ix, "status", a, b);
     if ui.view == "list" || ui.custom() {
         let mut v: Vec<&Bead> = ix
             .snap
@@ -573,18 +568,19 @@ fn row_json(ix: &Ix, ui: &Ui, r: &RowOut, cols: &[&Col]) -> Value {
                 "type" => cell(&b.kind, json!({ "tone": "muted" })),
                 "unlocks" => {
                     let n = ix.unlocked(b).iter().filter(|u| is_open(u)).count();
-                    cell(if n > 0 { n.to_string() } else { String::new() }, json!({ "tone": "muted" }))
+                    cell(if n > 0 { n.to_string() } else { String::new() }, json!({ "tone": "muted", "sort": n }))
                 }
-                "status" => cell(k, json!({ "chip": true, "tone": tone_of(k) })),
+                "status" => cell(k, json!({ "chip": true, "tone": tone_of(k), "sort": krank(k) })),
                 "pri" => cell(
                     b.priority.map(|p| format!("P{p}")).unwrap_or_default(),
                     match b.priority {
-                        Some(p) if p <= 1 => json!({ "mono": true, "tone": "bad" }),
-                        Some(p) if p >= 3 => json!({ "mono": true, "tone": "muted" }),
-                        _ => json!({ "mono": true }),
+                        Some(p) if p <= 1 => json!({ "mono": true, "tone": "bad", "sort": p }),
+                        Some(p) if p >= 3 => json!({ "mono": true, "tone": "muted", "sort": p }),
+                        Some(p) => json!({ "mono": true, "sort": p }),
+                        None => json!({ "mono": true, "sort": 9 }),
                     },
                 ),
-                _ => cell(ago(&b.updated), json!({ "tone": "muted" })),
+                _ => cell(ago(&b.updated), json!({ "tone": "muted", "sort": epoch(&b.updated) })),
             };
             v["key"] = json!(c.key);
             v
@@ -605,13 +601,15 @@ fn table(ix: &Ix, ui: &Ui) -> (Value, usize, usize) {
     let columns: Vec<Value> = cols
         .iter()
         .map(|c| table::column(c.key, c.label, json!(c.width), c.tree, c.wide))
+        // Only the flat list sorts: a header click re-orders every row, which would tear a tree apart.
+        .map(|c| if ui.view == "list" || ui.custom() { table::sortable(c) } else { c })
         .collect();
     let v = table::component(
         columns,
         sections,
         "select_bead",
         "toggle_path",
-        (&ui.sort.0, ui.sort.1),
+        ("status", true),
         if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." },
     );
     (v, shown, total)

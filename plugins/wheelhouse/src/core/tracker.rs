@@ -1,4 +1,4 @@
-//! The project's tracker (beads, through `bd`) as the Issues and Project views read and write it,
+//! The project's tracker (beads, through `bd`) as the Project view reads it,
 //! and the project's vision, the first paragraph of `docs/CONTEXT.md`.
 
 use std::collections::HashSet;
@@ -26,9 +26,6 @@ pub struct Item {
     /// Another item that is not closed blocks it.
     pub blocked: bool,
 }
-
-pub const STATUSES: [&str; 4] = ["open", "in_progress", "blocked", "deferred"];
-pub const KINDS: [&str; 5] = ["task", "bug", "feature", "chore", "epic"];
 
 /// Whether `dir` keeps a tracker.
 pub fn has(dir: &str) -> bool {
@@ -63,64 +60,6 @@ fn item(b: &Value, ready: &HashSet<String>, closed: &HashSet<&str>) -> Item {
         updated: s("updated_at"),
         id,
     }
-}
-
-fn id_ok(id: &str) -> Result<(), String> {
-    let ok = !id.is_empty() && id.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
-    if ok { Ok(()) } else { Err(format!("not an item id: {id:?}")) }
-}
-
-/// Create an item and return its id.
-pub fn create(dir: &str, title: &str, kind: &str, priority: i64, description: &str) -> Result<String, String> {
-    if title.trim().is_empty() {
-        return Err("a title is required".into());
-    }
-    if !KINDS.contains(&kind) {
-        return Err(format!("type must be one of {}", KINDS.join(", ")));
-    }
-    let p = priority.clamp(0, 4).to_string();
-    let mut args = vec!["create", title.trim(), "-t", kind, "-p", &p, "--json"];
-    if !description.trim().is_empty() {
-        args.extend(["-d", description.trim()]);
-    }
-    let made = run::json("bd", dir, &args)?;
-    // bd answers one issue, or a one-element list.
-    let made = if made.is_array() { made[0].clone() } else { made };
-    made["id"].as_str().map(String::from).ok_or_else(|| "bd create returned no id".to_string())
-}
-
-/// Set an item's status (open, in_progress, blocked, deferred), priority or title.
-pub fn update(dir: &str, id: &str, status: Option<&str>, priority: Option<i64>, title: Option<&str>) -> Result<(), String> {
-    id_ok(id)?;
-    let mut args: Vec<String> = vec!["update".into(), id.into()];
-    if let Some(s) = status {
-        if !STATUSES.contains(&s) {
-            return Err(format!("status must be one of {}", STATUSES.join(", ")));
-        }
-        args.extend(["-s".into(), s.into()]);
-    }
-    if let Some(p) = priority {
-        args.extend(["-p".into(), p.clamp(0, 4).to_string()]);
-    }
-    if let Some(t) = title.filter(|t| !t.trim().is_empty()) {
-        args.extend(["--title".into(), t.trim().into()]);
-    }
-    if args.len() == 2 {
-        return Err("nothing to update".into());
-    }
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run::text("bd", dir, &refs).map(|_| ())
-}
-
-/// Close an item.
-pub fn close(dir: &str, id: &str, reason: &str) -> Result<(), String> {
-    id_ok(id)?;
-    let mut args = vec!["close", id];
-    if !reason.trim().is_empty() {
-        args.extend(["-r", reason.trim()]);
-    }
-    run::text("bd", dir, &args).map(|_| ())
 }
 
 /// The vision: the first paragraph of `docs/CONTEXT.md` after its title.
@@ -181,12 +120,5 @@ mod tests {
         assert_eq!(vision(dir).as_deref(), Some("New vision"));
         assert!(set_vision(dir, "  ").is_err());
         std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    #[test]
-    fn an_item_id_is_plain() {
-        assert!(id_ok("wheel-cmbu.4").is_ok());
-        assert!(id_ok("-rf").is_err());
-        assert!(id_ok("a b").is_err());
     }
 }

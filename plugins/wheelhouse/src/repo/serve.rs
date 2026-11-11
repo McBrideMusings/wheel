@@ -28,8 +28,6 @@ struct Ui {
     q: String,
     /// "history" shows stashes and commits; anything else shows the branches.
     tab: String,
-    /// The column the branches are ordered by; empty is `state`, which groups safe-to-delete, blocked and live.
-    sort: String,
     show: String,
     sel: Option<String>,
     notice: Option<(bool, String)>,
@@ -71,20 +69,11 @@ fn matches(b: &Branch, ui: &Ui) -> bool {
         }
 }
 
-/// The order of two branches under `sort`; ties fall back to the newest first, then the name.
-fn order(a: &Branch, b: &Branch, sort: &str) -> std::cmp::Ordering {
+/// The page's own order: safe-to-delete, blocked, then live, the newest first, then the name. A click on a
+/// column header re-sorts the rows in the client.
+fn order(a: &Branch, b: &Branch) -> std::cmp::Ordering {
     let group = |x: &Branch| match kinds(x) { "dead" => 0, "blocked" => 1, _ => 2 };
-    let ci = |x: &Branch| match x.pr.as_ref().and_then(|p| p.ci) { Some("fail") => 0, Some("pass") => 2, Some(_) => 1, None => 3 };
-    let wt = |x: &Branch| x.worktree.as_ref().map(|w| w.path.rsplit('/').next().unwrap_or(&w.path).to_string());
-    let first = match sort {
-        "branch" => a.branch.cmp(&b.branch),
-        "worktree" => match (wt(a), wt(b)) { (Some(x), Some(y)) => x.cmp(&y), (Some(_), None) => std::cmp::Ordering::Less, (None, Some(_)) => std::cmp::Ordering::Greater, _ => std::cmp::Ordering::Equal },
-        "pr" => match (a.pr.as_ref().map(|p| p.number), b.pr.as_ref().map(|p| p.number)) { (Some(x), Some(y)) => y.cmp(&x), (Some(_), None) => std::cmp::Ordering::Less, (None, Some(_)) => std::cmp::Ordering::Greater, _ => std::cmp::Ordering::Equal },
-        "checks" => ci(a).cmp(&ci(b)),
-        "updated" => std::cmp::Ordering::Equal,
-        _ => group(a).cmp(&group(b)),
-    };
-    first.then(b.ts.cmp(&a.ts)).then(a.branch.cmp(&b.branch))
+    group(a).cmp(&group(b)).then(b.ts.cmp(&a.ts)).then(a.branch.cmp(&b.branch))
 }
 
 fn row(b: &Branch, ui: &Ui, at: i64) -> Value {
@@ -98,24 +87,25 @@ fn row(b: &Branch, ui: &Ui, at: i64) -> Value {
     };
     let pr = b.pr.as_ref().map(|p| format!("#{}", p.number)).unwrap_or_default();
     let ci = match b.pr.as_ref().and_then(|p| p.ci) {
-        Some("pass") => cell("passing", json!({ "chip": true, "tone": "ok" })),
-        Some("fail") => cell("failing", json!({ "chip": true, "tone": "bad" })),
-        Some(_) => cell("pending", json!({ "chip": true, "tone": "warn" })),
-        None => cell("", json!({})),
+        Some("pass") => cell("passing", json!({ "chip": true, "tone": "ok", "sort": 2 })),
+        Some("fail") => cell("failing", json!({ "chip": true, "tone": "bad", "sort": 0 })),
+        Some(_) => cell("pending", json!({ "chip": true, "tone": "warn", "sort": 1 })),
+        None => cell("", json!({ "sort": 3 })),
     };
     let state = match (b.dead, &b.blocked) {
         (Some(why), None) => cell(why, json!({ "chip": true, "tone": "ok" })),
         (Some(_), Some(why)) => cell(why, json!({ "tone": "warn" })),
         _ => cell(if b.local_only > 0 { format!("{} local-only", b.local_only) } else { String::new() }, json!({ "tone": "muted" })),
     };
+    let wt_sort = b.worktree.as_ref().map(|w| w.path.rsplit('/').next().unwrap_or(&w.path).to_lowercase()).unwrap_or_default();
     let cells = vec![
-        cell(&b.branch, json!({ "key": "branch", "mono": true })),
-        cell(wt.unwrap_or_default(), json!({ "key": "worktree", "tone": "muted" })),
-        cell(vs, json!({ "key": "vs", "mono": true, "tone": "muted" })),
-        cell(pr, json!({ "key": "pr", "mono": true })),
+        cell(&b.branch, json!({ "key": "branch", "mono": true, "sort": b.branch.to_lowercase() })),
+        cell(wt.unwrap_or_default(), json!({ "key": "worktree", "tone": "muted", "sort": wt_sort })),
+        cell(vs, json!({ "key": "vs", "mono": true, "tone": "muted", "sort": b.ahead.unwrap_or(-1) })),
+        cell(pr, json!({ "key": "pr", "mono": true, "sort": b.pr.as_ref().map(|p| p.number).unwrap_or(0) })),
         { let mut c = ci; c["key"] = json!("ci"); c },
         { let mut c = state; c["key"] = json!("state"); c },
-        cell(ago(b.ts, at), json!({ "key": "updated", "tone": "muted" })),
+        cell(ago(b.ts, at), json!({ "key": "updated", "tone": "muted", "sort": b.ts })),
     ];
     let menu = if kinds(b) == "dead" {
         vec![json!({ "label": "Delete branch", "action": "delete_branch", "context": { "branch": b.branch } })]
@@ -155,20 +145,15 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         p.choose("views", "/set_show", if ui.show.is_empty() { "all" } else { &ui.show }, vec![
             json!({ "value": "all", "text": "All" }), json!({ "value": "dead", "text": "Safe to delete" }),
             json!({ "value": "worktrees", "text": "Worktrees" }), json!({ "value": "prs", "text": "With a PR" })], true, history);
-        let sort = if ui.sort.is_empty() { "state" } else { ui.sort.as_str() };
-        p.choose("sort", "/set_sort", sort, vec![
-            json!({ "value": "state", "text": "Sort: State" }), json!({ "value": "updated", "text": "Sort: Updated" }),
-            json!({ "value": "branch", "text": "Sort: Branch" }), json!({ "value": "worktree", "text": "Sort: Worktree" }),
-            json!({ "value": "pr", "text": "Sort: PR" }), json!({ "value": "checks", "text": "Sort: Checks" })], false, history);
         let q = ui.q.to_lowercase();
         let stashes: Vec<&(String, String, String)> = s.stashes.iter().filter(|(r, subj, _)| q.is_empty() || format!("{r} {subj}").to_lowercase().contains(&q)).collect();
         let commits: Vec<&Commit> = s.commits.iter().filter(|c| q.is_empty() || format!("{} {} {}", c.sha, c.subject, c.author).to_lowercase().contains(&q)).collect();
         let mut shown: Vec<&Branch> = s.branches.iter().filter(|b| matches(b, ui)).collect();
-        shown.sort_by(|a, b| order(a, b, sort));
+        shown.sort_by(|a, b| order(a, b));
         let count_text = if history { format!("{} of {}", stashes.len() + commits.len(), s.stashes.len() + s.commits.len()) } else { format!("{} of {}", shown.len(), s.branches.len()) };
         let count = p.label("count", &count_text, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("tools", "h", vec!["tab".into(), "search".into(), "views".into(), "sort".into(), count],
-            json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": [null, "flex", null, null, 96], "trailing": 1 })));
+        page.push(p.boxed("tools", "h", vec!["tab".into(), "search".into(), "views".into(), count],
+            json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": [null, "flex", null, 96], "trailing": 1 })));
         let mut t = if history {
             let default = s.default.as_deref().unwrap_or("the default branch");
             let stash_rows: Vec<Value> = stashes.iter().map(|(r, subj, when)| json!({ "id": r, "path": r, "depth": 0, "kids": 0, "collapsed": false, "dim": false,
@@ -183,20 +168,22 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
                 (!stash_rows.is_empty()).then(|| table::section("Stashes", stash_rows)),
                 (!commit_rows.is_empty()).then(|| table::section(&format!("Commits on {default}"), commit_rows)),
             ].into_iter().flatten().collect();
-            let columns = vec![
+            let columns: Vec<Value> = vec![
                 table::column("ref", "Commit", json!(90), false, false), table::column("subject", "Subject", json!("flex"), false, true),
                 table::column("author", "Author", json!(140), false, true), table::column("when", "When", json!(70), false, false),
-            ];
+            ].into_iter()
+                // A stash's age is only text ("3 days ago"), so the When column keeps the page's order.
+                .map(|c| if c["key"] == "when" { c } else { table::sortable(c) }).collect();
             table::component(columns, sections, "select_branch", "select_branch", ("when", false),
                 if s.stashes.is_empty() && s.commits.is_empty() { "No stashes or commits." } else { "Nothing matches the search." })
         } else {
             let sections = vec![table::section("", shown.iter().map(|b| row(b, ui, at)).collect())];
-            let columns = vec![
+            let columns: Vec<Value> = vec![
                 table::column("branch", "Branch", json!("flex"), false, true), table::column("worktree", "Worktree", json!(180), false, true),
                 table::column("vs", format!("vs {}", s.default.as_deref().unwrap_or("default")).as_str(), json!(90), false, false),
                 table::column("pr", "PR", json!(60), false, false), table::column("ci", "Checks", json!(84), false, false),
                 table::column("state", "State", json!(150), false, true), table::column("updated", "Updated", json!(70), false, false),
-            ];
+            ].into_iter().map(table::sortable).collect();
             table::component(columns, sections, "select_branch", "select_branch", ("updated", false),
                 if s.branches.is_empty() { "No branches besides the default." } else { "Nothing matches the search." })
         };
@@ -275,11 +262,6 @@ impl Server {
     #[tool(description = "Show the branches or the history", meta = ui_meta())]
     fn set_tab(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
         self.with(&meta, |_, ui| ui.tab = value)
-    }
-
-    #[tool(description = "Order the branches by a column", meta = ui_meta())]
-    fn set_sort(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.sort = value)
     }
 
     #[tool(description = "Show all, dead, worktrees or prs", meta = ui_meta())]
