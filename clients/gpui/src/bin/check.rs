@@ -18,6 +18,7 @@ use anyhow::{Result, ensure};
 use gpui::AsyncApp;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
+use wheel_proto::{ClientMsg, ServerMsg};
 use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Drawn, Link, TITLE}};
 
 async fn tick(cx: &mut AsyncApp, ms: u64) {
@@ -755,13 +756,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let editing = window.update(cx, |c, _, _| c.address_edit())?;
     ensure!(editing == Some((browser_pane.clone(), one.to_string_lossy().into_owned())), "after a click on the field the edit is {editing:?}");
     ensure!(native.status()["root_focused"] == true, "the GPUI view does not hold the keyboard while the field is edited");
-    // Backspace carries DEL (0x7f) on a Mac keyboard; an uppercase letter is its key with shift.
+    // Backspace carries DEL (0x7f) on a Mac keyboard; an uppercase letter and `_` (the temp dir's random suffix may hold one) are their keys with shift.
     for _ in 0..one.to_string_lossy().chars().count() {
         native.call(json!({"op":"post_key","text":"\u{7f}","code":51}));
     }
     tick(cx, 100).await;
     for ch in two.to_string_lossy().chars() {
-        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch),"shift":ch.is_ascii_uppercase()}));
+        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch),"shift":ch.is_ascii_uppercase() || ch == '_'}));
         tick(cx, 10).await;
     }
     draw(window, None, cx)?;
@@ -1364,6 +1365,137 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "typed_saved": typed_saved, "cli_write_seen": seen_other, "refusal": refusal, "cleared_to": cleared, "chat": {"switch": bool_key, "written": bool_after, "changed": chat_changed, "toml": chat_toml, "query": chat_query, "rows": chat_rows, "all": chat_all, "reset_keys": reset_keys},
         "project": {"space": project_space, "value": project_value, "machine_unchanged": machine_value_under_project, "topics": project_topics}, "builtins": builtins, "guidance": {"segments": guidance_segments, "opened": guidance_opened},
         "devices": devices_state});
+    // Notices (Toasts.swift), the pairing window (PairingWindow.swift) and the quarantine card
+    // (QuarantineCard.swift). `wheel notify` posts a toast to every client; it names a pane, so
+    // the notice gets Focus pane and Close pane after Copy; `--clear` takes it down.
+    let wheel = |args: &[&str]| -> Result<std::process::Output> {
+        let cli = std::env::var("WHEEL_CLIENT_CLI")?;
+        Ok(std::process::Command::new(&cli).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?)
+    };
+    let toast_pane = native_panes[0].0.clone();
+    let posted = wheel(&["notify", "The fixture says hello", "--id", "check", "--level", "warning", "--pane", &toast_pane])?;
+    ensure!(posted.status.success(), "wheel notify failed: {}", String::from_utf8_lossy(&posted.stderr));
+    let mut toast_ids: Vec<String> = vec![];
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        toast_ids = window.update(cx, |c, _, _| c.toasts().iter().map(|t| t.id.clone()).collect())?;
+        if toast_ids.iter().any(|id| id == "notify:check") {
+            break;
+        }
+    }
+    ensure!(toast_ids.iter().any(|id| id == "notify:check"), "the notify toast never showed: {toast_ids:?}");
+    let toast = window.update(cx, |c, _, _| c.toasts().into_iter().find(|t| t.id == "notify:check"))?.unwrap();
+    ensure!(toast.text == "The fixture says hello" && toast.level == wheel_gpui::toasts::Level::Warning, "toast read {toast:?}");
+    let toast_actions: Vec<&str> = toast.actions.iter().map(|a| a.title).collect();
+    ensure!(toast_actions == ["Focus pane", "Close pane"], "a toast about pane {toast_pane} offers {toast_actions:?}");
+    // A second notice with the same id replaces the first; a long one draws as a card.
+    let long = "A second notice with the same id replaces the first one, and one this long is a card rather than a pill.";
+    wheel(&["notify", long, "--id", "check"])?;
+    let mut replaced = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        replaced = window.update(cx, |c, _, _| c.toasts().iter().filter(|t| t.id == "notify:check").count() == 1 && c.toasts().iter().any(|t| t.text == long && !t.compact()))?;
+        if replaced {
+            break;
+        }
+    }
+    ensure!(replaced, "the second notify did not replace the first");
+    // A refused layout op is the layout-error notice, naming the pane the message names.
+    window.update(cx, |c, _, _| c.send_layout(|req| ClientMsg::PaneClose { req: Some(req), pane: "p999999".into() }))?;
+    let mut layout_error = None;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        layout_error = window.update(cx, |c, _, _| c.toast_sources.layout_error.clone())?;
+        if layout_error.is_some() {
+            break;
+        }
+    }
+    ensure!(layout_error.is_some(), "closing a pane that does not exist raised no layout error");
+    draw(window, Some(output.join("client-toasts.png")), cx)?;
+    let stacked: Vec<String> = window.update(cx, |c, _, _| c.toasts().iter().map(|t| t.id.clone()).collect())?;
+    ensure!(stacked == ["layout-error", "notify:check"], "the stack reads {stacked:?}");
+    // Dismissing: the layout error's close button forgets it; `--clear` takes the posted one down.
+    window.update(cx, |c, _, _| {
+        let t = c.toasts().into_iter().find(|t| t.id == "layout-error").unwrap();
+        c.dismiss_toast(&t);
+    })?;
+    wheel(&["notify", "--clear", "check"])?;
+    let mut cleared = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        cleared = window.update(cx, |c, _, _| c.toasts().is_empty())?;
+        if cleared {
+            break;
+        }
+    }
+    ensure!(cleared, "the toasts did not clear");
+    // The pairing window: the fixture's wheeld listens for remote clients on an ephemeral loopback
+    // port, so a code is issued and the window draws it. A frame saying a paired device connected
+    // names it and, with the switch on, closes the window after 1.5 s, cancelling its codes.
+    let pairing_reason = window.update(cx, |c, _, _| c.pairing_disabled_reason())?;
+    ensure!(pairing_reason.is_none(), "pairing is off: {pairing_reason:?}");
+    window.update(cx, |c, _, _| c.show_pairing_window())?;
+    let mut pairing_rows = 0;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        pairing_rows = window.update(cx, |c, _, _| c.settings.devices.pairing_json(now_ms()).map(|j| c.qr_rows(&j).len()).unwrap_or(0))?;
+        if pairing_rows > 0 {
+            break;
+        }
+    }
+    ensure!(pairing_rows >= 21, "the pairing window drew {pairing_rows} QR rows");
+    let window_tokens = window.update(cx, |c, _, _| c.pairing.window_tokens.len())?;
+    ensure!(window_tokens == 1, "the window holds {window_tokens} codes");
+    window.update(cx, |c, _, _| c.pairing.details_open = true)?;
+    draw(window, Some(output.join("client-pairing.png")), cx)?;
+    // Copy code: the bridge writes a concealed item that clears itself after a minute.
+    window.update(cx, |c, _, _| c.copy_pairing_code())?;
+    let mut copied = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        copied = window.update(cx, |c, _, _| c.pairing.copied.is_some())?;
+        if copied {
+            break;
+        }
+    }
+    ensure!(copied, "Copy code left nothing on the clipboard");
+    let copy_answer = window.update(cx, |c, _, _| c.toast_log.iter().rev().find(|l| l.starts_with("pairing code copied")).cloned())?;
+    ensure!(copy_answer.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {copy_answer:?}");
+    let device = ServerMsg::DeviceConnected { device: "d1".into(), name: "Check phone".into(), address: "127.0.0.1:5".into(), paired: true };
+    window.update(cx, |c, _, _| c.on_event(Event::Message(Box::new(device))))?;
+    let (connected, close_at) = window.update(cx, |c, _, _| (c.pairing.connected.clone(), c.pairing.close_at))?;
+    ensure!(connected.as_deref() == Some("Check phone") && close_at.is_some(), "the window did not take the connection: {connected:?} {close_at:?}");
+    let mut pairing_closed = false;
+    for _ in 0..60 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        pairing_closed = window.update(cx, |c, _, _| !c.pairing.open)?;
+        if pairing_closed {
+            break;
+        }
+    }
+    ensure!(pairing_closed, "the pairing window stayed open after a device connected");
+    let pairing_events = window.update(cx, |c, _, _| c.pairing.events.clone())?;
+    ensure!(pairing_events.len() == 2 && pairing_events[1].contains("“Check phone” connected from 127.0.0.1:5 and paired"), "the events read {pairing_events:?}");
+    let cancelled = window.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.starts_with("pairing window closed: cancelled code")).count())?;
+    // The window showed two codes: the one it asked for and the one Copy code made while it was open.
+    ensure!(cancelled == 2, "closing cancelled {cancelled} codes, not the window's two");
+    // The quarantine card: a pane the last run died drawing is held out of the grid; Open Anyway draws it.
+    let held = native_panes[0].0.clone();
+    window.update(cx, |c, _, _| c.quarantine.hold(wheel_gpui::crash_guard::Crash::parse(&format!("space:x\npane:{held}\n"), None).unwrap()))?;
+    draw(window, Some(output.join("client-quarantine.png")), cx)?;
+    // The held pane's native view is gone from the window; Open Anyway brings it back.
+    let held_hidden = window.update(cx, |c, _, _| !c.native_panes.contains(&held))?;
+    ensure!(held_hidden, "the quarantined pane {held} still has its native view");
+    window.update(cx, |c, _, _| c.quarantine.release_pane(&held))?;
+    draw(window, None, cx)?;
+    let released = window.update(cx, |c, _, _| c.native_panes.contains(&held))?;
+    ensure!(released, "Open Anyway did not bring pane {held} back");
+    let toast_log = window.update(cx, |c, _, _| c.toast_log.clone())?;
+    let notices_report = json!({"toast": {"text": toast.text, "actions": toast_actions, "stack": stacked, "layout_error": layout_error},
+        "pairing": {"qr_rows": pairing_rows, "connected": connected, "events": pairing_events, "closed": pairing_closed},
+        "quarantine": {"pane": held, "held": held_hidden}, "log": toast_log});
     // Closing the second window above left `native_panes` as the first window's views; the
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
@@ -1441,11 +1573,17 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "pages": pages_report,
         "commands": commands_report,
         "settings": settings_report,
+        "notices": notices_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     }))
+}
+
+/// Unix milliseconds now.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// The ANSI keyboard's key code for a character GPUI reads back from `keyCode`.

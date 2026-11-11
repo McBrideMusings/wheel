@@ -27,6 +27,9 @@ fn main() -> Result<()> {
         })
         .detach();
         let result: Result<()> = (|| {
+            if let Some(crash) = wheel_gpui::crash_guard::start(&wheel_gpui::crash_guard::default_marks_file(), &wheel_gpui::crash_guard::default_reports()) {
+                eprintln!("wheel-gpui: the last run quit while drawing {:?} / {:?}; holding it out", crash.space, crash.pane);
+            }
             let bridge = Bridge::load()?;
             open_window(cx, &bridge, endpoint, None, space, false)?;
             Ok(())

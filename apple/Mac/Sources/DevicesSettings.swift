@@ -212,17 +212,5 @@ struct DevicesSettings: View {
         .padding(.vertical, 60)
     }
 
-    /// `text` as a QR code, one pixel per module scaled up to 440 so it stays sharp.
-    static func qrImage(_ text: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(text.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        let scale = (440 / output.extent.width).rounded(.down)
-        let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let rep = NSCIImageRep(ciImage: scaled)
-        let image = NSImage(size: rep.size)
-        image.addRepresentation(rep)
-        return image
-    }
+    static func qrImage(_ text: String) -> NSImage? { PairingClipboard.qrImage(text) }
 }

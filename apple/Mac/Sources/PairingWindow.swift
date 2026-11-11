@@ -16,9 +16,6 @@ struct PairingState: Equatable {
     var events: [String] = []
 }
 
-/// The concealed-pasteboard marker clipboard managers honour: an item that carries it is not recorded.
-private let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
-
 /// How long a copied pairing code stays on the clipboard if nothing else is copied.
 let pairingClipboardLife: Duration = .seconds(60)
 
@@ -60,45 +57,22 @@ extension AppModel {
         // A new copy replaces the old one, whose minute no longer runs.
         if let old = copiedToken { cancelPairing(tokens: [old]) }
         copiedToken = token
-        let board = NSPasteboard.general
-        board.clearContents()
-        board.declareTypes([.string, concealedType], owner: nil)
-        board.setString(text, forType: .string)
-        board.setData(Data(), forType: concealedType)
         Log.info("pairing code copied to the clipboard as a concealed item; clearing it in \(pairingClipboardLife)")
         clipboardClear?.cancel()
-        // An app nobody is looking at is napped by the system, which would stretch the minute; the
-        // clear is held to its time.
-        let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "clearing the pairing code from the clipboard")
-        clipboardClear = Task { [weak self] in
-            defer { ProcessInfo.processInfo.endActivity(activity) }
-            try? await Task.sleep(for: pairingClipboardLife)
-            guard !Task.isCancelled else { return }
+        clipboardClear = PairingClipboard.writeConcealed(text, life: pairingClipboardLife) { [weak self] cleared in
             // The copy is gone either way, so the code it held stops working. An open window that
             // shows the same code keeps it until the window closes.
             if let model = self, model.copiedToken == token {
                 model.copiedToken = nil
                 if !(model.pairing.open && model.windowTokens.contains(token)) { model.cancelPairing(tokens: [token]) }
             }
-            // Unchanged means the clipboard still holds the code. The change count is no test: a
-            // clipboard manager or the system touches it after a write, whatever was copied.
-            let board = NSPasteboard.general
-            if board.string(forType: .string) == text {
-                board.clearContents()
-                Log.info("pairing code cleared from the clipboard after a minute")
-            } else {
-                let now = board.string(forType: .string)
-                Log.info("clipboard holds something else now (\(now.map { "\($0.count) chars" } ?? "no text"), the code was \(text.count)); left alone")
-            }
+            Log.info(cleared ? "pairing code cleared from the clipboard after a minute" : "clipboard holds something else now; left alone")
             self?.clipboardClear = nil
         }
     }
 
     func copyPairingImage() {
-        guard let json = settings.devices.pairingJSON, let image = DevicesSettings.qrImage(json) else { return }
-        let board = NSPasteboard.general
-        board.clearContents()
-        board.writeObjects([image])
+        guard let json = settings.devices.pairingJSON, PairingClipboard.copyImage(json) else { return }
         Log.info("pairing code image copied to the clipboard")
     }
 

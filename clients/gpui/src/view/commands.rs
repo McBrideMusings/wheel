@@ -188,7 +188,7 @@ impl Client {
             "split-right" | "split-down" => {
                 if let Some(pane) = focused {
                     let dir = if id == "split-right" { Dir::Right } else { Dir::Down };
-                    self.send(&ClientMsg::PaneSplit { req: None, pane, dir: Some(dir), focus: false, site: None });
+                    self.send_layout(|req| ClientMsg::PaneSplit { req: Some(req), pane, dir: Some(dir), focus: false, site: None });
                 }
             }
             "focus-previous" | "focus-next" => self.cycle_focus(id == "focus-next"),
@@ -328,7 +328,7 @@ impl Client {
         }
     }
     /// Show `space`, switching to the session holding it when another does.
-    fn show_space_anywhere(&mut self, space: &str) {
+    pub(super) fn show_space_anywhere(&mut self, space: &str) {
         if !self.session_spaces().iter().any(|s| s.id == space)
             && let Some(session) = self.sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.clone())
         {
@@ -385,7 +385,10 @@ impl Client {
         let Some(leaf) = self.leaf(pane) else { return };
         match Self::ending_question(&leaf.kind) {
             Some((title, message)) => self.confirm(title, message.into(), "Close Pane".into(), Pending::ClosePane(pane.to_owned())),
-            None => self.send(&ClientMsg::PaneClose { req: None, pane: pane.to_owned() }),
+            None => {
+                let pane = pane.to_owned();
+                self.send_layout(|req| ClientMsg::PaneClose { req: Some(req), pane });
+            }
         }
     }
     /// ⌥⌘W: close `space`, asking first when it runs a shell or an agent.
@@ -395,7 +398,8 @@ impl Client {
         let shells = leaves.iter().filter(|l| l.kind == "terminal").count();
         let agents = leaves.iter().filter(|l| l.kind == "agent").count();
         if shells + agents == 0 {
-            return self.send(&ClientMsg::SpaceClose { req: None, id: id.to_owned(), if_empty: false });
+            let id = id.to_owned();
+            return self.send_layout(|req| ClientMsg::SpaceClose { req: Some(req), id, if_empty: false });
         }
         let mut parts = vec![];
         if shells > 0 {
@@ -436,8 +440,8 @@ impl Client {
     }
     fn run_pending(&mut self, run: Pending) {
         match run {
-            Pending::ClosePane(pane) => self.send(&ClientMsg::PaneClose { req: None, pane }),
-            Pending::CloseSpace(id) => self.send(&ClientMsg::SpaceClose { req: None, id, if_empty: false }),
+            Pending::ClosePane(pane) => self.send_layout(|req| ClientMsg::PaneClose { req: Some(req), pane }),
+            Pending::CloseSpace(id) => self.send_layout(|req| ClientMsg::SpaceClose { req: Some(req), id, if_empty: false }),
             Pending::SetKind(pane, kind) => self.set_kind(&pane, kind),
             Pending::StartAgent(pane, agent) => self.send(&ClientMsg::PaneStart { req: None, pane, kind: StartKind::Agent, message: None, agent: Some(agent), model: None, permission_mode: None, sandbox: None }),
             Pending::RemoveBuiltin(name) => self.remove_builtin(&name),
@@ -484,7 +488,7 @@ impl Client {
         }
         self.ask_roots();
     }
-    fn req(&mut self) -> u64 {
+    pub(super) fn req(&mut self) -> u64 {
         let req = self.next_req;
         self.next_req += 1;
         req
@@ -686,7 +690,7 @@ impl Client {
     /// Tell the bridge where the window-wide overlay is, so the native views leave it a hole and
     /// the GPUI view takes the keyboard while one is open.
     pub(super) fn sync_overlay(&mut self) {
-        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some();
+        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open;
         if open {
             let (w, h) = self.viewport;
             self.native.call(serde_json::json!({"op": "overlay", "open": true, "rect": [0., 0., f64::from(w), f64::from(h)]}));

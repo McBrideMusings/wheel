@@ -31,7 +31,8 @@ def machine_artifacts(gallery):
     wheelhouse = f'{shlex.quote(str(built("wheelhouse")))} serve'
     serve = dict(beads=wheelhouse, issues=wheelhouse, repo=wheelhouse, runner=f'{shlex.quote(str(built("wheel-runner")))} serve',
                  gallery=f'python3 {shlex.quote(str(gallery))} v17')
-    return ''.join(f'[artifacts.{name}]\nmcp = {json.dumps(serve[name])}\nshared = true\npane = true\ntitle = {json.dumps(name.title())}\n\n' for name in PAGES)
+    # Remote access on an ephemeral loopback port: the Devices page and the pairing window get a code to show.
+    return '[remote]\nlisten = "127.0.0.1:0"\n\n' + ''.join(f'[artifacts.{name}]\nmcp = {json.dumps(serve[name])}\nshared = true\npane = true\ntitle = {json.dumps(name.title())}\n\n' for name in PAGES)
 
 
 def html_page(title):

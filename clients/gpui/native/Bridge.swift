@@ -95,6 +95,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         if logs.count > 200 { logs.removeFirst(logs.count - 200) }
     }
     var overlay: CGRect?
+    /// The clear of the last concealed clipboard copy, until its minute runs out.
+    var concealedClear: Task<Void, Never>?
     var mouseNumber = 0
     var heldBeforeKey: String?
     var mouseTarget: NSView?
@@ -567,8 +569,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": owner?.id ?? NSNull()]
         case "qr":
             // The modules of a QR code for `text`, one row per line of "1"s (dark) and "0"s, with
-            // CoreImage's one-module quiet zone; what the Devices page draws as cells.
+            // CoreImage's one-module quiet zone; what the Devices page draws as cells. With
+            // `copy`, the code goes on the clipboard as an image instead (the pairing window's Copy image).
             let text = value["text"] as? String ?? ""
+            if value["copy"] as? Bool == true {
+                let copied = PairingClipboard.copyImage(text)
+                log("pairing code image \(copied ? "copied to the clipboard" : "could not be drawn")")
+                return ["copied": copied]
+            }
             guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return ["rows": []] }
             filter.setValue(Data(text.utf8), forKey: "inputMessage")
             filter.setValue("M", forKey: "inputCorrectionLevel")
@@ -580,6 +588,18 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // CoreGraphics draws with its origin at the bottom: the first row in memory is the last line.
             let rows: [String] = (0..<h).reversed().map { y in String((0..<w).map { pixels[y * w + $0] < 128 ? "1" : "0" }) }
             return ["rows": rows]
+        case "clipboard_concealed":
+            // The pairing window's Copy code: a concealed clipboard item, cleared after `clear_after_ms`
+            // if nothing else was copied (PairingWindow.swift's writeConcealed).
+            let text = value["text"] as? String ?? ""
+            let ms = value["clear_after_ms"] as? Int ?? 60_000
+            concealedClear?.cancel()
+            concealedClear = PairingClipboard.writeConcealed(text, life: .milliseconds(ms)) { [weak self] cleared in
+                self?.log(cleared ? "pairing code cleared from the clipboard after \(ms) ms" : "clipboard holds something else now; left alone")
+                self?.concealedClear = nil
+            }
+            log("pairing code copied to the clipboard as a concealed item; clearing it in \(ms) ms")
+            return ["copied": true, "clear_after_ms": ms]
         case "snapshot":
             let directory = value["directory"] as! String
             snapshotsPending = 0

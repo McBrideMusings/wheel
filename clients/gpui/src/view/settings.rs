@@ -29,17 +29,17 @@ pub enum SettingsEdit {
     Search(Topic),
 }
 
-const PANEL: u32 = 0x17201c;
-const BOX: u32 = 0x1d2823;
-const LINE: u32 = 0x2c3d34;
-const TEXT: u32 = 0xd9e8e1;
-const DIM: u32 = 0x8fa89b;
-const ACCENT: u32 = 0x31483e;
+pub(super) const PANEL: u32 = 0x17201c;
+pub(super) const BOX: u32 = 0x1d2823;
+pub(super) const LINE: u32 = 0x2c3d34;
+pub(super) const TEXT: u32 = 0xd9e8e1;
+pub(super) const DIM: u32 = 0x8fa89b;
+pub(super) const ACCENT: u32 = 0x31483e;
 const ORANGE: u32 = 0xe0b070;
 const RED: u32 = 0xe07070;
 const GREEN: u32 = 0x6fcf97;
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -342,15 +342,19 @@ impl Client {
 
     /// Redraw the window after `ms`, once: the countdown and the running command have no event
     /// of their own. A timer already armed is left alone.
-    fn redraw_in(&mut self, ms: u64, cx: &mut Context<Self>) {
-        if self.redraw_armed {
+    pub(super) fn redraw_in(&mut self, ms: u64, cx: &mut Context<Self>) {
+        // A timer already due sooner covers this one; a sooner ask arms another timer beside it.
+        let due = now_ms() + ms;
+        if self.redraw_due.is_some_and(|armed| armed <= due) {
             return;
         }
-        self.redraw_armed = true;
+        self.redraw_due = Some(due);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(ms)).await;
             let _ = this.update(cx, |client, cx| {
-                client.redraw_armed = false;
+                if client.redraw_due == Some(due) {
+                    client.redraw_due = None;
+                }
                 cx.notify();
             });
         })
@@ -405,6 +409,8 @@ impl Client {
                 } else if Some(*req) == self.settings_reqs.pairing {
                     self.settings_reqs.pairing = None;
                     self.settings.devices.code_problem = Some(message.clone());
+                    // A copy that asked for this code gets none: the next code is not its.
+                    self.pairing.copy_pending = false;
                 } else if Some(*req) == self.settings_reqs.status {
                     self.settings_reqs.status = None;
                 } else if !(self.settings_reqs.homes.remove(req).is_some() || self.settings_reqs.files.remove(req).is_some()) {
@@ -482,6 +488,7 @@ impl Client {
                 self.settings_reqs.pairing = None;
                 self.settings.devices.code = Some((token.clone(), *expires_ms));
                 self.settings.devices.code_problem = None;
+                self.pairing_code_arrived(token);
                 true
             }
             ServerMsg::UsageChanged { board } => {
@@ -600,7 +607,7 @@ impl Client {
     }
 
     /// The QR modules for `text`, drawn by the bridge's CoreImage and kept while the text holds.
-    fn qr_rows(&mut self, text: &str) -> Vec<String> {
+    pub fn qr_rows(&mut self, text: &str) -> Vec<String> {
         if let Some((t, rows)) = &self.qr_cache
             && t == text
         {
@@ -1324,6 +1331,7 @@ impl Client {
             let secs = (expires - now) / 1000;
             make = make.child(div().text_xs().text_color(rgb(DIM)).child(format!("Works once, for {}:{:02} more.", secs / 60, secs % 60)));
         }
+        make = make.child(button("Pair a device…", click(cx, |this| this.show_pairing_window())));
         left = left.child(make);
         let qr: gpui::Div = match qr_rows {
             Some(rows) if rows.is_empty() => div().w(px(220.)).text_xs().text_color(rgb(ORANGE)).child("The bridge could not draw the code."),
@@ -1404,7 +1412,7 @@ fn divider() -> gpui::Div {
     div().h(px(1.)).bg(rgb(LINE))
 }
 
-fn checkbox(on: bool) -> gpui::Div {
+pub(super) fn checkbox(on: bool) -> gpui::Div {
     div().w(px(14.)).h(px(14.)).rounded_sm().border_1().border_color(rgb(0x5a7266)).bg(rgb(if on { 0x7fb89a } else { PANEL })).flex().items_center().justify_center().text_xs().text_color(rgb(0x0e1311)).child(if on { "✓" } else { "" })
 }
 
@@ -1413,7 +1421,7 @@ fn switch(on: bool) -> gpui::Div {
 }
 
 /// A press handler that runs `act`, stops the press reaching what lies beneath and redraws.
-fn click(cx: &mut Context<Client>, act: impl Fn(&mut Client) + 'static) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+pub(super) fn click(cx: &mut Context<Client>, act: impl Fn(&mut Client) + 'static) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
     cx.listener(move |this, _, _, cx| {
         act(this);
         cx.stop_propagation();
@@ -1431,7 +1439,7 @@ fn write_order(cx: &mut Context<Client>, field: &Field, on: &[String], edit: imp
     })
 }
 
-fn button(label: &str, on: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> gpui::Div {
+pub(super) fn button(label: &str, on: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> gpui::Div {
     button_state(label, false, on)
 }
 

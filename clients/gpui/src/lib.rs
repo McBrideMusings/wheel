@@ -2,6 +2,7 @@
 pub mod actions;
 pub mod browser;
 pub mod command_palette;
+pub mod crash_guard;
 pub mod daemon;
 pub mod focus;
 pub mod footer;
@@ -10,9 +11,11 @@ pub mod keymap;
 pub mod layout;
 pub mod markdown;
 pub mod native;
+pub mod pairing;
 pub mod palette;
 pub mod settings;
 pub mod status;
+pub mod toasts;
 pub mod transcript;
 pub mod view;
 

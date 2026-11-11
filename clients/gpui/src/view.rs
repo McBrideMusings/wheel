@@ -5,6 +5,7 @@
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod commands;
 mod settings;
+mod toasts;
 pub use commands::{Confirmation, Pending};
 pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
@@ -127,8 +128,25 @@ pub struct Client {
     qr_cache: Option<(String, Vec<String>)>,
     /// A file the Settings window opens for editing at the next render, which has the app to open it with.
     pending_open: Option<String>,
-    /// A one-shot redraw timer is pending (the Settings window's countdown or running command).
-    redraw_armed: bool,
+    /// When the armed redraw timer fires (unix ms): the Settings window's countdown or running command, the pairing window's times.
+    redraw_due: Option<u64>,
+    /// The notices posted to this window (`notify` toasts, agents' notices), oldest first.
+    pub posted: Vec<crate::toasts::Toast>,
+    /// What the notice stack is built from besides the posted ones.
+    pub toast_sources: crate::toasts::Sources,
+    /// The layout ops this window sent and wheeld has not answered; a refusal of one is the layout-error notice.
+    layout_reqs: HashSet<u64>,
+    /// The permission requests waiting, from `status` and `perm_requested`.
+    pub perms: Vec<wheel_proto::PermInfo>,
+    /// The pairing window and the copied code.
+    pub pairing: crate::pairing::Pairing,
+    /// The spaces and panes the last crash named, held out until opened anyway.
+    pub quarantine: crate::crash_guard::Quarantine,
+    /// The executable's stamp when this process started, and when it was last compared with the disk.
+    launch_stamp: Option<u64>,
+    client_checked_at: Option<std::time::Instant>,
+    /// What the notices, the pairing window and the client check did, for a check to read.
+    pub toast_log: Vec<String>,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -225,7 +243,9 @@ impl Client {
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
-            settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_armed: false,
+            settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None,
+            posted: vec![], toast_sources: crate::toasts::Sources::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
+            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![],
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -233,8 +253,9 @@ impl Client {
         match event {
             Event::Message(message) => match crate::layout::parse_layout(&message) {
                 Some(layout) => {
-                    if let ServerMsg::Status { agents, .. } = message.as_ref() {
+                    if let ServerMsg::Status { agents, perms, .. } = message.as_ref() {
                         self.agents = agents.clone();
+                        self.perms = perms.clone();
                         self.rebuild_keymap();
                         self.on_settings_status(message.as_ref());
                     }
@@ -243,7 +264,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) {
+                    if self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -377,6 +398,10 @@ impl Client {
                     self.reported = None;
                     self.overrides.clear();
                     self.drag = None;
+                    // The old daemon's notices and requests: the new one sends its own on attach.
+                    self.posted.clear();
+                    self.perms.clear();
+                    self.layout_reqs.clear();
                     // Answers to the last connection's listings never come: a palette open across
                     // a reconnect lists again, against the layout the new daemon sends.
                     for palette in self.palettes.values_mut() {
@@ -869,6 +894,10 @@ impl Client {
             self.close_shortcuts();
             return true;
         }
+        if self.pairing.open && k.key == "escape" {
+            self.close_pairing_window();
+            return true;
+        }
         if self.overlay_key(&k.key) {
             return true;
         }
@@ -918,8 +947,9 @@ impl Client {
         }
     }
     /// Turn an empty pane into `kind` (`terminal` or `browser`).
-    fn set_kind(&self, pane: &str, kind: NewPaneKind) {
-        self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind, artifact: None, scope: None, url: None });
+    fn set_kind(&mut self, pane: &str, kind: NewPaneKind) {
+        let pane = pane.to_owned();
+        self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact: None, scope: None, url: None });
     }
     /// The artifact palette open inside `pane`, if any.
     pub fn palette(&self, pane: &str) -> Option<&Palette> {
@@ -1007,6 +1037,10 @@ impl Client {
         self.native_panes.clear();
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
         for p in leaves {
+            if self.quarantine.isolates_pane(&p.leaf.id) {
+                continue;
+            }
+            crate::crash_guard::mark_pane(&p.leaf.id);
             let scope = p.leaf.scope.as_deref().unwrap_or("project");
             let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
                 // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
@@ -1077,10 +1111,16 @@ impl Render for Client {
         if self.address_edit.is_some() && self.native.status()["root_focused"] != true {
             self.address_edit = None;
         }
+        crate::crash_guard::mark_space(self.space_id.as_deref().unwrap_or(""));
+        let space_held = self.space_id.as_deref().is_some_and(|s| self.quarantine.isolates_space(s));
+        // A quarantined space opens none of its views and draws its card in place of its panes.
+        let (leaves, dividers) = if space_held { (vec![], vec![]) } else { (leaves, dividers) };
         self.sync_native(&leaves);
         self.sync_agents(&leaves);
         self.settle_selection();
         self.drawn.borrow_mut().clear();
+        self.check_client_update();
+        self.tick_pairing(cx);
         let mut root = div().relative().track_focus(&self.handle)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
                 if this.key(e, cx) {
@@ -1141,7 +1181,8 @@ impl Render for Client {
             let r = p.rect;
             let native = self.native_panes.contains(&p.leaf.id);
             let id = p.leaf.id.clone();
-            let body = match p.leaf.kind.as_str() {
+            crate::crash_guard::mark_pane(&p.leaf.id);
+            let body = if self.quarantine.isolates_pane(&p.leaf.id) { self.quarantine_card(&p.leaf.id, &p.leaf.kind, cx) } else { match p.leaf.kind.as_str() {
                 "browser" if native => {
                     let state = self.browsers.get(&p.leaf.id).cloned().unwrap_or_default();
                     let editing = self.address_edit.as_ref().filter(|(pane, _)| pane == &p.leaf.id).map(|(_, d)| d.clone());
@@ -1180,7 +1221,7 @@ impl Render for Client {
                     div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(artifact).child(button("Browser", NewPaneKind::Browser, cx))
                 }
                 other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
-            };
+            } };
             root = root.child(
                 div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x17201c))
                     .border_1().border_color(rgb(if self.focus.current.as_ref() == Some(&p.leaf.id) { 0x7fb89a } else { 0x2c3d34 }))
@@ -1228,6 +1269,9 @@ impl Render for Client {
             root = root.child(if horizontal { bar.cursor_col_resize() } else { bar.cursor_row_resize() });
         }
         let (w, h) = self.viewport;
+        if space_held && let Some(space) = self.space_id.clone() {
+            root = root.child(div().absolute().left_0().top(px(TITLE)).w(px(w)).h(px(h - TITLE)).child(self.quarantine_space_card(&space, cx)));
+        }
         if let Some(palette) = &self.command_palette {
             root = root.child(commands::command_palette_overlay(palette, w, h, cx));
         }
@@ -1245,6 +1289,11 @@ impl Render for Client {
         if let Some(c) = &self.confirmation {
             root = root.child(commands::confirmation_overlay(c, w, h, cx));
         }
+        if self.pairing.open {
+            root = root.child(self.pairing_overlay(w, h, cx));
+        }
+        root = root.child(self.toast_stack(w, h, cx));
+        crate::crash_guard::clear();
         root
     }
 }
