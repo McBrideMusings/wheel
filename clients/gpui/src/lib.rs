@@ -23,14 +23,32 @@ pub mod strip;
 pub mod toasts;
 pub mod transcript;
 pub mod view;
+pub mod windows;
 
 use anyhow::Result;
 use futures::StreamExt as _;
 use gpui::{App, Bounds, WindowBounds, WindowHandle, WindowOptions, point, prelude::*, px, size};
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-use std::{rc::Rc, sync::atomic::{AtomicU32, Ordering}};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::atomic::{AtomicU32, Ordering}};
+use wheel_proto::{ServerMsg, WindowCommand};
 
 static WINDOWS: AtomicU32 = AtomicU32::new(0);
+
+thread_local! {
+    /// Every open window by id, for a window command or a debug request that names another window.
+    static HANDLES: RefCell<HashMap<String, WindowHandle<view::Client>>> = RefCell::default();
+}
+
+/// The open window `id`, if it is open.
+pub fn window_handle(id: &str) -> Option<WindowHandle<view::Client>> {
+    HANDLES.with(|h| h.borrow().get(id).copied())
+}
+
+/// A window closed: it leaves the handles and the app's list of windows.
+pub fn forget_window(id: &str) {
+    HANDLES.with(|h| h.borrow_mut().remove(id));
+    windows::with(|r| r.remove(id));
+}
 
 /// Open a client window over `connection_out` and attach the native bridge to it. `hidden` is
 /// the test mode: the window is never shown, never key, and the application never activates.
@@ -48,6 +66,7 @@ pub fn create_window(
     let native = native::Native::new(bridge);
     let (b, n) = (bridge.clone(), native.clone());
     let window_id = format!("gpui-{}-{}", std::process::id(), WINDOWS.fetch_add(1, Ordering::Relaxed));
+    let registered = window_id.clone();
     let window = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(720.)) })),
@@ -66,7 +85,27 @@ pub fn create_window(
     // The bridge speaks first for a browser pane (its state, its reports) and when it answers a
     // daemon request the view relayed: those frames come through this channel.
     let (frames, mut incoming) = futures::channel::mpsc::unbounded::<String>();
-    window.update(cx, |_, window, _| -> Result<()> {
+    HANDLES.with(|h| h.borrow_mut().insert(registered.clone(), window));
+    // The newest window is the focused one until another is key (AppModel.newWindow brings it front).
+    windows::with(|r| r.focused = Some(registered.clone()));
+    window.update(cx, |_, window, cx| -> Result<()> {
+        // The red light asks the window first: the last window on a session that holds spaces
+        // shows its close question and stays open.
+        // The focused window is the one that became key last (NSApp.keyWindow in the Swift app).
+        let id = registered.clone();
+        cx.observe_window_activation(window, move |_, window, _| {
+            if window.is_window_active() {
+                windows::with(|r| r.focused = Some(id.clone()));
+            }
+        })
+        .detach();
+        window.on_window_should_close(cx, |window, cx| {
+            let Some(Some(client)) = window.root::<view::Client>() else { return true };
+            client.update(cx, |client, cx| {
+                cx.notify();
+                client.ask_close_window()
+            })
+        });
         let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|e| anyhow::anyhow!("{e:?}"))?.as_raw() else {
             anyhow::bail!("not an AppKit window")
         };
@@ -93,6 +132,11 @@ pub fn answer_debug(window: WindowHandle<view::Client>, request: &debug::Request
     if request.expired() {
         anyhow::bail!("the request's connection stopped waiting");
     }
+    // `window=<id>` sends the request to another open window of this app.
+    let window = match request.query.get("window") {
+        Some(id) => window_handle(id).ok_or_else(|| anyhow::anyhow!("no window {id}"))?,
+        None => window,
+    };
     match window.update(cx, |client, _, cx| client.debug_request(request, cx))? {
         view::DebugAnswer::Done(status, body) => Ok((status, body)),
         view::DebugAnswer::Snapshot(target) => {
@@ -138,18 +182,128 @@ pub fn open_window(
     prefer_space: Option<String>,
     hidden: bool,
 ) -> Result<WindowHandle<view::Client>> {
-    let mut connection = daemon::Connection::open(endpoint.clone());
-    let window = create_window(cx, bridge, connection.send.clone(), endpoint, prefer_session, prefer_space, hidden)?;
+    // The window holds the only sender: when it closes, the socket closes with it, and wheeld
+    // forgets its view and its offer to run window commands at once.
+    let daemon::Connection { send, mut incoming } = daemon::Connection::open(endpoint.clone());
+    let window = create_window(cx, bridge, send, endpoint, prefer_session, prefer_space, hidden)?;
     cx.spawn(async move |cx| {
-        while let Some(event) = connection.incoming.next().await {
-            if window.update(cx, |client, _, cx| {
-                client.on_event(event);
-                cx.notify();
-            }).is_err() {
+        while let Some(event) = incoming.next().await {
+            if cx.update(|cx| deliver(cx, window, event)).is_err() {
                 return;
             }
         }
     })
     .detach();
     Ok(window)
+}
+
+/// Hand `window` one thing its connection reported. A window command acts on other windows
+/// too, so it runs with the app rather than inside the window. Ok(true) for a layout; Err when the
+/// window is gone, and then a window command it carried goes unanswered: there is no connection
+/// left to answer on, and wheeld gives up on it after its wait.
+pub fn deliver(cx: &mut App, window: WindowHandle<view::Client>, event: daemon::Event) -> Result<bool> {
+    if let daemon::Event::Message(message) = &event
+        && let ServerMsg::WindowRequest { id, command } = message.as_ref()
+    {
+        window.read(cx)?;
+        answer_window_command(cx, window, *id, command.clone());
+        return Ok(false);
+    }
+    window.update(cx, |client, _, cx| {
+        let layout = client.on_event(event);
+        cx.notify();
+        layout
+    })
+}
+
+/// Answer a window command wheeld forwarded to `via` (AppModel.answerWindowCommand): run it on
+/// the app's windows and send what it came to back through `via`'s connection.
+pub fn answer_window_command(cx: &mut App, via: WindowHandle<view::Client>, id: u64, command: WindowCommand) {
+    let result = run_window_command(cx, via, &command);
+    let _ = via.update(cx, |client, _, cx| {
+        client.window_answer(id, &command, result);
+        cx.notify();
+    });
+}
+
+fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &WindowCommand) -> Result<serde_json::Value, String> {
+    let gone = |_| "the window wheeld asked has closed".to_owned();
+    let (sessions, spaces) = via.read(cx).map(|c| c.layout_lists()).map_err(gone)?;
+    let target = |text: &str| -> Result<(String, WindowHandle<view::Client>), String> {
+        let id = windows::with(|r| windows::window_id(r, text, &spaces))?;
+        window_handle(&id).map(|h| (id.clone(), h)).ok_or_else(|| format!("window {id} has closed"))
+    };
+    match command {
+        WindowCommand::Ls => Ok(windows::with(|r| windows::ls(r, &sessions, &spaces))),
+        WindowCommand::New { name, space } => {
+            let held = space.as_deref().map(|s| windows::space_id(s, &spaces)).transpose()?;
+            // The session holding the space, else the one the focused window shows.
+            let session = match &held {
+                Some(space) => sessions.iter().find(|s| s.spaces.contains(space)).map(|s| s.id.clone()),
+                None => windows::with(|r| r.focused().and_then(|w| w.session.clone())),
+            };
+            // It opens with the focused window's sidebar (AppModel.newWindow).
+            let sidebar = windows::with(|r| r.focused().map(|w| w.sidebar)).unwrap_or(true);
+            let (bridge, endpoint, hidden) = via.read(cx).map(|c| c.opener()).map_err(gone)?;
+            let handle = open_window(cx, &bridge, endpoint, session, held, hidden).map_err(|e| format!("{e:#}"))?;
+            let new_id = handle.read(cx).map(|c| c.window_id().to_owned()).map_err(gone)?;
+            let _ = handle.update(cx, |client, _, cx| {
+                client.set_sidebar(sidebar);
+                client.set_window_name(name.clone());
+                cx.notify();
+            });
+            Ok(serde_json::json!({"window": new_id}))
+        }
+        WindowCommand::Rename { window, name } => {
+            let (id, handle) = target(window)?;
+            let _ = handle.update(cx, |client, _, cx| {
+                client.set_window_name(Some(name.clone()));
+                cx.notify();
+            });
+            Ok(serde_json::json!({"window": id}))
+        }
+        WindowCommand::Close { window } => {
+            let (id, handle) = target(window)?;
+            let closes = handle.update(cx, |client, _, cx| {
+                cx.notify();
+                client.ask_close_window()
+            });
+            // The window may be the one answering: it goes after its answer is queued.
+            match closes {
+                // Its connection writes every frame queued before the window's sender drops.
+                Ok(true) => cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                }),
+                // The question shows on that window: bring it front, as the Swift app does.
+                Ok(false) => bring_front(cx, handle),
+                Err(_) => {}
+            }
+            Ok(serde_json::json!({"window": id}))
+        }
+        WindowCommand::SpaceMove { space, to } => {
+            let space = windows::space_id(space, &spaces)?;
+            if to == "background" {
+                return Err(windows::NO_BACKGROUND_MOVE.into());
+            }
+            let (id, handle) = target(to)?;
+            let placed = handle.update(cx, |client, _, cx| {
+                cx.notify();
+                client.place(&space)
+            });
+            if placed.unwrap_or(false) {
+                windows::with(|r| r.focused = Some(id.clone()));
+                bring_front(cx, handle);
+                Ok(serde_json::json!({"space": space, "to": id}))
+            } else {
+                Err(format!("window {id} shows no session to put {space} in"))
+            }
+        }
+    }
+}
+
+/// Bring a window front and make it key, unless the app runs hidden for a check.
+fn bring_front(cx: &mut App, handle: WindowHandle<view::Client>) {
+    if handle.read(cx).is_ok_and(|c| !c.is_hidden()) {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+    }
 }

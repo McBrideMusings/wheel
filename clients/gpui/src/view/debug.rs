@@ -337,11 +337,56 @@ impl Client {
                 }
                 None
             }
+            // The window's name field (`kind=window`) and the Rename Session card (`kind=session&id=`):
+            // begin, commit with `name=`, or cancel, as Return and Esc do.
+            "/rename" if matches!(q("kind").as_deref(), Some("window" | "session")) => {
+                let target = match q("kind").as_deref() {
+                    Some("session") => {
+                        let Some(id) = q("id").filter(|id| self.sessions.iter().any(|s| &s.id == id)) else { return refuse(MISSING, "id= names no session") };
+                        NameTarget::Session(id)
+                    }
+                    _ => NameTarget::Window,
+                };
+                let begin = |this: &mut Self| match &target {
+                    NameTarget::Window => this.begin_window_rename(),
+                    NameTarget::Session(id) => this.begin_session_rename(id),
+                };
+                match q("action").as_deref() {
+                    Some("begin") => begin(self),
+                    Some("commit") => {
+                        if self.name_edit.as_ref().map(|e| &e.target) != Some(&target) {
+                            begin(self);
+                        }
+                        if let Some(name) = q("name") && let Some(edit) = self.name_edit.as_mut() {
+                            edit.draft = name;
+                        }
+                        self.commit_name_edit();
+                    }
+                    Some("cancel") => self.cancel_name_edit(),
+                    _ => return refuse(BAD, "action is begin, commit or cancel"),
+                }
+                None
+            }
+            // The close question: `ask` runs what the red light runs; `answer=background|stop|cancel` presses a button.
+            "/windowclose" => {
+                match (q("action").as_deref(), q("answer").as_deref()) {
+                    (Some("ask"), _) => self.request_close_window(),
+                    (_, Some(answer)) => {
+                        let answer = match answer { "background" => CloseAnswer::Background, "stop" => CloseAnswer::Stop, "cancel" => CloseAnswer::Cancel, _ => return refuse(BAD, "answer is background, stop or cancel") };
+                        if !self.closing_window {
+                            return refuse("409 Conflict", "no close question is showing");
+                        }
+                        self.answer_window_close(answer);
+                    }
+                    _ => return refuse(BAD, "action=ask, or answer=background|stop|cancel"),
+                }
+                None
+            }
             // Renaming as the field does it: `action` is begin (the menu item), commit (Return, with `name`) or cancel (Escape).
             "/rename" => {
-                let Some(id) = q("id") else { return refuse(BAD, "kind=space and id= are required") };
+                let Some(id) = q("id") else { return refuse(BAD, "kind=space|window|session is required, with id= for a space or a session") };
                 if q("kind").as_deref() != Some("space") {
-                    return refuse(BAD, "kind must be space (a window's name is wheel-ynjo.7's)");
+                    return refuse(BAD, "kind is space, window or session");
                 }
                 if !self.spaces.iter().any(|s| s.id == id) {
                     return refuse(MISSING, "no such space");
@@ -523,6 +568,7 @@ impl Client {
         }
         let procs: serde_json::Map<String, Value> = self.procs.by_space.iter().map(|(space, list)| (space.clone(), json!(list))).collect();
         json!({
+            "window_info": self.window_json(),
             "daemon_url": self.endpoint.ws.split('?').next().unwrap_or_default(),
             "connection": match &self.link { Link::Connecting => "connecting".to_owned(), Link::Up => "connected".to_owned(), Link::Down(why) => format!("unreachable: {why}"), Link::Incompatible { .. } => "incompatible".to_owned() },
             "banner": self.link.banner(),

@@ -195,11 +195,7 @@ async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window:
     let end = std::time::Instant::now() + Duration::from_millis(ms);
     while std::time::Instant::now() < end {
         while let Ok(event) = connection.incoming.try_recv() {
-            if window.update(cx, |c, _, cx| {
-                let layout = c.on_event(event);
-                cx.notify();
-                layout
-            })? {
+            if cx.update(|app| wheel_gpui::deliver(app, window, event))? {
                 *layouts += 1;
             }
         }
@@ -953,6 +949,127 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(native.status()["panes"].as_object().is_some_and(|p| native_panes.iter().all(|(id, _)| p.contains_key(id))), "the first window lost its views");
     let sessions_windows = json!({"first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
         "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
+    // `wheel window` and the window menus (wheel-ynjo.7.2; AppModel+Windows.swift): this app
+    // offers to run window commands; wheeld forwards each to the newest window that offered, which
+    // answers from the app's list of windows and acts on the others through their handles.
+    let window_ls = |out: &str| -> Result<Value> { serde_json::from_str(out).map_err(|e| anyhow::anyhow!("wheel window ls --json printed {out:?}: {e}")) };
+    let (ok, out, err) = run_pumped(&["window", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel window ls failed: {err}");
+    let listed = window_ls(&out)?;
+    let first_space_name = window.update(cx, |c, _, _| c.space_id().and_then(|s| c.space_name(s)))?;
+    ensure!(listed["windows"].as_array().map(Vec::len) == Some(1) && listed["windows"][0]["id"] == json!(id1), "wheel window ls lists {listed}");
+    ensure!(listed["windows"][0]["title"] == json!(first_space_name) && listed["windows"][0]["session"] == json!(first_session) && listed["windows"][0]["focused"] == true, "the window reads {}", listed["windows"][0]);
+    ensure!(listed["background"].as_array().is_some_and(|b| !b.is_empty()), "the second session's spaces are not the background: {listed}");
+    // Rename by id, then by the new name; an empty name clears it.
+    let (ok, _, err) = run_pumped(&["window", "rename", &id1, "Notes"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && window.update(cx, |c, _, _| c.window_name.clone())?.as_deref() == Some("Notes"), "wheel window rename left the name {:?}: {err}", window.update(cx, |c, _, _| c.window_name.clone())?);
+    let (_, out, _) = run_pumped(&["window", "ls"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(out.contains(&format!("{id1}  Notes  ")), "wheel window ls prints {out:?}");
+    let (ok, _, err) = run_pumped(&["window", "rename", "Notes", ""], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && window.update(cx, |c, _, _| c.window_name.is_none())?, "an empty name kept the name: {err}");
+    let (ok, _, err) = run_pumped(&["window", "rename", "Nowhere", "x"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(!ok && err.contains("no window Nowhere; the windows are"), "renaming a window that is not there said {err:?}");
+    // A new window, named, on the session the focused window shows.
+    let before_new = cx.update(|app| app.windows().len());
+    let (ok, out, err) = run_pumped(&["window", "new", "--name", "Second"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel window new failed: {err}");
+    let new_id = out.trim().to_owned();
+    let made = cx.update(|_| wheel_gpui::window_handle(&new_id)).ok_or_else(|| anyhow::anyhow!("wheel window new printed {new_id:?}, which is no window"))?;
+    ensure!(cx.update(|app| app.windows().len()) == before_new + 1, "wheel window new opened no window");
+    for _ in 0..30 {
+        if made.update(cx, |c, _, _| c.session_id().is_some())? {
+            break;
+        }
+        tick(cx, 100).await;
+    }
+    ensure!(made.update(cx, |c, _, _| (c.window_name.clone(), c.session_id().map(str::to_owned)))? == (Some("Second".into()), first_session.clone()), "the new window is {:?}", made.update(cx, |c, _, _| (c.window_name.clone(), c.session_id().map(str::to_owned)))?);
+    // `wheel space move` puts a new space in the named window's session and shows it there.
+    let dir = std::env::temp_dir().join(format!("wheel-gpui-window-move-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let (ok, out, err) = run_pumped(&["space", "new", &dir.to_string_lossy(), "--name", "moved"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space new failed: {err}");
+    let moved = out.trim().to_owned();
+    let (ok, out, err) = run_pumped(&["space", "move", "moved", "Second"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space move failed: {err} {out}");
+    let mut placed = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if made.update(cx, |c, _, _| c.space_id() == Some(moved.as_str()))? {
+            placed = true;
+            break;
+        }
+    }
+    ensure!(placed, "the moved space never showed in the window: {:?}", shown(made, cx)?);
+    ensure!(window.update(cx, |c, _, _| c.session_spaces().iter().any(|s| s.id == moved))?, "the moved space is not in the session the window shows");
+    let (ok, _, err) = run_pumped(&["space", "move", "moved", "background"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(!ok && err.contains("a space is always in a session"), "moving to the background said {err:?}");
+    let (ok, _, err) = run_pumped(&["space", "close", &moved], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space close failed: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+    // Two windows show the session: closing one asks nothing.
+    let (ok, _, err) = run_pumped(&["window", "close", "Second"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel window close failed: {err}");
+    for _ in 0..20 {
+        if cx.update(|_| wheel_gpui::window_handle(&new_id)).is_none() {
+            break;
+        }
+        tick(cx, 100).await;
+    }
+    ensure!(cx.update(|_| wheel_gpui::window_handle(&new_id)).is_none(), "the second window on a shared session stayed open");
+    // The last window on a session with spaces asks; Escape and Cancel keep it, as the sheet does.
+    let (ok, _, err) = run_pumped(&["window", "close", &id1], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel window close on the last window failed: {err}");
+    let summary = window.update(cx, |c, _, _| c.closing_window.then(|| c.close_summary()))?;
+    let expect_summary = window.update(cx, |c, _, _| {
+        let held = c.session_spaces();
+        let panes: usize = held.iter().map(|s| wheel_gpui::layout::leaves_of(&s.root).len()).sum();
+        let session = c.layout_lists().0.into_iter().find(|s| Some(s.id.as_str()) == c.session_id()).map(|s| s.name).unwrap_or_default();
+        format!("The “{session}” session holds {} {} with {panes} {}.", held.len(), if held.len() == 1 { "space" } else { "spaces" }, if panes == 1 { "pane" } else { "panes" })
+    })?;
+    ensure!(summary.as_deref() == Some(expect_summary.as_str()), "the close question reads {summary:?}, not {expect_summary:?}");
+    draw(window, Some(output.join("client-window-close.png")), cx)?;
+    let escape = wheel_gpui::keymap::KeyChord::parse("escape").unwrap().keystroke();
+    window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: escape.clone(), is_held: false, prefer_character_input: false }, cx))?;
+    ensure!(window.update(cx, |c, _, _| !c.closing_window)?, "Escape left the close question up");
+    ensure!(!window.update(cx, |c, _, cx| { let now = c.ask_close_window(); cx.notify(); now })?, "the last window closed with no question");
+    window.update(cx, |c, _, _| c.answer_window_close(wheel_gpui::view::CloseAnswer::Cancel))?;
+    ensure!(window.update(cx, |c, _, _| !c.closing_window)? && cx.update(|_| wheel_gpui::window_handle(&id1)).is_some(), "Cancel closed the window");
+    // Rename Window… from the palette's action: the title row shows the field over the tabs.
+    window.update(cx, |c, _, cx| c.run_action("rename-window", cx))?;
+    for ch in ["D", "e", "s", "k"] {
+        let keystroke = gpui::Keystroke { modifiers: gpui::Modifiers { shift: ch == "D", ..Default::default() }, key: ch.to_lowercase(), key_char: Some(ch.into()) };
+        window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke, is_held: false, prefer_character_input: false }, cx))?;
+    }
+    ensure!(window.update(cx, |c, _, _| c.renaming_window() && c.header_chips().iter().any(|chip| chip.hit == Hit::Title))?, "Rename Window shows no field in the title row");
+    draw(window, Some(output.join("client-window-rename.png")), cx)?;
+    let enter = wheel_gpui::keymap::KeyChord::parse("enter").unwrap().keystroke();
+    window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: enter.clone(), is_held: false, prefer_character_input: false }, cx))?;
+    ensure!(window.update(cx, |c, _, _| (c.window_name.clone(), c.window_title()))? == (Some("Desk".into()), "Desk".into()), "Rename Window named it {:?}", window.update(cx, |c, _, _| c.window_name.clone())?);
+    draw(window, Some(output.join("client-window-named.png")), cx)?;
+    window.update(cx, |c, _, _| c.set_window_name(None))?;
+    // Rename Session… from the session menu: a card with the name in a field; Return sends it.
+    let old_session_name = window.update(cx, |c, _, _| c.layout_lists().0.into_iter().find(|s| Some(s.id.as_str()) == c.session_id()).map(|s| s.name))?.unwrap_or_default();
+    window.update(cx, |c, _, _| {
+        c.toggle_title_menu(wheel_gpui::view::TitleMenu::Session);
+        c.run_title_menu("rename-session");
+    })?;
+    ensure!(window.update(cx, |c, _, _| c.name_edit.as_ref().map(|e| e.draft.clone()))? == Some(old_session_name.clone()), "Rename Session… opened no field holding {old_session_name:?}");
+    window.update(cx, |c, _, _| { if let Some(e) = c.name_edit.as_mut() { e.draft = "Renamed".into(); } })?;
+    draw(window, Some(output.join("client-session-rename.png")), cx)?;
+    window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: enter.clone(), is_held: false, prefer_character_input: false }, cx))?;
+    let mut renamed = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.layout_lists().0.iter().any(|s| Some(s.id.as_str()) == c.session_id() && s.name == "Renamed"))? {
+            renamed = true;
+            break;
+        }
+    }
+    ensure!(renamed, "the session was never renamed");
+    let back = first_session.clone().unwrap_or_default();
+    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::SessionRename { req: None, session: back, name: old_session_name.clone() }))?;
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    let windows_report = json!({"ls": listed, "new": new_id, "moved": moved, "close_summary": summary, "session_renamed_from": old_session_name});
     // Web panes: an artifact's page opens under the client's own `wheel-page` scheme, fetched from
     // wheeld with the token in a header (never in the page's address), in a store of its own; the
     // page's script reached wheeld through `.wheel/client.js`; a file written into the folder
@@ -2132,6 +2249,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "debug": debug_report,
         "sidebar": sidebar_report,
         "title_row": title_report,
+        "windows": windows_report,
         "server_updated": server_updated_report,
         "server_lifecycle": server_lifecycle_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,

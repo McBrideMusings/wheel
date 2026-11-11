@@ -102,7 +102,7 @@ impl Client {
         let has_pane = || if routing { self.space().is_some_and(|s| leaves_of(&s.root).iter().any(|l| drawn(&l.kind))) } else { self.focused_leaf().is_some_and(|l| drawn(&l.kind)) };
         let spaces = || self.session_spaces().len();
         match id {
-            "open-folder" | "new-window" | "command-palette" | "shortcuts" | "close-window" => true,
+            "open-folder" | "new-window" | "command-palette" | "shortcuts" | "close-window" | "rename-window" => true,
             "new-space" => up,
             "close-pane" => if routing { self.space().is_some() } else { self.focused_leaf().is_some() },
             "close-space" => self.space().is_some(),
@@ -113,7 +113,7 @@ impl Client {
             "last-space" => spaces() > 0,
             "settings" => true,
             "toggle-sidebar" | "usage" | "mode-spaces" | "mode-desk" => true,
-            "rename-window" | "zoom-pane" | "switch-view" => false,
+            "zoom-pane" | "switch-view" => false,
             other => {
                 if let Some(n) = other.strip_prefix("space-").and_then(|n| n.parse::<usize>().ok()) {
                     return spaces() >= n;
@@ -186,7 +186,8 @@ impl Client {
                     self.ask_close_space(&space);
                 }
             }
-            "close-window" => self.close_window_requested = true,
+            "close-window" => self.request_close_window(),
+            "rename-window" => self.begin_window_rename(),
             "toggle-sidebar" => self.toggle_sidebar(),
             "usage" => self.toggle_usage(),
             "mode-spaces" => self.set_mode("spaces"),
@@ -705,7 +706,7 @@ impl Client {
     /// Tell the bridge where the window-wide overlay is, so the native views leave it a hole and
     /// the GPUI view takes the keyboard while one is open.
     pub(super) fn sync_overlay(&mut self) {
-        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() || self.usage_open || self.title_menu.is_some();
+        let open = self.closing_window || self.name_edit.is_some() || self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() || self.usage_open || self.title_menu.is_some();
         if open {
             let (w, h) = self.viewport;
             self.native.call(serde_json::json!({"op": "overlay", "open": true, "rect": [0., 0., f64::from(w), f64::from(h)]}));

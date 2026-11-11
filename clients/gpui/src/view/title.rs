@@ -27,6 +27,8 @@ const USAGE_H: f32 = 520.0;
 pub enum TitleMenu {
     Session,
     Mode,
+    /// The title's own menu: Rename Space… and Rename Window….
+    Title,
 }
 
 /// One row of a title menu.
@@ -67,7 +69,8 @@ impl Client {
             None if matches!(self.link, Link::Incompatible { .. }) => "Wheel".into(),
             None => "waiting for wheeld".into(),
         };
-        header::row(self.viewport.0, self.sidebar_open, &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode)
+        // The title shows while the sidebar is open, and while its name field is up.
+        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode)
     }
     /// The row's chips: every button, tab and the title, with the rectangle a check presses.
     pub fn header_chips(&self) -> Vec<header::Chip> {
@@ -202,11 +205,14 @@ impl Client {
                 let current = self.session_id.as_deref();
                 let mut rows: Vec<MenuRow> = self.sessions.iter().map(|s| MenuRow { id: format!("session:{}", s.id), title: s.name.clone(), enabled: true, checked: Some(s.id.as_str()) == current, divided: false }).collect();
                 rows.push(MenuRow { id: "new-session".into(), title: "New Session".into(), enabled: self.link == Link::Up, checked: false, divided: true });
-                // Renaming a session is a window-and-session surface (wheel-ynjo.7): listed, not yet wired.
-                rows.push(MenuRow { id: "rename-session".into(), title: "Rename Session…".into(), enabled: false, checked: false, divided: false });
+                rows.push(MenuRow { id: "rename-session".into(), title: "Rename Session…".into(), enabled: current.is_some() && self.link == Link::Up, checked: false, divided: false });
                 rows.push(MenuRow { id: "close-session".into(), title: "Close Session…".into(), enabled: current.is_some(), checked: false, divided: false });
                 rows
             }
+            TitleMenu::Title => vec![
+                MenuRow { id: "rename-space".into(), title: "Rename Space…".into(), enabled: self.space_id.is_some(), checked: false, divided: false },
+                MenuRow { id: "rename-window".into(), title: "Rename Window…".into(), enabled: true, checked: false, divided: false },
+            ],
             TitleMenu::Mode => header::MODES.iter().map(|(id, title, _)| MenuRow { id: format!("mode:{id}"), title: (*title).to_owned(), enabled: true, checked: self.mode == *id, divided: false }).collect(),
         }
     }
@@ -235,6 +241,12 @@ impl Client {
             self.layout_reqs.insert(req);
             self.session_show_req = Some(req);
             self.send(&ClientMsg::SessionNew { req: Some(req), name });
+        } else if id == "rename-session" && let Some(session) = self.session_id.clone() {
+            self.begin_session_rename(&session);
+        } else if id == "rename-window" {
+            self.begin_window_rename();
+        } else if id == "rename-space" && let Some(space) = self.space_id.clone() {
+            self.begin_rename(&space);
         } else if id == "close-session"
             && let Some(session) = self.sessions.iter().find(|s| Some(&s.id) == self.session_id.as_ref()).cloned()
         {
@@ -319,7 +331,21 @@ impl Client {
                         .child(div().overflow_hidden().whitespace_nowrap().child(chip.label.clone())).children(dots);
                 }
                 Hit::Title => {
-                    el = el.justify_start().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(chip.label.clone());
+                    // A double click names the window; a right press opens the title's menu.
+                    el = el.justify_start().child(self.window_title_element(&chip.label))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                            this.press_title(&Hit::Title);
+                            if e.click_count >= 2 && !this.renaming_window() {
+                                this.begin_window_rename();
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
+                        .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| {
+                            this.toggle_title_menu(TitleMenu::Title);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }));
                 }
                 _ => {
                     let plugin = matches!(chip.hit, Hit::Plugin(_));
@@ -339,7 +365,7 @@ impl Client {
                     })));
                 }
             }
-            if chip.pressable || matches!(chip.hit, Hit::Title) {
+            if chip.pressable {
                 el = el.on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                     this.press_title(&hit);
                     cx.stop_propagation();
@@ -355,7 +381,7 @@ impl Client {
     /// the element draws and a check presses.
     pub fn title_menu_placed(&self) -> Option<(Rect, Vec<(MenuRow, Rect)>)> {
         let menu = self.title_menu?;
-        let anchor = self.header_chips().into_iter().find(|c| c.hit == match menu { TitleMenu::Session => Hit::SessionMenu, TitleMenu::Mode => Hit::Mode })?.rect;
+        let anchor = self.header_chips().into_iter().find(|c| c.hit == match menu { TitleMenu::Session => Hit::SessionMenu, TitleMenu::Mode => Hit::Mode, TitleMenu::Title => Hit::Title })?.rect;
         let top = anchor.y + anchor.h + 2.;
         let mut y = top + 4.;
         let mut placed = vec![];
@@ -704,7 +730,7 @@ impl Client {
             "buttons": self.title_buttons.iter().map(|(space, list)| (space.clone(), json!(list))).collect::<serde_json::Map<_, _>>(),
             "row": row.chips.iter().map(|c| json!({"id": header::frame_id(&c.hit).unwrap_or_else(|| match &c.hit { Hit::Space(id) => format!("tab:{id}"), _ => "title".into() }), "label": c.label, "icon": c.icon, "badge": c.badge, "tint": c.tint, "enabled": c.enabled, "pressable": c.pressable, "active": c.active, "frame": [c.rect.x, c.rect.y, c.rect.w, c.rect.h]})).collect::<Vec<_>>(),
             "tabs": row.track.map(|t| json!({"track": [t.x, t.y, t.w, t.h], "tab_width": row.tab_width, "scrolls": row.scrolls})),
-            "menu": self.title_menu.map(|m| json!({"kind": match m { TitleMenu::Session => "session", TitleMenu::Mode => "mode" },
+            "menu": self.title_menu.map(|m| json!({"kind": match m { TitleMenu::Session => "session", TitleMenu::Mode => "mode", TitleMenu::Title => "title" },
                 "rows": self.title_menu_placed().map(|(_, rows)| rows.iter().map(|(r, rect)| json!({"id": r.id, "title": r.title, "enabled": r.enabled, "checked": r.checked, "frame": [rect.x, rect.y, rect.w, rect.h]})).collect::<Vec<_>>()).unwrap_or_default()})),
             "mode": self.mode,
             "pinned": self.pinned,

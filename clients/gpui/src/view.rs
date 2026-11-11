@@ -10,6 +10,8 @@ mod settings;
 mod sidebar;
 mod title;
 mod toasts;
+mod windows;
+pub use windows::{CloseAnswer, NameEdit, NameTarget};
 pub use commands::{Confirmation, Pending};
 pub use title::{BOTTOM, MenuRow, TitleMenu};
 pub use debug::Answer as DebugAnswer;
@@ -209,6 +211,16 @@ pub struct Client {
     preview_asked: u64,
     /// The `session_new` sent for Move to New Session, and the space to move into it.
     space_for_new_session: Option<(u64, String)>,
+    /// The window's name (Rename Window, `wheel window rename`); none shows the space's name.
+    pub window_name: Option<String>,
+    /// The close question is over the window: the last window on a session that holds spaces.
+    pub closing_window: bool,
+    /// A name field being edited: this window's in the title row, or a session's in its card.
+    pub name_edit: Option<NameEdit>,
+    /// A space `wheel window space-move` put in this window's session, shown once the layout holds it, and when (unix ms).
+    pending_show: Option<(String, u64)>,
+    /// The title last given the window, for Mission Control and the Window menu.
+    title_set: String,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -314,6 +326,7 @@ impl Client {
             server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
             server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(),
         };
         client.register_server();
         client
@@ -517,6 +530,8 @@ impl Client {
                 // This window draws its panes as PNGs for `wheel pane shot` and runs `wheel pane
                 // eval|dom|record` in its browser panes: wheeld may send it `render_pane` and `inspect_pane`.
                 self.send(&ClientMsg::RenderOffer {});
+                // This app owns its windows: wheeld may forward `wheel window` commands to it.
+                self.send(&ClientMsg::WindowOffer {});
                 // The dots and the footer follow two settings; a later change arrives as a broadcast.
                 self.send(&ClientMsg::SettingsLs { req: None, space: None });
                 self.ask_space_settings();
@@ -560,6 +575,7 @@ impl Client {
             let holder = self.sessions.iter().find(|s| self.space_id.as_ref().is_some_and(|id| s.spaces.contains(id)));
             self.session_id = holder.or(self.sessions.first()).map(|s| s.id.clone());
         }
+        self.show_placed();
         if !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
@@ -652,6 +668,7 @@ impl Client {
     }
     /// Tell wheeld what this window shows (ADR-0022) when it differs from the last report.
     fn sync_view(&mut self) {
+        self.publish();
         if self.link != Link::Up {
             return;
         }
@@ -672,6 +689,7 @@ impl Client {
     /// drops the window's reported view with the connection.
     pub fn shutdown(&mut self) {
         self.native.detach();
+        crate::forget_window(&self.window_id);
     }
     pub fn scene(&self) -> (Vec<Placed>, Vec<Divider>) {
         let (mut leaves, mut dividers) = (vec![], vec![]);
@@ -975,6 +993,18 @@ impl Client {
     }
     pub fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
+        // The close question and a name field take every key while they are up.
+        if self.closing_window {
+            match k.key.as_str() {
+                "enter" => self.answer_window_close(CloseAnswer::Background),
+                "escape" => self.answer_window_close(CloseAnswer::Cancel),
+                _ => {}
+            }
+            return true;
+        }
+        if self.name_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
+            return true;
+        }
         // Esc closes the shortcut sheet wherever the keyboard is; the overlays take their keys.
         if self.command_palette.is_some() {
             if k.modifiers.platform && let Some(chord) = crate::keymap::KeyChord::from_keystroke(k) && self.keymap.action(&chord) == Some("command-palette") {
@@ -1231,6 +1261,16 @@ impl Render for Client {
         if std::mem::take(&mut self.close_window_requested) {
             window.remove_window();
         }
+        if window.is_window_active() {
+            let id = self.window_id.clone();
+            crate::windows::with(|r| r.focused = Some(id));
+        }
+        self.publish();
+        let title = self.window_title();
+        if title != self.title_set {
+            window.set_window_title(&title);
+            self.title_set = title;
+        }
         self.sync_routed();
         // An address edit ends when the keyboard left the GPUI view: a click on the page or on a
         // terminal goes to AppKit's first responder, which GPUI never sees.
@@ -1438,6 +1478,12 @@ impl Render for Client {
         }
         if let Some(c) = &self.confirmation {
             root = root.child(commands::confirmation_overlay(c, w, h, cx));
+        }
+        if let Some(card) = self.session_name_overlay(w, h, cx) {
+            root = root.child(card);
+        }
+        if self.closing_window {
+            root = root.child(self.window_close_overlay(w, h, cx));
         }
         if self.pairing.open {
             root = root.child(self.pairing_overlay(w, h, cx));

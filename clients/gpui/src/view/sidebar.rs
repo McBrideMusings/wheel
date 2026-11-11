@@ -358,6 +358,8 @@ impl Client {
     pub fn begin_rename(&mut self, space: &str) {
         let Some(name) = self.space_name(space) else { return };
         self.close_space_menu();
+        // One name field at a time: the window's or a session's goes.
+        self.cancel_name_edit();
         self.rename = Some(Rename { space: space.to_owned(), draft: name, error: None, req: None });
     }
     pub fn cancel_rename(&mut self) {
