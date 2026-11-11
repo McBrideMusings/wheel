@@ -73,10 +73,9 @@ fn reported_views() -> Result<Vec<(String, Option<String>, Option<String>, Optio
     let out = std::process::Command::new(&cli)
         .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "client", "ls", "--json"])
         .output()?;
-    let clients: Value = serde_json::from_slice(&out.stdout)?;
-    let text = |v: &Value| v.as_str().map(str::to_owned);
-    Ok(clients.as_array().into_iter().flatten().flat_map(|c| c["windows"].as_array().into_iter().flatten())
-        .filter_map(|w| Some((text(&w["window"])?, text(&w["session"]), text(&w["space"]), text(&w["pane"])))).filter(|w| w.0.starts_with("gpui-")).collect())
+    let clients: Vec<wheel_proto::ClientInfo> = serde_json::from_slice(&out.stdout)?;
+    Ok(clients.into_iter().flat_map(|c| c.windows).filter(|w| w.window.starts_with("gpui-"))
+        .map(|w| (w.window, w.session, w.space, w.pane)).collect())
 }
 async fn reported(window: &str, what: &str, want: impl Fn(&(String, Option<String>, Option<String>, Option<String>)) -> bool, cx: &mut AsyncApp) -> Result<()> {
     for _ in 0..60 {
