@@ -308,6 +308,15 @@ impl AppState {
                     tracing::warn!(%pane, %config, %value, "agent view never offered the option; not restored");
                     continue;
                 }
+                // An option the agent takes only at a turn's start is refused while one runs, so
+                // the restore waits on the agent's events for the turn to end.
+                let mut attached = agent.attach();
+                let next_turn = attached.config.iter().any(|o| o.id == config && o.next_turn);
+                while next_turn && matches!(agent.state(), wheel_proto::AgentState::Busy { .. }) {
+                    if let Err(tokio::sync::broadcast::error::RecvError::Closed) = attached.rx.recv().await {
+                        break;
+                    }
+                }
                 match agent.set_config(config.clone(), value.clone()).await {
                     Ok(()) => {
                         tracing::info!(%pane, %config, %value, "agent view takes the option the pane had")

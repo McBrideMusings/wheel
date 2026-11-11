@@ -2253,7 +2253,7 @@ final class DebugServer {
                     o["context"] = contextJSON(chat?.context, pane: pane.id)
                     o["footer"] = chat?.footer.map { ["shells": Int($0.shells), "agents": Int($0.agents), "background_text": $0.backgroundText as Any, "branch": $0.branch as Any] } ?? NSNull()
                     o["request"] = model.perms.first { $0.agent == agent }?.id ?? NSNull()
-                    o["config"] = chat.map { configJSON($0.config) } ?? NSNull()
+                    o["config"] = chat.map { configJSON($0.config, busy: $0.isBusy) } ?? NSNull()
                     o["transcript_redraws"] = chat.map { chat -> [String: Any] in
                         ["rows": chat.rows.count, "list_updates": chat.listUpdates, "row_updates": chat.rowUpdates,
                          "row_draws": chat.rows.reduce(0) { $0 + $1.draws }]
@@ -2868,10 +2868,13 @@ final class DebugServer {
     }
 
     /// An agent's config controls as its pane draws them: what each shows, and what it offers.
-    private func configJSON(_ options: [ConfigOption]) -> [[String: Any]] {
+    private func configJSON(_ options: [ConfigOption], busy: Bool) -> [[String: Any]] {
         options.map { option in
             var o: [String: Any] = [
                 "id": option.id,
+                "next_turn": option.nextTurn,
+                // What `ConfigRow` passes the control: disabled while a turn runs.
+                "locked": option.nextTurn && busy,
                 "name": option.name,
                 "category": option.category ?? NSNull(),
                 "shows": option.currentLabel ?? NSNull(),

@@ -12,7 +12,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use wheel_proto::{
-    ClientMsg, ServerMsg, AgentEvent, AgentState, StampedEvent, StartKind, ToolContent,
+    ClientMsg, ConfigKind, ConfigOption, ServerMsg, AgentEvent, AgentState, StampedEvent, StartKind,
+    ToolContent,
 };
 
 /// A connection to the daemon. `pending` holds the messages `client_op` read past on its way to
@@ -2425,6 +2426,62 @@ async fn a_codex_message_waits_in_the_queue_until_sent_now_and_is_then_steered_i
         !events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "cancelled")),
         "nothing was interrupted: {events:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_option_is_refused_while_a_turn_runs_and_taken_once_it_ends() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    let config = agent_config(&url, &agent).await;
+    // Every Codex control rides on `turn/start`, so each is marked as one for the next turn.
+    assert!(!config.is_empty() && config.iter().all(|o| o.next_turn), "{config:?}");
+    queue(&mut ws, &agent, "permission", 2).await;
+    perm_from(&mut ws, &agent).await;
+    let set = |req: u64| ClientMsg::AgentConfigSet {
+        req: Some(req),
+        agent: agent.clone(),
+        config: "mode".into(),
+        value: "never".into(),
+    };
+    match ok_or_error(&mut ws, set(3), 3).await {
+        ServerMsg::Error { message, .. } => assert!(
+            message.contains("is in a turn") && message.contains("Approvals") && message.contains("when the turn ends"),
+            "{message}"
+        ),
+        other => panic!("a mid-turn set went through: {other:?}"),
+    }
+    let mode = |config: &[ConfigOption]| match &config.iter().find(|o| o.id == "mode").unwrap().kind {
+        ConfigKind::Select { current, .. } => current.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(mode(&agent_config(&url, &agent).await), "never", "the refused value was not stored");
+    let cancel = ClientMsg::AgentCancel { req: Some(4), agent: agent.clone() };
+    assert_eq!(ok_or_error(&mut ws, cancel, 4).await, ServerMsg::Ok { req: 4 });
+    events_until_ended(&mut ws, &[1]).await;
+    assert_eq!(ok_or_error(&mut ws, set(5), 5).await, ServerMsg::Ok { req: 5 });
+    assert_eq!(mode(&agent_config(&url, &agent).await), "never");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_option_changes_inside_a_running_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let agent = start_agent_as(&url, &pane, None, Some("claude")).await;
+    attach(&mut ws, &agent, 1).await;
+    // Claude takes `set_permission_mode` and `set_model` in the running turn.
+    assert!(agent_config(&url, &agent).await.iter().all(|o| !o.next_turn));
+    queue(&mut ws, &agent, "permission", 2).await;
+    perm_from(&mut ws, &agent).await;
+    let set = ClientMsg::AgentConfigSet {
+        req: Some(3),
+        agent: agent.clone(),
+        config: "mode".into(),
+        value: "plan".into(),
+    };
+    assert_eq!(ok_or_error(&mut ws, set, 3).await, ServerMsg::Ok { req: 3 });
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -5658,4 +5715,22 @@ async fn the_orchestrator_is_told_its_spaces_events() {
         }
     }
     assert!(seen.contains(&format!("Event: {mine} needs permission")), "{seen}");
+}
+
+/// The controls `agent` offers, read from a fresh attach on a connection of its own.
+async fn agent_config(url: &str, agent: &str) -> Vec<ConfigOption> {
+    let mut ws = connect(url).await;
+    send(
+        &mut ws,
+        ClientMsg::AgentAttach {
+            req: Some(1),
+            agent: agent.into(),
+        },
+    )
+    .await;
+    loop {
+        if let ServerMsg::AgentAttached { config, .. } = recv(&mut ws).await {
+            return config;
+        }
+    }
 }

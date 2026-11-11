@@ -1072,6 +1072,7 @@ fn initial_options(answer: &Value, requested: Option<&str>) -> Vec<ConfigOption>
         name: "Mode".into(),
         description: None,
         category: Some("mode".into()),
+        next_turn: false,
         kind: ConfigKind::Select {
             current: mode,
             choices: modes,
@@ -1109,6 +1110,7 @@ fn initial_options(answer: &Value, requested: Option<&str>) -> Vec<ConfigOption>
             name: "Model".into(),
             description: None,
             category: Some("model".into()),
+            next_turn: false,
             kind: ConfigKind::Select {
                 current,
                 choices: models,

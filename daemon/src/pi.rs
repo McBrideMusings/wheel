@@ -765,6 +765,7 @@ impl Driver {
             name: name.into(),
             description: None,
             category: Some(category.into()),
+            next_turn: false,
             kind: ConfigKind::Select { current: current.into(), choices },
         };
         let mut options = Vec::new();
@@ -802,6 +803,7 @@ impl Driver {
             name: "Thinking".into(),
             description: None,
             category: Some("thought_level".into()),
+            next_turn: false,
             kind: ConfigKind::Select {
                 current: self.thinking.clone(),
                 choices: self

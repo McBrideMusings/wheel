@@ -114,6 +114,10 @@ def fixture():
             if not fake_agent.exists():
                 raise FileNotFoundError(f'{fake_agent} is missing: run `cargo build -p wheeld --bin wheel-fake-agent` in the repo')
             cli('config', 'set', 'agent.claude.command', str(fake_agent), '--machine')
+            # The same stand-in answers as Codex, with a home of its own so no rollout lands in ~/.codex.
+            cli('config', 'set', 'agent.codex.command', str(fake_agent), '--machine')
+            (root / 'codex-home').mkdir()
+            cli('config', 'set', 'agent.codex.home', str(root / 'codex-home'), '--machine')
             agent_pane = cli('pane', 'split', browser, 'down').splitlines()[-1]
             started = json.loads(cli('pane', 'start', agent_pane, 'agent', '--agent', 'claude'))
 

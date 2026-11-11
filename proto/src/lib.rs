@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1763,6 +1763,11 @@ pub struct ConfigOption {
     /// an agent names. None when the agent gave no category.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// The agent takes a new value only when a turn starts, so a change made while one runs would
+    /// not apply to it. The daemon refuses such a change mid-turn and clients disable the control
+    /// then (`PROTOCOL_VERSION` 34).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub next_turn: bool,
     #[serde(flatten)]
     pub kind: ConfigKind,
 }
@@ -4287,6 +4292,23 @@ mod tests {
                 pane: Some("p4".into())
             }
         );
+    }
+
+    #[test]
+    fn a_next_turn_option_says_so_on_the_wire_and_any_other_says_nothing() {
+        let option = |next_turn| ConfigOption {
+            id: "mode".into(),
+            name: "Approvals".into(),
+            description: None,
+            category: Some("mode".into()),
+            next_turn,
+            kind: ConfigKind::Boolean { current: true },
+        };
+        assert!(serde_json::to_string(&option(true)).unwrap().contains(r#""next_turn":true"#));
+        let plain = serde_json::to_string(&option(false)).unwrap();
+        assert!(!plain.contains("next_turn"), "{plain}");
+        let read: ConfigOption = serde_json::from_str(&plain).unwrap();
+        assert!(!read.next_turn);
     }
 
     #[test]

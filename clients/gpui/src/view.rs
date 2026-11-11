@@ -595,6 +595,11 @@ impl Client {
     pub fn config_controls(&self, agent: &str) -> Vec<(String, String)> {
         self.transcripts.get(agent).map(|t| t.config.iter().map(|o| (o.id.clone(), footer::control_text(o))).collect()).unwrap_or_default()
     }
+    /// The ids of `agent`'s config controls drawn disabled now: the ones it takes only at a turn's
+    /// start, while a turn runs.
+    pub fn config_locked(&self, agent: &str) -> Vec<String> {
+        self.transcripts.get(agent).map(|t| t.config.iter().filter(|o| footer::locked(o, t.busy())).map(|o| o.id.clone()).collect()).unwrap_or_default()
+    }
     /// Where control `id` of `agent` was drawn in the last frame, as (x, y, w, h).
     pub fn control_bounds(&self, agent: &str, id: &str) -> Option<(f32, f32, f32, f32)> {
         self.controls.borrow().iter().find(|c| c.agent == agent && c.id == id)
@@ -1335,6 +1340,15 @@ pub fn recorded(agent: &str, id: &str, controls: &Rc<RefCell<Vec<Control>>>) -> 
     canvas(move |bounds, _, _| controls.borrow_mut().push(Control { agent, id, bounds }), |_, _, _, _| ()).absolute().top_0().left_0().size_full()
 }
 
+/// A tooltip's text in a box of the footer's colours.
+struct Tip(gpui::SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().px_2().py_1().rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).text_xs().text_color(rgb(0xd9e8e1)).child(self.0.clone())
+    }
+}
+
 /// The status line under the composer (the Swift client's `ConfigRow`): the footer's items in the
 /// order `chat.footer.items` says, then the agent's config controls at the right, each a menu
 /// of its choices. The context meter is a 28 by 4 bar with the percent beside it; a click on it
@@ -1366,11 +1380,18 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, items: Vec<(Strin
     let mut right = div().flex().items_center().gap(px(6.)).flex_none().text_xs();
     for option in t.map(|t| t.config.as_slice()).unwrap_or_default() {
         let choices = footer::control_choices(option);
-        let settable = !choices.is_empty();
+        // The agent takes this option only when a turn starts and one is running: the control
+        // stays where it is, disabled, until the turn ends (`ChatView.swift`'s `ConfigControl`).
+        let locked = t.is_some_and(|t| footer::locked(option, t.busy()));
+        let settable = !choices.is_empty() && !locked;
         let (agent_id, option_id) = (agent.to_owned(), option.id.clone());
-        let mut control = div().relative().flex().items_center().px_1().rounded_sm().bg(rgb(0x22302a)).text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
+        let mut control = div().id(gpui::SharedString::from(format!("config-{agent}-{}", option.id))).relative().flex().items_center().px_1().rounded_sm().bg(rgb(0x22302a)).text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
             .child(footer::control_text(option))
             .child(recorded(agent, &option.id, controls));
+        if locked {
+            let tip = footer::locked_help(option);
+            control = control.tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into());
+        }
         if settable {
             control = control.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                 // The pane under the control closes any menu on a press; this press is the control's.
@@ -1381,7 +1402,7 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, items: Vec<(Strin
                 cx.notify();
             }));
         }
-        if menu.as_deref() == Some(option.id.as_str()) {
+        if settable && menu.as_deref() == Some(option.id.as_str()) {
             let mut list = div().flex().flex_col().min_w(px(120.)).rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).py_1().text_xs().text_color(rgb(0xd9e8e1))
                 .child(div().px_2().py_1().text_color(rgb(0x8fa89b)).child(option.name.clone()));
             let current = match &option.kind {

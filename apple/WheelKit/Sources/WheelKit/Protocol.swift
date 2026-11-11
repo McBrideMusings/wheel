@@ -695,6 +695,9 @@ public struct ConfigOption: Sendable, Equatable, Identifiable, Decodable {
     /// What the option is for: `mode`, `model`, `thought_level`, `model_config`, or anything else
     /// an agent names. Nil when the agent gave no category.
     public let category: String?
+    /// The agent takes a new value only when a turn starts, so the server refuses a change while
+    /// one runs (protocol 34). False from an older server.
+    public let nextTurn: Bool
     public let kind: Kind
 
     public enum Kind: Sendable, Equatable {
@@ -705,7 +708,10 @@ public struct ConfigOption: Sendable, Equatable, Identifiable, Decodable {
         case unknown
     }
 
-    private enum K: String, CodingKey { case id, name, description, category, type, current, choices }
+    private enum K: String, CodingKey {
+        case id, name, description, category, type, current, choices
+        case nextTurn = "next_turn"
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -713,6 +719,7 @@ public struct ConfigOption: Sendable, Equatable, Identifiable, Decodable {
         name = try c.decode(String.self, forKey: .name)
         description = try c.decodeIfPresent(String.self, forKey: .description)
         category = try c.decodeIfPresent(String.self, forKey: .category)
+        nextTurn = (try? c.decodeIfPresent(Bool.self, forKey: .nextTurn)) ?? false
         // A control whose payload does not parse becomes `.unknown` rather than throwing: this
         // type is decoded inside `agent_attached`, so one malformed option would otherwise drop
         // the whole frame — the transcript and the agent's state with it.

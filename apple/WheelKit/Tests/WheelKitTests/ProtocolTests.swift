@@ -338,7 +338,7 @@ struct ProtocolTests {
         {"ev":"agent_config","agent":"w1","options":[
           {"id":"model","name":"Model","category":"model","description":"Which model","type":"select","current":"sonnet",
            "choices":[{"value":"sonnet","name":"Sonnet"},{"value":"haiku","name":"Haiku","description":"Fastest"}]},
-          {"id":"fast","name":"Fast mode","category":"model_config","type":"boolean","current":true},
+          {"id":"fast","name":"Fast mode","category":"model_config","type":"boolean","current":true,"next_turn":true},
           {"id":"dial","name":"Dial","type":"something_new"}]}
         """#
         guard case let .agentConfig(agent, options) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
@@ -354,6 +354,9 @@ struct ProtocolTests {
 
         #expect(options[1].kind == .boolean(current: true))
         #expect(options[1].currentLabel == "On")
+        // Only an option the agent takes at a turn's start says so; one that omits the field does not.
+        #expect(options[1].nextTurn)
+        #expect(!options[0].nextTurn)
 
         // A control kind this version does not know still arrives, so the card can show that the
         // agent has one rather than silently dropping it.

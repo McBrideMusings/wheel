@@ -814,6 +814,62 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "eval": {"sum": eval_out, "title": eval_title, "throw_error": eval_throw_err}, "dom_h1": dom_out, "dom_bytes": dom_all.len(),
         "shot_bytes": shot_bytes.len(), "shot_h1_bytes": element_bytes.len(), "shot_none_error": none_err, "record": {"bytes": movie_bytes, "printed": record_out},
         "typed": {"draft": typed_draft, "moved_to_two": on_two, "back_to_one": back_on_one}, "failure": failure, "cleared": cleared, "logs": browser_logs});
+    // A Codex agent takes its controls only when a turn starts: while a turn runs they draw
+    // disabled in place and a press opens no menu; once the turn ends they work again. The agent
+    // pane restarts as Codex here, after every other agent check.
+    let cli = |args: &[&str]| std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output();
+    let started = cli(&["pane", "start", &agent_pane, "agent", "--agent", "codex"])?;
+    ensure!(started.status.success(), "pane start codex failed: {}", String::from_utf8_lossy(&started.stderr));
+    let codex: String = serde_json::from_slice::<Value>(&started.stdout)?["agent"].as_str().unwrap_or_default().to_owned();
+    let mut ids = vec![];
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        ids = window.update(cx, |c, _, _| c.config_controls(&codex))?.into_iter().map(|(id, _)| id).collect();
+        if ids.iter().any(|id| id == "mode") {
+            break;
+        }
+    }
+    ensure!(ids.iter().any(|id| id == "mode"), "the Codex agent {codex} drew no mode control: {ids:?}");
+    let locked_idle = window.update(cx, |c, _, _| c.config_locked(&codex))?;
+    ensure!(locked_idle.is_empty(), "Codex controls locked with no turn running: {locked_idle:?}");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-codex-idle.png")), cx)?;
+    let mut sender = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, "permission", "--timeout", "30"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
+    let mut locked_turn = vec![];
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        locked_turn = window.update(cx, |c, _, _| c.config_locked(&codex))?;
+        if locked_turn.len() == ids.len() {
+            break;
+        }
+    }
+    ensure!(locked_turn.len() == ids.len(), "mid-turn locked controls {locked_turn:?}, wanted all of {ids:?}");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-codex-midturn.png")), cx)?;
+    let mode = window.update(cx, |c, _, _| c.control_bounds(&codex, "mode"))?.ok_or_else(|| anyhow::anyhow!("the Codex mode control was not drawn"))?;
+    press(&native, mode);
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let menu_locked = window.update(cx, |c, _, _| c.open_menu())?;
+    ensure!(menu_locked.is_none(), "a press on a locked control opened {menu_locked:?}");
+    let refused = cli(&["agent", "config", &agent_pane, "mode", "never"])?;
+    let refusal = String::from_utf8_lossy(&refused.stderr).into_owned();
+    ensure!(!refused.status.success() && refusal.contains("when the turn ends"), "a mid-turn mode change was not refused: {refusal}");
+    let cancelled = cli(&["agent", "cancel", &agent_pane])?;
+    ensure!(cancelled.status.success(), "agent cancel failed: {}", String::from_utf8_lossy(&cancelled.stderr));
+    let _ = sender.wait();
+    let mut locked_after = locked_turn.clone();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        locked_after = window.update(cx, |c, _, _| c.config_locked(&codex))?;
+        if locked_after.is_empty() {
+            break;
+        }
+    }
+    ensure!(locked_after.is_empty(), "controls still locked after the turn ended: {locked_after:?}");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-codex-ended.png")), cx)?;
+    let codex_report = json!({"agent": codex, "controls": ids, "locked_idle": locked_idle, "locked_midturn": locked_turn, "menu_on_locked_press": menu_locked, "cli_refusal": refusal.trim(), "locked_after": locked_after});
     // Closing the second window above left `native_panes` as the first window's views; the
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
@@ -885,6 +941,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "agent": agent_report,
         "markdown": markdown_report,
         "footer": footer_report,
+        "codex_controls": codex_report,
         "status": status_report,
         "web": web_report,
         "browser": browser_report,

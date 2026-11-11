@@ -65,7 +65,7 @@ struct ConfigRow: View {
             .clipped()
             Spacer(minLength: 0)
             ForEach(chat.config) { option in
-                ConfigControl(option: option) { value in
+                ConfigControl(option: option, locked: option.nextTurn && chat.isBusy) { value in
                     model.setConfig(chat, option, to: value)
                 }
             }
@@ -182,6 +182,9 @@ private extension Array where Element: Hashable {
 /// tooltip name the control for the cases that don't.
 struct ConfigControl: View {
     let option: ConfigOption
+    /// The agent takes this option only when a turn starts and one is running: the control stays
+    /// where it is, disabled, until the turn ends.
+    var locked = false
     let set: (String) -> Void
 
     var body: some View {
@@ -243,7 +246,10 @@ struct ConfigControl: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .chatControl("config", "Change \(option.name)")
-        .help(option.description.map { "\(option.name): \($0)" } ?? option.name)
+        .disabled(locked)
+        .help(locked
+            ? "\(option.name) can be changed when this turn ends. The agent takes it only at the start of a turn."
+            : option.description.map { "\(option.name): \($0)" } ?? option.name)
     }
 }
 

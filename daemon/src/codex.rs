@@ -99,6 +99,9 @@ fn select(
         name: name.into(),
         description: None,
         category: category.map(Into::into),
+        // Every Codex control travels with `turn/start` and nothing else, so a running turn keeps
+        // the value it started with.
+        next_turn: true,
         kind: ConfigKind::Select {
             current: current.into(),
             choices,

@@ -1097,6 +1097,12 @@ impl Agent {
         }
     }
 
+    /// The name of option `id` when the agent takes it only at a turn's start; None for any other.
+    fn next_turn_option(&self, id: &str) -> Option<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.config.iter().find(|o| o.id == id && o.next_turn).map(|o| o.name.clone())
+    }
+
     /// Replace the stored options and tell every client. Called with whatever the agent last sent:
     /// its start, a set's reply, or a change it made itself.
     fn set_config_options(&self, options: Vec<ConfigOption>) {
@@ -1707,10 +1713,21 @@ impl Agent {
                     Some(Cmd::Cancel { turn }) => {
                         tracing::info!(agent = %self.name, turn, "cancel dropped; that turn already ended");
                     }
-                    // Mid-turn is exactly when a mode or model change is worth making, so this
-                    // does not wait for the turn to end.
                     Some(Cmd::SetConfig { config: option, value, reply }) => {
-                        spawn_config_set(agent.input.clone(), self.clone(), option, value, reply);
+                        // An option the agent takes only at a turn's start would not apply to the
+                        // running turn while the value shown said it had, so it is refused until
+                        // the turn ends. Any other takes effect inside the running turn, which is
+                        // exactly when a mode or model change is worth making.
+                        match self.next_turn_option(&option).filter(|_| running.is_some() || unprompted) {
+                            Some(name) => {
+                                tracing::info!(agent = %self.name, option = %option, turn = ?running, "agent option refused mid-turn");
+                                let _ = reply.send(Err(format!(
+                                    "agent {} is in a turn, and {name} applies only from the next one; change it when the turn ends",
+                                    self.name
+                                )));
+                            }
+                            None => spawn_config_set(agent.input.clone(), self.clone(), option, value, reply),
+                        }
                     }
                     Some(Cmd::Switch { reply, .. }) if running.is_some() || unprompted || !queue.is_empty() || !steered.is_empty() => {
                         // Unreachable by any route a client has: `switch_conversation` refuses
@@ -2403,6 +2420,7 @@ mod tests {
                 name: "Mode".into(),
                 description: None,
                 category: Some("mode".into()),
+                next_turn: false,
                 kind: ConfigKind::Select {
                     current: "default".into(),
                     choices: vec![],
@@ -2413,6 +2431,7 @@ mod tests {
                 name: "Model".into(),
                 description: None,
                 category: Some("model".into()),
+                next_turn: false,
                 kind: ConfigKind::Select {
                     current: "sonnet".into(),
                     choices: vec![],

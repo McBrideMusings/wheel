@@ -160,6 +160,16 @@ pub fn control_choices(option: &ConfigOption) -> Vec<(String, String)> {
     }
 }
 
+/// A control the agent takes only at a turn's start, while a turn runs: shown, not settable.
+pub fn locked(option: &ConfigOption, busy: bool) -> bool {
+    option.next_turn && busy
+}
+
+/// What a locked control says when the pointer rests on it.
+pub fn locked_help(option: &ConfigOption) -> String {
+    format!("{} can be changed when this turn ends. The agent takes it only at the start of a turn.", option.name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,14 +211,23 @@ mod tests {
     #[test]
     fn config_controls_sort_by_category_and_read_their_current_choice() {
         let select = |id: &str, category: Option<&str>, current: &str| ConfigOption {
-            id: id.into(), name: id.into(), description: None, category: category.map(str::to_owned),
+            id: id.into(), name: id.into(), description: None, category: category.map(str::to_owned), next_turn: false,
             kind: ConfigKind::Select { current: current.into(), choices: vec![ConfigChoice { value: "a".into(), name: "Alpha".into(), description: None }, ConfigChoice { value: "b".into(), name: "Beta".into(), description: None }] },
         };
         let options = vec![select("extra", None, "a"), select("mode", Some("mode"), "b"), select("model", Some("model"), "a")];
         let sorted: Vec<String> = sorted_config(&options).iter().map(|o| o.id.clone()).collect();
         assert_eq!(sorted, vec!["model", "mode", "extra"]);
         assert_eq!(control_text(&options[1]), "Beta");
-        assert_eq!(control_text(&ConfigOption { id: "x".into(), name: "x".into(), description: None, category: None, kind: ConfigKind::Boolean { current: true } }), "On");
+        assert_eq!(control_text(&ConfigOption { id: "x".into(), name: "x".into(), description: None, category: None, next_turn: false, kind: ConfigKind::Boolean { current: true } }), "On");
         assert_eq!(control_choices(&options[0]).len(), 2);
+    }
+
+    #[test]
+    fn a_next_turn_control_locks_only_while_a_turn_runs() {
+        let option = |next_turn| ConfigOption { id: "mode".into(), name: "Approvals".into(), description: None, category: Some("mode".into()), next_turn, kind: ConfigKind::Boolean { current: true } };
+        assert!(locked(&option(true), true));
+        assert!(!locked(&option(true), false));
+        assert!(!locked(&option(false), true));
+        assert_eq!(locked_help(&option(true)), "Approvals can be changed when this turn ends. The agent takes it only at the start of a turn.");
     }
 }
