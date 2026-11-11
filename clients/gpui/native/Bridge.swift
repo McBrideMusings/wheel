@@ -101,6 +101,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var termOutputs = 0
     var sends: [String] = []
     var monitor: Any?
+    /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
+    var routed: Set<String> = []
 
     init(root: NSView, window: Int32, hidden: Bool, emit: @escaping Emit) {
         self.root = root
@@ -126,10 +128,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         string.withCString { emitter(window, $0) }
     }
 
-    /// Command-[ and command-] belong to the GPUI view: make it the first responder before they land.
+    /// A chord the GPUI view's keymap runs now belongs to it, wherever the keyboard is, as the
+    /// Swift app's key monitor runs its keymap before the pane sees the key: make the GPUI view the
+    /// first responder before the key lands.
     func routeKey(_ event: NSEvent) {
-        guard event.window === root.window, event.modifierFlags.contains(.command), ["[", "]"].contains(event.charactersIgnoringModifiers ?? ""),
-              root.window?.firstResponder !== root else { return }
+        guard event.window === root.window else { return }
+        // The pane that held the keyboard is named for this key only.
+        heldBeforeKey = nil
+        guard root.window?.firstResponder !== root, let chord = KeyChord(event: event), routed.contains(chord.text) else { return }
         // The pane that held the keyboard, so the GPUI view knows where cycling starts.
         let responder = root.window?.firstResponder as? NSView
         heldBeforeKey = panes.first { responder === $0.value.content || responder?.isDescendant(of: $0.value.content) == true }?.key
@@ -504,6 +510,18 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             if let host = panes[value["pane"] as! String], let term = host.termID {
                 send(["op": "term_input", "id": term, "data": Data((value["text"] as! String).utf8).base64EncodedString()])
             }
+        case "keymap":
+            routed = Set((value["chords"] as? [String]) ?? [])
+        case "choose_folder":
+            // The system folder picker, as the Swift app's Open Folder: the path chosen comes back as a frame.
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.begin { [weak self] response in
+                guard response == .OK, let url = panel.url else { return }
+                self?.emit(["event": "folder_chosen", "path": url.path])
+            }
         case "post_key":
             // Real NSEvents to NSWindow.sendEvent: first-responder routing and the views' own key
             // handling run as for hardware events; nothing touches the OS keyboard or focus.
@@ -512,6 +530,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             var flags: NSEvent.ModifierFlags = []
             if value["command"] as? Bool == true { flags.insert(.command) }
             if value["shift"] as? Bool == true { flags.insert(.shift) }
+            if value["control"] as? Bool == true { flags.insert(.control) }
+            if value["option"] as? Bool == true { flags.insert(.option) }
             for eventType in [NSEvent.EventType.keyDown, .keyUp] {
                 if let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: flags,
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,

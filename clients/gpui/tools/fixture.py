@@ -68,7 +68,7 @@ def fixture():
         (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
         gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n')
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n')
         (root / 'machine.toml').write_text(machine_artifacts(gallery))
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))

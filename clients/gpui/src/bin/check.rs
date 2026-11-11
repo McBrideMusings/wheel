@@ -896,6 +896,205 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     click_chip(window, Hit::Session(first_session.clone().unwrap()), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the pages did not come back");
     wait(&native, "the first space's views shown after the pages", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
+    // The command palette, the key bindings and the shortcut sheet (CommandActions.swift,
+    // KeyBindings.swift, ShortcutSheet.swift): a bound key pressed while a terminal holds the
+    // keyboard runs its action; the palette lists the verbs, the actions and the fixture's
+    // `[runner]` entry and runs them; the `keybind` setting moves a key; ⌘/ shows the sheet;
+    // ⌘W on a shell asks first.
+    let leaves = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.leaf.kind)).collect::<Vec<_>>());
+    let post = |native: &Native, ch: char, command: bool| native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch),"command":command}));
+    let config = |args: &[&str]| -> Result<std::process::Output> {
+        Ok(std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "config"]).args(args).output()?)
+    };
+    // The terminal takes the keyboard by a click, so ⌘K reaches the GPUI view only through the bridge's routing.
+    let term_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| &p.leaf.id == terms[0]).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("no terminal pane"))?;
+    let term_body = [f64::from(term_rect.x + term_rect.w / 2.), f64::from(term_rect.y + term_rect.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":term_body}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":term_body}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let routed_before = native.status();
+    ensure!(routed_before["panes"][terms[0].as_str()]["focused"] == true, "clicking the terminal did not give it the keyboard");
+    let panes_before = leaves(cx)?;
+    post(&native, 'k', true);
+    let mut root_rows = None;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        root_rows = window.update(cx, |c, _, _| c.command_palette.as_ref().map(|p| p.rows.iter().map(|r| r.id()).collect::<Vec<_>>()))?;
+        if root_rows.is_some() {
+            break;
+        }
+    }
+    let actions_so_far = window.update(cx, |c, _, _| c.actions_log.clone())?;
+    let root_rows = root_rows.ok_or_else(|| anyhow::anyhow!("⌘K in a terminal opened no command palette; held_before_key {:?}, actions {actions_so_far:?}", native.status()["held_before_key"]))?;
+    // The fixture's runner and the space's artifacts arrive with `runners` and `artifacts`, after the palette opened.
+    let mut root_rows = root_rows;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        root_rows = window.update(cx, |c, _, _| c.command_palette.as_ref().map(|p| p.rows.iter().map(|r| r.id()).collect::<Vec<_>>()).unwrap_or_default())?;
+        if root_rows.iter().any(|r| r == "verb:run") && root_rows.iter().any(|r| r == "verb:showArtifact") {
+            break;
+        }
+    }
+    for want in ["verb:switchSpace", "verb:goToPane", "verb:closePane", "verb:newPane", "verb:changePaneType", "verb:showArtifact", "verb:run", "action:new-space", "action:close-pane", "action:command-palette", "action:shortcuts", "action:focus-next"] {
+        ensure!(root_rows.iter().any(|r| r == want), "the palette's root list lacks {want}: {root_rows:?}");
+    }
+    for ch in "split r".chars() {
+        post(&native, ch, false);
+        tick(cx, 30).await;
+    }
+    draw(window, None, cx)?;
+    let (query, filtered) = window.update(cx, |c, _, _| c.command_palette.as_ref().map(|p| (p.query.clone(), p.rows.iter().map(|r| r.id()).collect::<Vec<_>>())).unwrap_or_default())?;
+    ensure!(query == "split r" && filtered.first().map(String::as_str) == Some("action:split-right"), "typing `split r` left query {query:?} and rows {filtered:?}");
+    draw(window, Some(output.join("client-command-palette.png")), cx)?;
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut after_split = panes_before.clone();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        after_split = leaves(cx)?;
+        if after_split.len() == panes_before.len() + 1 {
+            break;
+        }
+    }
+    ensure!(after_split.len() == panes_before.len() + 1, "Split Right from the palette made no pane: {panes_before:?} -> {after_split:?}");
+    ensure!(window.update(cx, |c, _, _| c.command_palette.is_none())?, "the palette stayed open after running an action");
+    let split_pane = after_split.iter().find(|p| !panes_before.iter().any(|b| b.0 == p.0)).map(|p| p.0.clone()).unwrap();
+    // Run… lists the fixture's runner; running it opens a terminal pane that prints its line.
+    post(&native, 'k', true);
+    tick(cx, 200).await;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.command_palette.as_ref().is_some_and(|p| p.rows.iter().any(|r| r.id() == "verb:run")))? {
+            break;
+        }
+    }
+    for ch in "fixture-echo".chars() {
+        post(&native, ch, false);
+        tick(cx, 30).await;
+    }
+    draw(window, None, cx)?;
+    let runner_rows = window.update(cx, |c, _, _| c.command_palette.as_ref().map(|p| p.rows.iter().map(|r| (r.id(), r.item.title())).collect::<Vec<_>>()).unwrap_or_default())?;
+    ensure!(runner_rows.first().map(|r| r.0.as_str()) == Some("action:run-fixture-echo") && runner_rows[0].1 == "Run fixture-echo", "typing the runner's name listed {runner_rows:?}");
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut after_run = after_split.clone();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        after_run = leaves(cx)?;
+        if after_run.len() == after_split.len() + 1 {
+            break;
+        }
+    }
+    ensure!(after_run.len() == after_split.len() + 1, "Run fixture-echo made no pane: {after_split:?} -> {after_run:?}");
+    let runner_pane = after_run.iter().find(|p| !after_split.iter().any(|b| b.0 == p.0)).map(|p| p.0.clone()).unwrap();
+    ensure!(after_run.iter().any(|p| p.0 == runner_pane && p.1 == "terminal"), "the runner's pane is not a terminal: {after_run:?}");
+    draw(window, None, cx)?;
+    let ran = wait(&native, "the runner's terminal printing its line", |s| viewport(s, &runner_pane).lines().any(|l| l.trim() == "FIXTURE-RUNNER"), cx).await?;
+    let runner_viewport = viewport(&ran, &runner_pane);
+    // The shortcut sheet: ⌘/ opens it with the keymap's keys, Esc closes it.
+    post(&native, '/', true);
+    let mut sheet = None;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        sheet = window.update(cx, |c, _, _| c.shortcuts_open.then(|| c.shortcut_sheet()))?;
+        if sheet.is_some() {
+            break;
+        }
+    }
+    let sheet = sheet.ok_or_else(|| anyhow::anyhow!("⌘/ opened no shortcut sheet"))?;
+    ensure!(sheet[0].0 == "Panes" && sheet[0].1[0].keys == "⌘D" && sheet[1].1.iter().any(|r| r.id == "space-1" && r.keys == "⌘1"), "the sheet lists {:?}", sheet.iter().map(|g| (g.0, g.1.len())).collect::<Vec<_>>());
+    draw(window, Some(output.join("client-shortcuts.png")), cx)?;
+    native.call(json!({"op":"post_key","text":"\u{1b}","code":53}));
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if !window.update(cx, |c, _, _| c.shortcuts_open)? {
+            break;
+        }
+    }
+    ensure!(!window.update(cx, |c, _, _| c.shortcuts_open)?, "Esc left the shortcut sheet open");
+    // The `keybind` setting moves Split Right to ⌘E: the keymap, the sheet and the key follow.
+    let set = config(&["set", "keybind", "cmd+e=split-right", "--machine"])?;
+    ensure!(set.status.success(), "config set keybind failed: {}{}", String::from_utf8_lossy(&set.stdout), String::from_utf8_lossy(&set.stderr));
+    let mut moved_key = String::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        moved_key = window.update(cx, |c, _, _| c.keymap.symbol("split-right"))?;
+        if moved_key == "⌘E" {
+            break;
+        }
+    }
+    ensure!(moved_key == "⌘E", "after `keybind = cmd+e=split-right` Split Right is bound to {moved_key:?}");
+    ensure!(window.update(cx, |c, _, _| c.keymap.action(&wheel_gpui::keymap::KeyChord::parse("cmd+d").unwrap()).map(str::to_owned))? == None, "⌘D is still bound after the setting moved it");
+    // The empty pane the first split made has the keyboard; ⌘E splits it.
+    let empty_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == split_pane).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("the split pane left"))?;
+    let empty_body = [f64::from(empty_rect.x + empty_rect.w / 2.), f64::from(empty_rect.y + empty_rect.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":empty_body}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":empty_body}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    post(&native, 'e', true);
+    let mut after_rebind = after_run.clone();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        after_rebind = leaves(cx)?;
+        if after_rebind.len() == after_run.len() + 1 {
+            break;
+        }
+    }
+    ensure!(after_rebind.len() == after_run.len() + 1, "⌘E after the rebind split nothing: {after_run:?} -> {after_rebind:?}; actions {:?}", window.update(cx, |c, _, _| c.actions_log.clone())?);
+    let unset = config(&["unset", "keybind", "--machine"])?;
+    ensure!(unset.status.success(), "config unset keybind failed: {}", String::from_utf8_lossy(&unset.stderr));
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.keymap.symbol("split-right"))? == "⌘D" {
+            break;
+        }
+    }
+    ensure!(window.update(cx, |c, _, _| c.keymap.symbol("split-right"))? == "⌘D", "unsetting keybind did not bring ⌘D back");
+    // ⌘W closes the focused empty pane with no question; on a shell it asks, and Esc declines.
+    let focused_now = window.update(cx, |c, _, _| c.focus.current.clone())?;
+    post(&native, 'w', true);
+    let mut after_close = after_rebind.clone();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        after_close = leaves(cx)?;
+        if after_close.len() == after_rebind.len() - 1 {
+            break;
+        }
+    }
+    ensure!(after_close.len() == after_rebind.len() - 1 && window.update(cx, |c, _, _| c.confirmation.is_none())?, "⌘W on empty pane {focused_now:?} closed nothing: {after_rebind:?} -> {after_close:?}");
+    // The splits moved the terminal: click where it is now.
+    draw(window, None, cx)?;
+    let term_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| &p.leaf.id == terms[0]).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("the terminal pane left"))?;
+    let term_body = [f64::from(term_rect.x + term_rect.w / 2.), f64::from(term_rect.y + term_rect.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":term_body}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":term_body}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    wait(&native, "the terminal taking the keyboard again", |s| s["panes"][terms[0].as_str()]["focused"] == true, cx).await?;
+    post(&native, 'w', true);
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if window.update(cx, |c, _, _| c.confirmation.is_some())? {
+            break;
+        }
+    }
+    let debug = (window.update(cx, |c, _, _| (c.actions_log.clone(), c.focus.current.clone(), c.keymap.symbol("close-pane")))?, native.status());
+    let asked = window.update(cx, |c, _, _| c.confirmation.clone())?.ok_or_else(|| anyhow::anyhow!("⌘W on a terminal asked nothing: actions {:?}, focus {:?}, close-pane key {:?}, held_before_key {:?}, root_focused {:?}, terminal focused {:?}",
+        debug.0.0, debug.0.1, debug.0.2, debug.1["held_before_key"], debug.1["root_focused"], debug.1["panes"][terms[0].as_str()]["focused"]))?;
+    ensure!(asked.title == "Kill this pane's shell?" && asked.button == "Close Pane", "the question reads {asked:?}");
+    draw(window, Some(output.join("client-confirm-close.png")), cx)?;
+    native.call(json!({"op":"post_key","text":"\u{1b}","code":53}));
+    tick(cx, 200).await;
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    ensure!(window.update(cx, |c, _, _| c.confirmation.is_none())? && leaves(cx)?.len() == after_close.len(), "Esc did not decline the close");
+    let commands_report = json!({"root_rows": root_rows, "split_query": query, "split_pane": split_pane, "runner_pane": runner_pane, "runner_viewport": runner_viewport,
+        "sheet_groups": sheet.iter().map(|g| json!({"name": g.0, "rows": g.1.len()})).collect::<Vec<_>>(), "rebound_key": moved_key,
+        "panes": {"before": panes_before.len(), "after_split": after_split.len(), "after_run": after_run.len(), "after_rebind": after_rebind.len(), "after_close": after_close.len()},
+        "confirmation": {"title": asked.title, "message": asked.message, "button": asked.button}, "actions": window.update(cx, |c, _, _| c.actions_log.clone())?});
     // Closing the second window above left `native_panes` as the first window's views; the
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
@@ -971,6 +1170,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "web": web_report,
         "browser": browser_report,
         "pages": pages_report,
+        "commands": commands_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},

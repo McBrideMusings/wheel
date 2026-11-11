@@ -198,6 +198,8 @@ pub enum BrowserEvent {
     Typed { pane: String, text: String },
     /// The page wrote to its console (`pane_console`); `reset` says it just loaded.
     Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
+    /// The person picked a folder in Open Folder's system picker (`choose_folder`).
+    FolderChosen { path: String },
 }
 /// The answer to `render_pane` or `inspect_pane` `id`.
 #[derive(Debug, Deserialize)]

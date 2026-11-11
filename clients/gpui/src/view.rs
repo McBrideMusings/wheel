@@ -3,9 +3,11 @@
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
-use crate::{browser::{self, CHROME, Press}, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
+mod commands;
+pub use commands::{Confirmation, Pending};
+use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, prelude::*, px, rgb, rgba};
-use wheel_proto::{AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, ServerMsg};
+use wheel_proto::{AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
 use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
@@ -90,6 +92,27 @@ pub struct Client {
     address_edit: Option<(String, String)>,
     /// `pane_browser_open` requests waiting for wheeld to read typed text: (pane, the text).
     open_reqs: HashMap<u64, (String, String)>,
+    /// Which chord runs which action: the built-in keys with the `keybind` setting applied.
+    pub keymap: Keymap,
+    keybind: String,
+    /// The `[runner]` names of the space `runners_space`, as last listed for the palette.
+    runners: Vec<String>,
+    runners_space: Option<String>,
+    /// The command palette over the window (⌘K), if open.
+    pub command_palette: Option<CommandPalette>,
+    recent_dirs: Vec<RecentDir>,
+    palette_artifacts: Vec<ArtifactInfo>,
+    palette_reqs: commands::PaletteReqs,
+    /// The shortcut sheet (⌘/) is over the window.
+    pub shortcuts_open: bool,
+    /// A destructive step waiting on a yes.
+    pub confirmation: Option<Confirmation>,
+    /// The chords the bridge hands the GPUI view the keyboard for, as last sent.
+    routed: Vec<String>,
+    /// The last actions run or refused, in order, for a failing check to read.
+    pub actions_log: Vec<String>,
+    /// Close Window ran: the next render removes the window.
+    close_window_requested: bool,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -184,6 +207,8 @@ impl Client {
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
+            keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
+            shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -193,12 +218,16 @@ impl Client {
                 Some(layout) => {
                     if let ServerMsg::Status { agents, .. } = message.as_ref() {
                         self.agents = agents.clone();
+                        self.rebuild_keymap();
                     }
                     // A `status` reply carries every status; a `spaces` broadcast carries none.
                     self.apply(layout, matches!(message.as_ref(), ServerMsg::Spaces { .. }));
                     true
                 }
                 None => {
+                    if self.on_palette_reply(message.as_ref()) {
+                        return false;
+                    }
                     match message.as_ref() {
                         ServerMsg::StatusChanged { space, pane, status, space_status } => {
                             apply_status(&mut self.spaces, space, pane.as_deref(), status.clone(), space_status.clone());
@@ -274,6 +303,8 @@ impl Client {
                                     "chat.footer.items" => {
                                         self.footer_items.insert(space.clone(), footer::items(&s.value));
                                     }
+                                    // Machine-wide: the keys follow Ghostty's one setting.
+                                    "keybind" if space.is_none() => self.set_keybind(&s.value),
                                     key => {
                                         // `agent.<name>.home` changes the home the footer shows; the
                                         // agent list that carries it comes with the next `status`.
@@ -391,6 +422,12 @@ impl Client {
         for pane in self.palettes.iter().filter(|(_, p)| p.req.is_none() && p.is_loading()).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
             self.ask_artifacts(&pane);
         }
+        // A pane that closed leaves the keyboard with no pane GPUI knows of; the next key reads
+        // where the window's first responder is.
+        if self.focus.current.as_ref().is_some_and(|p| !kinds.contains_key(p)) {
+            self.focus.current = None;
+        }
+        self.refresh_command_palette();
         self.sync_view();
     }
     /// Ask for the shown space's settings once, for its `chat.footer.items`.
@@ -458,6 +495,9 @@ impl Client {
             self.overrides.clear();
             self.menu = None;
             self.ask_space_settings();
+            if self.command_palette.is_some() {
+                self.ask_runners();
+            }
             self.sync_view();
         }
     }
@@ -658,6 +698,8 @@ impl Client {
                 self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text });
             }
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
+            // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
+            Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
             Frame::Answer(Answer::Rendered { id, png }) => self.send(&ClientMsg::Rendered { id, png }),
             Frame::Answer(Answer::Inspected { id, text }) => self.send(&ClientMsg::Inspected { id, text }),
             Frame::Answer(Answer::Recorded { id, mov, frames, millis }) => self.send(&ClientMsg::Recorded { id, mov, frames, millis }),
@@ -785,24 +827,39 @@ impl Client {
     }
     fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
+        // Esc closes the shortcut sheet wherever the keyboard is; the overlays take their keys.
+        if self.command_palette.is_some() {
+            if k.modifiers.platform && let Some(chord) = crate::keymap::KeyChord::from_keystroke(k) && self.keymap.action(&chord) == Some("command-palette") {
+                self.close_command_palette();
+                return true;
+            }
+            return self.command_palette_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control, cx);
+        }
+        // The sheet's own chord closes it, as the Swift app's toggle does.
+        if self.shortcuts_open && let Some(chord) = crate::keymap::KeyChord::from_keystroke(k) && self.keymap.action(&chord) == Some("shortcuts") {
+            self.close_shortcuts();
+            return true;
+        }
+        if self.overlay_key(&k.key) {
+            return true;
+        }
         if k.modifiers.platform && k.key == "c" && self.copy_selection(cx) {
             return true;
         }
         if k.key == "escape" && self.menu.take().is_some() {
             return true;
         }
-        if k.modifiers.platform && matches!(k.key.as_str(), "[" | "]") {
-            // A native view may have taken the keyboard by a click GPUI never saw.
+        // A native view may have taken the keyboard by a click GPUI never saw: an action on
+        // "the" pane means that one.
+        if k.modifiers.platform || k.modifiers.control {
             let status = self.native.status();
             let held = self.native_panes.iter().find(|p| status["panes"][p.as_str()]["focused"] == true).cloned()
                 .or_else(|| status["held_before_key"].as_str().filter(|h| !h.is_empty()).map(str::to_owned));
             if held.is_some() {
                 self.focus.current = held;
             }
-            let order: Vec<String> = self.scene().0.into_iter().map(|p| p.leaf.id).collect();
-            if let Some(next) = self.focus.step(&order, k.key == "]") {
-                self.focus_pane(&next);
-            }
+        }
+        if self.run_key(k, cx) {
             return true;
         }
         let focused = self.scene().0.into_iter().find(|p| Some(&p.leaf.id) == self.focus.current.as_ref()).map(|p| p.leaf);
@@ -982,6 +1039,10 @@ impl Render for Client {
         if !self.handle.is_focused(window) {
             window.focus(&self.handle, cx);
         }
+        if std::mem::take(&mut self.close_window_requested) {
+            window.remove_window();
+        }
+        self.sync_routed();
         // An address edit ends when the keyboard left the GPUI view: a click on the page or on a
         // terminal goes to AppKit's first responder, which GPUI never sees.
         if self.address_edit.is_some() && self.native.status()["root_focused"] != true {
@@ -1136,6 +1197,17 @@ impl Render for Client {
                     cx.notify();
                 }));
             root = root.child(if horizontal { bar.cursor_col_resize() } else { bar.cursor_row_resize() });
+        }
+        let (w, h) = self.viewport;
+        if let Some(palette) = &self.command_palette {
+            root = root.child(commands::command_palette_overlay(palette, w, h, cx));
+        }
+        if self.shortcuts_open {
+            let groups = self.shortcut_sheet();
+            root = root.child(commands::shortcut_sheet_overlay(&groups, w, h, cx));
+        }
+        if let Some(c) = &self.confirmation {
+            root = root.child(commands::confirmation_overlay(c, w, h, cx));
         }
         root
     }
