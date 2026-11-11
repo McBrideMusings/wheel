@@ -457,7 +457,9 @@ private struct SettingsForm: View {
                         restart: model.serverControl?.unavailable == nil ? { model.restartServer() } : nil)
                     StatusDotsSettings(model: model)
                 case .agents: AgentsSettings(agents: model.agents)
-                case .usage: UsageAgentsSettings(model: model, usage: model.usage)
+                case .usage:
+                    UsageAgentsSettings(model: model, usage: model.usage)
+                    UsageLabelsSettings(model: model, usage: model.usage)
                 case .keys, .chat, .terminal: EmptyView()
                 }
             }

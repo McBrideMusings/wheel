@@ -174,7 +174,13 @@ async fn run(args: Args) -> anyhow::Result<()> {
         });
     }
     if let Some(path) = args.usage_fixture {
-        state.set_usage_source(std::sync::Arc::new(wheeld::usage::FileUsage { path }));
+        let source = |agent| {
+            std::sync::Arc::new(wheeld::usage::FileUsage {
+                path: path.clone(),
+                agent,
+            })
+        };
+        state.set_usage_sources(source("claude"), source("codex"));
     }
     // Before the layout, because restoring opens the terminals and agents that carry it.
     state.set_control(

@@ -897,17 +897,33 @@ final class DebugServer {
                 return refuse("400 Bad Request", "action must be list or stop")
             }
         case ("POST", "/usage"):
-            // The Usage window and the strip: open and close the window, refresh, pin or unpin a
-            // row (`row=claude:weekly`), show or hide an agent (`agent=codex`).
+            // The Usage window and the strip: open and close the window, refresh, set a window's
+            // meter (`row=claude:weekly&level=off|meter|full`), turn a label on or off
+            // (`label=billing&on=true`), show or hide an agent (`agent=codex`).
             let action = query["action"] ?? ""
             Log.info("debug: usage \(action)")
             switch action {
             case "open": model.usage.openRequest += 1
             case "close": NSApp.windows.first(where: { $0.title == "Usage" })?.close()
             case "refresh": model.askUsage(dueOnly: query["due_only"] == "true")
-            case "pin", "unpin":
-                guard let row = query["row"] else { return refuse("400 Bad Request", "row=<agent>:<limit> is required") }
-                if model.usage.board.isPinned(row) == (action == "unpin") { model.togglePin(row) }
+            case "meter":
+                let parts = (query["row"] ?? "").split(separator: ":", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { return refuse("400 Bad Request", "row=<agent>:<window> is required") }
+                let level: UsageMeterLevel?
+                switch query["level"] {
+                case "off": level = nil
+                case "meter": level = .meter
+                case "full": level = .full
+                default: return refuse("400 Bad Request", "level must be off, meter or full")
+                }
+                if model.usage.board.level(agent: parts[0], window: parts[1]) != level {
+                    model.setMeter(agent: parts[0], window: parts[1], level: level)
+                }
+            case "label":
+                guard let label = query["label"].flatMap(UsageLabel.init(rawValue:)) else {
+                    return refuse("400 Bad Request", "label must be billing, folder or email")
+                }
+                if model.usage.board.shows(label) != (query["on"] != "false") { model.toggleUsageLabel(label) }
             case "agent":
                 guard let agent = query["agent"], model.usage.board.agents.contains(where: { $0.id == agent }) else {
                     return refuse("404 Not Found", "agent takes the id of an agent the board lists")
@@ -915,7 +931,7 @@ final class DebugServer {
                 let on = query["on"] != "false"
                 if model.usage.board.agents.first(where: { $0.id == agent })?.shown != on { model.toggleUsageAgent(agent) }
             default:
-                return refuse("400 Bad Request", "action must be open, close, refresh, pin, unpin or agent")
+                return refuse("400 Bad Request", "action must be open, close, refresh, meter, label or agent")
             }
         case ("POST", "/settings"):
             // The Settings window's controls: open (the app menu's Settings…), close (its close
@@ -2677,18 +2693,40 @@ final class DebugServer {
         NSApp.windows.first { $0.identifier?.rawValue.contains("Settings") == true }
     }
 
-    /// The usage strip as drawn (`strip`: per shown agent its pinned rows, or the note shown in
-    /// their place), the Usage window's state and every agent the board lists.
+    /// One window of an account as `/state` lists it under `agents`, with its strip level.
+    private static func windowJSON(_ window: WheelKit.UsageWindow, agent: String, board: UsageBoard) -> [String: Any] {
+        var out: [String: Any] = ["id": window.id, "label": window.label, "pct": window.pct]
+        out["length_secs"] = window.lengthSecs.map { Int($0) } ?? NSNull()
+        out["resets"] = UsageText.resets(window.resetsAt) ?? NSNull()
+        out["level"] = board.level(agent: agent, window: window.id)?.rawValue ?? "off"
+        return out
+    }
+
+    /// One strip row as `/state` lists it: the pace and reset clock only at the `full` level.
+    private static func stripRowJSON(_ row: UsageStripRow) -> [String: Any] {
+        let full = row.level == .full
+        var pace: Any = NSNull()
+        var resets: Any = NSNull()
+        if full, let p = row.window.pace() { pace = p }
+        if full, let r = UsageText.resetClock(row.window.resetsAt) { resets = r }
+        return ["id": row.id, "label": row.window.label, "pct": row.window.pct, "level": row.level.rawValue,
+                "pace": pace, "resets": resets]
+    }
+
+    /// The usage strip as drawn (`strip`: per shown agent's account its metered rows with their
+    /// level, pace and reset clock, the labels it prints, or the note shown in their place), the
+    /// Usage window's state and every agent the board lists with each window's level.
     private func usageJSON() -> [String: Any] {
         let u = model.usage
         let board = u.board
         return [
             "window_open": u.open,
             "loaded": u.loaded,
-            "pins": board.pins,
+            "meters": board.meters.map(\.text),
+            "labels": board.labels,
             "strip": board.shown.flatMap { agent -> [[String: Any]] in
                 if let note = agent.missingNote {
-                    return [["agent": agent.id, "account": NSNull(), "note": note, "stale": false, "age_secs": NSNull(), "rows": []]]
+                    return [["agent": agent.id, "account": NSNull(), "note": note, "stale": false, "age_secs": NSNull(), "labels": [], "rows": []]]
                 }
                 return agent.accounts.map { account in
                     [
@@ -2697,7 +2735,8 @@ final class DebugServer {
                         "note": account.missingNote ?? NSNull(),
                         "stale": account.isStale,
                         "age_secs": account.usage.ageSecs.map { Int($0) } ?? NSNull(),
-                        "rows": board.stripRows(for: account, of: agent).map { ["id": $0.id, "label": $0.label, "tag": $0.tag, "pct": $0.pct] },
+                        "labels": StripAccount.labels(board: board, agent: agent, account: account).map(\.1),
+                        "rows": board.stripRows(for: account, of: agent).map(Self.stripRowJSON),
                     ]
                 }
             },
@@ -2710,10 +2749,11 @@ final class DebugServer {
                             "id": account.id, "name": account.name,
                             "kind": account.usage.kind.rawValue,
                             "why": account.usage.why ?? NSNull(),
-                            "plan": account.usage.reading?.plan ?? NSNull(),
+                            "billing": account.usage.reading?.billing ?? NSNull(),
                             "email": account.usage.reading?.email ?? NSNull(),
                             "extra_usage": account.usage.reading?.extraUsage ?? NSNull(),
-                            "rows": account.rows(agent: agent.id).map { ["id": $0.id, "label": $0.label, "pct": $0.pct, "resets": UsageText.resets($0.resetsAt) ?? NSNull(), "pinned": board.isPinned($0.id)] },
+                            "source": account.usage.source,
+                            "rows": (account.usage.reading?.windows ?? []).map { Self.windowJSON($0, agent: agent.id, board: board) },
                         ]
                     },
                 ]

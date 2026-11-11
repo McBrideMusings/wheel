@@ -15,7 +15,8 @@ struct AgentHeader: View {
 
     private var info: PaneHeaderInfo? { model.logins[pane] }
     private var folder: String? { info?.folder }
-    private var weekly: UsageReading? { info?.login?.account?.usage.reading }
+    /// The login's weekly window; nil without a reading or without that window.
+    private var weekly: UsageWindow? { info?.login?.account?.usage.reading?.window("weekly") }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,10 +69,10 @@ struct AgentHeader: View {
                 row("Context", value: "No figure yet")
             }
             if let weekly {
-                meter("Weekly", pct: weekly.weeklyPct, fraction: weekly.weeklyPct / 100,
-                      detail: UsageText.resets(weekly.weeklyResetsAt) ?? "")
+                meter(weekly.label, pct: weekly.pct, fraction: weekly.pct / 100,
+                      detail: UsageText.resets(weekly.resetsAt) ?? "")
             } else if let login = info?.login {
-                row("Weekly", value: "No usage reading for \(login.dir)")
+                row("Weekly", value: login.account?.usage.reading == nil ? "No usage reading for \(login.dir)" : "No weekly window")
             }
         }
         .font(.footnote)
@@ -103,7 +104,7 @@ struct AgentHeader: View {
     }
 
     private static func accountText(_ account: UsageAccount) -> String {
-        [account.name, account.usage.reading?.plan].compactMap { $0 }.joined(separator: " · ")
+        [account.name, account.usage.reading?.billing].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// The label of the choice the option in `category` has now.

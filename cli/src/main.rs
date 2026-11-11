@@ -86,8 +86,9 @@ enum Command {
         #[arg(long, conflicts_with_all = ["text", "id", "pane"])]
         clear: Option<String>,
     },
-    /// Every Claude account's usage: 5-hour and weekly percentages, reset times, source and age,
-    /// then the rows the usage strip shows. Exits 3 when any account's reading is stale or missing.
+    /// Every shown agent's accounts: each rate-limit window the provider reported (id, percentage,
+    /// reset time, length), billing, email, source and age, then the rows the usage strip shows.
+    /// Exits 3 when any account's reading is stale or missing.
     Usage,
     /// Remote access to the daemon.
     #[command(subcommand)]
@@ -2044,7 +2045,8 @@ async fn remote_revoke(conn: &mut Conn, id: String) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The rows the strip shows, one line each as `strip: <agent> <limit> <pct>%`, then the agents the
+/// The rows the strip shows, one line each as `strip: <agent> <account> <window> <pct>%[ full]`
+/// from `usage.meters` (a metered window the reading lacks draws nothing), then the agents the
 /// settings leave out or wheel cannot read.
 fn print_strip(board: &wheel_proto::UsageBoard) {
     for agent in board.agents.iter().filter(|a| a.shown) {
@@ -2071,18 +2073,18 @@ fn print_strip(board: &wheel_proto::UsageBoard) {
             } else {
                 String::new()
             };
-            for pin in &board.pins {
-                let Some(limit) = pin.strip_prefix(&format!("{}:", agent.id)) else {
+            for meter in board.meters.iter().filter(|m| m.agent == agent.id) {
+                let Some(w) = r.windows.iter().find(|w| w.id == meter.window) else {
                     continue;
                 };
-                let pct = match limit {
-                    "session" => Some(r.session_pct),
-                    "weekly" => Some(r.weekly_pct),
-                    other => r.model_limits.iter().find(|l| l.id == other).map(|l| l.pct),
+                let full = match meter.level {
+                    wheel_proto::UsageMeterLevel::Full => " full",
+                    wheel_proto::UsageMeterLevel::Meter => "",
                 };
-                if let Some(pct) = pct {
-                    println!("strip: {} {} {limit} {pct}%{stale}", agent.id, account.name);
-                }
+                println!(
+                    "strip: {} {} {} {}%{full}{stale}",
+                    agent.id, account.name, w.id, w.pct
+                );
             }
         }
     }
@@ -2140,8 +2142,8 @@ async fn notify(
     Ok(())
 }
 
-/// Print each Claude account's usage as lines, then the strip, and fail with exit 3 when any
-/// account's reading is stale or missing.
+/// Print each shown agent's accounts as lines, then the strip, and fail with exit 3 when any
+/// account's reading is stale or missing, or when no Claude account is there.
 async fn usage(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::Usage { board, .. } = conn
@@ -2166,48 +2168,40 @@ async fn usage(conn: &mut Conn) -> Result<(), Fail> {
         println!("missing: {why}");
         wrong.push(format!("missing: {why}"));
     }
-    for account in claude.map(|a| a.accounts.as_slice()).unwrap_or_default() {
-        let info = &account.usage;
-        println!("account: {}", account.name);
-        let why = info.why.clone().unwrap_or_default();
-        let Some(r) = &info.reading else {
-            println!("missing: {why}");
-            wrong.push(format!("{} missing: {why}", account.name));
-            continue;
-        };
-        let reset = |at: &Option<String>| at.clone().unwrap_or_else(|| "-".into());
-        println!(
-            "5-hour: {}% (resets {})",
-            r.session_pct,
-            reset(&r.session_resets_at)
-        );
-        println!(
-            "weekly: {}% (resets {})",
-            r.weekly_pct,
-            reset(&r.weekly_resets_at)
-        );
-        for limit in &r.model_limits {
-            println!(
-                "{}: {}% (resets {})",
-                limit.label.to_lowercase(),
-                limit.pct,
-                reset(&limit.resets_at)
-            );
-        }
-        if let Some(plan) = &r.plan {
-            println!("plan: {plan}");
-        }
-        if let Some(on) = r.extra_usage {
-            println!("extra usage: {}", if on { "on" } else { "off" });
-        }
-        if let Some(email) = &r.email {
-            println!("email: {email}");
-        }
-        println!("source: {}", info.source);
-        println!("age: {} s", info.age_secs.unwrap_or(0));
-        if info.kind == wheel_proto::UsageKind::Stale {
-            println!("stale: {why}");
-            wrong.push(format!("{} stale: {why}", account.name));
+    for agent in board.agents.iter().filter(|a| a.shown) {
+        for account in &agent.accounts {
+            let info = &account.usage;
+            println!("account: {} ({})", account.name, agent.id);
+            let why = info.why.clone().unwrap_or_default();
+            let Some(r) = &info.reading else {
+                println!("missing: {why}");
+                wrong.push(format!("{} missing: {why}", account.name));
+                continue;
+            };
+            for w in &r.windows {
+                println!(
+                    "{}: {}% (resets {}, {} s)",
+                    w.id,
+                    w.pct,
+                    w.resets_at.clone().unwrap_or_else(|| "-".into()),
+                    w.length_secs.map_or("-".to_string(), |l| l.to_string())
+                );
+            }
+            if let Some(billing) = &r.billing {
+                println!("billing: {billing}");
+            }
+            if let Some(on) = r.extra_usage {
+                println!("extra usage: {}", if on { "on" } else { "off" });
+            }
+            if let Some(email) = &r.email {
+                println!("email: {email}");
+            }
+            println!("source: {}", info.source);
+            println!("age: {} s", info.age_secs.unwrap_or(0));
+            if info.kind == wheel_proto::UsageKind::Stale {
+                println!("stale: {why}");
+                wrong.push(format!("{} stale: {why}", account.name));
+            }
         }
     }
     print_strip(&board);

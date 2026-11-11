@@ -7,7 +7,7 @@ import Testing
     }
 
     @Test func groupsByPrefixInArrivalOrder() {
-        let sections = SettingSection.grouping([info("browser.homepage"), info("usage.pins"), info("browser.font_size")])
+        let sections = SettingSection.grouping([info("browser.homepage"), info("usage.meters"), info("browser.font_size")])
         #expect(sections.map(\.name) == ["Browser", "Usage"])
         #expect(sections[0].settings.map(\.key) == ["browser.homepage", "browser.font_size"])
     }

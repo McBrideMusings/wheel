@@ -108,10 +108,10 @@ sleep 1; bg bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/
 WP=$BGPID
 listening() { grep -q 'watching settings' "$WOUT"; }
 poll 10 listening
-w config set usage.pins claude:session --machine >/dev/null
+w config set usage.meters claude:5h:meter --machine >/dev/null
 wait "$WP" 2>/dev/null
 check "config watch prints settings space=" grep -q '^settings space=' "$WOUT"
-check "...and the value with its origin" grep -q "usage.pins = claude:session   (machine)" "$WOUT"
+check "...and the value with its origin" grep -q "usage.meters = claude:5h:meter   (machine)" "$WOUT"
 # The first watch's output still says it is listening; gone, `listening` waits for the second one.
 rm -f "$WOUT"
 sleep 1; bg bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' config watch --timeout 20 >'$WOUT' 2>&1"
