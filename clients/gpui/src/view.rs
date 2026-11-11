@@ -3,9 +3,9 @@
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
-use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, header::{self, Hit}, layout::*, native::{Bridge, Native}, transcript::{Line, Transcript}};
-use gpui::{App, Context, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
-use serde_json::json;
+use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, header::{self, Hit}, layout::*, native::{Bridge, Native}, transcript::{Kind, ToolRow, Transcript}};
+use gpui::{App, Context, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, ScrollHandle, Window, div, prelude::*, px, rgb};
+use wheel_proto::{ClientMsg, NewPaneKind};
 use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
@@ -40,6 +40,8 @@ pub struct Client {
     /// The conversation of every agent pane seen, by agent name, and the agents attached to on
     /// this connection.
     pub transcripts: HashMap<String, Transcript>,
+    /// The transcript column's scroll position per agent; it follows the stream at the bottom.
+    scrolls: HashMap<String, ScrollHandle>,
     attached: HashSet<String>,
     /// The pane with the keyboard, and what has been typed to each agent and not yet sent.
     pub focus: Focus,
@@ -75,7 +77,7 @@ impl Client {
     pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -88,7 +90,15 @@ impl Client {
                 }
                 None => {
                     for (agent, t) in &mut self.transcripts {
-                        t.on_message(&message, agent);
+                        // Follow the stream only while the column is at its bottom; a reader who
+                        // scrolled up stays where they are.
+                        let at_bottom = self.scrolls.get(agent).map(|s| -f32::from(s.offset().y) >= f32::from(s.max_offset().y) - 8.);
+                        if t.on_message(&message, agent)
+                            && at_bottom == Some(true)
+                            && let Some(scroll) = self.scrolls.get(agent)
+                        {
+                            scroll.scroll_to_bottom();
+                        }
                     }
                     false
                 }
@@ -204,7 +214,7 @@ impl Client {
         if now.0.is_none() && now.1.is_none() || self.reported.as_ref() == Some(&now) {
             return;
         }
-        self.send(json!({"op":"view","window":self.window_id,"session":now.0,"space":now.1,"pane":now.2}));
+        self.send(&ClientMsg::View { req: None, window: self.window_id.clone(), session: now.0.clone(), space: now.1.clone(), pane: now.2.clone() });
         self.reported = Some(now);
     }
     /// Open another window over its own connection, showing what this one shows.
@@ -234,18 +244,18 @@ impl Client {
         self.space().and_then(|s| find(&s.root, split))
     }
     /// Frames go out only while the link is up; the connection drops any others.
-    fn send(&self, frame: serde_json::Value) {
+    fn send(&self, message: &ClientMsg) {
         if self.link == Link::Up {
-            let _ = self.out.send(frame.to_string());
+            let _ = self.out.send(crate::daemon::frame(message));
         }
     }
     pub fn request_status(&self, req: u64) {
-        self.send(json!({"op":"status","req":req}));
+        self.send(&ClientMsg::Status { req: Some(req) });
     }
     fn end_drag(&mut self) {
         if let Some((split, _, _)) = self.drag.take() {
             if let Some(ratio) = self.overrides.get(&split) {
-                self.send(json!({"op":"split_ratio","split":split,"ratio":ratio}));
+                self.send(&ClientMsg::SplitRatio { req: None, split: split.clone(), ratio: *ratio });
             }
         }
     }
@@ -260,7 +270,7 @@ impl Client {
             if let Some(agent) = p.leaf.agent.as_ref().filter(|_| p.leaf.kind == "agent") {
                 if self.link == Link::Up && self.attached.insert(agent.clone()) {
                     self.transcripts.entry(agent.clone()).or_default();
-                    self.send(json!({"op":"agent_attach","agent":agent}));
+                    self.send(&ClientMsg::AgentAttach { req: None, agent: agent.clone() });
                 }
             }
         }
@@ -296,14 +306,14 @@ impl Client {
             Typed::Nothing => false,
             Typed::Edited => true,
             Typed::Send(text) => {
-                self.send(json!({"op":"agent_send","agent":agent,"text":text}));
+                self.send(&ClientMsg::AgentSend { req: None, agent: agent.clone(), text });
                 true
             }
         }
     }
     /// Turn an empty pane into `kind` (`terminal` or `browser`).
-    fn set_kind(&self, pane: &str, kind: &str) {
-        self.send(json!({"op":"pane_set_kind","pane":pane,"kind":kind}));
+    fn set_kind(&self, pane: &str, kind: NewPaneKind) {
+        self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind, artifact: None, scope: None, url: None });
     }
     /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views
@@ -408,29 +418,22 @@ impl Render for Client {
             let body = match p.leaf.kind.as_str() {
                 _ if native => div(),
                 "agent" => {
-                    let t = p.leaf.agent.as_ref().and_then(|a| self.transcripts.get(a));
-                    let mut col = div().flex().flex_col().gap_1().overflow_hidden().h(px((r.h - TITLE).max(1.)))
-                        .child(div().text_color(rgb(0x8fa89b)).child(format!("{} · {}", p.leaf.label, t.map(|t| t.state.as_str()).unwrap_or("connecting"))));
-                    for line in t.map(|t| t.lines.as_slice()).unwrap_or_default() {
-                        let (color, text) = match line {
-                            Line::User(x) => (0xe0b070, format!("> {x}")),
-                            Line::Reply(x) => (0xd9e8e1, x.clone()),
-                            Line::Thought(x) => (0x6f8a7c, x.clone()),
-                            Line::Tool { title, status, .. } => (0x8fa89b, format!("[{status}] {title}")),
-                            Line::Error(x) => (0xe07070, x.clone()),
-                        };
-                        col = col.child(div().text_color(rgb(color)).child(text));
-                    }
-                    col.child(div().text_color(rgb(0xe0b070)).child(format!("> {}", p.leaf.agent.as_ref().and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or(""))))
+                    // A pane whose agent has not started yet shares no draft or scroll state with another.
+                    let agent = p.leaf.agent.as_deref();
+                    let t = agent.and_then(|a| self.transcripts.get(a));
+                    let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
+                    let scroll = agent.map(|a| self.scrolls.entry(a.to_owned()).or_default().clone());
+                    let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
+                    agent_pane(&p.leaf.label, &p.leaf.id, t, draft, focused, scroll, r.h - TITLE)
                 }
                 "empty" => {
-                    let button = |label: &'static str, kind: &'static str, cx: &mut Context<Self>| {
+                    let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
                         let id = id.clone();
                         div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.set_kind(&id, kind)))
                             .child(label)
                     };
-                    div().flex().gap_2().child(button("Terminal", "terminal", cx)).child(button("Browser", "browser", cx))
+                    div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(button("Browser", NewPaneKind::Browser, cx))
                 }
                 other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
             };
@@ -459,4 +462,61 @@ impl Render for Client {
         }
         root
     }
+}
+
+/// The composer's height, so the transcript column above it never moves.
+const COMPOSER: f32 = 44.;
+
+/// An agent pane's body: its label and state, the transcript column scrolled to follow the
+/// stream, a running line while a turn is in progress, and the composer with the draft.
+fn agent_pane(label: &str, pane: &str, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32) -> gpui::Div {
+    let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
+    let mut col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into())).flex().flex_col().gap_1().overflow_y_scroll()
+        .h(px((height - COMPOSER - 24.).max(1.)));
+    if let Some(scroll) = &scroll {
+        col = col.track_scroll(scroll);
+    }
+    for row in t.map(|t| t.rows.as_slice()).unwrap_or_default() {
+        col = col.child(match &row.kind {
+            Kind::User { text, queued } => div().flex().gap_2().text_color(rgb(0xe0b070))
+                .child(div().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
+                .child(div().child(text.clone())),
+            Kind::Reply(x) => div().text_color(rgb(0xd9e8e1)).child(x.clone()),
+            Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(x.clone()),
+            Kind::Tool { title, kind, status, content, detail, .. } => {
+                let info = ToolRow::new(title, kind, status, content, detail.as_deref());
+                let mut line = div().flex().gap_2().items_center().text_color(rgb(0x8fa89b))
+                    .child(div().w(px(18.)).text_color(rgb(0x6f8a7c)).child(info.glyph))
+                    .child(div().child(info.label));
+                if let (Some(a), Some(r)) = (info.added, info.removed) {
+                    line = line.child(div().text_xs().text_color(rgb(0x7fb89a)).child(format!("+{a} −{r}")));
+                }
+                line = line.child(div().text_xs().text_color(rgb(match status.as_str() { "failed" => 0xe07070, "completed" => 0x4f6a5c, _ => 0xe0b070 })).child(status.clone()));
+                if let Some(reason) = info.reason {
+                    line = line.child(div().text_xs().text_color(rgb(0xe07070)).child(reason));
+                }
+                line
+            }
+            Kind::Plan(entries) => {
+                let mut plan = div().flex().flex_col().text_color(rgb(0x8fa89b));
+                for e in entries {
+                    plan = plan.child(format!("{} {}", match e.status.as_str() { "completed" => "☑", "in_progress" => "◐", _ => "☐" }, e.content));
+                }
+                plan
+            }
+            Kind::Mode(m) => div().text_xs().text_color(rgb(0x8fa89b)).child(format!("Mode: {m}")),
+            Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(x.clone()),
+            Kind::Error(x) => div().text_color(rgb(0xe07070)).child(x.clone()),
+        });
+    }
+    if t.is_some_and(Transcript::busy) {
+        col = col.child(div().text_color(rgb(0xe0b070)).child("working…"));
+    }
+    div().flex().flex_col().h(px(height.max(1.)))
+        .child(div().h(px(24.)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
+        .child(col)
+        .child(div().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
+            .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
+            .text_color(rgb(0xd9e8e1)).overflow_hidden()
+            .child(format!("{draft}{}", if focused { "▏" } else { "" })))
 }

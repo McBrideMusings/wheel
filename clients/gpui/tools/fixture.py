@@ -1,4 +1,4 @@
-"""A throwaway wheeld with a four-pane space, for running and checking the GPUI client.
+"""A throwaway wheeld with a five-pane space, for running and checking the GPUI client.
 
 The daemon and `wheel` are copied out of the installed Wheel.app and ad-hoc signed, so an
 unrelated client install cannot stop them. Nothing here touches the real wheeld.
@@ -6,6 +6,9 @@ unrelated client install cannot stop them. Nothing here touches the real wheeld.
 import contextlib, json, os, pathlib, shutil, socket, subprocess, tempfile, time
 
 DAEMON = '/Applications/Wheel.app/Contents/Helpers/Wheel Server.wheelserver/Contents/MacOS/wheeld'
+# The agent pane runs the daemon's scripted stand-in for Claude Code (`daemon/src/bin/wheel-fake-agent.rs`):
+# the same stream-json wire, no model calls. Built by `cargo build -p wheeld --bin wheel-fake-agent`.
+FAKE_AGENT = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', pathlib.Path(__file__).resolve().parents[3] / 'target')) / 'debug/wheel-fake-agent'
 
 
 @contextlib.contextmanager
@@ -88,6 +91,12 @@ def fixture():
             cli('pane', 'kind', term2_pane, 'terminal')
             web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
             cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
+            fake_agent = pathlib.Path(os.environ.get('WHEEL_FIXTURE_FAKE_AGENT', FAKE_AGENT))
+            if not fake_agent.exists():
+                raise FileNotFoundError(f'{fake_agent} is missing: run `cargo build -p wheeld --bin wheel-fake-agent` in the repo')
+            cli('config', 'set', 'agent.claude.command', str(fake_agent), '--machine')
+            agent_pane = cli('pane', 'split', browser, 'down').splitlines()[-1]
+            started = json.loads(cli('pane', 'start', agent_pane, 'agent', '--agent', 'claude'))
 
             def terminals(node):
                 if node.get('node') == 'pane':
@@ -104,8 +113,9 @@ def fixture():
             second_session = cli('session', 'new', 'Second').splitlines()[-1]
             second_space = cli('space', 'new', str(second_dir), '--name', 'other', '--session', second_session).splitlines()[-1]
             env.update(WHEEL_CLIENT_SECOND_SESSION=second_session, WHEEL_CLIENT_SECOND_SPACE=second_space)
-            env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers))
-            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2),
+            env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
+                       WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'])
+            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),
                         saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
             yield env, info
         finally:

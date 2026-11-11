@@ -57,6 +57,21 @@ pub fn gh(dir: &str, args: &[&str]) -> Result<String, String> {
 /// pane), its output in `log`. A command that fails at once is an error carrying the tail of its output;
 /// one still running after ten seconds counts as started and is left to finish.
 pub fn button(label: &str, sh: &str, dir: &str, pane: &str, env: &[(&str, &str)], log: &std::path::Path) -> Result<(), String> {
+    button_then(label, sh, dir, pane, env, log, |_| {})
+}
+
+/// `button`, and `then` gets the last line the command printed once it has exited with 0, or `None` when it
+/// failed after the ten seconds: at once when the command was quick (a quick failure is the `Err`, and `then`
+/// does not run), else from the thread that waits for it.
+pub fn button_then(
+    label: &str,
+    sh: &str,
+    dir: &str,
+    pane: &str,
+    env: &[(&str, &str)],
+    log: &std::path::Path,
+    then: impl FnOnce(Option<String>) + Send + 'static,
+) -> Result<(), String> {
     let file = std::fs::File::create(log).map_err(|e| format!("{}: {e}", log.display()))?;
     let mut command = Command::new("/bin/sh");
     if pane != "default" {
@@ -83,16 +98,23 @@ pub fn button(label: &str, sh: &str, dir: &str, pane: &str, env: &[(&str, &str)]
             Err(_) => break None,
         }
     };
-    if let Some(s) = status.filter(|s| !s.success()) {
-        let text = std::fs::read_to_string(log).unwrap_or_default();
-        let tail: String = text.trim().lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
-        return Err(format!("{label} failed ({s}): {tail}"));
+    let path = log.to_path_buf();
+    let last = move || {
+        std::fs::read_to_string(&path).unwrap_or_default().lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
+    };
+    if let Some(s) = status {
+        if !s.success() {
+            let text = std::fs::read_to_string(log).unwrap_or_default();
+            let tail: String = text.trim().lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
+            return Err(format!("{label} failed ({s}): {tail}"));
+        }
+        then(Some(last()));
+        return Ok(());
     }
-    if status.is_none() {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
+    std::thread::spawn(move || {
+        let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+        then(ok.then(last));
+    });
     Ok(())
 }
 
@@ -105,6 +127,21 @@ mod tests {
         assert_eq!(text("/bin/echo", "/", &["hi"]).unwrap(), "hi\n");
         assert!(text("/bin/ls", "/", &["/no/such/path"]).is_err());
         assert!(text("/no/such/program", "/", &[]).unwrap_err().contains("/no/such/program"));
+    }
+
+    #[test]
+    fn a_button_hands_the_last_line_it_printed_to_then() {
+        let dir = std::env::temp_dir().join(format!("wheel-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        button_then("t", "echo noise; echo p42; echo", "/", "default", &[], &dir.join("t.log"), move |l| tx.send(l).unwrap()).unwrap();
+        assert_eq!(rx.recv().unwrap().as_deref(), Some("p42"));
+        let err = button_then("t", "echo boom >&2; exit 3", "/", "default", &[], &dir.join("e.log"), |_| panic!("then ran")).unwrap_err();
+        assert!(err.contains("boom"), "{err}");
+        let (tx, rx) = std::sync::mpsc::channel();
+        button_then("t", "sleep 11; echo p7", "/", "default", &[], &dir.join("slow.log"), move |l| tx.send(l).unwrap()).unwrap();
+        assert_eq!(rx.recv().unwrap().as_deref(), Some("p7"), "a command past ten seconds still reports its pane");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

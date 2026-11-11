@@ -1,10 +1,12 @@
 //! The connection to wheeld: one thread owns the WebSocket, reads frames into a channel and
-//! writes whatever the client queued. The same socket the `wheel` CLI and the Swift clients use.
+//! writes whatever the client queued. The same socket the `wheel` CLI and the Swift clients use,
+//! and the same wire types: every frame is a `ServerMsg` or a `ClientMsg` of the proto crate.
 use anyhow::{Context as _, Result};
 use futures::channel::mpsc as fmpsc;
-use serde_json::{Value, json};
+use serde::Deserialize;
 use std::{net::TcpStream, path::PathBuf, sync::mpsc, time::Duration};
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
+use wheel_proto::{ClientMsg, ServerMsg};
 
 /// Where wheeld listens and the token it wants.
 #[derive(Clone, Debug)]
@@ -46,6 +48,11 @@ pub fn default_token_file() -> PathBuf {
     })
 }
 
+/// A `ClientMsg` as one text frame.
+pub fn frame(message: &ClientMsg) -> String {
+    serde_json::to_string(message).expect("a ClientMsg serializes")
+}
+
 fn socket(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
     let (ws, _) = tungstenite::connect(url).with_context(|| format!("connecting to wheeld at {url}"))?;
     if let MaybeTlsStream::Plain(stream) = ws.get_ref() {
@@ -57,8 +64,8 @@ fn socket(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
 /// What the connection tells the client, in order.
 #[derive(Debug)]
 pub enum Event {
-    /// A frame from wheeld.
-    Message(Value),
+    /// A frame from wheeld, boxed: a `status` reply is large and the other events are not.
+    Message(Box<ServerMsg>),
     /// A socket is open and wheeld answered `status` with a protocol this client speaks. The
     /// endpoint carries the token read for this attempt.
     Up(Endpoint),
@@ -72,6 +79,19 @@ pub enum Event {
 /// The protocol the client needs: ops it sends and fields it reads exist from this version on,
 /// the rule the `wheel` command applies (`cli/src/main.rs`).
 pub const PROTOCOL: u32 = wheel_proto::PROTOCOL_VERSION;
+
+/// The two fields of a `status` reply read before the rest: an older server's reply may lack
+/// fields this build's `ServerMsg` requires, and its protocol number still has to be read to
+/// say so.
+#[derive(Deserialize)]
+struct StatusHead {
+    ev: String,
+    #[serde(default = "first_protocol")]
+    protocol: u32,
+}
+fn first_protocol() -> u32 {
+    1
+}
 
 /// Pause between attempts: doubles from the first to the last, then stays.
 const BACKOFF: [Duration; 4] = [Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2)];
@@ -149,7 +169,7 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmps
         Err(error) => return lost(false, format!("{error:#}")),
     };
     while outgoing.try_recv().is_ok() {}
-    if ws.send(Message::text(json!({"op":"status","req":1}).to_string())).is_err() {
+    if ws.send(Message::text(frame(&ClientMsg::Status { req: Some(1) }))).is_err() {
         return lost(false, "wheeld closed the socket".into());
     }
     let mut up = false;
@@ -167,18 +187,23 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmps
         }
         match ws.read() {
             Ok(Message::Text(t)) => {
-                let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
-                if !up && v["ev"] == "status" {
-                    let server = v["protocol"].as_u64().map_or(1, |p| u32::try_from(p).unwrap_or(u32::MAX));
-                    if server < PROTOCOL {
-                        return Ended::Lost { was_up: false, reason: Event::Incompatible { server, client: PROTOCOL } };
+                if !up {
+                    let Ok(head) = serde_json::from_str::<StatusHead>(&t) else { continue };
+                    if head.ev != "status" {
+                        continue;
+                    }
+                    if head.protocol < PROTOCOL {
+                        return Ended::Lost { was_up: false, reason: Event::Incompatible { server: head.protocol, client: PROTOCOL } };
                     }
                     up = true;
                     if events.unbounded_send(Event::Up(endpoint.clone())).is_err() {
                         return Ended::ClientGone;
                     }
                 }
-                if up && events.unbounded_send(Event::Message(v)).is_err() {
+                // A frame this build's proto crate cannot read (an event a newer server added) is
+                // dropped: nothing in the client reads it.
+                let Ok(message) = serde_json::from_str::<ServerMsg>(&t) else { continue };
+                if events.unbounded_send(Event::Message(Box::new(message))).is_err() {
                     return Ended::ClientGone;
                 }
             }
@@ -191,9 +216,22 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmps
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use serde_json::json;
     use std::{net::TcpListener, sync::{Arc, Mutex}};
+
+    /// A `status` reply at `protocol` with one space, as wheeld writes it.
+    pub(crate) fn status_frame(protocol: u32) -> String {
+        json!({"ev":"status","req":1,"version":"test","protocol":protocol,"uptime_secs":0,"log_path":"/dev/null","terms":[],"perms":[],
+            "spaces":[{"id":"s1","name":"wheel","cwd":"/w","root":{"node":"pane","id":"p1","kind":"empty"}}],
+            "sessions":[{"id":"n1","name":"Main","spaces":["s1"]}]}).to_string()
+    }
+    /// A `spaces` broadcast whose session is named `marker`, so a test can tell which
+    /// connection's frames it reads.
+    fn marker_frame(marker: u32) -> String {
+        json!({"ev":"spaces","spaces":[],"sessions":[{"id":"n1","name":marker.to_string(),"spaces":[]}]}).to_string()
+    }
 
     /// A stand-in wheeld: for each scripted connection, record the token in the URL, answer the
     /// first frame with a `status` at `protocol`, then either close (`hold` false) or keep reading.
@@ -212,8 +250,8 @@ mod tests {
                 })
                 .unwrap();
                 ws.read().unwrap();
-                ws.send(Message::text(json!({"ev":"status","protocol":protocol}).to_string())).unwrap();
-                ws.send(Message::text(json!({"ev":"marker","n":protocol}).to_string())).unwrap();
+                ws.send(Message::text(status_frame(protocol))).unwrap();
+                ws.send(Message::text(marker_frame(protocol))).unwrap();
                 if hold {
                     while ws.read().is_ok() {}
                 }
@@ -238,13 +276,20 @@ mod tests {
     }
 
     #[test]
+    fn the_first_frame_is_a_status_request() {
+        assert_eq!(frame(&ClientMsg::Status { req: Some(1) }), r#"{"op":"status","req":1}"#);
+        let back: ClientMsg = serde_json::from_str(&frame(&ClientMsg::SplitRatio { req: None, split: "x1".into(), ratio: 0.3 })).unwrap();
+        assert_eq!(back, ClientMsg::SplitRatio { req: None, split: "x1".into(), ratio: 0.3 });
+    }
+
+    #[test]
     fn reconnects_after_the_socket_closes_and_rereads_the_token() {
         let (port, tokens) = serve(vec![(PROTOCOL, false), (PROTOCOL, true)]);
         let (endpoint, file) = endpoint(port, "one");
         let mut connection = Connection::open(endpoint);
         assert!(matches!(next(&mut connection), Event::Up(e) if e.token == "one"));
-        assert!(matches!(next(&mut connection), Event::Message(m) if m["ev"] == "status"));
-        assert!(matches!(next(&mut connection), Event::Message(m) if m["ev"] == "marker"));
+        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(*m, ServerMsg::Status { protocol, .. } if protocol == PROTOCOL)));
+        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(&*m, ServerMsg::Spaces { sessions, .. } if sessions[0].name == PROTOCOL.to_string())));
         assert!(matches!(next(&mut connection), Event::Down(_)));
         std::fs::write(&file, "two").unwrap();
         assert!(matches!(next(&mut connection), Event::Up(e) if e.token == "two"));
@@ -274,7 +319,7 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             let mut ws = tungstenite::accept(stream).unwrap();
             ws.read().unwrap();
-            ws.send(Message::text(json!({"ev":"status","protocol":PROTOCOL}).to_string())).unwrap();
+            ws.send(Message::text(status_frame(PROTOCOL))).unwrap();
             while ws.read().is_ok() {}
         });
         assert!(matches!(next(&mut connection), Event::Up(_)));
@@ -293,6 +338,7 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             let mut ws = tungstenite::accept(stream).unwrap();
             ws.read().unwrap();
+            // An old server's status, with none of the fields later builds added.
             ws.send(Message::text(json!({"ev":"status","protocol":1}).to_string())).unwrap();
         });
         assert!(matches!(next(&mut connection), Event::Incompatible { server: 1, .. }));

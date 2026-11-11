@@ -48,7 +48,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         Some(d) => d,
         None => std::env::current_dir()?.to_string_lossy().into_owned(),
     };
-    let snap = collect(&dir);
+    let mut snap = collect(&dir);
+    fill_acts(&mut snap);
     anyhow::ensure!(snap.has_repo, "{dir} has no .beads directory");
     if let Some(e) = &snap.error {
         anyhow::bail!("{e}");
@@ -80,13 +81,20 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         Cmd::Show { id } => {
             let b = ix.by_id.get(id.as_str()).copied().ok_or_else(|| anyhow::anyhow!("no bead {id}"))?;
             let names = |v: Vec<&Bead>| v.iter().map(|x| x.id.clone()).collect::<Vec<_>>();
+            let button = snap.acts.get(&b.id).map(|a| {
+                let state = a.state.word();
+                json!({ "state": state, "label": a.label, "disabled": a.disabled, "help": a.help })
+            });
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&json!({
                     "id": b.id, "title": b.title, "status": kind_of(b), "type": b.kind, "priority": b.priority,
                     "labels": b.labels, "owner": b.owner, "parent": b.parent, "description": b.description,
-                    "depends_on": names(ix.blockers(b)), "unlocks": names(ix.unlocked(b)), "children": names(ix.children(b)),
+                    "button": button, "depends_on": names(ix.blockers(b)), "unlocks": names(ix.unlocked(b)), "children": names(ix.children(b)),
                 }))?);
             } else {
+                if let Some(a) = &button {
+                    println!("Button: {} ({}){}", a["label"].as_str().unwrap_or(""), a["state"].as_str().unwrap_or(""), if a["disabled"] == true { ", disabled" } else { "" });
+                }
                 println!("{}  {}\n{} · {} · {}", b.id, b.title, kind_of(b), b.kind,
                     b.priority.map(|p| format!("P{p}")).unwrap_or_else(|| "no priority".into()));
                 for (label, v) in [("Depends on", ix.blockers(b)), ("Unlocks", ix.unlocked(b)), ("Children", ix.children(b))] {
