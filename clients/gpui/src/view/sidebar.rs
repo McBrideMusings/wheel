@@ -34,6 +34,9 @@ impl Client {
     }
     /// The area the grid is placed in: right of the sidebar while it is open.
     pub fn grid_area(&self) -> Rect {
+        if self.is_little() {
+            return self.little_grid_area();
+        }
         let left = if self.sidebar_open { header::MARGIN + sidebar::WIDTH + sidebar::GAP } else { 0. };
         Rect { x: left, y: HEADER, w: (self.viewport.0 - left).max(0.), h: (self.viewport.1 - HEADER - BOTTOM).max(0.) }
     }
@@ -288,7 +291,7 @@ impl Client {
     pub fn space_menu_items(&self, space: &str) -> Vec<MenuItem> {
         let home = self.sessions.iter().find(|s| s.spaces.iter().any(|id| id == space));
         let sessions: Vec<(String, String)> = self.sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
-        sidebar::menu(space, home.map(|s| s.id.as_str()), &sessions, home.map(|s| s.spaces.as_slice()).unwrap_or(&[]))
+        sidebar::menu(space, home.map(|s| s.id.as_str()), &sessions, home.map(|s| s.spaces.as_slice()).unwrap_or(&[]), self.little_showing(space).is_some())
     }
     pub fn open_space_menu(&mut self, space: &str, x: f32, y: f32) {
         if !self.spaces.iter().any(|s| s.id == space) {
@@ -338,6 +341,9 @@ impl Client {
                 let Some(i) = home.spaces.iter().position(|s| s == space) else { return };
                 let index = if id == "left" { i - 1 } else { i + 1 };
                 self.send_layout(|req| ClientMsg::SessionMove { req: Some(req), space: space_id, session: home.id, index: Some(index) });
+            }
+            "little" => {
+                self.open_little(space, cx);
             }
             "rename" => self.begin_rename(space),
             "copy-path" => cx.write_to_clipboard(ClipboardItem::new_string(info.cwd.clone())),
@@ -620,6 +626,8 @@ impl Client {
             let Some(space) = self.spaces.iter().find(|s| s.id == row.id) else { continue };
             let active = self.space_id.as_deref() == Some(row.id.as_str());
             let (id, rr, close) = (row.id.clone(), row.rect, row.close);
+            // A space in a little window dims, and its close button is the back icon (BackFromLittleButton).
+            let away = self.little_showing(&id).is_some();
             let dimmed = dragged.as_deref() == Some(id.as_str());
             let caption = space.status.as_ref().filter(|s| self.status_dots.contains(status::rank(s))).and_then(status::caption);
             let renaming = self.rename.as_ref().filter(|rn| rn.space == id).cloned();
@@ -627,6 +635,7 @@ impl Client {
             let mut el = div().absolute().left(px(rr.x - r.x)).top(px(rr.y - r.y)).w(px(rr.w)).h(px(rr.h)).px(px(6.)).rounded_md().flex().items_center().gap(px(4.))
                 .bg(rgb(if active { ROW_BG_ACTIVE } else { CARD_BG })).cursor_pointer()
                 .when(dimmed, |d| d.opacity(0.4))
+                .when(away && !dimmed, |d| d.opacity(super::little::AWAY_OPACITY))
                 .when(self.pane_is_over(&id), |d| d.border_2().border_color(rgb(ACCENT)))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                     if this.rename.as_ref().is_some_and(|rn| rn.space == press_id) {
@@ -667,11 +676,16 @@ impl Client {
             el = el.child(div().w(px(close.w)).h(px(close.h)).flex_none().rounded_sm().flex().items_center().justify_center().text_xs().text_color(rgb(DIM)).cursor_pointer()
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.press(format!("close space {close_id}"));
-                    this.ask_close_space(&close_id);
+                    if away {
+                        this.press(format!("back space {close_id}"));
+                        this.bring_back(&close_id, cx);
+                    } else {
+                        this.press(format!("close space {close_id}"));
+                        this.ask_close_space(&close_id);
+                    }
                     cx.notify();
                 }))
-                .child("×"));
+                .child(if away { "↩" } else { "×" }));
             bar = bar.child(el);
             if let Some(err) = self.rename.as_ref().filter(|rn| rn.space == id).and_then(|rn| rn.error.clone()) {
                 bar = bar.child(div().absolute().left(px(rr.x - r.x + 6.)).top(px(rr.y - r.y + rr.h)).w(px(rr.w - 12.)).text_xs().text_color(rgb(RED)).child(err));

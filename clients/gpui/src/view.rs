@@ -5,6 +5,8 @@
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod commands;
 mod debug;
+mod little;
+pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
 mod panes;
 pub use panes::focus_target;
 mod procs;
@@ -231,6 +233,8 @@ pub struct Client {
     pending_show: Option<(String, u64)>,
     /// The title last given the window, for Mission Control and the Window menu.
     title_set: String,
+    /// A little window: one space's grid under a strip, owned by the main window holding it or none.
+    pub little: bool,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -336,7 +340,7 @@ impl Client {
             server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
             server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
-            window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(),
+            window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         };
         client.register_server();
         client
@@ -579,6 +583,9 @@ impl Client {
         self.spaces = layout.spaces;
         self.sessions = layout.sessions;
         self.overrides.clear();
+        if self.follow_little_space() {
+            return;
+        }
         // The session shown stays unless it is gone; a space shown stays while its session
         // holds it. A session that holds the space asked for (a new window's) is the one shown.
         if !self.sessions.iter().any(|s| Some(&s.id) == self.session_id.as_ref()) {
@@ -590,7 +597,7 @@ impl Client {
         if self.pane_menu.as_ref().is_some_and(|(pane, _, _)| self.header_menu(pane).is_empty()) {
             self.close_pane_menu();
         }
-        if !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
+        if !self.little && !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
         self.ask_space_settings();
@@ -657,7 +664,8 @@ impl Client {
     }
     /// Show `session`: the space it was last showing is not remembered, so its first space.
     pub fn select_session(&mut self, session: &str) {
-        if self.session_id.as_deref() == Some(session) || !self.sessions.iter().any(|s| s.id == session) {
+        // A little window shows its one space.
+        if self.is_little() || self.session_id.as_deref() == Some(session) || !self.sessions.iter().any(|s| s.id == session) {
             return;
         }
         self.session_id = Some(session.to_owned());
@@ -669,7 +677,7 @@ impl Client {
     }
     /// Show `space` of the session shown.
     pub fn select_space(&mut self, space: &str) {
-        if self.space_id.as_deref() != Some(space) && self.session_spaces().iter().any(|s| s.id == space) {
+        if !self.is_little() && self.space_id.as_deref() != Some(space) && self.session_spaces().iter().any(|s| s.id == space) {
             self.space_id = Some(space.to_owned());
             self.overrides.clear();
             self.menu = None;
@@ -707,7 +715,8 @@ impl Client {
     }
     pub fn scene(&self) -> (Vec<Placed>, Vec<Divider>) {
         let (mut leaves, mut dividers) = (vec![], vec![]);
-        if let Some(space) = self.space() {
+        // A space away in a little window draws its panes there, and this grid draws the placeholder.
+        if let Some(space) = self.space().filter(|_| !self.space_away()) {
             place(&space.root, self.grid_area(), &self.overrides, &mut leaves, &mut dividers);
         }
         (leaves, dividers)
@@ -1279,7 +1288,7 @@ impl Render for Client {
         if std::mem::take(&mut self.close_window_requested) {
             window.remove_window();
         }
-        if window.is_window_active() {
+        if window.is_window_active() && !self.is_little() {
             let id = self.window_id.clone();
             crate::windows::with(|r| r.focused = Some(id));
         }
@@ -1361,10 +1370,16 @@ impl Render for Client {
                 cx.notify();
             }));
         self.controls.borrow_mut().clear();
-        root = root.child(self.title_element(cx));
-        // The row along the bottom edge: the connection badge and the usage strip (ADR-0034).
-        root = root.child(self.bottom_row(window, cx));
-        if desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
+        let little = self.is_little();
+        if little {
+            root = root.child(self.little_strip(cx));
+        } else {
+            root = root.child(self.title_element(cx));
+            // The row along the bottom edge: the connection badge and the usage strip (ADR-0034).
+            root = root.child(self.bottom_row(window, cx));
+        }
+        root = root.children(self.little_placeholder(cx));
+        if !little && desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.desk_element());
         }
         for p in &leaves {
@@ -1487,7 +1502,7 @@ impl Render for Client {
         if let Some(h) = self.grid_drop_highlight() {
             root = root.child(div().absolute().left(px(h.x)).top(px(h.y)).w(px(h.w)).h(px(h.h)).rounded_md().bg(rgba(0x7fb89a24)).border_2().border_color(rgb(0x7fb89a)));
         }
-        if self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
+        if !little && self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.sidebar_element(cx));
         }
         root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.drag_chip());

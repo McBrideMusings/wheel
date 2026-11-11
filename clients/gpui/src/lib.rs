@@ -51,6 +51,24 @@ pub fn forget_window(id: &str) {
     windows::with(|r| r.remove(id));
 }
 
+/// Redraw every open window after the app's list of windows changed under them: a little window
+/// opened or closed, so its owner's tab, row and grid change.
+pub fn refresh_windows(cx: &mut App) {
+    cx.defer(|cx| {
+        let handles: Vec<WindowHandle<view::Client>> = HANDLES.with(|h| h.borrow().values().copied().collect());
+        for handle in handles {
+            let _ = handle.update(cx, |_, _, cx| cx.notify());
+        }
+    });
+}
+
+/// What kind of window to open: a main one, or a little one showing a single space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opening {
+    Main,
+    Little,
+}
+
 /// Open a client window over `connection_out` and attach the native bridge to it. `hidden` is
 /// the test mode: the window is never shown, never key, and the application never activates.
 /// The caller feeds the window the connection's events.
@@ -63,23 +81,42 @@ pub fn create_window(
     prefer_session: Option<String>,
     prefer_space: Option<String>,
     hidden: bool,
+    opening: Opening,
 ) -> Result<WindowHandle<view::Client>> {
     let native = native::Native::new(bridge);
     let (b, n) = (bridge.clone(), native.clone());
     let window_id = format!("gpui-{}-{}", std::process::id(), WINDOWS.fetch_add(1, Ordering::Relaxed));
     let registered = window_id.clone();
+    let little = opening == Opening::Little;
+    // A little window opens at its own small size, centred, and shrinks no further than its minimum.
+    let (bounds, min_size) = match opening {
+        Opening::Main => (Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(720.)) }, None),
+        Opening::Little => {
+            let ((w, h), (mw, mh)) = (view::LITTLE_SIZE, view::LITTLE_MIN_SIZE);
+            (Bounds::centered(None, size(px(w), px(h)), cx), Some(size(px(mw), px(mh))))
+        }
+    };
     let window = cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(720.)) })),
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: min_size,
             focus: !hidden,
             show: !hidden,
             ..Default::default()
         },
         |_, cx| {
-            // The window's content is released when it closes: its native views go with it.
+            // The window's content is released when it closes: its native views go with it, and
+            // the other windows redraw (a little window's owner shows its space's grid again).
             cx.new(|cx| {
-                cx.on_release(|client: &mut view::Client, _| client.shutdown()).detach();
-                view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle())
+                cx.on_release(|client: &mut view::Client, cx| {
+                    client.shutdown();
+                    refresh_windows(cx);
+                })
+                .detach();
+                let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
+                client.little = little;
+                client.publish();
+                client
             })
         },
     )?;
@@ -87,8 +124,11 @@ pub fn create_window(
     // daemon request the view relayed: those frames come through this channel.
     let (frames, mut incoming) = futures::channel::mpsc::unbounded::<String>();
     HANDLES.with(|h| h.borrow_mut().insert(registered.clone(), window));
-    // The newest window is the focused one until another is key (AppModel.newWindow brings it front).
-    windows::with(|r| r.focused = Some(registered.clone()));
+    // The newest main window is the focused one until another is key (AppModel.newWindow brings it
+    // front); a little window is never the one CLI commands act on.
+    if opening == Opening::Main {
+        windows::with(|r| r.focused = Some(registered.clone()));
+    }
     window.update(cx, |_, window, cx| -> Result<()> {
         // The red light asks the window first: the last window on a session that holds spaces
         // shows its close question and stays open.
@@ -96,7 +136,11 @@ pub fn create_window(
         let id = registered.clone();
         cx.observe_window_activation(window, move |_, window, _| {
             if window.is_window_active() {
-                windows::with(|r| r.focused = Some(id.clone()));
+                windows::with(|r| {
+                    if r.get(&id).is_some() {
+                        r.focused = Some(id.clone());
+                    }
+                });
             }
         })
         .detach();
@@ -183,10 +227,23 @@ pub fn open_window(
     prefer_space: Option<String>,
     hidden: bool,
 ) -> Result<WindowHandle<view::Client>> {
+    open_window_as(cx, bridge, endpoint, prefer_session, prefer_space, hidden, Opening::Main)
+}
+
+/// `open_window` for a main or a little window.
+pub fn open_window_as(
+    cx: &mut App,
+    bridge: &Rc<native::Bridge>,
+    endpoint: daemon::Endpoint,
+    prefer_session: Option<String>,
+    prefer_space: Option<String>,
+    hidden: bool,
+    opening: Opening,
+) -> Result<WindowHandle<view::Client>> {
     // The window holds the only sender: when it closes, the socket closes with it, and wheeld
     // forgets its view and its offer to run window commands at once.
     let daemon::Connection { send, mut incoming } = daemon::Connection::open(endpoint.clone());
-    let window = create_window(cx, bridge, send, endpoint, prefer_session, prefer_space, hidden)?;
+    let window = create_window(cx, bridge, send, endpoint, prefer_session, prefer_space, hidden, opening)?;
     cx.spawn(async move |cx| {
         while let Some(event) = incoming.next().await {
             if cx.update(|cx| deliver(cx, window, event)).is_err() {
@@ -215,6 +272,36 @@ pub fn deliver(cx: &mut App, window: WindowHandle<view::Client>, event: daemon::
         && let ServerMsg::SpaceFocused { space, pane } = message.as_ref()
     {
         let (id, sessions) = window.read(cx).map(|c| (c.window_id().to_owned(), c.layout_lists().0))?;
+        // A space in a little window is shown there: that window focuses the pane and comes
+        // front (AppModel.focus(space:) goes to the little window).
+        if let Some(little) = windows::with(|r| r.little_showing(space).map(|l| l.id.clone())) {
+            if little == id {
+                window.update(cx, |client, _, cx| {
+                    cx.notify();
+                    client.show_requested(space, pane.as_deref())
+                })?;
+                bring_front(cx, window);
+            }
+            return Ok(false);
+        }
+        // A space whose session no main window shows opens in a little window that belongs to
+        // none (AppModel.showRequested), which focuses the pane once its layout lists it.
+        let home = sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.clone());
+        let background = home.is_some_and(|home| windows::with(|r| !r.windows.iter().any(|w| w.session.as_deref() == Some(home.as_str()))));
+        if windows::with(|r| view::focus_target(r, &sessions, space)).as_deref() == Some(id.as_str()) && background {
+            let opened = window.update(cx, |client, _, cx| {
+                client.log(format!("space {space} focused by a request; it runs with no window, so it opens in a little window"));
+                cx.notify();
+                client.open_little(space, cx)
+            })?;
+            if let Some(handle) = opened.as_deref().and_then(window_handle) {
+                let _ = handle.update(cx, |client, _, cx| {
+                    cx.notify();
+                    client.show_requested(space, pane.as_deref())
+                });
+            }
+            return Ok(false);
+        }
         if windows::with(|r| view::focus_target(r, &sessions, space)).as_deref() == Some(id.as_str()) {
             let shown = window.update(cx, |client, _, cx| {
                 cx.notify();
@@ -319,7 +406,7 @@ fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &W
 }
 
 /// Bring a window front and make it key, unless the app runs hidden for a check.
-fn bring_front(cx: &mut App, handle: WindowHandle<view::Client>) {
+pub fn bring_front(cx: &mut App, handle: WindowHandle<view::Client>) {
     if handle.read(cx).is_ok_and(|c| !c.is_hidden()) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
     }

@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn the_window_showing_the_session_takes_the_focus_request_else_the_key_one() {
         let sessions = [session("a", &["s1"]), session("b", &["s2"]), session("c", &["s3"])];
-        let mut r = Registry { windows: vec![window("w1", "a"), window("w2", "b")], focused: Some("w1".into()) };
+        let mut r = Registry { windows: vec![window("w1", "a"), window("w2", "b")], focused: Some("w1".into()), ..Default::default() };
         assert_eq!(focus_target(&r, &sessions, "s2").as_deref(), Some("w2"));
         assert_eq!(focus_target(&r, &sessions, "s1").as_deref(), Some("w1"));
         // No window shows session c: the key window shows it.

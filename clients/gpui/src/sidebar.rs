@@ -169,14 +169,15 @@ pub struct MenuItem {
 
 /// What right-clicking `space` offers (AppModel.spaceMenu): one flat item per other session,
 /// then Move to New Session, Move Left and Right, Rename, Copy Path, Reveal, New Pane, Close
-/// Other Spaces and Close Space. "Open in Little Window" is a window of its own (wheel-ynjo.7).
-/// `sessions` is (id, name); `held` is the home session's spaces in order.
-pub fn menu(space: &str, home: Option<&str>, sessions: &[(String, String)], held: &[String]) -> Vec<MenuItem> {
+/// Other Spaces and Close Space, with Open in Little Window (Go to Little Window while `little`,
+/// one is open) after the moves. `sessions` is (id, name); `held` is the home session's spaces in order.
+pub fn menu(space: &str, home: Option<&str>, sessions: &[(String, String)], held: &[String], little: bool) -> Vec<MenuItem> {
     let item = |id: &str, title: String, enabled: bool, section: u8, destructive: bool| MenuItem { id: id.to_owned(), title, enabled, section, destructive };
     let index = held.iter().position(|id| id == space);
     let mut items: Vec<MenuItem> = sessions.iter().filter(|(id, _)| Some(id.as_str()) != home)
         .map(|(id, name)| item(&format!("session:{id}"), format!("Move to {name}"), true, 0, false)).collect();
     items.push(item("new-session", "Move to New Session".into(), true, 0, false));
+    items.push(item("little", if little { "Go to Little Window" } else { "Open in Little Window" }.into(), true, 0, false));
     items.push(item("left", "Move Left".into(), index.is_some_and(|i| i > 0), 1, false));
     items.push(item("right", "Move Right".into(), index.is_some_and(|i| i + 1 < held.len()), 1, false));
     items.push(item("rename", "Rename Space…".into(), true, 2, false));
@@ -277,16 +278,18 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_matches_the_swift_one_without_the_little_window() {
+    fn the_menu_matches_the_swift_one() {
         let sessions = vec![("n1".to_owned(), "Main".to_owned()), ("n2".to_owned(), "Other".to_owned())];
-        let items = menu("s1", Some("n1"), &sessions, &ids(3));
+        let items = menu("s1", Some("n1"), &sessions, &ids(3), false);
         let got: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(got, ["session:n2", "new-session", "left", "right", "rename", "copy-path", "reveal", "new-pane", "close-others", "close"]);
-        assert!(!items[2].enabled && items[3].enabled);
-        assert!(items[8].destructive && items[9].destructive && items[8].enabled);
-        let last = menu("s3", Some("n1"), &sessions, &ids(3));
-        assert!(last[2].enabled && !last[3].enabled);
-        assert!(!menu("s1", Some("n1"), &sessions, &ids(1))[8].enabled);
+        assert_eq!(got, ["session:n2", "new-session", "little", "left", "right", "rename", "copy-path", "reveal", "new-pane", "close-others", "close"]);
+        assert_eq!(items[2].title, "Open in Little Window");
+        assert_eq!(menu("s1", Some("n1"), &sessions, &ids(3), true)[2].title, "Go to Little Window");
+        assert!(!items[3].enabled && items[4].enabled);
+        assert!(items[9].destructive && items[10].destructive && items[9].enabled);
+        let last = menu("s3", Some("n1"), &sessions, &ids(3), false);
+        assert!(last[3].enabled && !last[4].enabled);
+        assert!(!menu("s1", Some("n1"), &sessions, &ids(1), false)[9].enabled);
         assert_eq!(items[0].title, "Move to Other");
     }
 

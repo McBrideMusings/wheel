@@ -223,7 +223,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
     let mut connection = Connection::open(endpoint.clone());
-    let window = cx.update(|app| wheel_gpui::create_window(app, &bridge, connection.send.clone(), endpoint, None, std::env::var("WHEEL_CLIENT_SPACE").ok(), true))?;
+    let window = cx.update(|app| wheel_gpui::create_window(app, &bridge, connection.send.clone(), endpoint, None, std::env::var("WHEEL_CLIENT_SPACE").ok(), true, wheel_gpui::Opening::Main))?;
     let native = window.update(cx, |c, _, _| c.native())?;
     let markers: Value = serde_json::from_str(&std::env::var("WHEEL_CLIENT_MARKERS")?)?;
     let mut layouts = 0usize;
@@ -1070,6 +1070,95 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::SessionRename { req: None, session: back, name: old_session_name.clone() }))?;
     pump(&mut connection, 300, &mut layouts, window, cx).await?;
     let windows_report = json!({"ls": listed, "new": new_id, "moved": moved, "close_summary": summary, "session_renamed_from": old_session_name});
+    // Little windows (wheel-ynjo.7.5.1; LittleWindow.swift, AppModel+Windows.swift): the space
+    // menu's Open in Little Window opens the shown space in a window of its own, owned by this one,
+    // whose tab and row dim and whose grid shows the placeholder; the strip's back icon, the red
+    // light and Bring Back each close it, and the space's grid comes home.
+    let little_space = window.update(cx, |c, _, _| c.space_id().map(str::to_owned))?.ok_or_else(|| anyhow::anyhow!("the window shows no space to open in a little window"))?;
+    let home_panes = window.update(cx, |c, _, _| c.native_panes.clone())?;
+    let menu_title = |cx: &mut AsyncApp| -> Result<Option<String>> {
+        Ok(window.update(cx, |c, _, _| c.space_menu_items(&little_space).into_iter().find(|i| i.id == "little").map(|i| i.title))?)
+    };
+    ensure!(menu_title(cx)?.as_deref() == Some("Open in Little Window"), "the space menu offers {:?}", menu_title(cx)?);
+    let open_little = |cx: &mut AsyncApp| -> Result<gpui::WindowHandle<Client>> {
+        window.update(cx, |c, _, cx| {
+            c.run_space_menu("little", &little_space, cx);
+            cx.notify();
+        })?;
+        let id = window.update(cx, |c, _, _| c.little_showing(&little_space))?.ok_or_else(|| anyhow::anyhow!("Open in Little Window opened none: {}", window.update(cx, |c, _, _| c.little_json()).unwrap_or_default()))?;
+        cx.update(|_| wheel_gpui::window_handle(&id)).ok_or_else(|| anyhow::anyhow!("little window {id} has no handle"))
+    };
+    let little = open_little(cx)?;
+    let little_id = little.update(cx, |c, _, _| c.window_id().to_owned())?;
+    let mut little_up = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if little.update(cx, |c, _, _| c.session_id().is_some() && c.space_id() == Some(little_space.as_str()))? {
+            draw(little, None, cx)?;
+            if little.update(cx, |c, _, _| home_panes.iter().all(|p| c.native_panes.contains(p)))? {
+                little_up = true;
+                break;
+            }
+        }
+    }
+    ensure!(little_up, "the little window never showed the space's panes: {:?} of {home_panes:?}", little.update(cx, |c, _, _| (c.space_id().map(str::to_owned), c.native_panes.clone()))?);
+    draw(window, None, cx)?;
+    let state = window.update(cx, |c, _, _| c.little_json())?;
+    ensure!(state["space_away"] == true && window.update(cx, |c, _, _| c.scene().0.is_empty() && c.native_panes.is_empty())?, "the owner still draws the space away in its little window: {state}");
+    ensure!(state["littles"] == json!([{"id": little_id, "space": little_space, "owner": id1, "pinned": false}]), "the app's list of little windows reads {}", state["littles"]);
+    ensure!(little.update(cx, |c, _, _| c.little_json())?["mode"] == json!({"owner": id1, "space": little_space}), "the little window does not know its owner");
+    ensure!(menu_title(cx)?.as_deref() == Some("Go to Little Window"), "with the little window open the menu offers {:?}", menu_title(cx)?);
+    let (ok, out, err) = run_pumped(&["window", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel window ls failed: {err}");
+    let little_ls = window_ls(&out)?;
+    ensure!(little_ls["little"][0]["id"] == json!(little_id) && little_ls["little"][0]["space"]["id"] == json!(little_space) && little_ls["little"][0]["owner"] == json!(id1), "wheel window ls lists the little windows as {}", little_ls["little"]);
+    ensure!(little_ls["windows"].as_array().is_some_and(|w| w.iter().all(|w| w["id"] != json!(little_id))), "a little window is listed as a main window: {little_ls}");
+    draw(window, Some(output.join("client-little-placeholder.png")), cx)?;
+    draw(little, Some(output.join("client-little-window.png")), cx)?;
+    // Go to Little Window from the menu again opens no second one.
+    window.update(cx, |c, _, cx| c.run_space_menu("little", &little_space, cx))?;
+    ensure!(window.update(cx, |c, _, _| c.little_json())?["littles"].as_array().map(Vec::len) == Some(1), "Go to Little Window opened a second little window");
+    let wait_closed = async |id: &str, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp| -> Result<bool> {
+        for _ in 0..40 {
+            pump(connection, 100, layouts, window, cx).await?;
+            // A hidden window renders only when drawn, and its render is what removes it.
+            if let Some(open) = cx.update(|_| wheel_gpui::window_handle(id)) {
+                let _ = draw(open, None, cx);
+            }
+            if cx.update(|_| wheel_gpui::window_handle(id)).is_none() {
+                draw(window, None, cx)?;
+                return Ok(window.update(cx, |c, _, _| !c.space_away() && c.little_showing(&little_space).is_none())?);
+            }
+        }
+        Ok(false)
+    };
+    // The strip's back icon.
+    little.update(cx, |c, _, cx| {
+        c.little_back();
+        cx.notify();
+    })?;
+    ensure!(wait_closed(&little_id, &mut connection, &mut layouts, cx).await?, "the back icon left the little window open or the owner's grid away");
+    ensure!(window.update(cx, |c, _, _| home_panes.iter().all(|p| c.native_panes.contains(p)))?, "the owner did not take its space's panes back: {:?}", window.update(cx, |c, _, _| c.native_panes.clone())?);
+    draw(window, Some(output.join("client-little-back.png")), cx)?;
+    // The red light: the window may close at once, and the space comes home.
+    let little = open_little(cx)?;
+    let red_id = little.update(cx, |c, _, _| c.window_id().to_owned())?;
+    let closes = little.update(cx, |c, window, _| {
+        let now = c.ask_close_window();
+        if now {
+            window.remove_window();
+        }
+        now
+    })?;
+    ensure!(closes, "a little window's red light asked a question");
+    ensure!(wait_closed(&red_id, &mut connection, &mut layouts, cx).await?, "the red light left the owner's grid away");
+    // Bring Back from the owner's placeholder.
+    let little = open_little(cx)?;
+    let brought_id = little.update(cx, |c, _, _| c.window_id().to_owned())?;
+    window.update(cx, |c, _, cx| c.bring_back(&little_space, cx))?;
+    ensure!(wait_closed(&brought_id, &mut connection, &mut layouts, cx).await?, "Bring Back left the little window open");
+    let little_report = json!({"space": little_space, "owner": id1, "panes": home_panes, "ls": little_ls["little"], "closed_by": ["back", "red light", "bring back"],
+        "pictures": ["client-little-placeholder.png", "client-little-window.png", "client-little-back.png"]});
     // Web panes: an artifact's page opens under the client's own `wheel-page` scheme, fetched from
     // wheeld with the token in a header (never in the page's address), in a store of its own; the
     // page's script reached wheeld through `.wheel/client.js`; a file written into the folder
@@ -2231,7 +2320,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let proxy = OlderProxy::start(&format!("{}?token={}", default_url(), std::fs::read_to_string(default_token_file())?.trim()), PROTOCOL - 1)?;
     let older = Endpoint::new(&proxy.url, &default_token_file())?;
     let mut older_connection = Connection::open(older.clone());
-    let older_window = cx.update(|app| wheel_gpui::create_window(app, &bridge, older_connection.send.clone(), older, None, None, true))?;
+    let older_window = cx.update(|app| wheel_gpui::create_window(app, &bridge, older_connection.send.clone(), older, None, None, true, wheel_gpui::Opening::Main))?;
     let mut older_layouts = 0usize;
     let mut older_link = Link::Connecting;
     for _ in 0..100 {
@@ -2383,6 +2472,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "title_row": title_report,
         "pane_grid": pane_grid_report,
         "windows": windows_report,
+        "little_windows": little_report,
         "server_updated": server_updated_report,
         "server_lifecycle": server_lifecycle_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,

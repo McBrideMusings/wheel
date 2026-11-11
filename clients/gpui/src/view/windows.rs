@@ -46,7 +46,10 @@ impl Client {
     }
     /// Write this window's record to the app's list.
     pub fn publish(&self) {
-        windows::with(|r| r.put(self.record()));
+        match self.little_record() {
+            Some(little) => windows::with(|r| r.put_little(little)),
+            None => windows::with(|r| r.put(self.record())),
+        }
     }
     /// What opening a window like this one needs: the bridge, the endpoint and the test mode.
     pub fn is_hidden(&self) -> bool {
@@ -141,6 +144,11 @@ impl Client {
     /// Close Window, the red light and `wheel window close`: the last window showing a session
     /// that holds spaces asks what to do with the session; true when the window may close now.
     pub fn ask_close_window(&mut self) -> bool {
+        // A little window's red light returns its space to its tab, and asks nothing.
+        if self.is_little() {
+            self.log(format!("little window {} closed by the person", self.window_id));
+            return true;
+        }
         self.publish();
         if !windows::with(|r| r.close_needs_answer(&self.window_id, &self.sessions)) {
             return true;
@@ -160,7 +168,8 @@ impl Client {
         }
     }
     pub fn close_summary(&self) -> String {
-        windows::close_summary(&self.record(), &self.sessions, &self.spaces)
+        let record = self.record();
+        windows::with(|r| windows::close_summary(r, &record, &self.sessions, &self.spaces))
     }
     /// The question's answer: close the window, close its session and then the window, or neither.
     pub fn answer_window_close(&mut self, answer: CloseAnswer) {
@@ -298,6 +307,7 @@ impl Client {
             "closing": self.closing_window.then(|| self.close_summary()),
             "name_edit": self.name_edit.as_ref().map(|e| json!({"target": match &e.target { NameTarget::Window => "window".to_owned(), NameTarget::Session(s) => format!("session:{s}") }, "draft": e.draft})),
             "windows": windows::with(|r| windows::ls(r, &self.sessions, &self.spaces)),
+            "little": self.little_json(),
         })
     }
 }

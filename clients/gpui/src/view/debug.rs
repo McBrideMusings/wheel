@@ -505,6 +505,31 @@ impl Client {
                 }
                 None
             }
+            // Little windows, as the Swift app's `/window?action=little|littleback|littlegoto|
+            // littleclosebutton`: on a main window `open`, `goto` and `back` take `space=`; on the
+            // little window itself (`window=<id>`) `back` is the strip's back icon and `close` its red light.
+            "/little" => {
+                let space = q("space").map(|s| crate::windows::space_id(&s, &self.spaces));
+                match (q("action").as_deref(), space) {
+                    (Some("close"), None) if self.is_little() => {
+                        if self.ask_close_window() {
+                            self.close_window_requested = true;
+                        }
+                    }
+                    (Some("back"), None) if self.is_little() => self.little_back(),
+                    (Some(_), Some(Err(e))) => return refuse("404 Not Found", &e),
+                    (Some("open"), Some(Ok(space))) => {
+                        if self.open_little(&space, cx).is_none() {
+                            return refuse("409 Conflict", "the layout places that space nowhere");
+                        }
+                    }
+                    (Some("goto" | "back"), Some(Ok(space))) if self.little_showing(&space).is_none() => return refuse("404 Not Found", "no little window shows that space"),
+                    (Some("goto"), Some(Ok(space))) => self.go_to_little(&space, cx),
+                    (Some("back"), Some(Ok(space))) => self.bring_back(&space, cx),
+                    _ => return refuse(BAD, "action is open, goto or back with space=, or back or close on a little window"),
+                }
+                None
+            }
             // The Usage window and the strip, as the Swift app's `/usage`: open, close, refresh
             // (`due_only=true` for the timer's read), a window's meter level, a label or an agent toggle.
             "/usage" => {

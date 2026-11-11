@@ -19,13 +19,43 @@ pub struct Record {
     pub sidebar: bool,
 }
 
+/// One little window as it last described itself (WheelKit's LittleWindow): one space's grid
+/// under a strip, with no tabs and no sidebar. Its id is its window's id.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Little {
+    pub id: String,
+    pub space: String,
+    /// The main window whose tab for `space` it dims; none when it belongs to none.
+    pub owner: Option<String>,
+    pub pinned: bool,
+}
+
 /// The windows in the order they opened, and the one that was key last.
 #[derive(Debug, Default)]
 pub struct Registry {
     pub windows: Vec<Record>,
     pub focused: Option<String>,
+    /// The little windows, in the order they opened.
+    pub littles: Vec<Little>,
 }
 impl Registry {
+    pub fn put_little(&mut self, little: Little) {
+        match self.littles.iter_mut().find(|l| l.id == little.id) {
+            Some(held) => *held = little,
+            None => self.littles.push(little),
+        }
+    }
+    /// The little window showing `space`, if one is open.
+    pub fn little_showing(&self, space: &str) -> Option<&Little> {
+        self.littles.iter().find(|l| l.space == space)
+    }
+    /// The main window holding `space`: the focused one when its session holds it, else the
+    /// first whose session does (WindowLayout.window(holding:)).
+    pub fn window_holding(&self, space: &str, sessions: &[Session]) -> Option<&Record> {
+        let home = sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.as_str())?;
+        let holds = |w: &&Record| w.session.as_deref() == Some(home);
+        self.focused().filter(holds).or_else(|| self.windows.iter().find(holds))
+    }
     pub fn put(&mut self, record: Record) {
         match self.windows.iter_mut().find(|w| w.id == record.id) {
             Some(held) => *held = record,
@@ -34,6 +64,7 @@ impl Registry {
     }
     pub fn remove(&mut self, id: &str) {
         self.windows.retain(|w| w.id != id);
+        self.littles.retain(|l| l.id != id);
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
         }
@@ -110,8 +141,13 @@ pub fn ls(registry: &Registry, sessions: &[Session], spaces: &[Space]) -> Value 
     let named = |s: &&Space| json!({"id": s.id, "name": s.name});
     let focused = registry.focused().map(|w| w.id.clone());
     let shown: Vec<&str> = registry.windows.iter().filter_map(|w| w.session.as_deref()).collect();
+    // A space in a little window is not in the background (WindowLayout.backgroundSpaces).
     let background: Vec<Value> = sessions.iter().filter(|s| !shown.contains(&s.id.as_str()))
-        .flat_map(|s| spaces_of(Some(&s.id), sessions, spaces)).map(|s| named(&s)).collect();
+        .flat_map(|s| spaces_of(Some(&s.id), sessions, spaces)).filter(|s| registry.little_showing(&s.id).is_none()).map(|s| named(&s)).collect();
+    let little = |l: &Little| {
+        let space = match spaces.iter().find(|s| s.id == l.space) { Some(s) => json!({"id": s.id, "name": s.name}), None => json!({"id": l.space}) };
+        json!({"id": l.id, "space": space, "owner": l.owner})
+    };
     json!({
         "windows": registry.windows.iter().map(|w| json!({
             "id": w.id,
@@ -124,17 +160,23 @@ pub fn ls(registry: &Registry, sessions: &[Session], spaces: &[Space]) -> Value 
             "focused": Some(&w.id) == focused.as_ref(),
         })).collect::<Vec<_>>(),
         "background": background,
-        "little": [],
+        "little": registry.littles.iter().map(little).collect::<Vec<_>>(),
     })
 }
 
-/// "The “Main” session holds 3 spaces with 6 panes." (AppModel.closeSummary)
-pub fn close_summary(window: &Record, sessions: &[Session], spaces: &[Space]) -> String {
+/// "The “Main” session holds 3 spaces with 6 panes. 1 of them is in a little window."
+/// (AppModel.closeSummary)
+pub fn close_summary(registry: &Registry, window: &Record, sessions: &[Session], spaces: &[Space]) -> String {
     let held = spaces_of(window.session.as_deref(), sessions, spaces);
     let panes: usize = held.iter().map(|s| leaves_of(&s.root).len()).sum();
     let name = sessions.iter().find(|s| Some(&s.id) == window.session.as_ref()).map(|s| s.name.as_str()).unwrap_or("This");
     let noun = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
-    format!("The “{name}” session holds {} {} with {panes} {}.", held.len(), noun(held.len(), "space", "spaces"), noun(panes, "pane", "panes"))
+    let mut text = format!("The “{name}” session holds {} {} with {panes} {}.", held.len(), noun(held.len(), "space", "spaces"), noun(panes, "pane", "panes"));
+    let away = held.iter().filter(|s| registry.little_showing(&s.id).is_some()).count();
+    if away > 0 {
+        text += &format!(" {away} of them {} in a little window.", noun(away, "is", "are"));
+    }
+    text
 }
 
 #[cfg(test)]
@@ -182,6 +224,23 @@ mod tests {
     }
 
     #[test]
+    fn a_little_window_is_listed_and_leaves_the_background() {
+        let (mut registry, sessions, spaces) = fixture();
+        registry.focused = Some("w2".into());
+        assert_eq!(registry.window_holding("s1", &sessions).map(|w| w.id.as_str()), Some("w2"));
+        assert_eq!(registry.window_holding("s3", &sessions), None);
+        registry.put_little(Little { id: "l1".into(), space: "s1".into(), owner: Some("w2".into()), pinned: false });
+        registry.put_little(Little { id: "l2".into(), space: "s3".into(), owner: None, pinned: true });
+        let answer = ls(&registry, &sessions, &spaces);
+        assert_eq!(answer["little"], json!([{"id": "l1", "space": {"id": "s1", "name": "wheel"}, "owner": "w2"}, {"id": "l2", "space": {"id": "s3", "name": "site"}, "owner": null}]));
+        assert_eq!(answer["background"], json!([]));
+        assert_eq!(registry.little_showing("s3").map(|l| l.id.as_str()), Some("l2"));
+        registry.remove("l2");
+        assert!(registry.little_showing("s3").is_none());
+        assert_eq!(ls(&registry, &sessions, &spaces)["background"], json!([{"id": "s3", "name": "site"}]));
+    }
+
+    #[test]
     fn names_resolve_by_id_then_title_and_say_what_exists() {
         let (registry, _, spaces) = fixture();
         assert_eq!(window_id(&registry, "w2", &spaces), Ok("w2".into()));
@@ -201,12 +260,15 @@ mod tests {
         assert!(!registry.close_needs_answer("w1", &sessions));
         registry.remove("w2");
         assert!(registry.close_needs_answer("w1", &sessions));
-        assert_eq!(close_summary(registry.get("w1").unwrap(), &sessions, &spaces), "The “Main” session holds 2 spaces with 3 panes.");
+        assert_eq!(close_summary(&registry, registry.get("w1").unwrap(), &sessions, &spaces), "The “Main” session holds 2 spaces with 3 panes.");
+        registry.put_little(Little { id: "l1".into(), space: "s2".into(), owner: Some("w1".into()), pinned: false });
+        assert_eq!(close_summary(&registry, registry.get("w1").unwrap(), &sessions, &spaces), "The “Main” session holds 2 spaces with 3 panes. 1 of them is in a little window.");
+        registry.remove("l1");
         // A window on a session with no spaces closes.
         registry.put(window("w3", "n3", ""));
         assert!(!registry.close_needs_answer("w3", &sessions));
         let side = window("w4", "n2", "s3");
-        assert_eq!(close_summary(&side, &sessions, &spaces), "The “Side” session holds 1 space with 3 panes.");
+        assert_eq!(close_summary(&registry, &side, &sessions, &spaces), "The “Side” session holds 1 space with 3 panes.");
     }
 
     #[test]

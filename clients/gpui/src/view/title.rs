@@ -176,6 +176,7 @@ impl Client {
             return;
         }
         self.pinned = on;
+        self.publish();
         self.native.call(serde_json::json!({"op": "pin", "on": on}));
         self.log(format!("window {} {}", &self.window_id[..self.window_id.len().min(12)], if on { "pinned" } else { "unpinned" }));
     }
@@ -326,7 +327,9 @@ impl Client {
             match &chip.hit {
                 Hit::Space(id) => {
                     let dots = self.spaces.iter().find(|s| &s.id == id).and_then(|s| status::space_dots(s, &self.status_dots));
-                    el = el.rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
+                    // A space in a little window draws its tab dimmed (AppModel.isDimmed).
+                    let away = self.little_showing(id).is_some();
+                    el = el.when(away, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
                         .text_color(rgb(if chip.active { TEXT } else { DIM }))
                         .child(div().overflow_hidden().whitespace_nowrap().child(chip.label.clone())).children(dots);
                 }
