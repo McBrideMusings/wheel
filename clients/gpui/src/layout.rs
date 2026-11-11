@@ -13,6 +13,8 @@ pub struct Leaf {
     pub term: Option<String>,
     /// A browser pane's page.
     pub url: Option<String>,
+    /// A web pane's artifact scope (`project` or `machine`); its name is the label.
+    pub scope: Option<String>,
     /// An agent pane's agent.
     pub agent: Option<String>,
 }
@@ -47,6 +49,7 @@ pub fn parse(v: &Value) -> Tree {
             label: text("name").or_else(|| text("url")).or_else(|| text("cwd")).unwrap_or_default(),
             term: text("term"),
             url: text("url"),
+            scope: text("scope"),
             agent: text("agent"),
         })
     }
@@ -199,7 +202,7 @@ mod tests {
     #[test]
     fn unknown_kinds_survive_parsing() {
         let leaf = parse(&json!({"node":"pane","id":"p9","kind":"hologram"}));
-        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, agent: None }));
+        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None }));
     }
 
     #[test]

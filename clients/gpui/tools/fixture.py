@@ -22,7 +22,8 @@ def fixture():
         (page / 'index.html').write_text('''<!doctype html><html><meta charset="utf-8"><title>Fixture artifact</title>
 <style>body{background:#e9eee8;color:#1c3027;font:18px/1.6 system-ui;padding:22px}</style>
 <h1>HTML artifact</h1><p>Served by the fixture wheeld into the client's WKWebView pane.</p></html>''')
-        (project / 'wheel.toml').write_text('[artifacts.fixture-html]\npath="html"\n')
+        gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\n')
         (root / 'machine.toml').write_text('')
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
@@ -86,7 +87,7 @@ def fixture():
             term2_pane = cli('pane', 'split', web, 'down').splitlines()[-1]
             cli('pane', 'kind', term2_pane, 'terminal')
             web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
-            cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-html')
+            cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
 
             def terminals(node):
                 if node.get('node') == 'pane':

@@ -74,6 +74,11 @@ impl Native {
     pub fn open_web(&self, pane: &str, url: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"web","url":url}));
     }
+    /// Show an artifact for `pane`: the bridge draws its A2UI page when the artifact's MCP server
+    /// speaks A2UI (ADR-0031, ADR-0038), and the page at `url` in a WKWebView otherwise.
+    pub fn open_artifact(&self, pane: &str, url: &str, name: &str, scope: &str, space: Option<&str>, ws: &str) {
+        self.call(json!({"op":"open","pane":pane,"kind":"web","url":url,"artifact":name,"scope":scope,"space":space,"ws":ws}));
+    }
     /// Show terminal `term` in a Ghostty view for `pane`, streamed over the daemon socket `ws`.
     pub fn open_terminal(&self, pane: &str, term: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"terminal","term":term,"ws":ws}));

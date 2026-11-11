@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the client: the Rust binaries, the Swift bridge, and `target/app/Wheel GPUI.app`.
 
-The bridge links Wheel's already-built release GhosttyTerminal objects from DerivedData, so
+The bridge links Wheel's already-built release objects (GhosttyTerminal, WheelKit, WheelUI and what they use) from DerivedData, so
 build the Mac app first (`make deploy-client` or a Release xcodebuild). WHEEL_NATIVE_PRODUCTS
 selects another product directory. CARGO_TARGET_DIR is honoured.
 """
@@ -20,12 +20,13 @@ contents = client / 'target/app/Wheel GPUI.app/Contents'
 subprocess.run(['cargo', '+stable', 'build', '--release', '--manifest-path', str(client / 'Cargo.toml')], check=True)
 subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-library', '-module-name', 'WheelGpuiBridge',
     '-I', str(products), '-I', str(headers), str(client / 'native/Bridge.swift'),
-    *[str(products / (name + '.o')) for name in ['GhosttyTerminal', 'GhosttyKit', 'DisplayLink']],
+    *[str(o) for o in sorted(products.glob('*.o'))],
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)
 for name in ['wheel-gpui', 'wheel-gpui-check']:
     shutil.copy2(target / 'release' / name, contents / 'MacOS' / name)
-shutil.copytree(products / 'GhosttyKit_GhosttyTerminal.bundle', contents / 'Resources/GhosttyKit_GhosttyTerminal.bundle', dirs_exist_ok=True)
+for bundle in products.glob('*.bundle'):
+    shutil.copytree(bundle, contents / 'Resources' / bundle.name, dirs_exist_ok=True)
 (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
     CFBundleExecutable='wheel-gpui', CFBundleIdentifier='com.piercemakes.wheel.gpui', CFBundleName='Wheel GPUI',
     CFBundlePackageType='APPL', NSHighResolutionCapable=True)))

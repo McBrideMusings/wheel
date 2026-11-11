@@ -16,6 +16,12 @@ use wheel_gpui::{daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, 
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
+/// A web pane is ready when its page loaded, or when its artifact's A2UI page is drawn natively.
+fn web_ready(s: &Value, pane: &str) -> bool {
+    let p = &s["panes"][pane];
+    p["loads"].as_array().is_some_and(|a| !a.is_empty()) || p["page"]["native"] == true
+}
+
 async fn wait(native: &Native, what: &str, pred: impl Fn(&Value) -> bool, cx: &mut AsyncApp) -> Result<Value> {
     for _ in 0..200 {
         let s = native.status();
@@ -143,7 +149,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(webs.len() >= 2 && terms.len() >= 2, "fixture needs two web and two terminal panes: {native_panes:?}");
     // Each pane has its own view, loaded or replayed by the client itself.
     let loaded = wait(&native, "pages and terminals", |s| {
-        webs.iter().all(|w| s["panes"][w.as_str()]["loads"].as_array().is_some_and(|a| !a.is_empty()))
+        webs.iter().all(|w| web_ready(s, w))
             && terms.iter().all(|t| viewport(s, t).contains(markers[t.as_str()].as_str().unwrap_or("?")))
     }, cx).await?;
     draw(window, None, cx)?;
@@ -151,6 +157,16 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     draw(window, Some(output.join("client-before.png")), cx)?;
     shot(&native, &output.join("before"), cx).await?;
     let before = native.status();
+    // A web pane on an A2UI artifact draws the page natively, from the layout its MCP server sent,
+    // and not the WKWebView; a plain HTML artifact keeps its WKWebView.
+    let native_pages: Vec<&String> = webs.iter().copied().filter(|w| before["panes"][w.as_str()]["page"]["native"] == true).collect();
+    ensure!(native_pages.len() == 1, "exactly one web pane should draw an A2UI page: {:?}", before["panes"]);
+    ensure!(before["panes"][webs[0].as_str()]["page"]["native"] != true || native_pages[0] != webs[0], "the HTML artifact must stay in its web view");
+    let page_state = before["panes"][native_pages[0].as_str()]["page"]["state"].clone();
+    ensure!(page_state == "ready", "the native page is not ready: {page_state}");
+    let page_png = output.join("before").join(format!("{}-page.png", native_pages[0]));
+    let page_bytes = std::fs::metadata(&page_png).map(|m| m.len()).unwrap_or(0);
+    ensure!(page_bytes > 5000, "the native page's picture is missing or blank: {} ({page_bytes} bytes)", page_png.display());
     // Every native view sits on its pane's body.
     let rects = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.rect)).collect::<Vec<_>>())?;
     let aligned: Vec<(String, bool)> = native_panes.iter().map(|(id, _)| (id.clone(), on_body(frame(&before, id), rects.iter().find(|r| &r.0 == id).unwrap().1))).collect();
@@ -263,7 +279,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(opened, "the second window never opened the space's views: {}", native2.status());
     ensure!(shown(second, cx)? == (first_session.clone(), first_space.clone()), "the second window shows {:?}", shown(second, cx)?);
-    wait(&native2, "the second window's pages and terminals", |st| webs.iter().all(|w| st["panes"][w.as_str()]["loads"].as_array().is_some_and(|a| !a.is_empty())), cx).await?;
+    wait(&native2, "the second window's pages and terminals", |st| webs.iter().all(|w| web_ready(st, w)), cx).await?;
     let (s1, s2) = (native.status(), native2.status());
     let distinct = native_panes.iter().all(|(id, _)| identity(&s1, id) != identity(&s2, id));
     ensure!(distinct, "the two windows share native views");
@@ -320,7 +336,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     draw(window, None, cx)?;
     ensure!(layouts > layouts_before_restart, "no layout after the restart");
     wait(&native, "native views on the restarted daemon", |s| {
-        webs.iter().all(|w| s["panes"][w.as_str()]["loads"].as_array().is_some_and(|a| !a.is_empty()))
+        webs.iter().all(|w| web_ready(s, w))
             && terms.iter().all(|t| s["panes"][t.as_str()]["pixels"] == true)
     }, cx).await?;
     // A new PTY answers keys typed through the reopened view: only the shell's output holds 42.
@@ -347,7 +363,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         native_panes.iter().map(|(id, kind)| (id.clone(), json!({"kind":kind,"frame":frame(s,id),"grid":last_grid(s,id)}))).collect::<serde_json::Map<_, _>>().into()
     };
     Ok(json!({
-        "host_pid": std::process::id(), "layouts_received": layouts, "first_layout": first,
+        "host_pid": std::process::id(), "layouts_received": layouts, "page": {"pane": native_pages[0], "state": page_state, "png_bytes": page_bytes}, "first_layout": first,
         "native_panes": native_panes, "loaded_at_start": loaded["panes"],
         "native_aligned_with_panes": aligned, "own_session_only": own,
         "keyboard": {"clicked": target, "click": click, "focused": focused, "typed_viewport": viewport(&typed, target), "leaked_to_first": leaked},

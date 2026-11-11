@@ -321,7 +321,7 @@ impl Client {
                 match (&p.leaf.term, p.leaf.kind.as_str()) {
                     (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, &self.endpoint.ws),
                     (None, "browser") => self.native.open_web(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank")),
-                    (None, _) => self.native.open_web(&p.leaf.id, &self.endpoint.artifact(&p.leaf.id)),
+                    (None, _) => self.native.open_artifact(&p.leaf.id, &self.endpoint.artifact(&p.leaf.id), &p.leaf.label, p.leaf.scope.as_deref().unwrap_or("project"), self.space_id.as_deref(), &self.endpoint.ws),
                 }
                 self.opened.insert(p.leaf.id.clone(), kind);
             }

@@ -3,6 +3,9 @@ import WebKit
 import IOSurface
 import QuartzCore
 import GhosttyTerminal
+import SwiftUI
+import WheelKit
+import WheelUI
 
 // The native half of the GPUI client: real WKWebView and Ghostty terminal views as children
 // of the GPUI window's NSView, one per pane id. Every C entrypoint is called on the main thread.
@@ -39,10 +42,15 @@ final class Slot: NSView {
     var termID: String?
     var url: String?
     var loads: [String] = []
+    /// A web pane on an artifact whose MCP server speaks A2UI draws that page natively (ADR-0031,
+    /// ADR-0038): the same `A2UIPane` and `A2UIPaneView` the Swift Mac app uses.
+    var page: A2UIPane?
+    var pageView: NSHostingView<A2UIPaneView>?
+    var pageShown: Bool { page?.isNative == true }
     var grids: [[Int]] = []
     var writes: [String] = []
     init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
-    var content: NSView { (web ?? terminal)! }
+    var content: NSView { (pageShown ? pageView : nil) ?? web ?? terminal! }
 }
 
 @MainActor final class Native: NSObject, WKNavigationDelegate {
@@ -50,6 +58,8 @@ final class Slot: NSView {
     let controller = TerminalController(configSource: .generated("font-size = 14\nkeybind = clear\nbackground = #17201c\n"))
     var panes: [String: PaneHost] = [:]
     var socket: URLSessionWebSocketTask?
+    /// The connection the A2UI pages talk over, started with the first page and dropped with `disconnect`.
+    var pageClient: DaemonClient?
     var sendTask: Task<Void, Never>?
     var errors: [String] = []
     var overlay: CGRect?
@@ -93,6 +103,8 @@ final class Slot: NSView {
         for id in Array(panes.keys) { close(id) }
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
+        pageClient?.stop()
+        pageClient = nil
     }
 
     // MARK: daemon socket (terminal bytes only; layout and ops go over Rust's own socket)
@@ -152,6 +164,17 @@ final class Slot: NSView {
             host.web = web
             host.slot.addSubview(web)
             if let url = value["url"] as? String { host.url = url; web.load(URLRequest(url: URL(string: url)!)) }
+            if let name = value["artifact"] as? String, let scope = (value["scope"] as? String).flatMap(ArtifactScope.init(rawValue:)),
+               let client = pages(value["ws"] as! String) {
+                let page = A2UIPane(pane: id, artifact: ArtifactRef(scope: scope, name: name), space: value["space"] as? String,
+                                    send: { [weak client] in client?.send($0) }, nextReq: { [weak client] in client?.req() ?? 0 })
+                let view = NSHostingView(rootView: A2UIPaneView(pane: page))
+                view.isHidden = true
+                host.page = page
+                host.pageView = view
+                host.slot.addSubview(view)
+                if client.connection == .connected { page.start() }
+            }
         } else {
             let term = value["term"] as! String
             connect(value["ws"] as! String)
@@ -183,6 +206,32 @@ final class Slot: NSView {
         if let term = host.termID, !panes.values.contains(where: { $0.termID == term }) { send(["op": "term_detach", "id": term]) }
         host.slot.removeFromSuperview()
     }
+    /// The page connection, opened on first use from the socket address the pane was given.
+    func pages(_ ws: String) -> DaemonClient? {
+        if let pageClient { return pageClient }
+        guard var parts = URLComponents(string: ws), let token = parts.queryItems?.first(where: { $0.name == "token" })?.value else { return nil }
+        parts.queryItems = nil
+        guard let url = parts.url else { return nil }
+        let client = DaemonClient(endpoint: DaemonEndpoint(url: url, token: { token }))
+        client.onConnect = { [weak self] _ in self?.panes.values.forEach { $0.page?.start() } }
+        client.onMessage = { [weak self] message in
+            guard let self else { return }
+            for host in panes.values { host.page?.handle(message) }
+            showPages()
+        }
+        client.log = { [weak self] in self?.errors.append("pages: " + $0) }
+        client.start()
+        pageClient = client
+        return client
+    }
+    /// Show each page's native view once its server has answered with an A2UI layout, its web page until then.
+    func showPages() {
+        for host in panes.values {
+            guard let view = host.pageView else { continue }
+            view.isHidden = !host.pageShown
+            host.web?.isHidden = host.pageShown
+        }
+    }
     func place(_ value: [String: Any]) {
         guard let host = panes[value["pane"] as! String] else { return }
         host.slot.isHidden = value["hidden"] as? Bool == true
@@ -191,6 +240,8 @@ final class Slot: NSView {
         if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
         host.slot.frame = frame
         host.content.frame = host.slot.bounds
+        host.pageView?.frame = host.slot.bounds
+        host.web?.frame = host.slot.bounds
         host.terminal?.setSurfaceVisible(!host.slot.isHidden)
         host.slot.cut(overlay)
     }
@@ -231,6 +282,8 @@ final class Slot: NSView {
             socket?.cancel(with: .goingAway, reason: nil)
             socket = nil
             sendTask = nil
+            pageClient?.stop()
+            pageClient = nil
         case "place": place(value)
         case "focus":
             // A pane with no native view is drawn by GPUI: its view takes the keyboard.
@@ -302,6 +355,10 @@ final class Slot: NSView {
                     }
                 }
                 if let terminal = host.terminal { _ = png(terminalPixels(terminal), "\(directory)/\(host.id)-terminal.png") }
+                if host.pageShown, let view = host.pageView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: "\(directory)/\(host.id)-page.png")) }
+                }
             }
         default: break
         }
@@ -324,7 +381,10 @@ final class Slot: NSView {
                 "masked": host.slot.layer?.mask != nil,
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
                 "view_identity": String(describing: Unmanaged.passUnretained(host.content).toOpaque())]
-            if host.kind == "web" { entry["loads"] = host.loads; entry["url"] = host.url ?? "" }
+            if host.kind == "web" {
+                entry["loads"] = host.loads; entry["url"] = host.url ?? ""
+                if let page = host.page { entry["page"] = ["state": page.stateName, "native": host.pageShown, "notice": page.notice ?? "", "unsupported": page.unsupported] }
+            }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["writes"] = host.writes
                    entry["pixels"] = host.terminal?.layer?.contents != nil }
             panesOut[id] = entry
