@@ -87,6 +87,11 @@ extension SpaceInfo {
         return nil
     }
 
+    /// The tree holding `pane`: the grid's root, the popped window's tree or the tray leaf; nil when the space does not hold it.
+    public func tree(holding pane: String) -> Node? {
+        ([root] + popped + backgrounded).first { $0.panes.contains { $0.id == pane } }
+    }
+
     /// The pane this client keeps focused when the space's tree becomes `root`: the same pane while it
     /// is there, else the pane that now sits where it was in reading order (a closed pane's neighbour).
     public func focusKept(in root: Node) -> String {

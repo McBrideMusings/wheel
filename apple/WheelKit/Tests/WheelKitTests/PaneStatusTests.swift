@@ -106,6 +106,15 @@ struct PaneSiteTests {
         #expect(space.paneStatuses == ["p5": .needsYou(waiting: 1)])
     }
 
+    @Test func treeHoldingNamesTheGridThePoppedWindowOrTheTrayLeaf() throws {
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        let space = spaces[0]
+        #expect(space.tree(holding: "p1")?.panes.map(\.id) == ["p1"])
+        #expect(space.tree(holding: "p3")?.panes.map(\.id) == ["p2", "p3"])
+        #expect(space.tree(holding: "p5")?.panes.map(\.id) == ["p5"])
+        #expect(space.tree(holding: "p9") == nil)
+    }
+
     @Test func aSpaceWithNoneIsAsBefore() throws {
         let plain = #"{"ev":"spaces","spaces":[{"id":"s1","name":"tmp","cwd":"/tmp","root":{"node":"pane","id":"p1","kind":"empty"}}]}"#
         guard case let .spaces(spaces, _) = try ServerMsg.decode(plain) else { Issue.record("wrong case"); return }

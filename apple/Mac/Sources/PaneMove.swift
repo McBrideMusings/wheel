@@ -104,9 +104,16 @@ extension AppModel {
             if let strip, screenRect(strip, in: nswindow).contains(point) { return (.newSpace(window: id), nil) }
             if let shown = record.active, shown != home, layout.little(showing: shown) == nil,
                let grid = gridFrames[id].map({ screenRect($0, in: nswindow) }), grid.contains(point),
-               let base = baseLayouts[shown],
-               let hit = PaneDragging.away(at: CGPoint(x: point.x - grid.minX, y: grid.maxY - point.y), among: base.panes) {
-                return (.beside(pane: hit.pane, dir: hit.dir, space: shown), nil)
+               let base = baseLayouts[shown], let there = spaces.first(where: { $0.id == shown }) {
+                let inGrid = CGPoint(x: point.x - grid.minX, y: grid.maxY - point.y)
+                // A popped window floats over that grid: over one, the pane takes a side of the pane in it.
+                if let popped = poppedDrop(at: inGrid, in: there, dragging: "") {
+                    guard let drop = popped, case let .edge(dir) = drop.zone else { return nil }
+                    return (.beside(pane: drop.target, dir: dir, space: shown), nil)
+                }
+                if let hit = PaneDragging.away(at: inGrid, among: base.panes) {
+                    return (.beside(pane: hit.pane, dir: hit.dir, space: shown), nil)
+                }
             }
             return nil
         }

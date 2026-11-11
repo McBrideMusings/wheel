@@ -157,6 +157,8 @@ final class AppModel {
     /// Each space's panes as the daemon's tree places them, which a drag is hit-tested against so the
     /// preview moving panes aside never moves the target under the pointer. Not published.
     @ObservationIgnored var baseLayouts: [String: WheelKit.GridLayout] = [:]
+    /// Each space's grid size as last drawn, which places its popped windows for a drag's hit test.
+    @ObservationIgnored var gridSizes: [String: CGSize] = [:]
     /// The pane each space shows alone, by space id. Client-only: the daemon's tree is untouched, and
     /// an entry whose pane has left its space is ignored by `zoomedPane(in:)`.
     private(set) var zoomedPanes: [String: String] = [:]
@@ -1321,6 +1323,42 @@ final class AppModel {
                       y: min(max(frame.minY, 0), max(size.height - height, 0)), width: width, height: height)
     }
 
+    /// The size a popped window draws at from its placed frame and a resize in progress: never below
+    /// its minimum, never past the grid's right or bottom edge.
+    static func poppedSize(_ base: CGRect, grow: CGSize = .zero, in bounds: CGSize) -> CGSize {
+        let least = CGSize(width: 280, height: 180)
+        return CGSize(width: min(max(base.width + grow.width, least.width), max(bounds.width - base.minX, least.width)),
+                      height: min(max(base.height + grow.height, least.height), max(bounds.height - base.minY, least.height)))
+    }
+
+    /// The popped windows of `space` as drawn, topmost first (the one holding the focus, then the
+    /// last drawn), each with its panes in the space's grid coordinates.
+    func poppedWindows(in space: SpaceInfo) -> [(frame: CGRect, panes: [WheelKit.GridLayout.Pane])] {
+        guard let bounds = gridSizes[space.id] else { return [] }
+        let drawn = space.popped.enumerated().map { index, tree in
+            let base = poppedFrame(of: tree, index: index, in: bounds)
+            let frame = CGRect(origin: base.origin, size: Self.poppedSize(base, in: bounds))
+            let layout = WheelKit.GridLayout(tree, in: frame, minimum: WheelKit.GridLayout.minimumPane)
+            return (frame: frame, panes: layout.panes, focused: tree.panes.contains { $0.id == space.focus })
+        }
+        return (drawn.filter(\.focused).reversed() + drawn.filter { !$0.focused }.reversed()).map { ($0.frame, $0.panes) }
+    }
+
+    /// The popped window of `space` under `point` (grid coordinates) and the pane in it there, or
+    /// nil when the point is over no popped window. A pane dropped in a popped window takes a side
+    /// of the pane under it: the two are in different trees, which never swap.
+    func poppedDrop(at point: CGPoint, in space: SpaceInfo, dragging: String) -> PaneDrop?? {
+        guard let window = poppedWindows(in: space).first(where: { $0.frame.contains(point) }) else { return nil }
+        guard let pane = window.panes.first(where: { $0.frame.contains(point) }), pane.id != dragging else { return .some(nil) }
+        return PaneDrop(target: pane.id, zone: .edge(PaneDragging.nearestEdge(at: point, in: pane.frame)))
+    }
+
+    /// The frame of `pane` in its space's grid coordinates, in the grid or in a popped window.
+    func drawnFrame(of pane: String, in space: SpaceInfo) -> CGRect? {
+        baseLayouts[space.id]?.panes.first(where: { $0.id == pane })?.frame
+            ?? poppedWindows(in: space).lazy.flatMap(\.panes).first(where: { $0.id == pane })?.frame
+    }
+
     func setPoppedFrame(_ frame: CGRect, of tree: Node) {
         for pane in tree.panes { poppedFrames[pane.id] = frame }
         let raw = poppedFrames.mapValues { [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)] }
@@ -1553,6 +1591,11 @@ final class AppModel {
     func hoverPaneDrag(_ drop: PaneDrop?) {
         guard var drag = paneDrag, !drag.committed, drag.drop != drop else { return }
         if drop?.target == drag.pane { return hoverPaneDrag(nil) }
+        // Panes in two trees of one space (the grid, a popped window) never swap: the middle docks on the right.
+        if let drop, drop.zone == .center, let home = space(holding: drag.pane), home.site(of: drop.target) != nil,
+           home.tree(holding: drag.pane)?.panes.contains(where: { $0.id == drop.target }) == false {
+            return hoverPaneDrag(PaneDrop(target: drop.target, zone: .edge(.right)))
+        }
         // A pane in another space is a dock there, which the pointer's hit test also makes.
         if let drop, let home = space(holding: drag.pane)?.id, let there = space(holding: drop.target), there.id != home {
             let dir: Dir = if case let .edge(dir) = drop.zone { dir } else { .right }
@@ -1566,9 +1609,11 @@ final class AppModel {
 
     /// Pointer position in the grid's space: hover whatever pane is there.
     func dragPane(to point: CGPoint) {
-        guard let drag = paneDrag, !dragCancelled, let id = space(holding: drag.pane)?.id, let base = baseLayouts[id] else { return }
+        guard let drag = paneDrag, !dragCancelled, let home = space(holding: drag.pane), let base = baseLayouts[home.id] else { return }
         // Over a tab, a row, another space or the desktop the drop is theirs, not the grid's.
         if drag.away != nil { return }
+        // A popped window floats over the grid, so the pane is over the window, not the grid under it.
+        if let popped = poppedDrop(at: point, in: home, dragging: drag.pane) { return hoverPaneDrag(popped) }
         hoverPaneDrag(PaneDragging.drop(at: point, among: base.panes, dragging: drag.pane))
     }
 

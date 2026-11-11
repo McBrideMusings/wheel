@@ -433,9 +433,11 @@ struct SpaceGrid: View {
                         .frame(width: zone.width, height: zone.height)
                         .offset(x: zone.minX, y: zone.minY)
                         .allowsHitTesting(false)
+                        // Over a popped window's pane it draws over that window.
+                        .zIndex(space.site(of: drop.target) == .popped ? 4 : 0)
                 }
                 if case let .beside(target, dir, held)? = drag.pane?.away, held == space.id,
-                   let frame = model.baseLayouts[space.id]?.panes.first(where: { $0.id == target })?.frame {
+                   let frame = model.drawnFrame(of: target, in: space) {
                     let zone = PaneDragging.highlight(.edge(dir), in: frame)
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.accentColor.opacity(0.18))
@@ -443,6 +445,7 @@ struct SpaceGrid: View {
                         .frame(width: zone.width, height: zone.height)
                         .offset(x: zone.minX, y: zone.minY)
                         .allowsHitTesting(false)
+                        .zIndex(space.site(of: target) == .popped ? 4 : 0)
                 }
                 if zoomed == nil {
                     ForEach(layout.dividers) { divider in
@@ -468,10 +471,12 @@ struct SpaceGrid: View {
             .coordinateSpace(name: "spaceGrid")
             .onChange(of: space.root, initial: true) { _, root in
                 CrashGuard.mark(space: space.id)
+                model.gridSizes[space.id] = rect.size
                 model.baseLayouts[space.id] = WheelKit.GridLayout(root, in: rect, minimum: WheelKit.GridLayout.minimumPane)
             }
             .onChange(of: geo.size) { _, size in
                 CrashGuard.mark(space: space.id)
+                model.gridSizes[space.id] = size
                 model.baseLayouts[space.id] = WheelKit.GridLayout(space.root, in: CGRect(origin: .zero, size: size), minimum: WheelKit.GridLayout.minimumPane)
             }
         }
@@ -480,8 +485,8 @@ struct SpaceGrid: View {
     /// The part of the grid that lights up for the drop: the target's own frame for a swap, and for
     /// a dock the half of the target the pane would take.
     private func dropZone(_ drag: AppModel.PaneDrag, _ drop: PaneDrop) -> CGRect? {
-        guard space.root.panes.contains(where: { $0.id == drag.pane }),
-              let frame = model.baseLayouts[space.id]?.panes.first(where: { $0.id == drop.target })?.frame else { return nil }
+        guard space.site(of: drag.pane) != nil,
+              let frame = model.drawnFrame(of: drop.target, in: space) else { return nil }
         return PaneDragging.highlight(drop.zone, in: frame)
     }
 }
@@ -1284,14 +1289,10 @@ struct PoppedWindow: View {
     @State private var move: CGSize = .zero
     @State private var grow: CGSize = .zero
 
-    private static let minSize = CGSize(width: 280, height: 180)
     private static let edgeReach: CGFloat = 14
 
     private var base: CGRect { model.poppedFrame(of: tree, index: index, in: bounds) }
-    private var size: CGSize {
-        CGSize(width: min(max(base.width + grow.width, Self.minSize.width), max(bounds.width - base.minX, Self.minSize.width)),
-               height: min(max(base.height + grow.height, Self.minSize.height), max(bounds.height - base.minY, Self.minSize.height)))
-    }
+    private var size: CGSize { AppModel.poppedSize(base, grow: grow, in: bounds) }
 
     private func edge(of point: CGPoint) -> Dir? {
         if point.x < Self.edgeReach { return .left }

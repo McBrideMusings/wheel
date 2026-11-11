@@ -1140,7 +1140,8 @@ final class DebugServer {
             // `zone`: center, left, right, up or down; a target in another space takes a side), hover
             // with `space` (a tab, row or popover row: the end of that space; the held wait runs as
             // for a pointer), `newspace` (a window id: a new space there), `desktop=1`, or `at=x,y`
-            // (a screen point from `GET /geometry`, run through the real hit test), drop or cancel.
+            // (a screen point from `GET /geometry`, run through the real hit test), `grid=x,y` (a point in
+            // the pane's own space's grid, run through the header gesture's hit test, popped windows first), drop or cancel.
             // The same model calls the pointer's gesture makes.
             Log.info("debug: pane drag \(query["action"] ?? "-")")
             switch query["action"] {
@@ -1170,7 +1171,13 @@ final class DebugServer {
                     model.movePaneDrag(at: CGPoint(x: parts[0], y: parts[1]))
                     break
                 }
-                guard let target = query["target"], let zone = query["zone"] else { return refuse("400 Bad Request", "target and zone, space, newspace, desktop or at are required") }
+                if let at = query["grid"] {
+                    let parts = at.split(separator: ",").compactMap { Double($0) }
+                    guard parts.count == 2 else { return refuse("400 Bad Request", "grid is x,y") }
+                    model.dragPane(to: CGPoint(x: parts[0], y: parts[1]))
+                    break
+                }
+                guard let target = query["target"], let zone = query["zone"] else { return refuse("400 Bad Request", "target and zone, space, newspace, desktop, at or grid are required") }
                 let parsed: DropZone? = zone == "center" ? .center : Dir(rawValue: zone).map { .edge($0) }
                 guard let parsed else { return refuse("400 Bad Request", "zone is center, left, right, up or down") }
                 model.hoverPaneDrag(PaneDrop(target: target, zone: parsed))
