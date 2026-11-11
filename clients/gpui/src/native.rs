@@ -66,6 +66,10 @@ impl Native {
     pub fn disconnect(&self) {
         self.call(json!({"op":"disconnect"}));
     }
+    /// Give `pane`'s native view the keyboard; a pane with none (GPUI draws it) gives it to the GPUI view.
+    pub fn focus(&self, pane: &str) {
+        self.call(json!({"op":"focus","pane":pane}));
+    }
     pub fn close(&self, pane: &str) {
         self.call(json!({"op":"close","pane":pane}));
     }

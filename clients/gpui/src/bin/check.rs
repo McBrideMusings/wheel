@@ -134,6 +134,23 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let typed = wait(&native, "typed key in second terminal", |s| viewport(s, target).contains("PTY:k"), cx).await?;
     let leaked = viewport(&typed, terms[0]).contains("PTY:k");
     ensure!(focused == true && !leaked, "keyboard focus: focused={focused} leaked_to_first={leaked}");
+    // Command-] from the focused terminal (a native view) moves the keyboard to the next pane in
+    // layout order, and command-[ moves it back.
+    let order: Vec<(String, String)> = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.leaf.kind)).collect())?;
+    let at = order.iter().position(|p| p.0 == *target).unwrap();
+    let next = order[(at + 1) % order.len()].clone();
+    native.call(json!({"op":"post_key","text":"]","code":30,"command":true}));
+    tick(cx, 300).await;
+    let after = native.status();
+    let client_focus = window.update(cx, |c, _, _| c.focus.current.clone())?;
+    let next_has_it = if next.1 == "web" || next.1 == "terminal" || next.1 == "browser" { after["panes"][next.0.as_str()]["focused"] == true } else { after["root_focused"] == true };
+    ensure!(client_focus.as_deref() == Some(next.0.as_str()) && next_has_it && after["panes"][target.as_str()]["focused"] == false,
+        "command-] moved focus to {client_focus:?}, wanted {next:?}: {after}");
+    native.call(json!({"op":"post_key","text":"[","code":33,"command":true}));
+    tick(cx, 300).await;
+    let back = native.status();
+    let back_focus = window.update(cx, |c, _, _| c.focus.current.clone())?;
+    ensure!(back_focus.as_deref() == Some(target.as_str()) && back["panes"][target.as_str()]["focused"] == true, "command-[ moved focus to {back_focus:?}");
     // Drag the first divider between columns with NSEvents the GPUI view receives.
     let (split, bar, parent) = window.update(cx, |c, _, _| {
         let (_, dividers) = c.scene();

@@ -2,8 +2,8 @@
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
-use crate::{daemon::{Endpoint, Event}, layout::*, native::Native, transcript::{Line, Transcript}};
-use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
+use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, layout::*, native::Native, transcript::{Line, Transcript}};
+use gpui::{Context, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use serde_json::json;
 use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
 
@@ -30,6 +30,12 @@ pub struct Client {
     /// this connection.
     pub transcripts: HashMap<String, Transcript>,
     attached: HashSet<String>,
+    /// The pane with the keyboard, and what has been typed to each agent and not yet sent.
+    pub focus: Focus,
+    drafts: HashMap<String, String>,
+    /// GPUI delivers keys only to a focused element: the root holds this for good, while the
+    /// keyboard itself moves between the window's views by AppKit's first responder.
+    handle: FocusHandle,
     /// What the connection to wheeld is doing, shown at the right of the header.
     pub link: Link,
 }
@@ -54,10 +60,10 @@ impl Link {
 }
 
 impl Client {
-    pub fn new(native: Rc<Native>, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_space: Option<String>) -> Self {
+    pub fn new(native: Rc<Native>, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_space: Option<String>, handle: FocusHandle) -> Self {
         Self {
             native, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), attached: HashSet::new(), link: Link::Connecting,
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -169,6 +175,41 @@ impl Client {
             }
         }
     }
+    /// Give `pane` the keyboard: its native view, or the GPUI view for a pane GPUI draws.
+    fn focus_pane(&mut self, pane: &str) {
+        self.focus.current = Some(pane.to_owned());
+        self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
+    }
+    fn key(&mut self, e: &KeyDownEvent) -> bool {
+        let k = &e.keystroke;
+        if k.modifiers.platform && matches!(k.key.as_str(), "[" | "]") {
+            // A native view may have taken the keyboard by a click GPUI never saw.
+            let status = self.native.status();
+            let held = self.native_panes.iter().find(|p| status["panes"][p.as_str()]["focused"] == true).cloned()
+                .or_else(|| status["held_before_key"].as_str().filter(|h| !h.is_empty()).map(str::to_owned));
+            if held.is_some() {
+                self.focus.current = held;
+            }
+            let order: Vec<String> = self.scene().0.into_iter().map(|p| p.leaf.id).collect();
+            if let Some(next) = self.focus.step(&order, k.key == "]") {
+                self.focus_pane(&next);
+            }
+            return true;
+        }
+        let agent = self.scene().0.into_iter()
+            .find(|p| Some(&p.leaf.id) == self.focus.current.as_ref() && p.leaf.kind == "agent")
+            .and_then(|p| p.leaf.agent);
+        let Some(agent) = agent else { return false };
+        let draft = self.drafts.entry(agent.clone()).or_default();
+        match type_into(draft, &k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
+            Typed::Nothing => false,
+            Typed::Edited => true,
+            Typed::Send(text) => {
+                self.send(json!({"op":"agent_send","agent":agent,"text":text}));
+                true
+            }
+        }
+    }
     /// Turn an empty pane into `kind` (`terminal` or `browser`).
     fn set_kind(&self, pane: &str, kind: &str) {
         self.send(json!({"op":"pane_set_kind","pane":pane,"kind":kind}));
@@ -223,9 +264,17 @@ impl Render for Client {
         let v = window.viewport_size();
         self.viewport = (f32::from(v.width), f32::from(v.height));
         let (leaves, dividers) = self.scene();
+        if !self.handle.is_focused(window) {
+            window.focus(&self.handle, cx);
+        }
         self.sync_native(&leaves);
         self.sync_agents(&leaves);
-        let mut root = div().relative().size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
+        let mut root = div().relative().track_focus(&self.handle)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                if this.key(e) {
+                    cx.notify();
+                }
+            })).size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if this.drag.is_some() {
                     this.move_drag(f32::from(e.position.x), f32::from(e.position.y));
@@ -277,7 +326,7 @@ impl Render for Client {
                         };
                         col = col.child(div().text_color(rgb(color)).child(text));
                     }
-                    col
+                    col.child(div().text_color(rgb(0xe0b070)).child(format!("> {}", p.leaf.agent.as_ref().and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or(""))))
                 }
                 "empty" => {
                     let button = |label: &'static str, kind: &'static str, cx: &mut Context<Self>| {
@@ -292,7 +341,14 @@ impl Render for Client {
             };
             root = root.child(
                 div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x17201c))
-                    .border_1().border_color(rgb(0x2c3d34))
+                    .border_1().border_color(rgb(if self.focus.current.as_ref() == Some(&p.leaf.id) { 0x7fb89a } else { 0x2c3d34 }))
+                    .on_mouse_down(MouseButton::Left, cx.listener({
+                        let id = p.leaf.id.clone();
+                        move |this, _, _, cx| {
+                            this.focus_pane(&id);
+                            cx.notify();
+                        }
+                    }))
                     .child(div().h(px(TITLE)).px_2().bg(rgb(0x22302a)).text_xs().child(format!("{} · {}", p.leaf.kind, p.leaf.id)))
                     .child(div().p_2().text_color(rgb(0x8fa89b)).child(body)),
             );

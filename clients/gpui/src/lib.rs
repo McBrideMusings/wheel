@@ -1,5 +1,6 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
 pub mod daemon;
+pub mod focus;
 pub mod layout;
 pub mod native;
 pub mod transcript;
@@ -29,7 +30,7 @@ pub fn open_window(
                 show: !hidden,
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| view::Client::new(n, connection_out, endpoint, prefer_space)),
+            |_, cx| cx.new(|cx| view::Client::new(n, connection_out, endpoint, prefer_space, cx.focus_handle())),
         )
     })?;
     window.update(cx, |_, window, _| -> Result<()> {

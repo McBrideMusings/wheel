@@ -54,6 +54,7 @@ final class Slot: NSView {
     var errors: [String] = []
     var overlay: CGRect?
     var mouseNumber = 0
+    var heldBeforeKey: String?
     var mouseTarget: NSView?
     var snapshotsPending = 0
     var termOutputs = 0
@@ -67,6 +68,21 @@ final class Slot: NSView {
             NSApp.setActivationPolicy(.prohibited)
             root.window?.ignoresMouseEvents = true
         }
+        // Hardware keys reach the focused native view first; the pane-cycling shortcuts are the
+        // GPUI view's, so a native pane hands the window's keyboard back to it for those.
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.routeKey(event)
+            return event
+        }
+    }
+    /// Command-[ and command-] belong to the GPUI view: make it the first responder before they land.
+    func routeKey(_ event: NSEvent) {
+        guard event.modifierFlags.contains(.command), ["[", "]"].contains(event.charactersIgnoringModifiers ?? ""),
+              root.window?.firstResponder !== root else { return }
+        // The pane that held the keyboard, so the GPUI view knows where cycling starts.
+        let responder = root.window?.firstResponder as? NSView
+        heldBeforeKey = panes.first { responder === $0.value.content || responder?.isDescendant(of: $0.value.content) == true }?.key
+        _ = root.window?.makeFirstResponder(root)
     }
 
     // MARK: daemon socket (terminal bytes only; layout and ops go over Rust's own socket)
@@ -207,8 +223,9 @@ final class Slot: NSView {
             sendTask = nil
         case "place": place(value)
         case "focus":
-            let host = panes[value["pane"] as! String]
-            return ["accepted": host.map { root.window?.makeFirstResponder($0.content) ?? false } ?? false]
+            // A pane with no native view is drawn by GPUI: its view takes the keyboard.
+            let target = panes[value["pane"] as! String]?.content ?? root
+            return ["accepted": root.window?.makeFirstResponder(target) ?? false]
         case "overlay":
             if value["open"] as? Bool == true {
                 let a = value["rect"] as! [Double]
@@ -229,10 +246,12 @@ final class Slot: NSView {
             // handling run as for hardware events; nothing touches the OS keyboard or focus.
             let text = value["text"] as! String
             let code = UInt16(value["code"] as? Int ?? 0)
+            let flags: NSEvent.ModifierFlags = value["command"] as? Bool == true ? [.command] : []
             for eventType in [NSEvent.EventType.keyDown, .keyUp] {
-                if let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: [],
+                if let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: flags,
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,
                     context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) {
+                    if eventType == .keyDown { routeKey(event) }
                     root.window?.sendEvent(event)
                 }
             }
@@ -282,6 +301,7 @@ final class Slot: NSView {
     func status() -> [String: Any] {
         var out: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "errors": errors,
             "snapshots_pending": snapshotsPending,
+            "root_focused": root.window?.firstResponder === root, "held_before_key": heldBeforeKey ?? "",
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
             "key_window": root.window?.isKeyWindow ?? false, "visible": root.window?.isVisible ?? false,
             "app_active": NSApp.isActive, "native_subviews": root.subviews.count,
