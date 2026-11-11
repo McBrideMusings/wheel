@@ -1,17 +1,28 @@
-//! The window's content: a header with the spaces, the active space's split tree drawn as
+//! The window's content: a header with the sessions and the shown session's spaces (ADR-0014),
+//! the shown space's split tree drawn as
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
-use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, layout::*, native::Native, transcript::{Line, Transcript}};
-use gpui::{Context, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
+use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, header::{self, Hit}, layout::*, native::{Bridge, Native}, transcript::{Line, Transcript}};
+use gpui::{App, Context, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use serde_json::json;
 use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
-pub const HEADER: f32 = 34.0;
+pub const HEADER: f32 = header::HEIGHT;
 
 pub struct Client {
     native: Rc<Native>,
+    bridge: Rc<Bridge>,
+    /// The test mode the window was opened in; a window this one opens is opened the same way.
+    hidden: bool,
+    /// Names this window to wheeld in `view` reports (ADR-0022).
+    window_id: String,
+    sessions: Vec<Session>,
+    /// The session shown: kept across layouts by id.
+    session_id: Option<String>,
+    /// The last (session, space, pane) reported to wheeld.
+    reported: Option<(Option<String>, Option<String>, Option<String>)>,
     out: mpsc::Sender<String>,
     endpoint: Endpoint,
     spaces: Vec<Space>,
@@ -60,18 +71,19 @@ impl Link {
 }
 
 impl Client {
-    pub fn new(native: Rc<Native>, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_space: Option<String>, handle: FocusHandle) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
         Self {
-            native, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
+            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
     pub fn on_event(&mut self, event: Event) -> bool {
         match event {
-            Event::Message(message) => match crate::layout::parse_spaces(&message) {
-                Some(spaces) => {
-                    self.apply(spaces);
+            Event::Message(message) => match crate::layout::parse_layout(&message) {
+                Some(layout) => {
+                    self.apply(layout);
                     true
                 }
                 None => {
@@ -98,6 +110,8 @@ impl Client {
                     // The layout we hold is the old daemon's: its terminal ids mean nothing to the
                     // new one. Nothing opens until the layout that follows this event arrives.
                     self.spaces.clear();
+                    self.sessions.clear();
+                    self.reported = None;
                     self.overrides.clear();
                     self.drag = None;
                 }
@@ -116,15 +130,91 @@ impl Client {
         }
     }
     /// The daemon's layout replaces ours, dragged ratios included.
-    pub fn apply(&mut self, spaces: Vec<Space>) {
-        if !spaces.iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
-            self.space_id = spaces.first().map(|s| s.id.clone());
-        }
-        self.spaces = spaces;
+    pub fn apply(&mut self, layout: Layout) {
+        self.spaces = layout.spaces;
+        self.sessions = layout.sessions;
         self.overrides.clear();
+        // The session shown stays unless it is gone; a space shown stays while its session
+        // holds it. A session that holds the space asked for (a new window's) is the one shown.
+        if !self.sessions.iter().any(|s| Some(&s.id) == self.session_id.as_ref()) {
+            let holder = self.sessions.iter().find(|s| self.space_id.as_ref().is_some_and(|id| s.spaces.contains(id)));
+            self.session_id = holder.or(self.sessions.first()).map(|s| s.id.clone());
+        }
+        if !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
+            self.space_id = self.session_spaces().first().map(|s| s.id.clone());
+        }
+        self.sync_view();
+    }
+    /// The spaces of the session shown, in the session's order; every space when wheeld lists
+    /// no sessions.
+    pub fn session_spaces(&self) -> Vec<&Space> {
+        match self.sessions.iter().find(|s| Some(&s.id) == self.session_id.as_ref()) {
+            Some(session) => session.spaces.iter().filter_map(|id| self.spaces.iter().find(|s| &s.id == id)).collect(),
+            None => self.spaces.iter().collect(),
+        }
+    }
+    pub fn window_id(&self) -> &str {
+        &self.window_id
+    }
+    pub fn native(&self) -> Rc<Native> {
+        self.native.clone()
+    }
+    /// The header's chips as drawn at the window's current size.
+    pub fn header_chips(&self) -> Vec<header::Chip> {
+        let pair = |id: &String, name: &String| (id.clone(), name.clone());
+        let sessions: Vec<_> = self.sessions.iter().map(|s| pair(&s.id, &s.name)).collect();
+        let spaces: Vec<_> = self.session_spaces().iter().map(|s| pair(&s.id, &s.name)).collect();
+        header::chips(self.viewport.0, &sessions, &spaces, self.session_id.as_deref(), self.space_id.as_deref())
+    }
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+    pub fn space_id(&self) -> Option<&str> {
+        self.space_id.as_deref()
     }
     fn space(&self) -> Option<&Space> {
         self.spaces.iter().find(|s| Some(&s.id) == self.space_id.as_ref())
+    }
+    /// Show `session`: the space it was last showing is not remembered, so its first space.
+    pub fn select_session(&mut self, session: &str) {
+        if self.session_id.as_deref() == Some(session) || !self.sessions.iter().any(|s| s.id == session) {
+            return;
+        }
+        self.session_id = Some(session.to_owned());
+        self.space_id = self.session_spaces().first().map(|s| s.id.clone());
+        self.overrides.clear();
+        self.sync_view();
+    }
+    /// Show `space` of the session shown.
+    pub fn select_space(&mut self, space: &str) {
+        if self.space_id.as_deref() != Some(space) && self.session_spaces().iter().any(|s| s.id == space) {
+            self.space_id = Some(space.to_owned());
+            self.overrides.clear();
+            self.sync_view();
+        }
+    }
+    /// Tell wheeld what this window shows (ADR-0022) when it differs from the last report.
+    fn sync_view(&mut self) {
+        if self.link != Link::Up {
+            return;
+        }
+        // A pane is reported only while it is one of the space shown.
+        let pane = self.focus.current.clone().filter(|p| self.space().is_some_and(|s| leaves_of(&s.root).iter().any(|l| &l.id == p)));
+        let now = (self.session_id.clone(), self.space_id.clone(), pane);
+        if now.0.is_none() && now.1.is_none() || self.reported.as_ref() == Some(&now) {
+            return;
+        }
+        self.send(json!({"op":"view","window":self.window_id,"session":now.0,"space":now.1,"pane":now.2}));
+        self.reported = Some(now);
+    }
+    /// Open another window over its own connection, showing what this one shows.
+    pub fn new_window(&self, cx: &mut App) {
+        let _ = crate::open_window(cx, &self.bridge, self.endpoint.clone(), self.session_id.clone(), self.space_id.clone(), self.hidden);
+    }
+    /// The window is closing: drop its native views. Its connection ends with it, and wheeld
+    /// drops the window's reported view with the connection.
+    pub fn shutdown(&mut self) {
+        self.native.detach();
     }
     pub fn scene(&self) -> (Vec<Placed>, Vec<Divider>) {
         let (mut leaves, mut dividers) = (vec![], vec![]);
@@ -179,6 +269,7 @@ impl Client {
     fn focus_pane(&mut self, pane: &str) {
         self.focus.current = Some(pane.to_owned());
         self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
+        self.sync_view();
     }
     fn key(&mut self, e: &KeyDownEvent) -> bool {
         let k = &e.keystroke;
@@ -285,26 +376,30 @@ impl Render for Client {
                 this.end_drag();
                 cx.notify();
             }));
-        let mut header = div().absolute().left(px(10.)).top(px(6.)).h(px(HEADER - 8.)).flex().gap_3().items_center();
-        if self.spaces.is_empty() {
-            header = header.child("waiting for wheeld");
+        let chips = self.header_chips();
+        if !chips.iter().any(|c| matches!(c.hit, Hit::Space(_))) {
+            root = root.child(div().absolute().left(px(header::MARGIN)).top(px(header::SPACES_Y)).child("waiting for wheeld"));
         }
-        for s in &self.spaces {
-            let (id, active) = (s.id.clone(), Some(&s.id) == self.space_id.as_ref());
-            header = header.child(
-                div().px_2().rounded_sm().cursor_pointer()
-                    .bg(rgb(if active { 0x31483e } else { 0x17201c }))
+        for chip in chips {
+            let (r, hit) = (chip.rect, chip.hit.clone());
+            root = root.child(
+                div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).px_2().rounded_sm().cursor_pointer().overflow_hidden().whitespace_nowrap()
+                    .flex().items_center()
+                    .bg(rgb(if chip.active { 0x31483e } else { 0x17201c }))
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                        this.space_id = Some(id.clone());
-                        this.overrides.clear();
+                        match &hit {
+                            Hit::Session(id) => this.select_session(id),
+                            Hit::Space(id) => this.select_space(id),
+                            Hit::NewWindow => this.new_window(cx),
+                        }
                         cx.notify();
                     }))
-                    .child(s.name.clone()),
+                    .child(chip.label),
             );
         }
-        root = root.child(header);
         // Always drawn, so the header's controls stay where they are; empty while connected.
-        root = root.child(div().absolute().right(px(10.)).top(px(6.)).h(px(HEADER - 8.)).w(px(420.)).flex().justify_end().items_center()
+        let banner = header::banner_rect(self.viewport.0);
+        root = root.child(div().absolute().left(px(banner.x)).top(px(banner.y)).w(px(banner.w)).h(px(banner.h)).flex().justify_end().items_center()
             .text_color(rgb(0xe0b070)).child(self.link.banner()));
         for p in &leaves {
             let r = p.rect;

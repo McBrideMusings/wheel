@@ -98,6 +98,11 @@ def fixture():
                 markers[node['id']] = marker
                 cli('term', 'send', node['term'], "stty -echo; printf '\\033[2J\\033[H\\033[32m%s\\033[0m\\r\\n' " + marker + "; while IFS= read -r line; do printf 'PTY:%s\\r\\n' \"$line\"; done", '--enter')
                 cli('term', 'read', node['term'], '--until', marker, '--timeout', '10')
+            second_dir = root / 'project2'
+            second_dir.mkdir()
+            second_session = cli('session', 'new', 'Second').splitlines()[-1]
+            second_space = cli('space', 'new', str(second_dir), '--name', 'other', '--session', second_session).splitlines()[-1]
+            env.update(WHEEL_CLIENT_SECOND_SESSION=second_session, WHEEL_CLIENT_SECOND_SPACE=second_space)
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2),
                         saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)

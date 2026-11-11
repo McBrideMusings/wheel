@@ -2,6 +2,8 @@
 //! layout from the daemon, one native view per web and terminal pane on its pane, separate
 //! terminal sessions, keyboard focus following a click, a divider drag with NSEvents the GPUI
 //! view receives, the daemon keeping the ratio, following another client's change, and surviving
+//! sessions and windows (header chips clicked with NSEvents, a second window with its own
+//! connection and view, `wheel client ls` reporting each), and surviving
 //! a wheeld restart: the link reads down, comes back up on its own, and every native view is
 //! opened again on the new daemon.
 //! The window is never visible, key or active.
@@ -9,7 +11,7 @@ use anyhow::{Result, ensure};
 use gpui::AsyncApp;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
-use wheel_gpui::{daemon::*, layout::Rect, native::Native, open_window, view::{Client, Link, TITLE}};
+use wheel_gpui::{daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, view::{Client, Link, TITLE}};
 
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
@@ -59,6 +61,43 @@ fn last_grid(status: &Value, pane: &str) -> Value {
     status["panes"][pane]["grids"].as_array().and_then(|a| a.last()).cloned().unwrap_or(Value::Null)
 }
 
+/// What `wheel client ls --json` says each GPUI window shows: (window id, session, space, pane).
+fn reported_views() -> Result<Vec<(String, Option<String>, Option<String>, Option<String>)>> {
+    let cli = std::env::var("WHEEL_CLIENT_CLI")?;
+    let out = std::process::Command::new(&cli)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "client", "ls", "--json"])
+        .output()?;
+    let clients: Value = serde_json::from_slice(&out.stdout)?;
+    let text = |v: &Value| v.as_str().map(str::to_owned);
+    Ok(clients.as_array().into_iter().flatten().flat_map(|c| c["windows"].as_array().into_iter().flatten())
+        .filter_map(|w| Some((text(&w["window"])?, text(&w["session"]), text(&w["space"]), text(&w["pane"])))).filter(|w| w.0.starts_with("gpui-")).collect())
+}
+async fn reported(window: &str, what: &str, want: impl Fn(&(String, Option<String>, Option<String>, Option<String>)) -> bool, cx: &mut AsyncApp) -> Result<()> {
+    for _ in 0..60 {
+        if reported_views()?.iter().any(|w| w.0 == window && want(w)) {
+            return Ok(());
+        }
+        tick(cx, 100).await;
+    }
+    anyhow::bail!("wheeld never reported {what} for {window}: {:?}", reported_views()?)
+}
+/// Click a header chip with a real NSEvent pair on the window's own views, then draw.
+async fn click_chip(window: gpui::WindowHandle<Client>, hit: Hit, cx: &mut AsyncApp) -> Result<()> {
+    let (native, chip): (_, Option<Chip>) = window.update(cx, |c, _, _| (c.native(), c.header_chips().into_iter().find(|chip| chip.hit == hit)))?;
+    let chip = chip.ok_or_else(|| anyhow::anyhow!("no header chip {hit:?}"))?;
+    let at = [f64::from(chip.rect.x + chip.rect.w / 2.), f64::from(chip.rect.y + chip.rect.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    for _ in 0..3 {
+        tick(cx, 100).await;
+        draw(window, None, cx)?;
+    }
+    Ok(())
+}
+fn shown(window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(Option<String>, Option<String>)> {
+    Ok(window.update(cx, |c, _, _| (c.session_id().map(str::to_owned), c.space_id().map(str::to_owned)))?)
+}
+
 async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
     let end = std::time::Instant::now() + Duration::from_millis(ms);
     while std::time::Instant::now() < end {
@@ -77,10 +116,11 @@ async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window:
 }
 
 async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
-    let native = Native::load()?;
+    let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
     let mut connection = Connection::open(endpoint.clone());
-    let window = open_window(cx, &native, connection.send.clone(), endpoint, std::env::var("WHEEL_CLIENT_SPACE").ok(), true)?;
+    let window = cx.update(|app| wheel_gpui::create_window(app, &bridge, connection.send.clone(), endpoint, None, std::env::var("WHEEL_CLIENT_SPACE").ok(), true))?;
+    let native = window.update(cx, |c, _, _| c.native())?;
     let markers: Value = serde_json::from_str(&std::env::var("WHEEL_CLIENT_MARKERS")?)?;
     let mut layouts = 0usize;
     pump(&mut connection, 1500, &mut layouts, window, cx).await?;
@@ -187,6 +227,69 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let external_status = native.status();
     draw(window, Some(output.join("client-external.png")), cx)?;
     shot(&native, &output.join("external"), cx).await?;
+    // Sessions and windows. The fixture holds two sessions; this window shows the first.
+    let (first_session, first_space) = shown(window, cx)?;
+    let (second_session, second_space) = (std::env::var("WHEEL_CLIENT_SECOND_SESSION")?, std::env::var("WHEEL_CLIENT_SECOND_SPACE")?);
+    let id1 = window.update(cx, |c, _, _| c.window_id().to_owned())?;
+    let chips_first = window.update(cx, |c, _, _| c.header_chips())?;
+    ensure!(chips_first.iter().any(|c| c.hit == Hit::Session(second_session.clone())) && chips_first.iter().any(|c| c.hit == Hit::NewWindow), "header lacks the session or New Window chip: {chips_first:?}");
+    reported(&id1, "the first session", |w| w.1 == first_session && w.2 == first_space, cx).await?;
+    click_chip(window, Hit::Session(second_session.clone()), cx).await?;
+    let on_second = shown(window, cx)?;
+    ensure!(on_second == (Some(second_session.clone()), Some(second_space.clone())), "clicking the second session shows {on_second:?}");
+    reported(&id1, "the second session and its space", |w| w.1.as_deref() == Some(second_session.as_str()) && w.2.as_deref() == Some(second_space.as_str()), cx).await?;
+    let hidden_native = wait(&native, "the first space's views hidden", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == true), cx).await?;
+    draw(window, Some(output.join("client-second-session.png")), cx)?;
+    click_chip(window, Hit::Session(first_session.clone().unwrap()), cx).await?;
+    ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session did not come back");
+    wait(&native, "the first space's views shown again", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
+    // New Window opens a second window with a connection of its own, showing the same space.
+    let before_windows = cx.update(|app| app.windows().len());
+    click_chip(window, Hit::NewWindow, cx).await?;
+    let windows: Vec<gpui::WindowHandle<Client>> = cx.update(|app| app.windows().into_iter().filter_map(|w| w.downcast::<Client>()).collect());
+    ensure!(windows.len() == before_windows + 1, "New Window opened no window: {before_windows} -> {}", windows.len());
+    let second = *windows.iter().find(|w| w.window_id() != window.window_id()).unwrap();
+    let id2 = second.update(cx, |c, _, _| c.window_id().to_owned())?;
+    ensure!(id1 != id2, "two windows share the id {id1}");
+    let native2 = second.update(cx, |c, _, _| c.native())?;
+    let mut opened = false;
+    for _ in 0..100 {
+        draw(second, None, cx)?;
+        if native2.status()["panes"].as_object().is_some_and(|p| native_panes.iter().all(|(id, _)| p.contains_key(id))) {
+            opened = true;
+            break;
+        }
+        tick(cx, 100).await;
+    }
+    ensure!(opened, "the second window never opened the space's views: {}", native2.status());
+    ensure!(shown(second, cx)? == (first_session.clone(), first_space.clone()), "the second window shows {:?}", shown(second, cx)?);
+    wait(&native2, "the second window's pages and terminals", |st| webs.iter().all(|w| st["panes"][w.as_str()]["loads"].as_array().is_some_and(|a| !a.is_empty())), cx).await?;
+    let (s1, s2) = (native.status(), native2.status());
+    let distinct = native_panes.iter().all(|(id, _)| identity(&s1, id) != identity(&s2, id));
+    ensure!(distinct, "the two windows share native views");
+    // Each window shows its own session: the second goes to the second session, the first stays.
+    click_chip(second, Hit::Session(second_session.clone()), cx).await?;
+    ensure!(shown(second, cx)?.0.as_deref() == Some(second_session.as_str()) && shown(window, cx)?.0 == first_session, "windows moved together: {:?} {:?}", shown(window, cx)?, shown(second, cx)?);
+    reported(&id2, "the second window on the second session", |w| w.1.as_deref() == Some(second_session.as_str()), cx).await?;
+    reported(&id1, "the first window still on the first session", |w| w.1 == first_session, cx).await?;
+    draw(second, Some(output.join("client-second-window.png")), cx)?;
+    draw(window, Some(output.join("client-first-window.png")), cx)?;
+    let both = reported_views()?;
+    // Closing the second window ends its connection: wheeld forgets its view, the first stays.
+    second.update(cx, |_, w, _| w.remove_window())?;
+    let mut gone = false;
+    for _ in 0..60 {
+        if reported_views()?.iter().all(|w| w.0 != id2) {
+            gone = true;
+            break;
+        }
+        tick(cx, 100).await;
+    }
+    ensure!(gone, "wheeld still lists the closed window {id2}: {:?}", reported_views()?);
+    ensure!(reported_views()?.iter().any(|w| w.0 == id1), "closing the second window dropped the first's view");
+    ensure!(native.status()["panes"].as_object().is_some_and(|p| native_panes.iter().all(|(id, _)| p.contains_key(id))), "the first window lost its views");
+    let sessions_windows = json!({"first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
+        "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
     // the restart when it sees the request file.
     let (request, done) = (output.join("restart.request"), output.join("restart.done"));
@@ -252,6 +355,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "drag": {"split": split, "from": start, "to": moved, "parent": [parent.x, parent.y, parent.w, parent.h],
             "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved},
         "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
+        "sessions_windows": sessions_windows,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},

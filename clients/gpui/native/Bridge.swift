@@ -59,6 +59,7 @@ final class Slot: NSView {
     var snapshotsPending = 0
     var termOutputs = 0
     var sends: [String] = []
+    var monitor: Any?
 
     init(root: NSView, hidden: Bool) {
         self.root = root
@@ -70,19 +71,28 @@ final class Slot: NSView {
         }
         // Hardware keys reach the focused native view first; the pane-cycling shortcuts are the
         // GPUI view's, so a native pane hands the window's keyboard back to it for those.
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.routeKey(event)
             return event
         }
     }
     /// Command-[ and command-] belong to the GPUI view: make it the first responder before they land.
     func routeKey(_ event: NSEvent) {
-        guard event.modifierFlags.contains(.command), ["[", "]"].contains(event.charactersIgnoringModifiers ?? ""),
+        guard event.window === root.window, event.modifierFlags.contains(.command), ["[", "]"].contains(event.charactersIgnoringModifiers ?? ""),
               root.window?.firstResponder !== root else { return }
         // The pane that held the keyboard, so the GPUI view knows where cycling starts.
         let responder = root.window?.firstResponder as? NSView
         heldBeforeKey = panes.first { responder === $0.value.content || responder?.isDescendant(of: $0.value.content) == true }?.key
         _ = root.window?.makeFirstResponder(root)
+    }
+
+    /// The window is closing: drop every view, the socket and the key monitor.
+    func detach() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        for id in Array(panes.keys) { close(id) }
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
     }
 
     // MARK: daemon socket (terminal bytes only; layout and ops go over Rust's own socket)
@@ -324,15 +334,29 @@ final class Slot: NSView {
     }
 }
 
-@MainActor private var native: Native?
+/// One Native per GPUI window, by the id `attach` hands back.
+@MainActor private var natives: [Int32: Native] = [:]
+@MainActor private var nextWindow: Int32 = 1
 @_cdecl("wheel_native_attach") @MainActor
-public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32) { native = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), hidden: hidden != 0) }
+public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32) -> Int32 {
+    let id = nextWindow
+    nextWindow += 1
+    natives[id] = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), hidden: hidden != 0)
+    return id
+}
 @_cdecl("wheel_native_command") @MainActor
 public func command(_ pointer: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar> {
     do {
         let value = try JSONSerialization.jsonObject(with: Data(String(cString: pointer).utf8)) as! [String: Any]
-        // GPUI may render before the bridge attaches to the window.
-        let result = native?.command(value) ?? ["detached": true]
+        let window = Int32(value["window"] as? Int ?? 0)
+        var result: [String: Any]
+        if value["op"] as? String == "detach" {
+            natives.removeValue(forKey: window)?.detach()
+            result = ["detached": true]
+        } else {
+            // GPUI may render before the bridge attaches to the window.
+            result = natives[window]?.command(value) ?? ["detached": true]
+        }
         let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
         return strdup(String(decoding: data, as: UTF8.self))!
     } catch { return strdup("{\"error\":\"JSON bridge failed\"}")! }

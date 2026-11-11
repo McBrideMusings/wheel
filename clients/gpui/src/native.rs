@@ -4,18 +4,20 @@
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 use std::{
+    cell::Cell,
     ffi::{CStr, CString, c_char, c_void},
     path::PathBuf,
     rc::Rc,
 };
 
-pub struct Native {
+/// The loaded bridge library, shared by every window.
+pub struct Bridge {
     _library: libloading::Library,
-    pub attach: unsafe extern "C" fn(*mut c_void, i32),
-    pub command: unsafe extern "C" fn(*const c_char) -> *mut c_char,
-    pub free: unsafe extern "C" fn(*mut c_void),
+    attach: unsafe extern "C" fn(*mut c_void, i32) -> i32,
+    command: unsafe extern "C" fn(*const c_char) -> *mut c_char,
+    free: unsafe extern "C" fn(*mut c_void),
 }
-impl Native {
+impl Bridge {
     /// `WHEEL_GPUI_BRIDGE`, else `libWheelGpuiBridge.dylib` beside the executable.
     pub fn load() -> Result<Rc<Self>> {
         let path = match std::env::var_os("WHEEL_GPUI_BRIDGE") {
@@ -33,17 +35,35 @@ impl Native {
             }))
         }
     }
+}
+
+/// The native views of one window. Every command names the window the bridge assigned at
+/// `attach_to`; before that, commands answer `detached`.
+pub struct Native {
+    bridge: Rc<Bridge>,
+    window: Cell<i32>,
+}
+impl Native {
+    pub fn new(bridge: &Rc<Bridge>) -> Rc<Self> {
+        Rc::new(Self { bridge: bridge.clone(), window: Cell::new(0) })
+    }
     /// Attach to the window's content view. `hidden` is the test mode: no Dock icon, never
     /// active, deaf to the pointer.
     pub fn attach_to(&self, ns_view: *mut c_void, hidden: bool) {
-        unsafe { (self.attach)(ns_view, i32::from(hidden)) }
+        self.window.set(unsafe { (self.bridge.attach)(ns_view, i32::from(hidden)) });
     }
-    pub fn call(&self, value: Value) -> Value {
+    /// The window is closing: the bridge drops its views, socket and key monitor.
+    pub fn detach(&self) {
+        self.call(json!({"op":"detach"}));
+        self.window.set(0);
+    }
+    pub fn call(&self, mut value: Value) -> Value {
+        value["window"] = json!(self.window.get());
         let input = CString::new(value.to_string()).unwrap();
         unsafe {
-            let output = (self.command)(input.as_ptr());
+            let output = (self.bridge.command)(input.as_ptr());
             let result = serde_json::from_slice(CStr::from_ptr(output).to_bytes()).unwrap();
-            (self.free)(output.cast());
+            (self.bridge.free)(output.cast());
             result
         }
     }
