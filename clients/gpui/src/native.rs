@@ -136,9 +136,15 @@ impl Native {
     pub fn reload(&self, pane: &str) {
         self.call(json!({"op":"reload","pane":pane}));
     }
-    /// Show terminal `term` in a Ghostty view for `pane`, streamed over the daemon socket `ws`.
-    pub fn open_terminal(&self, pane: &str, term: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"terminal","term":term,"ws":ws}));
+    /// Show terminal `term` in a Ghostty view for `pane`, streamed over the daemon socket `ws` and
+    /// styled by the Ghostty controller of `space`, the space it opens in.
+    pub fn open_terminal(&self, pane: &str, term: &str, space: Option<&str>, ws: &str) {
+        self.call(json!({"op":"open","pane":pane,"kind":"terminal","term":term,"space":space,"ws":ws}));
+    }
+    /// `space`'s `terminal.*` settings as wheeld resolved them: its terminals restyle in place.
+    pub fn terminal_look(&self, space: &str, settings: &[wheel_proto::SettingInfo]) {
+        let terminal: Vec<&wheel_proto::SettingInfo> = settings.iter().filter(|s| s.key.starts_with("terminal.")).collect();
+        self.call(json!({"op":"terminal_look","space":space,"settings":terminal}));
     }
     /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin).
     pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool) {

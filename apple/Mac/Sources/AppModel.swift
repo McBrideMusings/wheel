@@ -401,26 +401,13 @@ final class AppModel {
     @ObservationIgnored private var terminalControllers: [String: TerminalController] = [:]
     /// How each space's terminals draw, from its `terminal.*` settings.
     @ObservationIgnored private(set) var terminalLooks: [String: TerminalAppearance] = [:]
-    /// Ghostty's default keybinds are cleared, so a ⌘ key Wheel's keymap leaves unbound reaches the
-    /// program in the terminal; the keys the surface still handles itself (copy, paste, select
-    /// all, font size) are bound again.
-    private static let terminalKeybinds = [
-        "super+c=copy_to_clipboard",
-        "super+v=paste_from_clipboard",
-        "super+a=select_all",
-        "super+equal=increase_font_size:1",
-        "super+plus=increase_font_size:1",
-        "super+minus=decrease_font_size:1",
-        "super+zero=reset_font_size",
-    ]
-
     /// The controller for `space`, made on first use from the look held for it (the defaults until
     /// its settings arrive, then restyled live).
     private func terminalController(for space: String?) -> TerminalController {
         let key = space ?? ""
         if let held = terminalControllers[key] { return held }
         let look = terminalLooks[key] ?? .standard
-        let made = TerminalController(configuration: TerminalStyle.configuration(look, keybinds: Self.terminalKeybinds), theme: TerminalStyle.theme(look))
+        let made = TerminalStyle.controller(look)
         terminalControllers[key] = made
         return made
     }
@@ -2233,9 +2220,8 @@ final class AppModel {
         terminalLooks[space] = look
         Log.info("terminal appearance for \(space): \(look.fontFamily.isEmpty ? "own font" : look.fontFamily) \(look.fontSize)pt, line \(look.lineHeight), \(look.theme.rawValue), cursor \(look.cursor.rawValue)\(look.cursorBlink ? " blinking" : "")")
         guard let controller = terminalControllers[space] else { return }
-        let a = controller.setTerminalConfiguration(TerminalStyle.configuration(look, keybinds: Self.terminalKeybinds))
-        let b = controller.setTheme(TerminalStyle.theme(look))
-        Log.info("terminal controller for \(space) restyled (config \(a), theme \(b))")
+        let took = TerminalStyle.restyle(controller, to: look)
+        Log.info("terminal controller for \(space) restyled (config \(took.config), theme \(took.theme))")
     }
 
     // MARK: Web panes

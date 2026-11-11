@@ -39,9 +39,11 @@ final class Slot: NSView {
     let kind: String
     let slot = Slot()
     var web: WKWebView?
-    var terminal: AppTerminalView?
+    var terminal: DropTerminalView?
     var session: InMemoryTerminalSession?
     var termID: String?
+    /// The space a terminal was opened in, whose controller styles it.
+    var space: String?
     var url: String?
     var loads: [String] = []
     /// An artifact page: the address under `WebPanes.scheme` it opens at, how many times a
@@ -71,6 +73,37 @@ final class Slot: NSView {
     var content: NSView { (pageShown ? pageView : nil) ?? web ?? terminal! }
 }
 
+/// A terminal that takes dropped files: each file's path, shell-escaped, pasted at the prompt as
+/// Ghostty's own Mac app does (its surface view's drop handler), several separated by a space.
+final class DropTerminalView: AppTerminalView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { Self.paths(sender).isEmpty ? [] : .copy }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { drop(Self.paths(sender)) }
+    static func paths(_ sender: NSDraggingInfo) -> [String] {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
+        return urls?.map(\.path) ?? []
+    }
+    /// Paste `paths` as the shell reads them; false when there are none or no surface yet.
+    @discardableResult func drop(_ paths: [String]) -> Bool {
+        guard !paths.isEmpty else { return false }
+        return paste(text: paths.map(Self.escaped).joined(separator: " "))
+    }
+    /// A backslash before each character a shell would read as syntax (Ghostty's `shellEscape` set).
+    static let shellSpecial = Set("\\ ()[]{}<>\"'`!#$&;|*?\t")
+    static func escaped(_ path: String) -> String {
+        var out = ""
+        for c in path {
+            if shellSpecial.contains(c) { out.append("\\") }
+            out.append(c)
+        }
+        return out
+    }
+}
+
 /// A frame the bridge sends the Rust side on its own initiative: the C callback `attach` was
 /// given, with the bridge's window id and one JSON object.
 public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
@@ -79,7 +112,38 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     let root: NSView
     let window: Int32
     let emitter: Emit
-    let controller = TerminalController(configSource: .generated("font-size = 14\nkeybind = clear\nbackground = #17201c\n"))
+    /// One Ghostty controller per space, so a space's `terminal.*` settings restyle its terminals
+    /// and no other space's (the Swift app's `AppModel.terminalController(for:)`); a terminal keeps
+    /// the controller of the space it was opened in.
+    var controllers: [String: TerminalController] = [:]
+    /// How each space's terminals draw, from its `terminal.*` settings.
+    var looks: [String: TerminalAppearance] = [:]
+    /// What Ghostty answered to each space's last restyle: it took the configuration, the theme.
+    var restyled: [String: [Bool]] = [:]
+    func controller(for space: String?) -> TerminalController {
+        let key = space ?? ""
+        if let held = controllers[key] { return held }
+        let look = looks[key] ?? .standard
+        let made = TerminalStyle.controller(look)
+        controllers[key] = made
+        return made
+    }
+    /// A space's settings arrived (`terminal_look`): restyle its controller in place, so the shells
+    /// keep running and every surface redraws (the Swift app's `restyleTerminals`).
+    func restyle(_ value: [String: Any]) {
+        guard let space = value["space"] as? String, let list = value["settings"],
+              let data = try? JSONSerialization.data(withJSONObject: list),
+              let settings = try? JSONDecoder().decode([SettingInfo].self, from: data) else {
+            errors.append("terminal_look: unreadable settings for \(value["space"] ?? "no space")")
+            return
+        }
+        let look = TerminalAppearance(settings: settings)
+        guard looks[space] != look else { return }
+        looks[space] = look
+        guard let controller = controllers[space] else { return }
+        let took = TerminalStyle.restyle(controller, to: look)
+        restyled[space] = [took.config, took.theme]
+    }
     var panes: [String: PaneHost] = [:]
     var socket: URLSessionWebSocketTask?
     /// The connection the A2UI pages talk over, started with the first page and dropped with `disconnect`.
@@ -278,8 +342,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         } else {
             let term = value["term"] as! String
             connect(value["ws"] as! String)
-            let terminal = AppTerminalView(frame: .zero)
+            let terminal = DropTerminalView(frame: .zero)
             host.termID = term
+            host.space = value["space"] as? String
             host.session = InMemoryTerminalSession(write: { [weak self, weak host] data in
                 Task { @MainActor in
                     guard let self, let host else { return }
@@ -293,7 +358,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                     self.send(["op": "term_resize", "id": term, "cols": viewport.columns, "rows": viewport.rows])
                 }
             })
-            terminal.controller = controller
+            terminal.controller = controller(for: host.space)
             terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(host.session!))
             host.terminal = terminal
             host.slot.addSubview(terminal)
@@ -525,6 +590,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 guard response == .OK, let url = panel.url else { return }
                 self?.emit(["event": "folder_chosen", "path": url.path])
             }
+        case "terminal_look": restyle(value)
+        case "term_drop":
+            // What a drop of these files does, for the check: the drag itself needs a real pointer.
+            guard let terminal = panes[value["pane"] as! String]?.terminal else { return ["dropped": false] }
+            return ["dropped": terminal.drop(value["paths"] as? [String] ?? [])]
         case "post_key":
             // Real NSEvents to NSWindow.sendEvent: first-responder routing and the views' own key
             // handling run as for hardware events; nothing touches the OS keyboard or focus.
@@ -701,7 +771,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 }
             }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["writes"] = host.writes
-                   entry["pixels"] = host.terminal?.layer?.contents != nil }
+                   entry["pixels"] = host.terminal?.layer?.contents != nil
+                   let space = host.space ?? ""
+                   entry["space"] = host.space ?? NSNull()
+                   entry["config"] = controllers[space]?.renderedConfig ?? ""
+                   entry["theme"] = (looks[space] ?? .standard).theme.rawValue
+                   entry["restyled"] = restyled[space] ?? NSNull()
+                   entry["font_size"] = host.terminal?.fontSize.map { Double($0) } ?? NSNull() }
             panesOut[id] = entry
         }
         out["panes"] = panesOut

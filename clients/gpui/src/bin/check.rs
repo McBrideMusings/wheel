@@ -288,6 +288,81 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let typed = wait(&native, "typed key in second terminal", |s| viewport(s, target).contains("PTY:k"), cx).await?;
     let leaked = viewport(&typed, terms[0]).contains("PTY:k");
     ensure!(focused == true && !leaked, "keyboard focus: focused={focused} leaked_to_first={leaked}");
+    // The terminal pane (TerminalStyle.swift, the Ghostty surface): a dropped file's path reaches
+    // the PTY of the terminal that holds it, and the `terminal.*` settings restyle the surface live
+    // with the shell still running. Committed IME text is Ghostty's own path, which takes text only
+    // while AppKit dispatches a dequeued event; this headless run has no event loop to dequeue one.
+    let dropped = native.call(json!({"op":"term_drop","pane":target,"paths":["/tmp/a b(1).txt", "/tmp/c"]}));
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let drop_line = r"PTY:/tmp/a\ b\(1\).txt /tmp/c";
+    let after_drop = wait(&native, "a dropped file's path in the terminal", |s| viewport(s, target).contains(drop_line), cx).await?;
+    ensure!(dropped["dropped"] == true, "the drop pasted nothing: {dropped}");
+    let other_term = terms.iter().copied().find(|t| *t != target).unwrap();
+    ensure!(!viewport(&after_drop, other_term).contains("/tmp/c"), "the other terminal got the typed text: {}", viewport(&after_drop, other_term));
+    let term_cli = std::env::var("WHEEL_CLIENT_CLI")?;
+    let term_config = |args: &[&str]| -> Result<std::process::Output> {
+        Ok(std::process::Command::new(&term_cli).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "config"]).args(args).output()?)
+    };
+    let config_of = |s: &Value, t: &str| s["panes"][t]["config"].as_str().unwrap_or_default().to_owned();
+    // A key can appear more than once in the rendered config; the last line is the one in force.
+    let last = |config: &str, key: &str| config.lines().rev().find_map(|l| l.strip_prefix(&format!("{key} = ")).map(str::to_owned)).unwrap_or_default();
+    let status_before_look = native.status();
+    let look_before = config_of(&status_before_look, target);
+    let columns_before = last_grid(&status_before_look, target)[0].as_u64().unwrap_or(0);
+    ensure!(last(&look_before, "font-size") == "14" && last(&look_before, "cursor-style") == "block" && look_before.contains("copy_to_clipboard"),
+        "the terminal's config is not the Swift app's: {look_before}");
+    for (key, value) in [("terminal.font.size", "18"), ("terminal.theme", "gruvbox"), ("terminal.cursor.style", "bar")] {
+        let set = term_config(&["set", key, value, "--machine"])?;
+        ensure!(set.status.success(), "config set {key} failed: {}", String::from_utf8_lossy(&set.stderr));
+    }
+    let mut restyled = Value::Null;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let s = native.status();
+        let c = config_of(&s, target);
+        // The surface itself took the new font when its grid has fewer columns.
+        let columns = last_grid(&s, target)[0].as_u64().unwrap_or(0);
+        if last(&c, "font-size") == "18" && last(&c, "cursor-style") == "bar" && s["panes"][target]["theme"] == "gruvbox" && columns > 0 && columns < columns_before {
+            restyled = s;
+            break;
+        }
+    }
+    ensure!(!restyled.is_null(), "the terminal.* settings never restyled the terminal (grid {} columns before): {} {}", columns_before, config_of(&native.status(), target), last_grid(&native.status(), target));
+    ensure!(restyled["panes"][target.as_str()]["restyled"] == json!([true, true]), "Ghostty refused the restyle: {}", restyled["panes"][target.as_str()]["restyled"]);
+    // A restyled surface draws its next frame on its own schedule: shoot until it has one.
+    let look_dir = output.join("terminal-look");
+    let _ = std::fs::remove_dir_all(&look_dir);
+    let look_png = look_dir.join(format!("{target}-terminal.png"));
+    for _ in 0..20 {
+        pump(&mut connection, 200, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        shot(&native, &look_dir, cx).await?;
+        if look_png.exists() {
+            break;
+        }
+    }
+    ensure!(look_png.exists(), "the restyled terminal never drew a picture");
+    native.call(json!({"op":"post_key","text":"s","code":1}));
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    wait(&native, "the restyled terminal still answering", |s| viewport(s, target).contains("PTY:s"), cx).await?;
+    for key in ["terminal.font.size", "terminal.theme", "terminal.cursor.style"] {
+        let unset = term_config(&["unset", key, "--machine"])?;
+        ensure!(unset.status.success(), "config unset {key} failed: {}", String::from_utf8_lossy(&unset.stderr));
+    }
+    let reverted = |s: &Value| { let c = config_of(s, target); last(&c, "font-size") == "14" && last(&c, "cursor-style") == "block" && s["panes"][target.as_str()]["theme"] == "default" };
+    let mut unset_status = native.status();
+    for _ in 0..100 {
+        if reverted(&unset_status) {
+            break;
+        }
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        unset_status = native.status();
+    }
+    let look_after = config_of(&unset_status, target);
+    ensure!(reverted(&unset_status), "unsetting the terminal.* settings left the terminal restyled: theme {} {look_after}", unset_status["panes"][target.as_str()]["theme"]);
+    let terminal_report = json!({"dropped": dropped, "drop_line": drop_line, "target_viewport": viewport(&after_drop, target),
+        "other_viewport": viewport(&after_drop, other_term), "config_before": look_before, "config_restyled": config_of(&restyled, target),
+        "config_after": look_after, "grids": terms.iter().map(|t| (t.to_string(), last_grid(&restyled, t))).collect::<serde_json::Map<_, _>>()});
     // Command-] from the focused terminal (a native view) moves the keyboard to the next pane in
     // layout order, and command-[ moves it back.
     let order: Vec<(String, String)> = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.leaf.kind)).collect())?;
@@ -2447,7 +2522,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let per_pane = |s: &Value| -> Value {
         native_panes.iter().map(|(id, kind)| (id.clone(), json!({"kind":kind,"frame":frame(s,id),"grid":last_grid(s,id)}))).collect::<serde_json::Map<_, _>>().into()
     };
-    Ok(json!({
+    let mut report = json!({
         "host_pid": std::process::id(), "layouts_received": layouts, "page": {"pane": native_pages[0], "state": page_state, "png_bytes": page_bytes}, "first_layout": first,
         "native_panes": native_panes, "loaded_at_start": loaded["panes"],
         "native_aligned_with_panes": aligned, "own_session_only": own,
@@ -2479,7 +2554,10 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
-    }))
+    });
+    // Past the one `json!` the recursion limit allows.
+    report["terminal"] = terminal_report;
+    Ok(report)
 }
 
 /// The fixture wheeld as an older one: a loopback WebSocket in front of it that passes every frame

@@ -93,7 +93,7 @@ impl Client {
 
     // Requests
 
-    fn settings_req(&mut self) -> u64 {
+    pub(super) fn settings_req(&mut self) -> u64 {
         self.next_req += 1;
         self.next_req
     }

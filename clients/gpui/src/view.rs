@@ -443,7 +443,16 @@ impl Client {
                             }
                             return false;
                         }
-                        ServerMsg::Settings { settings, space, .. } => {
+                        ServerMsg::Settings { req, settings, space } => {
+                            // A space's terminals draw from its `terminal.*` settings.
+                            if let Some(space) = space {
+                                self.native.terminal_look(space, settings);
+                            }
+                            // A broadcast changes what every other space falls back to (a machine-wide
+                            // write is resolved for none): ask for each again (`refreshAppearances`).
+                            if req.is_none() {
+                                self.refresh_settings(space.as_deref());
+                            }
                             let mut home_changed = false;
                             for s in settings {
                                 match s.key.as_str() {
@@ -547,7 +556,9 @@ impl Client {
                 // This app owns its windows: wheeld may forward `wheel window` commands to it.
                 self.send(&ClientMsg::WindowOffer {});
                 // The dots and the footer follow two settings; a later change arrives as a broadcast.
-                self.send(&ClientMsg::SettingsLs { req: None, space: None });
+                // wheeld answers a listing only when it carries a req.
+                let req = self.settings_req();
+                self.send(&ClientMsg::SettingsLs { req: Some(req), space: None });
                 self.ask_space_settings();
                 self.settings_reconnected();
                 false
@@ -623,14 +634,32 @@ impl Client {
         self.refresh_command_palette();
         self.sync_view();
     }
-    /// Ask for the shown space's settings once, for its `chat.footer.items`.
+    /// Ask for the shown space's settings once, for its `chat.footer.items` and `terminal.*`.
     fn ask_space_settings(&mut self) {
         if let Some(space) = self.space_id.clone()
             && !self.footer_items.contains_key(&Some(space.clone()))
             && self.link == Link::Up
         {
             self.footer_items.insert(Some(space.clone()), self.footer_items.get(&None).cloned().unwrap_or_else(|| footer::DEFAULT_ITEMS.iter().map(|s| s.to_string()).collect()));
-            self.send(&ClientMsg::SettingsLs { req: None, space: Some(space) });
+            self.ask_shown_settings();
+        }
+    }
+    /// Ask for the shown space's settings; wheeld answers a listing only when it carries a req.
+    fn ask_shown_settings(&mut self) {
+        if let Some(space) = self.space_id.clone() {
+            self.ask_settings_of(space);
+        }
+    }
+    /// Ask for the settings of every space but `except`, whose list just came.
+    fn refresh_settings(&mut self, except: Option<&str>) {
+        for space in self.spaces.iter().map(|s| s.id.clone()).filter(|id| Some(id.as_str()) != except).collect::<Vec<_>>() {
+            self.ask_settings_of(space);
+        }
+    }
+    fn ask_settings_of(&mut self, space: String) {
+        if self.link == Link::Up {
+            let req = self.settings_req();
+            self.send(&ClientMsg::SettingsLs { req: Some(req), space: Some(space) });
         }
     }
     /// The footer items for `space`: the list the daemon resolved for it, else the machine's,
@@ -1234,7 +1263,7 @@ impl Client {
             };
             if self.opened.get(&p.leaf.id) != Some(&kind) {
                 match (&p.leaf.term, p.leaf.kind.as_str()) {
-                    (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, &self.endpoint.ws),
+                    (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, self.space_id.as_deref(), &self.endpoint.ws),
                     (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
                     (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                 }
