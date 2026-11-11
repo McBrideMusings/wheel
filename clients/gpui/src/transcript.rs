@@ -6,7 +6,7 @@
 //! place, the turn's rows follow it, a retract takes a message back, tool calls update in place
 //! by id, the one plan row is replaced whole, and a turn's end or an error closes everything open.
 use std::collections::HashMap;
-use wheel_proto::{AgentEvent, AgentState, PlanItem, ServerMsg, ToolContent};
+use wheel_proto::{AgentEvent, AgentFooter, AgentState, ConfigOption, ContextUse, PlanItem, ServerMsg, ToolContent};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -48,6 +48,12 @@ pub struct Transcript {
     /// The agent's state as its wire phase (`starting`, `ready`, `busy`, `failed`, `switching`,
     /// `gave_up`).
     pub state: String,
+    /// How full the context window is, as the agent last reported it; none until it has.
+    pub context: Option<ContextUse>,
+    /// What the status line shows besides the context and controls; none until the daemon said.
+    pub footer: Option<AgentFooter>,
+    /// The controls the agent offers, in draw order (`footer::sorted_config`).
+    pub config: Vec<ConfigOption>,
     next_id: usize,
     tool_rows: HashMap<String, usize>,
     plan_row: Option<usize>,
@@ -61,7 +67,9 @@ impl Transcript {
     /// Take one server message. Returns whether it was about `agent`.
     pub fn on_message(&mut self, message: &ServerMsg, agent: &str) -> bool {
         match message {
-            ServerMsg::AgentAttached { agent: a, state, events, .. } if a == agent => {
+            ServerMsg::AgentAttached { agent: a, state, events, config, context, .. } if a == agent => {
+                self.context = *context;
+                self.config = crate::footer::sorted_config(config);
                 self.rows.clear();
                 self.tool_rows.clear();
                 self.plan_row = None;
@@ -79,6 +87,18 @@ impl Transcript {
             }
             ServerMsg::AgentStateChanged { agent: a, state } if a == agent => {
                 self.state = state_name(state).to_owned();
+                true
+            }
+            ServerMsg::AgentContext { agent: a, context } if a == agent => {
+                self.context = *context;
+                true
+            }
+            ServerMsg::AgentFooter { agent: a, footer } if a == agent => {
+                self.footer = Some(footer.clone());
+                true
+            }
+            ServerMsg::AgentConfig { agent: a, options } if a == agent => {
+                self.config = crate::footer::sorted_config(options);
                 true
             }
             _ => false,

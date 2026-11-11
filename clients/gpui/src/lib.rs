@@ -1,10 +1,12 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
 pub mod daemon;
 pub mod focus;
+pub mod footer;
 pub mod header;
 pub mod layout;
 pub mod markdown;
 pub mod native;
+pub mod status;
 pub mod transcript;
 pub mod view;
 

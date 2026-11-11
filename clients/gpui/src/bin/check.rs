@@ -364,6 +364,117 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(clipboard.as_deref() == Some(expected_line.as_str()), "clipboard after Command-C: {clipboard:?}");
     let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
         "reply_row": md_row, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
+    // The footer under the composer: the context meter (three turns answered, 10,000 tokens each
+    // of a 200,000 window), the directory, the agent's home, and the config controls the agent
+    // offers, sorted model first. A click on the meter reads the raw figures; a click on a
+    // control opens its menu; picking a value asks wheeld and the control follows the agent's
+    // own list.
+    let footer_before = window.update(cx, |c, _, _| c.footer_texts(&agent_name))?;
+    let item = |items: &[(String, String)], name: &str| items.iter().find(|(i, _)| i == name).map(|(_, t)| t.clone());
+    let context_text = item(&footer_before, "context").ok_or_else(|| anyhow::anyhow!("no context item in the footer: {footer_before:?}"))?;
+    ensure!(context_text.ends_with('%') && context_text != "0%", "the context meter after three turns reads {context_text:?} (items {footer_before:?})");
+    ensure!(item(&footer_before, "directory").is_some_and(|d| d.starts_with('~') || d.starts_with('/')), "no directory in the footer: {footer_before:?}");
+    ensure!(item(&footer_before, "home").is_some(), "no home in the footer: {footer_before:?}");
+    let controls = window.update(cx, |c, _, _| c.config_controls(&agent_name))?;
+    ensure!(controls.first().is_some_and(|(id, _)| id == "model") && controls.iter().any(|(id, _)| id == "mode"), "config controls drawn: {controls:?}");
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
+    let meter = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "context"))?.ok_or_else(|| anyhow::anyhow!("the context meter was not drawn"))?;
+    press(&native, meter);
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let raw_text = item(&window.update(cx, |c, _, _| c.footer_texts(&agent_name))?, "context").unwrap_or_default();
+    ensure!(raw_text.contains(" / "), "the meter after a click reads {raw_text:?}, wanted the raw figures");
+    draw(window, Some(output.join("client-footer.png")), cx)?;
+    let model = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "model"))?.ok_or_else(|| anyhow::anyhow!("the model control was not drawn"))?;
+    press(&native, model);
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let menu = window.update(cx, |c, _, _| c.open_menu())?;
+    ensure!(menu == Some((agent_name.clone(), "model".into())), "after a click on the model control the open menu is {menu:?} (model at {model:?}, meter at {meter:?}, viewport {:?}, presses {:?})", window.update(cx, |_, w, _| w.viewport_size())?, window.update(cx, |c, _, _| c.presses.clone())?);
+    draw(window, Some(output.join("client-config-menu.png")), cx)?;
+    let before_set = controls.iter().find(|(id, _)| id == "model").map(|(_, t)| t.clone()).unwrap_or_default();
+    let haiku = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "model:haiku"))?.ok_or_else(|| anyhow::anyhow!("the menu drew no haiku item"))?;
+    press(&native, haiku);
+    tick(cx, 200).await;
+    let mut model_now = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        model_now = window.update(cx, |c, _, _| c.transcripts.get(&agent_name).and_then(|t| t.config.iter().find(|o| o.id == "model")).and_then(|o| match &o.kind { wheel_proto::ConfigKind::Select { current, .. } => Some(current.clone()), _ => None }))?;
+        if model_now.as_deref() == Some("haiku") {
+            break;
+        }
+    }
+    ensure!(model_now.as_deref() == Some("haiku"), "the model after setting it to haiku is {model_now:?}");
+    ensure!(window.update(cx, |c, _, _| c.open_menu())?.is_none(), "the menu stayed open after a pick");
+    let model_after = window.update(cx, |c, _, _| c.config_controls(&agent_name))?.into_iter().find(|(id, _)| id == "model").map(|(_, t)| t).unwrap_or_default();
+    press(&native, meter);
+    tick(cx, 200).await;
+    let footer_report = json!({"items": footer_before, "raw_text": raw_text, "controls": controls, "model_before": before_set, "model_after": model_after});
+    // Statuses: the pane's dot and the space chip's marks follow `status_changed`. A slow turn
+    // shows `working`; a permission request shows `needs_you` with the agent's reason until the
+    // CLI answers it; after that the pane is idle again.
+    let status_name = |s: &Option<wheel_proto::PaneStatus>| s.as_ref().map(wheel_gpui::status::rank).unwrap_or("none").to_owned();
+    let status_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.pane_status(&agent_pane));
+    let at_rest = status_now(cx)?;
+    ensure!(matches!(at_rest, Some(wheel_proto::PaneStatus::Idle | wheel_proto::PaneStatus::Done)), "the agent pane's status between turns is {at_rest:?}");
+    type_line(&native, "work slowly 3", cx).await;
+    let mut saw_working = false;
+    let mut marks_while_working = (vec![], 0);
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let status = status_now(cx)?;
+        if status == Some(wheel_proto::PaneStatus::Working) && !saw_working {
+            saw_working = true;
+            draw(window, None, cx)?;
+            draw(window, Some(output.join("client-status-working.png")), cx)?;
+            marks_while_working = window.update(cx, |c, _, _| c.space_marks())?;
+        }
+        let (state, rows) = rows(cx)?;
+        if saw_working && state == "ready" && rows.iter().all(|r| !r.open) && status != Some(wheel_proto::PaneStatus::Working) {
+            break;
+        }
+    }
+    let last_status = status_now(cx)?;
+    ensure!(saw_working, "the pane never showed `working` during the slow turn: {last_status:?}");
+    ensure!(marks_while_working.0.first() == Some(&"working"), "the space chip's marks while working: {marks_while_working:?}");
+    type_line(&native, "permission", cx).await;
+    let mut needs_you = None;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if let Some(s @ wheel_proto::PaneStatus::NeedsYou { .. }) = status_now(cx)? {
+            needs_you = Some(s);
+            break;
+        }
+    }
+    let last_status = status_now(cx)?;
+    let needs_you = needs_you.ok_or_else(|| anyhow::anyhow!("the permission turn never showed `needs_you`: {last_status:?}"))?;
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-status-needs-you.png")), cx)?;
+    let marks_needing = window.update(cx, |c, _, _| c.space_marks())?;
+    ensure!(marks_needing.0.first() == Some(&"needs_you"), "the space chip's marks while a permission waits: {marks_needing:?}");
+    let answered = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "perm", "answer", &agent_pane, "deny"])
+        .output()?;
+    ensure!(answered.status.success(), "perm answer failed: {}{}", String::from_utf8_lossy(&answered.stdout), String::from_utf8_lossy(&answered.stderr));
+    let mut after_answer = None;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let status = status_now(cx)?;
+        let (state, rows) = rows(cx)?;
+        if !matches!(status, Some(wheel_proto::PaneStatus::NeedsYou { .. } | wheel_proto::PaneStatus::Working)) && state == "ready" && rows.iter().all(|r| !r.open) {
+            after_answer = status;
+            break;
+        }
+    }
+    ensure!(matches!(after_answer, Some(wheel_proto::PaneStatus::Idle | wheel_proto::PaneStatus::Done)), "the pane after the answer is {after_answer:?}");
+    draw(window, None, cx)?;
+    let status_report = json!({"at_rest": status_name(&at_rest), "saw_working": saw_working, "marks_while_working": marks_while_working,
+        "needs_you": wheel_gpui::status::label(&needs_you), "marks_needing": marks_needing, "after_answer": status_name(&after_answer),
+        "dots_setting": window.update(cx, |c, _, _| c.status_dots.iter().copied().collect::<Vec<_>>())?});
     // Back to the terminal, so the focus checks below start where they did.
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
@@ -499,6 +610,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "sessions_windows": sessions_windows,
         "agent": agent_report,
         "markdown": markdown_report,
+        "footer": footer_report,
+        "status": status_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
