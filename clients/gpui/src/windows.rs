@@ -148,7 +148,7 @@ mod tests {
         for n in 1..panes {
             root = Tree::Split { id: format!("{id}x{n}"), horizontal: true, ratio: 0.5, a: Box::new(root), b: Box::new(leaf(n)) };
         }
-        Space { id: id.into(), name: name.into(), cwd: "/".into(), root, status: None }
+        Space { id: id.into(), name: name.into(), cwd: "/".into(), root, status: None, popped: vec![], backgrounded: vec![] }
     }
     fn session(id: &str, name: &str, spaces: &[&str]) -> Session {
         Session { id: id.into(), name: name.into(), spaces: spaces.iter().map(|s| s.to_string()).collect() }

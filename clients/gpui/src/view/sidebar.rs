@@ -202,19 +202,29 @@ impl Client {
             return;
         }
         self.close_preview();
-        self.pane_drag = Some(PaneDrag { pane: pane.to_owned(), label: label.to_owned(), away: None, at, grab });
+        self.pane_drag = Some(PaneDrag { pane: pane.to_owned(), label: label.to_owned(), away: None, drop: None, at, grab });
         self.log(format!("pane drag {pane}: started"));
     }
     pub fn move_pane_drag(&mut self, x: f32, y: f32) {
         let away = if self.sidebar_open { sidebar::pane_away(self.sidebar_rect(), &self.sidebar_rows(), x, y) } else { None };
-        if let Some(drag) = &mut self.pane_drag {
-            drag.at = (x, y);
+        let Some(drag) = &mut self.pane_drag else { return };
+        drag.at = (x, y);
+        let pane = drag.pane.clone();
+        // Off the sidebar the grid's drop zones take the pointer.
+        if away.is_none() {
+            let drop = self.grid_drop_at(x, y, &pane);
+            self.hover_pane_drag(None);
+            self.hover_grid_drop(drop);
+        } else {
+            self.hover_pane_drag(away);
         }
-        self.hover_pane_drag(away);
     }
     pub fn hover_pane_drag(&mut self, away: Option<PaneAway>) {
         let Some(drag) = &mut self.pane_drag else { return };
         if drag.away != away {
+            if away.is_some() {
+                drag.drop = None;
+            }
             drag.away = away;
             let (pane, words) = (drag.pane.clone(), drag.away.as_ref().map(describe_away).unwrap_or_else(|| "nothing".into()));
             self.log(format!("pane drag {pane}: over {words}"));
@@ -223,6 +233,10 @@ impl Client {
     pub fn end_pane_drag(&mut self) {
         let Some(drag) = self.pane_drag.take() else { return };
         self.pane_press = None;
+        self.sync_sidebar_overlay();
+        if let Some(drop) = drag.drop {
+            return self.send_grid_drop(drag.pane, drop);
+        }
         let Some(away) = drag.away else {
             self.log(format!("pane drag {}: released over nothing", drag.pane));
             return;
@@ -239,10 +253,14 @@ impl Client {
         self.pane_press = None;
         if let Some(drag) = self.pane_drag.take() {
             self.log(format!("pane drag {}: cancelled", drag.pane));
+            self.sync_sidebar_overlay();
         }
     }
     pub fn pane_drag_hint(&self) -> Option<String> {
         let drag = self.pane_drag.as_ref()?;
+        if let Some(drop) = &drag.drop {
+            return Some(crate::grid_drop::hint(drop, &drag.pane));
+        }
         Some(sidebar::pane_hint(drag.away.as_ref()?, &drag.label, |id| self.space_name(id)))
     }
     /// Whether the dragged pane is over `space`'s row, which draws outlined.
@@ -280,6 +298,7 @@ impl Client {
         // The menu stays inside the window: it is moved up when it would run off the bottom.
         let h = self.menu_height(space);
         let y = y.min(self.viewport.1 - h - 4.).max(0.);
+        self.pane_menu = None;
         self.space_menu = Some((space.to_owned(), x, y));
         self.sync_sidebar_overlay();
     }
@@ -539,12 +558,18 @@ impl Client {
             .map(|l| (l.id.clone(), l.kind.clone(), l.status.as_ref().map(status::rank), self.last_line(l))).collect()).unwrap_or_default()
     }
     /// The bridge's hole for the menu or the preview, which sit over the grid's native views.
-    fn sync_sidebar_overlay(&mut self) {
+    pub(super) fn sync_sidebar_overlay(&mut self) {
         if self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() {
             return;
         }
+        // GPUI draws over the native views only inside one rect: the open menu, else the lit drop
+        // zone, else the preview card.
         let rect = if let Some((space, x, y)) = self.space_menu.clone() {
             Some(Rect { x, y, w: sidebar::MENU_W, h: self.menu_height(&space) })
+        } else if let Some((pane, x, y)) = self.pane_menu.clone() {
+            Some(Rect { x, y, w: super::panes::MENU_W, h: self.pane_menu_height(&pane) })
+        } else if let Some(h) = self.grid_drop_highlight() {
+            Some(h)
         } else {
             self.preview_rect()
         };
@@ -571,7 +596,7 @@ impl Client {
         json!({
             "open": self.sidebar_open, "frame": [r.x, r.y, r.w, r.h], "rows": rows,
             "drag": self.space_drag.as_ref().map(|d| json!({"space": d.space, "target": d.target.as_ref().map(describe_target), "insertion": self.space_drag_insertion(), "hint": self.space_drag_hint()})),
-            "pane_drag": self.pane_drag.as_ref().map(|d| json!({"pane": d.pane, "label": d.label, "away": d.away.as_ref().map(describe_away), "hint": self.pane_drag_hint(), "new_space": self.pane_is_over_new_space()})),
+            "pane_drag": self.pane_drag.as_ref().map(|d| json!({"pane": d.pane, "label": d.label, "away": d.away.as_ref().map(describe_away), "drop": d.drop.as_ref().map(|g| json!({"target": g.target, "zone": g.zone.label()})), "hint": self.pane_drag_hint(), "new_space": self.pane_is_over_new_space()})),
             "renaming": self.rename.as_ref().map(|r| json!({"space": r.space, "draft": r.draft, "error": r.error})),
             "menu": self.space_menu.as_ref().map(|(space, _, _)| json!({"space": space, "items": self.space_menu_items(space).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled, "section": i.section, "destructive": i.destructive})).collect::<Vec<_>>()})),
             "preview": self.preview.as_ref().map(|space| json!({"space": space, "frame": self.preview_rect().map(|r| [r.x, r.y, r.w, r.h]),

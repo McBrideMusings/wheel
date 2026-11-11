@@ -5,6 +5,8 @@
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod commands;
 mod debug;
+mod panes;
+pub use panes::focus_target;
 mod procs;
 mod settings;
 mod sidebar;
@@ -204,6 +206,14 @@ pub struct Client {
     pub rename: Option<crate::sidebar::Rename>,
     /// A space's context menu: the space and where it was opened.
     pub space_menu: Option<(String, f32, f32)>,
+    /// A pane header's menu: the pane and where it was opened.
+    pub pane_menu: Option<(String, f32, f32)>,
+    /// A space or pane to show once this window's layout lists it (a focus request that came
+    /// before the layout, a split's new pane): (space, pane, since when in unix ms).
+    pending_focus: Option<(Option<String>, Option<String>, u64)>,
+    /// The header splits sent whose new pane gets the focus once made (AppModel.split's
+    /// `showing: .pane`).
+    split_reqs: HashSet<u64>,
     /// The row under the pointer and since when (unix ms); the preview shown; when the pointer left a row.
     hover: Option<(String, u64)>,
     pub preview: Option<String>,
@@ -325,7 +335,7 @@ impl Client {
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
             server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(),
         };
         client.register_server();
@@ -360,7 +370,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_sidebar_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
+                    if self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -576,6 +586,10 @@ impl Client {
             self.session_id = holder.or(self.sessions.first()).map(|s| s.id.clone());
         }
         self.show_placed();
+        self.retry_pending_focus();
+        if self.pane_menu.as_ref().is_some_and(|(pane, _, _)| self.header_menu(pane).is_empty()) {
+            self.close_pane_menu();
+        }
         if !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
@@ -1054,6 +1068,10 @@ impl Client {
         if k.key == "escape" && self.menu.take().is_some() {
             return true;
         }
+        if k.key == "escape" && self.pane_menu.is_some() {
+            self.close_pane_menu();
+            return true;
+        }
         if k.key == "escape" && (self.space_drag.is_some() || self.pane_drag.is_some() || self.space_menu.is_some()) {
             self.cancel_space_drag(true);
             self.cancel_pane_drag();
@@ -1307,6 +1325,10 @@ impl Render for Client {
                     this.close_title_menu();
                     cx.notify();
                 }
+                if this.pane_menu.is_some() {
+                    this.close_pane_menu();
+                    cx.notify();
+                }
                 if let Some(rn) = &this.rename
                     && !this.space_hit_rect(&rn.space.clone()).is_some_and(|r| crate::sidebar::contains(r, x, y))
                 {
@@ -1420,16 +1442,34 @@ impl Render for Client {
                     .child(div().h(px(TITLE)).w(px(r.w)).px_2().bg(rgb(0x22302a)).text_xs().flex().items_center().justify_between().overflow_hidden()
                         .on_mouse_down(MouseButton::Left, cx.listener({
                             let (id, label, origin) = (p.leaf.id.clone(), self.pane_label(&p.leaf), (r.x, r.y));
-                            move |this, e: &MouseDownEvent, _, _| {
+                            move |this, e: &MouseDownEvent, _, cx| {
                                 let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+                                // A control-click asks for the pane menu, as a right press does.
+                                if e.modifiers.control {
+                                    cx.stop_propagation();
+                                    this.focus_pane(&id);
+                                    this.open_pane_menu(&id, x, y);
+                                    cx.notify();
+                                    return;
+                                }
                                 this.pane_press_down(&id, &label, x, y, (x - origin.0, y - origin.1));
                             }
                         }))
-                        .child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
+                        .on_mouse_down(MouseButton::Right, cx.listener({
+                            let id = p.leaf.id.clone();
+                            move |this, e: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.focus_pane(&id);
+                                this.open_pane_menu(&id, f32::from(e.position.x), f32::from(e.position.y));
+                                cx.notify();
+                            }
+                        }))
+                        .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
                             ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
                             _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
-                        })
-                        .child(div().w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))))
+                        }))
+                        .child(self.header_buttons(&p.leaf.id, cx))
+                        .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))))
                     .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
                     .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, r.w, r.h - TITLE, cx))),
             );
@@ -1443,10 +1483,14 @@ impl Render for Client {
                 }));
             root = root.child(if horizontal { bar.cursor_col_resize() } else { bar.cursor_row_resize() });
         }
+        // The part of the target a dragged pane would take: all of it to swap, a half to dock.
+        if let Some(h) = self.grid_drop_highlight() {
+            root = root.child(div().absolute().left(px(h.x)).top(px(h.y)).w(px(h.w)).h(px(h.h)).rounded_md().bg(rgba(0x7fb89a24)).border_2().border_color(rgb(0x7fb89a)));
+        }
         if self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.sidebar_element(cx));
         }
-        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.drag_chip());
+        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.drag_chip());
         let (w, h) = self.viewport;
         if space_held && let Some(space) = self.space_id.clone() {
             root = root.child(div().absolute().left_0().top(px(TITLE)).w(px(w)).h(px(h - TITLE)).child(self.quarantine_space_card(&space, cx)));

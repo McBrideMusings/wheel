@@ -42,6 +42,26 @@ pub struct Space {
     pub root: Tree,
     /// The highest status among its panes, as the daemon computed it.
     pub status: Option<PaneStatus>,
+    /// The trees popped out of the grid, and the panes in its tray: kept so a pane's site is
+    /// known; the grid draws neither (wheel-ynjo.7.3 draws the popped ones).
+    pub popped: Vec<Tree>,
+    pub backgrounded: Vec<Tree>,
+}
+
+impl Space {
+    /// Where `pane` is in this space: `grid`, `popped` or `backgrounded`; none when it is not here.
+    pub fn site_of(&self, pane: &str) -> Option<wheel_proto::PaneSite> {
+        let holds = |t: &Tree| leaves_of(t).iter().any(|l| l.id == pane);
+        if holds(&self.root) {
+            Some(wheel_proto::PaneSite::Grid)
+        } else if self.popped.iter().any(holds) {
+            Some(wheel_proto::PaneSite::Popped)
+        } else if self.backgrounded.iter().any(holds) {
+            Some(wheel_proto::PaneSite::Backgrounded)
+        } else {
+            None
+        }
+    }
 }
 
 /// Put browser pane `pane` on `url` in `tree` (a `pane_url`), leaving every other leaf alone.
@@ -131,7 +151,7 @@ pub struct Layout {
 impl Layout {
     fn new(spaces: &[SpaceInfo], sessions: &[SessionInfo]) -> Self {
         Self {
-            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone() }).collect(),
+            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone(), popped: s.popped.iter().map(Tree::from).collect(), backgrounded: s.backgrounded.iter().map(Tree::from).collect() }).collect(),
             sessions: sessions.iter().map(|s| Session { id: s.id.clone(), name: s.name.clone(), spaces: s.spaces.clone() }).collect(),
         }
     }

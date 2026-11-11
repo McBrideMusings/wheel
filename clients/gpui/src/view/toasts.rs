@@ -73,10 +73,15 @@ impl Client {
     /// A layout op this window sends carries a request id, so wheeld's refusal of it becomes the
     /// layout-error notice; sending one clears the last.
     pub fn send_layout(&mut self, make: impl FnOnce(u64) -> ClientMsg) {
+        self.send_layout_req(make);
+    }
+    /// `send_layout`, returning the request id so its answer can be told apart.
+    pub fn send_layout_req(&mut self, make: impl FnOnce(u64) -> ClientMsg) -> u64 {
         self.toast_sources.layout_error = None;
         let req = self.req();
         self.layout_reqs.insert(req);
         self.send(&make(req));
+        req
     }
     /// A message the stack is built from. Returns whether it was one.
     pub fn on_toast_message(&mut self, message: &ServerMsg) -> bool {

@@ -2090,6 +2090,138 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // A hidden window refuses the routes that would show it or feed it input.
     let (front_refused, _) = call!("POST", "/window/front");
     ensure!(front_refused == 403, "a hidden window answered the front route with {front_refused}");
+    // The pane grid (wheel-ynjo.8.1): a space of its own, shown by a focus request; the header's
+    // menu splits it; a real header drag onto another pane's middle swaps the two, a drag held
+    // on an edge docks beside it; the header's buttons pop and background a pane; a focus request
+    // moves the pane focus; the menu moves a pane into a new space.
+    macro_rules! until {
+        ($what:expr, $cond:expr) => {{
+            let mut got = Value::Null;
+            let mut held = false;
+            for _ in 0..60 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                if ($cond)(&got) {
+                    held = true;
+                    break;
+                }
+            }
+            ensure!(held, "{} never happened: {}", $what, got);
+            got
+        }};
+    }
+    let grid_dir = std::env::temp_dir().join(format!("wheel-gpui-grid-{}", std::process::id()));
+    std::fs::create_dir_all(&grid_dir)?;
+    let (ok, out, err) = run_pumped(&["space", "new", &grid_dir.to_string_lossy(), "--name", "grid", "--session", &first_session_id], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space new grid failed: {err}");
+    let grid = out.trim().to_owned();
+    let (ok, _, err) = run_pumped(&["space", "focus", &grid], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space focus failed: {err}");
+    let shown = until!("the grid space showing after wheel space focus", |s: &Value| s["active"] == grid.as_str());
+    let grid_panes = |s: &Value| -> Vec<String> {
+        s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).and_then(|x| x["panes"].as_array())
+            .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    };
+    let grid_a = grid_panes(&shown).first().cloned().ok_or_else(|| anyhow::anyhow!("the grid space has no pane"))?;
+    let menu_ids: Vec<String> = shown["panes"][grid_a.as_str()]["menu"].as_array().map(|m| m.iter().filter_map(|i| i["id"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    let here = shown["panes"][grid_a.as_str()]["menu"].as_array().and_then(|m| m.iter().find(|i| i["id"] == format!("move-space:{grid}")).cloned()).unwrap_or_default();
+    ensure!(here["enabled"] == false && here["title"].as_str().is_some_and(|t| t.ends_with("(here)")), "the pane's own space is not offered as here: {here}");
+    ensure!(shown["panes"][grid_a.as_str()]["header_buttons"]["split-right"]["frame"].is_array(), "the header reports no buttons: {}", shown["panes"][grid_a.as_str()]);
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_a}&item=split-right"));
+    ensure!(code == 200, "split-right got {code}");
+    // The split's new pane takes the focus once wheeld makes it (AppModel.split's `showing: .pane`).
+    let two = until!("a second pane, focused, after Split Right", |s: &Value| grid_panes(s).len() == 2 && grid_panes(s).iter().any(|p| p != &grid_a && s["panes"][p.as_str()]["focused"] == true));
+    let grid_b = grid_panes(&two).into_iter().find(|p| p != &grid_a).unwrap_or_default();
+    // Split Down by a real press on the header's button: it splits and starts no drag.
+    let button = two["panes"][grid_b.as_str()]["header_buttons"]["split-down"]["frame"].clone();
+    let at = [button[0].as_f64().unwrap_or(0.) + 9., button[1].as_f64().unwrap_or(0.) + 9.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    let three = until!("a third pane after a press on Split Down", |s: &Value| grid_panes(s).len() == 3);
+    ensure!(three["sidebar"]["pane_drag"].is_null(), "a press on a header button started a drag: {}", three["sidebar"]["pane_drag"]);
+    let grid_c = grid_panes(&three).into_iter().find(|p| p != &grid_a && p != &grid_b).unwrap_or_default();
+    let frame = |s: &Value, pane: &str| -> [f64; 4] {
+        let f = &s["panes"][pane]["frame"];
+        [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(-1.))
+    };
+    // The real drag: press the first pane's header, move onto the third's middle, release.
+    let (a, c) = (frame(&three, &grid_a), frame(&three, &grid_c));
+    let grip = [a[0] + 30., a[1] + 11.];
+    let middle = [c[0] + c[2] / 2., c[1] + c[3] / 2.];
+    let pressed = native.call(json!({"op":"post_mouse","kind":"down","point":grip}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    let dragged = native.call(json!({"op":"post_mouse","kind":"drag","point":[grip[0] + 20., grip[1] + 20.]}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":middle}));
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    let over = state!();
+    let log_tail: Vec<Value> = over["log"].as_array().map(|l| l.iter().rev().take(8).cloned().collect()).unwrap_or_default();
+    ensure!(over["sidebar"]["pane_drag"]["drop"] == json!({"target": grid_c, "zone": "center"}), "the drag over the third pane's middle reads {} (press at {grip:?} hit {pressed}, drag hit {dragged}; frames {a:?} {c:?}; log {log_tail:?}; presses {:?})", over["sidebar"]["pane_drag"], window.update(cx, |c, _, _| c.presses.iter().rev().take(4).cloned().collect::<Vec<_>>())?);
+    ensure!(over["grid_drop_highlight"] == json!(c), "the swap lights {}, not the whole target {c:?}", over["grid_drop_highlight"]);
+    draw(window, Some(output.join("client-pane-swap.png")), cx)?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":middle}));
+    let swapped = until!("the swap", |s: &Value| frame(s, &grid_a) == c && frame(s, &grid_c) == a);
+    ensure!(swapped["sidebar"]["pane_drag"].is_null() && swapped["grid_drop_highlight"].is_null(), "the drag outlived its drop: {}", swapped["sidebar"]["pane_drag"]);
+    // Dock: the second pane held on the left quarter of the first (now bottom right).
+    let (code, _) = call!("POST", format!("/panedrag?action=start&pane={grid_b}"));
+    ensure!(code == 200, "panedrag start got {code}");
+    let (code, _) = call!("POST", format!("/panedrag?action=hover&target=pane:{grid_a}:left"));
+    ensure!(code == 200, "panedrag hover got {code}");
+    let docking = state!();
+    let f = frame(&docking, &grid_a);
+    ensure!(docking["grid_drop_highlight"] == json!([f[0], f[1], f[2] * 0.5, f[3]]), "the dock lights {}, not the left half of {f:?}", docking["grid_drop_highlight"]);
+    ensure!(docking["sidebar"]["pane_drag"]["hint"] == format!("Dock {grid_b} on the left of {grid_a}"), "the dock hint reads {}", docking["sidebar"]["pane_drag"]["hint"]);
+    draw(window, Some(output.join("client-pane-dock.png")), cx)?;
+    let (code, _) = call!("POST", "/panedrag?action=drop");
+    ensure!(code == 200, "panedrag drop got {code}");
+    let docked = until!("the dock", |s: &Value| { let (b, a) = (frame(s, &grid_b), frame(s, &grid_a)); b[0] >= 0. && b[0] < a[0] && b[1] == a[1] && b[3] == a[3] });
+    // A focus request for a pane moves this window's focus to it (the header press above focused the first).
+    ensure!(docked["panes"][grid_c.as_str()]["focused"] == false, "the third pane was focused before the request: {}", docked["focus_key"]);
+    let (ok, _, err) = run_pumped(&["pane", "focus", &grid_c], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane focus failed: {err}");
+    until!("the third pane focused by wheel pane focus", |s: &Value| s["panes"][grid_c.as_str()]["focused"] == true);
+    // The header's buttons: Pop out, then back with the CLI; Background, then back.
+    let site_list = |s: &Value, key: &str| s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).map(|x| x[key].clone()).unwrap_or_default();
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=pop"));
+    ensure!(code == 200, "pop got {code}");
+    let popped = until!("the third pane popped", |s: &Value| site_list(s, "popped") == json!([grid_c]));
+    ensure!(!grid_panes(&popped).contains(&grid_c), "a popped pane stayed in the grid: {:?}", grid_panes(&popped));
+    let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane pop failed: {err}");
+    until!("the third pane back in the grid", |s: &Value| grid_panes(s).contains(&grid_c));
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=background"));
+    ensure!(code == 200, "background got {code}");
+    until!("the third pane backgrounded", |s: &Value| site_list(s, "backgrounded") == json!([grid_c]));
+    let (ok, _, err) = run_pumped(&["pane", "background", &grid_c], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane background failed: {err}");
+    until!("the third pane back from the tray", |s: &Value| grid_panes(s).contains(&grid_c) && s["panes"][grid_c.as_str()]["site"] == "grid");
+    // The menu drawn, and Esc closing it.
+    let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_a}&x=420&y=120"));
+    ensure!(code == 200, "panemenu open got {code}");
+    let opened = state!();
+    ensure!(opened["pane_menu"]["pane"] == grid_a.as_str(), "the pane menu did not open: {}", opened["pane_menu"]);
+    draw(window, Some(output.join("client-pane-menu.png")), cx)?;
+    let (code, escaped) = call!("POST", "/key?keys=escape");
+    ensure!(code == 200 && escaped["taken"] == true && state!()["pane_menu"].is_null(), "Esc left the pane menu open: {escaped}");
+    // Move Pane to New Space: the second pane leaves for a space of its own.
+    let spaces_before = state!()["spaces"].as_array().map(Vec::len).unwrap_or(0);
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=move-new-space"));
+    ensure!(code == 200, "move-new-space got {code}");
+    let moved_out = until!("the second pane in a new space", |s: &Value| s["spaces"].as_array().is_some_and(|a| a.len() == spaces_before + 1) && !grid_panes(s).contains(&grid_b));
+    let new_space = moved_out["panes"][grid_b.as_str()]["space"].as_str().unwrap_or_default().to_owned();
+    ensure!(!new_space.is_empty() && new_space != grid, "the second pane is in {new_space:?}");
+    // Back to the fixture space by a focus request, and the two spaces made here go.
+    let (ok, _, err) = run_pumped(&["space", "focus", &fixture_space], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space focus back failed: {err}");
+    until!("the fixture space showing again", |s: &Value| s["active"] == fixture_space.as_str());
+    for space in [&new_space, &grid] {
+        let (ok, _, err) = run_pumped(&["space", "close", space], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel space close {space} failed: {err}");
+    }
+    pump(&mut connection, 500, &mut layouts, window, cx).await?;
+    let pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c},
+        "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
     let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
         "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
     drop(debug);
@@ -2249,6 +2381,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "debug": debug_report,
         "sidebar": sidebar_report,
         "title_row": title_report,
+        "pane_grid": pane_grid_report,
         "windows": windows_report,
         "server_updated": server_updated_report,
         "server_lifecycle": server_lifecycle_report,

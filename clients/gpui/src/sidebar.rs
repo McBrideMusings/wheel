@@ -116,12 +116,14 @@ pub fn space_hint(target: &SpaceDropTarget, space: &str, window: &str) -> String
 
 /// A pane held by its header (PaneMove.swift's PaneDrag), as far as the sidebar is its target:
 /// a drop on a row moves the pane to the end of that space, on the sidebar's empty room makes a
-/// new space for it. The grid's own drop zones are wheel-ynjo.8's.
+/// new space for it. Its drop zones in its own space are `drop` (grid_drop.rs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaneDrag {
     pub pane: String,
     pub label: String,
     pub away: Option<PaneAway>,
+    /// Where it docks in its own space; never set together with `away`.
+    pub drop: Option<crate::grid_drop::GridDrop>,
     /// Where the pointer is, and where in the header it took hold.
     pub at: (f32, f32),
     pub grab: (f32, f32),

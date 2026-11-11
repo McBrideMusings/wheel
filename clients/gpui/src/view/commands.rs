@@ -52,7 +52,7 @@ pub fn palette_name(leaf: &Leaf) -> String {
         _ => leaf.label.clone(),
     }
 }
-fn capitalized(word: &str) -> String {
+pub(super) fn capitalized(word: &str) -> String {
     let mut c = word.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
@@ -426,8 +426,13 @@ impl Client {
     pub fn ask_set_kind(&mut self, pane: &str, new: NewPaneKind) {
         let Some(leaf) = self.leaf(pane) else { return };
         let Some((title, message)) = Self::ending_question(&leaf.kind) else { return self.set_kind(pane, new) };
-        let what = if new == NewPaneKind::Terminal { "Terminal" } else { "Browser" };
-        self.confirm(title, format!("{message} The pane then shows a {}.", what.to_lowercase()), format!("Show {what}"), Pending::SetKind(pane.to_owned(), new));
+        let (shows, button) = match new {
+            NewPaneKind::Terminal => ("shows a terminal", "Show Terminal"),
+            NewPaneKind::Browser => ("shows a browser", "Show Browser"),
+            NewPaneKind::Empty => ("is empty", "Empty Pane"),
+            NewPaneKind::Web => ("shows an artifact", "Show Artifact"),
+        };
+        self.confirm(title, format!("{message} The pane then {shows}."), button.into(), Pending::SetKind(pane.to_owned(), new));
     }
     /// Start agent `agent` in `pane`, asking first when that ends what it runs.
     pub fn ask_start_agent(&mut self, pane: &str, agent: &str) {
@@ -738,7 +743,7 @@ impl Client {
     }
 }
 
-fn dir_named(name: &str) -> Option<Dir> {
+pub(super) fn dir_named(name: &str) -> Option<Dir> {
     match name {
         "left" => Some(Dir::Left),
         "right" => Some(Dir::Right),

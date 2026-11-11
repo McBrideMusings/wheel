@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod debug;
 pub mod focus;
 pub mod footer;
+pub mod grid_drop;
 pub mod header;
 pub mod keymap;
 pub mod layout;
@@ -207,6 +208,22 @@ pub fn deliver(cx: &mut App, window: WindowHandle<view::Client>, event: daemon::
     {
         window.read(cx)?;
         answer_window_command(cx, window, *id, command.clone());
+        return Ok(false);
+    }
+    // Every window hears a focus request on its own connection; the one it names acts on it.
+    if let daemon::Event::Message(message) = &event
+        && let ServerMsg::SpaceFocused { space, pane } = message.as_ref()
+    {
+        let (id, sessions) = window.read(cx).map(|c| (c.window_id().to_owned(), c.layout_lists().0))?;
+        if windows::with(|r| view::focus_target(r, &sessions, space)).as_deref() == Some(id.as_str()) {
+            let shown = window.update(cx, |client, _, cx| {
+                cx.notify();
+                client.show_requested(space, pane.as_deref())
+            })?;
+            if shown {
+                bring_front(cx, window);
+            }
+        }
         return Ok(false);
     }
     window.update(cx, |client, _, cx| {

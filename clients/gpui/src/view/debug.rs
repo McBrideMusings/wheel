@@ -311,7 +311,8 @@ impl Client {
                 }
                 None
             }
-            // A pane drag without a pointer: `action` is start (`pane`), hover (`target` space:<id> or new-space), drop or cancel.
+            // A pane drag without a pointer: `action` is start (`pane`), hover (`target` space:<id>,
+            // new-space, or pane:<id>:<zone> with zone center, left, right, up or down), drop or cancel.
             "/panedrag" => {
                 match q("action").as_deref() {
                     Some("start") => {
@@ -324,16 +325,46 @@ impl Client {
                         if self.pane_drag.is_none() {
                             return refuse("409 Conflict", "no pane drag in progress");
                         }
-                        let away = match q("target").as_deref() {
-                            Some("new-space") => crate::sidebar::PaneAway::NewSpace,
-                            Some(t) if t.starts_with("space:") => crate::sidebar::PaneAway::End(t[6..].to_owned()),
-                            _ => return refuse(BAD, "target is space:<id> or new-space"),
-                        };
-                        self.hover_pane_drag(Some(away));
+                        let target = q("target").unwrap_or_default();
+                        if let Some(rest) = target.strip_prefix("pane:") {
+                            let Some((pane, zone)) = rest.rsplit_once(':').and_then(|(p, z)| crate::grid_drop::Zone::parse(z).map(|z| (p.to_owned(), z))) else {
+                                return refuse(BAD, "target is pane:<id>:<center|left|right|up|down>");
+                            };
+                            self.hover_pane_drag(None);
+                            self.hover_grid_drop(Some(crate::grid_drop::GridDrop { target: pane, zone }));
+                        } else {
+                            let away = match target.as_str() {
+                                "new-space" => crate::sidebar::PaneAway::NewSpace,
+                                t if t.starts_with("space:") => crate::sidebar::PaneAway::End(t[6..].to_owned()),
+                                _ => return refuse(BAD, "target is space:<id>, new-space or pane:<id>:<zone>"),
+                            };
+                            self.hover_grid_drop(None);
+                            self.hover_pane_drag(Some(away));
+                        }
                     }
                     Some("drop") => self.end_pane_drag(),
                     Some("cancel") => self.cancel_pane_drag(),
                     _ => return refuse(BAD, "action is start, hover, drop or cancel"),
+                }
+                None
+            }
+            // A pane header's menu and buttons: `action` open (`pane`, optional `x`, `y`), close, or
+            // run (`pane`, `item`: a menu item's id, or the buttons' pop and background).
+            "/panemenu" => {
+                match q("action").as_deref() {
+                    Some("open") => {
+                        let Some(pane) = q("pane").filter(|p| !self.header_menu(p).is_empty()) else { return refuse(MISSING, "pane= names no pane in the grid") };
+                        let num = |k: &str| q(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(40.);
+                        self.open_pane_menu(&pane, num("x"), num("y"));
+                    }
+                    Some("close") => self.close_pane_menu(),
+                    Some("run") => {
+                        let (Some(pane), Some(item)) = (q("pane"), q("item")) else { return refuse(BAD, "pane= and item= are required") };
+                        if !self.choose_header_menu(&item, &pane) {
+                            return refuse("409 Conflict", "the pane menu offers no such enabled item");
+                        }
+                    }
+                    _ => return refuse(BAD, "action is open, close or run"),
                 }
                 None
             }
@@ -552,7 +583,9 @@ impl Client {
                 let placed = leaves.iter().find(|p| p.leaf.id == leaf.id);
                 let mut entry = json!({
                     "space": space.id, "kind": leaf.kind, "label": leaf.label, "term": leaf.term, "url": leaf.url, "agent": leaf.agent,
-                    "harness": leaf.harness, "status": leaf.status, "visible": placed.is_some(),
+                    "harness": leaf.harness, "status": leaf.status, "visible": placed.is_some(), "site": space.site_of(&leaf.id).map(|s| s.name()),
+                    "menu": self.header_menu(&leaf.id).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled})).collect::<Vec<_>>(),
+                    "header_buttons": self.header_button_frames(&leaf.id),
                     "frame": placed.map(|p| json!([p.rect.x, p.rect.y, p.rect.w, p.rect.h])),
                     "native": self.native_panes.contains(&leaf.id), "focused": self.focus.current.as_deref() == Some(leaf.id.as_str()),
                     "palette": self.palettes.get(&leaf.id).map(|p| json!({"query": p.query, "rows": p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), "selected": p.selected})),
@@ -594,7 +627,10 @@ impl Client {
             "sessions": self.sessions.iter().map(|s| json!({"id": s.id, "name": s.name, "spaces": s.spaces})).collect::<Vec<_>>(),
             "session": self.session_id,
             "active": self.space_id,
-            "spaces": self.spaces.iter().map(|s| json!({"id": s.id, "name": s.name, "cwd": s.cwd, "status": s.status, "panes": leaves_of(&s.root).iter().map(|l| l.id.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "spaces": self.spaces.iter().map(|s| json!({"id": s.id, "name": s.name, "cwd": s.cwd, "status": s.status, "panes": leaves_of(&s.root).iter().map(|l| l.id.clone()).collect::<Vec<_>>(),
+                "popped": s.popped.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>(), "backgrounded": s.backgrounded.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "pane_menu": self.pane_menu.as_ref().map(|(pane, x, y)| json!({"pane": pane, "at": [x, y]})),
+            "grid_drop_highlight": self.grid_drop_highlight().map(|h| json!([h.x, h.y, h.w, h.h])),
             "focus_key": self.focus.current,
             "panes": panes,
             "perms": self.perms,
