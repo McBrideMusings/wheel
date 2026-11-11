@@ -1,19 +1,40 @@
 //! Rust side of native/Bridge.swift: loads the bridge library and speaks its JSON command ABI.
 //! The bridge hosts Wheel's real Ghostty terminal view and a WKWebView as children of the
-//! GPUI window's NSView. All calls run on the main thread.
+//! GPUI window's NSView. All calls run on the main thread. The bridge also speaks first: a
+//! browser pane's state, its reports for wheeld and the answers to the daemon requests the view
+//! relayed arrive as frames through the callback `attach` is given, each read as a [`Frame`].
 use anyhow::{Context as _, Result};
+use futures::channel::mpsc as fmpsc;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
+    collections::HashMap,
     ffi::{CStr, CString, c_char, c_void},
     path::PathBuf,
     rc::Rc,
+    sync::Mutex,
 };
+use wheel_proto::ConsoleEntry;
+
+/// The bridge's callback: its window id and one JSON object.
+type Emit = unsafe extern "C" fn(i32, *const c_char);
+
+/// Where each bridge window's frames go: the channel `attach_to` registered for it.
+static EMITS: Mutex<Option<HashMap<i32, fmpsc::UnboundedSender<String>>>> = Mutex::new(None);
+
+unsafe extern "C" fn on_emit(window: i32, json: *const c_char) {
+    // The bridge owns the string for the length of the call; it is copied here.
+    let text = unsafe { CStr::from_ptr(json) }.to_string_lossy().into_owned();
+    if let Some(sender) = EMITS.lock().unwrap().as_ref().and_then(|m| m.get(&window)) {
+        let _ = sender.unbounded_send(text);
+    }
+}
 
 /// The loaded bridge library, shared by every window.
 pub struct Bridge {
     _library: libloading::Library,
-    attach: unsafe extern "C" fn(*mut c_void, i32) -> i32,
+    attach: unsafe extern "C" fn(*mut c_void, i32, Emit) -> i32,
     command: unsafe extern "C" fn(*const c_char) -> *mut c_char,
     free: unsafe extern "C" fn(*mut c_void),
 }
@@ -48,13 +69,18 @@ impl Native {
         Rc::new(Self { bridge: bridge.clone(), window: Cell::new(0) })
     }
     /// Attach to the window's content view. `hidden` is the test mode: no Dock icon, never
-    /// active, deaf to the pointer.
-    pub fn attach_to(&self, ns_view: *mut c_void, hidden: bool) {
-        self.window.set(unsafe { (self.bridge.attach)(ns_view, i32::from(hidden)) });
+    /// active, deaf to the pointer. The bridge's own frames for this window go to `frames`.
+    pub fn attach_to(&self, ns_view: *mut c_void, hidden: bool, frames: fmpsc::UnboundedSender<String>) {
+        let window = unsafe { (self.bridge.attach)(ns_view, i32::from(hidden), on_emit) };
+        self.window.set(window);
+        EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(window, frames);
     }
     /// The window is closing: the bridge drops its views, socket and key monitor.
     pub fn detach(&self) {
         self.call(json!({"op":"detach"}));
+        if let Some(map) = EMITS.lock().unwrap().as_mut() {
+            map.remove(&self.window.get());
+        }
         self.window.set(0);
     }
     pub fn call(&self, mut value: Value) -> Value {
@@ -81,6 +107,31 @@ impl Native {
     pub fn open_artifact(&self, pane: &str, name: &str, scope: &str, space: Option<&str>, cwd: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws}));
     }
+    /// Show a browser pane on `url` (ADR-0005): WheelUI's `BrowserPane`, the model the Swift Mac
+    /// app shows under its chrome. `remote` says wheeld runs on another machine, so a file page
+    /// names a path this Mac does not have. Opening it again sends the pane to `url` as the daemon
+    /// would.
+    pub fn open_browser(&self, pane: &str, url: &str, remote: bool) {
+        self.call(json!({"op":"open","pane":pane,"kind":"browser","url":url,"remote":remote}));
+    }
+    /// One of a browser pane's actions: `back`, `forward`, `reload`, `stop`, `clear_failure`,
+    /// `open` (with `text`), `opened` and `daemon_says` (with `url`), `refused` (with `text` and
+    /// `message`).
+    pub fn browser(&self, pane: &str, action: &str, fields: Value) {
+        let mut value = json!({"op":"browser","pane":pane,"action":action});
+        if let (Some(into), Some(from)) = (value.as_object_mut(), fields.as_object()) {
+            into.extend(from.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        self.call(value);
+    }
+    /// wheeld's `render_pane` `id`: the bridge draws `pane` and answers through a frame.
+    pub fn render(&self, id: u64, pane: &str, full: bool) {
+        self.call(json!({"op":"render","id":id,"pane":pane,"full":full}));
+    }
+    /// wheeld's `inspect_pane` `id`: the bridge runs `action` on `pane`'s page and answers through a frame.
+    pub fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>) {
+        self.call(json!({"op":"inspect","id":id,"pane":pane,"action":action,"arg":arg}));
+    }
     /// A file in `pane`'s folder changed: open its page again.
     pub fn reload(&self, pane: &str) {
         self.call(json!({"op":"reload","pane":pane}));
@@ -103,5 +154,76 @@ impl Native {
     }
     pub fn close(&self, pane: &str) {
         self.call(json!({"op":"close","pane":pane}));
+    }
+}
+
+/// A browser pane's chrome state, as the bridge last emitted it (WheelUI's `BrowserPane`).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct BrowserState {
+    pub pane: String,
+    /// The page the view is on, or the one the daemon gave it before anything committed.
+    pub url: String,
+    /// What the address field shows: the failed address while a failure shows, else the page.
+    pub address: String,
+    pub title: String,
+    pub loading: bool,
+    pub progress: f64,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub failure: Option<Failure>,
+}
+
+/// The last load that failed, shown over the page until the next one starts.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Failure {
+    pub address: String,
+    pub message: String,
+}
+
+/// What the bridge says on its own: a browser pane's state (`browser`), its reports for wheeld
+/// (`navigated`, `typed`, `console`), or the answer to a daemon request the view relayed.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Frame {
+    Event(BrowserEvent),
+    Answer(Answer),
+}
+#[derive(Debug, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum BrowserEvent {
+    Browser(BrowserState),
+    /// The view landed on `url`: wheeld's layout follows (`pane_browser_url`).
+    Navigated { pane: String, url: String },
+    /// The person submitted `text` in the address field: wheeld says what page it means (`pane_browser_open`).
+    Typed { pane: String, text: String },
+    /// The page wrote to its console (`pane_console`); `reset` says it just loaded.
+    Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
+}
+/// The answer to `render_pane` or `inspect_pane` `id`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "answer", rename_all = "snake_case")]
+pub enum Answer {
+    Rendered { id: u64, png: String },
+    Inspected { id: u64, text: String },
+    Recorded { id: u64, mov: String, frames: u64, millis: u64 },
+    Refused { id: u64, message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_read_both_shapes() {
+        let state: Frame = serde_json::from_str(r#"{"event":"browser","pane":"p3","url":"about:blank","address":"about:blank","title":"","loading":false,"progress":0,"can_go_back":false,"can_go_forward":false}"#).unwrap();
+        assert!(matches!(state, Frame::Event(BrowserEvent::Browser(BrowserState { ref pane, ref failure, .. })) if pane == "p3" && failure.is_none()));
+        let typed: Frame = serde_json::from_str(r#"{"event":"typed","pane":"p3","text":"example.com"}"#).unwrap();
+        assert!(matches!(typed, Frame::Event(BrowserEvent::Typed { ref text, .. }) if text == "example.com"));
+        let console: Frame = serde_json::from_str(r#"{"event":"console","pane":"p3","reset":true,"entries":[{"time":5,"level":"log","text":"hi"}]}"#).unwrap();
+        assert!(matches!(console, Frame::Event(BrowserEvent::Console { reset: true, ref entries, .. }) if entries.len() == 1 && entries[0].text == "hi"));
+        let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();
+        assert!(matches!(answer, Frame::Answer(Answer::Recorded { id: 7, frames: 12, .. })));
+        let refused: Frame = serde_json::from_str(r#"{"answer":"refused","id":8,"message":"not shown"}"#).unwrap();
+        assert!(matches!(refused, Frame::Answer(Answer::Refused { id: 8, .. })));
     }
 }

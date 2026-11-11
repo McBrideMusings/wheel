@@ -3,7 +3,7 @@
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
-use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Bridge, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
+use crate::{browser::{self, CHROME, Press}, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, prelude::*, px, rgb, rgba};
 use wheel_proto::{AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, ServerMsg};
 use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
@@ -82,8 +82,14 @@ pub struct Client {
     /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over
     /// that pane's body only.
     palettes: HashMap<String, Palette>,
-    /// The next request id for a reply this window tells apart (`artifact_ls`).
+    /// The next request id for a reply this window tells apart (`artifact_ls`, `pane_browser_open`).
     next_req: u64,
+    /// Each browser pane's chrome state, as the bridge last emitted it.
+    browsers: HashMap<String, BrowserState>,
+    /// The address field being edited: the pane and the draft.
+    address_edit: Option<(String, String)>,
+    /// `pane_browser_open` requests waiting for wheeld to read typed text: (pane, the text).
+    open_reqs: HashMap<u64, (String, String)>,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -177,6 +183,7 @@ impl Client {
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
+            browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -215,6 +222,46 @@ impl Client {
                             if let Some(palette) = self.palettes.values_mut().find(|p| p.req == Some(*req)) {
                                 palette.req = None;
                                 palette.failed(message);
+                            }
+                            // wheeld read typed text as no page: the field shows why.
+                            if let Some((pane, text)) = self.open_reqs.remove(req) {
+                                self.native.browser(&pane, "refused", serde_json::json!({"text": text, "message": message}));
+                            }
+                            return false;
+                        }
+                        // wheeld read typed text as a page: the pane goes there, even when it is already on it.
+                        ServerMsg::Opened { req, pane, url } => {
+                            if self.open_reqs.remove(req).is_some() {
+                                self.native.browser(pane, "opened", serde_json::json!({"url": url}));
+                            }
+                            return false;
+                        }
+                        // A browser pane is on a new page: the one field, patched into the tree held
+                        // (ADR-0005), and the view sent there unless it reported the page itself.
+                        ServerMsg::PaneUrl { pane, url } => {
+                            for space in &mut self.spaces {
+                                set_url(&mut space.root, pane, url);
+                            }
+                            if self.opened.contains_key(pane) {
+                                self.native.browser(pane, "daemon_says", serde_json::json!({"url": url}));
+                            }
+                            return false;
+                        }
+                        // `wheel pane shot`: the bridge draws the pane and answers through a frame.
+                        ServerMsg::RenderPane { id, pane, full } => {
+                            if self.opened.contains_key(pane) {
+                                self.native.render(*id, pane, *full);
+                            } else {
+                                self.send(&ClientMsg::RenderRefused { id: *id, message: "not shown".into() });
+                            }
+                            return false;
+                        }
+                        // `wheel pane eval|dom|shot --selector|record` on a browser pane's page.
+                        ServerMsg::InspectPane { id, pane, action, arg } => {
+                            if self.opened.get(pane).map(String::as_str) == Some("browser") {
+                                self.native.inspect(*id, pane, action, arg.as_deref());
+                            } else {
+                                self.send(&ClientMsg::RenderRefused { id: *id, message: "not shown".into() });
                             }
                             return false;
                         }
@@ -288,8 +335,15 @@ impl Client {
                         palette.relisting();
                     }
                 }
+                // Answers to the last connection's address reads never come.
+                for (pane, text) in std::mem::take(&mut self.open_reqs).into_values() {
+                    self.native.browser(&pane, "refused", serde_json::json!({"text": text, "message": "The connection to wheeld dropped before it read this address."}));
+                }
                 self.endpoint = endpoint;
                 self.link = Link::Up;
+                // This window draws its panes as PNGs for `wheel pane shot` and runs `wheel pane
+                // eval|dom|record` in its browser panes: wheeld may send it `render_pane` and `inspect_pane`.
+                self.send(&ClientMsg::RenderOffer {});
                 // The dots and the footer follow two settings; a later change arrives as a broadcast.
                 self.send(&ClientMsg::SettingsLs { req: None, space: None });
                 self.ask_space_settings();
@@ -327,6 +381,13 @@ impl Client {
         // something else changed, closes it. One still waiting for a listing asks again.
         let kinds: HashMap<String, String> = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).map(|l| (l.id.clone(), l.kind.clone())).collect();
         self.palettes.retain(|pane, palette| kinds.get(pane) == Some(&palette.opened_over));
+        for leaf in self.spaces.iter().flat_map(|s| leaves_of(&s.root)).filter(|l| l.kind == "browser") {
+            if self.opened.get(&leaf.id).map(String::as_str) == Some("browser")
+                && let Some(url) = &leaf.url
+            {
+                self.native.browser(&leaf.id, "daemon_says", serde_json::json!({"url": url}));
+            }
+        }
         for pane in self.palettes.iter().filter(|(_, p)| p.req.is_none() && p.is_loading()).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
             self.ask_artifacts(&pane);
         }
@@ -555,6 +616,103 @@ impl Client {
         self.menu = None;
         self.send(&ClientMsg::AgentConfigSet { req: None, agent: agent.to_owned(), config: config.to_owned(), value: value.to_owned() });
     }
+    /// A browser pane's chrome state, as the bridge last emitted it.
+    pub fn browser_state(&self, pane: &str) -> Option<&BrowserState> {
+        self.browsers.get(pane)
+    }
+    /// The address field being edited: (pane, draft).
+    pub fn address_edit(&self) -> Option<(String, String)> {
+        self.address_edit.clone()
+    }
+    /// Whether wheeld runs on another machine, so a file page names a path this Mac does not have.
+    fn daemon_is_remote(&self) -> bool {
+        let host = self.endpoint.ws.split("://").nth(1).unwrap_or_default().split(['/', '?']).next().unwrap_or_default();
+        let host = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host).trim_matches(['[', ']']);
+        !matches!(host, "127.0.0.1" | "localhost" | "::1" | "")
+    }
+    /// A frame the bridge sent on its own: a browser pane's state is kept for its chrome, its
+    /// reports go to wheeld as this connection's requests, and an answer to a relayed daemon
+    /// request goes back as the reply wheeld waits for.
+    pub fn on_native(&mut self, frame: &str) {
+        let frame: Frame = match serde_json::from_str(frame) {
+            Ok(frame) => frame,
+            Err(error) => {
+                eprintln!("wheel-gpui: a frame from the bridge was not understood ({error}): {frame}");
+                self.press(format!("bad native frame: {error}"));
+                return;
+            }
+        };
+        match frame {
+            Frame::Event(BrowserEvent::Browser(state)) => {
+                self.browsers.insert(state.pane.clone(), state);
+            }
+            Frame::Event(BrowserEvent::Navigated { pane, url }) => self.send(&ClientMsg::PaneBrowserUrl { req: None, pane, url }),
+            Frame::Event(BrowserEvent::Typed { pane, text }) => {
+                if self.link != Link::Up {
+                    self.native.browser(&pane, "refused", serde_json::json!({"text": text, "message": "Not connected to wheeld, which says what an address means."}));
+                    return;
+                }
+                let req = self.next_req;
+                self.next_req += 1;
+                self.open_reqs.insert(req, (pane.clone(), text.clone()));
+                self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text });
+            }
+            Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
+            Frame::Answer(Answer::Rendered { id, png }) => self.send(&ClientMsg::Rendered { id, png }),
+            Frame::Answer(Answer::Inspected { id, text }) => self.send(&ClientMsg::Inspected { id, text }),
+            Frame::Answer(Answer::Recorded { id, mov, frames, millis }) => self.send(&ClientMsg::Recorded { id, mov, frames, millis }),
+            Frame::Answer(Answer::Refused { id, message }) => self.send(&ClientMsg::RenderRefused { id, message }),
+        }
+    }
+    /// A press on a browser pane's chrome.
+    pub fn browser_press(&mut self, pane: &str, press: Press) {
+        self.press(format!("browser {pane} {press:?}"));
+        self.focus_pane(pane);
+        match press {
+            Press::Back => self.native.browser(pane, "back", serde_json::json!({})),
+            Press::Forward => self.native.browser(pane, "forward", serde_json::json!({})),
+            Press::Reload | Press::Retry => self.native.browser(pane, "reload", serde_json::json!({})),
+            Press::Stop => self.native.browser(pane, "stop", serde_json::json!({})),
+            // Home: the kind again with no page, which opens the `browser.homepage` setting as
+            // wheeld resolves it for the pane's space.
+            Press::Home => {
+                self.native.browser(pane, "clear_failure", serde_json::json!({}));
+                self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Browser, artifact: None, scope: None, url: None });
+            }
+            // The field takes the keyboard from the web view: the GPUI view holds it while editing.
+            Press::Edit => {
+                let address = self.browsers.get(pane).map(|s| browser::editable(&s.address)).unwrap_or_default();
+                self.address_edit = Some((pane.to_owned(), address));
+                self.native.focus("");
+            }
+        }
+    }
+    /// A key typed while `pane`'s address field is being edited. Returns false when it is not.
+    fn address_key(&mut self, pane: &str, key: &str, text: Option<&str>) -> bool {
+        let Some((editing, draft)) = self.address_edit.as_mut().filter(|(p, _)| p == pane) else { return false };
+        let editing = editing.clone();
+        match key {
+            "escape" => {
+                self.address_edit = None;
+                self.native.focus(&editing);
+            }
+            "enter" => {
+                let typed = std::mem::take(draft);
+                self.address_edit = None;
+                self.native.focus(&editing);
+                self.native.browser(&editing, "open", serde_json::json!({"text": typed}));
+            }
+            "backspace" => {
+                draft.pop();
+            }
+            _ => {
+                if let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) {
+                    draft.push_str(t);
+                }
+            }
+        }
+        true
+    }
     /// Scroll `agent`'s column so row `row` is in view.
     pub fn reveal(&self, agent: &str, row: usize) {
         if let Some(scroll) = self.scrolls.get(agent) {
@@ -617,6 +775,10 @@ impl Client {
     }
     /// Give `pane` the keyboard: its native view, or the GPUI view for a pane GPUI draws.
     fn focus_pane(&mut self, pane: &str) {
+        // An address edit ends when the keyboard goes to another pane.
+        if self.address_edit.as_ref().is_some_and(|(p, _)| p != pane) {
+            self.address_edit = None;
+        }
         self.focus.current = Some(pane.to_owned());
         self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
         self.sync_view();
@@ -648,7 +810,7 @@ impl Client {
             && !k.modifiers.platform
             && !k.modifiers.control
         {
-            if self.palette_key(&leaf.id, &k.key, k.key_char.as_deref()) {
+            if self.address_key(&leaf.id, &k.key, k.key_char.as_deref()) || self.palette_key(&leaf.id, &k.key, k.key_char.as_deref()) {
                 return true;
             }
             // The empty pane's chooser: `a` opens the artifact palette.
@@ -763,22 +925,28 @@ impl Client {
             let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
                 // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
                 ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
-                ("browser", _) => format!("browser:{}", p.leaf.url.clone().unwrap_or_default()),
+                ("browser", _) => "browser".to_owned(),
                 ("terminal", Some(_)) => "terminal".to_owned(),
                 _ => continue,
             };
             if self.opened.get(&p.leaf.id) != Some(&kind) {
                 match (&p.leaf.term, p.leaf.kind.as_str()) {
                     (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, &self.endpoint.ws),
-                    (None, "browser") => self.native.open_web(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank")),
+                    (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
                     (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                 }
                 self.opened.insert(p.leaf.id.clone(), kind);
             }
-            let rect = [f64::from(p.rect.x), f64::from(p.rect.y + TITLE), f64::from(p.rect.w), f64::from((p.rect.h - TITLE).max(1.))];
-            if self.placed.get(&p.leaf.id) != Some(&(rect, false)) {
-                self.native.place(&p.leaf.id, rect, false);
-                self.placed.insert(p.leaf.id.clone(), (rect, false));
+            // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
+            // card while a load has failed.
+            let (top, failed) = match p.leaf.kind.as_str() {
+                "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
+                _ => (TITLE, false),
+            };
+            let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
+            if self.placed.get(&p.leaf.id) != Some(&(rect, failed)) {
+                self.native.place(&p.leaf.id, rect, failed);
+                self.placed.insert(p.leaf.id.clone(), (rect, failed));
             }
             self.native_panes.push(p.leaf.id.clone());
         }
@@ -795,7 +963,11 @@ impl Client {
                 self.native.close(&id);
                 self.opened.remove(&id);
                 self.placed.remove(&id);
+                self.browsers.remove(&id);
             }
+        }
+        if self.address_edit.as_ref().is_some_and(|(pane, _)| !alive.contains(pane.as_str())) {
+            self.address_edit = None;
         }
     }
 }
@@ -807,6 +979,11 @@ impl Render for Client {
         let (leaves, dividers) = self.scene();
         if !self.handle.is_focused(window) {
             window.focus(&self.handle, cx);
+        }
+        // An address edit ends when the keyboard left the GPUI view: a click on the page or on a
+        // terminal goes to AppKit's first responder, which GPUI never sees.
+        if self.address_edit.is_some() && self.native.status()["root_focused"] != true {
+            self.address_edit = None;
         }
         self.sync_native(&leaves);
         self.sync_agents(&leaves);
@@ -873,6 +1050,15 @@ impl Render for Client {
             let native = self.native_panes.contains(&p.leaf.id);
             let id = p.leaf.id.clone();
             let body = match p.leaf.kind.as_str() {
+                "browser" if native => {
+                    let state = self.browsers.get(&p.leaf.id).cloned().unwrap_or_default();
+                    let editing = self.address_edit.as_ref().filter(|(pane, _)| pane == &p.leaf.id).map(|(_, d)| d.clone());
+                    let mut body = div().flex().flex_col().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().child(browser::chrome(&p.leaf.id, &state, r.w, editing.as_deref(), &self.controls, cx));
+                    if let Some(failure) = &state.failure {
+                        body = body.child(div().flex_1().min_h(px(0.)).w(px(r.w)).overflow_hidden().child(browser::failure_card(&p.leaf.id, failure, &self.controls, cx)));
+                    }
+                    body
+                }
                 _ if native => div(),
                 "agent" => {
                     // A pane whose agent has not started yet shares no draft or scroll state with another.
@@ -915,6 +1101,10 @@ impl Render for Client {
                             this.press(format!("pane {id} at {:?}", e.position));
                             this.focus_pane(&id);
                             this.menu = None;
+                            // A press outside the address field ends its edit; the field stops this event.
+                            if this.address_edit.take().is_some() {
+                                this.native.focus(&id);
+                            }
                             // A press in the band starts a selection; one anywhere else drops the old one.
                             if let Some(agent) = &agent
                                 && band.contains(&f32::from(e.position.y))
@@ -926,10 +1116,13 @@ impl Render for Client {
                             cx.notify();
                         }
                     }))
-                    .child(div().h(px(TITLE)).px_2().bg(rgb(0x22302a)).text_xs().flex().items_center().justify_between()
-                        .child(format!("{} · {}", p.leaf.kind, p.leaf.id))
+                    .child(div().h(px(TITLE)).w(px(r.w)).px_2().bg(rgb(0x22302a)).text_xs().flex().items_center().justify_between().overflow_hidden()
+                        .child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
+                            ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
+                            _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
+                        })
                         .child(div().w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))))
-                    .child(div().p_2().text_color(rgb(0x8fa89b)).child(body))
+                    .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
                     .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, r.w, r.h - TITLE, cx))),
             );
         }
@@ -1137,7 +1330,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
 }
 
 /// A zero-size element that records where its parent was drawn, so a check can press it.
-fn recorded(agent: &str, id: &str, controls: &Rc<RefCell<Vec<Control>>>) -> impl IntoElement {
+pub fn recorded(agent: &str, id: &str, controls: &Rc<RefCell<Vec<Control>>>) -> impl IntoElement {
     let (agent, id, controls) = (agent.to_owned(), id.to_owned(), controls.clone());
     canvas(move |bounds, _, _| controls.borrow_mut().push(Control { agent, id, bounds }), |_, _, _, _| ()).absolute().top_0().left_0().size_full()
 }

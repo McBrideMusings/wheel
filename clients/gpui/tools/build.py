@@ -18,13 +18,24 @@ contents = client / 'target/app/Wheel GPUI.app/Contents'
 (contents / 'Resources').mkdir(exist_ok=True)
 
 subprocess.run(['cargo', '+stable', 'build', '--release', '--manifest-path', str(client / 'Cargo.toml')], check=True)
+# A binary written over one macOS has already run is killed at its next launch ("load code
+# signature error 2": the mapped pages no longer match the signature), so each is replaced, never
+# overwritten, and signed again.
+def fresh(path):
+    path.unlink(missing_ok=True)
+    return path
+def sign(path):
+    subprocess.run(['codesign', '--force', '--sign', '-', str(path)], check=True, stderr=subprocess.DEVNULL)
+fresh(contents / 'MacOS/libWheelGpuiBridge.dylib')
 subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-library', '-module-name', 'WheelGpuiBridge',
     '-I', str(products), '-I', str(headers), str(client / 'native/Bridge.swift'),
     *[str(o) for o in sorted(products.glob('*.o'))],
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)
+sign(contents / 'MacOS/libWheelGpuiBridge.dylib')
 for name in ['wheel-gpui', 'wheel-gpui-check']:
-    shutil.copy2(target / 'release' / name, contents / 'MacOS' / name)
+    shutil.copy2(target / 'release' / name, fresh(contents / 'MacOS' / name))
+    sign(contents / 'MacOS' / name)
 for bundle in products.glob('*.bundle'):
     shutil.copytree(bundle, contents / 'Resources' / bundle.name, dirs_exist_ok=True)
 (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
