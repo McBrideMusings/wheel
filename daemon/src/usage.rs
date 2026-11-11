@@ -1085,7 +1085,7 @@ fn codex_homes() -> Vec<PathBuf> {
 impl UsageSource for CodexLogin {
     fn read(&self) -> Vec<LoginRead> {
         let homes = codex_homes();
-        tracing::info!(
+        tracing::debug!(
             "usage codex homes found={} {}",
             homes.len(),
             homes
