@@ -4,9 +4,12 @@
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod commands;
+mod debug;
+mod procs;
 mod settings;
 mod toasts;
 pub use commands::{Confirmation, Pending};
+pub use debug::Answer as DebugAnswer;
 pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, prelude::*, px, rgb, rgba};
@@ -147,6 +150,8 @@ pub struct Client {
     client_checked_at: Option<std::time::Instant>,
     /// What the notices, the pairing window and the client check did, for a check to read.
     pub toast_log: Vec<String>,
+    /// The process card and the lists behind it.
+    pub procs: crate::procs::Procs,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -245,7 +250,7 @@ impl Client {
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None,
             posted: vec![], toast_sources: crate::toasts::Sources::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
-            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![],
+            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -264,7 +269,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) {
+                    if self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -869,7 +874,7 @@ impl Client {
         self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
         self.sync_view();
     }
-    fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
+    pub fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
         // Esc closes the shortcut sheet wherever the keyboard is; the overlays take their keys.
         if self.command_palette.is_some() {
@@ -896,6 +901,11 @@ impl Client {
         }
         if self.pairing.open && k.key == "escape" {
             self.close_pairing_window();
+            return true;
+        }
+        // The process card takes every key while it is open and nothing is over it: its filter, and Esc to close.
+        if self.procs.open.is_some() && self.confirmation.is_none() {
+            self.procs_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control);
             return true;
         }
         if self.overlay_key(&k.key) {
@@ -1121,6 +1131,7 @@ impl Render for Client {
         self.drawn.borrow_mut().clear();
         self.check_client_update();
         self.tick_pairing(cx);
+        self.tick_procs(cx);
         let mut root = div().relative().track_focus(&self.handle)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
                 if this.key(e, cx) {
@@ -1164,6 +1175,7 @@ impl Render for Client {
                         match &hit {
                             Hit::Session(id) => this.select_session(id),
                             Hit::Space(id) => this.select_space(id),
+                            Hit::Processes => this.toggle_processes(),
                             Hit::NewWindow => this.new_window(cx),
                         }
                         cx.notify();
@@ -1271,6 +1283,9 @@ impl Render for Client {
         let (w, h) = self.viewport;
         if space_held && let Some(space) = self.space_id.clone() {
             root = root.child(div().absolute().left_0().top(px(TITLE)).w(px(w)).h(px(h - TITLE)).child(self.quarantine_space_card(&space, cx)));
+        }
+        if self.procs.open.is_some() {
+            root = root.child(self.processes_overlay(w, h, cx));
         }
         if let Some(palette) = &self.command_palette {
             root = root.child(commands::command_palette_overlay(palette, w, h, cx));

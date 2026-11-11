@@ -5,10 +5,12 @@ use crate::layout::Rect;
 pub const SESSION_W: f32 = 130.0;
 pub const SPACE_W: f32 = 96.0;
 pub const NEW_WINDOW_W: f32 = 110.0;
+/// The Processes button (ProcessesView.swift's title-bar button), left of New Window.
+pub const PROCESSES_W: f32 = 96.0;
 pub const CHIP_H: f32 = 22.0;
 pub const GAP: f32 = 6.0;
 pub const MARGIN: f32 = 10.0;
-/// Where the connection banner sits, left of the New Window button on the sessions row.
+/// Where the connection banner sits, left of the Processes and New Window buttons on the sessions row.
 pub const BANNER_W: f32 = 380.0;
 pub const SESSIONS_Y: f32 = 6.0;
 pub const SPACES_Y: f32 = 32.0;
@@ -19,6 +21,7 @@ pub const HEIGHT: f32 = 60.0;
 pub enum Hit {
     Session(String),
     Space(String),
+    Processes,
     NewWindow,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -31,7 +34,10 @@ pub struct Chip {
 
 /// Where the banner is drawn for a window `width` points wide.
 pub fn banner_rect(width: f32) -> Rect {
-    Rect { x: width - MARGIN - NEW_WINDOW_W - GAP - BANNER_W, y: SESSIONS_Y, w: BANNER_W, h: CHIP_H }
+    Rect { x: processes_rect(width).x - GAP - BANNER_W, y: SESSIONS_Y, w: BANNER_W, h: CHIP_H }
+}
+pub fn processes_rect(width: f32) -> Rect {
+    Rect { x: width - MARGIN - NEW_WINDOW_W - GAP - PROCESSES_W, y: SESSIONS_Y, w: PROCESSES_W, h: CHIP_H }
 }
 pub fn new_window_rect(width: f32) -> Rect {
     Rect { x: width - MARGIN - NEW_WINDOW_W, y: SESSIONS_Y, w: NEW_WINDOW_W, h: CHIP_H }
@@ -62,6 +68,7 @@ pub fn chips(width: f32, sessions: &[(String, String)], spaces: &[(String, Strin
     };
     row(sessions, SESSIONS_Y, SESSION_W, banner_rect(width).x - GAP - MARGIN, session, &Hit::Session, &mut out);
     row(spaces, SPACES_Y, SPACE_W, width - 2.0 * MARGIN, space, &Hit::Space, &mut out);
+    out.push(Chip { hit: Hit::Processes, rect: processes_rect(width), label: "Processes".into(), active: false });
     out.push(Chip { hit: Hit::NewWindow, rect: new_window_rect(width), label: "New Window".into(), active: false });
     out
 }
@@ -77,13 +84,16 @@ mod tests {
     #[test]
     fn sessions_and_spaces_sit_on_their_own_rows_and_new_window_at_the_right() {
         let c = chips(1200., &named("n", 2), &named("s", 3), Some("n2"), Some("s1"));
-        assert_eq!(c.len(), 2 + 3 + 1);
+        assert_eq!(c.len(), 2 + 3 + 2);
         assert_eq!(c[0].rect, Rect { x: 10., y: 6., w: 130., h: 22. });
         assert_eq!(c[1].rect.x, 146.);
         assert!(c[1].active && !c[0].active);
         assert_eq!(c[2].rect, Rect { x: 10., y: 32., w: 96., h: 22. });
-        assert_eq!(c[5].hit, Hit::NewWindow);
-        assert_eq!(c[5].rect.x + c[5].rect.w, 1190.);
+        assert_eq!(c[5].hit, Hit::Processes);
+        assert_eq!(c[6].hit, Hit::NewWindow);
+        assert_eq!(c[6].rect.x + c[6].rect.w, 1190.);
+        assert_eq!(c[5].rect.x + c[5].rect.w + GAP, c[6].rect.x);
+        assert_eq!(banner_rect(1200.).x + BANNER_W + GAP, c[5].rect.x);
     }
 
     #[test]
@@ -108,7 +118,7 @@ mod tests {
     #[test]
     fn session_chips_stop_before_the_banner() {
         let c = chips(900., &named("n", 9), &[], Some("n1"), None);
-        let last = c.iter().filter(|c| c.rect.y == SESSIONS_Y && c.hit != Hit::NewWindow).last().unwrap();
+        let last = c.iter().filter(|c| c.rect.y == SESSIONS_Y && !matches!(c.hit, Hit::NewWindow | Hit::Processes)).last().unwrap();
         assert!(last.rect.x + last.rect.w <= banner_rect(900.).x);
     }
 }

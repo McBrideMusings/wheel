@@ -43,6 +43,11 @@ const PRINTING: [(&str, char); 11] = [
     ("minus", '-'), ("equal", '='), ("backslash", '\\'), ("bracket_left", '['), ("bracket_right", ']'),
 ];
 /// The keys that type no character, with what a menu prints for each.
+/// GPUI's names for the keys this file names `arrow_*` and `page_*`.
+const GPUI_NAMES: [(&str, &str); 6] = [
+    ("arrow_up", "up"), ("arrow_down", "down"), ("arrow_left", "left"), ("arrow_right", "right"),
+    ("page_up", "pageup"), ("page_down", "pagedown"),
+];
 const NAMED: [(&str, &str); 14] = [
     ("enter", "↩"), ("tab", "⇥"), ("space", "Space"), ("escape", "⎋"), ("backspace", "⌫"), ("delete", "⌦"),
     ("arrow_up", "↑"), ("arrow_down", "↓"), ("arrow_left", "←"), ("arrow_right", "→"),
@@ -77,6 +82,29 @@ impl KeyChord {
         }
         Some(Self::new(key, modifiers))
     }
+    /// The chord as the key event GPUI would deliver for it (the debug server's `/key`).
+    pub fn keystroke(&self) -> Keystroke {
+        let key = GPUI_NAMES.iter().find(|(ours, _)| *ours == self.key).map(|(_, gpui)| (*gpui).to_owned())
+            .or_else(|| PRINTING.iter().find(|(n, _)| *n == self.key).map(|(_, c)| c.to_string()))
+            .unwrap_or_else(|| self.key.clone());
+        // What the key would type, as GPUI reports it: nothing under Command or Control, a space
+        // for `space`, the shifted character under Shift.
+        let key_char = if self.modifiers.cmd || self.modifiers.ctrl {
+            None
+        } else if self.key == "space" {
+            Some(" ".to_owned())
+        } else if self.modifiers.shift {
+            SHIFTED.iter().find(|(_, name)| *name == self.key).map(|(c, _)| c.to_string())
+                .or_else(|| (key.chars().count() == 1).then(|| key.to_uppercase()))
+        } else {
+            (key.chars().count() == 1).then(|| key.clone())
+        };
+        Keystroke {
+            modifiers: gpui::Modifiers { control: self.modifiers.ctrl, alt: self.modifiers.opt, shift: self.modifiers.shift, platform: self.modifiers.cmd, function: false },
+            key,
+            key_char,
+        }
+    }
     /// `shift+cmd+d`, as wheeld stores it.
     pub fn text(&self) -> String {
         let mut parts: Vec<&str> = self.modifiers.held().map(|(name, _)| name).collect();
@@ -98,12 +126,7 @@ impl KeyChord {
     pub fn from_keystroke(k: &Keystroke) -> Option<Self> {
         let mut modifiers = Modifiers { ctrl: k.modifiers.control, opt: k.modifiers.alt, shift: k.modifiers.shift, cmd: k.modifiers.platform };
         let key = match k.key.as_str() {
-            "up" => "arrow_up".to_owned(),
-            "down" => "arrow_down".to_owned(),
-            "left" => "arrow_left".to_owned(),
-            "right" => "arrow_right".to_owned(),
-            "pageup" => "page_up".to_owned(),
-            "pagedown" => "page_down".to_owned(),
+            name if GPUI_NAMES.iter().any(|(_, g)| *g == name) => GPUI_NAMES.iter().find(|(_, g)| *g == name).map(|(ours, _)| (*ours).to_owned()).unwrap_or_default(),
             name @ ("enter" | "tab" | "space" | "escape" | "backspace" | "delete" | "home" | "end") => name.to_owned(),
             function if function.len() > 1 && function.starts_with('f') && function[1..].parse::<u8>().is_ok_and(|n| (1..=12).contains(&n)) => function.to_owned(),
             other => {
@@ -205,6 +228,21 @@ mod tests {
         assert!(KeyChord::parse("cmd+D").is_none());
         assert!(KeyChord::parse("f13").is_none());
         assert!(KeyChord::parse("cmd+").is_none());
+    }
+
+    #[test]
+    fn a_chord_becomes_the_key_event_gpui_would_deliver() {
+        let k = KeyChord::parse("shift+cmd+d").unwrap().keystroke();
+        assert!(k.modifiers.platform && k.modifiers.shift && k.key == "d" && k.key_char.is_none());
+        assert_eq!(KeyChord::parse("space").unwrap().keystroke().key_char.as_deref(), Some(" "));
+        assert_eq!(KeyChord::parse("shift+d").unwrap().keystroke().key_char.as_deref(), Some("D"));
+        assert_eq!(KeyChord::parse("shift+1").unwrap().keystroke().key_char.as_deref(), Some("!"));
+        assert_eq!(KeyChord::parse("arrow_left").unwrap().keystroke().key, "left");
+        assert_eq!(KeyChord::parse("bracket_left").unwrap().keystroke().key, "[");
+        for text in ["shift+cmd+d", "space", "arrow_up", "escape", "f5"] {
+            let chord = KeyChord::parse(text).unwrap();
+            assert_eq!(KeyChord::from_keystroke(&chord.keystroke()).unwrap(), chord, "{text}");
+        }
     }
 
     #[test]

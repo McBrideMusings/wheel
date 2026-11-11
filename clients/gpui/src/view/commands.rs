@@ -690,7 +690,7 @@ impl Client {
     /// Tell the bridge where the window-wide overlay is, so the native views leave it a hole and
     /// the GPUI view takes the keyboard while one is open.
     pub(super) fn sync_overlay(&mut self) {
-        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open;
+        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some();
         if open {
             let (w, h) = self.viewport;
             self.native.call(serde_json::json!({"op": "overlay", "open": true, "rect": [0., 0., f64::from(w), f64::from(h)]}));

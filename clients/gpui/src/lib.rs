@@ -4,6 +4,7 @@ pub mod browser;
 pub mod command_palette;
 pub mod crash_guard;
 pub mod daemon;
+pub mod debug;
 pub mod focus;
 pub mod footer;
 pub mod header;
@@ -13,6 +14,7 @@ pub mod markdown;
 pub mod native;
 pub mod pairing;
 pub mod palette;
+pub mod procs;
 pub mod settings;
 pub mod status;
 pub mod toasts;
@@ -80,6 +82,47 @@ pub fn create_window(
     })
     .detach();
     Ok(window)
+}
+
+/// Answer one debug request against `window`: the view runs the route, then a snapshot is drawn
+/// with the view free again. Err when the window is gone.
+pub fn answer_debug(window: WindowHandle<view::Client>, request: &debug::Request, cx: &mut gpui::AsyncApp) -> Result<(String, serde_json::Value)> {
+    if request.expired() {
+        anyhow::bail!("the request's connection stopped waiting");
+    }
+    match window.update(cx, |client, _, cx| client.debug_request(request, cx))? {
+        view::DebugAnswer::Done(status, body) => Ok((status, body)),
+        view::DebugAnswer::Snapshot(target) => {
+            let any: gpui::AnyWindowHandle = window.into();
+            let drawn = any.update(cx, |_, window, cx| -> Result<(u32, u32)> {
+                window.draw(cx).clear();
+                let image = window.render_to_image()?;
+                image.save(&target)?;
+                Ok((image.width(), image.height()))
+            })?;
+            match drawn {
+                Ok((w, h)) => {
+                    let _ = window.update(cx, |client, _, _| client.log(format!("debug: window snapshot saved to {target}, {w}x{h}")));
+                    Ok(("200 OK".to_owned(), serde_json::json!({"path": target, "width": w, "height": h})))
+                }
+                Err(e) => Ok(("500 Internal Server Error".to_owned(), debug::error(&format!("the window could not be rendered to {target}: {e}")))),
+            }
+        }
+    }
+}
+
+/// Answer the debug server's requests against `window` until the window closes or the server stops.
+pub fn serve_debug(cx: &mut App, window: WindowHandle<view::Client>, mut server: debug::Server) {
+    cx.spawn(async move |cx| {
+        while let Some(request) = server.requests.next().await {
+            match answer_debug(window, &request, cx) {
+                Ok(answer) => request.respond(answer),
+                Err(_) if request.expired() => {}
+                Err(_) => return,
+            }
+        }
+    })
+    .detach();
 }
 
 /// A window with a connection of its own, which a task feeds it until the window closes. Every

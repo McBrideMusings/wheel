@@ -135,6 +135,43 @@ async fn run_pumped(args: &[&str], connection: &mut Connection, layouts: &mut us
     Ok((done.is_some_and(|s| s.success()), String::from_utf8_lossy(&out.stdout).trim().to_owned(), String::from_utf8_lossy(&out.stderr).trim().to_owned()))
 }
 
+/// One request to the client's debug server from a thread, answered while this check keeps
+/// pumping the connection and handing the server's requests to the window, as `serve_debug` does
+/// in the real binary. Returns the status code and the JSON body.
+async fn http(debug: &mut wheel_gpui::debug::Server, method: &str, target: &str, headers: &[(&str, &str)], connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(u16, Value)> {
+    use std::io::{Read as _, Write as _};
+    let port = debug.port;
+    let mut head = format!("{method} {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\n");
+    for (k, v) in headers {
+        head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    let request = format!("{head}\r\n");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Vec<u8>> {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            stream.write_all(request.as_bytes())?;
+            let mut out = Vec::new();
+            stream.read_to_end(&mut out)?;
+            Ok(out)
+        })();
+        let _ = tx.send(result);
+    });
+    let raw = loop {
+        pump(connection, 50, layouts, window, cx).await?;
+        while let Ok(req) = debug.requests.try_recv() {
+            req.respond(wheel_gpui::answer_debug(window, &req, cx)?);
+        }
+        if let Ok(result) = rx.try_recv() {
+            break result?;
+        }
+    };
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let code: u16 = text.split(' ').nth(1).and_then(|c| c.parse().ok()).ok_or_else(|| anyhow::anyhow!("no status line in {text:?}"))?;
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    Ok((code, serde_json::from_str(body).unwrap_or(Value::String(body.to_owned()))))
+}
+
 async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
     let end = std::time::Instant::now() + Duration::from_millis(ms);
     while std::time::Instant::now() < end {
@@ -1500,6 +1537,116 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
     // the restart when it sees the request file.
+    // The debug server (wheel-ynjo.18): the same loopback endpoint the Swift app has, guarded the
+    // same way, reading the client and driving its process card.
+    let mut debug = wheel_gpui::debug::start(0, &default_token_file())?;
+    let token = std::fs::read_to_string(default_token_file())?.trim().to_owned();
+    let bearer = format!("Bearer {token}");
+    let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
+    macro_rules! call {
+        ($method:literal, $target:expr) => {
+            http(&mut debug, $method, &$target, &auth, &mut connection, &mut layouts, window, cx).await?
+        };
+    }
+    macro_rules! state {
+        () => { call!("GET", "/state").1 };
+    }
+    let (unauthorized, _) = http(&mut debug, "GET", "/state", &[], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(unauthorized == 401, "a request without the token got {unauthorized}");
+    let (origin_refused, _) = http(&mut debug, "GET", "/state", &[auth[0], ("Origin", "http://example.test")], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(origin_refused == 403, "a browser origin got {origin_refused}");
+    let (missing, _) = call!("GET", "/nothing");
+    ensure!(missing == 404, "an unknown route got {missing}");
+    let (code, state) = call!("GET", "/state");
+    ensure!(code == 200, "GET /state got {code}: {state}");
+    let fixture_space = std::env::var("WHEEL_CLIENT_SPACE")?;
+    ensure!(state["active"] == fixture_space, "state shows {} active, not the fixture space {fixture_space}", state["active"]);
+    ensure!(state["connection"] == "connected" && state["hidden"] == true, "state: {}", state);
+    let state_keys: Vec<String> = state.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+    ensure!(state["panes"][terms[1].as_str()]["kind"] == "terminal", "state lacks the second terminal pane: {}", state["panes"]);
+    // The fixture's terminals sit in a `read` loop that echoes lines: Ctrl-D ends it, and the
+    // shell under it runs the sleep, which the list then shows under that pane.
+    let sleep_term = state["panes"][terms[1].as_str()]["term"].as_str().unwrap_or_default().to_owned();
+    let (sent, _, err) = run_pumped(&["term", "send", &sleep_term, "\u{4}"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(sent, "wheel term send failed: {err}");
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    let (sent, _, err) = run_pumped(&["term", "send", &sleep_term, "sleep 4243", "--enter"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(sent, "wheel term send failed: {err}");
+    // The Processes chip opens the card (a real click), and the card lists on its own: nothing
+    // below asks `/procs?action=list` until the timer is proven.
+    click_chip(window, Hit::Processes, cx).await?;
+    let opened = state!();
+    ensure!(opened["processes_card"]["space"] == fixture_space, "the card did not open for the space: {}", opened["processes_card"]);
+    let mut sleep_row = Value::Null;
+    let mut lists_seen = 0usize;
+    for _ in 0..30 {
+        pump(&mut connection, 250, &mut layouts, window, cx).await?;
+        // The timer fires a redraw; the hidden window still needs a draw to render, so each pass draws.
+        draw(window, None, cx)?;
+        let s = state!();
+        lists_seen = s["log"].as_array().map(|l| l.iter().filter(|e| e.as_str().is_some_and(|e| e.contains(" processes: "))).count()).unwrap_or(0);
+        if let Some(row) = s["procs"][fixture_space.as_str()].as_array().and_then(|a| a.iter().find(|p| p["command"] == "sleep 4243" && p["pane"] == terms[1].as_str())) {
+            sleep_row = row.clone();
+            break;
+        }
+    }
+    ensure!(!sleep_row.is_null(), "the sleep never listed under pane {} ({lists_seen} lists seen): {}", terms[1], state!()["procs"]);
+    // The card asks again every 2 s while open: a second list line within 5 s.
+    for _ in 0..20 {
+        if lists_seen >= 2 {
+            break;
+        }
+        pump(&mut connection, 250, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        lists_seen = state!()["log"].as_array().map(|l| l.iter().filter(|e| e.as_str().is_some_and(|e| e.contains(" processes: "))).count()).unwrap_or(0);
+    }
+    ensure!(lists_seen >= 2, "the open card listed only {lists_seen} time(s) in 5 s: its 2 s refresh never ran");
+    let sleep_pid = sleep_row["pid"].as_u64().unwrap_or_default();
+    // Typing filters the rows; a click on the row (through its route) opens its details.
+    call!("POST", "/type?text=sleep%204");
+    let (code, _) = call!("POST", format!("/procs?action=choose&pid={sleep_pid}"));
+    ensure!(code == 200, "choose got {code}");
+    let card = state!();
+    ensure!(card["processes_card"]["filter"] == "sleep 4", "typing did not reach the filter: {}", card["processes_card"]);
+    let card_rows = card["processes_card"]["rows"].clone();
+    ensure!(card_rows.as_array().is_some_and(|r| r.iter().all(|p| p["name"] == "sleep 4243") && !r.is_empty()), "the filtered card rows are not the sleep: {card_rows}");
+    ensure!(card["processes_card"]["chosen"] == sleep_pid, "the chosen row is not the sleep: {}", card["processes_card"]);
+    let shot_path = output.join("client-processes.png");
+    let (code, snap) = call!("POST", format!("/window/snapshot?path={}", shot_path.display()));
+    ensure!(code == 200, "snapshot got {code}: {snap}");
+    let snapshot_bytes = std::fs::metadata(&shot_path).map(|m| m.len()).unwrap_or(0);
+    ensure!(snapshot_bytes > 5000, "the window snapshot is missing or blank: {snapshot_bytes} bytes");
+    // Stop takes the row out of the list the card asks for again on its own.
+    let (code, _) = call!("POST", format!("/procs?space={fixture_space}&action=stop&pid={sleep_pid}"));
+    ensure!(code == 200, "stop got {code}");
+    let mut stopped = false;
+    for _ in 0..30 {
+        pump(&mut connection, 250, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let s = state!();
+        if !s["procs"][fixture_space.as_str()].as_array().is_some_and(|a| a.iter().any(|p| p["pid"] == sleep_pid)) {
+            stopped = true;
+            break;
+        }
+    }
+    ensure!(stopped, "pid {sleep_pid} never left the list after Stop");
+    let (code, escaped) = call!("POST", "/key?keys=escape");
+    ensure!(code == 200 && escaped["taken"] == true, "escape got {code}: {escaped}");
+    let closed = state!();
+    ensure!(closed["processes_card"].is_null(), "the card stayed open after Esc: {}", closed["processes_card"]);
+    // The same frame without the card differs from the one with it: the card was drawn.
+    let closed_shot = output.join("client-processes-closed.png");
+    let (code, _) = call!("POST", format!("/window/snapshot?path={}", closed_shot.display()));
+    ensure!(code == 200, "second snapshot got {code}");
+    let closed_bytes = std::fs::read(&closed_shot)?;
+    ensure!(closed_bytes != std::fs::read(&shot_path)?, "the snapshot with the card open is identical to the one without it");
+    std::fs::remove_file(&closed_shot)?;
+    // A hidden window refuses the routes that would show it or feed it input.
+    let (front_refused, _) = call!("POST", "/window/front");
+    ensure!(front_refused == 403, "a hidden window answered the front route with {front_refused}");
+    let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
+        "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
+    drop(debug);
     let (request, done) = (output.join("restart.request"), output.join("restart.done"));
     let _ = std::fs::remove_file(&done);
     let status_before_restart = native.status();
@@ -1574,6 +1721,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "commands": commands_report,
         "settings": settings_report,
         "notices": notices_report,
+        "debug": debug_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
