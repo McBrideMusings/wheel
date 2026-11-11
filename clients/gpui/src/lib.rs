@@ -3,6 +3,7 @@ pub mod daemon;
 pub mod focus;
 pub mod header;
 pub mod layout;
+pub mod markdown;
 pub mod native;
 pub mod transcript;
 pub mod view;

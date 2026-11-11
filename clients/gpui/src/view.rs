@@ -3,10 +3,10 @@
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
-use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, header::{self, Hit}, layout::*, native::{Bridge, Native}, transcript::{Kind, ToolRow, Transcript}};
-use gpui::{App, Context, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, ScrollHandle, Window, div, prelude::*, px, rgb};
+use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, header::{self, Hit}, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Bridge, Native}, transcript::{Kind, ToolRow, Transcript}};
+use gpui::{App, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, div, prelude::*, px, rgb};
 use wheel_proto::{ClientMsg, NewPaneKind};
-use std::{collections::{HashMap, HashSet}, rc::Rc, sync::mpsc};
+use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
 pub const HEADER: f32 = header::HEIGHT;
@@ -51,6 +51,75 @@ pub struct Client {
     handle: FocusHandle,
     /// What the connection to wheeld is doing, shown at the right of the header.
     pub link: Link,
+    /// Every transcript text drawn in the last frame, in reading order, with its layout: the
+    /// selection maps a pointer position to a text and a byte offset through these.
+    drawn: Rc<RefCell<Vec<Drawn>>>,
+    /// The transcript text selected with the pointer, if any.
+    pub selection: Option<Selection>,
+    /// Pointer positions the next frame turns into the selection's ends, with the agent pressed in.
+    pending_down: Option<(String, Point<Pixels>)>,
+    pending_move: Option<Point<Pixels>>,
+    pending_up: bool,
+    /// Each reply row's blocks, parsed again only when its text changed.
+    parsed: Parsed,
+    /// Syntax colours by (language, code), kept across frames while a block streams in.
+    highlights: Highlights,
+}
+
+/// Reply blocks by (agent, row id), with the text they were parsed from.
+type Parsed = RefCell<HashMap<(String, usize), (String, Rc<Vec<Block>>)>>;
+/// Syntax colours by (language, code); none for a language `syntect` does not know.
+type Highlights = RefCell<HashMap<(String, String), Option<Rc<Vec<Run>>>>>;
+
+/// A place in an agent's transcript: a row (by position), a text within it (by order drawn), and a
+/// byte offset into that text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pos {
+    pub row: usize,
+    pub block: usize,
+    pub offset: usize,
+}
+
+/// A pointer selection over one agent's transcript; empty while `anchor == head`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Selection {
+    pub agent: String,
+    pub anchor: Pos,
+    pub head: Pos,
+    pub dragging: bool,
+}
+impl Selection {
+    pub fn range(&self) -> (Pos, Pos) {
+        (self.anchor.min(self.head), self.anchor.max(self.head))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.head
+    }
+    /// The byte range of the text at (`row`, `block`) with `len` bytes that lies inside the selection.
+    pub fn slice(&self, row: usize, block: usize, len: usize) -> Option<Range<usize>> {
+        let (a, b) = self.range();
+        let key = (row, block);
+        if self.is_empty() || key < (a.row, a.block) || key > (b.row, b.block) {
+            return None;
+        }
+        let start = if key == (a.row, a.block) { a.offset.min(len) } else { 0 };
+        let end = if key == (b.row, b.block) { b.offset.min(len) } else { len };
+        (start < end).then_some(start..end)
+    }
+}
+
+/// One transcript text as drawn: what it is, and the layout that maps pixels to bytes.
+#[derive(Clone)]
+pub struct Drawn {
+    pub agent: String,
+    pub row: usize,
+    pub block: usize,
+    /// `reply`, `heading`, `list`, `code`, `quote`, `table`, `user`, `thought`, `notice` or `error`.
+    pub kind: &'static str,
+    pub language: Option<String>,
+    pub highlighted: bool,
+    pub text: String,
+    pub layout: TextLayout,
 }
 
 /// The state of the connection to wheeld.
@@ -78,6 +147,7 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
+            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -252,6 +322,106 @@ impl Client {
     pub fn request_status(&self, req: u64) {
         self.send(&ClientMsg::Status { req: Some(req) });
     }
+    /// The place in `agent`'s transcript under `point`, from the last frame's texts: the text whose
+    /// box holds the point, else the end of the last text above it, else the start of the first.
+    fn resolve(&self, agent: &str, point: Point<Pixels>) -> Option<Pos> {
+        let drawn = self.drawn.borrow();
+        let texts: Vec<&Drawn> = drawn.iter().filter(|d| d.agent == agent).collect();
+        let mut above: Option<&Drawn> = None;
+        for d in &texts {
+            let b = d.layout.bounds();
+            if b.contains(&point) {
+                let offset = d.layout.index_for_position(point).unwrap_or_else(|i| i);
+                return Some(Pos { row: d.row, block: d.block, offset: offset.min(d.text.len()) });
+            }
+            if b.bottom() <= point.y || (b.top() <= point.y && point.y <= b.bottom() && b.right() <= point.x) {
+                above = Some(d);
+            } else if b.top() <= point.y && point.y <= b.bottom() && point.x < b.left() {
+                return Some(Pos { row: d.row, block: d.block, offset: 0 });
+            }
+        }
+        match (above, texts.first()) {
+            (Some(d), _) => Some(Pos { row: d.row, block: d.block, offset: d.text.len() }),
+            (None, Some(d)) => Some(Pos { row: d.row, block: d.block, offset: 0 }),
+            (None, None) => None,
+        }
+    }
+    /// The selected text, texts joined by newlines; none while nothing is selected.
+    pub fn selected_text(&self) -> Option<String> {
+        let sel = self.selection.as_ref().filter(|s| !s.is_empty())?;
+        let drawn = self.drawn.borrow();
+        let mut parts = vec![];
+        for d in drawn.iter().filter(|d| d.agent == sel.agent) {
+            if let Some(range) = sel.slice(d.row, d.block, d.text.len()) {
+                let (mut a, mut b) = (range.start, range.end);
+                while !d.text.is_char_boundary(a) {
+                    a -= 1;
+                }
+                while !d.text.is_char_boundary(b) {
+                    b += 1;
+                }
+                parts.push(d.text[a..b].to_owned());
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    }
+    /// What the last frame drew for `agent`'s transcript, text by text.
+    pub fn drawn_texts(&self, agent: &str) -> Vec<Drawn> {
+        self.drawn.borrow().iter().filter(|d| d.agent == agent).cloned().collect()
+    }
+    /// The window point at the middle of the line holding byte `index` of the text at (`row`, `block`).
+    pub fn text_point(&self, agent: &str, row: usize, block: usize, index: usize) -> Option<(f32, f32)> {
+        let drawn = self.drawn.borrow();
+        let d = drawn.iter().find(|d| d.agent == agent && d.row == row && d.block == block)?;
+        let p = d.layout.position_for_index(index)?;
+        Some((f32::from(p.x), f32::from(p.y + d.layout.line_height() / 2.)))
+    }
+    /// The selection machinery's state in words, for a failing check.
+    pub fn selection_debug(&self, agent: &str) -> String {
+        let drawn = self.drawn.borrow();
+        let boxes: Vec<String> = drawn.iter().filter(|d| d.agent == agent).map(|d| {
+            let b = d.layout.bounds();
+            format!("{}:{}:{} {:?} at ({:.0},{:.0}) {:.0}x{:.0}", d.row, d.block, d.kind, d.text.chars().take(16).collect::<String>(), f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height))
+        }).collect();
+        format!("pending_down={:?} pending_move={:?} selection={:?} drawn={} [{}]", self.pending_down, self.pending_move, self.selection, drawn.len(), boxes.join("; "))
+    }
+    /// Scroll `agent`'s column so row `row` is in view.
+    pub fn reveal(&self, agent: &str, row: usize) {
+        if let Some(scroll) = self.scrolls.get(agent) {
+            scroll.scroll_to_item(row);
+        }
+    }
+    /// Copy the selection to the clipboard. Returns whether there was one.
+    pub fn copy_selection(&self, cx: &mut App) -> bool {
+        match self.selected_text() {
+            Some(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                true
+            }
+            None => false,
+        }
+    }
+    /// Turn the pointer positions of the frame's events into the selection's ends, through the
+    /// texts the last frame drew.
+    fn settle_selection(&mut self) {
+        if let Some((agent, point)) = self.pending_down.take() {
+            self.selection = self.resolve(&agent, point).map(|pos| Selection { agent, anchor: pos, head: pos, dragging: true });
+        }
+        if let Some(point) = self.pending_move.take()
+            && let Some(sel) = &self.selection
+            && sel.dragging
+            && let Some(pos) = self.resolve(&sel.agent, point)
+        {
+            self.selection.as_mut().unwrap().head = pos;
+        }
+        // A release ends the drag after the frame has taken its last position, so a press and a
+        // release inside one frame still make a settled (empty) selection.
+        if std::mem::take(&mut self.pending_up)
+            && let Some(sel) = &mut self.selection
+        {
+            sel.dragging = false;
+        }
+    }
     fn end_drag(&mut self) {
         if let Some((split, _, _)) = self.drag.take() {
             if let Some(ratio) = self.overrides.get(&split) {
@@ -281,8 +451,11 @@ impl Client {
         self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
         self.sync_view();
     }
-    fn key(&mut self, e: &KeyDownEvent) -> bool {
+    fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
+        if k.modifiers.platform && k.key == "c" && self.copy_selection(cx) {
+            return true;
+        }
         if k.modifiers.platform && matches!(k.key.as_str(), "[" | "]") {
             // A native view may have taken the keyboard by a click GPUI never saw.
             let status = self.native.status();
@@ -370,9 +543,11 @@ impl Render for Client {
         }
         self.sync_native(&leaves);
         self.sync_agents(&leaves);
+        self.settle_selection();
+        self.drawn.borrow_mut().clear();
         let mut root = div().relative().track_focus(&self.handle)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
-                if this.key(e) {
+                if this.key(e, cx) {
                     cx.notify();
                 }
             })).size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
@@ -381,9 +556,17 @@ impl Render for Client {
                     this.move_drag(f32::from(e.position.x), f32::from(e.position.y));
                     cx.notify();
                 }
+                if this.pending_down.is_some() || this.selection.as_ref().is_some_and(|s| s.dragging) {
+                    this.pending_move = Some(e.position);
+                    cx.notify();
+                }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| {
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, _, cx| {
                 this.end_drag();
+                if this.pending_down.is_some() || this.selection.as_ref().is_some_and(|s| s.dragging) {
+                    this.pending_move = Some(e.position);
+                    this.pending_up = true;
+                }
                 cx.notify();
             }));
         let chips = self.header_chips();
@@ -424,7 +607,8 @@ impl Render for Client {
                     let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
                     let scroll = agent.map(|a| self.scrolls.entry(a.to_owned()).or_default().clone());
                     let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
-                    agent_pane(&p.leaf.label, &p.leaf.id, t, draft, focused, scroll, r.h - TITLE)
+                    let selection = self.selection.as_ref().filter(|s| Some(s.agent.as_str()) == agent);
+                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, scroll, r.h - TITLE, selection, &self.drawn, &self.highlights, &self.parsed, cx)
                 }
                 "empty" => {
                     let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -442,8 +626,19 @@ impl Render for Client {
                     .border_1().border_color(rgb(if self.focus.current.as_ref() == Some(&p.leaf.id) { 0x7fb89a } else { 0x2c3d34 }))
                     .on_mouse_down(MouseButton::Left, cx.listener({
                         let id = p.leaf.id.clone();
-                        move |this, _, _, cx| {
+                        // A press in an agent pane's transcript band starts a pointer selection.
+                        let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
+                        let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - 4.);
+                        move |this, e: &MouseDownEvent, _, cx| {
                             this.focus_pane(&id);
+                            // A press in the band starts a selection; one anywhere else drops the old one.
+                            if let Some(agent) = &agent
+                                && band.contains(&f32::from(e.position.y))
+                            {
+                                this.pending_down = Some((agent.clone(), e.position));
+                            } else {
+                                this.selection = None;
+                            }
                             cx.notify();
                         }
                     }))
@@ -466,28 +661,51 @@ impl Render for Client {
 
 /// The composer's height, so the transcript column above it never moves.
 const COMPOSER: f32 = 44.;
+/// The pane body's padding (`p_2`) and the label line above the transcript column.
+const PAD: f32 = 8.;
+const LABEL: f32 = 24.;
 
 /// An agent pane's body: its label and state, the transcript column scrolled to follow the
-/// stream, a running line while a turn is in progress, and the composer with the draft.
-fn agent_pane(label: &str, pane: &str, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32) -> gpui::Div {
+/// stream, a running line while a turn is in progress, and the composer with the draft. Every
+/// text it draws is recorded in `drawn` with its layout, so a pointer selection can find it.
+#[allow(clippy::too_many_arguments)]
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32,
+    selection: Option<&Selection>, drawn: &Rc<RefCell<Vec<Drawn>>>, highlights: &Highlights, parsed: &Parsed, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let mut col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into())).flex().flex_col().gap_1().overflow_y_scroll()
-        .h(px((height - COMPOSER - 24.).max(1.)));
+        .h(px((height - COMPOSER - LABEL).max(1.)));
     if let Some(scroll) = &scroll {
         col = col.track_scroll(scroll);
     }
-    for row in t.map(|t| t.rows.as_slice()).unwrap_or_default() {
+    let mut texts = Texts { agent: agent.unwrap_or("").to_owned(), row: 0, next: 0, selection, drawn };
+    for (i, row) in t.map(|t| t.rows.as_slice()).unwrap_or_default().iter().enumerate() {
+        texts.row = i;
+        texts.next = 0;
         col = col.child(match &row.kind {
             Kind::User { text, queued } => div().flex().gap_2().text_color(rgb(0xe0b070))
                 .child(div().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
-                .child(div().child(text.clone())),
-            Kind::Reply(x) => div().text_color(rgb(0xd9e8e1)).child(x.clone()),
-            Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(x.clone()),
+                .child(div().child(texts.plain("user", text, 0xe0b070))),
+            Kind::Reply(x) => {
+                let blocks = {
+                    let mut cache = parsed.borrow_mut();
+                    let entry = cache.entry((texts.agent.clone(), row.id)).or_insert_with(|| (String::new(), Rc::new(vec![])));
+                    if entry.0 != *x {
+                        *entry = (x.clone(), Rc::new(markdown::parse(x)));
+                    }
+                    entry.1.clone()
+                };
+                let mut col = div().flex().flex_col().gap_1().text_color(rgb(0xd9e8e1));
+                for block in blocks.iter() {
+                    col = col.child(block_el(block, &mut texts, highlights, cx));
+                }
+                col
+            }
+            Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(texts.plain("thought", x, 0x6f8a7c)),
             Kind::Tool { title, kind, status, content, detail, .. } => {
                 let info = ToolRow::new(title, kind, status, content, detail.as_deref());
                 let mut line = div().flex().gap_2().items_center().text_color(rgb(0x8fa89b))
                     .child(div().w(px(18.)).text_color(rgb(0x6f8a7c)).child(info.glyph))
-                    .child(div().child(info.label));
+                    .child(div().child(texts.plain("tool", &info.label, 0x8fa89b)));
                 if let (Some(a), Some(r)) = (info.added, info.removed) {
                     line = line.child(div().text_xs().text_color(rgb(0x7fb89a)).child(format!("+{a} −{r}")));
                 }
@@ -500,23 +718,164 @@ fn agent_pane(label: &str, pane: &str, t: Option<&Transcript>, draft: &str, focu
             Kind::Plan(entries) => {
                 let mut plan = div().flex().flex_col().text_color(rgb(0x8fa89b));
                 for e in entries {
-                    plan = plan.child(format!("{} {}", match e.status.as_str() { "completed" => "☑", "in_progress" => "◐", _ => "☐" }, e.content));
+                    plan = plan.child(texts.plain("plan", &format!("{} {}", match e.status.as_str() { "completed" => "☑", "in_progress" => "◐", _ => "☐" }, e.content), 0x8fa89b));
                 }
                 plan
             }
             Kind::Mode(m) => div().text_xs().text_color(rgb(0x8fa89b)).child(format!("Mode: {m}")),
-            Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(x.clone()),
-            Kind::Error(x) => div().text_color(rgb(0xe07070)).child(x.clone()),
+            Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(texts.plain("notice", x, 0x8fa89b)),
+            Kind::Error(x) => div().text_color(rgb(0xe07070)).child(texts.plain("error", x, 0xe07070)),
         });
     }
     if t.is_some_and(Transcript::busy) {
         col = col.child(div().text_color(rgb(0xe0b070)).child("working…"));
     }
     div().flex().flex_col().h(px(height.max(1.)))
-        .child(div().h(px(24.)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
+        .child(div().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
         .child(col)
         .child(div().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
             .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
             .text_color(rgb(0xd9e8e1)).overflow_hidden()
             .child(format!("{draft}{}", if focused { "▏" } else { "" })))
+}
+
+/// The background of selected text.
+const SELECTION: u32 = 0x3d5a4c;
+/// The code block's ground and its header's.
+const CODE_BG: u32 = 0x0b100e;
+const CODE_HEADER: u32 = 0x1a2621;
+
+/// Hands out the texts of one row in drawing order, recording each in `drawn` and painting the
+/// selection's part of it.
+struct Texts<'a> {
+    agent: String,
+    row: usize,
+    next: usize,
+    selection: Option<&'a Selection>,
+    drawn: &'a Rc<RefCell<Vec<Drawn>>>,
+}
+impl Texts<'_> {
+    /// A text with `runs` already flat; `base` is its colour where no run says otherwise.
+    fn styled(&mut self, kind: &'static str, text: &str, runs: &[Run], base: u32, language: Option<&str>, highlighted: bool) -> StyledText {
+        let block = self.next;
+        self.next += 1;
+        let selected = self.selection.and_then(|s| s.slice(self.row, block, text.len()));
+        let styled = StyledText::new(text.to_owned()).with_highlights(highlight_runs(text, runs, selected, base));
+        self.drawn.borrow_mut().push(Drawn { agent: self.agent.clone(), row: self.row, block, kind, language: language.map(str::to_owned), highlighted, text: text.to_owned(), layout: styled.layout().clone() });
+        styled
+    }
+    fn plain(&mut self, kind: &'static str, text: &str, base: u32) -> StyledText {
+        self.styled(kind, text, &[], base, None, false)
+    }
+    fn inline(&mut self, kind: &'static str, text: &Text, base: u32) -> StyledText {
+        self.styled(kind, &text.text, &text.runs, base, None, false)
+    }
+}
+
+/// GPUI highlight runs for `text`: the marks' styles, with the selection's background laid over
+/// `selected`. Ranges come out sorted and disjoint, as `StyledText` needs.
+fn highlight_runs(text: &str, runs: &[Run], selected: Option<Range<usize>>, base: u32) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut all: Vec<Run> = runs.to_vec();
+    if let Some(sel) = selected {
+        let (mut a, mut b) = (sel.start, sel.end);
+        while !text.is_char_boundary(a) {
+            a -= 1;
+        }
+        while !text.is_char_boundary(b) {
+            b += 1;
+        }
+        all.push(Run { range: a..b, mark: Mark { selected: true, ..Mark::default() } });
+    }
+    markdown::flatten(&all).into_iter().map(|r| (r.range, style_of(&r.mark, base))).collect()
+}
+
+fn style_of(mark: &Mark, base: u32) -> HighlightStyle {
+    let mut style = HighlightStyle { color: Some(rgb(mark.color.unwrap_or(if mark.code { 0xe0b070 } else { base })).into()), ..HighlightStyle::default() };
+    if mark.bold {
+        style.font_weight = Some(FontWeight::BOLD);
+    }
+    if mark.italic {
+        style.font_style = Some(FontStyle::Italic);
+    }
+    if mark.code {
+        style.background_color = Some(rgb(0x22302a).into());
+    }
+    if mark.link.is_some() {
+        style.color = Some(rgb(0x7fb89a).into());
+        style.underline = Some(UnderlineStyle { thickness: px(1.), color: None, wavy: false });
+    }
+    if mark.strike {
+        style.strikethrough = Some(StrikethroughStyle { thickness: px(1.), color: None });
+    }
+    if mark.selected {
+        style.background_color = Some(rgb(SELECTION).into());
+    }
+    style
+}
+
+/// One block of a reply, drawn as WheelUI's `ChatRich` does.
+fn block_el(block: &Block, texts: &mut Texts, highlights: &Highlights, cx: &mut Context<Client>) -> gpui::Div {
+    match block {
+        Block::Paragraph(t) => div().child(texts.inline("reply", t, 0xd9e8e1)),
+        Block::Heading { level, text: t } => {
+            let h = div().font_weight(FontWeight::BOLD).child(texts.inline("heading", t, 0xd9e8e1));
+            match level { 1 => h.text_lg(), 2 => h.text_base(), _ => h.text_sm() }
+        }
+        Block::List(items) => {
+            let mut list = div().flex().flex_col();
+            for item in items {
+                let line = div().flex().gap_1().pl(px(16. * item.depth as f32))
+                    .child(div().w(px(20.)).flex_none().text_color(rgb(0x8fa89b)).child(item.marker.clone()));
+                list = list.child(match &item.block {
+                    Some(b) => line.child(div().flex_1().child(block_el(b, texts, highlights, cx))),
+                    None => line.child(div().child(texts.inline("list", &item.text, 0xd9e8e1))),
+                });
+            }
+            list
+        }
+        Block::Code { language, code } => {
+            let key = (language.clone().unwrap_or_default(), code.clone());
+            let runs = {
+                let mut cache = highlights.borrow_mut();
+                if cache.len() > 256 {
+                    cache.clear();
+                }
+                cache.entry(key).or_insert_with(|| markdown::highlight(language.as_deref(), code).map(Rc::new)).clone()
+            };
+            let highlighted = runs.as_ref().is_some_and(|r| !r.is_empty());
+            let body = texts.styled("code", code, runs.as_deref().map(Vec::as_slice).unwrap_or(&[]), 0xd9e8e1, language.as_deref(), highlighted);
+            let copied = code.clone();
+            div().rounded_sm().bg(rgb(CODE_BG)).border_1().border_color(rgb(0x2c3d34)).flex().flex_col().overflow_hidden()
+                .child(div().h(px(20.)).px_2().flex().items_center().justify_between().bg(rgb(CODE_HEADER)).text_xs().text_color(rgb(0x8fa89b))
+                    .child(language.clone().unwrap_or_else(|| "code".to_owned()))
+                    .child(div().id(gpui::ElementId::Name(format!("copy-{}-{}", texts.row, texts.next).into())).px_1().rounded_sm().cursor_pointer().bg(rgb(0x22302a)).child("Copy")
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |_, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                            cx.stop_propagation();
+                        }))))
+                .child(div().p_2().font_family("Menlo").text_xs().child(body))
+        }
+        Block::Quote(t) => div().pl_2().border_l_2().border_color(rgb(0x3d5247)).text_color(rgb(0x8fa89b)).child(texts.inline("quote", t, 0x8fa89b)),
+        Block::Table { header, rows } => {
+            let cell = |texts: &mut Texts, t: &Text, bold: bool| {
+                let c = div().flex_1().px_1().py_0p5().border_1().border_color(rgb(0x2c3d34)).child(texts.inline("table", t, 0xd9e8e1));
+                if bold { c.font_weight(FontWeight::BOLD).bg(rgb(0x1a2621)) } else { c }
+            };
+            let mut table = div().flex().flex_col();
+            let mut head = div().flex();
+            for h in header {
+                head = head.child(cell(texts, h, true));
+            }
+            table = table.child(head);
+            for r in rows {
+                let mut line = div().flex();
+                for c in r {
+                    line = line.child(cell(texts, c, false));
+                }
+                table = table.child(line);
+            }
+            table
+        }
+        Block::Rule => div().h(px(1.)).bg(rgb(0x2c3d34)),
+    }
 }

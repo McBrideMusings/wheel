@@ -3,7 +3,9 @@
 //! terminal sessions, keyboard focus following a click, a divider drag with NSEvents the GPUI
 //! view receives, the daemon keeping the ratio, following another client's change, and surviving
 //! sessions and windows (header chips clicked with NSEvents, a second window with its own
-//! connection and view, `wheel client ls` reporting each), and surviving
+//! connection and view, `wheel client ls` reporting each), an agent pane whose reply's Markdown
+//! is drawn as blocks (a fenced block with its language and syntax colours) and selected with the
+//! pointer and copied with Command-C, and surviving
 //! a wheeld restart: the link reads down, comes back up on its own, and every native view is
 //! opened again on the new daemon.
 //! The window is never visible, key or active.
@@ -11,7 +13,7 @@ use anyhow::{Result, ensure};
 use gpui::AsyncApp;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
-use wheel_gpui::{daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Link, TITLE}};
+use wheel_gpui::{daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Drawn, Link, TITLE}};
 
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
@@ -307,6 +309,61 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let state_after = rows(cx)?.0;
     let agent_report = json!({"pane": agent_pane, "agent": agent_name, "sent_seen_by_wheeld": sent_seen_by_wheeld, "tool_rows": tool_rows, "failed_rows": failed_rows,
         "thought_rows": thought_rows, "diff_paths": diff_paths, "state_after": state_after, "rows_total": rows(cx)?.1.len()});
+    // Markdown: a message sent through the CLI comes back echoed as the reply, so its fenced
+    // block is drawn as a code block with its language label and syntax colours; the first line
+    // of that reply is selected with the pointer and copied with Command-C.
+    let markdown_message = "Here is code:\n\n```rust\nfn main() { println!(\"hi\"); }\n```";
+    let sent = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, markdown_message, "--timeout", "30"])
+        .output()?;
+    ensure!(sent.status.success(), "agent send failed: {}{}", String::from_utf8_lossy(&sent.stdout), String::from_utf8_lossy(&sent.stderr));
+    let mut md_row = None;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (state, rows) = rows(cx)?;
+        md_row = rows.iter().position(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("```rust") && t.contains("println")));
+        if md_row.is_some() && state == "ready" && rows.iter().all(|r| !r.open) {
+            break;
+        }
+    }
+    let rows_now = rows(cx)?.1;
+    let md_row = md_row.ok_or_else(|| anyhow::anyhow!("no Markdown reply arrived: {rows_now:?}"))?;
+    window.update(cx, |c, _, _| c.reveal(&agent_name, md_row))?;
+    draw(window, None, cx)?;
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-markdown.png")), cx)?;
+    let drawn = window.update(cx, |c, _, _| c.drawn_texts(&agent_name))?;
+    let code_blocks: Vec<&Drawn> = drawn.iter().filter(|d| d.kind == "code").collect();
+    ensure!(code_blocks.len() == 1 && code_blocks[0].language.as_deref() == Some("rust") && code_blocks[0].highlighted,
+        "code blocks drawn: {:?}", code_blocks.iter().map(|d| (d.language.clone(), d.highlighted, d.text.clone())).collect::<Vec<_>>());
+    let para = drawn.iter().find(|d| d.row == md_row && d.kind == "reply").ok_or_else(|| anyhow::anyhow!("the Markdown reply drew no paragraph"))?;
+    let first_line_len = para.text.find('\n').unwrap_or(para.text.len());
+    let (from, to) = window.update(cx, |c, _, _| (c.text_point(&agent_name, md_row, para.block, 0), c.text_point(&agent_name, md_row, para.block, first_line_len)))?;
+    let from = from.ok_or_else(|| anyhow::anyhow!("no point for the line start"))?;
+    let to = to.ok_or_else(|| anyhow::anyhow!("no point for the line end"))?;
+    let (from, to) = ([f64::from(from.0) - 1., f64::from(from.1)], [f64::from(to.0) + 1., f64::from(to.1)]);
+    native.call(json!({"op":"post_mouse","kind":"down","point":from}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[(from[0] + to[0]) / 2., from[1]]}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":to}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":to}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-selection.png")), cx)?;
+    let selected = window.update(cx, |c, _, _| c.selected_text())?;
+    let expected_line = para.text.lines().next().unwrap_or("").to_owned();
+    ensure!(selected.as_deref() == Some(expected_line.as_str()), "selected {selected:?}, wanted {expected_line:?} (dragged {from:?} to {to:?}; {})", window.update(cx, |c, _, _| c.selection_debug(&agent_name))?);
+    native.call(json!({"op":"post_key","text":"c","code":8,"command":true}));
+    tick(cx, 300).await;
+    let clipboard = cx.update(|app| app.read_from_clipboard().and_then(|i| i.text()));
+    ensure!(clipboard.as_deref() == Some(expected_line.as_str()), "clipboard after Command-C: {clipboard:?}");
+    let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
+        "reply_row": md_row, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
     // Back to the terminal, so the focus checks below start where they did.
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
@@ -441,6 +498,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
         "sessions_windows": sessions_windows,
         "agent": agent_report,
+        "markdown": markdown_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
