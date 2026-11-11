@@ -11,6 +11,12 @@ pub struct Leaf {
     pub kind: String,
     pub label: String,
     pub term: Option<String>,
+    /// A browser pane's page.
+    pub url: Option<String>,
+    /// A web pane's artifact scope (`project` or `machine`); its name is the label.
+    pub scope: Option<String>,
+    /// An agent pane's agent.
+    pub agent: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tree {
@@ -42,24 +48,47 @@ pub fn parse(v: &Value) -> Tree {
             kind: text("kind").unwrap_or_else(|| "unknown".into()),
             label: text("name").or_else(|| text("url")).or_else(|| text("cwd")).unwrap_or_default(),
             term: text("term"),
+            url: text("url"),
+            scope: text("scope"),
+            agent: text("agent"),
         })
     }
 }
 
-/// The spaces in a `status` reply or a `spaces` broadcast.
-pub fn parse_spaces(message: &Value) -> Option<Vec<Space>> {
+/// A named, ordered group of spaces (ADR-0021).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Session {
+    pub id: String,
+    pub name: String,
+    /// Its spaces' ids, in order.
+    pub spaces: Vec<String>,
+}
+
+/// What wheeld holds: the spaces and the sessions that group them.
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    pub spaces: Vec<Space>,
+    pub sessions: Vec<Session>,
+}
+
+/// The layout in a `status` reply or a `spaces` broadcast.
+pub fn parse_layout(message: &Value) -> Option<Layout> {
     if !matches!(message["ev"].as_str(), Some("status" | "spaces")) {
         return None;
     }
-    Some(
-        message["spaces"].as_array().into_iter().flatten()
-            .map(|s| Space {
-                id: s["id"].as_str().unwrap_or_default().to_owned(),
-                name: s["name"].as_str().unwrap_or_default().to_owned(),
-                root: parse(&s["root"]),
+    let text = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_owned();
+    Some(Layout {
+        spaces: message["spaces"].as_array().into_iter().flatten()
+            .map(|s| Space { id: text(s, "id"), name: text(s, "name"), root: parse(&s["root"]) })
+            .collect(),
+        sessions: message["sessions"].as_array().into_iter().flatten()
+            .map(|s| Session {
+                id: text(s, "id"),
+                name: text(s, "name"),
+                spaces: s["spaces"].as_array().into_iter().flatten().filter_map(|i| i.as_str().map(str::to_owned)).collect(),
             })
             .collect(),
-    )
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -100,6 +129,14 @@ pub fn place(tree: &Tree, rect: Rect, overrides: &HashMap<String, f64>, leaves: 
                 place(b, Rect { y: rect.y + ah + GAP, h: rect.h - ah - GAP, ..rect }, overrides, leaves, dividers);
             }
         }
+    }
+}
+
+/// Every pane of a tree, in layout order.
+pub fn leaves_of(tree: &Tree) -> Vec<&Leaf> {
+    match tree {
+        Tree::Pane(leaf) => vec![leaf],
+        Tree::Split { a, b, .. } => leaves_of(a).into_iter().chain(leaves_of(b)).collect(),
     }
 }
 
@@ -165,13 +202,16 @@ mod tests {
     #[test]
     fn unknown_kinds_survive_parsing() {
         let leaf = parse(&json!({"node":"pane","id":"p9","kind":"hologram"}));
-        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None }));
+        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None }));
     }
 
     #[test]
-    fn spaces_come_from_status_and_broadcast_only() {
-        let spaces = json!({"ev":"spaces","spaces":[{"id":"s1","name":"wheel","root":{"node":"pane","id":"p1","kind":"empty"}}]});
-        assert_eq!(parse_spaces(&spaces).unwrap()[0].name, "wheel");
-        assert!(parse_spaces(&json!({"ev":"term_output"})).is_none());
+    fn the_layout_comes_from_status_and_broadcast_only() {
+        let spaces = json!({"ev":"spaces","spaces":[{"id":"s1","name":"wheel","root":{"node":"pane","id":"p1","kind":"empty"}}],
+            "sessions":[{"id":"n1","name":"Main","spaces":["s1"]}]});
+        let layout = parse_layout(&spaces).unwrap();
+        assert_eq!(layout.spaces[0].name, "wheel");
+        assert_eq!(layout.sessions, [Session { id: "n1".into(), name: "Main".into(), spaces: vec!["s1".into()] }]);
+        assert!(parse_layout(&json!({"ev":"term_output"})).is_none());
     }
 }

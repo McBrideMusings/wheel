@@ -25,6 +25,7 @@ futures = "0.3"
 raw-window-handle = "0.6"
 libloading = "0.8"
 tungstenite = "0.30"
+wheel-proto = { path = "../../proto" }
 gpui = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", default-features = false, features = ["test-support"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", features = ["font-kit", "test-support"] }
 

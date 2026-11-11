@@ -22,7 +22,8 @@ def fixture():
         (page / 'index.html').write_text('''<!doctype html><html><meta charset="utf-8"><title>Fixture artifact</title>
 <style>body{background:#e9eee8;color:#1c3027;font:18px/1.6 system-ui;padding:22px}</style>
 <h1>HTML artifact</h1><p>Served by the fixture wheeld into the client's WKWebView pane.</p></html>''')
-        (project / 'wheel.toml').write_text('[artifacts.fixture-html]\npath="html"\n')
+        gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\n')
         (root / 'machine.toml').write_text('')
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
@@ -40,22 +41,42 @@ def fixture():
         def tree(space):
             return next(s for s in json.loads(cli('status', '--json'))['spaces'] if s['id'] == space)
 
-        log = open(root / 'daemon.log', 'w')
-        daemon = subprocess.Popen([str(root / 'wheeld'), '--listen', f'127.0.0.1:{port}', '--support-dir', str(root / 'support'),
-            '--machine-file', str(root / 'machine.toml'), '--log-dir', str(root / 'logs')], env=env, stdout=log, stderr=log)
-        try:
+        log = open(root / 'daemon.log', 'a')
+        running = []
+
+        def start():
+            daemon = subprocess.Popen([str(root / 'wheeld'), '--listen', f'127.0.0.1:{port}', '--support-dir', str(root / 'support'),
+                '--machine-file', str(root / 'machine.toml'), '--log-dir', str(root / 'logs')], env=env, stdout=log, stderr=log)
+            running.append(daemon)
             for _ in range(100):
                 if daemon.poll() is not None:
                     raise RuntimeError(f'fixture daemon exited: {daemon.returncode}')
                 if token.exists():
                     try:
                         with socket.create_connection(('127.0.0.1', port), .1):
-                            break
+                            return daemon
                     except OSError:
                         pass
                 time.sleep(.1)
-            else:
-                raise TimeoutError('fixture daemon did not start')
+            raise TimeoutError('fixture daemon did not start')
+
+        def stop():
+            daemon = running[-1]
+            daemon.terminate()
+            try:
+                daemon.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                daemon.kill()
+                daemon.wait()
+
+        def restart(down_for=0.0):
+            """Stop the daemon, wait `down_for` seconds with nothing listening, start it again on the same port and support dir."""
+            stop()
+            time.sleep(down_for)
+            return start().pid
+
+        daemon = start()
+        try:
             space = cli('space', 'new', str(project)).splitlines()[-1]
             web = tree(space)['root']['id']
             cli('pane', 'kind', web, 'web', '--artifact', 'fixture-html')
@@ -63,24 +84,30 @@ def fixture():
             cli('pane', 'kind', term_pane, 'terminal')
             browser = cli('pane', 'split', term_pane, 'down').splitlines()[-1]
             cli('pane', 'kind', browser, 'browser', '--page', 'about:blank')
-            empty = cli('pane', 'split', web, 'down').splitlines()[-1]
+            term2_pane = cli('pane', 'split', web, 'down').splitlines()[-1]
+            cli('pane', 'kind', term2_pane, 'terminal')
+            web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
+            cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
 
-            def find(node, kind):
+            def terminals(node):
                 if node.get('node') == 'pane':
-                    return node if node.get('kind') == kind else None
-                return find(node['a'], kind) or find(node['b'], kind)
-            term = find(tree(space)['root'], 'terminal')['term']
-            cli('term', 'send', term, "stty -echo; printf '\\033[2J\\033[H\\033[32mterminal-%s\\033[0m\\r\\n' $((6*7)); while IFS= read -r line; do printf 'PTY:%s\\r\\n' \"$line\"; done", '--enter')
-            cli('term', 'read', term, '--until', 'terminal-42', '--timeout', '10')
-            env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'))
-            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, empty=empty),
-                        saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: daemon.poll() is None)
+                    return [node] if node.get('kind') == 'terminal' else []
+                return terminals(node['a']) + terminals(node['b'])
+            markers = {}
+            for n, node in enumerate(terminals(tree(space)['root'])):
+                marker = f'terminal-{42 + n}'
+                markers[node['id']] = marker
+                cli('term', 'send', node['term'], "stty -echo; printf '\\033[2J\\033[H\\033[32m%s\\033[0m\\r\\n' " + marker + "; while IFS= read -r line; do printf 'PTY:%s\\r\\n' \"$line\"; done", '--enter')
+                cli('term', 'read', node['term'], '--until', marker, '--timeout', '10')
+            second_dir = root / 'project2'
+            second_dir.mkdir()
+            second_session = cli('session', 'new', 'Second').splitlines()[-1]
+            second_space = cli('space', 'new', str(second_dir), '--name', 'other', '--session', second_session).splitlines()[-1]
+            env.update(WHEEL_CLIENT_SECOND_SESSION=second_session, WHEEL_CLIENT_SECOND_SPACE=second_space)
+            env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers))
+            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2),
+                        saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
             yield env, info
         finally:
-            daemon.terminate()
-            try:
-                daemon.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                daemon.kill()
-                daemon.wait()
+            stop()
             log.close()
