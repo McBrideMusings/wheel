@@ -1,4 +1,4 @@
-"""A throwaway wheeld with a five-pane space, for running and checking the GPUI client.
+"""A throwaway wheeld with a six-pane space, for running and checking the GPUI client.
 
 The daemon and `wheel` are copied out of the installed Wheel.app and ad-hoc signed, so an
 unrelated client install cannot stop them. Nothing here touches the real wheeld.
@@ -19,6 +19,14 @@ def html_page(title):
 <script src=".wheel/client.js"></script><script>wheel.set('seen', {{ok: true, title: document.title}})</script></html>'''
 
 
+def browser_page(name, title):
+    """A file page for the browser pane: it names itself, writes two console lines and has one headline."""
+    return f'''<!doctype html><html><meta charset="utf-8"><title>{title}</title>
+<style>body{{background:#f4efe6;color:#2b2118;font:20px/1.5 system-ui;padding:24px}}h1{{margin:0 0 12px;font-size:28px}}</style>
+<h1 id="headline">{title}</h1><p class="note">A file page the fixture wrote for the browser pane ({name}).</p>
+<script>console.log('hello from {name}'); console.warn('careful from {name}');</script></html>'''
+
+
 @contextlib.contextmanager
 def fixture():
     """Yield (env, info). `env` carries WHEEL_URL, WHEEL_TOKEN_FILE and WHEEL_CLIENT_SPACE."""
@@ -32,6 +40,10 @@ def fixture():
         page.mkdir(parents=True)
         # The page calls the daemon through `.wheel/client.js`: `wheel artifact state <pane> seen` reads what it stored.
         (page / 'index.html').write_text(html_page('Fixture artifact'))
+        pages = root / 'pages'
+        pages.mkdir()
+        (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
+        (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
         gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
         (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n')
         (root / 'machine.toml').write_text('')
@@ -121,7 +133,7 @@ def fixture():
             second_space = cli('space', 'new', str(second_dir), '--name', 'other', '--session', second_session).splitlines()[-1]
             env.update(WHEEL_CLIENT_SECOND_SESSION=second_session, WHEEL_CLIENT_SECOND_SPACE=second_space)
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
-                       WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page))
+                       WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page), WHEEL_CLIENT_PAGES=str(pages))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),
                         saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
             yield env, info

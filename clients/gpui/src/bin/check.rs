@@ -6,6 +6,9 @@
 //! connection and view, `wheel client ls` reporting each), an agent pane whose reply's Markdown
 //! is drawn as blocks (a fenced block with its language and syntax colours) and selected with the
 //! pointer and copied with Command-C, and surviving
+//! a browser pane sent to a file page by `wheel pane page`, serving `wheel pane console`, `eval`,
+//! `dom`, `shot` and `record`, its address field typed into and its back button pressed with
+//! wheeld's layout following, a failed load shown and cleared, and surviving
 //! a wheeld restart: the link reads down, comes back up on its own, and every native view is
 //! opened again on the new daemon.
 //! The window is never visible, key or active.
@@ -13,7 +16,7 @@ use anyhow::{Result, ensure};
 use gpui::AsyncApp;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
-use wheel_gpui::{daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Drawn, Link, TITLE}};
+use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Drawn, Link, TITLE}};
 
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
@@ -59,8 +62,10 @@ fn frame(status: &Value, pane: &str) -> [f64; 4] {
     let f = &status["panes"][pane]["frame_top"];
     [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(-1.))
 }
-fn on_body(a: [f64; 4], r: Rect) -> bool {
-    (a[0] - f64::from(r.x)).abs() < 1.0 && (a[1] - f64::from(r.y + TITLE)).abs() < 1.0 && (a[2] - f64::from(r.w)).abs() < 1.0 && (a[3] - f64::from(r.h - TITLE)).abs() < 1.0
+/// Whether frame `a` is pane `r`'s body: under the title, and for a browser pane under its chrome too.
+fn on_body(a: [f64; 4], r: Rect, kind: &str) -> bool {
+    let top = if kind == "browser" { TITLE + CHROME } else { TITLE };
+    (a[0] - f64::from(r.x)).abs() < 1.0 && (a[1] - f64::from(r.y + top)).abs() < 1.0 && (a[2] - f64::from(r.w)).abs() < 1.0 && (a[3] - f64::from(r.h - top)).abs() < 1.0
 }
 fn viewport(status: &Value, pane: &str) -> String {
     status["panes"][pane]["viewport"].as_str().unwrap_or_default().to_owned()
@@ -103,6 +108,28 @@ async fn click_chip(window: gpui::WindowHandle<Client>, hit: Hit, cx: &mut Async
 }
 fn shown(window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(Option<String>, Option<String>)> {
     Ok(window.update(cx, |c, _, _| (c.session_id().map(str::to_owned), c.space_id().map(str::to_owned)))?)
+}
+
+/// Run `wheel` with `args` while the connection is pumped: a `pane page`, `shot` or `eval` waits on
+/// wheeld, which waits on this client's answer, so the frames must flow while the command runs.
+async fn run_pumped(args: &[&str], connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(bool, String, String)> {
+    let cli = std::env::var("WHEEL_CLIENT_CLI")?;
+    let mut child = std::process::Command::new(&cli)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+    let mut done = None;
+    for _ in 0..600 {
+        pump(connection, 100, layouts, window, cx).await?;
+        if let Some(status) = child.try_wait()? {
+            done = Some(status);
+            break;
+        }
+    }
+    if done.is_none() {
+        child.kill()?;
+    }
+    let out = child.wait_with_output()?;
+    Ok((done.is_some_and(|s| s.success()), String::from_utf8_lossy(&out.stdout).trim().to_owned(), String::from_utf8_lossy(&out.stderr).trim().to_owned()))
 }
 
 async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
@@ -170,7 +197,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(page_bytes > 5000, "the native page's picture is missing or blank: {} ({page_bytes} bytes)", page_png.display());
     // Every native view sits on its pane's body.
     let rects = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.rect)).collect::<Vec<_>>())?;
-    let aligned: Vec<(String, bool)> = native_panes.iter().map(|(id, _)| (id.clone(), on_body(frame(&before, id), rects.iter().find(|r| &r.0 == id).unwrap().1))).collect();
+    let aligned: Vec<(String, bool)> = native_panes.iter().map(|(id, kind)| (id.clone(), on_body(frame(&before, id), rects.iter().find(|r| &r.0 == id).unwrap().1, kind))).collect();
     ensure!(aligned.iter().all(|a| a.1), "native views not on their panes: {aligned:?}");
     // Terminals are separate sessions: each shows only its own marker.
     let own: Vec<(String, bool, bool)> = terms.iter().map(|t| {
@@ -640,6 +667,153 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let web_report = json!({"pane": html_pane, "address": address, "http_status": http_status, "store": store, "client_state": seen_text.trim(),
         "loads_before_change": loads_before, "reloads": reloads, "title_after_change": title_after,
         "palette": {"pane": new_pane, "listed": listed, "query": query, "filtered": filtered, "footer": footer_text, "kind_after": kind_after, "opened_address": opened_address}});
+    // The browser pane: `wheel pane page` sends it to a file page through wheeld; the page's
+    // console reaches wheeld; `eval`, `dom`, `shot` (the pane and one element) and `record` run in
+    // the pane's page; an address typed into the GPUI-drawn field goes through wheeld and the
+    // layout follows; Back goes back and the layout follows; a missing file shows the failure
+    // card in place of the page, and the next page clears it.
+    let browser_pane = native_panes.iter().find(|p| p.1 == "browser").map(|p| p.0.clone()).ok_or_else(|| anyhow::anyhow!("no browser pane"))?;
+    let pages = PathBuf::from(std::env::var("WHEEL_CLIENT_PAGES")?);
+    let (one, two) = (pages.join("one.html"), pages.join("two.html"));
+    let state_of = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.browser_state(&browser_pane).cloned());
+    ensure!(state_of(cx)?.is_some_and(|s| s.address == "about:blank"), "the browser pane's chrome state before any page: {:?}", state_of(cx)?);
+    let (ok, page_out, page_err) = run_pumped(&["pane", "page", &browser_pane, &one.to_string_lossy()], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane page failed: {page_out}{page_err}");
+    let one_url = format!("file://{}", one.display());
+    ensure!(page_out == one_url, "pane page printed {page_out:?}, wanted {one_url:?}");
+    let mut on_one = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if let Some(s) = state_of(cx)?.filter(|s| s.url == one_url && s.title == "Fixture page one" && !s.loading) {
+            on_one = Some(s);
+            break;
+        }
+    }
+    let last_state = state_of(cx)?;
+    let on_one = on_one.ok_or_else(|| anyhow::anyhow!("the browser pane never reached page one: {last_state:?}"))?;
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-browser.png")), cx)?;
+    let leaf_url = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == browser_pane).and_then(|p| p.leaf.url));
+    ensure!(leaf_url(cx)? == Some(one_url.clone()), "wheeld's layout does not hold page one: {:?}", leaf_url(cx)?);
+    let title_shown = window.update(cx, |c, _, _| c.browser_state(&browser_pane).map(wheel_gpui::browser::title))?;
+    ensure!(title_shown.as_deref() == Some("Fixture page one"), "the pane's title reads {title_shown:?}");
+    let (ok, console_out, console_err) = run_pumped(&["pane", "console", &browser_pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && console_out.contains("hello from one") && console_out.contains("careful from one"), "pane console: {console_out}{console_err}");
+    let (ok, eval_out, eval_err) = run_pumped(&["pane", "eval", &browser_pane, "1 + 2"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && eval_out == "3", "pane eval 1 + 2: {eval_out}{eval_err}");
+    let (ok, eval_title, _) = run_pumped(&["pane", "eval", &browser_pane, "document.title"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && eval_title == "\"Fixture page one\"", "pane eval document.title: {eval_title}");
+    let (ok, eval_throw, eval_throw_err) = run_pumped(&["pane", "eval", &browser_pane, "throw new Error('nope')"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(!ok && eval_throw_err.contains("nope"), "a throwing eval should fail with its message: ok={ok} {eval_throw} {eval_throw_err}");
+    let (ok, dom_out, dom_err) = run_pumped(&["pane", "dom", &browser_pane, "h1"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && dom_out == "<h1 id=\"headline\">Fixture page one</h1>", "pane dom h1: {dom_out}{dom_err}");
+    let (ok, dom_all, _) = run_pumped(&["pane", "dom", &browser_pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && dom_all.starts_with("<html>") && dom_all.contains("class=\"note\""), "pane dom: {}", &dom_all[..dom_all.len().min(200)]);
+    let shot_path = output.join("browser-shot.png");
+    let (ok, shot_out, shot_err) = run_pumped(&["pane", "shot", &browser_pane, &shot_path.to_string_lossy()], &mut connection, &mut layouts, window, cx).await?;
+    let shot_bytes = std::fs::read(&shot_path).unwrap_or_default();
+    ensure!(ok && shot_bytes.starts_with(b"\x89PNG") && shot_bytes.len() > 2000, "pane shot: ok={ok} {} bytes {shot_out}{shot_err}", shot_bytes.len());
+    let element_path = output.join("browser-shot-h1.png");
+    let (ok, el_out, el_err) = run_pumped(&["pane", "shot", &browser_pane, &element_path.to_string_lossy(), "--selector", "h1"], &mut connection, &mut layouts, window, cx).await?;
+    let element_bytes = std::fs::read(&element_path).unwrap_or_default();
+    ensure!(ok && element_bytes.starts_with(b"\x89PNG") && element_bytes.len() < shot_bytes.len(), "pane shot --selector h1: ok={ok} {} bytes (page {}) {el_out}{el_err}", element_bytes.len(), shot_bytes.len());
+    let (ok, none_out, none_err) = run_pumped(&["pane", "shot", &browser_pane, &output.join("browser-none.png").to_string_lossy(), "--selector", "#nothing"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(!ok && none_err.contains("no element matches"), "a shot of nothing should fail: ok={ok} {none_out} {none_err}");
+    let movie_path = output.join("browser.mov");
+    let (ok, record_out, record_err) = run_pumped(&["pane", "record", &browser_pane, &movie_path.to_string_lossy(), "--seconds", "1"], &mut connection, &mut layouts, window, cx).await?;
+    let movie_bytes = std::fs::metadata(&movie_path).map(|m| m.len()).unwrap_or(0);
+    ensure!(ok && movie_bytes > 1000, "pane record: ok={ok} {movie_bytes} bytes {record_out}{record_err}");
+    // The address field: a click starts editing the page's path; the path is replaced with page
+    // two's and Return sends it to wheeld, which answers `opened`; the view goes there and
+    // reports the page, so the layout follows.
+    let field = window.update(cx, |c, _, _| c.control_bounds(&browser_pane, "browser:address"))?.ok_or_else(|| anyhow::anyhow!("the address field was not drawn"))?;
+    press(&native, field);
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let editing = window.update(cx, |c, _, _| c.address_edit())?;
+    ensure!(editing == Some((browser_pane.clone(), one.to_string_lossy().into_owned())), "after a click on the field the edit is {editing:?}");
+    ensure!(native.status()["root_focused"] == true, "the GPUI view does not hold the keyboard while the field is edited");
+    // Backspace carries DEL (0x7f) on a Mac keyboard; an uppercase letter is its key with shift.
+    for _ in 0..one.to_string_lossy().chars().count() {
+        native.call(json!({"op":"post_key","text":"\u{7f}","code":51}));
+    }
+    tick(cx, 100).await;
+    for ch in two.to_string_lossy().chars() {
+        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch),"shift":ch.is_ascii_uppercase()}));
+        tick(cx, 10).await;
+    }
+    draw(window, None, cx)?;
+    let typed_draft = window.update(cx, |c, _, _| c.address_edit())?.map(|(_, d)| d);
+    ensure!(typed_draft.as_deref() == Some(&*two.to_string_lossy()), "the typed address reads {typed_draft:?}");
+    draw(window, Some(output.join("client-browser-typing.png")), cx)?;
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let two_url = format!("file://{}", two.display());
+    let mut on_two = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if state_of(cx)?.is_some_and(|s| s.url == two_url && s.title == "Fixture page two") && leaf_url(cx)? == Some(two_url.clone()) {
+            on_two = true;
+            break;
+        }
+    }
+    ensure!(on_two, "typing page two's path did not move the pane and the layout: state {:?} leaf {:?}", state_of(cx)?, leaf_url(cx)?);
+    ensure!(window.update(cx, |c, _, _| c.address_edit())?.is_none(), "the field is still being edited after Return");
+    let back = window.update(cx, |c, _, _| c.control_bounds(&browser_pane, "browser:back"))?.ok_or_else(|| anyhow::anyhow!("the back button was not drawn"))?;
+    ensure!(state_of(cx)?.is_some_and(|s| s.can_go_back), "back is not enabled on page two");
+    press(&native, back);
+    let mut back_on_one = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if state_of(cx)?.is_some_and(|s| s.url == one_url && s.can_go_forward) && leaf_url(cx)? == Some(one_url.clone()) {
+            back_on_one = true;
+            break;
+        }
+    }
+    ensure!(back_on_one, "Back did not return to page one with the layout following: state {:?} leaf {:?}", state_of(cx)?, leaf_url(cx)?);
+    // A file that does not exist: wheeld reads the path as a page, the load fails, and the failure
+    // card takes the body with the web view hidden under it; the next page clears it.
+    let missing = pages.join("missing.html");
+    let (ok, missing_out, missing_err) = run_pumped(&["pane", "page", &browser_pane, &missing.to_string_lossy()], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane page on a missing file should still be read as a page: {missing_out}{missing_err}");
+    let mut failure = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if let Some(f) = state_of(cx)?.and_then(|s| s.failure) {
+            failure = Some(f);
+            break;
+        }
+    }
+    let last_state = state_of(cx)?;
+    let failure = failure.ok_or_else(|| anyhow::anyhow!("the missing file showed no failure: {last_state:?}"))?;
+    ensure!(failure.message.contains("no such file") && failure.address == missing.to_string_lossy(), "the failure reads {failure:?}");
+    draw(window, None, cx)?;
+    ensure!(native.status()["panes"][browser_pane.as_str()]["hidden"] == true, "the web view still shows under the failure card");
+    ensure!(window.update(cx, |c, _, _| c.control_bounds(&browser_pane, "browser:retry"))?.is_some(), "the failure card drew no Try Again");
+    draw(window, Some(output.join("client-browser-failure.png")), cx)?;
+    // WebKit stays on page one behind the card and reports it, so wheeld holds page one again and
+    // another `pane page one` changes nothing (the Swift app behaves the same); page two clears it.
+    let (ok, _, clear_err) = run_pumped(&["pane", "page", &browser_pane, &two.to_string_lossy()], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane page two after the failure: {clear_err}");
+    let mut cleared = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if state_of(cx)?.is_some_and(|s| s.failure.is_none() && s.url == two_url && s.title == "Fixture page two") && native.status()["panes"][browser_pane.as_str()]["hidden"] == false {
+            cleared = true;
+            break;
+        }
+    }
+    ensure!(cleared, "page two did not clear the failure: {:?}\nbridge logs: {}", state_of(cx)?, native.status()["logs"]);
+    shot(&native, &output.join("browser"), cx).await?;
+    let browser_logs = native.status()["logs"].clone();
+    let browser_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == browser_pane).map(|p| [p.rect.x, p.rect.y, p.rect.w, p.rect.h]))?;
+    let browser_report = json!({"pane": browser_pane, "rect": browser_rect, "page_printed": page_out, "state_on_one": on_one, "title_shown": title_shown, "console": console_out,
+        "eval": {"sum": eval_out, "title": eval_title, "throw_error": eval_throw_err}, "dom_h1": dom_out, "dom_bytes": dom_all.len(),
+        "shot_bytes": shot_bytes.len(), "shot_h1_bytes": element_bytes.len(), "shot_none_error": none_err, "record": {"bytes": movie_bytes, "printed": record_out},
+        "typed": {"draft": typed_draft, "moved_to_two": on_two, "back_to_one": back_on_one}, "failure": failure, "cleared": cleared, "logs": browser_logs});
     // Closing the second window above left `native_panes` as the first window's views; the
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
@@ -713,6 +887,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "footer": footer_report,
         "status": status_report,
         "web": web_report,
+        "browser": browser_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
@@ -726,7 +901,7 @@ fn keycode(ch: char) -> u16 {
         'a' => 0, 's' => 1, 'd' => 2, 'f' => 3, 'h' => 4, 'g' => 5, 'z' => 6, 'x' => 7, 'c' => 8, 'v' => 9, 'b' => 11, 'q' => 12, 'w' => 13, 'e' => 14,
         'r' => 15, 'y' => 16, 't' => 17, '1' => 18, '2' => 19, '3' => 20, '4' => 21, '6' => 22, '5' => 23, '=' => 24, '9' => 25, '7' => 26, '-' => 27,
         '8' => 28, '0' => 29, ']' => 30, 'o' => 31, 'u' => 32, '[' => 33, 'i' => 34, 'p' => 35, 'l' => 37, 'j' => 38, '\'' => 39, 'k' => 40, ';' => 41,
-        '\\' => 42, ',' => 43, '/' => 44, 'n' => 45, 'm' => 46, '.' => 47, ' ' => 49, other => panic!("no key code for {other:?}: add it to keycode()"),
+        '\\' => 42, ',' => 43, '/' => 44, 'n' => 45, 'm' => 46, '.' => 47, ' ' => 49, '_' => 27, ':' => 41, upper if upper.is_ascii_uppercase() => keycode(upper.to_ascii_lowercase()), other => panic!("no key code for {other:?}: add it to keycode()"),
     }
 }
 

@@ -1,4 +1,5 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
+pub mod browser;
 pub mod daemon;
 pub mod focus;
 pub mod footer;
@@ -50,13 +51,27 @@ pub fn create_window(
             })
         },
     )?;
+    // The bridge speaks first for a browser pane (its state, its reports) and when it answers a
+    // daemon request the view relayed: those frames come through this channel.
+    let (frames, mut incoming) = futures::channel::mpsc::unbounded::<String>();
     window.update(cx, |_, window, _| -> Result<()> {
         let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|e| anyhow::anyhow!("{e:?}"))?.as_raw() else {
             anyhow::bail!("not an AppKit window")
         };
-        native.attach_to(handle.ns_view.as_ptr(), hidden);
+        native.attach_to(handle.ns_view.as_ptr(), hidden, frames);
         Ok(())
     })??;
+    cx.spawn(async move |cx| {
+        while let Some(frame) = incoming.next().await {
+            if window.update(cx, |client, _, cx| {
+                client.on_native(&frame);
+                cx.notify();
+            }).is_err() {
+                return;
+            }
+        }
+    })
+    .detach();
     Ok(window)
 }
 

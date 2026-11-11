@@ -67,34 +67,19 @@ extension AppModel {
             if header == nil { Log.info("render \(pane) \(pane) has no header to draw (no window shows it); the shot is the page alone") }
             // A page in a hidden space is hidden (no cursor rects); WebKit draws it only when shown.
             web.isHidden = false
-            let take: (WKSnapshotConfiguration?) -> Void = { configuration in
-              web.takeSnapshot(with: configuration) { [weak self] image, error in
-                MainActor.assumeIsolated {
-                    self?.updatePageVisibility()
-                    let whole = image.map { page in header.map { Self.stack($0, over: page) } ?? page }
-                    guard let png = whole.flatMap(Self.png) else {
-                        let drew = "WebKit drew no image: \(error?.localizedDescription ?? "no error")"
-                        let hidden = self.map { !$0.shownSpaces.contains(space.id) } ?? false
-                        refuse(hidden
-                            ? "pane \(pane) is in background space \(space.id), which no window shows, so it cannot be drawn; show the space first with `wheel space move \(space.id) <window>` (\(drew))"
-                            : drew)
-                        return
-                    }
+            Task { @MainActor [weak self] in
+                let drawn = await BrowserInspect.shotPage(web, full: full)
+                self?.updatePageVisibility()
+                switch drawn {
+                case let .success(page):
+                    let whole = header.map { BrowserInspect.stack($0, over: page) } ?? page
+                    guard let png = BrowserInspect.png(whole) else { refuse("the drawing could not be encoded as a PNG"); return }
                     answer(png)
-                }
-              }
-            }
-            guard full else { take(nil); return }
-            // The page's own size, as the document lays it out: the snapshot's rect covers all of it.
-            web.evaluateJavaScript("[Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)]") { value, _ in
-                MainActor.assumeIsolated {
-                    let size = (value as? [Double]).flatMap { $0.count == 2 ? CGSize(width: $0[0], height: $0[1]) : nil }
-                    guard let size, size.width > 0, size.height > 0 else { take(nil); return }
-                    let configuration = WKSnapshotConfiguration()
-                    configuration.rect = CGRect(origin: .zero, size: size)
-                    configuration.snapshotWidth = NSNumber(value: Double(size.width))
-                    Log.info("render \(pane) \(pane) page is \(Int(size.width))x\(Int(size.height)) pt; drawing all of it")
-                    take(configuration)
+                case let .failure(refusal):
+                    let hidden = self.map { !$0.shownSpaces.contains(space.id) } ?? false
+                    refuse(hidden
+                        ? "pane \(pane) is in background space \(space.id), which no window shows, so it cannot be drawn; show the space first with `wheel space move \(space.id) <window>` (\(refusal.message))"
+                        : refusal.message)
                 }
             }
             return
@@ -226,37 +211,6 @@ extension AppModel {
         let top = global.minY - titleBar
         return NSRect(x: global.minX, y: content.isFlipped ? top : content.bounds.height - top - global.height,
                       width: global.width, height: global.height)
-    }
-
-    /// `top` above `page`, as wide as the page, in a bitmap with as many pixels per point as the
-    /// sharper of the two, so a Retina snapshot keeps its pixels.
-    private static func stack(_ top: NSImage, over page: NSImage) -> NSImage {
-        func scale(_ image: NSImage) -> CGFloat {
-            let wide = image.representations.map { CGFloat($0.pixelsWide) }.max() ?? 0
-            return image.size.width > 0 ? wide / image.size.width : 1
-        }
-        let pixels = max(1, scale(top), scale(page))
-        let size = NSSize(width: page.size.width, height: top.size.height + page.size.height)
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int((size.width * pixels).rounded()),
-                                         pixelsHigh: Int((size.height * pixels).rounded()), bitsPerSample: 8, samplesPerPixel: 4,
-                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-              let context = NSGraphicsContext(bitmapImageRep: rep) else { return page }
-        rep.size = size
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        // A bitmap context counts pixels; the drawing below counts points.
-        context.cgContext.scaleBy(x: pixels, y: pixels)
-        page.draw(in: NSRect(origin: .zero, size: page.size))
-        top.draw(in: NSRect(x: 0, y: page.size.height, width: page.size.width, height: top.size.height))
-        NSGraphicsContext.restoreGraphicsState()
-        let image = NSImage(size: size)
-        image.addRepresentation(rep)
-        return image
-    }
-
-    static func png(_ image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation else { return nil }
-        return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
     }
 
     func answerRender(_ id: UInt64, _ pane: String, _ png: Data) {

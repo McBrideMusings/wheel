@@ -44,4 +44,4 @@ with fixture() as (env, info):
                   daemon_alive_after_client_exit=info['daemon_alive'](), host_sha256=digest)
     (out / 'report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False))
     print(json.dumps(dict(host_pid=report['host_pid'], daemon_pid=report['daemon_pid'], restarted_daemon_pid=info['restarted_daemon_pid'], restart=report['restart']['saw_down'], layouts=report['layouts_received'],
-                          ratio_saved=report['drag']['ratio_saved_by_wheeld'], markdown=report['markdown'], footer=report['footer'], status=report['status'], web=report['web']), indent=2))
+                          ratio_saved=report['drag']['ratio_saved_by_wheeld'], markdown=report['markdown'], footer=report['footer'], status=report['status'], web=report['web'], browser=report['browser']), indent=2))

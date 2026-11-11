@@ -4,10 +4,10 @@ import WheelKit
 /// Forwards a browser pane's console to the app. The script runs at document start in every
 /// frame; the top frame's first message says the page just loaded, so the daemon drops what it
 /// kept for the pane.
-enum BrowserConsole {
-    static let handlerName = "wheelConsole"
+public enum BrowserConsole {
+    public static let handlerName = "wheelConsole"
 
-    static let script = #"""
+    public static let script = #"""
     (function () {
       if (window.__wheelConsole) return;
       window.__wheelConsole = true;
@@ -53,7 +53,7 @@ enum BrowserConsole {
     """#
 
     /// One message from the script: `reset` for a page load, else a console entry.
-    static func decode(_ body: Any) -> (reset: Bool, entry: ConsoleEntry?)? {
+    public static func decode(_ body: Any) -> (reset: Bool, entry: ConsoleEntry?)? {
         guard let body = body as? [String: Any] else { return nil }
         if body["reset"] as? Bool == true { return (true, nil) }
         guard let level = body["level"] as? String, let text = body["text"] as? String,
@@ -64,10 +64,12 @@ enum BrowserConsole {
 }
 
 /// Receives the script's messages without the web view's controller holding the pane.
-final class ConsoleRelay: NSObject, WKScriptMessageHandler {
-    var onMessage: (Bool, ConsoleEntry?) -> Void = { _, _ in }
+public final class ConsoleRelay: NSObject, WKScriptMessageHandler {
+    public var onMessage: (Bool, ConsoleEntry?) -> Void = { _, _ in }
 
-    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+    public override init() {}
+
+    public func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let decoded = BrowserConsole.decode(message.body) else { return }
         MainActor.assumeIsolated { onMessage(decoded.reset, decoded.entry) }
     }

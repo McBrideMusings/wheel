@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import WebKit
 import IOSurface
 import QuartzCore
@@ -55,14 +56,24 @@ final class Slot: NSView {
     var page: A2UIPane?
     var pageView: NSHostingView<A2UIPaneView>?
     var pageShown: Bool { page?.isNative == true }
+    /// A browser pane: WheelUI's model, the one the Swift Mac app shows under its chrome. Here the
+    /// GPUI view draws the chrome from the state the bridge emits on every change.
+    var browser: BrowserPane?
+    var browserChanges: AnyCancellable?
     var grids: [[Int]] = []
     var writes: [String] = []
     init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
     var content: NSView { (pageShown ? pageView : nil) ?? web ?? terminal! }
 }
 
+/// A frame the bridge sends the Rust side on its own initiative: the C callback `attach` was
+/// given, with the bridge's window id and one JSON object.
+public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
+
 @MainActor final class Native: NSObject, WKNavigationDelegate {
     let root: NSView
+    let window: Int32
+    let emitter: Emit
     let controller = TerminalController(configSource: .generated("font-size = 14\nkeybind = clear\nbackground = #17201c\n"))
     var panes: [String: PaneHost] = [:]
     var socket: URLSessionWebSocketTask?
@@ -72,6 +83,12 @@ final class Slot: NSView {
     let pageDaemon = PageDaemon()
     var sendTask: Task<Void, Never>?
     var errors: [String] = []
+    /// What the browser models logged, the last 200 lines, for the check's report.
+    var logs: [String] = []
+    func log(_ line: String) {
+        logs.append(line)
+        if logs.count > 200 { logs.removeFirst(logs.count - 200) }
+    }
     var overlay: CGRect?
     var mouseNumber = 0
     var heldBeforeKey: String?
@@ -81,8 +98,10 @@ final class Slot: NSView {
     var sends: [String] = []
     var monitor: Any?
 
-    init(root: NSView, hidden: Bool) {
+    init(root: NSView, window: Int32, hidden: Bool, emit: @escaping Emit) {
         self.root = root
+        self.window = window
+        self.emitter = emit
         super.init()
         // Test mode: no Dock icon, activation, ordering or key-window call, deaf to the pointer.
         if hidden {
@@ -96,6 +115,13 @@ final class Slot: NSView {
             return event
         }
     }
+    /// Send one JSON object to the Rust side: a browser pane's state or report, or the answer to a
+    /// daemon request the Rust side relayed.
+    func emit(_ value: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return }
+        string.withCString { emitter(window, $0) }
+    }
+
     /// Command-[ and command-] belong to the GPUI view: make it the first responder before they land.
     func routeKey(_ event: NSEvent) {
         guard event.window === root.window, event.modifierFlags.contains(.command), ["[", "]"].contains(event.charactersIgnoringModifiers ?? ""),
@@ -163,11 +189,41 @@ final class Slot: NSView {
         let kind = value["kind"] as! String
         if let existing = panes[id], existing.kind == kind {
             if kind == "web", let url = value["url"] as? String, url != existing.url { existing.url = url; existing.web?.load(URLRequest(url: URL(string: url)!)) }
+            if kind == "browser", let url = value["url"] as? String { existing.browser?.daemonSays(url) }
             return
         }
         close(id)
         let host = PaneHost(id: id, kind: kind)
         root.addSubview(host.slot)
+        if kind == "browser" {
+            // The model reports the pages it lands on, asks what typed text means and relays the
+            // page's console through the Rust side, which owns the connection to wheeld.
+            let browser = BrowserPane(pane: id, url: value["url"] as? String ?? "about:blank", daemonIsRemote: value["remote"] as? Bool == true,
+                log: { [weak self] in self?.log($0) },
+                report: { [weak self] in self?.emit(["event": "navigated", "pane": id, "url": $0]) },
+                ask: { [weak self] in self?.emit(["event": "typed", "pane": id, "text": $0]) },
+                console: { [weak self] reset, entries in
+                    let list = entries.map { e -> [String: Any] in
+                        var o: [String: Any] = ["time": e.time, "level": e.level, "text": e.text]
+                        if let url = e.url { o["url"] = url }
+                        if let line = e.line { o["line"] = line }
+                        return o
+                    }
+                    self?.emit(["event": "console", "pane": id, "reset": reset, "entries": list])
+                })
+            host.browser = browser
+            host.web = browser.view
+            host.url = browser.url
+            host.slot.addSubview(browser.view)
+            // Every change of the chrome's state goes to the GPUI view once the change has landed.
+            host.browserChanges = browser.objectWillChange.receive(on: RunLoop.main).sink { [weak self, weak host] _ in
+                guard let self, let host else { return }
+                self.emit(self.browserState(host))
+            }
+            panes[id] = host
+            emit(browserState(host))
+            return
+        }
         if kind == "web" {
             let config = WKWebViewConfiguration()
             let artifact = (value["artifact"] as? String).flatMap { name in (value["scope"] as? String).flatMap(ArtifactScope.init(rawValue:)).map { ArtifactRef(scope: $0, name: name) } }
@@ -229,6 +285,74 @@ final class Slot: NSView {
         }
         panes[id] = host
     }
+    /// What the GPUI view draws a browser pane's chrome from.
+    func browserState(_ host: PaneHost) -> [String: Any] {
+        guard let b = host.browser else { return [:] }
+        var o: [String: Any] = ["event": "browser", "pane": host.id, "url": b.url, "address": b.address, "title": b.title, "loading": b.loading,
+            "progress": b.progress, "can_go_back": b.canGoBack, "can_go_forward": b.canGoForward]
+        if let f = b.failure { o["failure"] = ["address": f.address, "message": f.message] }
+        return o
+    }
+    /// `back`, `forward`, `reload`, `stop`, `clear_failure`, `open` (typed text), `opened` and
+    /// `refused` (the daemon's answers to typed text), `daemon_says` (a `pane_url`).
+    func browser(_ value: [String: Any]) {
+        guard let host = panes[value["pane"] as! String], let browser = host.browser else { return }
+        switch value["action"] as? String {
+        case "back": browser.back()
+        case "forward": browser.forward()
+        case "reload": browser.reload()
+        case "stop": browser.stop()
+        case "clear_failure": browser.clearFailure()
+        case "open": browser.open(typed: value["text"] as? String ?? "")
+        case "opened": browser.opened(value["url"] as? String ?? "")
+        case "refused": browser.refused(typed: value["text"] as? String ?? "", value["message"] as? String ?? "")
+        case "daemon_says": browser.daemonSays(value["url"] as? String ?? "")
+        default: break
+        }
+    }
+    /// `render_pane` relayed by the Rust side: the pane as a PNG, answered through `emit` with
+    /// `rendered` or `refused`. A web or browser pane is WebKit's own render of the page (under
+    /// `full`, the whole document); a native A2UI page and a terminal are their views' pixels.
+    func render(_ value: [String: Any]) {
+        let id = value["id"] as! UInt64
+        let pane = value["pane"] as! String
+        guard let host = panes[pane] else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
+        if host.pageShown, let view = host.pageView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { emit(["answer": "refused", "id": id, "message": "the page could not be encoded as a PNG"]); return }
+            emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
+        } else if let web = host.web {
+            Task { @MainActor [weak self] in
+                switch await BrowserInspect.shotPage(web, full: value["full"] as? Bool == true) {
+                case let .success(image):
+                    guard let png = BrowserInspect.png(image) else { self?.emit(["answer": "refused", "id": id, "message": "the drawing could not be encoded as a PNG"]); return }
+                    self?.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
+                case let .failure(refusal): self?.emit(["answer": "refused", "id": id, "message": refusal.message])
+                }
+            }
+        } else if let terminal = host.terminal, let image = terminalPixels(terminal), let tiff = image.tiffRepresentation,
+                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
+        } else {
+            emit(["answer": "refused", "id": id, "message": "the GPUI client draws this pane itself; its picture is not served yet"])
+        }
+    }
+    /// `inspect_pane` relayed by the Rust side, on a browser pane's page: answered through `emit`
+    /// with `inspected`, `rendered`, `recorded` or `refused`.
+    func inspect(_ value: [String: Any]) {
+        let id = value["id"] as! UInt64
+        let pane = value["pane"] as! String
+        let arg = value["arg"] as? String
+        guard let web = panes[pane]?.browser?.view else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
+        Task { @MainActor [weak self] in
+            switch await BrowserInspect.run(value["action"] as? String ?? "", arg: arg, in: web) {
+            case let .text(text): self?.emit(["answer": "inspected", "id": id, "text": text])
+            case let .png(png): self?.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
+            case let .film(film): self?.emit(["answer": "recorded", "id": id, "mov": film.mov.base64EncodedString(), "frames": film.frames, "millis": film.millis])
+            case let .refused(message): self?.emit(["answer": "refused", "id": id, "message": message])
+            }
+        }
+    }
     /// A file in the pane's folder changed. Opens the address again rather than `WKWebView.reload()`,
     /// which does nothing when the first load never committed (the daemon was down).
     func reload(_ id: String) {
@@ -289,6 +413,7 @@ final class Slot: NSView {
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let host = panes.values.first(where: { $0.web === webView }) else { return }
+        // A browser pane's view answers to its model's delegate, not this one.
         host.loads.append(webView.title ?? "")
         webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak host] result, _ in
             MainActor.assumeIsolated { host?.text = result as? String }
@@ -335,6 +460,9 @@ final class Slot: NSView {
         case "open": open(value)
         case "close": close(value["pane"] as! String)
         case "reload": reload(value["pane"] as! String)
+        case "browser": browser(value)
+        case "render": render(value)
+        case "inspect": inspect(value)
         case "disconnect":
             // Sends queued behind a socket that is gone never finish; the next socket starts a new chain.
             socket?.cancel(with: .goingAway, reason: nil)
@@ -367,7 +495,9 @@ final class Slot: NSView {
             // handling run as for hardware events; nothing touches the OS keyboard or focus.
             let text = value["text"] as! String
             let code = UInt16(value["code"] as? Int ?? 0)
-            let flags: NSEvent.ModifierFlags = value["command"] as? Bool == true ? [.command] : []
+            var flags: NSEvent.ModifierFlags = []
+            if value["command"] as? Bool == true { flags.insert(.command) }
+            if value["shift"] as? Bool == true { flags.insert(.shift) }
             for eventType in [NSEvent.EventType.keyDown, .keyUp] {
                 if let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: flags,
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,
@@ -430,7 +560,7 @@ final class Slot: NSView {
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
             "key_window": root.window?.isKeyWindow ?? false, "visible": root.window?.isVisible ?? false,
             "app_active": NSApp.isActive, "native_subviews": root.subviews.count,
-            "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends]
+            "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends, "logs": logs]
         var panesOut: [String: Any] = [:]
         for (id, host) in panes {
             let f = host.slot.frame
@@ -439,7 +569,12 @@ final class Slot: NSView {
                 "masked": host.slot.layer?.mask != nil,
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
                 "view_identity": String(describing: Unmanaged.passUnretained(host.content).toOpaque())]
-            if host.kind == "web" {
+            if let b = host.browser {
+                entry["url"] = b.url; entry["title"] = b.title; entry["loading"] = b.loading; entry["can_go_back"] = b.canGoBack
+                entry["can_go_forward"] = b.canGoForward; entry["status"] = b.status ?? NSNull(); entry["text"] = b.text ?? ""
+                entry["failure"] = b.failure.map { ["address": $0.address, "message": $0.message] } ?? NSNull()
+                entry["loads"] = host.loads
+            } else if host.kind == "web" {
                 entry["loads"] = host.loads; entry["url"] = host.url ?? ""; entry["reloads"] = host.reloads
                 entry["status"] = host.status ?? NSNull(); entry["store"] = host.store?.uuidString ?? ""; entry["text"] = host.text ?? ""
                 if let page = host.page { entry["page"] = ["state": page.stateName, "native": host.pageShown, "notice": page.notice ?? "", "unsupported": page.unsupported] }
@@ -457,10 +592,10 @@ final class Slot: NSView {
 @MainActor private var natives: [Int32: Native] = [:]
 @MainActor private var nextWindow: Int32 = 1
 @_cdecl("wheel_native_attach") @MainActor
-public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32) -> Int32 {
+public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: @escaping Emit) -> Int32 {
     let id = nextWindow
     nextWindow += 1
-    natives[id] = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), hidden: hidden != 0)
+    natives[id] = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), window: id, hidden: hidden != 0, emit: emit)
     return id
 }
 @_cdecl("wheel_native_command") @MainActor
