@@ -685,10 +685,13 @@ impl AppState {
             each_space_kind_mut(space, &mut |kind| {
                 if let PaneKind::Agent {
                     agent,
+                    harness,
                     state,
                     model,
                     context,
                     permissions,
+                    place,
+                    login,
                     ..
                 } = kind
                 {
@@ -699,6 +702,7 @@ impl AppState {
                     if let Some(running) = &running {
                         *permissions = self.current_permissions(running);
                     }
+                    *login = self.agent_login(harness, place.as_deref()).map(Box::new);
                 }
             });
         }
@@ -722,9 +726,14 @@ impl AppState {
         for space in &mut spaces.spaces {
             each_space_kind_mut(space, &mut |kind| {
                 if let PaneKind::Agent {
-                    agent, permissions, ..
+                    agent,
+                    permissions,
+                    login,
+                    ..
                 } = kind
                 {
+                    // The login is the listing's, read fresh each time; a layout never holds it.
+                    *login = None;
                     if let Ok(running) = self.agent(agent) {
                         *permissions = self.current_permissions(&running);
                     }
@@ -1960,6 +1969,7 @@ impl AppState {
             // The pane keeps the account it started in, so a restart finds its conversation there.
             place: wheel_proto::AgentPlace::boxed(fork.and_then(|f| f.cwd), home),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
+            login: None,
             extra: Extra::default(),
         };
         // A pane that closed while the agent spawned ends the agent it was given.

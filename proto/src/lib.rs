@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 32;
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -3796,6 +3796,23 @@ pub struct PaneLogin {
     pub account: Option<UsageAccount>,
 }
 
+/// Which login an agent pane runs under, as the `status` listing reports it (protocol 33): the
+/// config directory the agent takes its login from and, from the usage reading of the account
+/// whose login lives there, what pays for it and whose it is. Carried whatever `usage.labels`
+/// says, so a script can say which login a pane uses; never saved with the layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLogin {
+    /// The agent's config directory: the pane's own `home`, else the `agent.<name>.home`
+    /// setting, else the agent's default (`~/.claude`, `~/.codex`).
+    pub home: String,
+    /// The reading's `billing` (`Max 20x`, `API`); None while no reading names a login in `home`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<String>,
+    /// The reading's `email`; None while no reading names a login in `home`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
 /// One account of a coding agent and its reading. Several logins of one account are one entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageAccount {
@@ -3894,6 +3911,8 @@ pub enum PaneKind {
         /// The permission mode and sandbox the agent was started with; in a layout listing
         /// (`status`) `permission_mode` is the mode the running agent is in now.
         permissions: Option<Box<AgentPermissions>>,
+        /// The login the pane runs under; set by the listing (`status`), never saved.
+        login: Option<Box<AgentLogin>>,
         extra: Extra,
     },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
@@ -4022,6 +4041,8 @@ enum KnownPaneKind {
         permission_mode: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sandbox: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        login: Option<AgentLogin>,
     },
 }
 
@@ -4061,6 +4082,7 @@ impl Serialize for PaneKind {
                 context,
                 place,
                 permissions,
+                login,
                 extra,
             } => (
                 KnownPaneKind::Agent {
@@ -4074,6 +4096,7 @@ impl Serialize for PaneKind {
                     home: place.as_ref().and_then(|p| p.home.clone()),
                     permission_mode: permissions.as_ref().and_then(|p| p.permission_mode.clone()),
                     sandbox: permissions.as_ref().and_then(|p| p.sandbox.clone()),
+                    login: login.as_deref().cloned(),
                 },
                 extra,
             ),
@@ -4156,6 +4179,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 home,
                 permission_mode,
                 sandbox,
+                login,
             } => PaneKind::Agent {
                 agent,
                 harness,
@@ -4165,6 +4189,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 context,
                 place: AgentPlace::boxed(cwd, home),
                 permissions: AgentPermissions::boxed(permission_mode, sandbox),
+                login: login.map(Box::new),
                 extra,
             },
         })
@@ -4544,11 +4569,19 @@ mod tests {
             matches!(&node, Node::Pane { kind: PaneKind::Agent { agent, harness, .. }, .. } if agent == "w7" && harness == "codex")
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), agent);
+        // The listing's login rides on the agent pane and comes back whole; a pane without one
+        // (every saved layout) reads as none.
+        let listed = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7", "harness": "claude",
+            "login": {"home": "/h/.claude-work", "billing": "Max 20x", "email": "pat@work.example"}});
+        let node: Node = serde_json::from_value(listed.clone()).unwrap();
+        assert!(matches!(&node, Node::Pane { kind: PaneKind::Agent { login: Some(l), .. }, .. }
+            if l.home == "/h/.claude-work" && l.email.as_deref() == Some("pat@work.example")));
+        assert_eq!(serde_json::to_value(&node).unwrap(), listed);
         // A pane saved without an agent name ran Claude Code.
         let old = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7"});
         let node: Node = serde_json::from_value(old).unwrap();
         assert!(
-            matches!(&node, Node::Pane { kind: PaneKind::Agent { harness, .. }, .. } if harness == "claude")
+            matches!(&node, Node::Pane { kind: PaneKind::Agent { harness, login: None, .. }, .. } if harness == "claude")
         );
         let saved = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7", "harness": "claude", "conversation": "abc"});
         let node: Node = serde_json::from_value(saved.clone()).unwrap();

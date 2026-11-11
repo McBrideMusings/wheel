@@ -59,5 +59,32 @@ expect_out 'strip: codex .codex-work weekly 92% full' "the codex:weekly:full met
 eq "the codex:5h meter draws nothing for a login with no 5h window" "$(w usage | grep -c 'strip: codex .codex-work 5h')" "0"
 has_log "usage read failed account=.claude-work" "log: the signed-out account's read names it"
 has_log "usage read account=.codex-work source=wham/usage via Codex logins windows=weekly=92%/604800s billing=Prolite" "log: a read names its source, windows and billing"
+stop_daemon
+
+# An agent pane's entry in `wheel status --json` carries its login (wheel-32cu.1): the home the
+# agent takes its login from, and the billing and email of the account read from that folder,
+# whatever usage.labels says. A home no reading names gives the home alone.
+WORK="$SCR/h/.claude-work"
+mkdir -p "$WORK"
+printf '{"accounts":[{"name":".claude-work","dirs":["%s"],"five_hour":{"utilization":3},"seven_day":{"utilization":86},"billing":"Max 20x","email":"pat@work.example"}]}\n' "$WORK" >"$FIX"
+use_fake_agent
+printf 'home = "%s/"\n' "$WORK" >>"$INST/wheel.toml"
+start_daemon --state-file "$STATE" --usage-fixture "$FIX"
+w config set usage.labels folder --machine >/dev/null
+w space new /tmp >/dev/null
+LOGIN_PANE="$(w space ls | jget spaces.0.root.id)"
+w pane start "$LOGIN_PANE" agent >/dev/null
+w usage >/dev/null
+eq "status --json: login.home is the agent.claude.home setting, trailing / dropped" "$(w status --json | jget spaces.0.root.login.home)" "$WORK"
+eq "status --json: login.billing comes from the reading of that home" "$(w status --json | jget spaces.0.root.login.billing)" "Max 20x"
+eq "status --json: login.email too, with usage.labels naming only folder" "$(w status --json | jget spaces.0.root.login.email)" "pat@work.example"
+w space new /tmp >/dev/null
+eq "the second space's pane runs no agent" "$(w status --json | jget spaces.1.root.kind)" "empty"
+eq "...and has no login" "$(w status --json | python3 -c 'import json,sys; print("login" in json.load(sys.stdin)["spaces"][1]["root"])')" "False"
+printf '{"accounts":[{"name":".claude","dirs":["%s"],"five_hour":{"utilization":3},"seven_day":{"utilization":86},"billing":"Pro","email":"a@b.c"}]}\n' "$SCR/h/.claude" >"$FIX"
+w usage >/dev/null
+eq "a reading that no longer names the home leaves billing out" "$(w status --json | jget spaces.0.root.login.billing)" ""
+eq "...and keeps the home" "$(w status --json | jget spaces.0.root.login.home)" "$WORK"
+check "the saved layout carries no login" file_lacks '"login"' "$STATE"
 
 finish

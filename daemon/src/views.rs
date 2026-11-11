@@ -190,6 +190,7 @@ impl AppState {
             context: None,
             place: AgentPlace::boxed((cwd != space_cwd).then_some(cwd), claude_dir),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
+            login: None,
             extra: Extra::default(),
         };
         self.install(pane, new, None)?;
