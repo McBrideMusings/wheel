@@ -16,9 +16,9 @@ const DIM: u32 = 0x8fa89b;
 const RED: u32 = 0xe07070;
 
 impl Client {
-    /// The sidebar's rectangle: under the sessions row, down the left edge.
+    /// The sidebar's rectangle: under the title row, down the left edge, over the bottom row.
     pub fn sidebar_rect(&self) -> Rect {
-        Rect { x: header::MARGIN, y: header::SPACES_Y, w: sidebar::WIDTH, h: (self.viewport.1 - header::SPACES_Y - header::MARGIN).max(0.) }
+        Rect { x: header::MARGIN, y: HEADER, w: sidebar::WIDTH, h: (self.viewport.1 - HEADER - BOTTOM).max(0.) }
     }
     /// The rows of the session shown, as drawn.
     pub fn sidebar_rows(&self) -> Vec<Row> {
@@ -35,7 +35,7 @@ impl Client {
     /// The area the grid is placed in: right of the sidebar while it is open.
     pub fn grid_area(&self) -> Rect {
         let left = if self.sidebar_open { header::MARGIN + sidebar::WIDTH + sidebar::GAP } else { 0. };
-        Rect { x: left, y: HEADER, w: (self.viewport.0 - left).max(0.), h: (self.viewport.1 - HEADER).max(0.) }
+        Rect { x: left, y: HEADER, w: (self.viewport.0 - left).max(0.), h: (self.viewport.1 - HEADER - BOTTOM).max(0.) }
     }
     pub fn set_sidebar(&mut self, open: bool) {
         if self.sidebar_open != open {
@@ -308,7 +308,7 @@ impl Client {
         match id {
             "new-session" => {
                 let taken: Vec<&str> = self.sessions.iter().map(|s| s.name.as_str()).collect();
-                let name = (1..).map(|n| format!("Session {n}")).find(|n| !taken.contains(&n.as_str())).unwrap();
+                let name = header::session_name(&taken);
                 let req = self.req();
                 self.layout_reqs.insert(req);
                 self.space_for_new_session = Some((req, space_id));
@@ -506,7 +506,7 @@ impl Client {
         let procs = self.procs.by_space.get(space).map(Vec::len).unwrap_or(0);
         let lines = procs.clamp(1, 4) + usize::from(procs > 4);
         let h = 28. + sidebar::PREVIEW_GRID_H + 20. + lines as f32 * 18. + 30.;
-        let y = row.rect.y.min(self.viewport.1 - h - header::MARGIN).max(header::SPACES_Y);
+        let y = row.rect.y.min(self.viewport.1 - BOTTOM - h).max(HEADER);
         Some(Rect { x: header::MARGIN + sidebar::WIDTH + sidebar::GAP, y, w: sidebar::PREVIEW_W, h })
     }
     /// The last thing a pane shows, as one line (AppModel.lastLine): an agent's last reply, message

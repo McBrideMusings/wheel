@@ -19,6 +19,7 @@ pub mod server;
 pub mod settings;
 pub mod sidebar;
 pub mod status;
+pub mod strip;
 pub mod toasts;
 pub mod transcript;
 pub mod view;

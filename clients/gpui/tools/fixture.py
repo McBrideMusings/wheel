@@ -32,7 +32,56 @@ def machine_artifacts(gallery):
     serve = dict(beads=wheelhouse, issues=wheelhouse, repo=wheelhouse, runner=f'{shlex.quote(str(built("wheel-runner")))} serve',
                  gallery=f'python3 {shlex.quote(str(gallery))} v17')
     # Remote access on an ephemeral loopback port: the Devices page and the pairing window get a code to show.
-    return '[remote]\nlisten = "127.0.0.1:0"\n\n' + ''.join(f'[artifacts.{name}]\nmcp = {json.dumps(serve[name])}\nshared = true\npane = true\ntitle = {json.dumps(name.title())}\n\n' for name in PAGES)
+    return '[remote]\nlisten = "127.0.0.1:0"\n\n' + TITLE_MACHINE + ''.join(f'[artifacts.{name}]\nmcp = {json.dumps(serve[name])}\nshared = true\npane = true\ntitle = {json.dumps(name.title())}\n\n' for name in PAGES)
+
+
+# The machine's `[[title.button]]` entries (ADR-0037): `build` with a state command that recolours
+# and badges it every second, `vpn` with a command, and the built-in pin hidden.
+TITLE_MACHINE = '''[[title.button]]
+id = "build"
+icon = "hammer"
+tip = "Build"
+command = "echo machine-build > build.txt"
+state = "echo '{\\"icon\\":\\"hammer.fill\\",\\"tint\\":\\"green\\",\\"badge\\":\\"2\\"}'"
+every = 1
+
+[[title.button]]
+id = "vpn"
+icon = "lock"
+tip = "VPN"
+command = "echo machine-pressed > pressed.txt"
+
+[[title.button]]
+id = "pin"
+hidden = true
+
+'''
+# The project's entries: `vpn` replaces the machine's in place, on the right with its own command;
+# `deploy` has no command, so it is an indicator.
+TITLE_PROJECT = '''
+[[title.button]]
+id = "vpn"
+icon = "lock.open"
+side = "right"
+tip = "Project VPN"
+command = "echo project-pressed > pressed.txt"
+
+[[title.button]]
+id = "deploy"
+icon = "shippingbox"
+'''
+
+
+def usage_readings():
+    """What `wheeld --usage-fixture` reads: two Claude logins (one signed out) and a Codex Pro Lite login."""
+    now = int(time.time())
+    iso = lambda t: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))  # noqa: E731
+    return json.dumps({'accounts': [
+        {'name': '.claude', 'five_hour': {'utilization': 3, 'resets_at': iso(now + 7200)}, 'seven_day': {'utilization': 86, 'resets_at': iso(now + 3 * 86400)}},
+        {'name': '.claude-work', 'not_logged_in': 'signed out: open Claude Code with /h/.claude-work to sign in again'},
+        {'name': '.codex-work', 'agent': 'codex', 'plan_type': 'prolite',
+         'rate_limit': {'primary_window': {'used_percent': 92, 'limit_window_seconds': 604800, 'reset_at': now + 5 * 86400}, 'secondary_window': None}},
+    ]})
 
 
 def html_page(title):
@@ -69,8 +118,9 @@ def fixture():
         (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
         gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n')
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
         (root / 'machine.toml').write_text(machine_artifacts(gallery))
+        (root / 'usage.json').write_text(usage_readings())
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
@@ -92,7 +142,7 @@ def fixture():
 
         def start():
             daemon = subprocess.Popen([str(root / 'wheeld'), '--listen', f'127.0.0.1:{port}', '--support-dir', str(root / 'support'),
-                '--machine-file', str(root / 'machine.toml'), '--log-dir', str(root / 'logs')], env=env, stdout=log, stderr=log)
+                '--machine-file', str(root / 'machine.toml'), '--log-dir', str(root / 'logs'), '--usage-fixture', str(root / 'usage.json')], env=env, stdout=log, stderr=log)
             running.append(daemon)
             for _ in range(100):
                 if daemon.poll() is not None:
@@ -135,6 +185,7 @@ def fixture():
             web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
             cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
             cli('config', 'set', 'agent.claude.command', str(built('wheel-fake-agent')), '--machine')
+            cli('config', 'set', 'usage.agents', 'claude,codex', '--machine')
             agent_pane = cli('pane', 'split', browser, 'down').splitlines()[-1]
             started = json.loads(cli('pane', 'start', agent_pane, 'agent', '--agent', 'claude'))
 

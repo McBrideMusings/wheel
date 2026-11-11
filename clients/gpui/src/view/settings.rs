@@ -278,7 +278,7 @@ impl Client {
     }
 
     /// A machine-wide list setting toggled by a checkbox: `status.dots`, `usage.agents`, `usage.labels`.
-    fn write_machine(&mut self, key: &str, value: String) {
+    pub(super) fn write_machine(&mut self, key: &str, value: String) {
         if self.link != Link::Up {
             return;
         }
@@ -495,7 +495,7 @@ impl Client {
                 true
             }
             ServerMsg::UsageChanged { board } => {
-                self.settings.usage = board.clone();
+                self.take_usage_board(board);
                 false
             }
             _ => false,

@@ -382,6 +382,92 @@ impl Client {
                 }
                 None
             }
+            // A press on a title-row control by its id (`sidebar`, `session`, `mode`, `plugin-<id>`,
+            // `processes`, `palette`, `pin`, `new-space`, or `tab:<space>`), through the row's own press.
+            "/title" => {
+                let Some(id) = q("id") else { return refuse(BAD, "id= is required") };
+                let Some(chip) = self.header_chips().into_iter().find(|c| header::frame_id(&c.hit).as_deref() == Some(id.as_str()) || matches!(&c.hit, Hit::Space(s) if format!("tab:{s}") == id)) else {
+                    return refuse(MISSING, "no title-row control with that id");
+                };
+                self.press_title(&chip.hit);
+                None
+            }
+            // The session or mode menu: open (`menu=session|mode`), close, or select a row (`item=`).
+            "/titlemenu" => {
+                match q("action").as_deref() {
+                    Some("open") => {
+                        let menu = match q("menu").as_deref() { Some("session") => TitleMenu::Session, Some("mode") => TitleMenu::Mode, _ => return refuse(BAD, "menu is session or mode") };
+                        if self.title_menu != Some(menu) {
+                            self.toggle_title_menu(menu);
+                        }
+                    }
+                    Some("close") => self.close_title_menu(),
+                    Some("select") => {
+                        let Some(item) = q("item") else { return refuse(BAD, "item= is required") };
+                        if self.title_menu.is_none() {
+                            return refuse(BAD, "no title menu is open");
+                        }
+                        self.run_title_menu(&item);
+                    }
+                    _ => return refuse(BAD, "action is open, close or select"),
+                }
+                None
+            }
+            "/mode" => {
+                let Some(mode) = q("mode") else { return refuse(BAD, "mode= is required") };
+                if !header::MODES.iter().any(|m| m.0 == mode) {
+                    return refuse(BAD, "mode is spaces or desk");
+                }
+                self.set_mode(&mode);
+                None
+            }
+            "/pin" => {
+                match q("on").as_deref() {
+                    Some("true") => self.set_pinned(true),
+                    Some("false") => self.set_pinned(false),
+                    _ => return refuse(BAD, "on is true or false"),
+                }
+                None
+            }
+            // The Usage window and the strip, as the Swift app's `/usage`: open, close, refresh
+            // (`due_only=true` for the timer's read), a window's meter level, a label or an agent toggle.
+            "/usage" => {
+                match q("action").as_deref() {
+                    Some("open") => self.open_usage(),
+                    Some("close") => self.close_usage(),
+                    Some("refresh") => self.refresh_usage(q("due_only").as_deref() == Some("true")),
+                    Some("meter") => {
+                        let Some(row) = q("row") else { return refuse(BAD, "row=<agent>:<window> is required") };
+                        let Some((agent, window)) = row.split_once(':') else { return refuse(BAD, "row=<agent>:<window> is required") };
+                        let level = match q("level").as_deref() {
+                            Some("off") => None,
+                            Some("meter") => Some(wheel_proto::UsageMeterLevel::Meter),
+                            Some("full") => Some(wheel_proto::UsageMeterLevel::Full),
+                            _ => return refuse(BAD, "level is off, meter or full"),
+                        };
+                        self.set_meter(agent, window, level);
+                    }
+                    Some("label") => {
+                        let Some(label) = q("label") else { return refuse(BAD, "label= is required") };
+                        if !crate::strip::LABELS.contains(&label.as_str()) {
+                            return refuse(BAD, "label is billing, folder or email");
+                        }
+                        let on = self.settings.usage.labels.iter().any(|l| *l == label);
+                        if q("on").as_deref().map(|v| v == "true") != Some(on) {
+                            self.toggle_usage_label(&label);
+                        }
+                    }
+                    Some("agent") => {
+                        let Some(agent) = q("agent") else { return refuse(BAD, "agent= is required") };
+                        let Some(info) = self.settings.usage.agents.iter().find(|a| a.id == agent) else { return refuse(MISSING, "no such usage agent") };
+                        if q("on").as_deref().map(|v| v == "true") != Some(info.shown) {
+                            self.toggle_usage_agent(&agent);
+                        }
+                    }
+                    _ => return refuse(BAD, "action is open, close, refresh, meter, label or agent"),
+                }
+                None
+            }
             // The hover preview as the pointer drives it: `space` holds the pointer over its row, none lets it go.
             "/preview" => {
                 match q("space") {
@@ -402,13 +488,13 @@ impl Client {
         ok(answer.unwrap_or_else(|| self.state_json()))
     }
 
-    /// Where the header's controls are, for a check that presses them with real events.
+    /// Where the title row's controls are, for a check that presses them with real events:
+    /// `title_buttons` by the Swift ids, and `tabs` while the sidebar is hidden.
     fn geometry_json(&self) -> Value {
-        let chips: Vec<Value> = self.header_chips().into_iter().map(|c| {
-            let hit = match &c.hit { Hit::Session(id) => format!("session:{id}"), Hit::Space(id) => format!("space:{id}"), Hit::Processes => "processes".into(), Hit::NewWindow => "new-window".into() };
-            json!({"hit": hit, "label": c.label, "active": c.active, "frame": [c.rect.x, c.rect.y, c.rect.w, c.rect.h]})
-        }).collect();
-        json!({"viewport": [self.viewport.0, self.viewport.1], "header": chips})
+        let row = self.title_row();
+        let tabs: Vec<Value> = row.chips.iter().filter_map(|c| match &c.hit { Hit::Space(id) => Some(json!({"space": id, "label": c.label, "active": c.active, "frame": [c.rect.x, c.rect.y, c.rect.w, c.rect.h]})), _ => None }).collect();
+        json!({"viewport": [self.viewport.0, self.viewport.1], "title_buttons": self.title_button_frames(), "tabs": tabs,
+            "tab_strip": row.track.map(|t| json!([t.x, t.y, t.w, t.h])), "title": row.chips.iter().find(|c| c.hit == Hit::Title).map(|c| json!({"label": c.label, "frame": [c.rect.x, c.rect.y, c.rect.w, c.rect.h]}))})
     }
 
     /// The client as JSON: what the Swift app's `/state` carries where the GPUI client has it.
@@ -474,6 +560,8 @@ impl Client {
             "confirmation": self.confirmation.as_ref().map(|c| json!({"title": c.title, "message": c.message, "button": c.button})),
             "shortcuts_open": self.shortcuts_open,
             "sidebar": self.sidebar_json(),
+            "title": self.title_json(),
+            "usage": self.usage_json(),
             "pairing": {"open": self.pairing.open},
             "keymap": self.all_actions().iter().map(|a| (a.id.clone(), json!(self.keymap.symbol(&a.id)))).collect::<serde_json::Map<_, _>>(),
             "actions_log": self.actions_log,

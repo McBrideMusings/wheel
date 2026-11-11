@@ -27,6 +27,8 @@ pub enum Pending {
     StartAgent(String, String),
     /// Remove an installed built-in artifact: its folder and its entry go.
     RemoveBuiltin(String),
+    /// Close a session: every space in it and every pane in those.
+    CloseSession(String),
 }
 
 /// The requests the open palette has out, so their answers are told apart.
@@ -110,8 +112,8 @@ impl Client {
             "previous-space" | "next-space" => spaces() > 1,
             "last-space" => spaces() > 0,
             "settings" => true,
-            "toggle-sidebar" => true,
-            "usage" | "rename-window" | "mode-spaces" | "mode-desk" | "zoom-pane" | "switch-view" => false,
+            "toggle-sidebar" | "usage" | "mode-spaces" | "mode-desk" => true,
+            "rename-window" | "zoom-pane" | "switch-view" => false,
             other => {
                 if let Some(n) = other.strip_prefix("space-").and_then(|n| n.parse::<usize>().ok()) {
                     return spaces() >= n;
@@ -186,6 +188,9 @@ impl Client {
             }
             "close-window" => self.close_window_requested = true,
             "toggle-sidebar" => self.toggle_sidebar(),
+            "usage" => self.toggle_usage(),
+            "mode-spaces" => self.set_mode("spaces"),
+            "mode-desk" => self.set_mode("desk"),
             "command-palette" => self.open_command_palette(Mode::Root),
             "shortcuts" => self.toggle_shortcuts(),
             "settings" => self.toggle_settings(),
@@ -454,6 +459,7 @@ impl Client {
             Pending::SetKind(pane, kind) => self.set_kind(&pane, kind),
             Pending::StartAgent(pane, agent) => self.send(&ClientMsg::PaneStart { req: None, pane, kind: StartKind::Agent, message: None, agent: Some(agent), model: None, permission_mode: None, sandbox: None }),
             Pending::RemoveBuiltin(name) => self.remove_builtin(&name),
+            Pending::CloseSession(session) => self.send_layout(|req| ClientMsg::SessionClose { req: Some(req), session }),
         }
     }
 
@@ -484,7 +490,7 @@ impl Client {
         self.sync_overlay();
     }
     /// The `+` and ⌘T: the palette in New Space mode, switching one already open into it.
-    fn open_new_space_palette(&mut self) {
+    pub(super) fn open_new_space_palette(&mut self) {
         match &self.command_palette {
             None => self.open_command_palette(Mode::NewSpace),
             Some(p) if p.mode != Mode::NewSpace => self.enter_new_space_mode(),
@@ -699,7 +705,7 @@ impl Client {
     /// Tell the bridge where the window-wide overlay is, so the native views leave it a hole and
     /// the GPUI view takes the keyboard while one is open.
     pub(super) fn sync_overlay(&mut self) {
-        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some();
+        let open = self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() || self.usage_open || self.title_menu.is_some();
         if open {
             let (w, h) = self.viewport;
             self.native.call(serde_json::json!({"op": "overlay", "open": true, "rect": [0., 0., f64::from(w), f64::from(h)]}));

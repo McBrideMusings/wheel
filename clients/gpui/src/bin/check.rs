@@ -112,6 +112,22 @@ async fn click_chip(window: gpui::WindowHandle<Client>, hit: Hit, cx: &mut Async
     }
     Ok(())
 }
+/// Switch the window to `session` the way a person does: a real click on the title row's session
+/// menu button, then one on the session's row.
+async fn switch_session(window: gpui::WindowHandle<Client>, session: &str, cx: &mut AsyncApp) -> Result<()> {
+    click_chip(window, Hit::SessionMenu, cx).await?;
+    let (native, row) = window.update(cx, |c, _, _| (c.native(), c.title_menu_placed().and_then(|(_, rows)| rows.into_iter().find(|(r, _)| r.id == format!("session:{session}")).map(|(_, r)| r))))?;
+    let row = row.ok_or_else(|| anyhow::anyhow!("the session menu lists no {session}"))?;
+    let at = [f64::from(row.x + row.w / 2.), f64::from(row.y + row.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    for _ in 0..3 {
+        tick(cx, 100).await;
+        draw(window, None, cx)?;
+    }
+    ensure!(window.update(cx, |c, _, _| c.title_menu.is_none())?, "the session menu stayed open after the row was clicked");
+    Ok(())
+}
 fn shown(window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(Option<String>, Option<String>)> {
     Ok(window.update(cx, |c, _, _| (c.session_id().map(str::to_owned), c.space_id().map(str::to_owned)))?)
 }
@@ -754,25 +770,145 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
     tick(cx, 300).await;
+    // The title row and the bottom row (wheel-ynjo.6; ADR-0037, ADR-0034). The fixture's machine
+    // file has `build` (a state command: icon, tint and badge every second) and `vpn` entries and
+    // hides the pin; the project's file puts `vpn` on the right with its own command and adds
+    // `deploy`, which has none. wheeld reads usage from the fixture's file: two Claude logins, one
+    // signed out, and a Codex Pro Lite login.
+    let title_state = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.title_json());
+    let row_ids = |t: &Value| t["row"].as_array().map(|r| r.iter().filter_map(|c| c["id"].as_str().map(str::to_owned)).collect::<Vec<_>>()).unwrap_or_default();
+    let chip_of = |t: &Value, id: &str| t["row"].as_array().and_then(|r| r.iter().find(|c| c["id"] == id).cloned()).unwrap_or(Value::Null);
+    let mut title = Value::Null;
+    for _ in 0..60 {
+        pump(&mut connection, 200, &mut layouts, window, cx).await?;
+        title = title_state(cx)?;
+        if chip_of(&title, "plugin-build")["badge"] == "2" && chip_of(&title, "plugin-vpn")["icon"] == "lock.open" {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    let order = row_ids(&title);
+    ensure!(order == ["sidebar", "session", "mode", "plugin-build", "plugin-deploy", "title", "plugin-vpn", "processes", "palette", "new-space"], "the title row's order: {order:?} ({title})");
+    let build = chip_of(&title, "plugin-build");
+    ensure!(build["icon"] == "hammer.fill" && build["tint"] == "green" && build["badge"] == "2", "the machine entry's state did not land: {build}");
+    let vpn = chip_of(&title, "plugin-vpn");
+    ensure!(vpn["label"] == "Project VPN" && vpn["pressable"] == true, "the project's vpn entry: {vpn}");
+    ensure!(chip_of(&title, "plugin-deploy")["pressable"] == false, "deploy has no command and should not be pressable");
+    let frames: Vec<[f64; 4]> = title["row"].as_array().unwrap().iter().filter(|c| c["id"] != "title").map(|c| [c["frame"][0].as_f64().unwrap(), c["frame"][1].as_f64().unwrap(), c["frame"][2].as_f64().unwrap(), c["frame"][3].as_f64().unwrap()]).collect();
+    ensure!(frames.iter().all(|f| f[1] == 6. && f[2] == 28. && f[3] == 26.), "every button sits in a 28×26 slot at y 6: {frames:?}");
+    // A real click on vpn runs the project's command in the space's directory.
+    let project_dir = std::path::PathBuf::from(std::env::var("WHEEL_CLIENT_HTML")?).parent().unwrap().to_path_buf();
+    let pressed_file = project_dir.join("pressed.txt");
+    if let Err(e) = std::fs::remove_file(&pressed_file) && e.kind() != std::io::ErrorKind::NotFound {
+        anyhow::bail!("could not clear {}: {e}", pressed_file.display());
+    }
+    click_chip(window, Hit::Plugin("vpn".into()), cx).await?;
+    let mut pressed = String::new();
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if let Ok(text) = std::fs::read_to_string(&pressed_file)
+            && !text.trim().is_empty()
+        {
+            pressed = text.trim().to_owned();
+            break;
+        }
+    }
+    ensure!(pressed == "project-pressed", "the vpn press did not run the project's command: {pressed:?}");
+    window.update(cx, |c, _, _| c.press_plugin("deploy"))?;
+    let log_has = |cx: &mut AsyncApp, needle: &str| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.state_json()["log"].as_array().is_some_and(|l| l.iter().any(|e| e.as_str().is_some_and(|e| e.contains(needle)))))?) };
+    ensure!(log_has(cx, "title button deploy: an indicator")?, "a press on deploy should be ignored and logged");
+    // The mode menu, opened by a real click: Desk hides every pane and draws the placeholder.
+    click_chip(window, Hit::Mode, cx).await?;
+    let menu = title_state(cx)?["menu"].clone();
+    ensure!(menu["kind"] == "mode" && menu["rows"][0]["id"] == "mode:spaces" && menu["rows"][0]["checked"] == true && menu["rows"][1]["id"] == "mode:desk", "the mode menu: {menu}");
+    window.update(cx, |c, _, _| c.run_title_menu("mode:desk"))?;
+    draw(window, None, cx)?;
+    wait(&native, "every pane hidden in desk mode", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == true), cx).await?;
+    draw(window, Some(output.join("client-desk.png")), cx)?;
+    let mode_after = title_state(cx)?["mode"].clone();
+    ensure!(mode_after == "desk" && title_state(cx)?["menu"].is_null(), "desk mode did not take: {mode_after}");
+    window.update(cx, |c, _, _| c.set_mode("spaces"))?;
+    draw(window, None, cx)?;
+    wait(&native, "the panes shown again in spaces mode", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
+    // The pin (its button is hidden by the fixture's entry, so through the action the button runs).
+    window.update(cx, |c, _, _| c.set_pinned(true))?;
+    ensure!(title_state(cx)?["pinned"] == true && log_has(cx, " pinned")?, "the pin did not take");
+    window.update(cx, |c, _, _| c.set_pinned(false))?;
+    ensure!(title_state(cx)?["pinned"] == false && log_has(cx, " unpinned")?, "the pin did not come off");
+    // The session menu, opened by a real click: the sessions with the shown one checked, then the verbs; Esc closes it.
+    click_chip(window, Hit::SessionMenu, cx).await?;
+    let session_menu = title_state(cx)?["menu"].clone();
+    let menu_ids: Vec<String> = session_menu["rows"].as_array().unwrap_or(&vec![]).iter().map(|r| r["id"].as_str().unwrap_or_default().to_owned()).collect();
+    let session_count = window.update(cx, |c, _, _| c.state_json()["sessions"].as_array().map(Vec::len).unwrap_or(0))?;
+    ensure!(session_menu["kind"] == "session" && menu_ids.len() == session_count + 3 && menu_ids[session_count..] == ["new-session", "rename-session", "close-session"] && menu_ids[0] == format!("session:{first_session_id}") && session_menu["rows"][0]["checked"] == true, "the session menu: {session_menu}");
+    window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: wheel_gpui::keymap::KeyChord::parse("escape").unwrap().keystroke(), is_held: false, prefer_character_input: false }, cx))?;
+    ensure!(title_state(cx)?["menu"].is_null(), "Esc did not close the session menu");
+    // The sidebar hidden: the spaces become tabs in the title row, 220 pt wide for one space, and the title goes.
+    window.update(cx, |c, _, _| c.set_sidebar(false))?;
+    draw(window, Some(output.join("client-title-row.png")), cx)?;
+    let tabs = title_state(cx)?;
+    let tab_ids: Vec<String> = row_ids(&tabs).into_iter().filter(|id| id.starts_with("tab:")).collect();
+    ensure!(tab_ids == [format!("tab:{fixture_space}")] && tabs["tabs"]["tab_width"] == 220. && !row_ids(&tabs).iter().any(|id| id == "title"), "the tabs with the sidebar hidden: {tabs}");
+    window.update(cx, |c, _, _| c.set_sidebar(true))?;
+    draw(window, None, cx)?;
+    // The bottom row: the badge, and the strip from the fixture's readings (the folder label prints
+    // for Claude's two logins, not for Codex's one; the signed-out login shows its note).
+    ensure!(tabs["connection_badge"] == "Connected to wheeld", "the badge: {}", tabs["connection_badge"]);
+    let usage = window.update(cx, |c, _, _| c.usage_json())?;
+    let strip_rows = usage["strip"].as_array().cloned().unwrap_or_default();
+    let summary: Vec<String> = strip_rows.iter().map(|e| format!("{} {} [{}] {}", e["agent"].as_str().unwrap_or("?"), e["account"].as_str().unwrap_or("-"),
+        e["labels"].as_array().map(|l| l.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(",")).unwrap_or_default(),
+        e["rows"].as_array().map(|r| r.iter().map(|w| format!("{}={}%", w["id"].as_str().unwrap_or("?"), w["pct"].as_f64().unwrap_or(0.))).collect::<Vec<_>>().join(" ")).unwrap_or_default())).collect();
+    ensure!(summary == ["claude .claude [.claude] 5h=3% weekly=86%", "claude .claude-work [.claude-work] ", "codex .codex-work [] weekly=92%"], "the strip: {summary:?} ({usage})");
+    ensure!(strip_rows[1]["note"].as_str().is_some_and(|n| n.starts_with("signed out")), "the signed-out login's note: {}", strip_rows[1]);
+    // The Usage window; Full on Claude's weekly window writes `usage.meters` for every Claude login
+    // and the strip's row gains its pace tick and reset clock.
+    window.update(cx, |c, _, _| c.open_usage())?;
+    draw(window, None, cx)?;
+    ensure!(window.update(cx, |c, _, _| c.usage_open)?, "the Usage window did not open");
+    window.update(cx, |c, _, _| c.set_meter("claude", "weekly", Some(wheel_proto::UsageMeterLevel::Full)))?;
+    let mut meters: Vec<Value> = vec![];
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        meters = window.update(cx, |c, _, _| c.usage_json()["meters"].as_array().cloned().unwrap_or_default())?;
+        if meters.iter().any(|m| m == "claude:weekly:full") {
+            break;
+        }
+    }
+    ensure!(meters == ["claude:5h:meter", "claude:weekly:full", "codex:5h:meter", "codex:weekly:meter"], "usage.meters after Full: {meters:?}");
+    draw(window, Some(output.join("client-usage.png")), cx)?;
+    let full_row = window.update(cx, |c, _, _| c.usage_json()["strip"][0]["rows"][1].clone())?;
+    ensure!(full_row["level"] == "full" && full_row["resets"].is_string() && full_row["pace"].is_number(), "the full row: {full_row}");
+    window.update(cx, |c, _, _| c.set_meter("claude", "weekly", Some(wheel_proto::UsageMeterLevel::Meter)))?;
+    pump(&mut connection, 600, &mut layouts, window, cx).await?;
+    window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: wheel_gpui::keymap::KeyChord::parse("escape").unwrap().keystroke(), is_held: false, prefer_character_input: false }, cx))?;
+    draw(window, None, cx)?;
+    ensure!(!window.update(cx, |c, _, _| c.usage_open)?, "Esc did not close the Usage window");
+    let title_report = json!({"order": order, "build": build, "vpn": vpn, "pressed": pressed, "mode_after": mode_after, "session_menu": menu_ids, "tabs": tab_ids, "tab_width": tabs["tabs"]["tab_width"],
+        "badge": tabs["connection_badge"], "strip": summary, "meters_after_full": meters, "full_row": full_row});
     // Sessions and windows. The fixture holds two sessions; this window shows the first.
     let (first_session, first_space) = shown(window, cx)?;
     let (second_session, second_space) = (std::env::var("WHEEL_CLIENT_SECOND_SESSION")?, std::env::var("WHEEL_CLIENT_SECOND_SPACE")?);
     let id1 = window.update(cx, |c, _, _| c.window_id().to_owned())?;
     let chips_first = window.update(cx, |c, _, _| c.header_chips())?;
-    ensure!(chips_first.iter().any(|c| c.hit == Hit::Session(second_session.clone())) && chips_first.iter().any(|c| c.hit == Hit::NewWindow), "header lacks the session or New Window chip: {chips_first:?}");
+    ensure!(chips_first.iter().any(|c| c.hit == Hit::SessionMenu) && chips_first.iter().any(|c| c.hit == Hit::Title), "the title row lacks the session menu or the title: {chips_first:?}");
     reported(&id1, "the first session", |w| w.1 == first_session && w.2 == first_space, cx).await?;
-    click_chip(window, Hit::Session(second_session.clone()), cx).await?;
+    switch_session(window, &second_session, cx).await?;
     let on_second = shown(window, cx)?;
     ensure!(on_second == (Some(second_session.clone()), Some(second_space.clone())), "clicking the second session shows {on_second:?}");
     reported(&id1, "the second session and its space", |w| w.1.as_deref() == Some(second_session.as_str()) && w.2.as_deref() == Some(second_space.as_str()), cx).await?;
     let hidden_native = wait(&native, "the first space's views hidden", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == true), cx).await?;
     draw(window, Some(output.join("client-second-session.png")), cx)?;
-    click_chip(window, Hit::Session(first_session.clone().unwrap()), cx).await?;
+    switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session did not come back");
     wait(&native, "the first space's views shown again", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     // New Window opens a second window with a connection of its own, showing the same space.
     let before_windows = cx.update(|app| app.windows().len());
-    click_chip(window, Hit::NewWindow, cx).await?;
+    window.update(cx, |c, _, cx| c.run_action("new-window", cx))?;
+    for _ in 0..3 {
+        tick(cx, 100).await;
+        draw(window, None, cx)?;
+    }
     let windows: Vec<gpui::WindowHandle<Client>> = cx.update(|app| app.windows().into_iter().filter_map(|w| w.downcast::<Client>()).collect());
     ensure!(windows.len() == before_windows + 1, "New Window opened no window: {before_windows} -> {}", windows.len());
     let second = *windows.iter().find(|w| w.window_id() != window.window_id()).unwrap();
@@ -795,7 +931,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let distinct = native_panes.iter().all(|(id, _)| identity(&s1, id) != identity(&s2, id));
     ensure!(distinct, "the two windows share native views");
     // Each window shows its own session: the second goes to the second session, the first stays.
-    click_chip(second, Hit::Session(second_session.clone()), cx).await?;
+    switch_session(second, &second_session, cx).await?;
     ensure!(shown(second, cx)?.0.as_deref() == Some(second_session.as_str()) && shown(window, cx)?.0 == first_session, "windows moved together: {:?} {:?}", shown(window, cx)?, shown(second, cx)?);
     reported(&id2, "the second window on the second session", |w| w.1.as_deref() == Some(second_session.as_str()), cx).await?;
     reported(&id1, "the first window still on the first session", |w| w.1 == first_session, cx).await?;
@@ -1073,7 +1209,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // pictured from the view's pixels. The Beads page's Graph view, chosen by writing its picker's
     // value into the page's data model, draws the dependency graph with Wheel's Canvas component.
     let (pages_session, pages_pane) = (std::env::var("WHEEL_CLIENT_PAGES_SESSION")?, std::env::var("WHEEL_CLIENT_PAGES_PANE")?);
-    click_chip(window, Hit::Session(pages_session.clone()), cx).await?;
+    switch_session(window, &pages_session, cx).await?;
     ensure!(shown(window, cx)?.0.as_deref() == Some(pages_session.as_str()), "clicking the Pages session shows {:?}", shown(window, cx)?);
     let pages_dir = output.join("pages");
     let mut pages_report = serde_json::Map::new();
@@ -1124,7 +1260,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     let pages_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == pages_pane).map(|p| [p.rect.x, p.rect.y, p.rect.w, p.rect.h]))?;
     let pages_report = json!({"pane": pages_pane, "rect": pages_rect, "pages": pages_report});
-    click_chip(window, Hit::Session(first_session.clone().unwrap()), cx).await?;
+    switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the pages did not come back");
     wait(&native, "the first space's views shown after the pages", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     // The command palette, the key bindings and the shortcut sheet (CommandActions.swift,
@@ -1995,6 +2131,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "notices": notices_report,
         "debug": debug_report,
         "sidebar": sidebar_report,
+        "title_row": title_report,
         "server_updated": server_updated_report,
         "server_lifecycle": server_lifecycle_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,

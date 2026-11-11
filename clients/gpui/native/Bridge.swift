@@ -609,6 +609,44 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
             log("pairing code copied to the clipboard as a concealed item; clearing it in \(ms) ms")
             return ["copied": true, "clear_after_ms": ms]
+        case "symbol":
+            // An SF Symbol drawn to PNG pixels for the GPUI view, which has no symbol font of its own:
+            // `name` at `size` points in `color` (sRGB 0...1 and alpha), at the window's scale. The
+            // Swift app draws the same symbols through SwiftUI's Image(systemName:).
+            let name = value["name"] as? String ?? ""
+            let size = value["size"] as? Double ?? 13
+            var rgba = value["color"] as? [Double] ?? []
+            if rgba.count < 3 { rgba = [1, 1, 1, 1] }
+            let scale = value["scale"] as? Double ?? (root.window?.backingScaleFactor ?? 2)
+            let color = NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba.count > 3 ? rgba[3] : 1)
+            let weight: NSFont.Weight = switch value["weight"] as? String {
+            case "medium": .medium
+            case "semibold": .semibold
+            case "bold": .bold
+            default: .regular
+            }
+            let configuration = NSImage.SymbolConfiguration(pointSize: size, weight: weight).applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+            guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil), let image = base.withSymbolConfiguration(configuration) else {
+                return ["missing": true]
+            }
+            let points = image.size
+            let (w, h) = (Int((points.width * scale).rounded(.up)), Int((points.height * scale).rounded(.up)))
+            guard w > 0, h > 0, let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                                             hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+                return ["missing": true]
+            }
+            rep.size = points
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            image.draw(in: NSRect(origin: .zero, size: points), from: .zero, operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.restoreGraphicsState()
+            guard let data = rep.representation(using: .png, properties: [:]) else { return ["missing": true] }
+            return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": points.width, "height": points.height]
+        case "pin":
+            // The title row's pin: the window floats over every other while it is on (`setPinned`).
+            let on = value["on"] as? Bool == true
+            root.window?.level = on ? .floating : .normal
+            return ["pinned": root.window?.level == .floating]
         case "snapshot":
             let directory = value["directory"] as! String
             snapshotsPending = 0

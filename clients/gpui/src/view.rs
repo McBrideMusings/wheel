@@ -8,16 +8,19 @@ mod debug;
 mod procs;
 mod settings;
 mod sidebar;
+mod title;
 mod toasts;
 pub use commands::{Confirmation, Pending};
+pub use title::{BOTTOM, MenuRow, TitleMenu};
 pub use debug::Answer as DebugAnswer;
 pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, prelude::*, px, rgb, rgba};
-use wheel_proto::{AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
+use wheel_proto::{TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
 use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
+/// The title row's height; the grid starts under it and ends over the bottom row (`BOTTOM`).
 pub const HEADER: f32 = header::HEIGHT;
 
 pub struct Client {
@@ -138,6 +141,23 @@ pub struct Client {
     pub posted: Vec<crate::toasts::Toast>,
     /// What the notice stack is built from besides the posted ones.
     pub toast_sources: crate::toasts::Sources,
+    /// The `[[title.button]]` entries wheeld merged for each space (ADR-0037), and the spaces asked.
+    pub title_buttons: HashMap<String, Vec<TitleButtonInfo>>,
+    title_asked: HashSet<String>,
+    /// The menu open under a title-row button.
+    pub title_menu: Option<TitleMenu>,
+    /// What the body draws: `spaces` or `desk` (`WindowMode`).
+    pub mode: String,
+    /// The title row's pin: the window floats over every other.
+    pub pinned: bool,
+    /// The Usage window is over the grid; a Refresh All is on its way.
+    pub usage_open: bool,
+    usage_refreshing: bool,
+    /// A `session_new` this window sent from its session menu, and the session to show once listed.
+    session_show_req: Option<u64>,
+    session_to_show: Option<String>,
+    /// SF Symbols the bridge drew, by name, size and colour; None for a name the system lacks.
+    symbols: RefCell<HashMap<(String, u32, u32), Option<(std::sync::Arc<gpui::Image>, f32, f32)>>>,
     /// The layout ops this window sent and wheeld has not answered; a refusal of one is the layout-error notice.
     layout_reqs: HashSet<u64>,
     /// The permission requests waiting, from `status` and `perm_requested`.
@@ -288,7 +308,8 @@ impl Client {
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None,
-            posted: vec![], toast_sources, layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
+            posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), pinned: false, usage_open: false, usage_refreshing: false,
+            session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
             server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
@@ -315,11 +336,18 @@ impl Client {
                         self.note_server_source();
                     }
                     // A `status` reply carries every status; a `spaces` broadcast carries none.
-                    self.apply(layout, matches!(message.as_ref(), ServerMsg::Spaces { .. }));
+                    let fresh = matches!(message.as_ref(), ServerMsg::Status { .. });
+                    self.apply(layout, !fresh);
+                    self.ask_title_buttons(fresh);
+                    self.show_made_session();
+                    if fresh {
+                        // The strip needs a reading: ask for one unless the last is recent (askUsage(dueOnly: true)).
+                        self.refresh_usage(true);
+                    }
                     true
                 }
                 None => {
-                    if self.on_sidebar_reply(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
+                    if self.on_sidebar_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -587,13 +615,6 @@ impl Client {
     }
     pub fn native(&self) -> Rc<Native> {
         self.native.clone()
-    }
-    /// The header's chips as drawn at the window's current size.
-    pub fn header_chips(&self) -> Vec<header::Chip> {
-        let pair = |id: &String, name: &String| (id.clone(), name.clone());
-        let sessions: Vec<_> = self.sessions.iter().map(|s| pair(&s.id, &s.name)).collect();
-        let spaces: Vec<_> = if self.sidebar_open { vec![] } else { self.session_spaces().iter().map(|s| pair(&s.id, &s.name)).collect() };
-        header::chips(self.viewport.0, &sessions, &spaces, self.session_id.as_deref(), self.space_id.as_deref())
     }
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
@@ -981,6 +1002,14 @@ impl Client {
             self.close_pairing_window();
             return true;
         }
+        if self.usage_open && k.key == "escape" && self.confirmation.is_none() {
+            self.close_usage();
+            return true;
+        }
+        if self.title_menu.is_some() && k.key == "escape" {
+            self.close_title_menu();
+            return true;
+        }
         // The process card takes every key while it is open and nothing is over it: its filter, and Esc to close.
         if self.procs.open.is_some() && self.confirmation.is_none() {
             self.procs_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control);
@@ -1211,7 +1240,8 @@ impl Render for Client {
         crate::crash_guard::mark_space(self.space_id.as_deref().unwrap_or(""));
         let space_held = self.space_id.as_deref().is_some_and(|s| self.quarantine.isolates_space(s));
         // A quarantined space opens none of its views and draws its card in place of its panes.
-        let (leaves, dividers) = if space_held { (vec![], vec![]) } else { (leaves, dividers) };
+        let desk = self.mode == "desk";
+        let (leaves, dividers) = if space_held || desk { (vec![], vec![]) } else { (leaves, dividers) };
         self.sync_native(&leaves);
         self.sync_agents(&leaves);
         self.settle_selection();
@@ -1231,6 +1261,10 @@ impl Render for Client {
                 let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
                 if this.space_menu.is_some() {
                     this.close_space_menu();
+                    cx.notify();
+                }
+                if this.title_menu.is_some() {
+                    this.close_title_menu();
                     cx.notify();
                 }
                 if let Some(rn) = &this.rename
@@ -1264,39 +1298,13 @@ impl Render for Client {
                 }
                 cx.notify();
             }));
-        let chips = self.header_chips();
-        if !chips.iter().any(|c| matches!(c.hit, Hit::Space(_))) && !matches!(self.link, Link::Incompatible { .. }) {
-            root = root.child(div().absolute().left(px(header::MARGIN)).top(px(header::SPACES_Y)).child("waiting for wheeld"));
-        }
         self.controls.borrow_mut().clear();
-        for chip in chips {
-            let (r, hit) = (chip.rect, chip.hit.clone());
-            let dots = match &chip.hit {
-                Hit::Space(id) => self.spaces.iter().find(|s| &s.id == id).and_then(|s| status::space_dots(s, &self.status_dots)),
-                _ => None,
-            };
-            root = root.child(
-                div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).px_2().rounded_sm().cursor_pointer().overflow_hidden().whitespace_nowrap()
-                    .flex().items_center()
-                    .bg(rgb(if chip.active { 0x31483e } else { 0x17201c }))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                        match &hit {
-                            Hit::Session(id) => this.select_session(id),
-                            Hit::Space(id) => this.select_space(id),
-                            Hit::Processes => this.toggle_processes(),
-                            Hit::NewWindow => this.new_window(cx),
-                        }
-                        cx.notify();
-                    }))
-                    .gap_1()
-                    .child(div().overflow_hidden().whitespace_nowrap().flex_1().child(chip.label))
-                    .children(dots),
-            );
+        root = root.child(self.title_element(cx));
+        // The row along the bottom edge: the connection badge and the usage strip (ADR-0034).
+        root = root.child(self.bottom_row(window, cx));
+        if desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
+            root = root.child(self.desk_element());
         }
-        // Always drawn, so the header's controls stay where they are; empty while connected.
-        let banner = header::banner_rect(self.viewport.0);
-        root = root.child(div().absolute().left(px(banner.x)).top(px(banner.y)).w(px(banner.w)).h(px(banner.h)).flex().justify_end().items_center()
-            .text_color(rgb(0xe0b070)).child(self.link.banner()));
         for p in &leaves {
             let r = p.rect;
             let native = self.native_panes.contains(&p.leaf.id);
@@ -1420,6 +1428,9 @@ impl Render for Client {
         if matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(div().absolute().left_0().top(px(HEADER)).w(px(w)).h(px(h - HEADER)).flex().justify_center().items_center()
                 .child(div().w(px(420.)).child(self.server_box(cx))));
+        }
+        if self.usage_open {
+            root = root.child(self.usage_overlay(w, h, cx));
         }
         if self.settings_open {
             self.poll_settings(cx);

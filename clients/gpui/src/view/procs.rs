@@ -121,7 +121,8 @@ impl Client {
             .child(div().w_full().px_2().py_1().rounded_sm().bg(rgb(BOX)).border_1().border_color(rgb(LINE)).child(field))
             .child(list);
         // The card hangs under its button, as the Swift popover does; a press on the dim closes it.
-        let anchor = header::processes_rect(width);
+        let anchor = self.header_chips().into_iter().find(|c| c.hit == Hit::Processes).map(|c| c.rect)
+            .unwrap_or(Rect { x: width - header::TRAILING - header::BUTTON_W, y: header::BUTTON_Y, w: header::BUTTON_W, h: header::BUTTON_H });
         div().absolute().left_0().top_0().w(px(width)).h(px(height)).bg(rgba(0x00000055))
             .on_mouse_down(MouseButton::Left, click(cx, |this| this.close_processes()))
             .child(div().absolute().top(px(anchor.y + anchor.h + 6.)).right(px(width - anchor.x - anchor.w)).child(card))
