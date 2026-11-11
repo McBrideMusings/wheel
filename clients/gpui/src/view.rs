@@ -7,6 +7,7 @@ mod commands;
 mod debug;
 mod procs;
 mod settings;
+mod sidebar;
 mod toasts;
 pub use commands::{Confirmation, Pending};
 pub use debug::Answer as DebugAnswer;
@@ -169,6 +170,25 @@ pub struct Client {
     server_source_logged: Option<String>,
     /// When the connected wheeld started (unix ms), from its `status` uptime.
     pub server_started: Option<u64>,
+    /// The spaces sidebar is shown (SpacesSidebar.swift); the spaces row of chips stands in when it is not.
+    pub sidebar_open: bool,
+    /// A space held by its row, and the press that may become one: (space, x, y).
+    pub space_drag: Option<crate::sidebar::SpaceDrag>,
+    space_press: Option<(String, f32, f32)>,
+    /// A pane held by its header, and the press that may become one: (pane, label, x, y, grab).
+    pub pane_drag: Option<crate::sidebar::PaneDrag>,
+    pane_press: Option<(String, String, f32, f32, (f32, f32))>,
+    /// A space's name being edited in its row.
+    pub rename: Option<crate::sidebar::Rename>,
+    /// A space's context menu: the space and where it was opened.
+    pub space_menu: Option<(String, f32, f32)>,
+    /// The row under the pointer and since when (unix ms); the preview shown; when the pointer left a row.
+    hover: Option<(String, u64)>,
+    pub preview: Option<String>,
+    preview_leave: Option<u64>,
+    preview_asked: u64,
+    /// The `session_new` sent for Move to New Session, and the space to move into it.
+    space_for_new_session: Option<(u64, String)>,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -272,6 +292,7 @@ impl Client {
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
             server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
+            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
         };
         client.register_server();
         client
@@ -298,7 +319,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
+                    if self.on_sidebar_reply(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -571,7 +592,7 @@ impl Client {
     pub fn header_chips(&self) -> Vec<header::Chip> {
         let pair = |id: &String, name: &String| (id.clone(), name.clone());
         let sessions: Vec<_> = self.sessions.iter().map(|s| pair(&s.id, &s.name)).collect();
-        let spaces: Vec<_> = self.session_spaces().iter().map(|s| pair(&s.id, &s.name)).collect();
+        let spaces: Vec<_> = if self.sidebar_open { vec![] } else { self.session_spaces().iter().map(|s| pair(&s.id, &s.name)).collect() };
         header::chips(self.viewport.0, &sessions, &spaces, self.session_id.as_deref(), self.space_id.as_deref())
     }
     pub fn session_id(&self) -> Option<&str> {
@@ -634,8 +655,7 @@ impl Client {
     pub fn scene(&self) -> (Vec<Placed>, Vec<Divider>) {
         let (mut leaves, mut dividers) = (vec![], vec![]);
         if let Some(space) = self.space() {
-            let area = Rect { x: 0., y: HEADER, w: self.viewport.0, h: self.viewport.1 - HEADER };
-            place(&space.root, area, &self.overrides, &mut leaves, &mut dividers);
+            place(&space.root, self.grid_area(), &self.overrides, &mut leaves, &mut dividers);
         }
         (leaves, dividers)
     }
@@ -975,6 +995,15 @@ impl Client {
         if k.key == "escape" && self.menu.take().is_some() {
             return true;
         }
+        if k.key == "escape" && (self.space_drag.is_some() || self.pane_drag.is_some() || self.space_menu.is_some()) {
+            self.cancel_space_drag(true);
+            self.cancel_pane_drag();
+            self.close_space_menu();
+            return true;
+        }
+        if self.rename_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
+            return true;
+        }
         // A native view may have taken the keyboard by a click GPUI never saw: an action on
         // "the" pane means that one.
         if k.modifiers.platform || k.modifiers.control {
@@ -1190,13 +1219,33 @@ impl Render for Client {
         self.check_client_update();
         self.tick_pairing(cx);
         self.tick_procs(cx);
+        self.tick_preview(cx);
         let mut root = div().relative().track_focus(&self.handle)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
                 if this.key(e, cx) {
                     cx.notify();
                 }
             })).size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                // A press anywhere else closes the space menu and ends a rename, as a click away does.
+                let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+                if this.space_menu.is_some() {
+                    this.close_space_menu();
+                    cx.notify();
+                }
+                if let Some(rn) = &this.rename
+                    && !this.space_hit_rect(&rn.space.clone()).is_some_and(|r| crate::sidebar::contains(r, x, y))
+                {
+                    this.cancel_rename();
+                    cx.notify();
+                }
+            }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                let had = this.space_press.is_some() || this.pane_press.is_some() || this.space_drag.is_some() || this.pane_drag.is_some() || this.hover.is_some();
+                this.pointer_moved(f32::from(e.position.x), f32::from(e.position.y), e.pressed_button.is_some());
+                if had || this.hover.is_some() {
+                    cx.notify();
+                }
                 if this.drag.is_some() {
                     this.move_drag(f32::from(e.position.x), f32::from(e.position.y));
                     cx.notify();
@@ -1208,6 +1257,7 @@ impl Render for Client {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, _, cx| {
                 this.end_drag();
+                this.pointer_up();
                 if this.pending_down.is_some() || this.selection.as_ref().is_some_and(|s| s.dragging) {
                     this.pending_move = Some(e.position);
                     this.pending_up = true;
@@ -1320,6 +1370,13 @@ impl Render for Client {
                         }
                     }))
                     .child(div().h(px(TITLE)).w(px(r.w)).px_2().bg(rgb(0x22302a)).text_xs().flex().items_center().justify_between().overflow_hidden()
+                        .on_mouse_down(MouseButton::Left, cx.listener({
+                            let (id, label, origin) = (p.leaf.id.clone(), self.pane_label(&p.leaf), (r.x, r.y));
+                            move |this, e: &MouseDownEvent, _, _| {
+                                let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+                                this.pane_press_down(&id, &label, x, y, (x - origin.0, y - origin.1));
+                            }
+                        }))
                         .child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
                             ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
                             _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
@@ -1338,6 +1395,10 @@ impl Render for Client {
                 }));
             root = root.child(if horizontal { bar.cursor_col_resize() } else { bar.cursor_row_resize() });
         }
+        if self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
+            root = root.child(self.sidebar_element(cx));
+        }
+        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.drag_chip());
         let (w, h) = self.viewport;
         if space_held && let Some(space) = self.space_id.clone() {
             root = root.child(div().absolute().left_0().top(px(TITLE)).w(px(w)).h(px(h - TITLE)).child(self.quarantine_space_card(&space, cx)));

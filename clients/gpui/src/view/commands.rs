@@ -21,6 +21,8 @@ pub struct Confirmation {
 pub enum Pending {
     ClosePane(String),
     CloseSpace(String),
+    /// Close Other Spaces in Window: every space listed goes.
+    CloseSpaces(Vec<String>),
     SetKind(String, NewPaneKind),
     StartAgent(String, String),
     /// Remove an installed built-in artifact: its folder and its entry go.
@@ -108,7 +110,8 @@ impl Client {
             "previous-space" | "next-space" => spaces() > 1,
             "last-space" => spaces() > 0,
             "settings" => true,
-            "usage" | "rename-window" | "toggle-sidebar" | "mode-spaces" | "mode-desk" | "zoom-pane" | "switch-view" => false,
+            "toggle-sidebar" => true,
+            "usage" | "rename-window" | "mode-spaces" | "mode-desk" | "zoom-pane" | "switch-view" => false,
             other => {
                 if let Some(n) = other.strip_prefix("space-").and_then(|n| n.parse::<usize>().ok()) {
                     return spaces() >= n;
@@ -182,6 +185,7 @@ impl Client {
                 }
             }
             "close-window" => self.close_window_requested = true,
+            "toggle-sidebar" => self.toggle_sidebar(),
             "command-palette" => self.open_command_palette(Mode::Root),
             "shortcuts" => self.toggle_shortcuts(),
             "settings" => self.toggle_settings(),
@@ -357,7 +361,7 @@ impl Client {
 
     // Asking first
 
-    fn confirm(&mut self, title: &str, message: String, button: String, run: Pending) {
+    pub(super) fn confirm(&mut self, title: &str, message: String, button: String, run: Pending) {
         self.confirmation = Some(Confirmation { title: title.to_owned(), message, button, run });
         self.sync_overlay();
     }
@@ -442,6 +446,11 @@ impl Client {
         match run {
             Pending::ClosePane(pane) => self.send_layout(|req| ClientMsg::PaneClose { req: Some(req), pane }),
             Pending::CloseSpace(id) => self.send_layout(|req| ClientMsg::SpaceClose { req: Some(req), id, if_empty: false }),
+            Pending::CloseSpaces(ids) => {
+                for id in ids {
+                    self.send_layout(|req| ClientMsg::SpaceClose { req: Some(req), id, if_empty: false });
+                }
+            }
             Pending::SetKind(pane, kind) => self.set_kind(&pane, kind),
             Pending::StartAgent(pane, agent) => self.send(&ClientMsg::PaneStart { req: None, pane, kind: StartKind::Agent, message: None, agent: Some(agent), model: None, permission_mode: None, sandbox: None }),
             Pending::RemoveBuiltin(name) => self.remove_builtin(&name),

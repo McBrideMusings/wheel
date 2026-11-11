@@ -255,6 +255,147 @@ impl Client {
                 self.posted.clear();
                 None
             }
+            // The sidebar toggle and its rows: `open` is true, false or toggle; `space` clicks that space's row.
+            "/sidebar" => {
+                let open = match q("open").as_deref() {
+                    None => None,
+                    Some("true") => Some(true),
+                    Some("false") => Some(false),
+                    Some("toggle") => Some(!self.sidebar_open),
+                    Some(_) => return refuse(BAD, "open is true, false or toggle"),
+                };
+                if let Some(space) = q("space") && !self.spaces.iter().any(|s| s.id == space) {
+                    return refuse(MISSING, "no space with that id");
+                }
+                if let Some(open) = open {
+                    self.set_sidebar(open);
+                }
+                if let Some(space) = q("space") {
+                    self.show_space_anywhere(&space);
+                }
+                None
+            }
+            // What a click on a space's row runs: the space shows.
+            "/spacetap" => {
+                let Some(space) = q("space") else { return refuse(BAD, "space= is required") };
+                let Some(r) = self.space_hit_rect(&space) else { return refuse(MISSING, "no such space in this window") };
+                self.space_press_down(&space, r.x + r.w / 2., r.y + r.h / 2.);
+                self.pointer_up();
+                None
+            }
+            // A space drag without a pointer: `action` is start (`space`), hover (`target` sidebar:<index> or window), drop or cancel.
+            "/spacedrag" => {
+                match q("action").as_deref() {
+                    Some("start") => {
+                        let Some(space) = q("space") else { return refuse(BAD, "space= is required") };
+                        if !self.spaces.iter().any(|s| s.id == space) {
+                            return refuse(MISSING, "no such space");
+                        }
+                        let at = self.space_hit_rect(&space).map(|r| (r.x + r.w / 2., r.y + r.h / 2.)).unwrap_or_default();
+                        self.begin_space_drag(&space, false, at);
+                    }
+                    Some("hover") => {
+                        if self.space_drag.is_none() {
+                            return refuse("409 Conflict", "no space drag in progress");
+                        }
+                        let target = match q("target").as_deref() {
+                            Some("window") => crate::sidebar::SpaceDropTarget::Window,
+                            Some(t) if t.starts_with("sidebar:") => match t[8..].parse() { Ok(i) => crate::sidebar::SpaceDropTarget::Sidebar(i), Err(_) => return refuse(BAD, "target is sidebar:<index> or window") },
+                            _ => return refuse(BAD, "target is sidebar:<index> or window"),
+                        };
+                        self.hover_space_drag(Some(target));
+                    }
+                    Some("drop") => self.end_space_drag(),
+                    Some("cancel") => self.cancel_space_drag(false),
+                    _ => return refuse(BAD, "action is start, hover, drop or cancel"),
+                }
+                None
+            }
+            // A pane drag without a pointer: `action` is start (`pane`), hover (`target` space:<id> or new-space), drop or cancel.
+            "/panedrag" => {
+                match q("action").as_deref() {
+                    Some("start") => {
+                        let Some(pane) = q("pane") else { return refuse(BAD, "pane= is required") };
+                        let Some(leaf) = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.id == pane).cloned() else { return refuse(MISSING, "no such pane") };
+                        let label = self.pane_label(&leaf);
+                        self.begin_pane_drag(&pane, &label, (0., 0.), (0., 0.));
+                    }
+                    Some("hover") => {
+                        if self.pane_drag.is_none() {
+                            return refuse("409 Conflict", "no pane drag in progress");
+                        }
+                        let away = match q("target").as_deref() {
+                            Some("new-space") => crate::sidebar::PaneAway::NewSpace,
+                            Some(t) if t.starts_with("space:") => crate::sidebar::PaneAway::End(t[6..].to_owned()),
+                            _ => return refuse(BAD, "target is space:<id> or new-space"),
+                        };
+                        self.hover_pane_drag(Some(away));
+                    }
+                    Some("drop") => self.end_pane_drag(),
+                    Some("cancel") => self.cancel_pane_drag(),
+                    _ => return refuse(BAD, "action is start, hover, drop or cancel"),
+                }
+                None
+            }
+            // Renaming as the field does it: `action` is begin (the menu item), commit (Return, with `name`) or cancel (Escape).
+            "/rename" => {
+                let Some(id) = q("id") else { return refuse(BAD, "kind=space and id= are required") };
+                if q("kind").as_deref() != Some("space") {
+                    return refuse(BAD, "kind must be space (a window's name is wheel-ynjo.7's)");
+                }
+                if !self.spaces.iter().any(|s| s.id == id) {
+                    return refuse(MISSING, "no such space");
+                }
+                match q("action").as_deref() {
+                    Some("begin") => self.begin_rename(&id),
+                    Some("commit") => {
+                        if self.rename.as_ref().map(|r| r.space.as_str()) != Some(id.as_str()) {
+                            self.begin_rename(&id);
+                        }
+                        if let Some(name) = q("name") && let Some(r) = self.rename.as_mut() {
+                            r.draft = name;
+                        }
+                        self.commit_rename();
+                    }
+                    Some("cancel") => self.cancel_rename(),
+                    _ => return refuse(BAD, "action is begin, commit or cancel"),
+                }
+                None
+            }
+            // A space's menu: `space` opens it (with `item`, runs that item as the menu would).
+            "/spacemenu" => {
+                let Some(space) = q("space") else { return refuse(BAD, "space= is required") };
+                if !self.spaces.iter().any(|s| s.id == space) {
+                    return refuse(MISSING, "no such space");
+                }
+                match q("item") {
+                    Some(item) => {
+                        if !self.space_menu_items(&space).iter().any(|i| i.id == item) {
+                            return refuse(MISSING, "no such menu item");
+                        }
+                        self.run_space_menu(&item, &space, cx);
+                    }
+                    None => {
+                        let at = self.space_hit_rect(&space).map(|r| (r.x + 20., r.y + r.h)).unwrap_or_default();
+                        self.open_space_menu(&space, at.0, at.1);
+                    }
+                }
+                None
+            }
+            // The hover preview as the pointer drives it: `space` holds the pointer over its row, none lets it go.
+            "/preview" => {
+                match q("space") {
+                    Some(space) => {
+                        if !self.spaces.iter().any(|s| s.id == space) {
+                            return refuse(MISSING, "no such space");
+                        }
+                        self.row_hover(Some(space));
+                    }
+                    None => self.row_hover(None),
+                }
+                self.tick_preview(cx);
+                None
+            }
             _ => return refuse(MISSING, "no such route"),
         };
         cx.notify();
@@ -332,6 +473,7 @@ impl Client {
             "settings": {"open": self.settings_open, "tab": self.settings.tab.id(), "project": self.settings.project},
             "confirmation": self.confirmation.as_ref().map(|c| json!({"title": c.title, "message": c.message, "button": c.button})),
             "shortcuts_open": self.shortcuts_open,
+            "sidebar": self.sidebar_json(),
             "pairing": {"open": self.pairing.open},
             "keymap": self.all_actions().iter().map(|a| (a.id.clone(), json!(self.keymap.symbol(&a.id)))).collect::<serde_json::Map<_, _>>(),
             "actions_log": self.actions_log,

@@ -548,16 +548,25 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let a = value["point"] as! [Double]
             var point = NSPoint(x: a[0], y: a[1])
             if !root.isFlipped { point.y = root.bounds.height - point.y }
-            let eventType: NSEvent.EventType = kind == "down" ? .leftMouseDown : kind == "drag" ? .leftMouseDragged : .leftMouseUp
+            // A synthesized right press reads as button 0 to GPUI (`NSEvent.buttonNumber` is 0 for
+            // every event made this way), so a context menu is asked for with `control: true` on a
+            // left press, as a Mac control-click asks for one.
+            let eventType: NSEvent.EventType = kind == "down" ? .leftMouseDown : kind == "drag" ? .leftMouseDragged : kind == "move" ? .mouseMoved : .leftMouseUp
+            let flags: NSEvent.ModifierFlags = value["control"] as? Bool == true ? [.control] : []
             mouseNumber += 1
             // NSWindow.sendEvent drops mouse events for an unordered window, so route as AppKit
             // does after its own step: hit test, then the view gets the NSEvent. A drag or release
             // goes to the view that took the press.
-            if kind == "down" { mouseTarget = root.hitTest(root.convert(point, to: root.superview)) }
-            if let event = NSEvent.mouseEvent(with: eventType, location: root.convert(point, to: nil), modifierFlags: [],
+            if kind == "down" || kind == "move" { mouseTarget = root.hitTest(root.convert(point, to: root.superview)) }
+            if let event = NSEvent.mouseEvent(with: eventType, location: root.convert(point, to: nil), modifierFlags: flags,
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,
                 context: nil, eventNumber: mouseNumber, clickCount: 1, pressure: kind == "up" ? 0 : 1), let target = mouseTarget {
-                switch kind { case "down": target.mouseDown(with: event); case "drag": target.mouseDragged(with: event); default: target.mouseUp(with: event) }
+                switch kind {
+                case "down": target.mouseDown(with: event)
+                case "drag": target.mouseDragged(with: event)
+                case "move": target.mouseMoved(with: event)
+                default: target.mouseUp(with: event)
+                }
             }
             return ["target": mouseTarget.map { String(describing: type(of: $0)) } ?? "nil"]
         case "hit":

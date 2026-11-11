@@ -17,6 +17,7 @@ pub mod palette;
 pub mod procs;
 pub mod server;
 pub mod settings;
+pub mod sidebar;
 pub mod status;
 pub mod toasts;
 pub mod transcript;

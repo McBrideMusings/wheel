@@ -564,6 +564,196 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
     tick(cx, 300).await;
+    // The spaces sidebar (wheel-ynjo.5). Four more spaces join the first session, so the sidebar
+    // lists five rows; then each thing the Swift sidebar does is driven here with real events or
+    // the client's own entry points, and the layout wheeld broadcasts shows the result.
+    let sidebar_state = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.sidebar_json());
+    let session_order = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.session_spaces().iter().map(|s| (s.id.clone(), s.name.clone())).collect::<Vec<_>>());
+    let (first_session, first_space) = shown(window, cx)?;
+    let first_session_id = first_session.clone().ok_or_else(|| anyhow::anyhow!("no session shown"))?;
+    let fixture_space = first_space.clone().ok_or_else(|| anyhow::anyhow!("no space shown"))?;
+    let opening = sidebar_state(cx)?;
+    ensure!(opening["open"] == true && opening["rows"].as_array().map(Vec::len) == Some(1), "the sidebar should open with the fixture's one row: {opening}");
+    ensure!(!window.update(cx, |c, _, _| c.header_chips())?.iter().any(|c| matches!(c.hit, Hit::Space(_))), "the spaces row of chips is drawn while the sidebar is open");
+    let grid_left = window.update(cx, |c, _, _| c.grid_area().x)?;
+    ensure!(grid_left > wheel_gpui::sidebar::WIDTH, "the grid does not sit right of the sidebar: x {grid_left}");
+    let mut made: Vec<String> = vec![];
+    for n in 2..=5 {
+        let dir = output.join(format!("sidebar-space-{n}"));
+        std::fs::create_dir_all(&dir)?;
+        let name = format!("sb{n}");
+        let (ok, out, err) = run_pumped(&["space", "new", &dir.to_string_lossy(), "--name", &name, "--session", &first_session_id], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel space new {name} failed: {err}");
+        made.push(out.lines().last().unwrap_or_default().trim().to_owned());
+    }
+    pump(&mut connection, 800, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    let five = sidebar_state(cx)?;
+    let row_names: Vec<String> = five["rows"].as_array().unwrap_or(&vec![]).iter().map(|r| r["name"].as_str().unwrap_or_default().to_owned()).collect();
+    ensure!(row_names.len() == 5 && row_names[1..] == ["sb2", "sb3", "sb4", "sb5"], "five rows in session order expected: {row_names:?}");
+    ensure!(five["rows"][0]["active"] == true && !five["rows"][0]["dots"].as_array().map(Vec::is_empty).unwrap_or(true), "the fixture row should be active with the agent's mark: {}", five["rows"][0]);
+    let rows_y: Vec<f64> = five["rows"].as_array().unwrap().iter().map(|r| r["frame"][1].as_f64().unwrap()).collect();
+    ensure!(rows_y.windows(2).all(|w| w[1] > w[0]), "rows out of order: {rows_y:?}");
+    let row_frame = |state: &Value, id: &str| -> Option<[f64; 4]> {
+        state["rows"].as_array()?.iter().find(|r| r["id"] == id).map(|r| [r["frame"][0].as_f64().unwrap(), r["frame"][1].as_f64().unwrap(), r["frame"][2].as_f64().unwrap(), r["frame"][3].as_f64().unwrap()])
+    };
+    let centre = |f: [f64; 4]| [f[0] + f[2] / 2., f[1] + f[3] / 2.];
+    let (sb2, sb3, sb4, sb5) = (made[0].clone(), made[1].clone(), made[2].clone(), made[3].clone());
+    // A key as the field gets it, through the same `key()` every real key takes.
+    let type_keys = |cx: &mut AsyncApp, keys: &[(&str, Option<&str>)]| -> Result<()> {
+        for (key, ch) in keys {
+            let keystroke = gpui::Keystroke { modifiers: gpui::Modifiers::default(), key: (*key).to_owned(), key_char: ch.map(str::to_owned) };
+            window.update(cx, |c, _, cx| { c.key(&gpui::KeyDownEvent { keystroke, is_held: false, prefer_character_input: true }, cx); })?;
+        }
+        Ok(())
+    };
+    // The context menu opens on a real control-click (what a right press also does) and lists
+    // what the Swift menu lists.
+    let sb2_at = centre(row_frame(&five, &sb2).unwrap());
+    native.call(json!({"op":"post_mouse","kind":"down","point":sb2_at,"control":true}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":sb2_at,"control":true}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let with_menu = sidebar_state(cx)?;
+    let menu_ids: Vec<String> = with_menu["menu"]["items"].as_array().unwrap_or(&vec![]).iter().map(|i| i["id"].as_str().unwrap_or_default().to_owned()).collect();
+    ensure!(with_menu["menu"]["space"] == sb2 && menu_ids.contains(&"rename".to_owned()) && menu_ids.contains(&"close-others".to_owned()) && menu_ids.iter().any(|i| i.starts_with("session:")), "the control-click did not open sb2's menu: {}", with_menu["menu"]);
+    let left_disabled = with_menu["menu"]["items"].as_array().unwrap().iter().find(|i| i["id"] == "left").map(|i| i["enabled"] == false).unwrap_or(false);
+    ensure!(!left_disabled, "sb2 is second, so Move Left is enabled: {}", with_menu["menu"]);
+    // Rename…: the row becomes a field; an empty name is refused in place; Return sends the name
+    // and the layout broadcast shows it.
+    window.update(cx, |c, _, cx| c.run_space_menu("rename", &sb2, cx))?;
+    let renaming = sidebar_state(cx)?;
+    ensure!(renaming["menu"].is_null() && renaming["renaming"]["space"] == sb2 && renaming["renaming"]["draft"] == "sb2", "Rename did not open the field: {}", renaming["renaming"]);
+    type_keys(cx, &[("backspace", None), ("backspace", None), ("backspace", None), ("enter", None)])?;
+    let refused = sidebar_state(cx)?;
+    ensure!(refused["renaming"]["error"] == "A space needs a name.", "an empty name should be refused in place: {}", refused["renaming"]);
+    type_keys(cx, &[("r", Some("r")), ("e", Some("e")), ("n", Some("n")), ("a", Some("a")), ("m", Some("m")), ("e", Some("e")), ("d", Some("d")), ("enter", None)])?;
+    pump(&mut connection, 800, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    let renamed = sidebar_state(cx)?;
+    ensure!(renamed["renaming"].is_null(), "the rename field stayed open: {}", renamed["renaming"]);
+    ensure!(session_order(cx)?.iter().any(|(id, name)| id == &sb2 && name == "renamed"), "wheeld did not list the new name: {:?}", session_order(cx)?);
+    // Escape cancels a rename and leaves the name alone.
+    window.update(cx, |c, _, _| c.begin_rename(&sb3))?;
+    type_keys(cx, &[("x", Some("x")), ("escape", None)])?;
+    ensure!(sidebar_state(cx)?["renaming"].is_null() && session_order(cx)?.iter().any(|(id, name)| id == &sb3 && name == "sb3"), "Escape did not cancel the rename");
+    // Drag to reorder: a real press on sb5's row, moved to the top of the list, shows the bar
+    // above the first row and the hint; releasing puts sb5 first.
+    let before_drag = sidebar_state(cx)?;
+    let from = centre(row_frame(&before_drag, &sb5).unwrap());
+    let top = row_frame(&before_drag, &fixture_space).unwrap();
+    let to = [top[0] + 20., top[1] + 2.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":from}));
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[from[0], from[1] - 10.]}));
+    native.call(json!({"op":"post_mouse","kind":"drag","point":to}));
+    tick(cx, 150).await;
+    draw(window, None, cx)?;
+    let dragging = sidebar_state(cx)?;
+    ensure!(dragging["drag"]["space"] == sb5 && dragging["drag"]["insertion"] == 0 && dragging["drag"]["hint"].as_str().is_some_and(|h| h.starts_with("Place “sb5” here")), "the drag did not aim at the top: {}", dragging["drag"]);
+    native.call(json!({"op":"post_mouse","kind":"up","point":to}));
+    pump(&mut connection, 1000, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    let order_after_drag: Vec<String> = session_order(cx)?.into_iter().map(|(id, _)| id).collect();
+    ensure!(order_after_drag.first() == Some(&sb5) && order_after_drag.get(1) == Some(&fixture_space) && sidebar_state(cx)?["drag"].is_null(), "the drop did not put sb5 first: {order_after_drag:?}");
+    ensure!(shown(window, cx)?.1.as_deref() == Some(sb5.as_str()), "the press on sb5's row should have shown sb5 (a sidebar selects on the press)");
+    // Move Left from the menu, the keyboardless way, puts the fixture space back first.
+    window.update(cx, |c, _, cx| c.run_space_menu("left", &fixture_space, cx))?;
+    pump(&mut connection, 800, &mut layouts, window, cx).await?;
+    ensure!(session_order(cx)?.first().map(|(id, _)| id.clone()) == Some(fixture_space.clone()), "Move Left did not move the fixture space first: {:?}", session_order(cx)?);
+    // A pane dragged by its header onto another space's row moves there: sb3's pane, shown and
+    // dragged onto sb4's row, lands at the end of sb4, and sb3 keeps one empty pane.
+    let sb3_at = centre(row_frame(&sidebar_state(cx)?, &sb3).unwrap());
+    native.call(json!({"op":"post_mouse","kind":"down","point":sb3_at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":sb3_at}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    ensure!(shown(window, cx)?.1.as_deref() == Some(sb3.as_str()), "a click on sb3's row did not show sb3");
+    let (sb3_pane, sb3_rect) = window.update(cx, |c, _, _| c.scene().0.first().map(|p| (p.leaf.id.clone(), p.rect)))?.ok_or_else(|| anyhow::anyhow!("sb3 shows no pane"))?;
+    let grab = [f64::from(sb3_rect.x + 60.), f64::from(sb3_rect.y + TITLE / 2.)];
+    let sb4_at = centre(row_frame(&sidebar_state(cx)?, &sb4).unwrap());
+    native.call(json!({"op":"post_mouse","kind":"down","point":grab}));
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[grab[0] - 10., grab[1]]}));
+    native.call(json!({"op":"post_mouse","kind":"drag","point":sb4_at}));
+    tick(cx, 150).await;
+    draw(window, Some(output.join("client-pane-drag.png")), cx)?;
+    let pane_dragging = sidebar_state(cx)?;
+    let sb4_row = pane_dragging["rows"].as_array().unwrap().iter().find(|r| r["id"] == sb4).cloned().unwrap_or_default();
+    ensure!(pane_dragging["pane_drag"]["pane"] == sb3_pane && sb4_row["pane_over"] == true && pane_dragging["pane_drag"]["hint"].as_str().is_some_and(|h| h.contains("to the end of “sb4”")), "the pane drag did not aim at sb4's row: {}", pane_dragging["pane_drag"]);
+    native.call(json!({"op":"post_mouse","kind":"up","point":sb4_at}));
+    pump(&mut connection, 1000, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    let holder = window.update(cx, |c, _, _| c.sidebar_json()["rows"].as_array().unwrap().iter().map(|r| (r["id"].as_str().unwrap().to_owned(), r["panes"].as_u64().unwrap())).collect::<Vec<_>>())?;
+    let pane_space = window.update(cx, |c, _, _| c.state_json()["panes"][sb3_pane.as_str()]["space"].clone())?;
+    // sb4's only pane was empty, so wheeld drops it: the moved pane is now sb4's one pane, and sb3 got a new empty one.
+    let sb3_panes = window.update(cx, |c, _, _| c.state_json()["spaces"].as_array().unwrap().iter().find(|s| s["id"] == sb3).map(|s| s["panes"].clone()).unwrap_or_default())?;
+    ensure!(pane_space == sb4 && holder.iter().any(|(id, n)| id == &sb4 && *n == 1) && sb3_panes.as_array().is_some_and(|p| p.len() == 1 && p[0] != sb3_pane), "the pane did not move to sb4: pane in {pane_space}, rows {holder:?}, sb3 holds {sb3_panes}");
+    // The hover preview: a pointer held over the fixture's row opens, after its delay, the card
+    // with that space's six panes, the agent pane's last line among them; moving off closes it.
+    let fixture_at = centre(row_frame(&sidebar_state(cx)?, &fixture_space).unwrap());
+    native.call(json!({"op":"post_mouse","kind":"move","point":fixture_at}));
+    let mut preview = Value::Null;
+    for _ in 0..8 {
+        tick(cx, 100).await;
+        draw(window, None, cx)?;
+        preview = sidebar_state(cx)?["preview"].clone();
+        if !preview.is_null() {
+            break;
+        }
+    }
+    ensure!(preview["space"] == fixture_space && preview["panes"].as_array().map(Vec::len) == Some(6), "the preview did not open on the fixture space: {preview}");
+    let agent_last = preview["panes"].as_array().unwrap().iter().find(|p| p["kind"] == "agent").map(|p| p["last"].clone()).unwrap_or_default();
+    ensure!(agent_last.as_str().is_some_and(|l| !l.is_empty()), "the agent pane's last line is missing from the preview: {preview}");
+    pump(&mut connection, 200, &mut layouts, window, cx).await?;
+    draw(window, Some(output.join("client-sidebar.png")), cx)?;
+    let far = [f64::from(grid_left + 200.), f64::from(TITLE + 300.)];
+    native.call(json!({"op":"post_mouse","kind":"move","point":far}));
+    tick(cx, 250).await;
+    draw(window, None, cx)?;
+    ensure!(sidebar_state(cx)?["preview"].is_null(), "the preview stayed open after the pointer left the row");
+    // The row's close button closes the space: at once, since nothing runs in sb5 (a space with a
+    // shell or an agent asks first; Close Other Spaces below asks).
+    let close_at = {
+        let s = sidebar_state(cx)?;
+        let r = s["rows"].as_array().unwrap().iter().find(|r| r["id"] == sb5).cloned().unwrap();
+        [r["close"][0].as_f64().unwrap() + r["close"][2].as_f64().unwrap() / 2., r["close"][1].as_f64().unwrap() + r["close"][3].as_f64().unwrap() / 2.]
+    };
+    native.call(json!({"op":"post_mouse","kind":"down","point":close_at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":close_at}));
+    pump(&mut connection, 800, &mut layouts, window, cx).await?;
+    ensure!(window.update(cx, |c, _, _| c.confirmation.is_none())? && !session_order(cx)?.iter().any(|(id, _)| id == &sb5), "sb5 is still listed after its close button");
+    // Move to <the other session> takes a row out of this window's list.
+    let second_session_id = std::env::var("WHEEL_CLIENT_SECOND_SESSION")?;
+    window.update(cx, |c, _, cx| c.run_space_menu(&format!("session:{second_session_id}"), &sb4, cx))?;
+    pump(&mut connection, 800, &mut layouts, window, cx).await?;
+    let second_holds = window.update(cx, |c, _, _| c.state_json()["sessions"].as_array().unwrap().iter().find(|s| s["id"] == second_session_id).map(|s| s["spaces"].clone()).unwrap_or_default())?;
+    ensure!(!session_order(cx)?.iter().any(|(id, _)| id == &sb4) && second_holds.as_array().is_some_and(|l| l.last() == Some(&json!(sb4))), "sb4 did not move to the end of the other session: it holds {second_holds}");
+    // The toggle hides the sidebar: the spaces row of chips comes back and the grid takes the width.
+    window.update(cx, |c, _, _| c.toggle_sidebar())?;
+    draw(window, None, cx)?;
+    let hidden_bar = sidebar_state(cx)?;
+    let chips_with_spaces = window.update(cx, |c, _, _| c.header_chips().iter().filter(|c| matches!(c.hit, Hit::Space(_))).count())?;
+    ensure!(hidden_bar["open"] == false && chips_with_spaces == 3 && window.update(cx, |c, _, _| c.grid_area().x)? == 0., "hiding the sidebar should show three space chips over a full-width grid: {chips_with_spaces} chips");
+    window.update(cx, |c, _, _| c.toggle_sidebar())?;
+    // Close Other Spaces in Window… from the fixture row's menu closes the two made here.
+    window.update(cx, |c, _, cx| c.run_space_menu("close-others", &fixture_space, cx))?;
+    let asked = window.update(cx, |c, _, _| c.confirmation.as_ref().map(|c| (c.title.clone(), c.button.clone())))?;
+    ensure!(asked.as_ref().map(|a| a.1.as_str()) == Some("Close Other Spaces") && asked.as_ref().is_some_and(|a| a.0.contains("2 other spaces")), "Close Other Spaces did not ask as expected: {asked:?}");
+    window.update(cx, |c, _, _| c.answer_confirmation(true))?;
+    pump(&mut connection, 1200, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    let left_over: Vec<String> = session_order(cx)?.into_iter().map(|(id, _)| id).collect();
+    ensure!(left_over == [fixture_space.clone()], "only the fixture space should remain in the first session: {left_over:?}");
+    // Back on the fixture space, as the sections below expect.
+    window.update(cx, |c, _, _| c.select_space(&fixture_space))?;
+    pump(&mut connection, 500, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    ensure!(shown(window, cx)?.1.as_deref() == Some(fixture_space.as_str()), "the fixture space is not shown again");
+    let sidebar_report = json!({"rows_with_five": row_names, "menu": menu_ids, "renamed": "renamed", "refusal": refused["renaming"]["error"],
+        "drag_hint": dragging["drag"]["hint"], "order_after_drag": order_after_drag, "pane_drag_hint": pane_dragging["pane_drag"]["hint"], "pane_moved_to": pane_space,
+        "preview_panes": preview["panes"].as_array().map(Vec::len), "preview_agent_last": agent_last, "closed_by_button": sb5, "moved_to_other_session": sb4, "left_over": left_over});
+    native.call(json!({"op":"post_mouse","kind":"down","point":click}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":click}));
+    tick(cx, 300).await;
     // Sessions and windows. The fixture holds two sessions; this window shows the first.
     let (first_session, first_space) = shown(window, cx)?;
     let (second_session, second_space) = (std::env::var("WHEEL_CLIENT_SECOND_SESSION")?, std::env::var("WHEEL_CLIENT_SECOND_SPACE")?);
@@ -1804,6 +1994,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "settings": settings_report,
         "notices": notices_report,
         "debug": debug_report,
+        "sidebar": sidebar_report,
         "server_updated": server_updated_report,
         "server_lifecycle": server_lifecycle_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
