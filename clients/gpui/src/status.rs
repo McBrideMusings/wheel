@@ -184,7 +184,7 @@ mod tests {
             split(leaf("a", Some(PaneStatus::Idle)), leaf("b", Some(PaneStatus::Working))),
             split(leaf("c", Some(PaneStatus::NeedsYou { waiting: 1, reason: None })), split(leaf("d", Some(PaneStatus::Working)), leaf("e", Some(PaneStatus::Done)))),
         );
-        let space = Space { id: "s".into(), name: "s".into(), root, status: None };
+        let space = Space { id: "s".into(), name: "s".into(), cwd: "/w".into(), root, status: None };
         let (marks, more) = agent_statuses(&space, &all_ranks(), AGENT_DOT_LIMIT);
         assert_eq!(marks, vec![PaneStatus::NeedsYou { waiting: 1, reason: None }, PaneStatus::Working, PaneStatus::Working, PaneStatus::Done]);
         assert_eq!(more, 1);

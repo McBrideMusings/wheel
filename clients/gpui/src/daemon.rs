@@ -13,8 +13,6 @@ use wheel_proto::{ClientMsg, ServerMsg};
 pub struct Endpoint {
     /// `ws://host:port/ws?token=…`
     pub ws: String,
-    /// `http://host:port`, for the artifact routes.
-    pub http: String,
     pub token: String,
     url: String,
     token_file: PathBuf,
@@ -23,18 +21,12 @@ impl Endpoint {
     /// `url` is the daemon's WebSocket URL; the token comes from `token_file`.
     pub fn new(url: &str, token_file: &PathBuf) -> Result<Self> {
         let token = std::fs::read_to_string(token_file).with_context(|| format!("reading {}", token_file.display()))?.trim().to_owned();
-        let http = url.replacen("ws://", "http://", 1).replacen("wss://", "https://", 1);
-        let http = http.trim_end_matches("/ws").to_owned();
-        Ok(Self { ws: format!("{url}?token={token}"), http, token, url: url.to_owned(), token_file: token_file.clone() })
+        Ok(Self { ws: format!("{url}?token={token}"), token, url: url.to_owned(), token_file: token_file.clone() })
     }
     /// The same endpoint with the token file read again: wheeld writes a new token when it
     /// starts without one, so a reconnect must not reuse the old text.
     pub fn reread(&self) -> Result<Self> {
         Self::new(&self.url, &self.token_file)
-    }
-    /// The page a web pane shows.
-    pub fn artifact(&self, pane: &str) -> String {
-        format!("{}/artifacts/{pane}/?token={}", self.http, self.token)
     }
 }
 

@@ -3,9 +3,9 @@
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
-use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Bridge, Native}, status, transcript::{Kind, ToolRow, Transcript}};
+use crate::{daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Bridge, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, prelude::*, px, rgb, rgba};
-use wheel_proto::{AgentInfo, ClientMsg, NewPaneKind, PaneStatus, ServerMsg};
+use wheel_proto::{AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, ServerMsg};
 use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
@@ -79,6 +79,11 @@ pub struct Client {
     controls: Rc<RefCell<Vec<Control>>>,
     /// The last presses the window's listeners took, in order, for a failing check to read.
     pub presses: Vec<String>,
+    /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over
+    /// that pane's body only.
+    palettes: HashMap<String, Palette>,
+    /// The next request id for a reply this window tells apart (`artifact_ls`).
+    next_req: u64,
 }
 
 /// One footer control as drawn: the context meter (`context`) or a config option by id.
@@ -171,7 +176,7 @@ impl Client {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
-            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, controls: Rc::default(), presses: vec![],
+            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -190,6 +195,27 @@ impl Client {
                     match message.as_ref() {
                         ServerMsg::StatusChanged { space, pane, status, space_status } => {
                             apply_status(&mut self.spaces, space, pane.as_deref(), status.clone(), space_status.clone());
+                            return false;
+                        }
+                        // A file in a web pane's folder changed: its page opens again.
+                        ServerMsg::PaneReload { pane } => {
+                            if self.opened.contains_key(pane) {
+                                self.native.reload(pane);
+                            }
+                            return false;
+                        }
+                        ServerMsg::Artifacts { req, artifacts, .. } => {
+                            if let Some(palette) = self.palettes.values_mut().find(|p| p.req == Some(*req)) {
+                                palette.req = None;
+                                palette.listed(artifacts.clone());
+                            }
+                            return false;
+                        }
+                        ServerMsg::Error { req: Some(req), message, .. } => {
+                            if let Some(palette) = self.palettes.values_mut().find(|p| p.req == Some(*req)) {
+                                palette.req = None;
+                                palette.failed(message);
+                            }
                             return false;
                         }
                         ServerMsg::Settings { settings, space, .. } => {
@@ -255,6 +281,12 @@ impl Client {
                     self.reported = None;
                     self.overrides.clear();
                     self.drag = None;
+                    // Answers to the last connection's listings never come: a palette open across
+                    // a reconnect lists again, against the layout the new daemon sends.
+                    for palette in self.palettes.values_mut() {
+                        palette.req = None;
+                        palette.relisting();
+                    }
                 }
                 self.endpoint = endpoint;
                 self.link = Link::Up;
@@ -291,6 +323,13 @@ impl Client {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
         self.ask_space_settings();
+        // A palette is for the pane as it was when it opened: a pane that left, or that
+        // something else changed, closes it. One still waiting for a listing asks again.
+        let kinds: HashMap<String, String> = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).map(|l| (l.id.clone(), l.kind.clone())).collect();
+        self.palettes.retain(|pane, palette| kinds.get(pane) == Some(&palette.opened_over));
+        for pane in self.palettes.iter().filter(|(_, p)| p.req.is_none() && p.is_loading()).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
+            self.ask_artifacts(&pane);
+        }
         self.sync_view();
     }
     /// Ask for the shown space's settings once, for its `chat.footer.items`.
@@ -604,9 +643,21 @@ impl Client {
             }
             return true;
         }
-        let agent = self.scene().0.into_iter()
-            .find(|p| Some(&p.leaf.id) == self.focus.current.as_ref() && p.leaf.kind == "agent")
-            .and_then(|p| p.leaf.agent);
+        let focused = self.scene().0.into_iter().find(|p| Some(&p.leaf.id) == self.focus.current.as_ref()).map(|p| p.leaf);
+        if let Some(leaf) = &focused
+            && !k.modifiers.platform
+            && !k.modifiers.control
+        {
+            if self.palette_key(&leaf.id, &k.key, k.key_char.as_deref()) {
+                return true;
+            }
+            // The empty pane's chooser: `a` opens the artifact palette.
+            if leaf.kind == "empty" && k.key == "a" {
+                self.open_palette(&leaf.id);
+                return true;
+            }
+        }
+        let agent = focused.filter(|l| l.kind == "agent").and_then(|l| l.agent);
         let Some(agent) = agent else { return false };
         let draft = self.drafts.entry(agent.clone()).or_default();
         match type_into(draft, &k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
@@ -622,14 +673,96 @@ impl Client {
     fn set_kind(&self, pane: &str, kind: NewPaneKind) {
         self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind, artifact: None, scope: None, url: None });
     }
+    /// The artifact palette open inside `pane`, if any.
+    pub fn palette(&self, pane: &str) -> Option<&Palette> {
+        self.palettes.get(pane)
+    }
+    /// "Artifact…": open the palette inside `pane` and list the artifacts its space offers.
+    pub fn open_palette(&mut self, pane: &str) {
+        if self.palettes.contains_key(pane) {
+            return;
+        }
+        let Some(kind) = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.id == pane).map(|l| l.kind.clone()) else { return };
+        self.palettes.insert(pane.to_owned(), Palette::new(&kind));
+        self.focus_pane(pane);
+        self.ask_artifacts(pane);
+    }
+    /// List again for `pane`'s palette: the `pane = true` artifacts of the space the pane is in.
+    fn ask_artifacts(&mut self, pane: &str) {
+        let space = self.spaces.iter().find(|s| leaves_of(&s.root).iter().any(|l| l.id == pane)).map(|s| s.id.clone());
+        let req = self.next_req;
+        self.next_req += 1;
+        let up = self.link == Link::Up;
+        let Some(palette) = self.palettes.get_mut(pane) else { return };
+        palette.relisting();
+        let (Some(space), true) = (space, up) else {
+            palette.failed("wheeld is not connected.");
+            return;
+        };
+        palette.req = Some(req);
+        self.send(&ClientMsg::ArtifactLs { req: Some(req), space: Some(space), pane: true });
+    }
+    pub fn close_palette(&mut self, pane: &str) {
+        self.palettes.remove(pane);
+    }
+    /// A key typed while `pane`'s palette is open. Returns false when the pane has none.
+    fn palette_key(&mut self, pane: &str, key: &str, text: Option<&str>) -> bool {
+        let Some(palette) = self.palettes.get_mut(pane) else { return false };
+        match key {
+            "escape" => {
+                if palette.escape() {
+                    self.close_palette(pane);
+                }
+            }
+            "up" => palette.move_by(-1),
+            "down" => palette.move_by(1),
+            // Return: open the selected row, or list again after a failure.
+            "enter" => {
+                if palette.failure().is_some() {
+                    self.ask_artifacts(pane);
+                } else if let Some(row) = palette.selected_row() {
+                    let info = row.info.clone();
+                    self.show_artifact(pane, &info);
+                }
+            }
+            "backspace" => {
+                let mut query = palette.query.clone();
+                query.pop();
+                palette.type_text(&query);
+            }
+            _ => {
+                if palette.searchable()
+                    && let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control))
+                {
+                    let query = format!("{}{t}", palette.query);
+                    palette.type_text(&query);
+                }
+            }
+        }
+        true
+    }
+    /// A row, chosen by Return or a click: the artifact's scope and name go to wheeld, never a path.
+    fn show_artifact(&mut self, pane: &str, info: &ArtifactInfo) {
+        if self.link != Link::Up {
+            if let Some(palette) = self.palettes.get_mut(pane) {
+                palette.failed("wheeld is not connected.");
+            }
+            return;
+        }
+        self.close_palette(pane);
+        self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Web, artifact: Some(info.name.clone()), scope: Some(info.scope), url: None });
+    }
     /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views
     /// of panes no space has any more.
     fn sync_native(&mut self, leaves: &[Placed]) {
         self.native_panes.clear();
+        let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
         for p in leaves {
+            let scope = p.leaf.scope.as_deref().unwrap_or("project");
             let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
-                ("web", _) => "web".to_owned(),
+                // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
+                ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
                 ("browser", _) => format!("browser:{}", p.leaf.url.clone().unwrap_or_default()),
                 ("terminal", Some(_)) => "terminal".to_owned(),
                 _ => continue,
@@ -638,7 +771,7 @@ impl Client {
                 match (&p.leaf.term, p.leaf.kind.as_str()) {
                     (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, &self.endpoint.ws),
                     (None, "browser") => self.native.open_web(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank")),
-                    (None, _) => self.native.open_artifact(&p.leaf.id, &self.endpoint.artifact(&p.leaf.id), &p.leaf.label, p.leaf.scope.as_deref().unwrap_or("project"), self.space_id.as_deref(), &self.endpoint.ws),
+                    (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                 }
                 self.opened.insert(p.leaf.id.clone(), kind);
             }
@@ -760,7 +893,13 @@ impl Render for Client {
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.set_kind(&id, kind)))
                             .child(label)
                     };
-                    div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(button("Browser", NewPaneKind::Browser, cx))
+                    let artifact = {
+                        let id = id.clone();
+                        div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.open_palette(&id)))
+                            .child("Artifact…")
+                    };
+                    div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(artifact).child(button("Browser", NewPaneKind::Browser, cx))
                 }
                 other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
             };
@@ -790,7 +929,8 @@ impl Render for Client {
                     .child(div().h(px(TITLE)).px_2().bg(rgb(0x22302a)).text_xs().flex().items_center().justify_between()
                         .child(format!("{} · {}", p.leaf.kind, p.leaf.id))
                         .child(div().w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))))
-                    .child(div().p_2().text_color(rgb(0x8fa89b)).child(body)),
+                    .child(div().p_2().text_color(rgb(0x8fa89b)).child(body))
+                    .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, r.w, r.h - TITLE, cx))),
             );
         }
         for d in dividers {
@@ -804,6 +944,109 @@ impl Render for Client {
         }
         root
     }
+}
+
+/// The artifact palette over one pane's body: the body dims, and a search field above a grouped
+/// list sits inside the pane's bounds (ArtifactPaletteView.swift). A press on the dim closes it.
+fn palette_overlay(pane: &str, palette: &Palette, width: f32, height: f32, cx: &mut Context<Client>) -> gpui::Div {
+    let narrow = width < 420.;
+    let compact = height < 340.;
+    let inset = if narrow { 8. } else { 10. };
+    let card_w = if narrow { width - 2. * inset } else { 560f32.min(width - 2. * inset) };
+    let pid = pane.to_owned();
+    let dim = cx.listener(move |this, _, _, cx| {
+        this.close_palette(&pid);
+        cx.stop_propagation();
+        cx.notify();
+    });
+    let field: gpui::Div = if palette.query.is_empty() {
+        div().text_color(rgb(0x6f8a7d)).child(palette.field_placeholder())
+    } else {
+        div().text_color(rgb(0xd9e8e1)).child(palette.query.clone())
+    };
+    let mut card = div().w(px(card_w)).max_h(px(height - 2. * inset)).flex().flex_col().rounded_md().bg(rgb(0x17201c)).border_1().border_color(rgb(0x3d5247))
+        .text_color(rgb(0xd9e8e1)).overflow_hidden()
+        .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+        .child(div().h(px(if compact { 34. } else { 40. })).px_3().flex().items_center().gap_2().border_b_1().border_color(rgb(0x2c3d34))
+            .child(div().text_color(rgb(0x6f8a7d)).child("⌕")).child(field.flex_1().overflow_hidden().whitespace_nowrap()));
+    let note = |title: &str, lines: Vec<String>| {
+        let mut n = div().flex_1().min_h_0().p(px(if compact { 12. } else { 18. })).flex().flex_col().gap_1().items_center().text_center()
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(title.to_owned()));
+        for line in lines {
+            n = n.child(div().text_xs().text_color(rgb(0x8fa89b)).child(line));
+        }
+        n
+    };
+    let content: gpui::AnyElement = match &palette.listing {
+        palette::Listing::Loading => div().p_4().text_xs().text_color(rgb(0x8fa89b)).child("Listing artifacts…").into_any_element(),
+        palette::Listing::Failed(message) => {
+            let pid = pane.to_owned();
+            div().p(px(if compact { 10. } else { 16. })).flex().flex_col().gap_1()
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(0xe08070)).child(palette::FAILED_TITLE))
+                .child(div().text_xs().text_color(rgb(0x8fa89b)).child(palette::FAILED_LEAD))
+                .child(div().text_xs().font_family("Menlo").text_color(rgb(0xe08070)).child(message.clone()))
+                .child(div().mt_1().px_2().py_1().rounded_sm().bg(rgb(0x31483e)).cursor_pointer().text_xs().child(palette::RETRY)
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                        this.ask_artifacts(&pid);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))).into_any_element()
+        }
+        palette::Listing::Ready(list) if list.is_empty() => note(palette::EMPTY_TITLE, vec![palette::EMPTY_HELP.into(), format!("{} {}", palette::EMPTY_ASK, palette::EMPTY_COMMAND)]).into_any_element(),
+        palette::Listing::Ready(_) if palette.rows.is_empty() => note(&format!("No artifact matches “{}”", palette.query), vec![palette.no_match_detail()]).into_any_element(),
+        palette::Listing::Ready(_) => {
+            let mut list = div().id(gpui::ElementId::Name(format!("palette-{pane}").into())).overflow_y_scroll().flex().flex_col().pb_1();
+            let selected = palette.selected_row().map(|r| r.id());
+            for scope in [wheel_proto::ArtifactScope::Project, wheel_proto::ArtifactScope::Machine] {
+                let rows: Vec<&palette::Row> = palette.rows.iter().filter(|r| r.info.scope == scope).collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                list = list.child(div().px_4().pt(px(if compact { 5. } else { 8. })).pb(px(if compact { 2. } else { 3. })).flex().justify_between().text_xs().text_color(rgb(0x6f8a7d))
+                    .child(palette::scope_name(scope).to_uppercase()).child(rows.len().to_string()));
+                for row in rows {
+                    let is_selected = selected.as_deref() == Some(row.id().as_str());
+                    let (pid, info) = (pane.to_owned(), row.info.clone());
+                    let mut r = div().mx(px(6.)).px(px(10.)).py(px(if compact { 4. } else { 6. })).rounded_md().cursor_pointer().flex().flex_col()
+                        .bg(rgb(if is_selected { 0x31483e } else { 0x17201c }))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                            this.show_artifact(&pid, &info);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }));
+                    if row.has_title() {
+                        r = r.child(div().font_weight(FontWeight::MEDIUM).child(row.info.title.clone()))
+                            .child(div().text_xs().font_family("Menlo").text_color(rgb(0x8fa89b)).child(row.info.name.clone()));
+                    } else {
+                        r = r.child(div().font_weight(FontWeight::MEDIUM).font_family("Menlo").child(row.info.name.clone()));
+                    }
+                    if let Some(description) = &row.info.description {
+                        r = r.child(div().text_xs().text_color(rgb(0x8fa89b)).child(description.clone()));
+                    }
+                    for problem in &row.info.problems {
+                        r = r.child(div().text_xs().text_color(rgb(0xe0b070)).child(format!("⚠ {problem}")));
+                    }
+                    list = list.child(r);
+                }
+            }
+            list.flex_1().min_h_0().into_any_element()
+        }
+    };
+    card = card.child(content);
+    let mut keys = div().flex_none().flex().gap_3().whitespace_nowrap();
+    for (i, k) in palette.keys().into_iter().enumerate() {
+        // The narrow footer drops the move hint to keep the others on one line.
+        if narrow && i == 0 && k.symbol == "↑↓" {
+            continue;
+        }
+        keys = keys.child(div().flex().gap_1().opacity(if k.enabled { 1. } else { 0.45 })
+            .child(div().px_1().rounded_sm().border_1().border_color(rgb(0x3d5247)).child(k.symbol)).child(k.word));
+    }
+    card = card.child(div().px_3().py(px(5.)).flex().justify_between().items_center().text_xs().text_color(rgb(0x6f8a7d)).bg(rgb(0x1d2823)).border_t_1().border_color(rgb(0x2c3d34))
+        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(palette.footer())).child(keys));
+    div().absolute().left_0().top(px(TITLE)).w(px(width)).h(px(height)).bg(rgba(0x0000008c)).flex().justify_center().items_start().pt(px(inset))
+        .on_mouse_down(MouseButton::Left, dim)
+        .child(card)
 }
 
 /// The composer's height, so the transcript column above it never moves.

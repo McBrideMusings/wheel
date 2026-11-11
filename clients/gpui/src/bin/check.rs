@@ -542,6 +542,106 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(native.status()["panes"].as_object().is_some_and(|p| native_panes.iter().all(|(id, _)| p.contains_key(id))), "the first window lost its views");
     let sessions_windows = json!({"first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
         "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
+    // Web panes: an artifact's page opens under the client's own `wheel-page` scheme, fetched from
+    // wheeld with the token in a header (never in the page's address), in a store of its own; the
+    // page's script reached wheeld through `.wheel/client.js`; a file written into the folder
+    // reloads the pane; and the artifact palette, opened in a new empty pane with `a`, lists the
+    // space's `pane = true` artifacts, filters as typed and opens the selected one on Return.
+    let html_pane = webs.iter().copied().find(|w| before["panes"][w.as_str()]["page"]["native"] != true).ok_or_else(|| anyhow::anyhow!("no HTML web pane"))?.clone();
+    let address = before["panes"][html_pane.as_str()]["url"].as_str().unwrap_or("").to_owned();
+    ensure!(address == format!("wheel-page://pages/artifacts/{html_pane}/"), "the HTML pane's address is {address:?}");
+    let http_status = before["panes"][html_pane.as_str()]["status"].clone();
+    ensure!(http_status == 200, "the HTML pane's document status is {http_status}");
+    let store = before["panes"][html_pane.as_str()]["store"].as_str().unwrap_or("").to_owned();
+    ensure!(store.len() == 36, "the HTML pane has no page store: {store:?}");
+    let run = |args: &[&str]| -> Result<std::process::Output> {
+        Ok(std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?)
+    };
+    let seen = run(&["artifact", "state", &html_pane, "seen", "--wait", "--timeout", "30"])?;
+    let seen_text = String::from_utf8_lossy(&seen.stdout).to_string();
+    ensure!(seen.status.success() && (seen_text.contains("\"ok\": true") || seen_text.contains("\"ok\":true")), "the page's wheel.set never reached wheeld: {seen_text}{}", String::from_utf8_lossy(&seen.stderr));
+    let loads_before = before["panes"][html_pane.as_str()]["loads"].as_array().map(Vec::len).unwrap_or(0);
+    let html_dir = PathBuf::from(std::env::var("WHEEL_CLIENT_HTML")?);
+    let page_v2 = std::fs::read_to_string(html_dir.join("index.html"))?.replace("Fixture artifact", "Fixture artifact v2");
+    std::fs::write(html_dir.join("index.html"), page_v2)?;
+    // `pane_reload` arrives over the client's own connection, so the wait pumps it.
+    let mut reloaded = native.status();
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        reloaded = native.status();
+        let p = &reloaded["panes"][html_pane.as_str()];
+        if p["reloads"].as_u64().unwrap_or(0) >= 1 && p["loads"].as_array().and_then(|a| a.last()).and_then(Value::as_str) == Some("Fixture artifact v2") {
+            break;
+        }
+    }
+    ensure!(reloaded["panes"][html_pane.as_str()]["reloads"].as_u64().unwrap_or(0) >= 1, "the HTML pane never reloaded after its file changed: {}", reloaded["panes"][html_pane.as_str()]);
+    let reloads = reloaded["panes"][html_pane.as_str()]["reloads"].clone();
+    let title_after = reloaded["panes"][html_pane.as_str()]["loads"].as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
+    let split_out = run(&["pane", "split", &html_pane, "right"])?;
+    ensure!(split_out.status.success(), "pane split failed: {}", String::from_utf8_lossy(&split_out.stderr));
+    let new_pane = String::from_utf8_lossy(&split_out.stdout).lines().last().unwrap_or_default().trim().to_owned();
+    let mut new_rect = None;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        new_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == new_pane && p.leaf.kind == "empty").map(|p| p.rect))?;
+        if new_rect.is_some() {
+            break;
+        }
+    }
+    let new_rect = new_rect.ok_or_else(|| anyhow::anyhow!("the split pane {new_pane} never arrived as an empty pane"))?;
+    draw(window, None, cx)?;
+    let body = [f64::from(new_rect.x + new_rect.w / 2.), f64::from(new_rect.y + new_rect.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":body}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":body}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(new_pane.as_str()), "the click did not focus the empty pane");
+    native.call(json!({"op":"post_key","text":"a","code":keycode('a')}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    ensure!(window.update(cx, |c, _, _| c.palette(&new_pane).is_some())?, "`a` in the empty pane opened no palette");
+    let mut listed: Vec<String> = vec![];
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if let Some(rows) = window.update(cx, |c, _, _| c.palette(&new_pane).filter(|p| !p.is_loading()).map(|p| p.rows.iter().map(|r| r.id()).collect::<Vec<_>>()))? {
+            listed = rows;
+            break;
+        }
+    }
+    let failure = window.update(cx, |c, _, _| c.palette(&new_pane).and_then(|p| p.failure().map(str::to_owned)))?;
+    ensure!(listed == ["project/fixture-html", "project/fixture-page"], "the palette listed {listed:?} (failure {failure:?})");
+    for ch in "html".chars() {
+        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+        tick(cx, 30).await;
+    }
+    draw(window, None, cx)?;
+    let (query, filtered, footer_text) = window.update(cx, |c, _, _| c.palette(&new_pane).map(|p| (p.query.clone(), p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), p.footer())).unwrap_or_default())?;
+    ensure!(query == "html" && filtered == ["project/fixture-html"], "typing html left query {query:?} and rows {filtered:?}");
+    ensure!(footer_text == "1 of 2", "the palette's footer reads {footer_text:?}");
+    draw(window, Some(output.join("client-palette.png")), cx)?;
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut kind_after = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        kind_after = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == new_pane).map(|p| (p.leaf.kind, p.leaf.label)))?;
+        if kind_after.as_ref().is_some_and(|(k, _)| k == "web") {
+            break;
+        }
+    }
+    ensure!(kind_after == Some(("web".into(), "fixture-html".into())), "after Return the pane is {kind_after:?}");
+    ensure!(window.update(cx, |c, _, _| c.palette(&new_pane).is_none())?, "the palette stayed open after opening an artifact");
+    draw(window, None, cx)?;
+    let opened = wait(&native, "the artifact opened from the palette", |s| web_ready(s, &new_pane), cx).await?;
+    let opened_address = opened["panes"][new_pane.as_str()]["url"].as_str().unwrap_or("").to_owned();
+    ensure!(opened_address == format!("wheel-page://pages/artifacts/{new_pane}/"), "the opened pane's address is {opened_address:?}");
+    draw(window, Some(output.join("client-palette-opened.png")), cx)?;
+    // The pages' own pixels: the reloaded HTML artifact and the one the palette opened.
+    shot(&native, &output.join("web"), cx).await?;
+    let web_report = json!({"pane": html_pane, "address": address, "http_status": http_status, "store": store, "client_state": seen_text.trim(),
+        "loads_before_change": loads_before, "reloads": reloads, "title_after_change": title_after,
+        "palette": {"pane": new_pane, "listed": listed, "query": query, "filtered": filtered, "footer": footer_text, "kind_after": kind_after, "opened_address": opened_address}});
+    // Closing the second window above left `native_panes` as the first window's views; the
+    // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
     // the restart when it sees the request file.
     let (request, done) = (output.join("restart.request"), output.join("restart.done"));
@@ -612,6 +712,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "markdown": markdown_report,
         "footer": footer_report,
         "status": status_report,
+        "web": web_report,
         "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
             "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
