@@ -1227,12 +1227,16 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // scrolls the column from its end to its top and back with wheel events, and times each frame
     // (the event and the whole draw). The column follows the stream at its end and stops while
     // scrolled up.
-    let store = [std::env::var("CLAUDE_CONFIG_DIR").ok().map(PathBuf::from), std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".claude"))]
+    // The fixture gives the stand-in Claude its own home (`agent.claude.home`); its store is there.
+    let claude_home = PathBuf::from(wheel(&["config", "get", "agent.claude.home"])?);
+    ensure!(claude_home.is_absolute(), "agent.claude.home is unset: {claude_home:?}");
+    let store = std::fs::read_dir(claude_home.join("projects"))
         .into_iter()
         .flatten()
-        .flat_map(|home| std::fs::read_dir(home.join("projects")).into_iter().flatten().flatten().map(|e| e.path()))
+        .flatten()
+        .map(|e| e.path())
         .find(|dir| dir.join(format!("{old_id}.jsonl")).exists())
-        .ok_or_else(|| anyhow::anyhow!("no Claude Code store holds {old_id}.jsonl"))?;
+        .ok_or_else(|| anyhow::anyhow!("no store under {claude_home:?} holds {old_id}.jsonl"))?;
     let seed_id = format!("00000000-0000-4000-8000-{:012x}", now_ms() & 0xffff_ffff_ffff);
     let seed_path = store.join(format!("{seed_id}.jsonl"));
     let mut seed = String::new();

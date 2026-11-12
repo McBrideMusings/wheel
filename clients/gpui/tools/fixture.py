@@ -106,7 +106,9 @@ def fixture():
     env = os.environ.copy()
     for key in ['WHEEL_PANE', 'WHEEL_SPACE', 'WHEEL_SPACE_DIR']:
         env.pop(key, None)
-    with tempfile.TemporaryDirectory(prefix='wheel-gpui-fixture-') as temp:
+    # A short root under /tmp: the agent footer shows the project's directory and the stand-in's
+    # home side by side, and the check's wide pane fits both whole.
+    with tempfile.TemporaryDirectory(prefix='wgf-', dir='/tmp') as temp:
         root = pathlib.Path(temp)
         project = root / 'project'
         page = project / 'html'
@@ -185,6 +187,11 @@ def fixture():
             web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
             cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
             cli('config', 'set', 'agent.claude.command', str(built('wheel-fake-agent')), '--machine')
+            # The stand-in keeps its conversations where Claude Code would, so it gets a home of its own
+            # and nothing the check writes reaches ~/.claude/projects.
+            claude_home = root / 'claude-home'
+            claude_home.mkdir()
+            cli('config', 'set', 'agent.claude.home', str(claude_home), '--machine')
             cli('config', 'set', 'usage.agents', 'claude,codex', '--machine')
             # A Codex pane runs the same stand-in as `codex app-server`, its threads in a home of its own.
             codex_home = root / 'codex-home'
@@ -219,7 +226,7 @@ def fixture():
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
                        WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page), WHEEL_CLIENT_PAGES=str(pages))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),
-                        saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
+                        root=root, claude_home=claude_home, saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
             yield env, info
         finally:
             stop()
