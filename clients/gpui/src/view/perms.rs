@@ -19,7 +19,7 @@ impl Client {
     }
     /// The oldest waiting request of the agent in `pane`, with its place among them all.
     pub fn perm_for_pane(&self, pane: &str) -> Option<(usize, &PermInfo)> {
-        let leaf = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.id == pane && l.kind == "agent")?;
+        let leaf = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane && l.kind == "agent")?;
         perms::waiting(&self.perms, leaf.agent.as_deref()?)
     }
     /// The height `agent`'s card takes in an agent pane body `body` tall (`perms::fitted`), zero

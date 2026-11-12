@@ -50,8 +50,12 @@ impl Client {
 
     /// The drop the pointer at (`x`, `y`) is over in this window's grid.
     pub fn grid_drop_at(&self, x: f32, y: f32, pane: &str) -> Option<GridDrop> {
-        let (leaves, _) = self.scene();
-        grid_drop::drop_at(x, y, &leaves, pane)
+        let layers = self.layers();
+        let (grid, cards) = layers.split_first()?;
+        if cards.iter().any(|l| l.card.as_ref().is_some_and(|c| crate::sidebar::contains(c.frame, x, y))) {
+            return None;
+        }
+        grid_drop::drop_at(x, y, &grid.leaves, pane)
     }
     /// Name where the dragged pane docks in its space, as the pointer or the debug route says.
     pub fn hover_grid_drop(&mut self, drop: Option<GridDrop>) {
@@ -89,7 +93,7 @@ impl Client {
     fn space_holding(&self, pane: &str) -> Option<&Space> {
         self.spaces.iter().find(|s| s.site_of(pane).is_some())
     }
-    fn site_of(&self, pane: &str) -> Option<PaneSite> {
+    pub(super) fn site_of(&self, pane: &str) -> Option<PaneSite> {
         self.spaces.iter().find_map(|s| s.site_of(pane))
     }
     /// Pop Out and Background: put `pane` at `site`, or back in the grid when it is there already

@@ -13,23 +13,37 @@ import WheelUI
 // of the GPUI window's NSView, one per pane id. Every C entrypoint is called on the main thread.
 // Panes are opened, placed and closed by JSON commands; the Rust side owns what each pane is.
 
-/// A pane's container. Its hole is a rectangle (an overlay's) that neither draws nor hit-tests.
+/// A pane's container. Its holes (an overlay's, and the cards drawn over it) neither draw nor hit-test.
 final class Slot: NSView {
     override var isFlipped: Bool { true }
-    var hole = CGRect.zero
+    var holes: [CGRect] = []
+    /// How many rects the mask keeps: 1 with no hole over the view.
+    var shown = 1
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        if hole.contains(local) { return nil }
+        if holes.contains(where: { $0.contains(local) }) { return nil }
         return super.hitTest(point)
     }
-    func cut(_ rect: CGRect?) {
-        hole = rect.map { convert($0, from: superview) } ?? .zero
+    /// Cut `rects` (the root's coordinates) out of the slot. The mask is what is left of the
+    /// bounds once every hole is taken away, so two holes that overlap stay holes.
+    func cut(_ rects: [CGRect]) {
+        holes = rects.map { convert($0, from: superview) }.filter { $0.intersects(bounds) }
+        var left = [bounds]
+        for hole in holes {
+            left = left.flatMap { r -> [CGRect] in
+                let h = r.intersection(hole)
+                if h.isNull || h.isEmpty { return [r] }
+                return [CGRect(x: r.minX, y: r.minY, width: r.width, height: h.minY - r.minY),
+                        CGRect(x: r.minX, y: h.maxY, width: r.width, height: r.maxY - h.maxY),
+                        CGRect(x: r.minX, y: h.minY, width: h.minX - r.minX, height: h.height),
+                        CGRect(x: h.maxX, y: h.minY, width: r.maxX - h.maxX, height: h.height)].filter { $0.width > 0 && $0.height > 0 }
+            }
+        }
+        shown = left.count
         let path = CGMutablePath()
-        path.addRect(bounds)
-        if !hole.isEmpty { path.addRect(hole) }
+        left.forEach { path.addRect($0) }
         let mask = CAShapeLayer()
         mask.path = path
-        mask.fillRule = .evenOdd
         layer?.mask = mask
     }
 }
@@ -38,6 +52,8 @@ final class Slot: NSView {
     let id: String
     let kind: String
     let slot = Slot()
+    /// The cards drawn over this view, as GPUI placed them (x, y, w, h, top-left origin).
+    var holesTop: [[Double]] = []
     var web: WKWebView?
     var terminal: DropTerminalView?
     var session: InMemoryTerminalSession?
@@ -485,12 +501,22 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let a = value["rect"] as! [Double]
         var frame = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
         if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
+        host.holesTop = (value["holes"] as? [[Double]]) ?? []
         host.slot.frame = frame
         host.content.frame = host.slot.bounds
         host.pageView?.frame = host.slot.bounds
         host.web?.frame = host.slot.bounds
         host.terminal?.setSurfaceVisible(!host.slot.isHidden)
-        host.slot.cut(overlay)
+        host.slot.cut(cuts(host))
+    }
+    /// What is cut out of `host`'s view: the overlay's rect and the cards over it, in the root's coordinates.
+    func cuts(_ host: PaneHost) -> [CGRect] {
+        let cards = host.holesTop.map { a -> CGRect in
+            var rect = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
+            if !root.isFlipped { rect.origin.y = root.bounds.height - rect.maxY }
+            return rect
+        }
+        return (overlay.map { [$0] } ?? []) + cards
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let host = panes.values.first(where: { $0.web === webView }) else { return }
@@ -573,7 +599,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             } else {
                 overlay = nil
             }
-            panes.values.forEach { $0.slot.cut(overlay) }
+            panes.values.forEach { $0.slot.cut(cuts($0)) }
         case "pty":
             if let host = panes[value["pane"] as! String], let term = host.termID {
                 send(["op": "term_input", "id": term, "data": Data((value["text"] as! String).utf8).base64EncodedString()])
@@ -753,7 +779,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let f = host.slot.frame
             var entry: [String: Any] = ["kind": host.kind, "hidden": host.slot.isHidden,
                 "frame_top": [f.minX, root.isFlipped ? f.minY : root.bounds.height - f.maxY, f.width, f.height],
-                "masked": host.slot.layer?.mask != nil,
+                "masked": host.slot.layer?.mask != nil, "holes": host.holesTop, "mask_rects": host.slot.shown,
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
                 "view_identity": String(describing: Unmanaged.passUnretained(host.content).toOpaque())]
             if let b = host.browser {

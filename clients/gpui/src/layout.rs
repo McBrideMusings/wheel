@@ -33,6 +33,10 @@ pub enum Tree {
 }
 
 impl Tree {
+    /// Whether `pane` is one of this tree's panes.
+    pub fn holds(&self, pane: &str) -> bool {
+        leaves_of(self).iter().any(|l| l.id == pane)
+    }
     /// The splits from the root down to `pane`: each split's id, whether the pane is in its first
     /// side, and its ratio. None when the pane is not in this tree.
     pub fn splits_to(&self, pane: &str) -> Option<Vec<(String, bool, f64)>> {
@@ -61,16 +65,24 @@ pub struct Space {
     pub root: Tree,
     /// The highest status among its panes, as the daemon computed it.
     pub status: Option<PaneStatus>,
-    /// The trees popped out of the grid, and the panes in its tray: kept so a pane's site is
-    /// known; the grid draws neither (wheel-ynjo.7.3 draws the popped ones).
+    /// The trees popped out of the grid, each drawn as a card over it (`crate::popped`), and the
+    /// panes in its tray, which nothing draws.
     pub popped: Vec<Tree>,
     pub backgrounded: Vec<Tree>,
 }
 
 impl Space {
+    /// Every pane the space holds: the grid's, the popped trees' and the tray's.
+    pub fn all(&self) -> impl Iterator<Item = &Leaf> {
+        std::iter::once(&self.root).chain(&self.popped).chain(&self.backgrounded).flat_map(leaves_of)
+    }
+    /// Every pane this space draws: the grid's, then each popped tree's.
+    pub fn shown(&self) -> impl Iterator<Item = &Leaf> {
+        std::iter::once(&self.root).chain(&self.popped).flat_map(leaves_of)
+    }
     /// Where `pane` is in this space: `grid`, `popped` or `backgrounded`; none when it is not here.
     pub fn site_of(&self, pane: &str) -> Option<wheel_proto::PaneSite> {
-        let holds = |t: &Tree| leaves_of(t).iter().any(|l| l.id == pane);
+        let holds = |t: &Tree| t.holds(pane);
         if holds(&self.root) {
             Some(wheel_proto::PaneSite::Grid)
         } else if self.popped.iter().any(holds) {
@@ -240,6 +252,7 @@ pub struct Divider {
     /// The area of the split this divider belongs to; a drag measures its ratio against it.
     pub parent: Rect,
 }
+#[derive(Clone)]
 pub struct Placed {
     pub leaf: Leaf,
     pub rect: Rect,

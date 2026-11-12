@@ -91,7 +91,7 @@ impl Client {
             }
             "/agent" | "/agent/draft" | "/agent/focus" => {
                 let Some(agent) = q("agent") else { return refuse(BAD, "agent=<name> is required") };
-                let Some(pane) = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.agent.as_deref() == Some(agent.as_str())).map(|l| l.id.clone()) else {
+                let Some(pane) = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.agent.as_deref() == Some(agent.as_str())).map(|l| l.id.clone()) else {
                     return refuse(MISSING, "no agent pane shows that agent");
                 };
                 match path {
@@ -318,7 +318,7 @@ impl Client {
                 match q("action").as_deref() {
                     Some("start") => {
                         let Some(pane) = q("pane") else { return refuse(BAD, "pane= is required") };
-                        let Some(leaf) = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.id == pane).cloned() else { return refuse(MISSING, "no such pane") };
+                        let Some(leaf) = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).cloned() else { return refuse(MISSING, "no such pane") };
                         let label = self.pane_label(&leaf);
                         self.begin_pane_drag(&pane, &label, (0., 0.), (0., 0.));
                     }
@@ -602,10 +602,11 @@ impl Client {
     /// The client as JSON: what the Swift app's `/state` carries where the GPUI client has it.
     pub fn state_json(&self) -> Value {
         let native = self.native.status();
-        let (leaves, _) = self.scene();
+        let layers = self.layers();
+        let leaves: Vec<&Placed> = layers.iter().flat_map(|l| &l.leaves).collect();
         let mut panes = serde_json::Map::new();
         for space in &self.spaces {
-            for leaf in leaves_of(&space.root) {
+            for leaf in space.shown() {
                 let placed = leaves.iter().find(|p| p.leaf.id == leaf.id);
                 let mut entry = json!({
                     "space": space.id, "kind": leaf.kind, "label": leaf.label, "term": leaf.term, "url": leaf.url, "agent": leaf.agent,
@@ -629,7 +630,7 @@ impl Client {
             }
         }
         let procs: serde_json::Map<String, Value> = self.procs.by_space.iter().map(|(space, list)| (space.clone(), json!(list))).collect();
-        json!({
+        let mut out = json!({
             "window_info": self.window_json(),
             "daemon_url": self.endpoint.ws.split('?').next().unwrap_or_default(),
             "connection": match &self.link { Link::Connecting => "connecting".to_owned(), Link::Up => "connected".to_owned(), Link::Down(why) => format!("unreachable: {why}"), Link::Incompatible { .. } => "incompatible".to_owned() },
@@ -681,6 +682,10 @@ impl Client {
             "log": self.toast_log,
             "quarantine": {"spaces": self.quarantine.spaces, "panes": self.quarantine.panes},
             "bridge": {"visible": native["visible"], "key_window": native["key_window"], "app_active": native["app_active"], "root_focused": native["root_focused"], "errors": native["errors"]},
-        })
+        });
+        // The popped cards, bottom first, in window coordinates.
+        out["cards"] = layers.iter().filter_map(|l| l.card.as_ref()).map(|c| json!({"panes": c.panes, "frame": [c.frame.x, c.frame.y, c.frame.w, c.frame.h], "grip": [c.grip.x, c.grip.y, c.grip.w, c.grip.h]})).collect();
+        out["card_drag"] = json!(self.card_drag.as_ref().map(|d| json!({"pane": d.pane, "resize": d.resize, "delta": [d.delta.0, d.delta.1]})));
+        out
     }
 }

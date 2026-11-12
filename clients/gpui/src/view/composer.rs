@@ -44,7 +44,7 @@ impl Client {
     /// The focused pane's agent and harness, when it is an agent pane.
     fn focused_agent(&self) -> Option<(String, String)> {
         let pane = self.focus.current.as_ref()?;
-        let leaf = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| &l.id == pane && l.kind == "agent")?;
+        let leaf = self.spaces.iter().flat_map(|s| s.shown()).find(|l| &l.id == pane && l.kind == "agent")?;
         Some((leaf.agent.clone()?, leaf.harness.clone().unwrap_or_default()))
     }
 

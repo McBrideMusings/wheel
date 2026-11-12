@@ -23,12 +23,14 @@ pub use commands::{Confirmation, Pending};
 pub use title::{BOTTOM, MenuRow, TitleMenu};
 pub use debug::Answer as DebugAnswer;
 pub use settings::{SettingsEdit, SettingsReqs};
-use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
+use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, popped::{Card, CardDrag, GRIP, Layer}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FollowMode, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, list, prelude::*, px, rgb, rgba};
 use wheel_proto::{TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
+/// Where a native view was last put: its rect, whether it was hidden, and the holes cut in it.
+type Placement = ([f64; 4], bool, Vec<[f64; 4]>);
 /// The title row's height; the grid starts under it and ends over the bottom row (`BOTTOM`).
 pub const HEADER: f32 = header::HEIGHT;
 
@@ -52,11 +54,14 @@ pub struct Client {
     /// Ratios being dragged, until the daemon confirms them in its next layout.
     overrides: HashMap<String, f64>,
     drag: Option<(String, bool, Rect)>,
+    /// Where this client left each popped card, and the card being moved or resized.
+    popped_frames: Rc<RefCell<crate::popped::Frames>>,
+    card_drag: Option<CardDrag>,
     /// Panes drawn by the native views in the space shown, in layout order.
     pub native_panes: Vec<String>,
     /// Every pane that has a native view, with its kind, and where it was last placed.
     opened: HashMap<String, String>,
-    placed: HashMap<String, ([f64; 4], bool)>,
+    placed: HashMap<String, Placement>,
     viewport: (f32, f32),
     /// The conversation of every agent pane seen, by agent name, and the agents attached to on
     /// this connection.
@@ -351,8 +356,10 @@ impl Client {
     pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
         let server_control = crate::server::Control::for_service(endpoint.service.clone());
         let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
+        let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         let mut client = Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
+            popped_frames, card_drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
@@ -641,9 +648,9 @@ impl Client {
         self.ask_space_settings();
         // A palette is for the pane as it was when it opened: a pane that left, or that
         // something else changed, closes it. One still waiting for a listing asks again.
-        let kinds: HashMap<String, String> = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).map(|l| (l.id.clone(), l.kind.clone())).collect();
+        let kinds: HashMap<String, String> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| (l.id.clone(), l.kind.clone())).collect();
         self.palettes.retain(|pane, palette| kinds.get(pane) == Some(&palette.opened_over));
-        for leaf in self.spaces.iter().flat_map(|s| leaves_of(&s.root)).filter(|l| l.kind == "browser") {
+        for leaf in self.spaces.iter().flat_map(|s| s.shown()).filter(|l| l.kind == "browser") {
             if self.opened.get(&leaf.id).map(String::as_str) == Some("browser")
                 && let Some(url) = &leaf.url
             {
@@ -751,7 +758,7 @@ impl Client {
             return;
         }
         // A pane is reported only while it is one of the space shown.
-        let pane = self.focus.current.clone().filter(|p| self.space().is_some_and(|s| leaves_of(&s.root).iter().any(|l| &l.id == p)));
+        let pane = self.focus.current.clone().filter(|p| self.space().is_some_and(|s| s.shown().any(|l| &l.id == p)));
         let now = (self.session_id.clone(), self.space_id.clone(), pane);
         if now.0.is_none() && now.1.is_none() || self.reported.as_ref() == Some(&now) {
             return;
@@ -769,13 +776,73 @@ impl Client {
         self.native.detach();
         crate::forget_window(&self.window_id);
     }
+    /// What the grid draws, bottom first: the space's grid, then a card per popped tree, the one
+    /// holding the focus on top.
+    pub fn layers(&self) -> Vec<Layer> {
+        // A space away in a little window draws its panes there, and this grid draws the placeholder.
+        let Some(space) = self.space().filter(|_| !self.space_away()) else { return vec![] };
+        let area = self.grid_area();
+        let (mut leaves, mut dividers) = (vec![], vec![]);
+        place(&space.root, area, &self.overrides, &mut leaves, &mut dividers);
+        let mut layers = vec![Layer { card: None, leaves, dividers }];
+        for index in crate::popped::order(&space.popped, self.focus.current.as_deref()) {
+            let tree = &space.popped[index];
+            let frame = self.card_frame(tree, index, area);
+            let (mut leaves, mut dividers) = (vec![], vec![]);
+            place(tree, frame, &self.overrides, &mut leaves, &mut dividers);
+            let grip = Rect { x: frame.x + frame.w - GRIP, y: frame.y + frame.h - GRIP, w: GRIP, h: GRIP };
+            layers.push(Layer { card: Some(Card { panes: leaves_of(tree).iter().map(|l| l.id.clone()).collect(), frame, grip }), leaves, dividers });
+        }
+        layers
+    }
+    /// Where popped tree `index` draws over a grid at `area` (window coordinates), a drag on it included.
+    fn card_frame(&self, tree: &Tree, index: usize, area: Rect) -> Rect {
+        let base = crate::popped::frame(self.popped_frames.borrow().remembered(tree), index, area.w, area.h);
+        let drag = self.card_drag.as_ref().filter(|d| tree.holds(&d.pane));
+        let (dx, dy) = drag.filter(|d| !d.resize).map_or((0., 0.), |d| d.delta);
+        let grow = drag.filter(|d| d.resize).map_or((0., 0.), |d| d.delta);
+        let (w, h) = crate::popped::size(base, grow, area.w, area.h);
+        Rect { x: area.x + base.x + dx, y: area.y + base.y + dy, w, h }
+    }
+    /// Every pane drawn and every divider, bottom layer first.
     pub fn scene(&self) -> (Vec<Placed>, Vec<Divider>) {
         let (mut leaves, mut dividers) = (vec![], vec![]);
-        // A space away in a little window draws its panes there, and this grid draws the placeholder.
-        if let Some(space) = self.space().filter(|_| !self.space_away()) {
-            place(&space.root, self.grid_area(), &self.overrides, &mut leaves, &mut dividers);
+        for layer in self.layers() {
+            leaves.extend(layer.leaves);
+            dividers.extend(layer.dividers);
         }
         (leaves, dividers)
+    }
+    /// A press on the header of `pane` in a card moves the card; one on its corner resizes it.
+    pub fn card_press(&mut self, pane: &str, resize: bool, x: f32, y: f32) {
+        self.card_drag = Some(CardDrag { pane: pane.to_owned(), resize, start: (x, y), delta: (0., 0.) });
+    }
+    /// The pointer at (`x`, `y`) with a card held. A header press moves the card only once the
+    /// pointer has gone `DRAG_DISTANCE`, so a click on the header stays a click.
+    fn move_card(&mut self, x: f32, y: f32) {
+        let Some(drag) = &mut self.card_drag else { return };
+        let delta = (x - drag.start.0, y - drag.start.1);
+        if drag.resize || drag.delta != (0., 0.) || delta.0.hypot(delta.1) >= crate::sidebar::DRAG_DISTANCE {
+            drag.delta = delta;
+        }
+    }
+    /// The release: a card that moved stays where it was left, and every pane in it remembers it.
+    fn end_card_drag(&mut self) {
+        let Some(drag) = self.card_drag.clone() else { return };
+        // A press that never moved the card leaves it where it is.
+        if drag.delta == (0., 0.) {
+            self.card_drag = None;
+            return;
+        }
+        let area = self.grid_area();
+        let held = self.space().and_then(|s| s.popped.iter().enumerate().find(|(_, t)| t.holds(&drag.pane)).map(|(i, t)| (i, t.clone())));
+        // The frame is measured with the drag still applied, then the drag ends.
+        let frame = held.as_ref().map(|(index, tree)| self.card_frame(tree, *index, area));
+        self.card_drag = None;
+        let (Some((_, tree)), Some(f)) = (held, frame) else { return };
+        let left = Rect { x: f.x - area.x, y: f.y - area.y, w: f.w, h: f.h };
+        self.popped_frames.borrow_mut().set(&tree, left);
+        self.log(format!("popped card {}: {} to ({:.0},{:.0}) {:.0}x{:.0}", drag.pane, if drag.resize { "resized" } else { "moved" }, left.x, left.y, left.w, left.h));
     }
     pub fn tree_ratio(&self, split: &str) -> Option<f64> {
         fn find(t: &Tree, id: &str) -> Option<f64> {
@@ -863,7 +930,7 @@ impl Client {
     }
     /// The status the daemon holds for `pane`, whichever space holds it.
     pub fn pane_status(&self, pane: &str) -> Option<PaneStatus> {
-        self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.id == pane).and_then(|l| l.status.clone())
+        self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).and_then(|l| l.status.clone())
     }
     /// The marks the shown space's chip draws, by rank, and how many more it counts.
     pub fn space_marks(&self) -> (Vec<&'static str>, usize) {
@@ -880,7 +947,7 @@ impl Client {
     /// item with nothing to show is left out, as the Swift client leaves it out.
     pub fn footer_items_all(&self, agent: &str) -> Vec<(String, String)> {
         let Some(t) = self.transcripts.get(agent) else { return vec![] };
-        let (space, leaf) = self.spaces.iter().find_map(|s| leaves_of(&s.root).into_iter().find(|l| l.agent.as_deref() == Some(agent)).map(|l| (s.id.clone(), l.clone()))).unzip();
+        let (space, leaf) = self.spaces.iter().find_map(|s| s.shown().find(|l| l.agent.as_deref() == Some(agent)).map(|l| (s.id.clone(), l.clone()))).unzip();
         let pane = leaf.as_ref().map(|l| l.id.clone()).unwrap_or_default();
         footer_items(&self.footer_items_for(space.as_deref()), t, leaf.as_ref(), &self.agents, self.raw_context.contains(&pane))
     }
@@ -1378,14 +1445,14 @@ impl Client {
         if self.palettes.contains_key(pane) {
             return;
         }
-        let Some(kind) = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.id == pane).map(|l| l.kind.clone()) else { return };
+        let Some(kind) = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).map(|l| l.kind.clone()) else { return };
         self.palettes.insert(pane.to_owned(), Palette::new(&kind));
         self.focus_pane(pane);
         self.ask_artifacts(pane);
     }
     /// List again for `pane`'s palette: the `pane = true` artifacts of the space the pane is in.
     fn ask_artifacts(&mut self, pane: &str) {
-        let space = self.spaces.iter().find(|s| leaves_of(&s.root).iter().any(|l| l.id == pane)).map(|s| s.id.clone());
+        let space = self.spaces.iter().find(|s| s.shown().any(|l| l.id == pane)).map(|s| s.id.clone());
         let req = self.next_req;
         self.next_req += 1;
         let up = self.link == Link::Up;
@@ -1451,53 +1518,57 @@ impl Client {
     /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views
     /// of panes no space has any more.
-    fn sync_native(&mut self, leaves: &[Placed]) {
+    /// A view in a layer has every card above it cut out of it, and its own card's resize corner.
+    fn sync_native(&mut self, layers: &[Layer]) {
         self.native_panes.clear();
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
-        for p in leaves {
-            if self.quarantine.isolates_pane(&p.leaf.id) {
-                continue;
-            }
-            crate::crash_guard::mark_pane(&p.leaf.id);
-            let scope = p.leaf.scope.as_deref().unwrap_or("project");
-            let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
-                // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
-                ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
-                ("browser", _) => "browser".to_owned(),
-                ("terminal", Some(_)) => "terminal".to_owned(),
-                _ => continue,
-            };
-            if self.opened.get(&p.leaf.id) != Some(&kind) {
-                match (&p.leaf.term, p.leaf.kind.as_str()) {
-                    (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, self.space_id.as_deref(), &self.endpoint.ws),
-                    (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
-                    (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
+        let at = |r: Rect| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)];
+        for (n, layer) in layers.iter().enumerate() {
+            let holes: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).map(at).collect();
+            for p in &layer.leaves {
+                if self.quarantine.isolates_pane(&p.leaf.id) {
+                    continue;
                 }
-                self.opened.insert(p.leaf.id.clone(), kind);
-                // A view opened in place of another starts unplaced, so it is placed below.
-                self.placed.remove(&p.leaf.id);
+                crate::crash_guard::mark_pane(&p.leaf.id);
+                let scope = p.leaf.scope.as_deref().unwrap_or("project");
+                let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
+                    // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
+                    ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
+                    ("browser", _) => "browser".to_owned(),
+                    ("terminal", Some(_)) => "terminal".to_owned(),
+                    _ => continue,
+                };
+                if self.opened.get(&p.leaf.id) != Some(&kind) {
+                    match (&p.leaf.term, p.leaf.kind.as_str()) {
+                        (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, self.space_id.as_deref(), &self.endpoint.ws),
+                        (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
+                        (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
+                    }
+                    self.opened.insert(p.leaf.id.clone(), kind);
+                    // A view opened in place of another starts unplaced, so it is placed below.
+                    self.placed.remove(&p.leaf.id);
+                }
+                // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
+                // card while a load has failed.
+                let (top, failed) = match p.leaf.kind.as_str() {
+                    "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
+                    _ => (TITLE, false),
+                };
+                let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
+                if self.placed.get(&p.leaf.id).is_none_or(|(r, f, h)| (*r, *f) != (rect, failed) || *h != holes) {
+                    self.native.place(&p.leaf.id, rect, failed, &holes);
+                    self.placed.insert(p.leaf.id.clone(), (rect, failed, holes.clone()));
+                }
+                self.native_panes.push(p.leaf.id.clone());
             }
-            // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
-            // card while a load has failed.
-            let (top, failed) = match p.leaf.kind.as_str() {
-                "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
-                _ => (TITLE, false),
-            };
-            let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
-            if self.placed.get(&p.leaf.id) != Some(&(rect, failed)) {
-                self.native.place(&p.leaf.id, rect, failed);
-                self.placed.insert(p.leaf.id.clone(), (rect, failed));
-            }
-            self.native_panes.push(p.leaf.id.clone());
         }
         let shown: HashSet<&String> = self.native_panes.iter().collect();
-        for (id, (rect, hidden)) in self.placed.clone() {
-            if !shown.contains(&id) && !hidden {
-                self.native.place(&id, rect, true);
-                self.placed.insert(id, (rect, true));
-            }
+        let to_hide: Vec<(String, [f64; 4])> = self.placed.iter().filter(|(id, (_, hidden, _))| !shown.contains(id) && !hidden).map(|(id, (rect, _, _))| (id.clone(), *rect)).collect();
+        for (id, rect) in to_hide {
+            self.native.place(&id, rect, true, &[]);
+            self.placed.insert(id, (rect, true, vec![]));
         }
-        let alive: HashSet<&str> = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).map(|l| l.id.as_str()).collect();
+        let alive: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| l.id.as_str()).collect();
         for id in self.opened.keys().cloned().collect::<Vec<_>>() {
             if !alive.contains(id.as_str()) {
                 self.native.close(&id);
@@ -1510,6 +1581,201 @@ impl Client {
             self.address_edit = None;
         }
     }
+    /// The pointer moved anywhere in the window: what the root hears, and the capture layer while
+    /// a drag holds the pointer.
+    fn window_mouse_move(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+        let had = self.space_press.is_some() || self.pane_press.is_some() || self.space_drag.is_some() || self.pane_drag.is_some() || self.hover.is_some();
+        self.pointer_moved(x, y, e.pressed_button.is_some());
+        if had || self.hover.is_some() {
+            cx.notify();
+        }
+        if self.drag.is_some() {
+            self.move_drag(x, y);
+            cx.notify();
+        }
+        if self.card_drag.is_some() {
+            // A release GPUI never saw ends the drag where it is.
+            if e.pressed_button.is_none() {
+                self.end_card_drag();
+            } else {
+                self.move_card(x, y);
+            }
+            cx.notify();
+        }
+        if self.pending_down.is_some() || self.selection.as_ref().is_some_and(|s| s.dragging) {
+            self.pending_move = Some(e.position);
+            cx.notify();
+        }
+    }
+    /// The button came up anywhere in the window.
+    fn window_mouse_up(&mut self, e: &MouseUpEvent, cx: &mut Context<Self>) {
+        self.end_drag();
+        self.end_card_drag();
+        self.pointer_up();
+        if self.pending_down.is_some() || self.selection.as_ref().is_some_and(|s| s.dragging) {
+            self.pending_move = Some(e.position);
+            self.pending_up = true;
+        }
+        cx.notify();
+    }
+    /// One pane as the grid or a card draws it: its header, its body and its palette.
+    fn pane_element(&mut self, p: &Placed, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let r = p.rect;
+        let native = self.native_panes.contains(&p.leaf.id);
+        let id = p.leaf.id.clone();
+        crate::crash_guard::mark_pane(&p.leaf.id);
+        let body = if self.quarantine.isolates_pane(&p.leaf.id) { self.quarantine_card(&p.leaf.id, &p.leaf.kind, cx) } else { match p.leaf.kind.as_str() {
+            "browser" if native => {
+                let state = self.browsers.get(&p.leaf.id).cloned().unwrap_or_default();
+                let editing = self.address_edit.as_ref().filter(|(pane, _)| pane == &p.leaf.id).map(|(_, d)| d.clone());
+                let mut body = div().flex().flex_col().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().child(browser::chrome(&p.leaf.id, &state, r.w, editing.as_deref(), &self.controls, cx));
+                if let Some(failure) = &state.failure {
+                    body = body.child(div().flex_1().min_h(px(0.)).w(px(r.w)).overflow_hidden().child(browser::failure_card(&p.leaf.id, failure, &self.controls, cx)));
+                }
+                body
+            }
+            _ if native => div(),
+            "agent" => {
+                // A pane whose agent has not started yet shares no draft or scroll state with another.
+                let agent = p.leaf.agent.as_deref();
+                let harness = p.leaf.harness.as_deref().unwrap_or("");
+                let t = agent.and_then(|a| self.transcripts.get(a));
+                let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
+                let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
+                    list(state, cx.processor(move |this, ix, _, cx| this.row_el(&a, ix, cx).into_any_element())).size_full()
+                });
+                let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
+                let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents, self.raw_context.contains(&p.leaf.id));
+                // The pane's padding and its 1 px border on each side.
+                let (items, more) = fit_footer(window, items, t, r.w - 2. * PAD - 2.);
+                if let Some(a) = agent {
+                    self.footer_shown.borrow_mut().insert(a.to_owned(), (items.clone(), more));
+                }
+                let menu = self.menu.clone().filter(|(a, _)| Some(a.as_str()) == agent).map(|(_, o)| o);
+                // Directly above the composer, where a person answering has their hands: this agent's oldest waiting request.
+                let body = r.h - TITLE - 2. * PAD;
+                let card_h = self.card_height(agent, body);
+                let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, position, self.perms.len(), focused, card_h, &self.controls, cx));
+                let (rows, at, prefix) = agent.map(|a| self.command_matches(a, harness)).unwrap_or_default();
+                let list_h = composer::command_list_height(rows.len());
+                let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
+                let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
+                let footer = FooterRow { items, more, harness: harness.to_owned(), menu, menu_at: self.menu_at };
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h, list, error, footer, &self.controls, cx)
+            }
+            "empty" => {
+                let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
+                    let id = id.clone();
+                    div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.set_kind(&id, kind)))
+                        .child(label)
+                };
+                let artifact = {
+                    let id = id.clone();
+                    div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.open_palette(&id)))
+                        .child("Artifact…")
+                };
+                div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(artifact).child(button("Browser", NewPaneKind::Browser, cx))
+            }
+            other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
+        } };
+        div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x17201c))
+            .border_1().border_color(rgb(if self.focus.current.as_ref() == Some(&p.leaf.id) { 0x7fb89a } else { 0x2c3d34 }))
+            .on_mouse_down(MouseButton::Left, cx.listener({
+                let id = p.leaf.id.clone();
+                // A press in an agent pane's transcript band starts a pointer selection.
+                let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
+                let listed = agent.as_deref().map_or(0, |a| self.command_matches(a, p.leaf.harness.as_deref().unwrap_or("")).0.len());
+                let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD) + composer::command_list_height(listed);
+                let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - FOOTER - 8. - card_h);
+                move |this, e: &MouseDownEvent, _, cx| {
+                    this.press(format!("pane {id} at {:?}", e.position));
+                    this.focus_pane(&id);
+                    this.menu = None;
+                    // A press outside the address field ends its edit; the field stops this event.
+                    if this.address_edit.take().is_some() {
+                        this.native.focus(&id);
+                    }
+                    // A press in the band starts a selection; one anywhere else drops the old one.
+                    if let Some(agent) = &agent
+                        && band.contains(&f32::from(e.position.y))
+                    {
+                        this.pending_down = Some((agent.clone(), e.position));
+                    } else {
+                        this.selection = None;
+                    }
+                    cx.notify();
+                }
+            }))
+            .child(div().h(px(TITLE)).w(px(r.w)).px_2().bg(rgb(0x22302a)).text_xs().flex().items_center().justify_between().overflow_hidden()
+                .on_mouse_down(MouseButton::Left, cx.listener({
+                    let (id, label, origin) = (p.leaf.id.clone(), self.pane_label(&p.leaf), (r.x, r.y));
+                    move |this, e: &MouseDownEvent, _, cx| {
+                        let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+                        // A control-click asks for the pane menu, as a right press does.
+                        if e.modifiers.control {
+                            cx.stop_propagation();
+                            this.focus_pane(&id);
+                            this.open_pane_menu(&id, x, y);
+                            cx.notify();
+                            return;
+                        }
+                        // In a card the header moves the card (PoppedWindowDrag); in the grid it drags the pane.
+                        if this.site_of(&id) == Some(wheel_proto::PaneSite::Popped) {
+                            this.card_press(&id, false, x, y);
+                            return;
+                        }
+                        this.pane_press_down(&id, &label, x, y, (x - origin.0, y - origin.1));
+                    }
+                }))
+                .on_mouse_down(MouseButton::Right, cx.listener({
+                    let id = p.leaf.id.clone();
+                    move |this, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.focus_pane(&id);
+                        this.open_pane_menu(&id, f32::from(e.position.x), f32::from(e.position.y));
+                        cx.notify();
+                    }
+                }))
+                .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
+                    ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
+                    _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
+                }))
+                .child(self.header_buttons(&p.leaf.id, cx))
+                .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))
+                    .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
+            .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
+            .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, r.w, r.h - TITLE, cx)))
+    }
+    /// A card's resize corner, over its panes and their views.
+    fn card_grip(&self, card: &Card, cx: &mut Context<Self>) -> gpui::Div {
+        let (g, pane) = (card.grip, card.panes.first().cloned().unwrap_or_default());
+        div().absolute().left(px(g.x)).top(px(g.y)).w(px(g.w)).h(px(g.h)).occlude().cursor_crosshair()
+            .child(div().absolute().right(px(3.)).bottom(px(3.)).w(px(7.)).h(px(7.)).border_r_2().border_b_2().border_color(rgb(0x5d7a6b)))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                this.card_press(&pane, true, f32::from(e.position.x), f32::from(e.position.y));
+                cx.notify();
+            }))
+    }
+}
+
+/// The shade and shadow under a card's panes; it takes every press, so none reaches the grid under it.
+fn card_backdrop(card: &Card) -> gpui::Div {
+    let f = card.frame;
+    div().absolute().left(px(f.x - 1.)).top(px(f.y - 1.)).w(px(f.w + 2.)).h(px(f.h + 2.)).rounded_md().bg(rgb(0x0e1311)).border_1().border_color(rgb(0x3d5247)).shadow_lg().occlude()
+}
+/// A divider between two panes, which a press drags.
+fn divider_element(d: &Divider, cx: &mut Context<Client>) -> gpui::Div {
+    let (split, horizontal, parent, r) = (d.split.clone(), d.horizontal, d.parent, d.rect);
+    let bar = div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x3d5247))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.drag = Some((split.clone(), horizontal, parent));
+            cx.notify();
+        }));
+    if horizontal { bar.cursor_col_resize() } else { bar.cursor_row_resize() }
 }
 
 impl Render for Client {
@@ -1517,7 +1783,7 @@ impl Render for Client {
         let v = window.viewport_size();
         self.viewport = (f32::from(v.width), f32::from(v.height));
         self.footer_shown.borrow_mut().clear();
-        let (leaves, dividers) = self.scene();
+        let layers = self.layers();
         if !self.handle.is_focused(window) {
             window.focus(&self.handle, cx);
         }
@@ -1544,8 +1810,9 @@ impl Render for Client {
         let space_held = self.space_id.as_deref().is_some_and(|s| self.quarantine.isolates_space(s));
         // A quarantined space opens none of its views and draws its card in place of its panes.
         let desk = self.mode == "desk";
-        let (leaves, dividers) = if space_held || desk { (vec![], vec![]) } else { (leaves, dividers) };
-        self.sync_native(&leaves);
+        let layers = if space_held || desk { vec![] } else { layers };
+        let leaves: Vec<Placed> = layers.iter().flat_map(|l| l.leaves.iter().cloned()).collect();
+        self.sync_native(&layers);
         self.sync_agents(&leaves);
         self.frames += 1;
         self.settle_selection();
@@ -1584,30 +1851,8 @@ impl Render for Client {
                     cx.notify();
                 }
             }))
-            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                let had = this.space_press.is_some() || this.pane_press.is_some() || this.space_drag.is_some() || this.pane_drag.is_some() || this.hover.is_some();
-                this.pointer_moved(f32::from(e.position.x), f32::from(e.position.y), e.pressed_button.is_some());
-                if had || this.hover.is_some() {
-                    cx.notify();
-                }
-                if this.drag.is_some() {
-                    this.move_drag(f32::from(e.position.x), f32::from(e.position.y));
-                    cx.notify();
-                }
-                if this.pending_down.is_some() || this.selection.as_ref().is_some_and(|s| s.dragging) {
-                    this.pending_move = Some(e.position);
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, _, cx| {
-                this.end_drag();
-                this.pointer_up();
-                if this.pending_down.is_some() || this.selection.as_ref().is_some_and(|s| s.dragging) {
-                    this.pending_move = Some(e.position);
-                    this.pending_up = true;
-                }
-                cx.notify();
-            }));
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| this.window_mouse_move(e, cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, _, cx| this.window_mouse_up(e, cx)));
         self.controls.borrow_mut().clear();
         let little = self.is_little();
         if little {
@@ -1621,140 +1866,19 @@ impl Render for Client {
         if !little && desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.desk_element());
         }
-        for p in &leaves {
-            let r = p.rect;
-            let native = self.native_panes.contains(&p.leaf.id);
-            let id = p.leaf.id.clone();
-            crate::crash_guard::mark_pane(&p.leaf.id);
-            let body = if self.quarantine.isolates_pane(&p.leaf.id) { self.quarantine_card(&p.leaf.id, &p.leaf.kind, cx) } else { match p.leaf.kind.as_str() {
-                "browser" if native => {
-                    let state = self.browsers.get(&p.leaf.id).cloned().unwrap_or_default();
-                    let editing = self.address_edit.as_ref().filter(|(pane, _)| pane == &p.leaf.id).map(|(_, d)| d.clone());
-                    let mut body = div().flex().flex_col().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().child(browser::chrome(&p.leaf.id, &state, r.w, editing.as_deref(), &self.controls, cx));
-                    if let Some(failure) = &state.failure {
-                        body = body.child(div().flex_1().min_h(px(0.)).w(px(r.w)).overflow_hidden().child(browser::failure_card(&p.leaf.id, failure, &self.controls, cx)));
-                    }
-                    body
-                }
-                _ if native => div(),
-                "agent" => {
-                    // A pane whose agent has not started yet shares no draft or scroll state with another.
-                    let agent = p.leaf.agent.as_deref();
-                    let harness = p.leaf.harness.as_deref().unwrap_or("");
-                    let t = agent.and_then(|a| self.transcripts.get(a));
-                    let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
-                    let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
-                        list(state, cx.processor(move |this, ix, _, cx| this.row_el(&a, ix, cx).into_any_element())).size_full()
-                    });
-                    let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
-                    let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents, self.raw_context.contains(&p.leaf.id));
-                    // The pane's padding and its 1 px border on each side.
-                    let (items, more) = fit_footer(window, items, t, r.w - 2. * PAD - 2.);
-                    if let Some(a) = agent {
-                        self.footer_shown.borrow_mut().insert(a.to_owned(), (items.clone(), more));
-                    }
-                    let menu = self.menu.clone().filter(|(a, _)| Some(a.as_str()) == agent).map(|(_, o)| o);
-                    // Directly above the composer, where a person answering has their hands: this agent's oldest waiting request.
-                    let body = r.h - TITLE - 2. * PAD;
-                    let card_h = self.card_height(agent, body);
-                    let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, position, self.perms.len(), focused, card_h, &self.controls, cx));
-                    let (rows, at, prefix) = agent.map(|a| self.command_matches(a, harness)).unwrap_or_default();
-                    let list_h = composer::command_list_height(rows.len());
-                    let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
-                    let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
-                    let footer = FooterRow { items, more, harness: harness.to_owned(), menu, menu_at: self.menu_at };
-                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h, list, error, footer, &self.controls, cx)
-                }
-                "empty" => {
-                    let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
-                        let id = id.clone();
-                        div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.set_kind(&id, kind)))
-                            .child(label)
-                    };
-                    let artifact = {
-                        let id = id.clone();
-                        div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.open_palette(&id)))
-                            .child("Artifact…")
-                    };
-                    div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(artifact).child(button("Browser", NewPaneKind::Browser, cx))
-                }
-                other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
-            } };
-            root = root.child(
-                div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x17201c))
-                    .border_1().border_color(rgb(if self.focus.current.as_ref() == Some(&p.leaf.id) { 0x7fb89a } else { 0x2c3d34 }))
-                    .on_mouse_down(MouseButton::Left, cx.listener({
-                        let id = p.leaf.id.clone();
-                        // A press in an agent pane's transcript band starts a pointer selection.
-                        let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
-                        let listed = agent.as_deref().map_or(0, |a| self.command_matches(a, p.leaf.harness.as_deref().unwrap_or("")).0.len());
-                        let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD) + composer::command_list_height(listed);
-                        let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - FOOTER - 8. - card_h);
-                        move |this, e: &MouseDownEvent, _, cx| {
-                            this.press(format!("pane {id} at {:?}", e.position));
-                            this.focus_pane(&id);
-                            this.menu = None;
-                            // A press outside the address field ends its edit; the field stops this event.
-                            if this.address_edit.take().is_some() {
-                                this.native.focus(&id);
-                            }
-                            // A press in the band starts a selection; one anywhere else drops the old one.
-                            if let Some(agent) = &agent
-                                && band.contains(&f32::from(e.position.y))
-                            {
-                                this.pending_down = Some((agent.clone(), e.position));
-                            } else {
-                                this.selection = None;
-                            }
-                            cx.notify();
-                        }
-                    }))
-                    .child(div().h(px(TITLE)).w(px(r.w)).px_2().bg(rgb(0x22302a)).text_xs().flex().items_center().justify_between().overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, cx.listener({
-                            let (id, label, origin) = (p.leaf.id.clone(), self.pane_label(&p.leaf), (r.x, r.y));
-                            move |this, e: &MouseDownEvent, _, cx| {
-                                let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
-                                // A control-click asks for the pane menu, as a right press does.
-                                if e.modifiers.control {
-                                    cx.stop_propagation();
-                                    this.focus_pane(&id);
-                                    this.open_pane_menu(&id, x, y);
-                                    cx.notify();
-                                    return;
-                                }
-                                this.pane_press_down(&id, &label, x, y, (x - origin.0, y - origin.1));
-                            }
-                        }))
-                        .on_mouse_down(MouseButton::Right, cx.listener({
-                            let id = p.leaf.id.clone();
-                            move |this, e: &MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.focus_pane(&id);
-                                this.open_pane_menu(&id, f32::from(e.position.x), f32::from(e.position.y));
-                                cx.notify();
-                            }
-                        }))
-                        .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
-                            ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
-                            _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
-                        }))
-                        .child(self.header_buttons(&p.leaf.id, cx))
-                        .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))
-                            .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
-                    .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
-                    .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, r.w, r.h - TITLE, cx))),
-            );
-        }
-        for d in dividers {
-            let (split, horizontal, parent, r) = (d.split.clone(), d.horizontal, d.parent, d.rect);
-            let bar = div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).bg(rgb(0x3d5247))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                    this.drag = Some((split.clone(), horizontal, parent));
-                    cx.notify();
-                }));
-            root = root.child(if horizontal { bar.cursor_col_resize() } else { bar.cursor_row_resize() });
+        for layer in &layers {
+            if let Some(card) = &layer.card {
+                root = root.child(card_backdrop(card));
+            }
+            for p in &layer.leaves {
+                root = root.child(self.pane_element(p, window, cx));
+            }
+            for d in &layer.dividers {
+                root = root.child(divider_element(d, cx));
+            }
+            if let Some(card) = &layer.card {
+                root = root.child(self.card_grip(card, cx));
+            }
         }
         // The part of the target a dragged pane would take: all of it to swap, a half to dock.
         if let Some(h) = self.grid_drop_highlight() {
@@ -1764,6 +1888,15 @@ impl Render for Client {
             root = root.child(self.sidebar_element(cx));
         }
         root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.drag_chip());
+        // While a card, a divider or a pane is dragged, a layer over the whole window takes the
+        // pointer: a card's backdrop occludes the root, whose listeners hear only a pointer over nothing else.
+        if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() {
+            let resize = self.card_drag.as_ref().is_some_and(|d| d.resize);
+            let layer = div().absolute().left_0().top_0().size_full().occlude()
+                .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| this.window_mouse_move(e, cx)))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, _, cx| this.window_mouse_up(e, cx)));
+            root = root.child(if resize { layer.cursor_crosshair() } else { layer });
+        }
         let (w, h) = self.viewport;
         if space_held && let Some(space) = self.space_id.clone() {
             root = root.child(div().absolute().left_0().top(px(TITLE)).w(px(w)).h(px(h - TITLE)).child(self.quarantine_space_card(&space, cx)));

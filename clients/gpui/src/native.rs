@@ -146,9 +146,10 @@ impl Native {
         let terminal: Vec<&wheel_proto::SettingInfo> = settings.iter().filter(|s| s.key.starts_with("terminal.")).collect();
         self.call(json!({"op":"terminal_look","space":space,"settings":terminal}));
     }
-    /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin).
-    pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool) {
-        self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden}));
+    /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin), with `holes`
+    /// (the same coordinates) cut out of it: the cards drawn over it.
+    pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool, holes: &[[f64; 4]]) {
+        self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden,"holes":holes}));
     }
     /// Drop the bridge's daemon socket, so the next terminal opened connects anew.
     pub fn disconnect(&self) {

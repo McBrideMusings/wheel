@@ -380,7 +380,7 @@ impl Client {
         }
     }
     fn leaf(&self, pane: &str) -> Option<Leaf> {
-        self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.id == pane).cloned()
+        self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).cloned()
     }
     /// The question a pane that runs a shell or an agent asks before it stops running it.
     fn ending_question(kind: &str) -> Option<(&'static str, &'static str)> {
@@ -404,7 +404,7 @@ impl Client {
     /// ⌥⌘W: close `space`, asking first when it runs a shell or an agent.
     pub fn ask_close_space(&mut self, id: &str) {
         let Some(space) = self.spaces.iter().find(|s| s.id == id) else { return };
-        let leaves = leaves_of(&space.root);
+        let leaves: Vec<&Leaf> = space.all().collect();
         let shells = leaves.iter().filter(|l| l.kind == "terminal").count();
         let agents = leaves.iter().filter(|l| l.kind == "agent").count();
         if shells + agents == 0 {

@@ -18,7 +18,7 @@ impl Client {
 
     /// Every notice now, in the order they stack from the top.
     pub fn toasts(&self) -> Vec<Toast> {
-        stack(&self.toast_sources, &self.posted, |pane| self.spaces.iter().any(|s| leaves_of(&s.root).iter().any(|l| l.id == pane)))
+        stack(&self.toast_sources, &self.posted, |pane| self.spaces.iter().any(|s| s.shown().any(|l| l.id == pane)))
     }
     /// Show `toast`, replacing one with the same id.
     pub fn post(&mut self, toast: Toast) {
@@ -65,7 +65,7 @@ impl Client {
     }
     /// Show the space holding `pane` and give it the keyboard.
     pub fn show_pane(&mut self, pane: &str) {
-        if let Some(space) = self.spaces.iter().find(|s| leaves_of(&s.root).iter().any(|l| l.id == pane)).map(|s| s.id.clone()) {
+        if let Some(space) = self.spaces.iter().find(|s| s.shown().any(|l| l.id == pane)).map(|s| s.id.clone()) {
             self.show_space_anywhere(&space);
         }
         self.focus_pane(pane);
@@ -92,7 +92,7 @@ impl Client {
             ServerMsg::ToastClear { id } => self.remove_toast(&format!("notify:{id}")),
             ServerMsg::AgentNotice { agent, notice } => match notice {
                 Some(notice) => {
-                    let pane = self.spaces.iter().flat_map(|s| leaves_of(&s.root)).find(|l| l.agent.as_deref() == Some(agent)).map(|l| l.id.clone());
+                    let pane = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.agent.as_deref() == Some(agent)).map(|l| l.id.clone());
                     let mut toast = Toast::posted(format!("chat:{agent}"), Level::Warning, format!("{agent}: {notice}"), pane);
                     toast.dismiss = Dismiss::AgentNotice(agent.clone());
                     self.post(toast);

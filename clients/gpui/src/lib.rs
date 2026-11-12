@@ -17,6 +17,7 @@ pub mod markdown;
 pub mod native;
 pub mod pairing;
 pub mod perms;
+pub mod popped;
 pub mod palette;
 pub mod procs;
 pub mod server;

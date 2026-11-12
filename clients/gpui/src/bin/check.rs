@@ -3052,13 +3052,86 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     until!("the third pane focused by wheel pane focus", |s: &Value| s["panes"][grid_c.as_str()]["focused"] == true);
     // The header's buttons: Pop out, then back with the CLI; Background, then back.
     let site_list = |s: &Value, key: &str| s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).map(|x| x[key].clone()).unwrap_or_default();
+    // The popped pane draws as a card over the grid (wheel-ynjo.7.3). The third pane and the first
+    // become terminals, so the card holds a native view that must sit on top of the grid's.
+    for pane in [&grid_c, &grid_a] {
+        let (ok, _, err) = run_pumped(&["pane", "kind", pane, "terminal"], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel pane kind {pane} terminal failed: {err}");
+        until!("a terminal view in the pane", |s: &Value| s["panes"][pane.as_str()]["native"] == true);
+    }
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=pop"));
     ensure!(code == 200, "pop got {code}");
     let popped = until!("the third pane popped", |s: &Value| site_list(s, "popped") == json!([grid_c]));
     ensure!(!grid_panes(&popped).contains(&grid_c), "a popped pane stayed in the grid: {:?}", grid_panes(&popped));
+    let four = |v: &Value| -> [f64; 4] { [0, 1, 2, 3].map(|i| v[i].as_f64().unwrap_or(-1.)) };
+    let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
+    let body_of = |f: [f64; 4]| [f[0], f[1] + f64::from(TITLE), f[2], f[3] - f64::from(TITLE)];
+    let card_now = |s: &Value| four(&s["cards"][0]["frame"]);
+    let carded = until!("the popped pane in a card with its view shown", |s: &Value| s["cards"].as_array().is_some_and(|c| c.len() == 1)
+        && s["panes"][grid_c.as_str()]["bridge"]["hidden"] == false && near(four(&s["panes"][grid_c.as_str()]["bridge"]["frame_top"]), body_of(card_now(s))));
+    ensure!(carded["cards"][0]["panes"] == json!([grid_c]), "the card holds {}, not the popped pane", carded["cards"][0]["panes"]);
+    let card_before = card_now(&carded);
+    ensure!(near(frame(&carded, &grid_c), card_before), "the popped pane fills {:?}, not its card {card_before:?}", frame(&carded, &grid_c));
+    let area = four(&json!(window.update(cx, |c, _, _| { let r = c.grid_area(); [r.x, r.y, r.w, r.h] })?));
+    ensure!(card_before[0] >= area[0] && card_before[1] >= area[1] && card_before[0] + card_before[2] <= area[0] + area[2] + 0.5 && card_before[1] + card_before[3] <= area[1] + area[3] + 0.5,
+        "the card {card_before:?} is not inside the grid {area:?}");
+    // The grid's terminal has the card cut out of it, so the card's own view is the one on top there.
+    let holes = carded["panes"][grid_a.as_str()]["bridge"]["holes"].clone();
+    ensure!(holes.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), card_before)), "the grid terminal under the card has holes {holes}, not the card {card_before:?}");
+    let own = carded["panes"][grid_c.as_str()]["bridge"]["holes"].clone();
+    ensure!(own.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), four(&carded["cards"][0]["grip"]))), "the card's view has holes {own}, not its resize corner {}", carded["cards"][0]["grip"]);
+    // Where the card covers the grid terminal, the pointer lands on the card's view, and the grid
+    // terminal's mask keeps the rects around the hole.
+    let inside = [card_before[0] + 30., card_before[1] + f64::from(TITLE) + 30.];
+    let hit = native.call(json!({"op":"hit","point":inside}));
+    ensure!(hit["pane"] == grid_c.as_str(), "a point inside the card's body at {inside:?} hits {hit}, not the card's terminal {grid_c}");
+    let rects = carded["panes"][grid_a.as_str()]["bridge"]["mask_rects"].as_u64().unwrap_or(0);
+    ensure!(rects > 1, "the grid terminal's mask keeps {rects} rect(s): the card was not cut out of it");
+    draw(window, Some(output.join("client-popped-card.png")), cx)?;
+    // A real drag on the card's header moves it, and its view goes with it.
+    let header_at = [card_before[0] + 40., card_before[1] + 11.];
+    let moved_by = [-80., 50.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":header_at}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    for step in 1..=4 {
+        let k = f64::from(step) / 4.;
+        native.call(json!({"op":"post_mouse","kind":"drag","point":[header_at[0] + moved_by[0] * k, header_at[1] + moved_by[1] * k]}));
+        pump(&mut connection, 60, &mut layouts, window, cx).await?;
+    }
+    let dragging = state!();
+    ensure!(dragging["card_drag"]["pane"] == grid_c.as_str() && dragging["sidebar"]["pane_drag"].is_null(), "the header drag reads card {} and pane drag {} (presses {})", dragging["card_drag"], dragging["sidebar"]["pane_drag"], dragging["presses"]);
+    draw(window, Some(output.join("client-popped-card-moving.png")), cx)?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":[header_at[0] + moved_by[0], header_at[1] + moved_by[1]]}));
+    let want = [card_before[0] + moved_by[0], card_before[1] + moved_by[1], card_before[2], card_before[3]];
+    let moved = until!("the card moved by its header", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want)
+        && near(four(&s["panes"][grid_c.as_str()]["bridge"]["frame_top"]), body_of(want)));
+    let card_moved = card_now(&moved);
+    // Its corner resizes it.
+    let corner = four(&moved["cards"][0]["grip"]);
+    let at = [corner[0] + corner[2] / 2., corner[1] + corner[3] / 2.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[at[0] + 40., at[1] + 30.]}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":[at[0] + 40., at[1] + 30.]}));
+    let want = [card_moved[0], card_moved[1], card_moved[2] + 40., card_moved[3] + 30.];
+    let resized = until!("the card resized by its corner", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want));
+    let card_resized = card_now(&resized);
+    draw(window, Some(output.join("client-popped-card-moved.png")), cx)?;
     let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane pop failed: {err}");
-    until!("the third pane back in the grid", |s: &Value| grid_panes(s).contains(&grid_c));
+    let back = until!("the third pane back in the grid", |s: &Value| grid_panes(s).contains(&grid_c) && s["cards"].as_array().is_some_and(Vec::is_empty));
+    ensure!(back["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid terminal kept holes after the card left: {}", back["panes"][grid_a.as_str()]["bridge"]["holes"]);
+    // Popped again, it comes back where it was left.
+    let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane pop again failed: {err}");
+    let again = until!("the card back where it was left", |s: &Value| s["cards"].as_array().is_some_and(|c| c.len() == 1));
+    ensure!(near(card_now(&again), card_resized), "popped again the card is at {:?}, not where it was left {card_resized:?}", card_now(&again));
+    let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane pop back failed: {err}");
+    until!("the third pane back in the grid again", |s: &Value| grid_panes(s).contains(&grid_c));
+    let popped_card_report = json!({"pane": grid_c, "grid": area, "before": card_before, "moved": card_moved, "resized": card_resized, "popped_again": card_now(&again),
+        "grid_view_holes": holes, "card_view_holes": own, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=background"));
     ensure!(code == 200, "background got {code}");
     until!("the third pane backgrounded", |s: &Value| site_list(s, "backgrounded") == json!([grid_c]));
@@ -3089,7 +3162,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         ensure!(ok, "wheel space close {space} failed: {err}");
     }
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
-    let pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c},
+    let pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report,
         "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
     let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
         "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
