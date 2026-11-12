@@ -2177,14 +2177,17 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
     footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
-        .h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)))
+        .flex_none().overflow_hidden().h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)))
         .children(column);
-    div().flex().flex_col().h(px(height.max(1.)))
-        .child(div().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
+    // Only the transcript gives up room; the label, a request card, the composer and the footer
+    // keep their heights, and whatever still does not fit is clipped at the pane's edge, as
+    // Swift's AgentBody stack is.
+    div().flex().flex_col().h(px(height.max(1.))).overflow_hidden()
+        .child(div().flex_none().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
         .child(col)
         .children(card)
         .children(list)
-        .child(div().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
+        .child(div().flex_none().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
             .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
             .text_color(rgb(0xd9e8e1)).overflow_hidden()
             .flex().justify_between().gap_2()
@@ -2382,7 +2385,7 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, footer: FooterRow
         }
         right = right.child(control);
     }
-    div().h(px(FOOTER)).mt_1().flex().items_center().gap(px(FOOTER_GAP)).child(left).child(right)
+    div().flex_none().h(px(FOOTER)).mt_1().flex().items_center().gap(px(FOOTER_GAP)).child(left).child(right)
 }
 
 /// The footer's items for a transcript as text, (item, text), in the order the setting says; an

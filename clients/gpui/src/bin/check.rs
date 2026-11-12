@@ -1922,6 +1922,37 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(little_ls["windows"].as_array().is_some_and(|w| w.iter().all(|w| w["id"] != json!(little_id))), "a little window is listed as a main window: {little_ls}");
     draw(window, Some(output.join("client-little-placeholder.png")), cx)?;
     draw(little, Some(output.join("client-little-window.png")), cx)?;
+    // The little window's agent pane is shorter than its label, composer and footer: nothing it
+    // draws lands below its frame, where the window's bottom inset shows one flat colour.
+    let short_pane = little.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.kind == "agent"))?.ok_or_else(|| anyhow::anyhow!("the little window shows no agent pane"))?;
+    let short_rect = short_pane.rect;
+    let little_any: gpui::AnyWindowHandle = little.into();
+    let (short_height, short_from, short_colours, short_inside) = little_any.update(cx, |_, w, cx| -> Result<(u32, u32, std::collections::BTreeSet<u32>, usize)> {
+        w.draw(cx).clear();
+        let image = w.render_to_image()?;
+        let scale = image.width() as f32 / f32::from(w.viewport_size().width);
+        let (x0, x1) = (((short_rect.x + 4.) * scale) as u32, ((short_rect.x + short_rect.w - 4.) * scale) as u32);
+        let y0 = ((short_rect.y + short_rect.h) * scale).ceil() as u32 + 1;
+        let mut colours = std::collections::BTreeSet::new();
+        for y in y0..image.height() {
+            for x in x0..x1.min(image.width()) {
+                let [r, g, b, _] = image.get_pixel(x, y).0;
+                colours.insert(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b));
+            }
+        }
+        // The body under the title still draws its label and composer.
+        let mut inside = std::collections::BTreeSet::new();
+        for y in ((short_rect.y + TITLE) * scale) as u32..((short_rect.y + short_rect.h) * scale) as u32 {
+            for x in x0..x1.min(image.width()) {
+                inside.insert(image.get_pixel(x, y).0);
+            }
+        }
+        Ok((image.height(), y0, colours, inside.len()))
+    })??;
+    ensure!(short_rect.h < 140. && short_from < short_height, "the little window's agent pane is not short, or reaches the window's bottom: {short_rect:?}, window {short_height} px, strip from {short_from}");
+    ensure!(short_colours.len() == 1, "the little window's agent pane ({short_rect:?}) draws below its frame: {} colours under it, {:x?}", short_colours.len(), short_colours.iter().take(8).collect::<Vec<_>>());
+    ensure!(short_inside > 1, "the little window's agent pane ({short_rect:?}) draws nothing in its body: {short_inside} colour");
+    let little_short = json!({"pane": [short_rect.x, short_rect.y, short_rect.w, short_rect.h], "rows_below": short_height - short_from, "colours_below": short_colours.len(), "colours_inside": short_inside});
     // Go to Little Window from the menu again opens no second one.
     window.update(cx, |c, _, cx| c.run_space_menu("little", &little_space, cx))?;
     ensure!(window.update(cx, |c, _, _| c.little_json())?["littles"].as_array().map(Vec::len) == Some(1), "Go to Little Window opened a second little window");
@@ -1964,7 +1995,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let brought_id = little.update(cx, |c, _, _| c.window_id().to_owned())?;
     window.update(cx, |c, _, cx| c.bring_back(&little_space, cx))?;
     ensure!(wait_closed(&brought_id, &mut connection, &mut layouts, cx).await?, "Bring Back left the little window open");
-    let little_report = json!({"space": little_space, "owner": id1, "panes": home_panes, "ls": little_ls["little"], "closed_by": ["back", "red light", "bring back"],
+    let little_report = json!({"short_agent_pane": little_short, "space": little_space, "owner": id1, "panes": home_panes, "ls": little_ls["little"], "closed_by": ["back", "red light", "bring back"],
         "pictures": ["client-little-placeholder.png", "client-little-window.png", "client-little-back.png"]});
     // Web panes: an artifact's page opens under the client's own `wheel-page` scheme, fetched from
     // wheeld with the token in a header (never in the page's address), in a store of its own; the
