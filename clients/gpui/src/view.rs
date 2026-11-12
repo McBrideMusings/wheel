@@ -106,6 +106,11 @@ pub struct Client {
     drafts: HashMap<String, String>,
     /// Each composer's command list: its highlight and whether Esc shut it.
     pickers: HashMap<String, crate::composer::Picker>,
+    /// The files each agent's composer holds for its next message.
+    attachments: HashMap<String, crate::composer::Tray>,
+    /// Files dragged from outside the window and held over an agent's composer: the agent and
+    /// the paths, attached when they are released there.
+    file_drag: Option<(String, Vec<std::path::PathBuf>)>,
     /// Messages taken back to edit, by (agent, turn): their text goes to the draft on `retract`.
     editing: HashMap<(String, u64), String>,
     /// Queued turns asked to run now and not yet started, by (agent, turn).
@@ -387,7 +392,7 @@ impl Client {
         let mut client = Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
@@ -1521,6 +1526,14 @@ impl Client {
         }
         let agent = focused.filter(|l| l.kind == "agent").and_then(|l| l.agent);
         let Some(agent) = agent else { return false };
+        if k.modifiers.platform && !k.modifiers.control && !k.modifiers.alt && !k.modifiers.shift && k.key == "v" {
+            self.paste_into_composer(&agent, cx);
+            return true;
+        }
+        if k.key == "enter" && !k.modifiers.shift && !k.modifiers.platform && !k.modifiers.control && self.holds_attachments(&agent) {
+            self.send_draft(&agent, false);
+            return true;
+        }
         let draft = self.drafts.entry(agent.clone()).or_default();
         match type_into(draft, &k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
             Typed::Nothing => false,
@@ -1785,7 +1798,11 @@ impl Client {
                 let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
                 let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
                 let footer = FooterRow { items, more, harness: harness.to_owned(), menu, menu_at: self.menu_at };
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h, list, error, footer, &self.controls, cx)
+                let chips_h = composer::chips_height(agent.and_then(|a| self.attachments.get(a)));
+                let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
+                let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
+                let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h + chips_h, list, Attach { chips, clip, over }, error, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -1811,7 +1828,8 @@ impl Client {
                 // A press in an agent pane's transcript band starts a pointer selection.
                 let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
                 let listed = agent.as_deref().map_or(0, |a| self.command_matches(a, p.leaf.harness.as_deref().unwrap_or("")).0.len());
-                let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD) + composer::command_list_height(listed);
+                let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD) + composer::command_list_height(listed)
+                    + composer::chips_height(agent.as_deref().and_then(|a| self.attachments.get(a)));
                 let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - FOOTER - 8. - card_h);
                 move |this, e: &MouseDownEvent, _, cx| {
                     this.press(format!("pane {id} at {:?}", e.position));
@@ -1914,6 +1932,11 @@ impl Render for Client {
         let v = window.viewport_size();
         self.viewport = (f32::from(v.width), f32::from(v.height));
         self.footer_shown.borrow_mut().clear();
+        // A file drag that left the window (GPUI's `FileDropEvent::Exited` sends no mouse event)
+        // leaves no files held over a composer.
+        if !cx.has_active_drag() {
+            self.file_drag = None;
+        }
         let layers = self.layers();
         if !self.handle.is_focused(window) {
             window.focus(&self.handle, cx);
@@ -2245,10 +2268,18 @@ static EMPTY: std::sync::LazyLock<Transcript> = std::sync::LazyLock::new(Transcr
 const PAD: f32 = 8.;
 const LABEL: f32 = 24.;
 
+/// What the composer draws for attaching: the chips above the text, and the paperclip in it.
+struct Attach {
+    chips: Option<gpui::Div>,
+    clip: Option<gpui::Stateful<gpui::Div>>,
+    /// Files from outside are held over the composer.
+    over: bool,
+}
+
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
-/// rows), and the composer with the draft.
+/// rows), and the composer with the draft. Files dropped on the composer or its chips attach.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, error: Option<&str>,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, attach: Attach, error: Option<&str>,
     footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
@@ -2262,12 +2293,15 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
         .child(col)
         .children(card)
         .children(list)
-        .child(div().flex_none().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
-            .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
-            .text_color(rgb(0xd9e8e1)).overflow_hidden()
-            .flex().justify_between().gap_2()
-            .child(format!("{draft}{}", if focused { "▏" } else { "" }))
-            .children(error.map(|e| div().flex_none().max_w(px(260.)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned()))))
+        .child(composer::drop_target(agent, attach.over, div().flex_none().flex().flex_col()
+            .children(attach.chips)
+            .child(div().flex_none().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
+                .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
+                .text_color(rgb(0xd9e8e1)).overflow_hidden()
+                .flex().gap_2()
+                .children(attach.clip)
+                .child(div().flex_1().min_w_0().overflow_hidden().child(format!("{draft}{}", if focused { "▏" } else { "" })))
+                .children(error.map(|e| div().flex_none().max_w(px(260.)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))), cx))
         .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls, cx))
 }
 

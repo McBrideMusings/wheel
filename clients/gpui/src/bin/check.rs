@@ -1171,6 +1171,116 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let kept = draft_now(cx)?;
     ensure!(esc_stopped && kept == "abc", "Esc with `abc` typed during a slow turn: stopped {esc_stopped}, state {:?}, draft {kept:?}", rows(cx)?.0);
     erase(&native, 3, cx).await;
+    // Attachments (wheel-ynjo.10.4.2): a file dropped on the composer and an image pasted with
+    // Command-V become chips; × on the image's chip deletes the copy it wrote; the message goes
+    // out with each path in backticks on its own line after the text, and the chips empty. A
+    // drop with nothing typed sends the path alone on Return.
+    let attach_dir = std::env::temp_dir().join(format!("wheel-gpui-attach-{}", std::process::id()));
+    std::fs::create_dir_all(&attach_dir)?;
+    /// Removes the folders the step wrote, whether it passes or fails.
+    struct Cleanup(Vec<PathBuf>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for dir in &self.0 {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+    let mut cleanup = Cleanup(vec![attach_dir.clone()]);
+    // The person's clipboard, put back once the paste steps are done.
+    let clipboard_before = cx.update(|app| app.read_from_clipboard());
+    let attach_file = attach_dir.join("notes for agent.txt");
+    std::fs::write(&attach_file, "attached from the GPUI check\n".repeat(60))?;
+    let log_tail = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(window.update(cx, |c, _, _| c.toast_log.iter().rev().take(8).cloned().collect())?) };
+    let attachments_now = |cx: &mut AsyncApp| -> Result<Vec<Value>> { Ok(pane_now(cx)?["composer"]["attachments"].as_array().cloned().unwrap_or_default()) };
+    let clip_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "attach"))?.ok_or_else(|| anyhow::anyhow!("the composer drew no paperclip"))?;
+    let drop_at = gpui::point(gpui::px(clip_at.0 + 120.), gpui::px(clip_at.1 + clip_at.3 / 2.));
+    // Through the untyped handle: a typed update holds the Client, which the drop then updates.
+    let drop_window: gpui::AnyWindowHandle = window.into();
+    let drop_files = |files: Vec<PathBuf>, cx: &mut AsyncApp| drop_window.update(cx, |_, w, cx| {
+        w.dispatch_event(gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Entered { position: drop_at, paths: gpui::ExternalPaths(files.into()) }), cx);
+        w.dispatch_event(gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Pending { position: drop_at }), cx);
+        // What `FileDropEvent::Submit` sends, without the app activation it asks for: the hidden
+        // check host never takes the person's focus.
+        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position: drop_at, modifiers: Default::default(), click_count: 1 }), cx);
+    });
+    drop_files(vec![attach_file.clone()], cx)?;
+    tick(cx, 150).await;
+    draw(window, None, cx)?;
+    let dropped = attachments_now(cx)?;
+    ensure!(dropped.len() == 1 && dropped[0]["name"] == "notes for agent.txt" && dropped[0]["detail"] == "2 KB", "a file dropped on the composer at {drop_at:?} (paperclip {clip_at:?}) gave chips {dropped:?}; log {:?}", log_tail(cx)?);
+    let mut png = vec![];
+    image::RgbaImage::from_fn(48, 32, |x, y| image::Rgba([(x * 5) as u8, 120, (y * 7) as u8, 255])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+    let paste_image = |png: &[u8], cx: &mut AsyncApp| cx.update(|app| app.write_to_clipboard(gpui::ClipboardItem { entries: vec![gpui::ClipboardEntry::Image(gpui::Image::from_bytes(gpui::ImageFormat::Png, png.to_vec()))] }));
+    paste_image(&png, cx);
+    native.call(json!({"op":"post_key","text":"v","code":9,"command":true}));
+    tick(cx, 300).await;
+    draw(window, None, cx)?;
+    let pasted = attachments_now(cx)?;
+    let first_image = PathBuf::from(pasted.get(1).and_then(|c| c["path"].as_str()).unwrap_or_default());
+    let attachments_folder = std::env::temp_dir().join("wheel-attachments");
+    cleanup.0.extend(first_image.parent().map(std::path::Path::to_owned));
+    ensure!(pasted.len() == 2 && pasted[1]["image"] == true && pasted[1]["name"].as_str().is_some_and(|n| n.starts_with("Image-") && n.ends_with(".png")) && first_image.starts_with(&attachments_folder) && first_image.exists(),
+        "Command-V with an image on the clipboard gave chips {pasted:?}");
+    let chips_drawn = ["attachment:notes for agent.txt", "attach"].iter().all(|id| window.update(cx, |c, _, _| c.control_bounds(&agent_name, id)).ok().flatten().is_some());
+    ensure!(chips_drawn, "the chips row was not drawn: {:?}", window.update(cx, |c, _, _| c.control_bounds(&agent_name, "chips"))?);
+    tick(cx, 300).await;
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-composer-attachments.png")), cx)?;
+    let image_name = pasted[1]["name"].as_str().unwrap_or_default().to_owned();
+    let remove_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("attachment:remove:{image_name}")))?.ok_or_else(|| anyhow::anyhow!("no × on the pasted image's chip"))?;
+    press(&native, remove_at);
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let removed_copy = !first_image.parent().is_some_and(std::path::Path::exists) && attachments_now(cx)?.len() == 1;
+    ensure!(removed_copy, "× on {image_name}: folder still there {}, chips {:?}", first_image.parent().is_some_and(std::path::Path::exists), attachments_now(cx)?);
+    paste_image(&png, cx);
+    native.call(json!({"op":"post_key","text":"v","code":9,"command":true}));
+    tick(cx, 300).await;
+    let image_path = attachments_now(cx)?.get(1).and_then(|c| c["path"].as_str()).unwrap_or_default().to_owned();
+    ensure!(!image_path.is_empty(), "the second paste attached nothing: {:?}", attachments_now(cx)?);
+    cleanup.0.extend(std::path::Path::new(&image_path).parent().map(std::path::Path::to_owned));
+    if let Some(item) = clipboard_before {
+        cx.update(|app| app.write_to_clipboard(item));
+    }
+    let rows_before_attach = rows(cx)?.1.len();
+    type_line(&native, "see attached", cx).await;
+    let expected_message = format!("see attached\n\n`{}`\n`{image_path}`", attach_file.display());
+    let mut attach_sent = false;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (state, all) = rows(cx)?;
+        attach_sent = all.iter().skip(rows_before_attach).any(|r| matches!(&r.kind, Kind::User { text, .. } if *text == expected_message));
+        if attach_sent && state == "ready" {
+            break;
+        }
+    }
+    ensure!(attach_sent && attachments_now(cx)?.is_empty() && draft_now(cx)?.is_empty(), "the message with attachments: sent {attach_sent}, chips {:?}, draft {:?}, rows {:?}", attachments_now(cx)?, draft_now(cx)?, &rows(cx)?.1[rows_before_attach..]);
+    let read_attach = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "read", &agent_pane])
+        .output()?;
+    let read_attach = String::from_utf8_lossy(&read_attach.stdout).to_string();
+    let attachment_path_in_message = read_attach.contains(&format!("`{}`", attach_file.display())) && read_attach.contains(&format!("`{image_path}`"));
+    ensure!(attachment_path_in_message, "wheel agent read lacks the backticked paths {} and {image_path}: {}", attach_file.display(), read_attach.chars().rev().take(1500).collect::<Vec<_>>().into_iter().rev().collect::<String>());
+    drop_files(vec![attach_dir.clone()], cx)?;
+    tick(cx, 150).await;
+    let folder_chip = attachments_now(cx)?;
+    ensure!(folder_chip.len() == 1 && folder_chip[0]["detail"] == "Folder", "a dropped folder gave chips {folder_chip:?}");
+    key(&native, "\r", 36);
+    let alone = format!("`{}`", attach_dir.display());
+    let mut alone_sent = false;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (state, all) = rows(cx)?;
+        alone_sent = all.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if *text == alone));
+        if alone_sent && state == "ready" {
+            break;
+        }
+    }
+    ensure!(alone_sent && attachments_now(cx)?.is_empty(), "Return with only a folder attached: sent {alone_sent}, chips {:?}", attachments_now(cx)?);
+    drop(cleanup);
+    let attachments_report = json!({"dropped": dropped[0]["name"], "dropped_detail": dropped[0]["detail"], "pasted_image": image_name, "removed_copy": removed_copy,
+        "message": expected_message, "attachment_path_in_message": attachment_path_in_message, "folder_alone_sent": alone_sent});
     // The Conversations popover (wheel-ynjo.10.5.1): the pane menu's Conversations… lists the
     // fake agent's conversations for its directory, New conversation empties the transcript and
     // wheeld names a new id, and the earlier conversation's row brings its rows back.
@@ -3840,6 +3950,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["terminal"] = terminal_report;
     report["perms"] = perms_report;
     report["composer"] = composer_report;
+    report["composer"]["attachment_path_in_message"] = attachments_report["attachment_path_in_message"].clone();
+    report["composer"]["attachments"] = attachments_report;
     report["conversations"] = conversations_report;
     report["scroll"] = scroll_report;
     // Last: it closes every window.

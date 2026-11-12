@@ -3,8 +3,18 @@
 //! prefix, and Send now, Edit, Remove and Clear queue on the messages waiting behind a turn.
 //! The model is `crate::composer`.
 use super::*;
-use crate::composer::{self, Command, Picker};
+use crate::composer::{self, Command, Picker, Tray};
 use serde_json::{Value, json};
+use gpui::{ExternalPaths, img};
+use std::path::PathBuf;
+
+/// The row of chips above the composer's text, while it holds any.
+const CHIPS: f32 = 44.;
+
+/// The room the chips take above `tray`'s composer: none while it holds nothing.
+pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
+    if tray.is_some_and(|t| !t.is_empty()) { CHIPS } else { 0. }
+}
 
 /// One row of the command list, and how many rows it shows at most before the rest wait for
 /// the arrows (`SkillList`'s 150 pt).
@@ -131,7 +141,7 @@ impl Client {
                 true
             }
             "enter" if k.modifiers.control && busy => {
-                if !empty {
+                if !empty || self.holds_attachments(&agent) {
                     self.send_draft(&agent, true);
                 }
                 true
@@ -142,15 +152,28 @@ impl Client {
 
     /// Send `agent`'s draft and empty it. `now` asks wheeld to run it once it is queued, ahead of
     /// the running turn (`AppModel.send(_:now:)`). With wheeld out of reach the draft stays.
+    /// The attached files' paths go after the text in backticks (`composer::message`), so a
+    /// message of attachments alone may go; a chip that failed holds it back until removed.
     pub(super) fn send_draft(&mut self, agent: &str, now: bool) {
-        if self.drafts.get(agent).is_none_or(|d| d.trim().is_empty()) {
+        let tray = self.attachments.get(agent);
+        let paths = tray.map(Tray::paths).unwrap_or_default();
+        let text = composer::message(self.drafts.get(agent).map(String::as_str).unwrap_or(""), &paths);
+        if text.is_empty() {
+            return;
+        }
+        if !tray.is_none_or(Tray::ready) {
+            self.composer_errors.insert(agent.to_owned(), "A file could not be attached; remove it to send.".into());
             return;
         }
         if self.link != Link::Up {
             self.composer_errors.insert(agent.to_owned(), "Not connected to wheeld; your message is still in the box.".into());
             return;
         }
-        let text = self.drafts.insert(agent.to_owned(), String::new()).unwrap_or_default();
+        self.drafts.insert(agent.to_owned(), String::new());
+        if let Some(tray) = self.attachments.get_mut(agent) {
+            tray.sent();
+        }
+        self.log(format!("send to {agent}, {} chars, {} attachments", text.chars().count(), paths.len()));
         self.draft_edited(agent);
         let req = self.agent_req(agent, now, None);
         self.send(&ClientMsg::AgentSend { req: Some(req), agent: agent.to_owned(), text });
@@ -270,8 +293,165 @@ impl Client {
             "unanswered": t.and_then(Transcript::unanswered_turn),
             "sending_now": self.sending_now_for(agent),
             "error": self.composer_errors.get(agent),
+            "attachments": self.attachments.get(agent).map(|t| t.items().iter().map(|i| json!({"id": i.id, "name": i.name, "detail": i.detail, "path": i.path, "image": i.thumbnail.is_some(), "failed": i.failed})).collect::<Vec<_>>()).unwrap_or_default(),
         })
     }
+
+    /// Whether `agent`'s composer holds a file for its next message.
+    pub(super) fn holds_attachments(&self, agent: &str) -> bool {
+        self.attachments.get(agent).is_some_and(|t| !t.is_empty())
+    }
+
+    /// Attach files and folders to `agent`'s next message, where they are.
+    pub fn attach_paths(&mut self, agent: &str, paths: &[PathBuf]) {
+        let tray = self.attachments.entry(agent.to_owned()).or_default();
+        for path in paths {
+            tray.add_file(path);
+        }
+        self.composer_errors.remove(agent);
+        self.log(format!("attach {} to {agent}", paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy()).collect::<Vec<_>>().join(", ")));
+    }
+
+    fn remove_attachment(&mut self, agent: &str, id: u64) {
+        self.press(format!("remove attachment {agent} {id}"));
+        if let Some(tray) = self.attachments.get_mut(agent) {
+            tray.remove(id);
+        }
+        self.composer_errors.remove(agent);
+    }
+
+    /// ⌘V in `agent`'s composer (`AppModel.pasteAttachments`): files on the pasteboard become
+    /// chips, an image with no text becomes a PNG chip, and text goes into the draft.
+    pub(super) fn paste_into_composer(&mut self, agent: &str, cx: &mut App) {
+        let Some(item) = cx.read_from_clipboard() else { return };
+        let mut paths = vec![];
+        let mut image = None;
+        for entry in item.entries() {
+            match entry {
+                gpui::ClipboardEntry::ExternalPaths(p) => paths.extend(p.paths().iter().cloned()),
+                gpui::ClipboardEntry::Image(i) if image.is_none() => image = Some(i.bytes.clone()),
+                _ => {}
+            }
+        }
+        if !paths.is_empty() {
+            self.attach_paths(agent, &paths);
+        } else if let Some(text) = item.text() {
+            // As typed text is: no control characters but the line breaks and tabs a text box keeps.
+            let text: String = text.replace("\r\n", "\n").chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').collect();
+            self.drafts.entry(agent.to_owned()).or_default().push_str(&text);
+            self.draft_edited(agent);
+        } else if let Some(bytes) = image {
+            let tray = self.attachments.entry(agent.to_owned()).or_default();
+            tray.add_image(&bytes, &composer::attachments_folder(), &composer::stamp_now());
+            self.composer_errors.remove(agent);
+            self.log(format!("attach a pasted image to {agent}: {} bytes", bytes.len()));
+        }
+    }
+
+    /// The paperclip: the Mac's file picker, directories and several files allowed; what it
+    /// returns attaches to `agent`'s next message.
+    fn pick_files(&mut self, agent: &str, cx: &mut Context<Self>) {
+        self.press(format!("attach {agent}"));
+        let chosen = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: true, multiple: true, prompt: None });
+        let agent = agent.to_owned();
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = chosen.await {
+                let _ = this.update(cx, |c, cx| {
+                    c.attach_paths(&agent, &paths);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+}
+
+/// The composer and its chips as one drop target: files dropped there attach to `agent`'s next
+/// message, and the box is outlined (`over`) while they are held over it. GPUI's own `on_drop`
+/// and `drag_over` go by hover, which GPUI turns off after a key press, and a drag from Finder
+/// sends no mouse move: the drop is found by where the pointer is instead. The drag's moves name
+/// the files (`Client::file_drag`), and the release over the box's hitbox attaches them.
+pub(super) fn drop_target(agent: Option<&str>, over: bool, el: gpui::Div, cx: &mut Context<Client>) -> gpui::Div {
+    let Some(agent) = agent.map(str::to_owned) else { return el };
+    let (moved, released, weak) = (agent.clone(), agent, cx.entity().downgrade());
+    el.relative()
+        .on_drag_move::<ExternalPaths>(cx.listener(move |this, e: &gpui::DragMoveEvent<ExternalPaths>, _, cx| {
+            let held = e.bounds.contains(&e.event.position).then(|| (moved.clone(), e.drag(cx).paths().to_vec()));
+            let was_here = this.file_drag.as_ref().is_some_and(|(a, _)| *a == moved);
+            if (held.is_some() || was_here) && this.file_drag != held {
+                this.file_drag = held;
+                cx.notify();
+            }
+        }))
+        .child(canvas(|bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal), move |_, hitbox, window, _| {
+            let (agent, weak) = (released.clone(), weak.clone());
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
+                if phase != gpui::DispatchPhase::Bubble || !cx.has_active_drag() || !hitbox.should_handle_scroll(window) {
+                    return;
+                }
+                let Some(client) = weak.upgrade() else { return };
+                let dropped = client.update(cx, |c, cx| {
+                    let Some((_, paths)) = c.file_drag.take_if(|(a, _)| *a == agent) else { return false };
+                    c.attach_paths(&agent, &paths);
+                    cx.notify();
+                    true
+                });
+                if dropped {
+                    cx.stop_active_drag(window);
+                    cx.stop_propagation();
+                }
+            });
+        }).absolute().top_0().left_0().size_full())
+        // Over everything else and never part of the layout, so the composer stays where it is.
+        .when(over, |d| d.child(div().absolute().top_0().left_0().size_full().border_1().border_color(rgb(0x7fb89a)).rounded_sm()))
+}
+
+/// The paperclip at the start of the composer, `icon` the SF Symbol the bridge drew ("+" until
+/// it has).
+pub(super) fn paperclip(agent: &str, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    let a = agent.to_owned();
+    div().id(gpui::ElementId::Name(format!("attach-{agent}").into())).tooltip(crate::tooltip::tip("Attach files"))
+        .relative().flex_none().w(px(18.)).h(px(18.)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.pick_files(&a, cx);
+            cx.stop_propagation();
+        }))
+        .child(icon.unwrap_or_else(|| div().child("+").into_any_element()))
+        .child(recorded(agent, "attach", controls))
+}
+
+/// The chips above the composer's text (`AttachmentChips`): a thumbnail for an image or the
+/// `doc` symbol `doc` draws, the name, its size, Folder or why it failed (red), and × to take it out.
+pub(super) fn attachment_chips(agent: &str, tray: &Tray, doc: impl Fn() -> Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+    let mut row = div().flex_none().h(px(CHIPS - 4.)).mt_1().flex().gap(px(6.)).overflow_hidden().child(recorded(agent, "chips", controls));
+    for item in tray.items() {
+        let (a, id) = (agent.to_owned(), item.id);
+        let thumb = div().flex_none().w(px(32.)).h(px(32.)).rounded(px(6.)).overflow_hidden().bg(rgb(0x24302a)).flex().items_center().justify_center();
+        let thumb = if let Some(png) = &item.thumbnail {
+            thumb.child(img(std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png.clone()))).w(px(32.)).h(px(32.)).object_fit(gpui::ObjectFit::Cover))
+        } else {
+            thumb.children(doc())
+        };
+        let (detail, tint) = match &item.failed {
+            Some(why) => (why.clone(), 0xe07070),
+            None => (item.detail.clone(), 0x8fa89b),
+        };
+        row = row.child(div().relative().flex_none().flex().items_center().gap(px(6.)).pl(px(4.)).pr(px(6.)).py(px(4.)).rounded(px(8.))
+            .bg(rgb(if item.failed.is_some() { 0x3a2424 } else { 0x24302a }))
+            .child(thumb)
+            .child(div().flex().flex_col().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_xs()
+                .child(div().text_color(rgb(0xd9e8e1)).text_ellipsis().child(item.name.clone()))
+                .child(div().text_color(rgb(tint)).text_ellipsis().child(detail)))
+            .child(div().relative().flex_none().cursor_pointer().text_xs().text_color(rgb(0x8fa89b)).child("✕")
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    this.remove_attachment(&a, id);
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .child(recorded(agent, &format!("attachment:remove:{}", item.name), controls)))
+            .child(recorded(agent, &format!("attachment:{}", item.name), controls)));
+    }
+    row
 }
 
 /// The command list over the composer: up to `COMMAND_ROWS` rows around the highlight, each the

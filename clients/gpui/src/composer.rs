@@ -1,6 +1,7 @@
 //! What the composer adds to typing: the agent's command list opened by its prefix
-//! (`Composer.swift` with WheelKit's `SkillSearch`), and which message Esc or Up takes back
-//! (`AgentChat.takeBack`).
+//! (`Composer.swift` with WheelKit's `SkillSearch`), which message Esc or Up takes back
+//! (`AgentChat.takeBack`), and the files it holds for the next message (`ComposerAttachments`).
+use std::path::{Path, PathBuf};
 use wheel_proto::SkillInfo;
 
 /// One command the list offers: its name without the prefix and what it does, when known.
@@ -155,6 +156,152 @@ pub fn restored(draft: &str, text: &str) -> String {
     if draft.is_empty() { text.to_owned() } else { format!("{draft}\n{text}") }
 }
 
+/// The message a draft and its attachments' paths make (`composerMessage`): the text, then each
+/// path in backticks on its own line, since a path may hold a space and the backticks keep it one
+/// path. Empty when both are.
+pub fn message(typed: &str, paths: &[String]) -> String {
+    let listed = paths.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join("\n");
+    [typed.trim(), listed.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n")
+}
+
+/// One file a composer holds for its next message: what its chip shows and the path that goes
+/// out at send.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attachment {
+    pub id: u64,
+    pub name: String,
+    /// The size, or "Folder".
+    pub detail: String,
+    pub path: PathBuf,
+    /// A PNG of the image at most 96 px on its longer side, made once when attached; None draws
+    /// the document symbol (not an image, or one that does not decode).
+    pub thumbnail: Option<Vec<u8>>,
+    /// Why it could not be attached; a chip with one holds the message back until it is removed.
+    pub failed: Option<String>,
+    /// A copy the tray wrote (a pasted image), deleted with its folder when the chip goes.
+    owned: bool,
+}
+
+/// The files one agent's composer holds (`ComposerAttachments`). The agent runs on this Mac, so
+/// a file is attached where it is and nothing is copied; an image with no file (a screenshot on
+/// the clipboard) is written once as PNG to a folder of its own so it has a path to send.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tray {
+    items: Vec<Attachment>,
+    next: u64,
+}
+
+/// Where a pasted image is written: one folder per image under the temp dir's `wheel-attachments`.
+pub fn attachments_folder() -> PathBuf {
+    std::env::temp_dir().join("wheel-attachments")
+}
+
+/// The extensions a chip draws as a thumbnail.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp"];
+
+impl Tray {
+    pub fn items(&self) -> &[Attachment] {
+        &self.items
+    }
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    pub fn paths(&self) -> Vec<String> {
+        self.items.iter().map(|i| i.path.to_string_lossy().into_owned()).collect()
+    }
+    /// Whether every chip can go out: none failed.
+    pub fn ready(&self) -> bool {
+        self.items.iter().all(|i| i.failed.is_none())
+    }
+
+    fn push(&mut self, name: String, detail: String, path: PathBuf, thumbnail: Option<Vec<u8>>, failed: Option<String>, owned: bool) {
+        self.next += 1;
+        self.items.push(Attachment { id: self.next, name, detail, path, thumbnail, failed, owned });
+    }
+
+    /// Attach the file or folder at `path` where it is: its name, and its size or "Folder".
+    pub fn add_file(&mut self, path: &Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let meta = std::fs::metadata(path).ok();
+        let detail = match &meta {
+            Some(m) if m.is_dir() => "Folder".to_owned(),
+            Some(m) => byte_count(m.len()),
+            None => String::new(),
+        };
+        let image = meta.as_ref().is_some_and(|m| m.is_file())
+            && path.extension().and_then(|e| e.to_str()).is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()));
+        let thumbnail = image.then(|| image::open(path).ok().and_then(|i| thumbnail(&i))).flatten();
+        self.push(name, detail, path.to_owned(), thumbnail, None, false);
+    }
+
+    /// Attach image bytes that have no file: decoded, written as `Image-<stamp>.png` in a new
+    /// folder under `folder`, and owned, so removing the chip deletes the folder. Bytes that do
+    /// not decode or cannot be written leave a failed chip saying why.
+    pub fn add_image(&mut self, bytes: &[u8], folder: &Path, stamp: &str) {
+        let name = format!("Image-{stamp}.png");
+        let dir = folder.join(uuid::Uuid::new_v4().to_string().to_uppercase());
+        let file = dir.join(&name);
+        let written = (|| -> Result<(u64, Option<Vec<u8>>), String> {
+            let decoded = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            decoded.save_with_format(&file, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+            Ok((std::fs::metadata(&file).map(|m| m.len()).map_err(|e| e.to_string())?, thumbnail(&decoded)))
+        })();
+        match written {
+            Ok((len, thumb)) => self.push(name, byte_count(len), file, thumb, None, true),
+            Err(why) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                self.push(name, String::new(), file, None, Some(format!("cannot save it: {why}")), false);
+            }
+        }
+    }
+
+    /// Take chip `id` out; a copy the tray wrote goes with its folder.
+    pub fn remove(&mut self, id: u64) {
+        let Some(at) = self.items.iter().position(|i| i.id == id) else { return };
+        let item = self.items.remove(at);
+        if item.owned && let Some(dir) = item.path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Empty the tray once its paths went out; the files stay where they are for the agent.
+    pub fn sent(&mut self) {
+        self.items.clear();
+    }
+}
+
+/// A chip's thumbnail: the image scaled to at most 96 px on its longer side, as PNG.
+fn thumbnail(image: &image::DynamicImage) -> Option<Vec<u8>> {
+    let mut png = vec![];
+    image.thumbnail(96, 96).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+    Some(png)
+}
+
+/// A size as Finder writes it (`ByteCountFormatter`'s file style, powers of 1000): bytes, whole
+/// KB, then MB with one decimal and GB with two.
+/// A size that rounds up to the next unit is written in that unit ("1.0 MB", never "1000 KB").
+pub fn byte_count(n: u64) -> String {
+    let (kb, mb) = ((n as f64 / 1e3).round(), (n as f64 / 1e6 * 10.).round() / 10.);
+    match n {
+        0 => "Zero KB".into(),
+        1 => "1 byte".into(),
+        n if n < 1000 => format!("{n} bytes"),
+        _ if kb < 1000. => format!("{kb} KB"),
+        _ if mb < 1000. => format!("{mb:.1} MB"),
+        n => format!("{:.2} GB", n as f64 / 1e9),
+    }
+}
+
+/// The local time as a pasted image's name carries it: `yyyyMMdd-HHmmss`.
+pub fn stamp_now() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as libc::time_t).unwrap_or(0);
+    // SAFETY: localtime_r writes only into `tm`, which outlives the call.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +376,67 @@ mod tests {
         assert_eq!(take_back_target(None, false, &[]), None);
         assert_eq!(restored("", "fix it"), "fix it");
         assert_eq!(restored("also", "fix it"), "also\nfix it");
+    }
+
+    #[test]
+    fn a_message_puts_each_path_in_backticks_on_its_own_line_after_the_text() {
+        let paths = vec!["/tmp/a b.txt".to_owned(), "/tmp/dir".to_owned()];
+        assert_eq!(message("  look at these \n", &paths), "look at these\n\n`/tmp/a b.txt`\n`/tmp/dir`");
+        assert_eq!(message("", &paths), "`/tmp/a b.txt`\n`/tmp/dir`", "attachments alone make a message");
+        assert_eq!(message(" hi ", &[]), "hi");
+        assert_eq!(message("  ", &[]), "");
+    }
+
+    #[test]
+    fn the_tray_attaches_files_where_they_are_and_owns_only_pasted_images() {
+        let root = std::env::temp_dir().join(format!("wheel-tray-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("dir")).unwrap();
+        std::fs::write(root.join("notes.txt"), vec![b'x'; 1500]).unwrap();
+        let mut tray = Tray::default();
+        tray.add_file(&root.join("notes.txt"));
+        tray.add_file(&root.join("dir"));
+        assert_eq!(tray.items().iter().map(|i| (i.name.as_str(), i.detail.as_str(), i.thumbnail.is_some())).collect::<Vec<_>>(), [("notes.txt", "2 KB", false), ("dir", "Folder", false)]);
+
+        let mut png = vec![];
+        image::RgbaImage::from_pixel(4, 3, image::Rgba([200, 30, 30, 255])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let pasted = root.join("pasted");
+        tray.add_image(&png, &pasted, "20261112-073000");
+        let shot = tray.items()[2].clone();
+        assert_eq!((shot.name.as_str(), shot.thumbnail.is_some(), shot.failed.is_none()), ("Image-20261112-073000.png", true, true));
+        std::fs::write(root.join("broken.png"), b"not a png").unwrap();
+        tray.add_file(&root.join("broken.png"));
+        assert!(tray.items()[3].thumbnail.is_none(), "an image file that does not decode draws the document symbol");
+        tray.remove(tray.items()[3].id);
+        assert!(shot.path.starts_with(&pasted) && shot.path.exists());
+        assert_eq!(image::open(&shot.path).unwrap().width(), 4);
+        assert!(tray.ready());
+
+        tray.add_image(b"not an image", &pasted, "20261112-073001");
+        assert!(tray.items()[3].failed.as_deref().is_some_and(|w| w.starts_with("cannot save it")));
+        assert!(!tray.ready(), "a failed chip holds the message back");
+        tray.remove(tray.items()[3].id);
+        assert!(tray.ready());
+
+        tray.remove(shot.id);
+        assert!(!shot.path.parent().unwrap().exists(), "removing a pasted image deletes its folder");
+        tray.remove(tray.items()[0].id);
+        assert!(root.join("notes.txt").exists(), "removing a file's chip leaves the file");
+        assert_eq!(tray.paths(), [root.join("dir").to_string_lossy().into_owned()]);
+        tray.sent();
+        assert!(tray.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sizes_read_as_finder_writes_them() {
+        assert_eq!(byte_count(0), "Zero KB");
+        assert_eq!(byte_count(1), "1 byte");
+        assert_eq!(byte_count(512), "512 bytes");
+        assert_eq!(byte_count(12_345), "12 KB");
+        assert_eq!(byte_count(1_234_567), "1.2 MB");
+        assert_eq!(byte_count(999_500), "1.0 MB", "a size that rounds to 1000 KB is written in MB");
+        assert_eq!(byte_count(999_400), "999 KB");
+        assert_eq!(byte_count(2_500_000_000), "2.50 GB");
+        assert_eq!(stamp_now().len(), 15);
     }
 }
