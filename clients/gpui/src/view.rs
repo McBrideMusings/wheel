@@ -254,6 +254,10 @@ pub struct Client {
     pub sidebar_open: bool,
     /// A space held by its row, and the press that may become one: (space, x, y).
     pub space_drag: Option<crate::sidebar::SpaceDrag>,
+    /// The windows and the popover as this window's space drag measured them when it started.
+    space_drag_world: Option<sidebar::DragWorld>,
+    /// The drag every window draws changed here: the other windows redraw.
+    space_hover_changed: bool,
     space_press: Option<(String, f32, f32)>,
     /// A pane held by its header, and the press that may become one: (pane, label, x, y, grab).
     pub pane_drag: Option<crate::sidebar::PaneDrag>,
@@ -395,7 +399,7 @@ impl Client {
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -800,6 +804,8 @@ impl Client {
     /// The window is closing: drop its native views. Its connection ends with it, and wheeld
     /// drops the window's reported view with the connection.
     pub fn shutdown(&mut self) {
+        // A space drag this window held ends with it, so no other window keeps drawing it.
+        self.cancel_space_drag(false);
         self.native.detach();
         crate::forget_window(&self.window_id);
     }
@@ -1724,6 +1730,12 @@ impl Client {
         let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
         let had = self.space_press.is_some() || self.pane_press.is_some() || self.space_drag.is_some() || self.pane_drag.is_some() || self.hover.is_some();
         self.pointer_moved(x, y, e.pressed_button.is_some());
+        // A drag that just started measures the windows it may land on, then aims again.
+        if self.space_drag.as_ref().is_some_and(|d| d.by_pointer) && self.space_drag_world.is_none() {
+            self.measure_space_drag(cx);
+            self.move_space_drag(x, y);
+        }
+        self.refresh_for_space_hover(cx);
         if had || self.hover.is_some() {
             cx.notify();
         }
@@ -1758,7 +1770,8 @@ impl Client {
         self.end_drag();
         self.end_card_drag();
         self.tray_release(f32::from(e.position.x), f32::from(e.position.y));
-        self.pointer_up();
+        self.pointer_up(cx);
+        self.refresh_for_space_hover(cx);
         if self.pending_down.is_some() || self.selection.as_ref().is_some_and(|s| s.dragging) {
             self.pending_move = Some(e.position);
             self.pending_up = true;
@@ -1954,6 +1967,7 @@ impl Render for Client {
         if std::mem::take(&mut self.close_window_requested) {
             window.remove_window();
         }
+        self.refresh_for_space_hover(cx);
         if window.is_window_active() && !self.is_little() {
             let id = self.window_id.clone();
             crate::windows::with(|r| r.focused = Some(id));
@@ -2076,7 +2090,7 @@ impl Render for Client {
         if !little && self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.sidebar_element(cx));
         }
-        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.message_menu_overlay(cx)).children(self.drag_chip());
+        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.message_menu_overlay(cx)).children(self.space_drop_outline()).children(self.drag_chip()).children(self.space_drag_capture(cx));
         // While a card, a divider or a pane is dragged, a layer over the whole window takes the
         // pointer: a card's backdrop occludes the root, whose listeners hear only a pointer over nothing else.
         if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() || self.tray_drag.is_some() {

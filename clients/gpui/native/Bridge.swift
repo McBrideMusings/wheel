@@ -803,6 +803,26 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 }
             }
             return ["target": mouseTarget.map { String(describing: type(of: $0)) } ?? "nil"]
+        // Where the window's content is on screen, with the origin at the top left of the main
+        // screen, and its place among the app's windows front to back (-1 while it is off screen):
+        // what a space drag measures each window against.
+        case "frame":
+            guard let window = root.window else { return ["frame": NSNull(), "order": -1, "visible": false] }
+            return ["frame": topLeftFrame(root), "order": NSApp.orderedWindows.firstIndex(of: window) ?? -1, "visible": window.isVisible]
+        // Put the content's top left corner at `point` in the same coordinates. After this call
+        // returns, as `fit_window` does: GPUI's resize callback cannot reach its app during the call.
+        case "move_window":
+            guard let a = value["point"] as? [Double], a.count == 2, root.window != nil else { return ["moved": false] }
+            DispatchQueue.main.async { [weak root] in
+                guard let root, let window = root.window else { return }
+                let content = window.convertToScreen(root.convert(root.bounds, to: nil))
+                var frame = window.frame
+                let (left, top) = (frame.minX - content.minX, frame.maxY - content.maxY)
+                frame.origin.x = a[0] + left
+                frame.origin.y = mainScreenTop() - a[1] + top - frame.height
+                window.setFrame(frame, display: true)
+            }
+            return ["moved": "queued"]
         case "hit":
             let a = value["point"] as! [Double]
             var point = NSPoint(x: a[0], y: a[1])
@@ -1119,6 +1139,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         return ["fitted": "queued"]
     }
 
+    /// Where `view` is on screen, top left origin (the popover's frame for a space drag).
+    func viewFrame(_ value: [String: Any]) -> [String: Any] {
+        guard let raw = (value["view"] as? NSNumber)?.uintValue, let pointer = UnsafeRawPointer(bitPattern: raw) else { return ["frame": NSNull()] }
+        let view = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue()
+        guard view.window != nil else { return ["frame": NSNull()] }
+        return ["frame": topLeftFrame(view)]
+    }
+
     /// The app's icon as a PNG, `size` points square at the screen's scale (ServerHeader's icon).
     func appIcon(_ value: [String: Any]) -> [String: Any] {
         let size = value["size"] as? Double ?? 36
@@ -1162,6 +1190,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             emit(["event": "alert", "id": asked["id"] as? String ?? "", "button": value["button"] as? Int ?? -1])
             return state()
         case "fit_window": return fitWindow(value)
+        case "view_frame": return viewFrame(value)
         case "app_icon": return appIcon(value)
         case "symbol": return symbolPNG(value, scale: Double(NSScreen.main?.backingScaleFactor ?? 2))
         case "pointer_on_item":
@@ -1170,6 +1199,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         default: return state()
         }
     }
+}
+/// The main screen's top edge in AppKit's screen coordinates: y grows down from it in the
+/// frames the client measures (a hidden check host may have no screen; 0 keeps the sums whole).
+@MainActor func mainScreenTop() -> Double { Double(NSScreen.screens.first?.frame.maxY ?? 0) }
+/// `view`'s rectangle on screen as [x, y, width, height] with the origin at the main screen's top left.
+@MainActor func topLeftFrame(_ view: NSView) -> [Double] {
+    guard let window = view.window else { return [0, 0, 0, 0] }
+    let r = window.convertToScreen(view.convert(view.bounds, to: nil))
+    return [Double(r.minX), mainScreenTop() - Double(r.maxY), Double(r.width), Double(r.height)]
 }
 @MainActor private var app: AppNative?
 /// The check's stand-in for the system's Reduce Motion (`reduce_motion` with `set`); nil reads the system's.

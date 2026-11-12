@@ -387,7 +387,7 @@ impl MenuBar {
                         .detach();
                         let focus = cx.focus_handle();
                         window.focus(&focus, cx);
-                        Popover { menu: menu.clone(), focus, content: Rc::default(), controls: Rc::default() }
+                        Popover { menu: menu.clone(), focus, content: Rc::default(), controls: Rc::default(), cards: Rc::default(), view: Rc::default() }
                     })
                 },
             );
@@ -425,6 +425,27 @@ impl MenuBar {
                 eprintln!("wheel-gpui: New Window failed: {error:#}");
             }
         });
+    }
+
+    /// The popover's cards as a space drag meets them, in screen points from the main screen's
+    /// top left: none while the popover is closed or not yet drawn.
+    pub fn drop_popover(&self, cx: &App) -> Option<crate::sidebar::DropPopover> {
+        use crate::layout::Rect;
+        let popover = self.popover?.read(cx).ok()?;
+        let view = popover.view.get();
+        if view == 0 {
+            return None;
+        }
+        let at = self.native.call(json!({"op": "view_frame", "view": view}))["frame"].as_array()?.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect::<Vec<_>>();
+        let [x, y, w, h] = at[..] else { return None };
+        let rows: HashMap<String, usize> = self.cards().into_iter().map(|c| (c.session, c.rows.len())).collect();
+        let cards = popover.cards.borrow().iter().map(|(session, [cx_, cy, cw, ch])| {
+            let frame = Rect { x: x + cx_, y: y + cy, w: *cw, h: *ch };
+            let top = frame.y + 1. + CARD_PAD + CARD_HEAD;
+            let rows = (0..rows.get(session).copied().unwrap_or(0)).map(|i| Rect { x: frame.x + CARD_PAD, y: top + i as f32 * ROW, w: frame.w - 2. * CARD_PAD, h: ROW }).collect();
+            crate::sidebar::DropCard { session: session.clone(), frame, rows }
+        }).collect();
+        Some(crate::sidebar::DropPopover { frame: Rect { x, y, w, h }, cards })
     }
 
     /// What the check reads: the item, its counts, the cards and the popover.
@@ -521,6 +542,10 @@ pub struct Popover {
     content: Rc<Cell<f32>>,
     /// Each named control's frame in the popover, as last laid out, for the check's presses.
     controls: Rc<RefCell<HashMap<&'static str, [f32; 4]>>>,
+    /// Each session's card frame in the popover, as last laid out: a space drag's targets.
+    cards: Rc<RefCell<Vec<(String, [f32; 4])>>>,
+    /// The popover's AppKit view, once drawn, for the bridge to measure and size its window.
+    view: Rc<Cell<u64>>,
 }
 
 /// How a popover button looks: prominent (`.borderedProminent`), red prominent (the confirm's
@@ -639,8 +664,23 @@ impl Render for Popover {
         let mut col = div().w_full().flex().flex_col().gap(px(GAP)).p(px(PAD)).text_sm().text_color(rgb(TEXT))
             .child(self.server_line(menu))
             .child(div().h(px(1.)).bg(rgb(LINE)));
+        self.cards.borrow_mut().clear();
+        // A space dragged over a card outlines it (SessionCard's drop highlight).
+        let over = super::sidebar::space_hover().and_then(|h| match h.target {
+            Some(crate::sidebar::SpaceDropTarget::Card { session, index }) => Some((session, index, h.space)),
+            _ => None,
+        });
         for card in &cards {
-            col = col.child(menu.card(card));
+            let (frames, session) = (self.cards.clone(), card.session.clone());
+            let aimed = over.as_ref().filter(|(s, _, _)| *s == card.session);
+            // The bar between the card's rows (SpaceDrag's card insertion), none beside the dragged row.
+            let held: Vec<String> = card.rows.iter().map(|r| r.space.clone()).collect();
+            let bar = aimed.and_then(|(_, index, space)| crate::sidebar::bar_index(*index, &held, space)).map(|i| {
+                div().absolute().left(px(CARD_PAD)).right(px(CARD_PAD)).top(px(1. + CARD_PAD + CARD_HEAD + i as f32 * ROW - 1.5)).h(px(3.)).rounded_full().bg(rgb(ACCENT))
+            });
+            col = col.child(menu.card(card).when(aimed.is_some(), |d| d.border_color(rgb(ACCENT))).relative().children(bar).child(canvas(move |b, _, _| {
+                frames.borrow_mut().push((session.clone(), [b.origin.x.as_f32(), b.origin.y.as_f32(), b.size.width.as_f32(), b.size.height.as_f32()]));
+            }, |_, _, _, _| {}).absolute().top_0().left_0().size_full()));
         }
         let held = self.menu.clone();
         // The popover closes through the window the row is in: GPUI holds that window while it
@@ -656,15 +696,17 @@ impl Render for Popover {
         let quit = menu.row("power", "Quit Wheel", Some("⌘Q")).on_mouse_up(MouseButton::Left, |_, _, cx| cx.quit());
         col = col.child(div().h(px(1.)).bg(rgb(LINE))).child(div().flex().flex_col().gap(px(ROW_GAP)).child(new_window).child(quit));
         // The window follows the content's height, keeping its top edge under the item.
-        let (content, native) = (self.content.clone(), menu.native.clone());
+        let (content, native, ns_view) = (self.content.clone(), menu.native.clone(), self.view.clone());
         let fit = canvas(move |b, window, cx| {
             let height = b.size.height.as_f32();
             content.set(height);
-            if (window.viewport_size().height.as_f32() - height).abs() > 0.5
-                && let Ok(handle) = window.window_handle()
+            if let Ok(handle) = window.window_handle()
                 && let RawWindowHandle::AppKit(appkit) = handle.as_raw()
             {
-                let view = appkit.ns_view.as_ptr() as usize as u64;
+                ns_view.set(appkit.ns_view.as_ptr() as usize as u64);
+            }
+            if (window.viewport_size().height.as_f32() - height).abs() > 0.5 {
+                let view = ns_view.get();
                 cx.defer(move |cx| {
                     // The view is the popover's: a popover closed since this draw is not touched.
                     if menu_bar().is_some_and(|m| m.read(cx).popover.is_some()) {

@@ -2109,6 +2109,198 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     draw(second, Some(output.join("client-second-window.png")), cx)?;
     draw(window, Some(output.join("client-first-window.png")), cx)?;
     let both = reported_views()?;
+    // A space dragged between windows (wheel-ynjo.7.5.2; SpaceDrag.swift, SpaceDropping.swift):
+    // window 2 moves beside window 1, a new space in window 1's session is dragged by a real
+    // press onto window 2's sidebar, then from there onto the desktop, then onto a popover card.
+    let frame_of = |n: &Native| -> Vec<f32> { n.call(json!({"op":"frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
+    let f1 = frame_of(&native);
+    native2.call(json!({"op":"move_window","point":[f64::from(f1[0] + f1[2] + 200.), f64::from(f1[1])]}));
+    let mut f2 = vec![];
+    for _ in 0..20 {
+        tick(cx, 100).await;
+        f2 = frame_of(&native2);
+        if f2.len() == 4 && f2[0] >= f1[0] + f1[2] {
+            break;
+        }
+    }
+    ensure!(f1.len() == 4 && f2.len() == 4 && f2[0] >= f1[0] + f1[2] + 150., "window 2 did not move beside window 1: {f1:?} {f2:?}");
+    let drag_dir = std::env::temp_dir().join(format!("wheel-gpui-space-drag-{}", std::process::id()));
+    std::fs::create_dir_all(&drag_dir)?;
+    let (ok, out, err) = run_pumped(&["space", "new", &drag_dir.to_string_lossy(), "--name", "dragged"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space new for the drag failed: {err}");
+    let dragged = out.trim().to_owned();
+    let (ok, out, err) = run_pumped(&["space", "move", &dragged, &id1], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space move to window 1 failed: {err} {out}");
+    let spaces_of = |c: &Client, session: &str| -> Vec<String> { c.layout_lists().0.into_iter().find(|s| s.id == session).map(|s| s.spaces).unwrap_or_default() };
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        draw(second, None, cx)?;
+        if window.update(cx, |c, _, _| c.sidebar_json()["rows"].as_array().is_some_and(|r| r.iter().any(|r| r["id"] == dragged)))? {
+            break;
+        }
+    }
+    let rows1 = window.update(cx, |c, _, _| c.sidebar_json())?;
+    let from = centre(row_frame(&rows1, &dragged).ok_or_else(|| anyhow::anyhow!("window 1's sidebar has no row for {dragged}: {}", rows1["rows"]))?);
+    let rows2 = second.update(cx, |c, _, _| c.sidebar_json())?;
+    let top2 = rows2["rows"][0]["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect::<Vec<_>>()).unwrap_or_default();
+    ensure!(top2.len() == 4, "window 2's sidebar has no rows: {}", rows2["rows"]);
+    // Window 2's first row's top edge, on screen, then in window 1's own coordinates.
+    let aim = (f2[0] + top2[0] + 20., f2[1] + top2[1] + 2.);
+    let local1 = [f64::from(aim.0 - f1[0]), f64::from(aim.1 - f1[1])];
+    native.call(json!({"op":"post_mouse","kind":"down","point":from}));
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[from[0], from[1] - 10.]}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":local1}));
+    tick(cx, 150).await;
+    draw(window, None, cx)?;
+    draw(second, Some(output.join("client-space-drag-window.png")), cx)?;
+    let over_window = window.update(cx, |c, _, _| c.sidebar_json()["drag"].clone())?;
+    let window2_sees = second.update(cx, |c, _, _| c.sidebar_json())?["hovered"].clone();
+    let window1_chip = window.update(cx, |c, _, _| c.sidebar_json()["hovered"]["chip"].clone())?;
+    ensure!(over_window["target"] == json!(format!("sidebar of {id2} at 0")) && over_window["hint"].as_str().is_some_and(|h| h.starts_with("Place “dragged” here in “"))
+        && over_window["measured"]["windows"].as_array().map(Vec::len) == Some(2),
+        "the drag from window 1 did not aim at window 2's sidebar: {over_window}; window 1 at {f1:?}, window 2 at {f2:?}, aimed at {aim:?}");
+    ensure!(window2_sees["insertion"] == 0 && window2_sees["chip"].is_array() && window1_chip.is_null(), "window 2 does not draw the bar and the chip: it sees {window2_sees}, window 1's chip {window1_chip}");
+    native.call(json!({"op":"post_mouse","kind":"up","point":local1}));
+    let mut moved_over = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(second, None, cx)?;
+        // Both windows hear wheeld's layout, each on its own connection.
+        if second.update(cx, |c, _, _| spaces_of(c, &second_session).first() == Some(&dragged) && c.space_id() == Some(dragged.as_str()))?
+            && window.update(cx, |c, _, _| spaces_of(c, &second_session).first() == Some(&dragged))?
+        {
+            moved_over = true;
+            break;
+        }
+    }
+    let after_window = window.update(cx, |c, _, _| (spaces_of(c, &second_session), spaces_of(c, first_session.as_deref().unwrap_or_default())))?;
+    let drag_lines = |h: gpui::WindowHandle<Client>, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("space drag") || l.contains("little window") || l.contains("layout")).rev().take(12).cloned().collect())?) };
+    ensure!(moved_over && !after_window.1.contains(&dragged), "the drop on window 2's sidebar left {dragged} in {after_window:?}; window 2 shows {:?} and its layout holds {:?}; window 1 logged {:?}; window 2 logged {:?}",
+        shown(second, cx)?, second.update(cx, |c, _, _| (spaces_of(c, &second_session), spaces_of(c, first_session.as_deref().unwrap_or_default())))?, drag_lines(window, cx)?, drag_lines(second, cx)?);
+    ensure!(window.update(cx, |c, _, _| c.sidebar_json()["hovered"].is_null())? && second.update(cx, |c, _, _| c.sidebar_json())?["hovered"].is_null(), "the drag stayed drawn after the drop");
+    // From window 2 onto the desktop between the windows: a little window opens on the space,
+    // centred on the drop.
+    let rows2 = second.update(cx, |c, _, _| c.sidebar_json())?;
+    let from2 = centre(row_frame(&rows2, &dragged).ok_or_else(|| anyhow::anyhow!("window 2's sidebar has no row for {dragged}"))?);
+    let desk = (f1[0] + f1[2] + 100., f2[1] + 300.);
+    let local2 = [f64::from(desk.0 - f2[0]), f64::from(desk.1 - f2[1])];
+    native2.call(json!({"op":"post_mouse","kind":"down","point":from2}));
+    native2.call(json!({"op":"post_mouse","kind":"drag","point":[from2[0], from2[1] + 10.]}));
+    tick(cx, 100).await;
+    draw(second, None, cx)?;
+    native2.call(json!({"op":"post_mouse","kind":"drag","point":local2}));
+    tick(cx, 150).await;
+    draw(second, None, cx)?;
+    let over_desk = second.update(cx, |c, _, _| c.sidebar_json())?["drag"].clone();
+    ensure!(over_desk["target"] == "the desktop" && over_desk["hint"] == "Release to open “dragged” in a little window" && over_desk["screen"] == json!([desk.0, desk.1]),
+        "the drag from window 2 did not aim at the desktop at {desk:?}: {over_desk}");
+    native2.call(json!({"op":"post_mouse","kind":"up","point":local2}));
+    let mut little = None;
+    for _ in 0..30 {
+        tick(cx, 100).await;
+        little = cx.update(|_| wheel_gpui::windows::with(|r| r.little_showing(&dragged).map(|l| (l.id.clone(), l.owner.clone()))));
+        if little.is_some() {
+            break;
+        }
+    }
+    let (little_id, little_owner) = little.ok_or_else(|| anyhow::anyhow!("the drop on the desktop opened no little window for {dragged}"))?;
+    let little_handle = cx.update(|_| wheel_gpui::window_handle(&little_id)).ok_or_else(|| anyhow::anyhow!("no handle for little window {little_id}"))?;
+    let little_native = little_handle.update(cx, |c, _, _| c.native())?;
+    let expect = (desk.0 - 240., desk.1 - 165.);
+    let mut little_frame = vec![];
+    for _ in 0..20 {
+        draw(little_handle, None, cx)?;
+        tick(cx, 100).await;
+        little_frame = frame_of(&little_native);
+        if little_frame.len() == 4 && (little_frame[0] - expect.0).abs() < 2. && (little_frame[1] - expect.1).abs() < 2. {
+            break;
+        }
+    }
+    ensure!(little_frame.len() == 4 && (little_frame[0] - expect.0).abs() < 2. && (little_frame[1] - expect.1).abs() < 2. && little_owner.as_deref() == Some(id2.as_str()),
+        "the little window is at {little_frame:?}, owned by {little_owner:?}; expected its top left at {expect:?}, owned by {id2}");
+    draw(little_handle, Some(output.join("client-space-drag-little.png")), cx)?;
+    little_handle.update(cx, |c, _, _| c.little_back())?;
+    for _ in 0..30 {
+        draw(little_handle, None, cx).ok();
+        tick(cx, 100).await;
+        if cx.update(|_| wheel_gpui::window_handle(&little_id)).is_none() {
+            break;
+        }
+    }
+    ensure!(cx.update(|_| wheel_gpui::window_handle(&little_id)).is_none(), "the little window {little_id} did not close");
+    // From window 2 onto the first session's card in the menu bar popover, which is in front of
+    // window 1: the space goes first in that session.
+    let menu = app_menu_bar(&bridge, cx)?;
+    cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+    let mut popover = None;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        popover = menu.update(cx, |m, _| m.popover());
+        if popover.is_some() {
+            break;
+        }
+    }
+    let popover_any: gpui::AnyWindowHandle = popover.ok_or_else(|| anyhow::anyhow!("the popover did not open for the card drop"))?.into();
+    let first_card = first_session.clone().unwrap_or_default();
+    let mut cards = None;
+    for _ in 0..30 {
+        let _ = popover_any.update(cx, |_, w, cx| w.draw(cx).clear());
+        tick(cx, 100).await;
+        cards = cx.update(|cx| menu.read(cx).drop_popover(cx)).filter(|p| p.cards.iter().any(|c| c.session == first_card && !c.rows.is_empty()));
+        if cards.is_some() {
+            break;
+        }
+    }
+    let cards = cards.ok_or_else(|| anyhow::anyhow!("the popover never measured the first session's card"))?;
+    let card = cards.cards.iter().find(|c| c.session == first_card).unwrap().clone();
+    let on_card = (card.rows[0].x + 20., card.rows[0].y + 2.);
+    let local_card = [f64::from(on_card.0 - f2[0]), f64::from(on_card.1 - f2[1])];
+    native2.call(json!({"op":"post_mouse","kind":"down","point":from2}));
+    native2.call(json!({"op":"post_mouse","kind":"drag","point":[from2[0], from2[1] + 10.]}));
+    tick(cx, 100).await;
+    draw(second, None, cx)?;
+    native2.call(json!({"op":"post_mouse","kind":"drag","point":local_card}));
+    tick(cx, 150).await;
+    draw(second, None, cx)?;
+    let _ = popover_any.update(cx, |_, w, cx| -> Result<()> {
+        w.draw(cx).clear();
+        w.render_to_image()?.save(output.join("client-space-drag-card.png"))?;
+        Ok(())
+    });
+    let over_card = second.update(cx, |c, _, _| c.sidebar_json())?["drag"].clone();
+    ensure!(over_card["target"] == json!(format!("card of session {first_card} at 0")) && over_card["measured"]["popover"].as_u64().is_some_and(|n| n >= 2),
+        "the drag from window 2 did not aim at the first session's card at {on_card:?} (popover {:?}): {over_card}", cards.frame);
+    let card_hint = over_card["hint"].clone();
+    native2.call(json!({"op":"post_mouse","kind":"up","point":local_card}));
+    let mut on_first = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| spaces_of(c, &first_card).first() == Some(&dragged))? {
+            on_first = true;
+            break;
+        }
+    }
+    ensure!(on_first, "the drop on the card left the first session with {:?}", window.update(cx, |c, _, _| spaces_of(c, &first_card))?);
+    cx.update(|cx| menu.update(cx, |m, cx| m.toggle_popover(None, cx)));
+    let (ok, _, err) = run_pumped(&["space", "close", &dragged], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space close for the dragged space failed: {err}");
+    let _ = std::fs::remove_dir_all(&drag_dir);
+    if let Some(space) = first_space.clone() {
+        window.update(cx, |c, _, cx| {
+            c.select_space(&space);
+            cx.notify();
+        })?;
+    }
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    let space_drags = json!({
+        "window_frames": [f1, f2],
+        "onto_window": {"target": over_window["target"], "hint": over_window["hint"], "window2_insertion": window2_sees["insertion"], "window2_chip": window2_sees["chip"], "session_after": after_window.0},
+        "onto_desktop": {"drop": [desk.0, desk.1], "little": little_id, "owner": little_owner, "frame": little_frame},
+        "onto_card": {"target": over_card["target"], "hint": card_hint, "card": [card.frame.x, card.frame.y, card.frame.w, card.frame.h]},
+    });
     // Closing the second window ends its connection: wheeld forgets its view, the first stays.
     second.update(cx, |_, w, _| w.remove_window())?;
     let mut gone = false;
@@ -2122,7 +2314,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(gone, "wheeld still lists the closed window {id2}: {:?}", reported_views()?);
     ensure!(reported_views()?.iter().any(|w| w.0 == id1), "closing the second window dropped the first's view");
     ensure!(native.status()["panes"].as_object().is_some_and(|p| native_panes.iter().all(|(id, _)| p.contains_key(id))), "the first window lost its views");
-    let sessions_windows = json!({"first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
+    let sessions_windows = json!({"space_drags": space_drags, "first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
         "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
     // `wheel window` and the window menus (wheel-ynjo.7.2; AppModel+Windows.swift): this app
     // offers to run window commands; wheeld forwards each to the newest window that offered, which
@@ -4133,12 +4325,20 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     Ok(report)
 }
 
+/// The app's one menu bar item, started the first time a step needs it, as the app starts it at launch.
+fn app_menu_bar(bridge: &std::rc::Rc<Bridge>, cx: &mut AsyncApp) -> Result<gpui::Entity<wheel_gpui::view::MenuBar>> {
+    if let Some(menu) = cx.update(|_| wheel_gpui::view::menu_bar()) {
+        return Ok(menu);
+    }
+    let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
+    Ok(cx.update(|cx| wheel_gpui::view::start_menu_bar(cx, bridge, endpoint, true)))
+}
+
 /// The menu bar item (wheel-ynjo.7.4.1): its own connection lists every session's spaces, it
 /// counts a fixture permission where it waits, its popover draws the cards, New Window opens a
 /// window, and closing every window leaves the app running with the item.
 async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, output: &std::path::Path, cx: &mut AsyncApp) -> Result<Value> {
-    let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
-    let menu = cx.update(|cx| wheel_gpui::view::start_menu_bar(cx, bridge, endpoint, true));
+    let menu = app_menu_bar(bridge, cx)?;
     let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
     let mut menu_state = Value::Null;
     for _ in 0..100 {

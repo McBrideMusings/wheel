@@ -86,32 +86,102 @@ pub struct SpaceDrag {
     /// Whether a held mouse button drives it; the debug route's drags have none.
     pub by_pointer: bool,
     pub target: Option<SpaceDropTarget>,
-    /// Where the pointer is, for the chip that follows it.
+    /// Where the pointer is in the window the drag started in.
     pub at: (f32, f32),
+    /// Where the pointer is on screen (top left origin), once the windows are measured.
+    pub screen: Option<(f32, f32)>,
+    /// The window the pointer is in and where in it: that window draws the chip.
+    pub chip: Option<(String, (f32, f32))>,
 }
 
-/// Where releasing a dragged space would put it. The Swift client also drops on other windows,
-/// the popover's cards and the desktop; this window is the only one here (wheel-ynjo.7).
+/// Where releasing a dragged space would put it (SpaceDropping.SpaceDropTarget). A window's
+/// tabs are no target yet: a window whose sidebar is hidden takes the space at its end.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpaceDropTarget {
-    /// Between this window's sidebar rows: `index` counts the rows above the bar, in the list as
-    /// it was before the drag.
-    Sidebar(usize),
-    /// The window's body: the space goes to the end of the window.
-    Window,
+    /// Between `window`'s sidebar rows: `index` counts the rows above the bar, in the list as it
+    /// was before the drag.
+    Sidebar { window: String, index: usize },
+    /// A window's body: the space goes to the end of the window's session.
+    Window(String),
+    /// A session's card in the menu bar popover: `index` counts the card's rows above the bar.
+    Card { session: String, index: usize },
+    /// No Wheel window under the pointer: the space opens in a little window.
+    Desktop,
 }
 
-/// What releasing at (`x`, `y`) would do while the sidebar is at `sidebar` with `rows`.
-pub fn space_target(sidebar: Rect, rows: &[Row], x: f32, y: f32) -> SpaceDropTarget {
-    if contains(sidebar, x, y) { SpaceDropTarget::Sidebar(drop_index(rows, y)) } else { SpaceDropTarget::Window }
+/// A main window as the pointer meets it, in screen points with the origin at the top left of
+/// the main screen (DropWindow).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropWindow {
+    pub id: String,
+    pub frame: Rect,
+    /// The sidebar's rectangle while the window shows it.
+    pub sidebar: Option<Rect>,
+    /// The sidebar's rows, top to bottom.
+    pub rows: Vec<Rect>,
+}
+
+/// A card in the popover: one session's spaces (DropCard).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropCard {
+    pub session: String,
+    pub frame: Rect,
+    pub rows: Vec<Rect>,
+}
+
+/// The menu bar popover while it is open (DropPopover).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropPopover {
+    pub frame: Rect,
+    pub cards: Vec<DropCard>,
+}
+
+/// The bar goes above the first rectangle whose middle is below `y`, else after the last.
+fn index_above(rows: &[Rect], y: f32) -> usize {
+    rows.iter().position(|r| y < r.y + r.h / 2.0).unwrap_or(rows.len())
+}
+
+/// What releasing at (`x`, `y`) would do (SpaceDropping.target). `windows` runs front to back
+/// and the first under the pointer decides; the popover, when open, is in front of them all.
+pub fn space_target(x: f32, y: f32, windows: &[DropWindow], popover: Option<&DropPopover>) -> SpaceDropTarget {
+    if let Some(popover) = popover.filter(|p| contains(p.frame, x, y)) {
+        // Between the cards the nearer one is the intent.
+        let card = popover.cards.iter().find(|c| contains(c.frame, x, y))
+            .or_else(|| popover.cards.iter().min_by(|a, b| (a.frame.y + a.frame.h / 2.0 - y).abs().total_cmp(&(b.frame.y + b.frame.h / 2.0 - y).abs())));
+        if let Some(card) = card {
+            return SpaceDropTarget::Card { session: card.session.clone(), index: index_above(&card.rows, y) };
+        }
+    }
+    let Some(window) = windows.iter().find(|w| contains(w.frame, x, y)) else { return SpaceDropTarget::Desktop };
+    match window.sidebar {
+        Some(bar) if contains(bar, x, y) => SpaceDropTarget::Sidebar { window: window.id.clone(), index: index_above(&window.rows, y) },
+        _ => SpaceDropTarget::Window(window.id.clone()),
+    }
 }
 
 /// The words under a space drag (SpaceDropping.hint).
-pub fn space_hint(target: &SpaceDropTarget, space: &str, window: &str) -> String {
+pub fn space_hint(target: &SpaceDropTarget, space: &str, session_name: impl Fn(&str) -> String, window_title: impl Fn(&str) -> String) -> String {
     match target {
-        SpaceDropTarget::Sidebar(_) => format!("Place “{space}” here in “{window}”"),
-        SpaceDropTarget::Window => format!("Move “{space}” to “{window}”"),
+        SpaceDropTarget::Sidebar { window, .. } => format!("Place “{space}” here in “{}”", window_title(window)),
+        SpaceDropTarget::Window(window) => format!("Move “{space}” to “{}”", window_title(window)),
+        SpaceDropTarget::Card { session, .. } => format!("Move “{space}” to the “{}” session", session_name(session)),
+        SpaceDropTarget::Desktop => format!("Release to open “{space}” in a little window"),
     }
+}
+
+/// What a drop at `index` among `held` (or at the end, for none) sends: none when it changes
+/// nothing, beside the space's own slot or on a list already ending with it; else the
+/// `session_move` index (none for the end).
+pub fn drop_move(index: Option<usize>, held: &[String], space: &str) -> Option<Option<usize>> {
+    match index {
+        Some(i) => bar_index(i, held, space).map(|_| Some(move_index(i, held, space))),
+        None => (held.last().map(String::as_str) != Some(space)).then_some(None),
+    }
+}
+
+/// Where a little window opened by a drop on the desktop goes: its content centred on the drop.
+pub fn little_origin(x: f32, y: f32, size: (f32, f32)) -> (f32, f32) {
+    (x - size.0 / 2.0, y - size.1 / 2.0)
 }
 
 /// A pane held by its header (PaneMove.swift's PaneDrag), as far as the sidebar is its target:
@@ -249,8 +319,64 @@ mod tests {
         assert_eq!(drop_index(&rows, 40.), 0);
         assert_eq!(drop_index(&rows, rows[0].rect.y + ROW_H - 1.), 1);
         assert_eq!(drop_index(&rows, 400.), 3);
-        assert_eq!(space_target(bar(), &rows, 20., 400.), SpaceDropTarget::Sidebar(3));
-        assert_eq!(space_target(bar(), &rows, 600., 400.), SpaceDropTarget::Window);
+    }
+
+    fn window(id: &str, x: f32, sidebar: bool) -> DropWindow {
+        let frame = Rect { x, y: 0., w: 1200., h: 720. };
+        let bar = Rect { x: x + 10., y: 32., w: WIDTH, h: 600. };
+        DropWindow { id: id.into(), frame, sidebar: sidebar.then_some(bar), rows: rows(&ids(3), bar).into_iter().map(|r| r.rect).collect() }
+    }
+
+    #[test]
+    fn the_front_window_under_the_pointer_takes_the_space() {
+        let (front, back) = (window("w1", 0., true), window("w2", 600., true));
+        let both = [front.clone(), back.clone()];
+        assert_eq!(space_target(20., 400., &both, None), SpaceDropTarget::Sidebar { window: "w1".into(), index: 3 });
+        assert_eq!(space_target(20., 40., &both, None), SpaceDropTarget::Sidebar { window: "w1".into(), index: 0 });
+        assert_eq!(space_target(900., 400., &both, None), SpaceDropTarget::Window("w1".into()));
+        // Past the front window's right edge the window behind it is under the pointer.
+        assert_eq!(space_target(1500., 400., &both, None), SpaceDropTarget::Window("w2".into()));
+        assert_eq!(space_target(620., 400., &[back.clone(), front], None), SpaceDropTarget::Sidebar { window: "w2".into(), index: 3 });
+        assert_eq!(space_target(1900., 400., &both, None), SpaceDropTarget::Desktop);
+        assert_eq!(space_target(20., 400., &[window("w3", 0., false)], None), SpaceDropTarget::Window("w3".into()));
+        assert_eq!(space_target(20., 400., &[], None), SpaceDropTarget::Desktop);
+    }
+
+    #[test]
+    fn the_popover_is_in_front_and_between_cards_the_nearer_one_counts() {
+        let card = |session: &str, y: f32, n: usize| DropCard { session: session.into(), frame: Rect { x: 12., y, w: 296., h: 60. }, rows: (0..n).map(|i| Rect { x: 22., y: y + 35. + i as f32 * 24., w: 276., h: 24. }).collect() };
+        let popover = DropPopover { frame: Rect { x: 0., y: 0., w: 320., h: 300. }, cards: vec![card("n1", 60., 2), card("n2", 140., 0)] };
+        let w = [window("w1", 0., true)];
+        assert_eq!(space_target(100., 110., &w, Some(&popover)), SpaceDropTarget::Card { session: "n1".into(), index: 1 });
+        assert_eq!(space_target(100., 61., &w, Some(&popover)), SpaceDropTarget::Card { session: "n1".into(), index: 0 });
+        assert_eq!(space_target(100., 135., &w, Some(&popover)), SpaceDropTarget::Card { session: "n2".into(), index: 0 });
+        assert_eq!(space_target(100., 10., &w, Some(&popover)), SpaceDropTarget::Card { session: "n1".into(), index: 0 });
+        assert_eq!(space_target(600., 100., &w, Some(&popover)), SpaceDropTarget::Window("w1".into()));
+    }
+
+    #[test]
+    fn a_drop_into_another_list_or_its_own_sends_the_index_wheeld_counts() {
+        let held = ids(3);
+        // Into another session: the index as counted, the end as none.
+        assert_eq!(drop_move(Some(2), &held, "x"), Some(Some(2)));
+        assert_eq!(drop_move(None, &held, "x"), Some(None));
+        // Within its own: past its slot counts it out; beside it or already last changes nothing.
+        assert_eq!(drop_move(Some(3), &held, "s1"), Some(Some(2)));
+        assert_eq!(drop_move(Some(0), &held, "s3"), Some(Some(0)));
+        assert_eq!(drop_move(Some(1), &held, "s1"), None);
+        assert_eq!(drop_move(Some(0), &held, "s1"), None);
+        assert_eq!(drop_move(None, &held, "s3"), None);
+        assert_eq!(drop_move(None, &held, "s1"), Some(None));
+    }
+
+    #[test]
+    fn the_hint_names_what_releasing_does() {
+        let (session, title) = (|s: &str| format!("S-{s}"), |w: &str| format!("T-{w}"));
+        assert_eq!(space_hint(&SpaceDropTarget::Sidebar { window: "w".into(), index: 0 }, "x", session, title), "Place “x” here in “T-w”");
+        assert_eq!(space_hint(&SpaceDropTarget::Window("w".into()), "x", session, title), "Move “x” to “T-w”");
+        assert_eq!(space_hint(&SpaceDropTarget::Card { session: "n".into(), index: 0 }, "x", session, title), "Move “x” to the “S-n” session");
+        assert_eq!(space_hint(&SpaceDropTarget::Desktop, "x", session, title), "Release to open “x” in a little window");
+        assert_eq!(little_origin(1250., 300., (480., 330.)), (1010., 135.));
     }
 
     #[test]

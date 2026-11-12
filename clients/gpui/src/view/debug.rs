@@ -281,10 +281,12 @@ impl Client {
                 let Some(space) = q("space") else { return refuse(BAD, "space= is required") };
                 let Some(r) = self.space_hit_rect(&space) else { return refuse(MISSING, "no such space in this window") };
                 self.space_press_down(&space, r.x + r.w / 2., r.y + r.h / 2.);
-                self.pointer_up();
+                self.pointer_up(cx);
                 None
             }
-            // A space drag without a pointer: `action` is start (`space`), hover (`target` sidebar:<index> or window), drop or cancel.
+            // A space drag without a pointer: `action` is start (`space`), hover (`target`: sidebar:<index>
+            // or window for this window, sidebar:<window>:<index>, window:<window>, card:<session>:<index>
+            // or desktop), drop or cancel.
             "/spacedrag" => {
                 match q("action").as_deref() {
                     Some("start") => {
@@ -299,14 +301,12 @@ impl Client {
                         if self.space_drag.is_none() {
                             return refuse("409 Conflict", "no space drag in progress");
                         }
-                        let target = match q("target").as_deref() {
-                            Some("window") => crate::sidebar::SpaceDropTarget::Window,
-                            Some(t) if t.starts_with("sidebar:") => match t[8..].parse() { Ok(i) => crate::sidebar::SpaceDropTarget::Sidebar(i), Err(_) => return refuse(BAD, "target is sidebar:<index> or window") },
-                            _ => return refuse(BAD, "target is sidebar:<index> or window"),
+                        let Some(target) = q("target").and_then(|t| debug_space_target(&t, &self.window_id)) else {
+                            return refuse(BAD, "target is sidebar:<index>, window, sidebar:<window>:<index>, window:<window>, card:<session>:<index> or desktop");
                         };
                         self.hover_space_drag(Some(target));
                     }
-                    Some("drop") => self.end_space_drag(),
+                    Some("drop") => self.end_space_drag(cx),
                     Some("cancel") => self.cancel_space_drag(false),
                     _ => return refuse(BAD, "action is start, hover, drop or cancel"),
                 }
@@ -722,4 +722,19 @@ impl Client {
         out["fork_lines"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.fork_lines))).collect::<serde_json::Map<_, _>>());
         out
     }
+}
+
+/// The drop target a `/spacedrag` hover names; `me` is the window answering.
+fn debug_space_target(text: &str, me: &str) -> Option<crate::sidebar::SpaceDropTarget> {
+    use crate::sidebar::SpaceDropTarget as T;
+    let parts: Vec<&str> = text.split(':').collect();
+    Some(match parts[..] {
+        ["window"] => T::Window(me.to_owned()),
+        ["desktop"] => T::Desktop,
+        ["sidebar", index] => T::Sidebar { window: me.to_owned(), index: index.parse().ok()? },
+        ["window", window] => T::Window(window.to_owned()),
+        ["sidebar", window, index] => T::Sidebar { window: window.to_owned(), index: index.parse().ok()? },
+        ["card", session, index] => T::Card { session: session.to_owned(), index: index.parse().ok()? },
+        _ => return None,
+    })
 }

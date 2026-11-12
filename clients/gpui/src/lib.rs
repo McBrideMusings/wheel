@@ -54,6 +54,27 @@ pub fn window_handle(id: &str) -> Option<WindowHandle<view::Client>> {
     HANDLES.with(|h| h.borrow().get(id).copied())
 }
 
+/// Every open window by id, main and little.
+pub fn window_handles() -> Vec<(String, WindowHandle<view::Client>)> {
+    HANDLES.with(|h| h.borrow().iter().map(|(id, w)| (id.clone(), *w)).collect())
+}
+
+/// Redraw every window but `except`, and the menu bar's popover: a space drag moved over or off
+/// them, and the one under the pointer draws the bar, the outline and the chip.
+pub fn refresh_other_windows(cx: &mut App, except: &str) {
+    let except = except.to_owned();
+    cx.defer(move |cx| {
+        for (id, handle) in window_handles() {
+            if id != except {
+                let _ = handle.update(cx, |_, _, cx| cx.notify());
+            }
+        }
+        if let Some(menu) = view::menu_bar() {
+            menu.update(cx, |_, cx| cx.notify());
+        }
+    });
+}
+
 /// A window closed: it leaves the handles and the app's list of windows.
 pub fn forget_window(id: &str) {
     HANDLES.with(|h| h.borrow_mut().remove(id));
