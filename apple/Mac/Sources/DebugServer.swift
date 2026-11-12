@@ -1219,15 +1219,9 @@ final class DebugServer {
                 model.moveSpace(space, toSession: session, at: query["at"].flatMap(Int.init))
             case "close":
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
-                model.askCloseWindow(id)
-            case "closeanswer":
-                // The close sheet's buttons: `answer` is background, stop or cancel.
-                guard model.closingWindow != nil else { return refuse("409 Conflict", "no close sheet is showing") }
-                let answers: [String: AppModel.WindowCloseAnswer] = ["background": .background, "stop": .stop, "cancel": .cancel]
-                guard let answer = query["answer"].flatMap({ answers[$0] }) else { return refuse("400 Bad Request", "answer is background, stop or cancel") }
-                model.answerWindowClose(answer)
+                model.closeWindow(id)
             case "closebutton":
-                // What the red close button does: the host asks the model, which shows the sheet when the window holds spaces.
+                // What the red close button does: the window closes and its session keeps running.
                 guard let id = windowID() else { return refuse("404 Not Found", "no such window") }
                 (model.windowHost as? WindowManager)?.window(id)?.performClose(nil)
             case "place":
@@ -2591,10 +2585,6 @@ final class DebugServer {
             "keymap": model.keymap.chords.mapValues(\.text),
             "keymap_problems": model.keymap.problems,
             "keybind": model.keybindSetting,
-            // The window whose close sheet is showing, and its summary line.
-            "window_close": model.closingWindow.map { id in
-                ["window": id, "summary": model.layout.window(id).map { model.closeSummary(of: $0) } ?? ""] as [String: Any]
-            } ?? NSNull(),
             "confirmation": model.confirmation.map {
                 ["title": $0.title, "message": $0.message, "button": $0.button, "window": $0.window] as [String: Any]
             } ?? NSNull(),

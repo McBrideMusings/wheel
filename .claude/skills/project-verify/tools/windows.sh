@@ -54,16 +54,12 @@ eq "after a relaunch the windows, their sessions and active spaces are as they w
 # Closing a window whose session another window shows closes it without asking.
 app_post "/windows?action=closebutton&window=$W2" >/dev/null
 wait_st '.windows | length == 1' 10
-eq "no sheet: the other window still shows the session" "$(st '.window_close')" "null"
 eq "the first window stays" "$(st '.windows[0].id')" "$W1"
 eq "Review is still shown, so the first session alone is background" "$(st '.background_sessions | join(",")')" "$N1"
 
-# The last window of a session asks; Background closes the window and keeps the session running.
+# The last window of a session closes without asking too, and the session keeps running.
 app_post "/windows?action=closebutton&window=$W1" >/dev/null
-check "the last window of a session opens the close sheet" wait_st '.window_close != null' 10
-check "the sheet names the session" test -n "$(st '.window_close.summary' | grep 'Review')"
-app_post "/windows?action=closeanswer&answer=background" >/dev/null
-wait_st '.windows | length == 0' 10
+check "the last window of a session closes at once" wait_st '.windows | length == 0' 10
 eq "the app and its connection stay" "$(st .connection)" "connected"
 eq "both sessions are background sessions" "$(st '.background_sessions | sort | join(",")')" "$(printf '%s\n' "$N1" "$N2" | sort | paste -sd, -)"
 eq "every space still runs in wheeld" "$(w space ls | jq '.spaces | length')" "6"
@@ -71,19 +67,15 @@ app_post "/windows?action=reopen" >/dev/null
 wait_st '.windows | length == 1' 10
 eq "the Dock icon opens a window on a background session" "$(st '.windows[0].session != null')" "true"
 
-# Stop closes the session: its windows, its spaces and their panes.
-app_post "/windows?action=session&window=$(st '.windows[0].id')&session=$N2" >/dev/null
-wait_st '.windows[0].session == "'"$N2"'"' 10
-app_post "/windows?action=closebutton&window=$(st '.windows[0].id')" >/dev/null
-wait_st '.window_close != null' 10
-app_post "/windows?action=closeanswer&answer=stop" >/dev/null
-wait_st '.windows | length == 0' 10
-eq "stopping closes the session in wheeld" "$(w session ls --json | jq -r --arg n "$N2" '[.[] | select(.id==$n)] | length')" "0"
+# Closing a session no window shows closes its spaces and their panes.
+app_post "/windows?action=session&window=$(st '.windows[0].id')&session=$N1" >/dev/null
+wait_st '.windows[0].session == "'"$N1"'"' 10
+w session close "$N2" >/dev/null
+wait_st '.sessions | length == 1' 10
+eq "closing the session closes it in wheeld" "$(w session ls --json | jq -r --arg n "$N2" '[.[] | select(.id==$n)] | length')" "0"
 eq "and its three spaces" "$(w space ls | jq '.spaces | length')" "3"
 
 # A session closed by the CLI while a window shows it: the window shows the first session.
-app_post "/windows?action=reopen" >/dev/null
-wait_st '.windows | length == 1' 10
 N3="$(w session new Third)"
 wait_st '.sessions | length == 2' 10
 app_post "/windows?action=session&window=$(st '.windows[0].id')&session=$N3" >/dev/null

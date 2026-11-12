@@ -224,8 +224,6 @@ extension AppModel {
     func commitWindows() {
         GridMetrics.shared.windowsCommitted()
         layout.save()
-        // A sheet asked in a window that has since gone (its last space moved out) has nobody to answer it.
-        if let closing = closingWindow, layout.window(closing) == nil { closingWindow = nil }
         // Measurements of windows that are gone would aim a drop at them.
         let open = Set(layout.windows.map(\.id))
         rowFrames = rowFrames.filter { open.contains($0.key) }
@@ -303,54 +301,12 @@ extension AppModel {
         return id
     }
 
-    /// What the person chose in a main window's close sheet.
-    enum WindowCloseAnswer { case background, stop, cancel }
-
-    /// The red light, ⇧⌘W and `wheel window close`: the last window showing a session that holds
-    /// spaces asks what to do with the session in a sheet on that window; any other closes.
-    func askCloseWindow(_ id: String) {
-        guard let record = layout.window(id) else { return }
-        guard windowCloseNeedsAnswer(id) else { return closeWindow(id) }
-        closingWindow = id
-        windowHost?.bringFront(id)
-        Log.info("close window \(id.prefix(8)) asked: \(closeSummary(of: record))")
-    }
-
-    /// Closing `id` ends what its session shows: no other window shows the session, and it holds spaces.
-    func windowCloseNeedsAnswer(_ id: String) -> Bool {
-        guard let record = layout.window(id), let session = record.session else { return false }
-        return layout.windows(showing: session).count == 1 && !layout.spaces(of: record).isEmpty
-    }
-
-    /// "It holds 3 spaces with 6 panes. 1 of them is in a little window."
-    func closeSummary(of window: WindowRecord) -> String {
-        let held = spaces(in: window.id)
-        let panes = held.reduce(0) { $0 + $1.allPanes.count }
-        let little = layout.spaces(of: window).filter { layout.little(showing: $0) != nil }.count
-        let name = session(of: window.id)?.name ?? "This"
-        var text = "The “\(name)” session holds \(held.count) \(held.count == 1 ? "space" : "spaces") with \(panes) \(panes == 1 ? "pane" : "panes")."
-        if little > 0 { text += " \(little) of them \(little == 1 ? "is" : "are") in a little window." }
-        return text
-    }
-
-    func answerWindowClose(_ answer: WindowCloseAnswer) {
-        guard let id = closingWindow else { return }
-        closingWindow = nil
-        Log.info("close window \(id.prefix(8)) answered: \(answer)")
-        switch answer {
-        case .background: closeWindow(id)
-        case .stop: closeWindow(id, stopping: true)
-        case .cancel: break
-        }
-    }
-
-    /// Close window `id` with no question: its session keeps running, in the other windows that
-    /// show it or in the background. With `stopping` the session closes too: every window
-    /// showing it, and every process in its spaces.
-    func closeWindow(_ id: String, stopping: Bool = false) {
-        guard let record = layout.window(id) else { return }
-        if closingWindow == id { closingWindow = nil }
-        if stopping, let session = record.session { closeSession(session) } else { editWindows { $0.close(window: id) } }
+    /// The red light, ⇧⌘W and `wheel window close` close window `id` with no question: its session
+    /// keeps running, in the other windows that show it or in the background, where a new window
+    /// can show it again.
+    func closeWindow(_ id: String) {
+        guard layout.window(id) != nil else { return }
+        editWindows { $0.close(window: id) }
     }
 
     /// Move `space` into the session `window` shows, at `position` among its spaces (the end by
@@ -729,7 +685,7 @@ extension AppModel {
         case let .close(window):
             switch windowID(named: window) {
             case let .success(id):
-                askCloseWindow(id)
+                closeWindow(id)
                 return .success(["window": id])
             case let .failure(failure): return .failure(failure)
             }
