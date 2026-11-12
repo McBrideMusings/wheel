@@ -3393,7 +3393,132 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["composer"] = composer_report;
     report["conversations"] = conversations_report;
     report["scroll"] = scroll_report;
+    // Last: it closes every window.
+    report["menu_bar"] = menu_bar_check(&bridge, &agent_name, &mut connection, &mut layouts, window, &output, cx).await?;
     Ok(report)
+}
+
+/// The menu bar item (wheel-ynjo.7.4.1): its own connection lists every session's spaces, it
+/// counts a fixture permission where it waits, its popover draws the cards, New Window opens a
+/// window, and closing every window leaves the app running with the item.
+async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, output: &std::path::Path, cx: &mut AsyncApp) -> Result<Value> {
+    let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
+    let menu = cx.update(|cx| wheel_gpui::view::start_menu_bar(cx, bridge, endpoint, true));
+    let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
+    let mut menu_state = Value::Null;
+    for _ in 0..100 {
+        pump(connection, 100, layouts, window, cx).await?;
+        menu_state = state(cx);
+        if menu_state["up"] == true && menu_state["cards"].as_array().is_some_and(|c| !c.is_empty()) {
+            break;
+        }
+    }
+    ensure!(menu_state["up"] == true, "the menu bar's connection never came up: {menu_state}");
+    ensure!(menu_state["item"]["status_item"] == true && menu_state["item"]["in_menu_bar"] == false && menu_state["item"]["template"] == true,
+        "the status item is missing, in the menu bar during a hidden check, or not a template image: {}", menu_state["item"]);
+    // Every session's spaces, in wheeld's order, as the window's own layout lists them.
+    let (sessions, _) = window.update(cx, |c, _, _| c.layout_lists())?;
+    let listed: Vec<(String, Vec<String>)> = menu_state["cards"].as_array().unwrap().iter()
+        .map(|c| (c["session"].as_str().unwrap_or("").to_owned(), c["rows"].as_array().unwrap().iter().map(|r| r["space"].as_str().unwrap_or("").to_owned()).collect())).collect();
+    let want: Vec<(String, Vec<String>)> = sessions.iter().map(|s| (s.id.clone(), s.spaces.clone())).collect();
+    ensure!(listed == want, "the popover's cards list {listed:?}, wheeld's sessions hold {want:?}");
+    // The badge counts the spaces in sessions no window shows and in ownerless little windows.
+    let spaces_now = window.update(cx, |c, _, _| c.layout_lists().1)?;
+    let background = wheel_gpui::windows::with(|r| wheel_gpui::windows::ls(r, &sessions, &spaces_now)["background"].as_array().map(|a| a.len()).unwrap_or(0)
+        + r.littles.iter().filter(|l| l.owner.is_none()).count());
+    ensure!(menu_state["item"]["badge"].as_u64() == Some(background as u64), "the item's badge reads {}, the windows leave {background} spaces unshown", menu_state["item"]["badge"]);
+    let badge_before = menu_state["item"]["badge"].clone();
+    // A permission the fixture agent raises counts in the row of the space holding it.
+    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { req: None, agent: agent.to_owned(), text: "permission".into() }))?;
+    let mut waiting_state = Value::Null;
+    for _ in 0..300 {
+        pump(connection, 100, layouts, window, cx).await?;
+        waiting_state = state(cx);
+        // Both connections hear the request: the menu bar's own and the window's.
+        if waiting_state["waiting"].as_u64().unwrap_or(0) > 0 && window.update(cx, |c, _, _| !c.perms.is_empty())? {
+            break;
+        }
+    }
+    let fixture_waiting = window.update(cx, |c, _, _| c.perms.len())?;
+    let row_waiting: u64 = waiting_state["cards"].as_array().unwrap().iter().flat_map(|c| c["rows"].as_array().unwrap().iter()).map(|r| r["waiting"].as_u64().unwrap_or(0)).sum();
+    ensure!(fixture_waiting > 0 && waiting_state["waiting"].as_u64() == Some(fixture_waiting as u64) && row_waiting == fixture_waiting as u64,
+        "the fixture has {fixture_waiting} permission(s) waiting; the menu bar holds {} and its rows count {row_waiting}", waiting_state["waiting"]);
+    // The popover opens as the item's click opens it, and draws the cards.
+    let clicked = cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+    let mut open_state = Value::Null;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        open_state = state(cx);
+        if open_state["popover"]["open"] == true {
+            break;
+        }
+    }
+    ensure!(open_state["popover"]["open"] == true, "pressing the status item ({clicked}) opened no popover: {}", open_state["popover"]);
+    let popover = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?;
+    let popover_any: gpui::AnyWindowHandle = popover.into();
+    let picture = output.join("client-menubar-popover.png");
+    let drawn = popover_any.update(cx, |_, w, cx| -> Result<(u32, u32)> {
+        w.draw(cx).clear();
+        let image = w.render_to_image()?;
+        image.save(&picture)?;
+        Ok((image.width(), image.height()))
+    })??;
+    let frame_h = open_state["popover"]["frame"][3].as_f64().unwrap_or(0.);
+    ensure!((frame_h - open_state["height"].as_f64().unwrap_or(-1.)).abs() < 1., "the popover is {frame_h} tall, its cards need {}", open_state["height"]);
+    // New Window: a press and release on its row, as the person clicks it.
+    let windows_before = wheel_gpui::windows::with(|r| r.windows.len());
+    let new_y = frame_h as f32 - wheel_gpui::menubar::PAD - 2. * wheel_gpui::menubar::ROW - wheel_gpui::menubar::ROW_GAP + wheel_gpui::menubar::ROW / 2.;
+    let at = gpui::point(gpui::px(wheel_gpui::menubar::WIDTH / 2.), gpui::px(new_y));
+    popover_any.update(cx, |_, w, cx| {
+        w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: at, pressed_button: None, modifiers: Default::default() }), cx);
+        w.draw(cx).clear();
+        w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Left, position: at, modifiers: Default::default(), click_count: 1, first_mouse: false }), cx);
+        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position: at, modifiers: Default::default(), click_count: 1 }), cx);
+    })?;
+    let mut windows_after = windows_before;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        windows_after = wheel_gpui::windows::with(|r| r.windows.len());
+        if windows_after > windows_before {
+            break;
+        }
+    }
+    ensure!(windows_after == windows_before + 1, "New Window left {windows_after} windows open, {windows_before} before");
+    let after_new = state(cx);
+    let popover_window_open = popover_any.update(cx, |_, _, _| ()).is_ok();
+    ensure!(after_new["popover"]["open"] == false && !popover_window_open, "the popover stayed open after New Window: handle held {}, window open {popover_window_open}", after_new["popover"]["open"]);
+    // Answer the permission, so the fixture is left as it was.
+    let answered = window.update(cx, |c, _, cx| {
+        let perm = c.perms.first().cloned();
+        if let Some(perm) = &perm && let Some(option) = perm.options.iter().find(|o| o.kind.starts_with("reject")).or(perm.options.first()) {
+            c.answer_perm(&perm.id, &option.id);
+        }
+        cx.notify();
+        perm.map(|p| p.id)
+    })?;
+    // Closing every window leaves the app running with its item, its connection and its counts.
+    let handles: Vec<gpui::AnyWindowHandle> = cx.update(|cx| cx.windows());
+    for handle in &handles {
+        let _ = handle.update(cx, |_, w, _| w.remove_window());
+    }
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        if cx.update(|cx| cx.windows().is_empty()) && state(cx)["waiting"] == 0 {
+            break;
+        }
+    }
+    let open_windows = cx.update(|cx| cx.windows().len());
+    let still = state(cx);
+    ensure!(open_windows == 0 && still["item"]["status_item"] == true && still["up"] == true,
+        "after closing every window: {open_windows} windows, the menu bar reads {still}");
+    let every_space: usize = still["cards"].as_array().unwrap().iter().map(|c| c["rows"].as_array().map(|r| r.len()).unwrap_or(0)).sum();
+    ensure!(still["item"]["badge"].as_u64() == Some(every_space as u64), "with no window, every space ({every_space}) is unshown; the badge reads {}", still["item"]["badge"]);
+    Ok(json!({"item": menu_state["item"], "cards": menu_state["cards"], "badge_before": badge_before, "background_counted": background,
+        "fixture_waiting": fixture_waiting, "rows_waiting": row_waiting, "dock_while_waiting": waiting_state["item"]["dock"], "answered": answered,
+        "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
+        "new_window": {"before": windows_before, "after": windows_after, "popover_closed": after_new["popover"]["open"] == false},
+        "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space},
+        "log": still["log"]}))
 }
 
 /// The fixture wheeld as an older one: a loopback WebSocket in front of it that passes every frame

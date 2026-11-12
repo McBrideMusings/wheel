@@ -706,38 +706,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             log("pairing code copied to the clipboard as a concealed item; clearing it in \(ms) ms")
             return ["copied": true, "clear_after_ms": ms]
         case "symbol":
-            // An SF Symbol drawn to PNG pixels for the GPUI view, which has no symbol font of its own:
-            // `name` at `size` points in `color` (sRGB 0...1 and alpha), at the window's scale. The
-            // Swift app draws the same symbols through SwiftUI's Image(systemName:).
-            let name = value["name"] as? String ?? ""
-            let size = value["size"] as? Double ?? 13
-            var rgba = value["color"] as? [Double] ?? []
-            if rgba.count < 3 { rgba = [1, 1, 1, 1] }
-            let scale = value["scale"] as? Double ?? (root.window?.backingScaleFactor ?? 2)
-            let color = NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba.count > 3 ? rgba[3] : 1)
-            let weight: NSFont.Weight = switch value["weight"] as? String {
-            case "medium": .medium
-            case "semibold": .semibold
-            case "bold": .bold
-            default: .regular
-            }
-            let configuration = NSImage.SymbolConfiguration(pointSize: size, weight: weight).applying(NSImage.SymbolConfiguration(paletteColors: [color]))
-            guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil), let image = base.withSymbolConfiguration(configuration) else {
-                return ["missing": true]
-            }
-            let points = image.size
-            let (w, h) = (Int((points.width * scale).rounded(.up)), Int((points.height * scale).rounded(.up)))
-            guard w > 0, h > 0, let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
-                                                             hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
-                return ["missing": true]
-            }
-            rep.size = points
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-            image.draw(in: NSRect(origin: .zero, size: points), from: .zero, operation: .sourceOver, fraction: 1)
-            NSGraphicsContext.restoreGraphicsState()
-            guard let data = rep.representation(using: .png, properties: [:]) else { return ["missing": true] }
-            return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": points.width, "height": points.height]
+            // An SF Symbol drawn to PNG pixels for the GPUI view, which has no symbol font of its own.
+            return symbolPNG(value, scale: Double(root.window?.backingScaleFactor ?? 2))
         case "pin":
             // The title row's pin: the window floats over every other while it is on (`setPinned`).
             let on = value["on"] as? Bool == true
@@ -811,6 +781,129 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
 }
 
+/// `name` at `size` points in `color` (sRGB 0...1 and alpha), at `scale` unless the value names
+/// one: the PNG's bytes as hex and its size in points. The Swift app draws the same symbols through
+/// SwiftUI's Image(systemName:).
+@MainActor func symbolPNG(_ value: [String: Any], scale fallback: Double) -> [String: Any] {
+    let name = value["name"] as? String ?? ""
+    let size = value["size"] as? Double ?? 13
+    var rgba = value["color"] as? [Double] ?? []
+    if rgba.count < 3 { rgba = [1, 1, 1, 1] }
+    let scale = value["scale"] as? Double ?? fallback
+    let color = NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba.count > 3 ? rgba[3] : 1)
+    let weight: NSFont.Weight = switch value["weight"] as? String {
+    case "medium": .medium
+    case "semibold": .semibold
+    case "bold": .bold
+    default: .regular
+    }
+    let configuration = NSImage.SymbolConfiguration(pointSize: size, weight: weight).applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+    guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil), let image = base.withSymbolConfiguration(configuration) else {
+        return ["missing": true]
+    }
+    let points = image.size
+    let (w, h) = (Int((points.width * scale).rounded(.up)), Int((points.height * scale).rounded(.up)))
+    guard w > 0, h > 0, let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                                     hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+        return ["missing": true]
+    }
+    rep.size = points
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    image.draw(in: NSRect(origin: .zero, size: points), from: .zero, operation: .sourceOver, fraction: 1)
+    NSGraphicsContext.restoreGraphicsState()
+    guard let data = rep.representation(using: .png, properties: [:]) else { return ["missing": true] }
+    return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": points.width, "height": points.height]
+}
+
+/// What the app holds outside every window (window id -1): the menu bar item, which lives while
+/// the app runs, with or without a window (WheelApp.swift's MenuBarExtra), and the Dock tile's badge.
+@MainActor final class AppNative: NSObject {
+    let emitter: Emit
+    let hidden: Bool
+    var item: NSStatusItem?
+    var badge = 0
+    var update = false
+    var label = ""
+    var dock: String?
+    var clicks = 0
+
+    init(hidden: Bool, emit: @escaping Emit) {
+        self.hidden = hidden
+        self.emitter = emit
+        super.init()
+    }
+
+    func emit(_ value: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return }
+        string.withCString { emitter(-1, $0) }
+    }
+
+    /// Make the item, or redraw it: its image counts `badge` spaces no window shows (MenuBarIcon),
+    /// `label` is what VoiceOver reads, and `dock` the Dock tile's badge (none at zero). In the
+    /// check's test mode the item exists but is never in the menu bar, and the Dock tile is left alone.
+    func statusItem(_ value: [String: Any]) -> [String: Any] {
+        let count = value["badge"] as? Int ?? 0
+        let waiting = value["update"] as? Bool ?? false
+        if item == nil {
+            let made = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            // The check's item saves its hidden state under its own name, never the app's.
+            if hidden { made.autosaveName = "wheel-gpui-check" }
+            made.isVisible = !hidden
+            made.button?.target = self
+            made.button?.action = #selector(pressed(_:))
+            item = made
+            badge = -1
+        }
+        if count != badge || waiting != update {
+            badge = count
+            update = waiting
+            item?.button?.image = MenuBarIcon.image(background: count, update: waiting)
+        }
+        label = value["label"] as? String ?? "Wheel"
+        item?.button?.setAccessibilityLabel(label)
+        let dockLabel = value["dock"] as? String
+        if !hidden, dock != dockLabel { NSApp.dockTile.badgeLabel = dockLabel }
+        dock = dockLabel
+        return state()
+    }
+
+    /// Where the item's button is on the main screen, in points from that screen's top left: the
+    /// popover opens under it.
+    func frame() -> [Double] {
+        guard let window = item?.button?.window, let screen = NSScreen.screens.first else { return [] }
+        let f = window.frame, s = screen.frame
+        return [f.minX - s.minX, s.maxY - f.maxY, f.width, f.height]
+    }
+
+    @objc func pressed(_ sender: Any?) {
+        clicks += 1
+        emit(["event": "status_item", "button": "left", "frame": frame()])
+    }
+
+    func state() -> [String: Any] {
+        let size = item?.button?.image?.size ?? .zero
+        return ["status_item": item != nil, "in_menu_bar": item?.isVisible ?? false, "badge": badge, "update": update, "label": label,
+                "dock": dock ?? NSNull(), "image": [size.width, size.height], "template": item?.button?.image?.isTemplate ?? false, "clicks": clicks]
+    }
+
+    func command(_ value: [String: Any]) -> [String: Any] {
+        switch value["op"] as? String {
+        case "status_item": return statusItem(value)
+        // The check presses the item as a click does; a hidden item has no window to click in.
+        case "press_status_item":
+            pressed(nil)
+            return state()
+        case "symbol": return symbolPNG(value, scale: Double(NSScreen.main?.backingScaleFactor ?? 2))
+        case "pointer_on_item":
+            let on = item?.button?.window.map { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? false
+            return ["pointer_on_item": on && item?.isVisible == true]
+        default: return state()
+        }
+    }
+}
+@MainActor private var app: AppNative?
+
 /// One Native per GPUI window, by the id `attach` hands back.
 @MainActor private var natives: [Int32: Native] = [:]
 @MainActor private var nextWindow: Int32 = 1
@@ -821,6 +914,11 @@ public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: 
     natives[id] = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), window: id, hidden: hidden != 0, emit: emit)
     return id
 }
+/// The app's own half, window id -1: the menu bar item. Its frames go to `emit` with window -1.
+@_cdecl("wheel_native_app_attach") @MainActor
+public func appAttach(_ hidden: Int32, _ emit: @escaping Emit) {
+    if app == nil { app = AppNative(hidden: hidden != 0, emit: emit) }
+}
 @_cdecl("wheel_native_command") @MainActor
 public func command(_ pointer: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar> {
     do {
@@ -830,6 +928,8 @@ public func command(_ pointer: UnsafePointer<CChar>) -> UnsafeMutablePointer<CCh
         if value["op"] as? String == "detach" {
             natives.removeValue(forKey: window)?.detach()
             result = ["detached": true]
+        } else if window == -1 {
+            result = app?.command(value) ?? ["detached": true]
         } else {
             // GPUI may render before the bridge attaches to the window.
             result = natives[window]?.command(value) ?? ["detached": true]

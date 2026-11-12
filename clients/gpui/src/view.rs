@@ -8,6 +8,8 @@ mod composer;
 mod conversations;
 mod debug;
 mod little;
+mod menubar;
+pub use menubar::{MenuBar, Popover, menu_bar, reopen, start as start_menu_bar};
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
 mod panes;
 pub use panes::focus_target;
@@ -21,7 +23,7 @@ mod tray;
 mod windows;
 pub use windows::{CloseAnswer, NameEdit, NameTarget};
 pub use commands::{Confirmation, Pending};
-pub use title::{BOTTOM, MenuRow, TitleMenu};
+pub use title::{BOTTOM, MenuRow, Symbols, TitleMenu, symbol};
 pub use debug::Answer as DebugAnswer;
 pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, popped::{Card, CardDrag, GRIP, Layer}, status, transcript::{Kind, ToolRow, Transcript}};
@@ -199,7 +201,7 @@ pub struct Client {
     session_show_req: Option<u64>,
     session_to_show: Option<String>,
     /// SF Symbols the bridge drew, by name, size and colour; None for a name the system lacks.
-    symbols: RefCell<HashMap<(String, u32, u32), Option<(std::sync::Arc<gpui::Image>, f32, f32)>>>,
+    symbols: Symbols,
     /// The layout ops this window sent and wheeld has not answered; a refusal of one is the layout-error notice.
     layout_reqs: HashSet<u64>,
     /// The permission requests waiting, from `status` and `perm_requested`.

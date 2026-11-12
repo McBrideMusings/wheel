@@ -69,6 +69,8 @@ subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-librar
     '-I', str(products), '-I', str(headers), str(client / 'native/Bridge.swift'),
     # The Swift app's own source for how `terminal.*` settings become a Ghostty configuration.
     str(repo / 'apple/Shared/TerminalStyle.swift'),
+    # The Swift app's menu bar image: the mark with the badge of spaces no window shows.
+    str(repo / 'apple/Mac/Sources/MenuBarIcon.swift'),
     *[str(o) for o in sorted(products.glob('*.o'))],
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)

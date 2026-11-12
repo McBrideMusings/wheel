@@ -14,6 +14,23 @@ fn rejects(kind: &str) -> bool {
     kind.starts_with("reject")
 }
 
+/// Follow wheeld's account of the waiting requests: a `status` lists them all, a request adds one
+/// it does not hold, a resolution drops one. True when `message` was one of those.
+pub fn follow(perms: &mut Vec<PermInfo>, message: &wheel_proto::ServerMsg) -> bool {
+    use wheel_proto::ServerMsg;
+    match message {
+        ServerMsg::Status { perms: all, .. } => *perms = all.clone(),
+        ServerMsg::PermRequested { perm } => {
+            if !perms.iter().any(|p| p.id == perm.id) {
+                perms.push(perm.clone());
+            }
+        }
+        ServerMsg::PermResolved { id, .. } => perms.retain(|p| &p.id != id),
+        _ => return false,
+    }
+    true
+}
+
 /// The oldest waiting request `agent` raised, with its 1-based place among every waiting request.
 pub fn waiting<'a>(perms: &'a [PermInfo], agent: &str) -> Option<(usize, &'a PermInfo)> {
     perms.iter().enumerate().find(|(_, p)| p.agent == agent).map(|(i, p)| (i + 1, p))

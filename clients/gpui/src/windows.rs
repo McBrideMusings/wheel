@@ -37,13 +37,32 @@ pub struct Registry {
     pub focused: Option<String>,
     /// The little windows, in the order they opened.
     pub littles: Vec<Little>,
+    /// Told after every change to the windows: the menu bar item counts what no window shows.
+    pub(crate) watchers: Vec<futures::channel::mpsc::UnboundedSender<()>>,
 }
 impl Registry {
+    /// A channel that hears once after each change to the list, until its receiver drops.
+    pub fn watch(&mut self) -> futures::channel::mpsc::UnboundedReceiver<()> {
+        let (send, receive) = futures::channel::mpsc::unbounded();
+        self.watchers.push(send);
+        receive
+    }
+    fn changed(&mut self) {
+        self.watchers.retain(|w| w.unbounded_send(()).is_ok());
+    }
     pub fn put_little(&mut self, little: Little) {
+        if self.littles.iter().any(|l| *l == little) {
+            return;
+        }
         match self.littles.iter_mut().find(|l| l.id == little.id) {
             Some(held) => *held = little,
             None => self.littles.push(little),
         }
+        self.changed();
+    }
+    /// Whether a main window shows `session`.
+    pub fn shows_session(&self, session: &str) -> bool {
+        self.windows.iter().any(|w| w.session.as_deref() == Some(session))
     }
     /// The little window showing `space`, if one is open.
     pub fn little_showing(&self, space: &str) -> Option<&Little> {
@@ -57,10 +76,14 @@ impl Registry {
         self.focused().filter(holds).or_else(|| self.windows.iter().find(holds))
     }
     pub fn put(&mut self, record: Record) {
+        if self.windows.iter().any(|w| *w == record) {
+            return;
+        }
         match self.windows.iter_mut().find(|w| w.id == record.id) {
             Some(held) => *held = record,
             None => self.windows.push(record),
         }
+        self.changed();
     }
     pub fn remove(&mut self, id: &str) {
         self.windows.retain(|w| w.id != id);
@@ -68,6 +91,7 @@ impl Registry {
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
         }
+        self.changed();
     }
     pub fn get(&self, id: &str) -> Option<&Record> {
         self.windows.iter().find(|w| w.id == id)
@@ -140,9 +164,8 @@ fn spaces_of<'a>(session: Option<&str>, sessions: &[Session], spaces: &'a [Space
 pub fn ls(registry: &Registry, sessions: &[Session], spaces: &[Space]) -> Value {
     let named = |s: &&Space| json!({"id": s.id, "name": s.name});
     let focused = registry.focused().map(|w| w.id.clone());
-    let shown: Vec<&str> = registry.windows.iter().filter_map(|w| w.session.as_deref()).collect();
     // A space in a little window is not in the background (WindowLayout.backgroundSpaces).
-    let background: Vec<Value> = sessions.iter().filter(|s| !shown.contains(&s.id.as_str()))
+    let background: Vec<Value> = sessions.iter().filter(|s| !registry.shows_session(&s.id))
         .flat_map(|s| spaces_of(Some(&s.id), sessions, spaces)).filter(|s| registry.little_showing(&s.id).is_none()).map(|s| named(&s)).collect();
     let little = |l: &Little| {
         let space = match spaces.iter().find(|s| s.id == l.space) { Some(s) => json!({"id": s.id, "name": s.name}), None => json!({"id": l.space}) };

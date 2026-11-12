@@ -99,12 +99,9 @@ impl Client {
                 }
                 None => self.remove_toast(&format!("chat:{agent}")),
             },
-            ServerMsg::PermRequested { perm } => {
-                if !self.perms.iter().any(|p| p.id == perm.id) {
-                    self.perms.push(perm.clone());
-                }
+            ServerMsg::PermRequested { .. } | ServerMsg::PermResolved { .. } => {
+                crate::perms::follow(&mut self.perms, message);
             }
-            ServerMsg::PermResolved { id, .. } => self.perms.retain(|p| &p.id != id),
             ServerMsg::DeviceConnected { name, address, paired, .. } => {
                 self.pairing.device_connected(now_ms(), name, address, *paired);
                 self.log(format!("device {name} connected from {address}, paired={paired}"));

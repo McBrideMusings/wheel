@@ -35,6 +35,7 @@ unsafe extern "C" fn on_emit(window: i32, json: *const c_char) {
 pub struct Bridge {
     _library: libloading::Library,
     attach: unsafe extern "C" fn(*mut c_void, i32, Emit) -> i32,
+    app_attach: unsafe extern "C" fn(i32, Emit),
     command: unsafe extern "C" fn(*const c_char) -> *mut c_char,
     free: unsafe extern "C" fn(*mut c_void),
 }
@@ -50,6 +51,7 @@ impl Bridge {
             let library = libloading::Library::new(&path).with_context(|| format!("loading {}", path.display()))?;
             Ok(Rc::new(Self {
                 attach: *library.get(b"wheel_native_attach")?,
+                app_attach: *library.get(b"wheel_native_app_attach")?,
                 command: *library.get(b"wheel_native_command")?,
                 free: *library.get(b"wheel_native_free")?,
                 _library: library,
@@ -57,6 +59,9 @@ impl Bridge {
         }
     }
 }
+
+/// The bridge's window id for what the app holds outside every window: the menu bar item.
+pub const APP: i32 = -1;
 
 /// The native views of one window. Every command names the window the bridge assigned at
 /// `attach_to`; before that, commands answer `detached`.
@@ -74,6 +79,13 @@ impl Native {
         let window = unsafe { (self.bridge.attach)(ns_view, i32::from(hidden), on_emit) };
         self.window.set(window);
         EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(window, frames);
+    }
+    /// The app's own half of the bridge (`APP`): the menu bar item and the Dock tile, which live
+    /// while the app runs, with or without a window. Its frames (the item's clicks) go to `frames`.
+    pub fn app(bridge: &Rc<Bridge>, hidden: bool, frames: fmpsc::UnboundedSender<String>) -> Rc<Self> {
+        unsafe { (bridge.app_attach)(i32::from(hidden), on_emit) };
+        EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(APP, frames);
+        Rc::new(Self { bridge: bridge.clone(), window: Cell::new(APP) })
     }
     /// The window is closing: the bridge drops its views, socket and key monitor.
     pub fn detach(&self) {

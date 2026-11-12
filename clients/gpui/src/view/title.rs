@@ -57,6 +57,32 @@ pub fn tint(name: Option<&str>) -> Option<u32> {
     })
 }
 
+/// The SF Symbols the bridge drew, by name, size (tenths of a point) and colour.
+pub type Symbols = RefCell<HashMap<(String, u32, u32), Option<(Arc<Image>, f32, f32)>>>;
+
+/// An SF Symbol as an image `native` drew, cached in `cache`; None for a name the system lacks.
+/// Every window and the menu bar's popover draw their symbols through this.
+pub fn symbol(native: &Native, cache: &Symbols, name: &str, size: f32, color: u32) -> Option<gpui::AnyElement> {
+    let key = (name.to_owned(), (size * 10.) as u32, color);
+    let mut cache = cache.borrow_mut();
+    if !cache.contains_key(&key) {
+        let channel = |shift: u32| f64::from((color >> shift) & 255) / 255.;
+        let answer = native.call(serde_json::json!({"op": "symbol", "name": name, "size": size, "color": [channel(16), channel(8), channel(0), 1.0]}));
+        match (answer["png_hex"].as_str(), answer["width"].as_f64(), answer["height"].as_f64()) {
+            (Some(hex), Some(w), Some(h)) => {
+                let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
+                cache.insert(key.clone(), Some((Arc::new(Image::from_bytes(ImageFormat::Png, bytes)), w as f32, h as f32)));
+            }
+            // A name the system lacks stays missing; a bridge not attached yet (the first frame) is asked again next frame.
+            _ if answer["missing"] == true => {
+                cache.insert(key.clone(), None);
+            }
+            _ => return None,
+        }
+    }
+    cache.get(&key).and_then(|e| e.as_ref()).map(|(image, w, h)| img(ImageSource::Image(image.clone())).w(px(*w)).h(px(*h)).flex_none().into_any_element())
+}
+
 impl Client {
     // MARK: The title row
 
@@ -293,24 +319,7 @@ impl Client {
     /// An SF Symbol as an image the bridge drew, cached by name, size and colour; None for a
     /// name the system lacks.
     pub(super) fn symbol(&self, name: &str, size: f32, color: u32) -> Option<gpui::AnyElement> {
-        let key = (name.to_owned(), (size * 10.) as u32, color);
-        let mut cache = self.symbols.borrow_mut();
-        if !cache.contains_key(&key) {
-            let channel = |shift: u32| f64::from((color >> shift) & 255) / 255.;
-            let answer = self.native.call(serde_json::json!({"op": "symbol", "name": name, "size": size, "color": [channel(16), channel(8), channel(0), 1.0]}));
-            match (answer["png_hex"].as_str(), answer["width"].as_f64(), answer["height"].as_f64()) {
-                (Some(hex), Some(w), Some(h)) => {
-                    let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
-                    cache.insert(key.clone(), Some((Arc::new(Image::from_bytes(ImageFormat::Png, bytes)), w as f32, h as f32)));
-                }
-                // A name the system lacks stays missing; a bridge not attached yet (the first frame) is asked again next frame.
-                _ if answer["missing"] == true => {
-                    cache.insert(key.clone(), None);
-                }
-                _ => return None,
-            }
-        }
-        cache.get(&key).and_then(|e| e.as_ref()).map(|(image, w, h)| img(ImageSource::Image(image.clone())).w(px(*w)).h(px(*h)).flex_none().into_any_element())
+        symbol(&self.native, &self.symbols, name, size, color)
     }
 
     /// The row: its buttons, the title or the tabs, and the open menu.

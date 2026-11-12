@@ -14,6 +14,7 @@ pub mod header;
 pub mod keymap;
 pub mod layout;
 pub mod markdown;
+pub mod menubar;
 pub mod native;
 pub mod pairing;
 pub mod perms;
@@ -348,20 +349,10 @@ fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &W
         WindowCommand::New { name, space } => {
             let held = space.as_deref().map(|s| windows::space_id(s, &spaces)).transpose()?;
             // The session holding the space, else the one the focused window shows.
-            let session = match &held {
-                Some(space) => sessions.iter().find(|s| s.spaces.contains(space)).map(|s| s.id.clone()),
-                None => windows::with(|r| r.focused().and_then(|w| w.session.clone())),
-            };
-            // It opens with the focused window's sidebar (AppModel.newWindow).
-            let sidebar = windows::with(|r| r.focused().map(|w| w.sidebar)).unwrap_or(true);
+            let session = held.as_ref().and_then(|space| sessions.iter().find(|s| s.spaces.contains(space)).map(|s| s.id.clone()));
             let (bridge, endpoint, hidden) = via.read(cx).map(|c| c.opener()).map_err(gone)?;
-            let handle = open_window(cx, &bridge, endpoint, session, held, hidden).map_err(|e| format!("{e:#}"))?;
+            let handle = new_window(cx, &bridge, endpoint, hidden, session, held, name.clone()).map_err(|e| format!("{e:#}"))?;
             let new_id = handle.read(cx).map(|c| c.window_id().to_owned()).map_err(gone)?;
-            let _ = handle.update(cx, |client, _, cx| {
-                client.set_sidebar(sidebar);
-                client.set_window_name(name.clone());
-                cx.notify();
-            });
             Ok(serde_json::json!({"window": new_id}))
         }
         WindowCommand::Rename { window, name } => {
@@ -409,6 +400,21 @@ fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &W
             }
         }
     }
+}
+
+/// New Window, `wheel window new` and the Dock icon (AppModel.newWindow): a main window on
+/// `session`, else the focused window's, showing `space` when one is named, with the focused
+/// window's sidebar and `name`, brought front.
+pub fn new_window(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, hidden: bool, session: Option<String>, space: Option<String>, name: Option<String>) -> Result<WindowHandle<view::Client>> {
+    let (focused, sidebar) = windows::with(|r| (r.focused().and_then(|w| w.session.clone()), r.focused().map(|w| w.sidebar).unwrap_or(true)));
+    let handle = open_window(cx, bridge, endpoint, session.or(focused), space, hidden)?;
+    let _ = handle.update(cx, |client, _, cx| {
+        client.set_sidebar(sidebar);
+        client.set_window_name(name);
+        cx.notify();
+    });
+    bring_front(cx, handle);
+    Ok(handle)
 }
 
 /// Bring a window front and make it key, unless the app runs hidden for a check.

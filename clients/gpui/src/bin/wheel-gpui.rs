@@ -40,18 +40,17 @@ fn main() -> Result<()> {
     if let Some(debug) = &debug {
         eprintln!("wheel-gpui: debug state at http://127.0.0.1:{}/state", debug.port);
     }
-    gpui::Application::with_platform(gpui_platform::current_platform(hidden)).run(move |cx| {
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
+    // Closing the last window leaves the app running with its menu bar item (GPUI's default on
+    // macOS quits only when asked); the Dock icon then opens a window.
+    let app = gpui::Application::with_platform(gpui_platform::current_platform(hidden));
+    app.on_reopen(wheel_gpui::view::reopen);
+    app.run(move |cx| {
         let result: Result<()> = (|| {
             if let Some(crash) = wheel_gpui::crash_guard::start(&wheel_gpui::crash_guard::default_marks_file(), &wheel_gpui::crash_guard::default_reports()) {
                 eprintln!("wheel-gpui: the last run quit while drawing {:?} / {:?}; holding it out", crash.space, crash.pane);
             }
             let bridge = Bridge::load()?;
+            wheel_gpui::view::start_menu_bar(cx, &bridge, endpoint.clone(), hidden);
             let window = open_window(cx, &bridge, endpoint, None, space, hidden)?;
             if let Some(debug) = debug {
                 wheel_gpui::serve_debug(cx, window, debug);
