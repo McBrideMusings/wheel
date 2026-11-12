@@ -114,8 +114,8 @@ impl Client {
             dividers.clear();
         }
     }
-    /// Once per frame: keep drawing while the grid moves, holding the terminals' resizes, and end
-    /// the motion when its time is up. Returns whether it still runs.
+    /// Once per frame: keep drawing while the grid moves, and end the motion when its time is up.
+    /// Returns whether it still runs.
     pub(super) fn tick_motion(&mut self, window: &mut Window) -> bool {
         let now = Instant::now();
         // A motion belongs to its space: showing another ends it.
@@ -124,10 +124,6 @@ impl Client {
         }
         match &self.motion {
             Some(m) if !m.done(now) => {
-                if !self.resizes_held {
-                    self.native.hold_resizes(true);
-                    self.resizes_held = true;
-                }
                 window.request_animation_frame();
                 true
             }
@@ -141,9 +137,22 @@ impl Client {
             None => false,
         }
     }
-    /// After the views are placed at the motion's end: every terminal sends the size it ended at.
+    /// Whether a terminal's size is a step of a move whose end settles it (AppModel.settle): the
+    /// grid animates or a divider is under the pointer. A window edge being dragged the bridge
+    /// holds on its own, as AppKit posts the live resize.
+    pub(super) fn resizes_wanted(&self) -> bool {
+        self.motion.is_some() || self.drag.is_some()
+    }
+    /// Before the views are placed: a move that began holds the terminals' resizes.
+    pub(super) fn hold_resizes(&mut self) {
+        if self.resizes_wanted() && !self.resizes_held {
+            self.native.hold_resizes(true);
+            self.resizes_held = true;
+        }
+    }
+    /// After the views are placed where every move ends: each terminal sends the size it ended at.
     pub(super) fn release_resizes(&mut self) {
-        if self.motion.is_none() && self.resizes_held {
+        if !self.resizes_wanted() && self.resizes_held {
             self.native.hold_resizes(false);
             self.resizes_held = false;
         }
@@ -182,6 +191,7 @@ impl Client {
             "progress": self.motion.as_ref().map(|m| m.progress(now)),
             "length_ms": motion::duration().as_millis() as u64,
             "resizes_held": self.resizes_held,
+            "dragging_divider": self.drag.is_some(),
             "zoomed": self.zoomed_here(),
             "reduce_motion": self.reduce_motion,
         })

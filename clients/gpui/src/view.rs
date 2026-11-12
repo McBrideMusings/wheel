@@ -59,7 +59,7 @@ pub struct Client {
     overrides: HashMap<String, f64>,
     /// The pane each space shows alone (AppModel.zoomedPanes), the grid's running animation, where
     /// the shown grid's panes were drawn last (where the next animation starts), and whether the
-    /// bridge holds the terminals' resizes while it runs.
+    /// bridge holds the terminals' resizes (`Client::resizes_wanted`).
     zoomed: HashMap<String, String>,
     motion: Option<crate::motion::Motion>,
     grid_drawn: HashMap<String, Rect>,
@@ -1945,6 +1945,7 @@ impl Render for Client {
         let leaves: Vec<Placed> = layers.iter().flat_map(|l| l.leaves.iter().cloned()).collect();
         self.grid_drawn = layers.first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default();
         let moving = self.tick_motion(window);
+        self.hold_resizes();
         self.sync_native(&layers);
         self.release_resizes();
         self.sync_agents(&leaves);

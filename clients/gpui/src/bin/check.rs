@@ -388,15 +388,80 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     })?;
     let start = [f64::from(bar.x + bar.w / 2.), f64::from(bar.y + bar.h / 2.)];
     let moved = [start[0] + 140., start[1]];
+    // While the divider is under the pointer, no terminal sends a size: every step is drawn and
+    // reported, and only the grid each terminal ends at goes to wheeld once the drag lets go.
+    let sent_of = |s: &Value| terms.iter().map(|t| s["panes"][t.as_str()]["sent_grids"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>();
+    let held_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["grid_motion"].clone());
+    let before_drag = native.status();
+    let sent_before_drag = sent_of(&before_drag);
     native.call(json!({"op":"post_mouse","kind":"down","point":start}));
-    native.call(json!({"op":"post_mouse","kind":"drag","point":[(start[0] + moved[0]) / 2., start[1]]}));
-    native.call(json!({"op":"post_mouse","kind":"drag","point":moved}));
-    pump(&mut connection, 300, &mut layouts, window, cx).await?;
-    draw(window, None, cx)?;
+    let mut drag_steps = vec![];
+    for step in 1..=5 {
+        let at = [start[0] + 140. * f64::from(step) / 5., start[1]];
+        native.call(json!({"op":"post_mouse","kind":"drag","point":at}));
+        pump(&mut connection, 50, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        pump(&mut connection, 250, &mut layouts, window, cx).await?;
+        let mid = native.status();
+        let motion = held_now(cx)?;
+        ensure!(motion["resizes_held"] == true && motion["dragging_divider"] == true && sent_of(&mid) == sent_before_drag,
+            "divider drag step {step}: held {motion}, sent {:?} before {sent_before_drag:?}", sent_of(&mid));
+        drag_steps.push(json!({"at": at, "grids": terms.iter().map(|t| last_grid(&mid, t)).collect::<Vec<_>>()}));
+    }
     native.call(json!({"op":"post_mouse","kind":"up","point":moved}));
     pump(&mut connection, 1500, &mut layouts, window, cx).await?;
     draw(window, None, cx)?;
     pump(&mut connection, 800, &mut layouts, window, cx).await?;
+    // Each terminal the drag resized sent once, the grid it reported last; the others sent nothing.
+    async fn settled_once(native: &Native, terms: &[&String], before: &[Vec<Value>], before_status: &Value, what: &str) -> Result<Value> {
+        let after = native.status();
+        let mut resized = 0;
+        let mut per = serde_json::Map::new();
+        for (i, t) in terms.iter().enumerate() {
+            let sent = after["panes"][t.as_str()]["sent_grids"].as_array().cloned().unwrap_or_default();
+            let new = &sent[before[i].len().min(sent.len())..];
+            let now = last_grid(&after, t);
+            if now != last_grid(before_status, t) {
+                ensure!(new.len() == 1 && new[0] == now, "{what}: terminal {t} sent {new:?} after the move, wanted only its last grid {now}");
+                resized += 1;
+            } else {
+                ensure!(new.is_empty(), "{what}: terminal {t} kept its grid {now} and still sent {new:?}");
+            }
+            per.insert(t.to_string(), json!({"sent_new": new, "last_grid": now}));
+        }
+        ensure!(resized > 0, "{what}: no terminal changed size: {per:?}");
+        Ok(Value::Object(per))
+    }
+    let drag_settled = settled_once(&native, &terms, &sent_before_drag, &before_drag, "the divider drag").await?;
+    ensure!(held_now(cx)?["resizes_held"] == false, "the divider drag left the resizes held");
+    // A window edge dragged, smaller and back: the bridge holds from AppKit's live resize
+    // notifications, posted here for the window, while the client's own hold stays off.
+    let window_size = window.update(cx, |_, w, _| w.viewport_size())?;
+    let mut window_resize = vec![];
+    for (what, from, to) in [("the window shrinking", 0., -180.), ("the window growing back", -180., 0.)] {
+        let before = native.status();
+        let sent_before = sent_of(&before);
+        let begun = native.call(json!({"op":"live_resize","on":true}));
+        ensure!(begun["held"] == true, "{what}: the posted live resize did not hold the resizes: {begun}");
+        for step in 1..=3 {
+            let w: f32 = from + (to - from) * step as f32 / 3.;
+            window.update(cx, |_, win, _| win.resize(gpui::size(window_size.width + gpui::px(w), window_size.height)))?;
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            pump(&mut connection, 250, &mut layouts, window, cx).await?;
+            let mid = native.status();
+            ensure!(mid["live_resize"] == true && mid["resizes_held"] == false && sent_of(&mid) == sent_before,
+                "{what} step {step}: live_resize {} resizes_held {}, sent {:?} before {sent_before:?}", mid["live_resize"], mid["resizes_held"], sent_of(&mid));
+        }
+        let ended = native.call(json!({"op":"live_resize","on":false}));
+        ensure!(ended["held"] == false, "{what}: the live resize's end left the resizes held: {ended}");
+        draw(window, None, cx)?;
+        pump(&mut connection, 800, &mut layouts, window, cx).await?;
+        let settled = settled_once(&native, &terms, &sent_before, &before, what).await?;
+        ensure!(native.status()["live_resize"] == false, "{what} left the window resizing");
+        window_resize.push(json!({"what": what, "width": window.update(cx, |_, w, _| f32::from(w.viewport_size().width))?, "terminals": settled}));
+    }
+    ensure!(window.update(cx, |_, w, _| w.viewport_size())? == window_size, "the window did not come back to its size");
     let after_drag = snapshot(cx)?;
     let after_status = native.status();
     draw(window, Some(output.join("client-dragged.png")), cx)?;
@@ -3745,7 +3810,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "keyboard": {"clicked": target, "click": click, "focused": focused, "typed_viewport": viewport(&typed, target), "leaked_to_first": leaked},
         "before": per_pane(&before),
         "drag": {"split": split, "from": start, "to": moved, "parent": [parent.x, parent.y, parent.w, parent.h],
-            "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved},
+            "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved, "steps": drag_steps, "settled": drag_settled, "window_resize": window_resize},
         "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
         "sessions_windows": sessions_windows,
         "agent": agent_report,

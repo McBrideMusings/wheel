@@ -193,6 +193,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var monitor: Any?
     var pressMonitor: Any?
     var motionObserver: Any?
+    var liveResizeObservers: [Any] = []
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
@@ -226,6 +227,18 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             MainActor.assumeIsolated { self?.emitReduceMotion() }
         }
         DispatchQueue.main.async { [weak self] in self?.emitReduceMotion() }
+        // A window edge under the pointer holds the terminals' resizes until it is let go, as
+        // AppModel counts `windowResizes` from these notifications. With no queue the block runs
+        // as AppKit posts, before the resize's first frame is laid out.
+        for (name, on) in [(NSWindow.willStartLiveResizeNotification, true), (NSWindow.didEndLiveResizeNotification, false)] {
+            liveResizeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let window = self.root.window, note.object as? NSWindow === window else { return }
+                    self.liveResizing = on
+                    if !self.holding { self.sendHeld() }
+                }
+            })
+        }
     }
     func emitReduceMotion() { emit(["event": "reduce_motion", "on": reduceMotion()]) }
     /// The pane whose native view `view` is or lies inside.
@@ -266,6 +279,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
         if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
+        liveResizeObservers.forEach { NotificationCenter.default.removeObserver($0) }
         motionObserver = nil
         monitor = nil
         pressMonitor = nil
@@ -535,16 +549,19 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             host.web?.isHidden = host.pageShown
         }
     }
-    /// While the grid animates (`hold_resizes`), a terminal's resizes wait: only the grid it ends
-    /// at goes to wheeld, as AppModel.settle sends a terminal's size when the layout animation ends.
+    /// While the GPUI view moves the panes (`hold_resizes`: the grid animates or a divider is
+    /// dragged) or a window edge is dragged, a terminal's resizes wait: only the grid it ends at
+    /// goes to wheeld, as AppModel.settle sends a terminal's size when the move ends.
     var resizesHeld = false
+    var liveResizing = false
+    var holding: Bool { resizesHeld || liveResizing }
     /// A report can lag its view: the surface reflows a display frame after the view moved, so a
     /// report whose pixels are not the view's is a grid of an earlier frame and waits for the one
     /// that follows, sent anyway after `lagLimit` with no newer report (AppModel.settle's rules).
     static let lagLimit: Duration = .milliseconds(100)
     static let paddingPoints: CGFloat = 24
     func resized(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
-        if resizesHeld { host.heldReport = vp; return }
+        if holding { host.heldReport = vp; return }
         host.reports += 1
         guard fitsView(host, vp) else {
             host.lagged += 1
@@ -560,7 +577,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             try? await Task.sleep(for: Self.lagLimit)
             guard let self, let host, host.reports == report else { return }
             // A motion that began meanwhile holds it, so its end sends it when nothing newer comes.
-            if self.resizesHeld { host.heldReport = host.heldReport ?? vp } else { self.sendSize(host, vp) }
+            if self.holding { host.heldReport = host.heldReport ?? vp } else { self.sendSize(host, vp) }
         }
     }
     func sendSize(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
@@ -583,7 +600,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
     func holdResizes(_ value: [String: Any]) {
         resizesHeld = value["held"] as? Bool == true
-        guard !resizesHeld else { return }
+        if !holding { sendHeld() }
+    }
+    /// The move ended: each terminal's held report goes.
+    func sendHeld() {
         // The report held last is of a frame before the motion's end, a cell short of its view
         // or more: the surface reports the grid of its end frame a display frame later, and only
         // when that grid differs. So it waits for that report, and goes when none comes.
@@ -687,6 +707,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             pageClient = nil
         case "place": place(value)
         case "hold_resizes": holdResizes(value)
+        case "live_resize":
+            // The check's stand-in for a person dragging the window's edge: AppKit's own start or
+            // end notification, posted for this window.
+            if let window = root.window {
+                NotificationCenter.default.post(name: value["on"] as? Bool == true ? NSWindow.willStartLiveResizeNotification : NSWindow.didEndLiveResizeNotification, object: window)
+            }
+            return ["held": holding]
         case "reduce_motion":
             // With `set`, the check stands in for the system setting (null hands it back), and
             // every window hears the new value.
@@ -850,6 +877,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func status() -> [String: Any] {
         var out: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "errors": errors,
             "snapshots_pending": snapshotsPending,
+            "resizes_held": resizesHeld, "live_resize": liveResizing,
             "root_focused": root.window?.firstResponder === root, "held_before_key": heldBeforeKey ?? "",
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
             "key_window": root.window?.isKeyWindow ?? false, "visible": root.window?.isVisible ?? false,
