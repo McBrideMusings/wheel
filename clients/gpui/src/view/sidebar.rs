@@ -289,7 +289,7 @@ impl Client {
     // MARK: The menu
 
     pub fn space_menu_items(&self, space: &str) -> Vec<MenuItem> {
-        let home = self.sessions.iter().find(|s| s.spaces.iter().any(|id| id == space));
+        let home = crate::windows::session_holding(&self.sessions, space);
         let sessions: Vec<(String, String)> = self.sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
         sidebar::menu(space, home.map(|s| s.id.as_str()), &sessions, home.map(|s| s.spaces.as_slice()).unwrap_or(&[]), self.little_showing(space).is_some())
     }
@@ -325,7 +325,7 @@ impl Client {
             return;
         }
         self.log(format!("space menu {space}: {id}"));
-        let home = self.sessions.iter().find(|s| s.spaces.iter().any(|i| i == space)).cloned();
+        let home = crate::windows::session_holding(&self.sessions, space).cloned();
         let space_id = space.to_owned();
         match id {
             "new-session" => {

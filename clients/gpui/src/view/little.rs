@@ -52,7 +52,7 @@ impl Client {
             return false;
         }
         let Some(space) = self.space_id.clone() else { return false };
-        match self.sessions.iter().find(|s| s.spaces.contains(&space)) {
+        match crate::windows::session_holding(&self.sessions, &space) {
             Some(holder) => self.session_id = Some(holder.id.clone()),
             None if !self.sessions.is_empty() => {
                 self.log(format!("little window {}: space {space} is gone; closing", self.window_id));
@@ -91,7 +91,7 @@ impl Client {
             }
             return Some(open);
         }
-        let Some(session) = self.sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.clone()) else {
+        let Some(session) = crate::windows::session_holding(&self.sessions, space).map(|s| s.id.clone()) else {
             self.log(format!("little window for {space}: the layout places it nowhere"));
             return None;
         };

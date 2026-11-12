@@ -71,7 +71,7 @@ impl Registry {
     /// The main window holding `space`: the focused one when its session holds it, else the
     /// first whose session does (WindowLayout.window(holding:)).
     pub fn window_holding(&self, space: &str, sessions: &[Session]) -> Option<&Record> {
-        let home = sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.as_str())?;
+        let home = session_holding(sessions, space).map(|s| s.id.as_str())?;
         let holds = |w: &&Record| w.session.as_deref() == Some(home);
         self.focused().filter(holds).or_else(|| self.windows.iter().find(holds))
     }
@@ -112,6 +112,11 @@ impl Registry {
 thread_local! {
     /// Windows live on the main thread, and so does this list.
     static REGISTRY: RefCell<Registry> = RefCell::default();
+}
+
+/// The session whose spaces hold `space`, if one does.
+pub fn session_holding<'a>(sessions: &'a [Session], space: &str) -> Option<&'a Session> {
+    sessions.iter().find(|s| s.spaces.iter().any(|id| id == space))
 }
 
 /// Run `f` over the app's list of windows.
@@ -292,6 +297,13 @@ mod tests {
         assert!(!registry.close_needs_answer("w3", &sessions));
         let side = window("w4", "n2", "s3");
         assert_eq!(close_summary(&registry, &side, &sessions, &spaces), "The “Side” session holds 1 space with 3 panes.");
+    }
+
+    #[test]
+    fn the_session_holding_a_space_is_found_by_its_spaces() {
+        let (_, sessions, _) = fixture();
+        assert_eq!(session_holding(&sessions, "s3").map(|s| s.id.as_str()), Some("n2"));
+        assert!(session_holding(&sessions, "nowhere").is_none());
     }
 
     #[test]

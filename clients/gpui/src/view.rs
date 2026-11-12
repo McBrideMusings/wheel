@@ -655,7 +655,7 @@ impl Client {
         // The session shown stays unless it is gone; a space shown stays while its session
         // holds it. A session that holds the space asked for (a new window's) is the one shown.
         if !self.sessions.iter().any(|s| Some(&s.id) == self.session_id.as_ref()) {
-            let holder = self.sessions.iter().find(|s| self.space_id.as_ref().is_some_and(|id| s.spaces.contains(id)));
+            let holder = self.space_id.as_deref().and_then(|id| crate::windows::session_holding(&self.sessions, id));
             self.session_id = holder.or(self.sessions.first()).map(|s| s.id.clone());
         }
         self.show_placed();

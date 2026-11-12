@@ -346,7 +346,7 @@ impl Client {
     /// Show `space`, switching to the session holding it when another does.
     pub(super) fn show_space_anywhere(&mut self, space: &str) {
         if !self.session_spaces().iter().any(|s| s.id == space)
-            && let Some(session) = self.sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.clone())
+            && let Some(session) = crate::windows::session_holding(&self.sessions, space).map(|s| s.id.clone())
         {
             self.select_session(&session);
         }

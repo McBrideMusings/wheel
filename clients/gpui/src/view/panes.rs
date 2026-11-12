@@ -50,7 +50,7 @@ const PENDING_FOCUS_MS: u64 = 10_000;
 /// The window that answers a `space_focused` for `space` (AppModel.focus(space:)): the first
 /// window whose session holds it, else the one key last. None when no window is open.
 pub fn focus_target(windows: &crate::windows::Registry, sessions: &[Session], space: &str) -> Option<String> {
-    let home = sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.as_str());
+    let home = crate::windows::session_holding(sessions, space).map(|s| s.id.as_str());
     windows.windows.iter().find(|w| home.is_some() && w.session.as_deref() == home)
         .or_else(|| windows.focused())
         .map(|w| w.id.clone())
@@ -376,7 +376,7 @@ impl Client {
             self.pending_focus = Some((Some(space.to_owned()), pane.map(str::to_owned), super::settings::now_ms()));
             return false;
         }
-        if let Some(session) = self.sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.clone()) {
+        if let Some(session) = crate::windows::session_holding(&self.sessions, space).map(|s| s.id.clone()) {
             self.select_session(&session);
         }
         self.select_space(space);

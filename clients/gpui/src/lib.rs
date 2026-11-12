@@ -295,8 +295,8 @@ pub fn deliver(cx: &mut App, window: WindowHandle<view::Client>, event: daemon::
         }
         // A space whose session no main window shows opens in a little window that belongs to
         // none (AppModel.showRequested), which focuses the pane once its layout lists it.
-        let home = sessions.iter().find(|s| s.spaces.iter().any(|id| id == space)).map(|s| s.id.clone());
-        let background = home.is_some_and(|home| windows::with(|r| !r.windows.iter().any(|w| w.session.as_deref() == Some(home.as_str()))));
+        let home = windows::session_holding(&sessions, space).map(|s| s.id.clone());
+        let background = home.is_some_and(|home| windows::with(|r| !r.shows_session(&home)));
         if windows::with(|r| view::focus_target(r, &sessions, space)).as_deref() == Some(id.as_str()) && background {
             let opened = window.update(cx, |client, _, cx| {
                 client.log(format!("space {space} focused by a request; it runs with no window, so it opens in a little window"));
@@ -351,7 +351,7 @@ fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &W
         WindowCommand::New { name, space } => {
             let held = space.as_deref().map(|s| windows::space_id(s, &spaces)).transpose()?;
             // The session holding the space, else the one the focused window shows.
-            let session = held.as_ref().and_then(|space| sessions.iter().find(|s| s.spaces.contains(space)).map(|s| s.id.clone()));
+            let session = held.as_deref().and_then(|space| windows::session_holding(&sessions, space)).map(|s| s.id.clone());
             let (bridge, endpoint, hidden) = via.read(cx).map(|c| c.opener()).map_err(gone)?;
             let handle = new_window(cx, &bridge, endpoint, hidden, session, held, name.clone()).map_err(|e| format!("{e:#}"))?;
             let new_id = handle.read(cx).map(|c| c.window_id().to_owned()).map_err(gone)?;
