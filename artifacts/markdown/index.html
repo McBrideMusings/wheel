@@ -25,9 +25,12 @@
   code { font: 13px ui-monospace, Menlo, monospace; background: var(--fill); padding: 1px 5px; border-radius: 4px; }
   .table-scroll { overflow-x: auto; max-width: 100%; margin: 0 0 10px; }
   .table-scroll > table { border-collapse: collapse; width: max-content; min-width: 100%; margin: 0; }
-  th, td { padding: 6px 12px; border: 1px solid var(--separator); text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; min-width: 6ch; max-width: 30ch; }
+  th, td { padding: 6px 12px; border: 1px solid var(--separator); text-align: left; vertical-align: top; overflow-wrap: break-word; word-break: normal; min-width: 6ch; max-width: 30ch; }
   th { background: var(--group); font-weight: 600; }
   del { color: var(--secondary); }
+  details { margin: 0 0 10px; }
+  details > :last-child { margin-bottom: 0; }
+  summary { cursor: pointer; font-weight: 600; margin: 0 0 6px; }
   a { color: var(--accent); }
   input[type="checkbox"] { margin: 0 6px 0 0; }
   :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
@@ -67,11 +70,14 @@
   }
 
   // Markdown is drawn by marked (vendored beside this page as marked.umd.js). Raw HTML is shown as text,
-  // a link or image whose target is refused is drawn as its text, and an image opens the lightbox.
+  // except the <details>, <details open> and <summary> tags and their closing tags, which make a
+  // collapsible section; a link or image whose target is refused is drawn as its text, and an image
+  // opens the lightbox.
+  const collapsible = /&lt;(\/?)(details|summary)&gt;|&lt;details open&gt;/g;
   marked.use({
     gfm: true,
     renderer: {
-      html({ text }) { return esc(text); },
+      html({ text }) { return esc(text).replace(collapsible, (tag, close, name) => name ? `<${close}${name}>` : "<details open>"); },
       link({ href, tokens }) {
         const body = this.parser.parseInline(tokens);
         const t = target(href);
