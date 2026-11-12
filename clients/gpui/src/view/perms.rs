@@ -3,7 +3,7 @@
 //! focused pane's empty composer. The model is `crate::perms`.
 use super::*;
 use crate::tooltip::tip;
-use crate::perms::{self, ANSWER_GAP, ANSWER_PAD, Answer, BUTTON, GAP, LINE, MARGIN, PADDING};
+use crate::perms::{self, ANSWER_GAP, ANSWER_PAD, Answer, BUTTON, GAP, LINE, Look, MARGIN, PADDING, ToolLine};
 use serde_json::{Value, json};
 use wheel_proto::PermInfo;
 
@@ -26,7 +26,12 @@ impl Client {
     /// when its agent waits on nothing. The transcript keeps two lines at least.
     pub(super) fn card_height(&self, agent: Option<&str>, body: f32) -> f32 {
         let room = body - LABEL - COMPOSER - FOOTER - 8. - 2. * LINE;
-        agent.and_then(|a| perms::waiting(&self.perms, a)).map_or(0., |(_, perm)| perms::fitted(perm, room))
+        agent.and_then(|a| perms::waiting(&self.perms, a)).map_or(0., |(_, perm)| perms::fitted(perm, self.perm_tool(perm).as_ref(), room))
+    }
+    /// The asking agent's tool line for `perm` (`perms::tool_line`), read from its transcript on
+    /// every frame, so a `tool_update` that changes the row redraws the card.
+    pub(super) fn perm_tool(&self, perm: &PermInfo) -> Option<ToolLine> {
+        perms::tool_line(perm, &self.transcripts.get(&perm.agent)?.rows)
     }
     /// A key in the focused agent pane while its agent waits on a request: Return with an empty
     /// draft allows, Command-Return always allows, Esc denies (Skip, for a question). A key held
@@ -58,12 +63,17 @@ impl Client {
     pub fn perm_card_json(&self, pane: &str) -> Value {
         let keys = self.focus.current.as_deref() == Some(pane);
         match self.perm_for_pane(pane) {
-            Some((position, perm)) => json!({
+            Some((position, perm)) => {
+                let tool = self.perm_tool(perm);
+                json!({
                 "id": perm.id, "title": perm.title, "question": perms::is_question(perm), "position": position, "count": self.perms.len(),
-                "height": perms::height(perm),
+                "tool_call": perm.tool_call,
+                "tool": tool.as_ref().map(|t| json!({"glyph": t.glyph, "action": t.action, "content": t.content.iter().map(|l| l.text.as_str()).collect::<Vec<_>>()})),
+                "height": perms::height(perm, tool.as_ref()),
                 "answers": perms::answers(perm).iter().map(|o| json!({"id": o.id, "name": o.name, "description": o.description})).collect::<Vec<_>>(),
                 "buttons": perms::row(perm).iter().map(|b| json!({"id": b.option.id, "kind": b.option.kind, "name": b.option.name, "prominent": b.prominent, "help": perms::help(&b.option, perm, keys)})).collect::<Vec<_>>(),
-            }),
+                })
+            }
             None => Value::Null,
         }
     }
@@ -76,11 +86,12 @@ fn line(text: &str, color: u32) -> gpui::Div {
 }
 
 /// The card, `height` tall (`Client::card_height`): who asks and which of how many, then why, the
-/// request and a question's answers, scrolling when the pane is too short for them, then the
+/// asking agent's tool line when `tool` has one (its glyph and what it does), the request,
+/// the tool's content, and a question's answers, scrolling when the pane is too short for them, then the
 /// buttons. Every press on a button sends `perm_answer`; each button records its bounds as control
 /// `perm:<option id>`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn perm_card(perm: &PermInfo, position: usize, count: usize, keys: bool, height: f32, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub(super) fn perm_card(perm: &PermInfo, tool: Option<&ToolLine>, position: usize, count: usize, keys: bool, height: f32, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let agent = perm.agent.as_str();
     let button = |option: &wheel_proto::PermOption, prominent: bool, tall: bool, cx: &mut Context<Client>| {
         let (id, choice) = (perm.id.clone(), option.id.clone());
@@ -122,11 +133,27 @@ pub(super) fn perm_card(perm: &PermInfo, position: usize, count: usize, keys: bo
         middle = middle.child(col);
     }
     let question = perms::is_question(perm);
+    if let Some(tool) = tool {
+        middle = middle.child(div().h(px(LINE)).flex_none().flex().items_center().gap_2().child(recorded(agent, "perm-tool", controls))
+            .child(div().w(px(18.)).flex_none().text_color(rgb(0x6f8a7c)).child(tool.glyph))
+            .child(line(tool.action, 0x8fa89b).flex_1().min_w_0()));
+    }
     let mut title = div().flex().flex_col().flex_none();
     for text in perms::title_lines(perm) {
         title = title.child(if question { line(&text, 0xd9e8e1) } else { line(&text, 0xe0b070).font_family("Menlo") });
     }
     middle = middle.child(title);
+    if let Some(tool) = tool.filter(|t| !t.content.is_empty()) {
+        let mut col = div().flex().flex_col().flex_none().font_family("Menlo");
+        for l in &tool.content {
+            col = col.child(match l.look {
+                Look::Plain => line(&l.text, 0x8fa89b),
+                Look::Added => line(&l.text, 0xd9e8e1).bg(rgba(0x3fa06a24)),
+                Look::Removed => line(&l.text, 0xd9e8e1).bg(rgba(0xc0505024)),
+            });
+        }
+        middle = middle.child(col);
+    }
     if question {
         let mut col = div().flex().flex_col().flex_none().gap(px(ANSWER_GAP));
         for option in perms::answers(perm) {

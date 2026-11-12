@@ -3,7 +3,8 @@
 //! and `apple/Mac/Sources/ChatView.swift`): which request, which buttons in which order, which key
 //! answers it, and how tall the card is so the transcript above it shrinks by exactly that much.
 
-use wheel_proto::{PermInfo, PermOption};
+use crate::transcript::{Kind, Row, ToolRow, action};
+use wheel_proto::{PermInfo, PermOption, ToolContent};
 
 /// A question the agent put to the person: its choices are answers to it, not allowances.
 pub fn is_question(perm: &PermInfo) -> bool {
@@ -134,6 +135,67 @@ pub fn title_lines(perm: &PermInfo) -> Vec<String> {
     lines
 }
 
+/// The asking agent's own tool line for a request that names a tool call (ChatView.swift's
+/// `PermissionTool`): the row's glyph, what the kind of call does in words (`action`), and its
+/// content as lines, drawn around the request's title.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolLine {
+    pub glyph: &'static str,
+    pub action: &'static str,
+    pub content: Vec<ContentLine>,
+}
+
+/// One line of a tool call's content as the card draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContentLine {
+    pub text: String,
+    pub look: Look,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// Text the tool returned, or a diff's path.
+    Plain,
+    Added,
+    Removed,
+}
+
+/// The tool line `perm` names in `rows`, its asking agent's transcript: the last tool row whose
+/// call is the request's, as `PermissionTool` takes `chat.rows.last(where:)`. None when the request
+/// names no call, the row has not arrived, or the request is a question, which never draws one;
+/// the card then draws the plain title.
+pub fn tool_line(perm: &PermInfo, rows: &[Row]) -> Option<ToolLine> {
+    let call = perm.tool_call.as_deref().filter(|_| !is_question(perm))?;
+    rows.iter().rev().find_map(|row| match &row.kind {
+        Kind::Tool { id, title, kind, status, content, detail } if id == call => {
+            let info = ToolRow::new(title, kind, status, content, detail.as_deref());
+            Some(ToolLine { glyph: info.glyph, action: action(kind), content: content_lines(content) })
+        }
+        _ => None,
+    })
+}
+
+/// A tool call's content as lines (WheelUI's `ContentItem`): text line by line, a diff as its path
+/// then `- ` and `+ ` lines, content this client cannot show as one line. All of it: the card's
+/// middle scrolls when it is taller than the pane has room for, as the Swift card's does.
+pub fn content_lines(content: &[ToolContent]) -> Vec<ContentLine> {
+    let line = |text: String, look: Look| ContentLine { text, look };
+    let mut out = vec![];
+    for item in content {
+        match item {
+            ToolContent::Text { text } => out.extend(text.lines().map(|t| line(t.to_owned(), Look::Plain))),
+            ToolContent::Diff { path, old_text, new_text } => {
+                out.push(line(if old_text.is_none() { format!("{path} (new file)") } else { path.clone() }, Look::Plain));
+                out.extend(old_text.as_deref().unwrap_or_default().lines().map(|t| line(format!("- {t}"), Look::Removed)));
+                out.extend(new_text.lines().map(|t| line(format!("+ {t}"), Look::Added)));
+            }
+            // `Unknown` keeps no type name, so the line cannot say which one.
+            ToolContent::Unknown => out.push(line("Content this version can't show".into(), Look::Plain)),
+        }
+    }
+    out
+}
+
 /// The card's fixed measures, in points: every line has its own height, so the card's height is
 /// known before it is drawn and the transcript above it gives up exactly that much.
 pub const PADDING: f32 = 10.;
@@ -153,14 +215,21 @@ pub fn answer_height(option: &PermOption) -> f32 {
     2. * ANSWER_PAD + LINE + if option.description.is_some() { LINE } else { 0. }
 }
 
-/// The card's whole height, its margin to the composer included.
-pub fn height(perm: &PermInfo) -> f32 {
+/// The card's whole height, its margin to the composer included. `tool` is the asking agent's
+/// tool line (`tool_line`), which adds its own line above the title and its content below it.
+pub fn height(perm: &PermInfo, tool: Option<&ToolLine>) -> f32 {
     let mut sections = vec![LINE];
     let why = why_lines(perm).len();
     if why > 0 {
         sections.push(why as f32 * LINE);
     }
+    if tool.is_some() {
+        sections.push(LINE);
+    }
     sections.push(title_lines(perm).len() as f32 * LINE);
+    if let Some(tool) = tool.filter(|t| !t.content.is_empty()) {
+        sections.push(tool.content.len() as f32 * LINE);
+    }
     if is_question(perm) {
         let answers = answers(perm);
         sections.push(answers.iter().map(|o| answer_height(o)).sum::<f32>() + ANSWER_GAP * answers.len().saturating_sub(1) as f32);
@@ -174,10 +243,10 @@ pub fn height(perm: &PermInfo) -> f32 {
 /// The card's height in a pane that has `room` for it: its whole height when that fits, else
 /// `room`, but never less than its header and buttons, which stay while the lines between them
 /// scroll.
-pub fn fitted(perm: &PermInfo, room: f32) -> f32 {
+pub fn fitted(perm: &PermInfo, tool: Option<&ToolLine>, room: f32) -> f32 {
     let buttons = if row(perm).is_empty() { 0. } else { GAP + BUTTON };
     let least = 2. * PADDING + LINE + buttons + 2. * BORDER + MARGIN;
-    height(perm).min(room.max(least))
+    height(perm, tool).min(room.max(least))
 }
 
 #[cfg(test)]
@@ -259,16 +328,55 @@ mod tests {
     #[test]
     fn height_counts_every_line() {
         // header, reason, title, buttons: four sections, three gaps.
-        assert_eq!(height(&permission()), 2. * PADDING + LINE + LINE + LINE + BUTTON + 3. * GAP + 2. + MARGIN);
+        assert_eq!(height(&permission(), None), 2. * PADDING + LINE + LINE + LINE + BUTTON + 3. * GAP + 2. + MARGIN);
         // header, title, two answers (one with a description), Skip.
         let answers = (8. + 2. * LINE) + (8. + LINE) + ANSWER_GAP;
-        assert_eq!(height(&question()), 2. * PADDING + LINE + LINE + answers + BUTTON + 3. * GAP + 2. + MARGIN);
+        assert_eq!(height(&question(), None), 2. * PADDING + LINE + LINE + answers + BUTTON + 3. * GAP + 2. + MARGIN);
         let mut long = permission();
         long.title = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         assert_eq!(title_lines(&long).len(), TITLE_LINES);
-        assert_eq!(fitted(&question(), 1000.), height(&question()), "a card that fits keeps its height");
-        assert_eq!(fitted(&question(), 120.), 120.);
-        assert_eq!(fitted(&question(), 10.), 2. * PADDING + LINE + GAP + BUTTON + 2. * BORDER + MARGIN, "the header and buttons always show");
+        assert_eq!(fitted(&question(), None, 1000.), height(&question(), None), "a card that fits keeps its height");
+        assert_eq!(fitted(&question(), None, 120.), 120.);
+        assert_eq!(fitted(&question(), None, 10.), 2. * PADDING + LINE + GAP + BUTTON + 2. * BORDER + MARGIN, "the header and buttons always show");
         assert!(title_lines(&long)[TITLE_LINES - 1].ends_with('…'));
+    }
+
+    fn rows(content: Vec<ToolContent>) -> Vec<Row> {
+        let tool = |id: &str, title: &str, content: Vec<ToolContent>| Row {
+            id: 0, turn: None, open: true,
+            kind: Kind::Tool { id: id.into(), title: title.into(), kind: "execute".into(), status: "pending".into(), content, detail: None },
+        };
+        vec![tool("call-0", "ls", vec![]), tool("call-1", "rm -rf old", vec![]), tool("call-1", "rm -rf build", content)]
+    }
+
+    #[test]
+    fn the_tool_line_is_the_last_row_of_the_requests_call() {
+        let text = ToolContent::Text { text: "one\ntwo\n".into() };
+        let line = tool_line(&permission(), &rows(vec![text])).expect("a tool line");
+        assert_eq!((line.glyph, line.action), ("›_", "Run a command"));
+        assert_eq!(line.content.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["one", "two"]);
+        let mut none = permission();
+        none.tool_call = None;
+        assert_eq!(tool_line(&none, &rows(vec![])), None, "a request naming no call has no tool line");
+        none.tool_call = Some("call-9".into());
+        assert_eq!(tool_line(&none, &rows(vec![])), None, "a call the transcript has not shown yet has none");
+        let mut asked = question();
+        asked.tool_call = Some("call-1".into());
+        assert_eq!(tool_line(&asked, &rows(vec![])), None, "a question draws no tool line");
+        // The tool line adds its own line and one per content line.
+        assert_eq!(height(&permission(), Some(&line)), height(&permission(), None) + 2. * GAP + 3. * LINE);
+        let bare = tool_line(&permission(), &rows(vec![])).unwrap();
+        assert_eq!(height(&permission(), Some(&bare)), height(&permission(), None) + GAP + LINE);
+    }
+
+    #[test]
+    fn content_lines_read_as_the_swift_content_items() {
+        let diff = ToolContent::Diff { path: "a.rs".into(), old_text: Some("x\n".into()), new_text: "y\nz\n".into() };
+        let new = ToolContent::Diff { path: "b.rs".into(), old_text: None, new_text: "w".into() };
+        let lines: Vec<(String, Look)> = content_lines(&[diff, new]).into_iter().map(|l| (l.text, l.look)).collect();
+        assert_eq!(lines, [("a.rs".into(), Look::Plain), ("- x".into(), Look::Removed), ("+ y".into(), Look::Added), ("+ z".into(), Look::Added),
+            ("b.rs (new file)".into(), Look::Plain), ("+ w".into(), Look::Added)]);
+        let long = ToolContent::Text { text: (0..20).map(|i| i.to_string()).collect::<Vec<_>>().join("\n") };
+        assert_eq!(content_lines(&[long]).len(), 20, "every line shows; the card's middle scrolls");
     }
 }

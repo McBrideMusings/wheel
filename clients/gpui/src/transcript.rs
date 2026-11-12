@@ -392,6 +392,21 @@ impl ToolRow {
     }
 }
 
+/// What a request asks to do, in words, from the tool kind (WheelUI's `action`).
+pub fn action(kind: &str) -> &'static str {
+    match kind {
+        "read" => "Read a file",
+        "edit" => "Change a file",
+        "delete" => "Delete a file",
+        "move" => "Move a file",
+        "search" => "Search",
+        "execute" => "Run a command",
+        "fetch" => "Fetch from the web",
+        "think" => "Think",
+        _ => "Use a tool",
+    }
+}
+
 /// A short text mark per kind of action; GPUI has no SF Symbols.
 fn glyph(kind: &str, creates: bool) -> &'static str {
     match kind {

@@ -798,11 +798,23 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     for _ in 0..300 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
         perm_card = card_now(cx)?;
-        if !perm_card.is_null() {
+        // The request names tool call call-1, whose row the agent sent first: the card draws it.
+        if !perm_card.is_null() && !perm_card["tool"].is_null() {
             break;
         }
     }
     ensure!(!perm_card.is_null(), "the described permission drew no card");
+    ensure!(perm_card["tool_call"] == "call-1", "the card names no tool call call-1: {perm_card}");
+    let tool = &perm_card["tool"];
+    ensure!(tool["glyph"] == "›_" && tool["action"] == "Run a command" && tool["content"].as_array().is_some(),
+        "the card drew no Bash tool line for call-1: {perm_card}");
+    draw(window, None, cx)?;
+    ensure!(window.update(cx, |c, _, _| c.control_bounds(&agent_name, "perm-tool"))?.is_some(), "the card's tool line drew nowhere: {perm_card}");
+    // The card is drawn exactly as tall as `perms::height` says, so the transcript gives up that much.
+    // Control `perm-card` spans the box inside the card's border.
+    let drawn_h = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "perm-card"))?.map(|b| b.3);
+    let want_h = perm_card["height"].as_f64().unwrap_or_default() as f32 - wheel_gpui::perms::MARGIN - 2. * wheel_gpui::perms::BORDER;
+    ensure!(drawn_h.is_some_and(|h| (h - want_h).abs() < 0.5), "the card drew {drawn_h:?} pt tall, perms::height says {want_h}: {perm_card}");
     draw(window, None, cx)?;
     draw(window, Some(output.join("client-perm-card.png")), cx)?;
     let allow_id = perm_card["buttons"].as_array().and_then(|b| b.iter().find(|b| b["prominent"] == true)).and_then(|b| b["id"].as_str()).unwrap_or_default().to_owned();

@@ -1699,7 +1699,7 @@ impl Client {
                 // Directly above the composer, where a person answering has their hands: this agent's oldest waiting request.
                 let body = r.h - TITLE - 2. * PAD;
                 let card_h = self.card_height(agent, body);
-                let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, position, self.perms.len(), focused, card_h, &self.controls, cx));
+                let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, self.perm_tool(perm).as_ref(), position, self.perms.len(), focused, card_h, &self.controls, cx));
                 let (rows, at, prefix) = agent.map(|a| self.command_matches(a, harness)).unwrap_or_default();
                 let list_h = composer::command_list_height(rows.len());
                 let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
