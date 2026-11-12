@@ -9,6 +9,7 @@ mod little;
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
 mod panes;
 pub use panes::focus_target;
+mod perms;
 mod procs;
 mod settings;
 mod sidebar;
@@ -1129,6 +1130,9 @@ impl Client {
                 self.focus.current = held;
             }
         }
+        if self.perm_key(e) {
+            return true;
+        }
         if self.run_key(k, cx) {
             return true;
         }
@@ -1437,7 +1441,11 @@ impl Render for Client {
                     let selection = self.selection.as_ref().filter(|s| Some(s.agent.as_str()) == agent);
                     let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents, self.raw_context.contains(&p.leaf.id));
                     let menu = self.menu.clone().filter(|(a, _)| Some(a.as_str()) == agent).map(|(_, o)| o);
-                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, scroll, r.h - TITLE - 2. * PAD, selection, &self.drawn, &self.highlights, &self.parsed, items, menu, &self.controls, cx)
+                    // Directly above the composer, where a person answering has their hands: this agent's oldest waiting request.
+                    let body = r.h - TITLE - 2. * PAD;
+                    let card_h = self.card_height(agent, body);
+                    let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, position, self.perms.len(), focused, card_h, &self.controls, cx));
+                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, scroll, body, card, card_h, selection, &self.drawn, &self.highlights, &self.parsed, items, menu, &self.controls, cx)
                 }
                 "empty" => {
                     let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -1463,7 +1471,8 @@ impl Render for Client {
                         let id = p.leaf.id.clone();
                         // A press in an agent pane's transcript band starts a pointer selection.
                         let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
-                        let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - FOOTER - 8.);
+                        let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD);
+                        let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - FOOTER - 8. - card_h);
                         move |this, e: &MouseDownEvent, _, cx| {
                             this.press(format!("pane {id} at {:?}", e.position));
                             this.focus_pane(&id);
@@ -1714,12 +1723,12 @@ const LABEL: f32 = 24.;
 /// stream, a running line while a turn is in progress, and the composer with the draft. Every
 /// text it draws is recorded in `drawn` with its layout, so a pointer selection can find it.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32, card: Option<gpui::Div>, card_h: f32,
     selection: Option<&Selection>, drawn: &Rc<RefCell<Vec<Drawn>>>, highlights: &Highlights, parsed: &Parsed, items: Vec<(String, String)>, menu: Option<String>,
     controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let mut col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into())).flex().flex_col().gap_1().overflow_y_scroll()
-        .h(px((height - LABEL - COMPOSER - FOOTER - 8.).max(1.)));
+        .h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)));
     if let Some(scroll) = &scroll {
         col = col.track_scroll(scroll);
     }
@@ -1779,6 +1788,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
     div().flex().flex_col().h(px(height.max(1.)))
         .child(div().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
         .child(col)
+        .children(card)
         .child(div().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
             .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
             .text_color(rgb(0xd9e8e1)).overflow_hidden()

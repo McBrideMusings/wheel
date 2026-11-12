@@ -620,6 +620,7 @@ impl Client {
                 if let Some(agent) = &leaf.agent {
                     entry["draft"] = json!(self.drafts.get(agent).cloned().unwrap_or_default());
                     entry["rows"] = json!(self.transcripts.get(agent).map(|t| t.rows.len()).unwrap_or(0));
+                    entry["perm_card"] = self.perm_card_json(&leaf.id);
                 }
                 panes.insert(leaf.id.clone(), entry);
             }

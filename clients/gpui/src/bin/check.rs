@@ -628,6 +628,18 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     draw(window, Some(output.join("client-status-needs-you.png")), cx)?;
     let marks_needing = window.update(cx, |c, _, _| c.space_marks())?;
     ensure!(marks_needing.0.first() == Some(&"needs_you"), "the space chip's marks while a permission waits: {marks_needing:?}");
+    // The card this request draws above the composer leaves when the CLI answers it (wheel-ynjo.10.2).
+    let card_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.perm_card_json(&agent_pane));
+    let card_before_cli = !card_now(cx)?.is_null();
+    // In this short pane the card's lines scroll and its buttons stay inside the pane.
+    let short_card = card_now(cx)?;
+    let short_allow = short_card["buttons"].as_array().and_then(|b| b.iter().find(|b| b["prominent"] == true)).and_then(|b| b["id"].as_str()).unwrap_or_default().to_owned();
+    let short_button = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("perm:{short_allow}")))?;
+    let pane_bottom = agent_rect.y + agent_rect.h;
+    // The card clips what it cannot fit, so the button must lie inside the card as drawn too.
+    let short_frame = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "perm-card"))?;
+    let buttons_inside_short_pane = matches!((short_button, short_frame), (Some(b), Some(f)) if b.1 >= f.1 && b.1 + b.3 <= f.1 + f.3 && f.1 + f.3 <= pane_bottom);
+    ensure!(buttons_inside_short_pane, "the card's Allow button {short_button:?} is not inside the card {short_frame:?} and the agent pane (bottom {pane_bottom}): {short_card}");
     let answered = std::process::Command::new(&cli_path)
         .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "perm", "answer", &agent_pane, "deny"])
         .output()?;
@@ -644,9 +656,120 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(matches!(after_answer, Some(wheel_proto::PaneStatus::Idle | wheel_proto::PaneStatus::Done)), "the pane after the answer is {after_answer:?}");
     draw(window, None, cx)?;
+    let card_after_cli = card_now(cx)?;
+    let card_control_after_cli = window.update(cx, |c, _, _| c.perm_buttons_drawn(&agent_name) > 0)?;
+    let resolved_from_cli = card_before_cli && card_after_cli.is_null() && !card_control_after_cli;
+    ensure!(resolved_from_cli, "the CLI's answer left the card: before {card_before_cli}, after {card_after_cli}, control drawn {card_control_after_cli}");
     let status_report = json!({"at_rest": status_name(&at_rest), "saw_working": saw_working, "marks_while_working": marks_while_working,
         "needs_you": wheel_gpui::status::label(&needs_you), "marks_needing": marks_needing, "after_answer": status_name(&after_answer),
         "dots_setting": window.update(cx, |c, _, _| c.status_dots.iter().copied().collect::<Vec<_>>())?});
+    // Permission and question cards (wheel-ynjo.10.2): a described permission draws its card
+    // above the composer and Return from the empty composer allows it; a question draws one
+    // button per answer and a click on the first answers it.
+    let replies_since = |rows: &[wheel_gpui::transcript::Row], from: usize| rows.iter().skip(from).filter_map(|r| match &r.kind { Kind::Reply(x) => Some(x.clone()), _ => None }).collect::<Vec<_>>().join("\n");
+    // The cards are taller than the fixture's agent pane: every split above the pane gives it 0.9
+    // of its room until the question is answered, then takes its ratio back.
+    let set_ratio = |split: &str, ratio: f64| -> Result<()> {
+        let out = std::process::Command::new(&cli_path)
+            .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "ratio", split, &ratio.to_string()]).output()?;
+        ensure!(out.status.success(), "pane ratio {split} {ratio}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        Ok(())
+    };
+    let splits_above = window.update(cx, |c, _, _| c.splits_to(&agent_pane))?;
+    for (split, first, _) in &splits_above {
+        set_ratio(split, if *first { 0.9 } else { 0.1 })?;
+    }
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().all(|(_, first, r)| (*r - if *first { 0.9 } else { 0.1 }).abs() < 0.01))? {
+            break;
+        }
+    }
+    let rows_before_perm = rows(cx)?.1.len();
+    type_line(&native, "permission described", cx).await;
+    let mut perm_card = Value::Null;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        perm_card = card_now(cx)?;
+        if !perm_card.is_null() {
+            break;
+        }
+    }
+    ensure!(!perm_card.is_null(), "the described permission drew no card");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-perm-card.png")), cx)?;
+    let allow_id = perm_card["buttons"].as_array().and_then(|b| b.iter().find(|b| b["prominent"] == true)).and_then(|b| b["id"].as_str()).unwrap_or_default().to_owned();
+    let card_shown = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("perm:{allow_id}")))?.is_some();
+    ensure!(card_shown, "the card drew no Allow button: {perm_card}");
+    ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(agent_pane.as_str()), "the agent pane lost the keyboard before Return");
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut answered_by_key = String::new();
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (state, rows) = rows(cx)?;
+        let text = replies_since(&rows, rows_before_perm);
+        if card_now(cx)?.is_null() && text.contains("permission: allow") && state == "ready" {
+            answered_by_key = "allow".into();
+            break;
+        }
+        if text.contains("permission: deny") {
+            answered_by_key = "deny".into();
+            break;
+        }
+    }
+    ensure!(answered_by_key == "allow", "Return on the card answered {answered_by_key:?}: {}", replies_since(&rows(cx)?.1, rows_before_perm));
+    let rows_before_question = rows(cx)?.1.len();
+    type_line(&native, "question", cx).await;
+    let mut question_card = Value::Null;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        question_card = card_now(cx)?;
+        if question_card["question"] == true {
+            break;
+        }
+    }
+    ensure!(question_card["question"] == true, "the question drew no question card: {question_card}");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-perm-question.png")), cx)?;
+    let question_options = question_card["answers"].as_array().map_or(0, Vec::len);
+    let first_answer = question_card["answers"][0]["id"].as_str().unwrap_or_default().to_owned();
+    let answer_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("perm:{first_answer}")))?.ok_or_else(|| anyhow::anyhow!("the question's first answer was not drawn: {question_card}"))?;
+    press(&native, answer_at);
+    // The fake agent asks two questions, Color then Size: each card's first answer is clicked.
+    let mut clicked = vec![question_card["id"].as_str().unwrap_or_default().to_owned()];
+    let mut question_answer = String::new();
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let card = card_now(cx)?;
+        if let Some(id) = card["id"].as_str().filter(|id| !clicked.iter().any(|c| c == id)) {
+            draw(window, None, cx)?;
+            let first = card["answers"][0]["id"].as_str().unwrap_or_default().to_owned();
+            if let Some(at) = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("perm:{first}")))? {
+                clicked.push(id.to_owned());
+                press(&native, at);
+            }
+        }
+        let (state, rows) = rows(cx)?;
+        let text = replies_since(&rows, rows_before_question);
+        if let Some(at) = text.find("question: ") && card.is_null() && state == "ready" {
+            question_answer = text[at + 10..].lines().next().unwrap_or_default().to_owned();
+            break;
+        }
+    }
+    ensure!(question_answer == r#"allow answers={"Which color?":"Red","Which size?":"Small"}"#, "clicks on each question's first answer gave {question_answer:?}: cards clicked {clicked:?}, card now {}, presses {:?}, replies {:?}",
+        card_now(cx)?, window.update(cx, |c, _, _| c.presses.clone())?, replies_since(&rows(cx)?.1, rows_before_question));
+    for (split, _, ratio) in &splits_above {
+        set_ratio(split, *ratio)?;
+    }
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.splits_to(&agent_pane))? == splits_above {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    let perms_report = json!({"card_shown": card_shown, "answered_by_key": answered_by_key, "resolved_from_cli": resolved_from_cli,
+        "question_options": question_options, "buttons_inside_short_pane": buttons_inside_short_pane, "question_answer": question_answer, "questions_clicked": clicked.len(), "card": perm_card, "question_card": question_card});
     // Back to the terminal, so the focus checks below start where they did.
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
@@ -2557,6 +2680,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     });
     // Past the one `json!` the recursion limit allows.
     report["terminal"] = terminal_report;
+    report["perms"] = perms_report;
     Ok(report)
 }
 

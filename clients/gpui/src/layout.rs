@@ -32,6 +32,25 @@ pub enum Tree {
     Split { id: String, horizontal: bool, ratio: f64, a: Box<Tree>, b: Box<Tree> },
 }
 
+impl Tree {
+    /// The splits from the root down to `pane`: each split's id, whether the pane is in its first
+    /// side, and its ratio. None when the pane is not in this tree.
+    pub fn splits_to(&self, pane: &str) -> Option<Vec<(String, bool, f64)>> {
+        match self {
+            Tree::Pane(leaf) => (leaf.id == pane).then(Vec::new),
+            Tree::Split { id, ratio, a, b, .. } => {
+                let (first, rest) = match a.splits_to(pane) {
+                    Some(rest) => (true, rest),
+                    None => (false, b.splits_to(pane)?),
+                };
+                let mut out = vec![(id.clone(), first, *ratio)];
+                out.extend(rest);
+                Some(out)
+            }
+        }
+    }
+}
+
 /// One space as the daemon lists it.
 #[derive(Clone, Debug)]
 pub struct Space {
