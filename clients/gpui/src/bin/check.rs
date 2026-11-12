@@ -3237,11 +3237,20 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let unzoomed = until!("the header's double-click put the grid back", |s: &Value| s["grid_motion"]["zoomed"].is_null() && near(frame(s, &grid_a), a_from));
     ensure!(unzoomed["sidebar"]["pane_drag"].is_null() && unzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == false, "after the unzoom the drag reads {} and the third view {}", unzoomed["sidebar"]["pane_drag"], unzoomed["panes"][grid_c.as_str()]["bridge"]);
     unsafe { std::env::remove_var("WHEEL_SLOW_ANIMATIONS") };
-    let (code, keyed) = call!("POST", "/key?keys=shift%2Bcmd%2Benter");
-    ensure!(code == 200 && keyed["taken"] == true, "⇧⌘↩ got {code} {keyed}");
-    let keyed_zoom = until!("⇧⌘↩ zoomed the focused pane", |s: &Value| s["grid_motion"]["zoomed"] == grid_a.as_str() && near(frame(s, &grid_a), zoom_area));
-    let normal_ms = keyed_zoom["grid_motion"]["length_ms"].clone();
+    // A double-click zooms too, at normal speed; ⇧⌘↩ puts the grid back and zooms again.
+    let header_at = [a_from[0] + 40., a_from[1] + 11.];
+    for clicks in [1, 2] {
+        native.call(json!({"op":"post_mouse","kind":"down","point":header_at,"clicks":clicks}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":header_at,"clicks":clicks}));
+    }
+    let clicked_zoom = until!("the header's double-click zoomed the pane", |s: &Value| s["grid_motion"]["zoomed"] == grid_a.as_str() && near(frame(s, &grid_a), zoom_area));
+    let normal_ms = clicked_zoom["grid_motion"]["length_ms"].clone();
     ensure!(normal_ms == 220, "the motion lasts {normal_ms} ms with WHEEL_SLOW_ANIMATIONS unset");
+    for (zoomed_after, what) in [(false, "⇧⌘↩ put the grid back"), (true, "⇧⌘↩ zoomed the focused pane")] {
+        let (code, keyed) = call!("POST", "/key?keys=shift%2Bcmd%2Benter");
+        ensure!(code == 200 && keyed["taken"] == true, "⇧⌘↩ got {code} {keyed}");
+        until!(what, |s: &Value| if zoomed_after { s["grid_motion"]["zoomed"] == grid_a.as_str() && near(frame(s, &grid_a), zoom_area) } else { s["grid_motion"]["zoomed"].is_null() && near(frame(s, &grid_a), a_from) });
+    }
     // A split ends the zoom: its new pane would sit hidden behind the zoomed one.
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_a}&item=split-right"));
     ensure!(code == 200, "split-right got {code}");
