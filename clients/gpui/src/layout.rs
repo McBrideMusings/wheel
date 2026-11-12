@@ -32,22 +32,32 @@ pub enum Tree {
     Split { id: String, horizontal: bool, ratio: f64, a: Box<Tree>, b: Box<Tree> },
 }
 
+/// One split on the way from a tree's root down to a pane (`Tree::splits_to`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplitStep {
+    pub id: String,
+    /// Whether the pane is in the split's first side.
+    pub first: bool,
+    pub ratio: f64,
+    /// Whether the split lays its sides out left and right, so its ratio sets the pane's width.
+    pub horizontal: bool,
+}
+
 impl Tree {
     /// Whether `pane` is one of this tree's panes.
     pub fn holds(&self, pane: &str) -> bool {
         leaves_of(self).iter().any(|l| l.id == pane)
     }
-    /// The splits from the root down to `pane`: each split's id, whether the pane is in its first
-    /// side, and its ratio. None when the pane is not in this tree.
-    pub fn splits_to(&self, pane: &str) -> Option<Vec<(String, bool, f64)>> {
+    /// The splits from the root down to `pane`. None when the pane is not in this tree.
+    pub fn splits_to(&self, pane: &str) -> Option<Vec<SplitStep>> {
         match self {
             Tree::Pane(leaf) => (leaf.id == pane).then(Vec::new),
-            Tree::Split { id, ratio, a, b, .. } => {
+            Tree::Split { id, horizontal, ratio, a, b } => {
                 let (first, rest) = match a.splits_to(pane) {
                     Some(rest) => (true, rest),
                     None => (false, b.splits_to(pane)?),
                 };
-                let mut out = vec![(id.clone(), first, *ratio)];
+                let mut out = vec![SplitStep { id: id.clone(), first, ratio: *ratio, horizontal: *horizontal }];
                 out.extend(rest);
                 Some(out)
             }

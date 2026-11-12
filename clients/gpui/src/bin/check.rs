@@ -650,49 +650,72 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         })?;
         tick(cx, 100).await;
     }
-    // A narrow pane: every split above the agent pane gives it 0.1 of its room, and the footer
-    // keeps whole items from the front with "…" for the rest, each drawn inside the row.
-    // A wide pane first (0.9 of every split above it), where every item fits.
+    // A narrow pane: every side-by-side split above the agent pane gives it 0.35 of its width
+    // (a 335 pt pane), and the footer keeps whole items from the front with "…" for the rest,
+    // each drawn inside the row. A wide pane first (0.9 of each), where every item fits. Splits
+    // that stack the pane keep their ratio, so its footer stays in view.
     let set_split = |split: &str, ratio: f64| -> Result<()> {
         let out = std::process::Command::new(&cli_path)
             .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "ratio", split, &ratio.to_string()]).output()?;
         ensure!(out.status.success(), "pane ratio {split} {ratio}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         Ok(())
     };
-    let restore = window.update(cx, |c, _, _| c.splits_to(&agent_pane))?;
+    let restore: Vec<_> = window.update(cx, |c, _, _| c.splits_to(&agent_pane))?.into_iter().filter(|s| s.horizontal).collect();
+    ensure!(!restore.is_empty(), "the agent pane has no side-by-side split above it to narrow");
     let mut sized = vec![];
-    for (share, other) in [(0.9, 0.1), (0.1, 0.9)] {
-        for (split, first, _) in &restore {
-            set_split(split, if *first { share } else { other })?;
+    let mut narrow_crop = None;
+    for (share, other) in [(0.9, 0.1), (0.35, 0.65)] {
+        for s in &restore {
+            set_split(&s.id, if s.first { share } else { other })?;
         }
         for _ in 0..50 {
             pump(&mut connection, 100, &mut layouts, window, cx).await?;
-            if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().all(|(_, first, r)| (*r - if *first { share } else { other }).abs() < 0.01))? {
+            if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().filter(|s| s.horizontal).all(|s| (s.ratio - if s.first { share } else { other }).abs() < 0.01))? {
                 break;
             }
         }
         draw(window, None, cx)?;
-        draw(window, Some(output.join(if share > 0.5 { "client-footer-wide.png" } else { "client-footer-narrow.png" })), cx)?;
+        if share > 0.5 {
+            draw(window, Some(output.join("client-footer-wide.png")), cx)?;
+        } else {
+            // The narrow pane's bottom: the end of its composer and the whole footer row.
+            let (pane_rect, context) = window.update(cx, |c, _, _| (c.scene().0.into_iter().find(|p| p.leaf.id == agent_pane).map(|p| p.rect), c.control_bounds(&agent_name, "context")))?;
+            let pane_rect = pane_rect.ok_or_else(|| anyhow::anyhow!("the narrow agent pane {agent_pane} was not placed"))?;
+            let any: gpui::AnyWindowHandle = window.into();
+            let crop = any.update(cx, |_, w, cx| -> Result<[u32; 4]> {
+                w.draw(cx).clear();
+                let image = w.render_to_image()?;
+                let scale = image.width() as f32 / f32::from(w.viewport_size().width);
+                let bottom = pane_rect.y + pane_rect.h;
+                let top = context.map_or(bottom - 60., |b| b.1 - 40.).max(pane_rect.y);
+                let [x, y] = [(pane_rect.x - 8.).max(0.), top].map(|v| (v * scale) as u32);
+                let [x1, y1] = [pane_rect.x + pane_rect.w + 8., bottom + 8.].map(|v| (v * scale) as u32);
+                let (w, h) = (x1.min(image.width()) - x, y1.min(image.height()) - y);
+                image::imageops::crop_imm(&image, x, y, w, h).to_image().save(output.join("client-footer-narrow.png"))?;
+                Ok([x, y, w, h])
+            })??;
+            narrow_crop = Some(json!({"pane": [pane_rect.x, pane_rect.y, pane_rect.w, pane_rect.h], "pixels": crop}));
+        }
         sized.push(window.update(cx, |c, _, _| c.footer_texts(&agent_name))?);
     }
     let (footer_wide, footer_narrow) = (sized[0].clone(), sized[1].clone());
     let all_items = window.update(cx, |c, _, _| c.footer_items_all(&agent_name))?;
-    for (split, _, ratio) in &restore {
-        set_split(split, *ratio)?;
+    for s in &restore {
+        set_split(&s.id, s.ratio)?;
     }
     for _ in 0..50 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().zip(&restore).all(|((_, _, r), (_, _, was))| (r - was).abs() < 0.01))? {
+        if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().filter(|s| s.horizontal).zip(&restore).all(|(now, was)| (now.ratio - was.ratio).abs() < 0.01))? {
             break;
         }
     }
     draw(window, None, cx)?;
     ensure!(!footer_wide.1 && footer_wide.0 == all_items, "the wide footer {footer_wide:?} does not show every item of {all_items:?}");
-    ensure!(footer_narrow.1 && footer_narrow.0.len() < all_items.len() && all_items.starts_with(&footer_narrow.0),
+    ensure!(footer_narrow.1 && !footer_narrow.0.is_empty() && footer_narrow.0.len() < all_items.len() && all_items.starts_with(&footer_narrow.0),
         "the narrow footer {footer_narrow:?} is not a shorter prefix of {all_items:?} with \u{2026}");
     let footer_report = json!({"items": footer_before, "raw_text": raw_text, "controls": controls, "model_before": before_set, "model_after": model_after,
         "menu_rows": {"opened": row_opened.1, "after_up": row_up}, "model_keyed": model_keyed, "tooltips": tips,
-        "wide": {"items": footer_wide.0, "more": footer_wide.1}, "narrow": {"items": footer_narrow.0, "more": footer_narrow.1}});
+        "wide": {"items": footer_wide.0, "more": footer_wide.1}, "narrow": {"items": footer_narrow.0, "more": footer_narrow.1, "shot": narrow_crop}});
     // Statuses: the pane's dot and the space chip's marks follow `status_changed`. A slow turn
     // shows `working`; a permission request shows `needs_you` with the agent's reason until the
     // CLI answers it; after that the pane is idle again.
@@ -783,12 +806,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         Ok(())
     };
     let splits_above = window.update(cx, |c, _, _| c.splits_to(&agent_pane))?;
-    for (split, first, _) in &splits_above {
-        set_ratio(split, if *first { 0.9 } else { 0.1 })?;
+    for s in &splits_above {
+        set_ratio(&s.id, if s.first { 0.9 } else { 0.1 })?;
     }
     for _ in 0..50 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().all(|(_, first, r)| (*r - if *first { 0.9 } else { 0.1 }).abs() < 0.01))? {
+        if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().all(|s| (s.ratio - if s.first { 0.9 } else { 0.1 }).abs() < 0.01))? {
             break;
         }
     }
@@ -1371,8 +1394,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let conversations_report = json!({"listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
-    for (split, _, ratio) in &splits_above {
-        set_ratio(split, *ratio)?;
+    for s in &splits_above {
+        set_ratio(&s.id, s.ratio)?;
     }
     for _ in 0..50 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -3365,8 +3388,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // About 287, 201, 172 and 96 pt of the grid's 957: every control, then without Pop Out and
     // Background, then without the splits, then only the menu and Close.
     for (share, level) in [(0.3, 0), (0.21, 1), (0.18, 3), (0.1, 4)] {
-        for (split, a_first, _) in &splits {
-            narrow_ratio(split, if *a_first { share } else { 1. - share })?;
+        for s in &splits {
+            narrow_ratio(&s.id, if s.first { share } else { 1. - share })?;
         }
         let narrow = until!("the narrowed header dropping controls", |s: &Value| (level == 0 || s["panes"][grid_a.as_str()]["header_level"].as_u64().unwrap_or(0) > 0) && frame(s, &grid_a)[2] < last_width - 1.);
         last_width = frame(&narrow, &grid_a)[2];
@@ -3391,8 +3414,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     draw(window, Some(output.join("client-header-narrow-menu.png")), cx)?;
     let (code, _) = call!("POST", "/key?keys=escape");
     ensure!(code == 200 && state!()["pane_menu"].is_null(), "Esc left the ⋯ menu open");
-    for (split, _, ratio) in &splits {
-        narrow_ratio(split, *ratio)?;
+    for s in &splits {
+        narrow_ratio(&s.id, s.ratio)?;
     }
     let widened = until!("the widened header drawing every control again", |s: &Value| s["panes"][grid_a.as_str()]["header_level"] == 0 && strings(&s["panes"][grid_a.as_str()]["header_order"]) == wide_order);
     let header_report = json!({"kind": header_kind, "wide": wide_order, "placed": {"bar": placed_order, "menu": placed_menu}, "reset": strings(&reset["panes"][grid_a.as_str()]["header_order"]), "narrowed": narrowed,

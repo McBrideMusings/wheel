@@ -51,7 +51,7 @@ impl Client {
         true
     }
     /// The splits above `pane` in its space (`Tree::splits_to`).
-    pub fn splits_to(&self, pane: &str) -> Vec<(String, bool, f64)> {
+    pub fn splits_to(&self, pane: &str) -> Vec<crate::layout::SplitStep> {
         self.spaces.iter().find_map(|s| s.root.splits_to(pane)).unwrap_or_default()
     }
     /// How many card buttons the last frame drew for `agent`.
