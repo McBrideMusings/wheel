@@ -303,6 +303,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_frame_with_an_event_kind_or_phase_this_build_does_not_know_still_arrives() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            ws.read().unwrap();
+            // A status whose agent pane is in a phase a newer wheeld added.
+            let status = json!({"ev":"status","req":1,"version":"test","protocol":PROTOCOL,"uptime_secs":0,"log_path":"/dev/null","terms":[],"perms":[],
+                "spaces":[{"id":"s1","name":"wheel","cwd":"/w","root":{"node":"pane","id":"p1","kind":"agent","agent":"a1","harness":"claude","state":{"phase":"dreaming"}}}],
+                "sessions":[{"id":"n1","name":"Main","spaces":["s1"]}]});
+            ws.send(Message::text(status.to_string())).unwrap();
+            let attached = json!({"ev":"agent_attached","agent":"a1","now":0,"state":{"phase":"ready"},"events":[
+                {"kind":"text","text":"before"},{"kind":"hologram","at":7,"frames":3},{"kind":"text","text":"after"}]});
+            ws.send(Message::text(attached.to_string())).unwrap();
+            while ws.read().is_ok() {}
+        });
+        let (endpoint, _) = endpoint(port, "t");
+        let mut connection = Connection::open(endpoint);
+        assert!(matches!(next(&mut connection), Event::Up(_)));
+        let Event::Message(status) = next(&mut connection) else { panic!("no status") };
+        let ServerMsg::Status { spaces, .. } = *status else { panic!("not a status") };
+        let wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Agent { state: Some(state), .. }, .. } = &spaces[0].root else { panic!("no agent pane: {:?}", spaces[0].root) };
+        assert_eq!(state.phase(), "dreaming");
+        let Event::Message(attached) = next(&mut connection) else { panic!("no agent_attached") };
+        let ServerMsg::AgentAttached { events, .. } = *attached else { panic!("not agent_attached") };
+        let kinds: Vec<_> = events.iter().map(|e| (e.at, serde_json::to_value(&e.event).unwrap()["kind"].clone())).collect();
+        assert_eq!(kinds, [(None, json!("text")), (Some(7), json!("hologram")), (None, json!("text"))]);
+        // Kept whole: written back exactly as it arrived.
+        assert_eq!(serde_json::to_value(&events[1]).unwrap(), json!({"kind":"hologram","at":7,"frames":3}));
+    }
+
+    #[test]
     fn an_older_protocol_is_reported_once_and_a_restart_to_the_new_one_connects() {
         let (port, _) = serve(vec![(1, false), (1, false), (PROTOCOL, true)]);
         let (endpoint, _) = endpoint(port, "t");

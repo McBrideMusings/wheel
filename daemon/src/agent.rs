@@ -317,6 +317,7 @@ fn without_agent(state: &AgentState) -> Option<String> {
         AgentState::GaveUp { tries, message } => {
             Some(format!("gave up after {tries} tries: {message}"))
         }
+        AgentState::Unknown(_) => Some(format!("is {}", state.phase())),
     }
 }
 
@@ -2092,7 +2093,8 @@ fn event_bytes(event: &AgentEvent) -> usize {
         | AgentEvent::Retract { .. }
         | AgentEvent::TextRevised { .. }
         | AgentEvent::ThoughtRevised { .. }
-        | AgentEvent::Mode { .. } => 0,
+        | AgentEvent::Mode { .. }
+        | AgentEvent::Unknown(_) => 0,
     }
 }
 

@@ -60,7 +60,7 @@ pub(crate) fn pane_status(
             PaneStatus::Working
         }
         AgentState::Ready if background > 0 => PaneStatus::Working,
-        AgentState::Ready => PaneStatus::Idle,
+        AgentState::Ready | AgentState::Unknown(_) => PaneStatus::Idle,
     })
 }
 

@@ -68,7 +68,7 @@ impl Filter {
                         urgent: true,
                     })
                 }
-                AgentState::Starting | AgentState::Switching => None,
+                AgentState::Starting | AgentState::Switching | AgentState::Unknown(_) => None,
             },
             _ => None,
         }

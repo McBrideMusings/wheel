@@ -6,7 +6,7 @@
 //! place, the turn's rows follow it, a retract takes a message back, tool calls update in place
 //! by id, the one plan row is replaced whole, and a turn's end or an error closes everything open.
 use std::collections::HashMap;
-use wheel_proto::{AgentEvent, AgentFooter, AgentState, ConfigOption, ContextUse, PlanItem, ServerMsg, ToolContent};
+use wheel_proto::{AgentEvent, AgentFooter, ConfigOption, ContextUse, PlanItem, ServerMsg, ToolContent};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -84,7 +84,7 @@ impl Transcript {
                 self.plan_row = None;
                 self.queued_turns.clear();
                 self.unanswered_turn = None;
-                self.state = state_name(state).to_owned();
+                self.state = state.phase().to_owned();
                 for event in events {
                     self.event(&event.event);
                 }
@@ -95,7 +95,7 @@ impl Transcript {
                 true
             }
             ServerMsg::AgentStateChanged { agent: a, state } if a == agent => {
-                self.state = state_name(state).to_owned();
+                self.state = state.phase().to_owned();
                 true
             }
             ServerMsg::AgentContext { agent: a, context } if a == agent => {
@@ -188,7 +188,8 @@ impl Transcript {
         {
             self.rows[last].open = false;
         }
-        if !matches!(event, AgentEvent::User { .. } | AgentEvent::TurnStart { .. } | AgentEvent::Retract { .. } | AgentEvent::TextRevised { .. } | AgentEvent::ThoughtRevised { .. }) {
+        // Only an event that answers the turn clears it; one this build cannot read answers nothing.
+        if !matches!(event, AgentEvent::User { .. } | AgentEvent::TurnStart { .. } | AgentEvent::Retract { .. } | AgentEvent::TextRevised { .. } | AgentEvent::ThoughtRevised { .. } | AgentEvent::Unknown(_)) {
             self.unanswered_turn = None;
         }
         match event {
@@ -309,6 +310,8 @@ impl Transcript {
                 self.close_all();
                 self.append(Kind::Error(message.clone()));
             }
+            // A kind a newer wheeld added: nothing here draws it (WheelKit's `AgentEvent.other`).
+            AgentEvent::Unknown(_) => {}
         }
     }
 }
@@ -337,18 +340,6 @@ pub fn stop_reason_words(reason: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" "),
     })
-}
-
-/// The state's wire phase name (the `phase` tag of `AgentState`).
-fn state_name(state: &AgentState) -> &'static str {
-    match state {
-        AgentState::Starting => "starting",
-        AgentState::Ready => "ready",
-        AgentState::Busy { .. } => "busy",
-        AgentState::Failed { .. } => "failed",
-        AgentState::Switching => "switching",
-        AgentState::GaveUp { .. } => "gave_up",
-    }
 }
 
 /// What a tool row shows (WheelKit's `ToolRowInfo`): a glyph for the kind of action, a sentence,
@@ -633,6 +624,18 @@ mod tests {
         assert_eq!(t.state, "gave_up");
         t.on_message(&msg(json!({"ev":"agent_state_changed","agent":"a1","state":{"phase":"busy","queued":1}})), "a1");
         assert!(t.busy());
+    }
+
+    #[test]
+    fn an_unknown_event_kind_and_phase_keep_the_rest_of_the_transcript() {
+        let mut t = Transcript::default();
+        t.on_message(&msg(json!({"ev":"agent_attached","agent":"a1","now":0,"state":{"phase":"dreaming","depth":2},"events":[
+            {"kind":"user","turn":1,"text":"hi"},{"kind":"turn_start","turn":1},{"kind":"text","text":"Hello"},
+            {"kind":"hologram","at":5,"frames":3},{"kind":"text","text":" there."},{"kind":"turn_end","turn":1,"stop_reason":"end_turn"}]})), "a1");
+        assert_eq!(t.state, "dreaming");
+        assert_eq!(kinds(&t), vec![&Kind::User { text: "hi".into(), queued: false }, &Kind::Reply("Hello there.".into())]);
+        t.on_message(&msg(json!({"ev":"agent_state_changed","agent":"a1","state":{"phase":"ready"}})), "a1");
+        assert_eq!(t.state, "ready");
     }
 
     #[test]

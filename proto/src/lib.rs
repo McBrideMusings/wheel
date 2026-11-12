@@ -2758,7 +2758,7 @@ pub struct DirEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "phase", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "phase", rename_all = "snake_case")]
 pub enum AgentState {
     Starting,
     Ready,
@@ -2779,6 +2779,74 @@ pub enum AgentState {
         tries: u32,
         message: String,
     },
+    /// A phase this build does not know; a newer daemon may send one. Only deserializing makes
+    /// one, and serializing writes it back exactly as it arrived.
+    #[serde(skip)]
+    Unknown(UnknownTagged),
+}
+
+/// The phases `AgentState` knows, as they appear on the wire.
+const AGENT_PHASES: &[&str] = &["starting", "ready", "busy", "failed", "switching", "gave_up"];
+
+impl AgentState {
+    /// The state's `phase` as it appears on the wire.
+    pub fn phase(&self) -> &str {
+        match self {
+            AgentState::Starting => "starting",
+            AgentState::Ready => "ready",
+            AgentState::Busy { .. } => "busy",
+            AgentState::Failed { .. } => "failed",
+            AgentState::Switching => "switching",
+            AgentState::GaveUp { .. } => "gave_up",
+            AgentState::Unknown(raw) => raw.tag("phase"),
+        }
+    }
+}
+
+impl Serialize for AgentState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            AgentState::Unknown(UnknownTagged(raw)) => raw.serialize(serializer),
+            known => AgentState::serialize(known, serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match UnknownTagged::read(deserializer, "phase", AGENT_PHASES)? {
+            Ok(known) => AgentState::deserialize(known).map_err(serde::de::Error::custom),
+            Err(unknown) => Ok(AgentState::Unknown(unknown)),
+        }
+    }
+}
+
+/// An `AgentEvent` or `AgentState` whose tag this build does not know, kept whole: a client that
+/// meets one keeps the rest of the frame (the transcript, the layout) and ignores this one entry,
+/// as WheelKit's `AgentEvent.other` and `AgentState.unknown` do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownTagged(serde_json::Map<String, serde_json::Value>);
+
+impl UnknownTagged {
+    /// The value of the tag field `key` it arrived with.
+    fn tag(&self, key: &str) -> &str {
+        self.0.get(key).and_then(|v| v.as_str()).unwrap_or_default()
+    }
+
+    /// The object as a value to deserialize as a known variant when its `key` tag is one of
+    /// `known`, or the object kept whole when its tag is a string nothing in `known` names.
+    fn read<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+        key: &str,
+        known: &[&str],
+    ) -> Result<Result<serde_json::Value, UnknownTagged>, D::Error> {
+        let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+        match raw.get(key).and_then(|k| k.as_str()) {
+            Some(tag) if known.contains(&tag) => Ok(Ok(serde_json::Value::Object(raw))),
+            Some(_) => Ok(Err(UnknownTagged(raw))),
+            None => Err(serde::de::Error::custom(format!("no string `{key}`"))),
+        }
+    }
 }
 
 /// An agent event with the moment the daemon recorded it, so a client can say how long a tool
@@ -2818,7 +2886,7 @@ impl StampedEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "kind", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// A message the person sent, recorded the moment the daemon queues it. It may wait behind a
     /// turn still running; `turn_start` with the same `turn` says when it is taken up.
@@ -2900,6 +2968,45 @@ pub enum AgentEvent {
         turn: Option<u64>,
         message: String,
     },
+    /// An event kind this build does not know; a newer daemon may send one. A client ignores it.
+    /// Only deserializing makes one, and serializing writes it back exactly as it arrived.
+    #[serde(skip)]
+    Unknown(UnknownTagged),
+}
+
+/// The kinds `AgentEvent` knows, as they appear on the wire.
+const AGENT_EVENT_KINDS: &[&str] = &[
+    "user",
+    "turn_start",
+    "text",
+    "thought",
+    "text_revised",
+    "thought_revised",
+    "tool_call",
+    "tool_update",
+    "plan",
+    "mode",
+    "turn_end",
+    "retract",
+    "error",
+];
+
+impl Serialize for AgentEvent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            AgentEvent::Unknown(UnknownTagged(raw)) => raw.serialize(serializer),
+            known => AgentEvent::serialize(known, serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentEvent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match UnknownTagged::read(deserializer, "kind", AGENT_EVENT_KINDS)? {
+            Ok(known) => AgentEvent::deserialize(known).map_err(serde::de::Error::custom),
+            Err(unknown) => Ok(AgentEvent::Unknown(unknown)),
+        }
+    }
 }
 
 /// What a tool call produced or proposes, as the agent reported it.
@@ -4483,6 +4590,102 @@ mod tests {
         assert!(matches!(call, AgentEvent::ToolCall { content, .. } if content.is_empty()));
         let newer: ToolContent = serde_json::from_str(r#"{"type":"hologram","depth":3}"#).unwrap();
         assert_eq!(newer, ToolContent::Unknown);
+    }
+
+    #[test]
+    fn an_event_kind_or_phase_this_build_does_not_know_is_kept_whole() {
+        let newer: StampedEvent =
+            serde_json::from_str(r#"{"kind":"hologram","at":9,"frames":[1,2]}"#).unwrap();
+        assert_eq!(newer.at, Some(9));
+        assert!(matches!(&newer.event, AgentEvent::Unknown(raw) if raw.tag("kind") == "hologram"));
+        assert_eq!(
+            serde_json::to_value(&newer).unwrap(),
+            serde_json::json!({"kind":"hologram","at":9,"frames":[1,2]})
+        );
+        let state: AgentState = serde_json::from_str(r#"{"phase":"dreaming","depth":2}"#).unwrap();
+        assert_eq!(state.phase(), "dreaming");
+        assert_eq!(
+            serde_json::to_value(&state).unwrap(),
+            serde_json::json!({"phase":"dreaming","depth":2})
+        );
+        // A kind this build knows with a field missing is still an error, as in WheelKit.
+        assert!(serde_json::from_str::<AgentEvent>(r#"{"kind":"text"}"#).is_err());
+        assert!(serde_json::from_str::<AgentState>(r#"{"phase":"busy"}"#).is_err());
+        assert!(serde_json::from_str::<AgentEvent>(r#"{"text":"no kind"}"#).is_err());
+    }
+
+    #[test]
+    fn every_known_event_kind_and_phase_is_read_as_itself() {
+        // A variant added to either enum fails to compile here until it has a fixture, and each
+        // fixture's tag must be in its list.
+        let events = [
+            AgentEvent::User { turn: 1, text: "a".into() },
+            AgentEvent::TurnStart { turn: 1 },
+            AgentEvent::Text { text: "a".into() },
+            AgentEvent::Thought { text: "a".into() },
+            AgentEvent::TextRevised { streamed: "a".into(), text: "b".into() },
+            AgentEvent::ThoughtRevised { streamed: "a".into(), text: "b".into() },
+            AgentEvent::ToolCall {
+                id: "c".into(),
+                title: "t".into(),
+                tool_kind: "read".into(),
+                status: "pending".into(),
+                content: vec![],
+                detail: None,
+            },
+            AgentEvent::ToolUpdate { id: "c".into(), title: None, status: None, content: None },
+            AgentEvent::Plan { entries: vec![] },
+            AgentEvent::Mode { mode: "plan".into() },
+            AgentEvent::TurnEnd { turn: 1, stop_reason: "end_turn".into() },
+            AgentEvent::Retract { turn: 1 },
+            AgentEvent::Error { turn: None, message: "x".into() },
+        ];
+        for event in &events {
+            match event {
+                AgentEvent::User { .. }
+                | AgentEvent::TurnStart { .. }
+                | AgentEvent::Text { .. }
+                | AgentEvent::Thought { .. }
+                | AgentEvent::TextRevised { .. }
+                | AgentEvent::ThoughtRevised { .. }
+                | AgentEvent::ToolCall { .. }
+                | AgentEvent::ToolUpdate { .. }
+                | AgentEvent::Plan { .. }
+                | AgentEvent::Mode { .. }
+                | AgentEvent::TurnEnd { .. }
+                | AgentEvent::Retract { .. }
+                | AgentEvent::Error { .. } => {}
+                AgentEvent::Unknown(_) => unreachable!(),
+            }
+            let json = serde_json::to_value(event).unwrap();
+            assert!(AGENT_EVENT_KINDS.contains(&json["kind"].as_str().unwrap()), "{json}");
+            assert_eq!(&serde_json::from_value::<AgentEvent>(json.clone()).unwrap(), event, "{json}");
+        }
+        assert_eq!(events.len(), AGENT_EVENT_KINDS.len());
+        let states = [
+            AgentState::Starting,
+            AgentState::Ready,
+            AgentState::Busy { queued: 1 },
+            AgentState::Failed { message: "x".into() },
+            AgentState::Switching,
+            AgentState::GaveUp { tries: 3, message: "x".into() },
+        ];
+        for state in &states {
+            match state {
+                AgentState::Starting
+                | AgentState::Ready
+                | AgentState::Busy { .. }
+                | AgentState::Failed { .. }
+                | AgentState::Switching
+                | AgentState::GaveUp { .. } => {}
+                AgentState::Unknown(_) => unreachable!(),
+            }
+            let json = serde_json::to_value(state).unwrap();
+            assert_eq!(json["phase"].as_str(), Some(state.phase()), "{json}");
+            assert!(AGENT_PHASES.contains(&state.phase()), "{json}");
+            assert_eq!(&serde_json::from_value::<AgentState>(json.clone()).unwrap(), state, "{json}");
+        }
+        assert_eq!(states.len(), AGENT_PHASES.len());
     }
 
     #[test]

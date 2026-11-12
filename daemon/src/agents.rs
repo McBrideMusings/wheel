@@ -28,18 +28,6 @@ pub struct AgentWaited {
     pub ready: bool,
 }
 
-/// The phase name a state is reported under.
-fn phase(state: &AgentState) -> &'static str {
-    match state {
-        AgentState::Starting => "starting",
-        AgentState::Ready => "ready",
-        AgentState::Busy { .. } => "busy",
-        AgentState::Failed { .. } => "failed",
-        AgentState::GaveUp { .. } => "gave_up",
-        AgentState::Switching => "switching",
-    }
-}
-
 impl AppState {
     /// Reserve conversation `id` for `asking`: Err with the other agent's name when another agent is
     /// in it or is being moved into it. The caller removes the reservation from `switching_into`
@@ -132,7 +120,7 @@ impl AppState {
                 break (agent.state(), false);
             }
         };
-        tracing::info!(%pane, agent = %agent.name, state = phase(&state.0), ready = state.1, "agent wait");
+        tracing::info!(%pane, agent = %agent.name, state = state.0.phase(), ready = state.1, "agent wait");
         Ok(AgentWaited {
             pane,
             agent: agent.name.clone(),

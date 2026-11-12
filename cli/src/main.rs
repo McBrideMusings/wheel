@@ -2779,6 +2779,12 @@ async fn agent_config(
                 "{agent} is switching to the terminal view"
             )));
         }
+        AgentState::Unknown(_) => {
+            return Err(Fail::Other(format!(
+                "{agent} is in a state this wheel does not know: {}",
+                state.phase()
+            )));
+        }
         AgentState::Ready | AgentState::Busy { .. } => {}
     }
     if json {
