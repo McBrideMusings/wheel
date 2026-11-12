@@ -349,14 +349,31 @@ impl Client {
                 }
                 None
             }
-            // A pane header's menu and buttons: `action` open (`pane`, optional `x`, `y`), close, or
-            // run (`pane`, `item`: a menu item's id, or the buttons' pop and background).
+            // Where a pane kind's header puts a control, as Settings › General › Pane header does:
+            // `kind`, `control` (a Swift HeaderControl name) and `placement` bar|menu|off, or `reset`.
+            "/paneheader" => {
+                let Some(kind) = q("kind") else { return refuse(BAD, "kind= is required") };
+                if q("reset").is_some() {
+                    self.reset_header_layout(&kind);
+                } else {
+                    let (Some(control), Some(placement)) = (q("control").as_deref().and_then(crate::pane_header::Control::named), q("placement").as_deref().and_then(crate::pane_header::Placement::named)) else {
+                        return refuse(BAD, "control= and placement= (bar, menu or off) are required");
+                    };
+                    self.set_header_placement(control, &kind, placement);
+                }
+                None
+            }
+            // A pane header's menu and buttons: `action` open (`pane`, optional `x`, `y`, and
+            // `level=header` for the ⋯ menu), close, or run (`pane`, `item`: a menu item's id or a
+            // header button's).
             "/panemenu" => {
                 match q("action").as_deref() {
                     Some("open") => {
-                        let Some(pane) = q("pane").filter(|p| !self.header_menu(p).is_empty()) else { return refuse(MISSING, "pane= names no pane in the grid") };
+                        let Some(pane) = q("pane").filter(|p| !self.header_menu(p, 0).is_empty()) else { return refuse(MISSING, "pane= names no pane in the grid") };
                         let num = |k: &str| q(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(40.);
-                        self.open_pane_menu(&pane, num("x"), num("y"));
+                        // `level=header` opens the ⋯ menu of the header as it is drawn; otherwise the right-click one.
+                        let level = if q("level").as_deref() == Some("header") { self.header_level(&pane) } else { 0 };
+                        self.open_pane_menu(&pane, num("x"), num("y"), level);
                     }
                     Some("close") => self.close_pane_menu(),
                     Some("run") => {
@@ -608,11 +625,15 @@ impl Client {
         for space in &self.spaces {
             for leaf in space.shown() {
                 let placed = leaves.iter().find(|p| p.leaf.id == leaf.id);
+                let level = placed.map_or(0, |p| self.header_level_for(&leaf.kind, p.rect.w));
                 let mut entry = json!({
                     "space": space.id, "kind": leaf.kind, "label": leaf.label, "term": leaf.term, "url": leaf.url, "agent": leaf.agent,
                     "harness": leaf.harness, "status": leaf.status, "visible": placed.is_some(), "site": space.site_of(&leaf.id).map(|s| s.name()),
-                    "menu": self.header_menu(&leaf.id).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled})).collect::<Vec<_>>(),
+                    "menu": self.header_menu(&leaf.id, 0).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled})).collect::<Vec<_>>(),
                     "header_buttons": self.header_button_frames(&leaf.id),
+                    "header_order": self.header_buttons_at(&leaf.id, level).iter().map(|b| b.id).collect::<Vec<_>>(),
+                    "header_level": level,
+                    "more_menu": self.header_menu(&leaf.id, level).iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
                     "frame": placed.map(|p| json!([p.rect.x, p.rect.y, p.rect.w, p.rect.h])),
                     "native": self.native_panes.contains(&leaf.id), "focused": self.focus.current.as_deref() == Some(leaf.id.as_str()),
                     "palette": self.palettes.get(&leaf.id).map(|p| json!({"query": p.query, "rows": p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), "selected": p.selected})),
@@ -660,7 +681,7 @@ impl Client {
             "spaces": self.spaces.iter().map(|s| json!({"id": s.id, "name": s.name, "cwd": s.cwd, "status": s.status, "panes": leaves_of(&s.root).iter().map(|l| l.id.clone()).collect::<Vec<_>>(),
                 "popped": s.popped.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>(), "backgrounded": s.backgrounded.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "conversations": self.conversations_json(),
-            "pane_menu": self.pane_menu.as_ref().map(|(pane, x, y)| json!({"pane": pane, "at": [x, y]})),
+            "pane_menu": self.pane_menu.as_ref().map(|(pane, x, y, level)| json!({"pane": pane, "at": [x, y], "level": level})),
             "grid_drop_highlight": self.grid_drop_highlight().map(|h| json!([h.x, h.y, h.w, h.h])),
             "focus_key": self.focus.current,
             "panes": panes,
@@ -686,6 +707,8 @@ impl Client {
         // The popped cards, bottom first, in window coordinates.
         out["cards"] = layers.iter().filter_map(|l| l.card.as_ref()).map(|c| json!({"panes": c.panes, "frame": [c.frame.x, c.frame.y, c.frame.w, c.frame.h], "grip": [c.grip.x, c.grip.y, c.grip.w, c.grip.h]})).collect();
         out["tray"] = self.tray_json();
+        out["header_layout"] = self.header_layout.borrow().layout.choices_json();
+        out["header_settings_kind"] = json!(self.header_settings_kind);
         out["grid_motion"] = self.motion_json();
         out["card_drag"] = json!(self.card_drag.as_ref().map(|d| json!({"pane": d.pane, "resize": d.resize, "delta": [d.delta.0, d.delta.1]})));
         out

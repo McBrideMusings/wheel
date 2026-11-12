@@ -1078,7 +1078,22 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let log_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.toast_log.clone());
     let rows_before_new = rows(cx)?.1.len();
     ensure!(rows_before_new > 0, "the agent has no rows before the conversations check");
-    ensure!(window.update(cx, |c, _, _| c.choose_header_menu("conversations", &agent_pane))?, "the agent pane's menu offers no Conversations…: {}", pane_now(cx)?["menu"]);
+    // The header's Conversations button by a real press when the pane is wide enough to draw it,
+    // else the ⋯ menu that offers it once dropped (wheel-ynjo.8.4.1).
+    let agent_header = pane_now(cx)?;
+    let conversations_from = if let Some(f) = agent_header["header_buttons"]["conversations"]["frame"].as_array().cloned() {
+        let at = [f[0].as_f64().unwrap_or(0.) + 9., f[1].as_f64().unwrap_or(0.) + 9.];
+        native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        "button"
+    } else {
+        let level = agent_header["header_level"].as_u64().unwrap_or(0) as u8;
+        ensure!(agent_header["more_menu"].as_array().is_some_and(|m| m.iter().any(|i| i == "conversations")), "the agent pane's header at level {level} offers Conversations nowhere: {agent_header}");
+        window.update(cx, |c, _, _| c.open_pane_menu(&agent_pane, 400., 100., level))?;
+        ensure!(window.update(cx, |c, _, _| c.choose_header_menu("conversations", &agent_pane))?, "the ⋯ menu did not run Conversations…");
+        "menu"
+    };
     let mut listing = Value::Null;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -1337,7 +1352,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     ensure!(rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")), "switching back to {old_id} after the scroll check");
-    let conversations_report = json!({"listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id});
+    let conversations_report = json!({"listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     for (split, _, ratio) in &splits_above {
@@ -3263,6 +3278,78 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(motions.iter().any(|m| m.as_str().is_some_and(|t| t.contains("grid motion: layout"))), "no layout change animated: {motions:?}");
     let zoom_report = json!({"area": zoom_area, "from": a_from, "mid": a_mid, "mid_progress": mid["grid_motion"]["progress"], "zoomed": frame(&zoomed, &grid_a),
         "slid_out": [frame(&zoomed, &grid_b), frame(&zoomed, &grid_c)], "sent_grids": sent_now, "grids": grids, "lagged_reports": zoomed["panes"][grid_a.as_str()]["bridge"]["lagged_reports"], "normal_ms": normal_ms, "motions": motions});
+    // The header's layout (wheel-ynjo.8.4.1): a placement moves a control from the bar to the
+    // menu or out of both, Reset puts it back, and a pane narrowed by every split above it
+    // drops controls group by group, its ⋯ menu offering each one dropped, until widened again.
+    let strings = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().or_else(|| x["id"].as_str()).map(str::to_owned)).collect()).unwrap_or_default() };
+    let wide = state!();
+    let header_kind = wide["panes"][grid_a.as_str()]["kind"].as_str().unwrap_or_default().to_owned();
+    let wide_order = strings(&wide["panes"][grid_a.as_str()]["header_order"]);
+    ensure!(wide["panes"][grid_a.as_str()]["header_level"] == 0 && wide_order == ["split-right", "split-down", "pop", "background", "zoom", "menu", "close"], "a wide {header_kind} header: level {} order {wide_order:?}", wide["panes"][grid_a.as_str()]["header_level"]);
+    let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=zoom&placement=menu"));
+    ensure!(code == 200, "paneheader zoom menu got {code}");
+    let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=pop&placement=off"));
+    ensure!(code == 200, "paneheader pop off got {code}");
+    let placed = state!();
+    let (placed_order, placed_menu) = (strings(&placed["panes"][grid_a.as_str()]["header_order"]), strings(&placed["panes"][grid_a.as_str()]["menu"]));
+    ensure!(!placed_order.contains(&"zoom".to_owned()) && placed_menu.contains(&"zoom".to_owned()), "Zoom set to the menu: bar {placed_order:?}, menu {placed_menu:?}");
+    ensure!(!placed_order.contains(&"pop".to_owned()) && !placed_menu.contains(&"pop".to_owned()), "Pop out set to Off: bar {placed_order:?}, menu {placed_menu:?}");
+    ensure!(placed["header_layout"][header_kind.as_str()] == json!({"zoom": "menu", "pop": "off"}), "the layout reads {}", placed["header_layout"]);
+    let (code, _) = call!("POST", "/settings?action=open");
+    ensure!(code == 200, "settings open got {code}");
+    let (code, _) = call!("POST", "/settings?action=tab&tab=general");
+    ensure!(code == 200, "settings tab general got {code}");
+    draw(window, Some(output.join("client-pane-header-settings.png")), cx)?;
+    let (code, _) = call!("POST", "/settings?action=close");
+    ensure!(code == 200, "settings close got {code}");
+    let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&reset=1"));
+    ensure!(code == 200, "paneheader reset got {code}");
+    let reset = until!("Reset put the header back", |s: &Value| strings(&s["panes"][grid_a.as_str()]["header_order"]) == wide_order && s["header_layout"].get(header_kind.as_str()).is_none());
+    let splits = window.update(cx, |c, _, _| c.splits_to(&grid_a))?;
+    ensure!(!splits.is_empty(), "the grid's first pane has no split above it");
+    let narrow_ratio = |split: &str, ratio: f64| -> Result<()> {
+        let out = std::process::Command::new(&cli)
+            .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "ratio", split, &ratio.to_string()]).output()?;
+        ensure!(out.status.success(), "pane ratio {split} {ratio}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        Ok(())
+    };
+    let mut narrowed = vec![];
+    let mut last_width = frame(&wide, &grid_a)[2];
+    // About 287, 201, 172 and 96 pt of the grid's 957: every control, then without Pop Out and
+    // Background, then without the splits, then only the menu and Close.
+    for (share, level) in [(0.3, 0), (0.21, 1), (0.18, 3), (0.1, 4)] {
+        for (split, a_first, _) in &splits {
+            narrow_ratio(split, if *a_first { share } else { 1. - share })?;
+        }
+        let narrow = until!("the narrowed header dropping controls", |s: &Value| (level == 0 || s["panes"][grid_a.as_str()]["header_level"].as_u64().unwrap_or(0) > 0) && frame(s, &grid_a)[2] < last_width - 1.);
+        last_width = frame(&narrow, &grid_a)[2];
+        let (order, more) = (strings(&narrow["panes"][grid_a.as_str()]["header_order"]), strings(&narrow["panes"][grid_a.as_str()]["more_menu"]));
+        for id in &wide_order {
+            let dropped = !order.contains(id);
+            let offered = more.contains(id);
+            ensure!(!dropped || offered || id == "menu", "{id} dropped from a {} pt header (level {}) and not in its ⋯ menu {more:?}", frame(&narrow, &grid_a)[2], narrow["panes"][grid_a.as_str()]["header_level"]);
+        }
+        ensure!(order.ends_with(&["menu".to_owned(), "close".to_owned()]), "a narrow header kept {order:?}");
+        ensure!(narrow["panes"][grid_a.as_str()]["header_level"] == level, "a {} pt header is at level {}, not {level}: {order:?}", frame(&narrow, &grid_a)[2], narrow["panes"][grid_a.as_str()]["header_level"]);
+        narrowed.push(json!({"share": share, "width": frame(&narrow, &grid_a)[2], "level": narrow["panes"][grid_a.as_str()]["header_level"], "bar": order, "menu": more}));
+    }
+    // The ⋯ button by a real press opens the menu at the header's level.
+    let narrow_now = state!();
+    let dots = narrow_now["panes"][grid_a.as_str()]["header_buttons"]["menu"]["frame"].clone();
+    let at = [dots[0].as_f64().unwrap_or(0.) + 9., dots[1].as_f64().unwrap_or(0.) + 9.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    let dots_open = until!("the ⋯ press opened the pane menu", |s: &Value| s["pane_menu"]["pane"] == grid_a.as_str());
+    ensure!(dots_open["pane_menu"]["level"] == narrow_now["panes"][grid_a.as_str()]["header_level"], "the ⋯ menu opened at level {} for a header at {}", dots_open["pane_menu"]["level"], narrow_now["panes"][grid_a.as_str()]["header_level"]);
+    draw(window, Some(output.join("client-header-narrow-menu.png")), cx)?;
+    let (code, _) = call!("POST", "/key?keys=escape");
+    ensure!(code == 200 && state!()["pane_menu"].is_null(), "Esc left the ⋯ menu open");
+    for (split, _, ratio) in &splits {
+        narrow_ratio(split, *ratio)?;
+    }
+    let widened = until!("the widened header drawing every control again", |s: &Value| s["panes"][grid_a.as_str()]["header_level"] == 0 && strings(&s["panes"][grid_a.as_str()]["header_order"]) == wide_order);
+    let header_report = json!({"kind": header_kind, "wide": wide_order, "placed": {"bar": placed_order, "menu": placed_menu}, "reset": strings(&reset["panes"][grid_a.as_str()]["header_order"]), "narrowed": narrowed,
+        "dots_level": dots_open["pane_menu"]["level"], "widened": frame(&widened, &grid_a)});
     // The menu drawn, and Esc closing it.
     let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_a}&x=420&y=120"));
     ensure!(code == 200, "panemenu open got {code}");
@@ -3290,6 +3377,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let mut pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
         "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
     pane_grid_report["zoom"] = zoom_report;
+    pane_grid_report["header"] = header_report;
     let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
         "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
     drop(debug);

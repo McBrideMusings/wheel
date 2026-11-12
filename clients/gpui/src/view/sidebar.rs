@@ -572,8 +572,8 @@ impl Client {
         // zone, else the preview card.
         let rect = if let Some((space, x, y)) = self.space_menu.clone() {
             Some(Rect { x, y, w: sidebar::MENU_W, h: self.menu_height(&space) })
-        } else if let Some((pane, x, y)) = self.pane_menu.clone() {
-            Some(Rect { x, y, w: super::panes::MENU_W, h: self.pane_menu_height(&pane) })
+        } else if let Some((pane, x, y, level)) = self.pane_menu.clone() {
+            Some(Rect { x, y, w: super::panes::MENU_W, h: self.pane_menu_height(&pane, level) })
         } else if let Some(h) = self.grid_drop_highlight() {
             Some(h)
         } else {

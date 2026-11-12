@@ -693,7 +693,43 @@ impl Client {
     /// One topic of this machine's settings as a page of its own.
     fn topic_page(&mut self, topic: Topic, cx: &mut Context<Self>) -> gpui::Div {
         let form = self.settings_form(Layer::Global, topic, cx);
-        self.content(Layer::Global, form, cx)
+        let content = self.content(Layer::Global, form, cx);
+        // The pane header is this client's own drawing, so its box shows whether or not wheeld answers.
+        if topic == Topic::General { div().flex().flex_col().gap_4().child(self.pane_header_box(cx)).child(content) } else { content }
+    }
+
+    /// Settings › General › Pane header (PaneHeaderSettings): a kind picker, Reset, and for each
+    /// control that kind has, where it goes: the top bar, the ⋯ menu, or nowhere.
+    fn pane_header_box(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use crate::pane_header::{Control, KINDS, Placement};
+        let kind = self.header_settings_kind;
+        let store = self.header_layout.borrow();
+        let kinds: Vec<String> = KINDS.iter().map(|k| super::commands::capitalized(k)).collect();
+        let picker = segmented(&kinds.iter().zip(KINDS).map(|(t, k)| (t.as_str(), k == kind)).collect::<Vec<_>>(), false, cx, |this, index| {
+            this.header_settings_kind = KINDS[index];
+        });
+        let changed = store.layout.choices.contains_key(kind);
+        let mut rows = div().flex().flex_col()
+            .child(div().flex().items_center().justify_between().gap_2().px_3().py_2().child(picker)
+                .child(button_state("Reset", !changed, click(cx, move |this| {
+                    if changed {
+                        this.reset_header_layout(kind);
+                    }
+                }))));
+        for control in Control::ALL.into_iter().filter(|c| c.applies(kind)) {
+            let now = store.layout.placement(control, kind);
+            let icon = self.symbol(control.symbol(), 12., TEXT).unwrap_or_else(|| div().into_any_element());
+            let places = segmented(&Placement::ALL.iter().map(|p| (p.title(), *p == now)).collect::<Vec<_>>(), false, cx, move |this, index| {
+                this.set_header_placement(control, kind, Placement::ALL[index]);
+            });
+            rows = rows.child(divider()).child(div().flex().items_center().gap_2().px_3().py_2()
+                .child(div().w(px(20.)).flex().justify_center().child(icon))
+                .child(div().flex_1().child(control.title()))
+                .child(places));
+        }
+        rows = rows.child(divider()).child(div().px_3().py_2().text_xs().text_color(rgb(DIM))
+            .child(format!("Where each icon button of a {kind} pane’s header goes. A narrow header moves what does not fit into the ⋯ menu.")));
+        titled("Pane header", boxed(rows))
     }
 
     /// The keys the daemon reports for one layer that belong to one topic, grouped into a box per

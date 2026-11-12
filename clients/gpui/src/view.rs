@@ -70,6 +70,10 @@ pub struct Client {
     card_drag: Option<CardDrag>,
     /// Where the tray chip sits (shared by every window), the space whose tray list is open, and a press on the chip.
     tray_store: Rc<RefCell<crate::tray::Store>>,
+    /// Where each kind of pane's header puts each control, shared by every window.
+    header_layout: Rc<RefCell<crate::pane_header::Store>>,
+    /// The kind Settings › General › Pane header shows.
+    header_settings_kind: &'static str,
     tray_open: Option<String>,
     tray_drag: Option<crate::tray::Drag>,
     /// Panes drawn by the native views in the space shown, in layout order.
@@ -254,8 +258,8 @@ pub struct Client {
     pub rename: Option<crate::sidebar::Rename>,
     /// A space's context menu: the space and where it was opened.
     pub space_menu: Option<(String, f32, f32)>,
-    /// A pane header's menu: the pane and where it was opened.
-    pub pane_menu: Option<(String, f32, f32)>,
+    /// The open pane menu: its pane, where it opened, and the header level it offers what was dropped at.
+    pub pane_menu: Option<(String, f32, f32, u8)>,
     /// A space or pane to show once this window's layout lists it (a focus request that came
     /// before the layout, a split's new pane): (space, pane, since when in unix ms).
     pending_focus: Option<(Option<String>, Option<String>, u64)>,
@@ -374,7 +378,7 @@ impl Client {
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         let mut client = Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, grid_drawn: HashMap::new(), resizes_held: false, drag: None,
-            popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), tray_open: None, tray_drag: None,
+            popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
@@ -656,7 +660,7 @@ impl Client {
         }
         self.show_placed();
         self.retry_pending_focus();
-        if self.pane_menu.as_ref().is_some_and(|(pane, _, _)| self.header_menu(pane).is_empty()) {
+        if self.pane_menu.as_ref().is_some_and(|(pane, _, _, level)| self.header_menu(pane, *level).is_empty()) {
             self.close_pane_menu();
         }
         if !self.little && !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
@@ -1757,7 +1761,7 @@ impl Client {
                         if e.modifiers.control {
                             cx.stop_propagation();
                             this.focus_pane(&id);
-                            this.open_pane_menu(&id, x, y);
+                            this.open_pane_menu(&id, x, y, 0);
                             cx.notify();
                             return;
                         }
@@ -1782,7 +1786,7 @@ impl Client {
                     move |this, e: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
                         this.focus_pane(&id);
-                        this.open_pane_menu(&id, f32::from(e.position.x), f32::from(e.position.y));
+                        this.open_pane_menu(&id, f32::from(e.position.x), f32::from(e.position.y), 0);
                         cx.notify();
                     }
                 }))
@@ -1790,7 +1794,7 @@ impl Client {
                     ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
                     _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
                 }))
-                .child(self.header_buttons(&p.leaf.id, cx))
+                .child(self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf.kind, r.w), cx))
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
             .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })

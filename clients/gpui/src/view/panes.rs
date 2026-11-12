@@ -6,6 +6,7 @@ use super::*;
 use super::commands::capitalized;
 use serde_json::Value;
 use crate::grid_drop::{self, GridDrop, Zone};
+use crate::pane_header::{self, Control, Placement};
 use wheel_proto::{MoveTarget, PaneSite};
 
 /// One entry of a pane header's menu (AppModel.HeaderMenuItem).
@@ -19,20 +20,29 @@ pub struct HeaderMenuItem {
 /// The width and row height the header menu draws with.
 pub const MENU_W: f32 = 300.0;
 pub const MENU_ROW_H: f32 = 22.0;
-/// The side of one header button.
+/// The side of one header button and the gap between two.
 const BUTTON: f32 = 18.0;
+const BUTTON_GAP: f32 = 2.0;
+/// The header's padding at each end, and the status dot with its gap after the buttons.
+const HEADER_PAD: f32 = 8.0;
+const DOT: f32 = 14.0;
+/// The title's ideal width: a header that would squeeze it below this drops controls instead.
+const TITLE_MIN: f32 = 64.0;
 
-/// The header's buttons, in the Swift order (Split Right, Split Down, Pop Out, Background, Zoom,
-/// the pane menu, Close): (id, SF Symbol, label). Zoom's symbol and label change while zoomed.
-pub const HEADER_BUTTONS: [(&str, &str, &str); 7] = [
-    ("split-right", "square.split.2x1", "Split Right"),
-    ("split-down", "square.split.1x2", "Split Down"),
-    ("pop", "rectangle.on.rectangle", "Pop out"),
-    ("background", "tray.and.arrow.down", "Background"),
-    ("zoom", "arrow.up.left.and.arrow.down.right", "Zoom Pane (⇧⌘↩)"),
-    ("menu", "ellipsis", "Pane menu"),
-    ("close", "xmark", "Close Pane"),
-];
+/// The width `n` header buttons take.
+fn buttons_width(n: usize) -> f32 {
+    n as f32 * BUTTON + n.saturating_sub(1) as f32 * BUTTON_GAP
+}
+
+/// One button the header draws: a control, or the pane menu (`menu`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeaderButton {
+    pub id: &'static str,
+    pub symbol: &'static str,
+    pub label: &'static str,
+    pub enabled: bool,
+    pub on: bool,
+}
 
 /// How long a focus request or a split's new pane waits for the layout to list it.
 const PENDING_FOCUS_MS: u64 = 10_000;
@@ -113,19 +123,47 @@ impl Client {
 
     // MARK: The header's menu
 
-    /// What the pane menu offers (AppModel.headerMenu): the four splits, every space it can move
-    /// to under its session's name, the kinds it can change to, a new space, a new little window
-    /// (none until wheel-ynjo.7.5, so disabled), and Close.
-    pub fn header_menu(&self, pane: &str) -> Vec<HeaderMenuItem> {
+    /// What the pane menu of a header at `level` offers (PaneMenuItems over AppModel.headerMenu):
+    /// first each control the header dropped at that level or the person moved to the menu, then
+    /// the four splits, every space it can move to under its session's name, the kinds it can
+    /// change to, a new space, a new little window (none until wheel-ynjo.7.5, so disabled), and
+    /// Close. A right-click asks at level 0; Split Right, Split Down and Close set to Off are left
+    /// out.
+    pub fn header_menu(&self, pane: &str, level: u8) -> Vec<HeaderMenuItem> {
         let item = |id: String, title: String, enabled: bool| HeaderMenuItem { id, title, enabled };
         let Some(space) = self.space_holding(pane) else { return vec![] };
         let home = Some(space.id.clone());
         let Some(leaf) = std::iter::once(&space.root).chain(&space.popped).chain(&space.backgrounded).flat_map(leaves_of).find(|l| l.id == pane).cloned() else { return vec![] };
-        let known = matches!(leaf.kind.as_str(), "empty" | "terminal" | "web" | "browser" | "agent");
+        let kind = pane_header::kind_name(&leaf.kind);
+        let known = kind != "unknown";
+        let store = self.header_layout.borrow();
+        let layout = &store.layout;
         let mut items = vec![];
+        for control in [Control::Conversations, Control::Pop, Control::Background, Control::Zoom] {
+            if !layout.in_menu(control, kind, level) {
+                continue;
+            }
+            match control {
+                Control::Conversations if leaf.agent.is_some() => items.push(item("conversations".into(), "Conversations…".into(), true)),
+                Control::Pop => items.push(item("pop".into(), "Pop out".into(), true)),
+                Control::Background => items.push(item("background".into(), "Background".into(), true)),
+                Control::Zoom => {
+                    let (enabled, zoomed) = self.zoom_button(pane);
+                    items.push(item("zoom".into(), if zoomed { "Unzoom Pane (⇧⌘↩)" } else { "Zoom Pane (⇧⌘↩)" }.into(), enabled));
+                }
+                _ => {}
+            }
+        }
         if known {
             for word in ["right", "left", "down", "up"] {
-                items.push(item(format!("split-{word}"), format!("Split {}", capitalized(word)), true));
+                let off = match word {
+                    "right" => layout.is_off(Control::SplitRight, kind),
+                    "down" => layout.is_off(Control::SplitDown, kind),
+                    _ => false,
+                };
+                if !off {
+                    items.push(item(format!("split-{word}"), format!("Split {}", capitalized(word)), true));
+                }
             }
         }
         for session in &self.sessions {
@@ -145,12 +183,11 @@ impl Client {
             items.push(item("kind:artifact".into(), "Change Type ▸ Artifact…".into(), true));
             items.push(item("kind:empty".into(), "Change Type ▸ Empty".into(), leaf.kind != "empty"));
         }
-        if leaf.kind == "agent" && leaf.agent.is_some() {
-            items.push(item("conversations".into(), "Conversations…".into(), true));
-        }
         items.push(item("move-new-space".into(), "Move Pane to New Space".into(), true));
         items.push(item("move-new-little".into(), "Move Pane to New Little Window".into(), false));
-        items.push(item("close".into(), "Close Pane".into(), true));
+        if !layout.is_off(Control::Close, kind) {
+            items.push(item("close".into(), "Close Pane".into(), true));
+        }
         items
     }
     /// Run a pane menu item, as the menu, the header's buttons and the debug route do.
@@ -165,6 +202,7 @@ impl Client {
             }
             "pop" => self.toggle_site(&pane, PaneSite::Popped),
             "background" => self.toggle_site(&pane, PaneSite::Backgrounded),
+            "zoom" => self.toggle_zoom(&pane),
             "close" => self.ask_close_pane(&pane),
             "kind:shell" => self.ask_set_kind(&pane, NewPaneKind::Terminal),
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
@@ -185,9 +223,12 @@ impl Client {
             }
         }
     }
-    /// Run `id` when the menu offers it enabled; false when it does not.
+    /// Run `id` when the pane's header offers it enabled, as a button or in the menu open for it
+    /// (the right-click one when none is); false when it does not.
     pub fn choose_header_menu(&mut self, id: &str, pane: &str) -> bool {
-        let offered = matches!(id, "pop" | "background") || self.header_menu(pane).iter().any(|i| i.id == id && i.enabled);
+        let level = self.pane_menu.as_ref().filter(|m| m.0 == pane).map_or(0, |m| m.3);
+        let button = id != "menu" && self.header_buttons_at(pane, self.header_level(pane)).iter().any(|b| b.id == id && b.enabled);
+        let offered = button || self.header_menu(pane, level).iter().any(|i| i.id == id && i.enabled);
         if !offered {
             self.log(format!("pane menu {pane}: {id} not available"));
             return false;
@@ -196,12 +237,13 @@ impl Client {
         self.run_header_menu(id, pane);
         true
     }
-    pub fn open_pane_menu(&mut self, pane: &str, x: f32, y: f32) {
+    /// Open the menu of a header at `level` (0 for a right-click, the header's own for ⋯).
+    pub fn open_pane_menu(&mut self, pane: &str, x: f32, y: f32, level: u8) {
         self.close_space_menu();
-        let h = self.pane_menu_height(pane);
+        let h = self.pane_menu_height(pane, level);
         let x = x.min(self.viewport.0 - MENU_W - 4.).max(0.);
         let y = y.min(self.viewport.1 - h - 4.).max(0.);
-        self.pane_menu = Some((pane.to_owned(), x, y));
+        self.pane_menu = Some((pane.to_owned(), x, y, level));
         self.sync_sidebar_overlay();
     }
     pub fn close_pane_menu(&mut self) {
@@ -209,15 +251,15 @@ impl Client {
             self.sync_sidebar_overlay();
         }
     }
-    pub(super) fn pane_menu_height(&self, pane: &str) -> f32 {
-        self.header_menu(pane).len() as f32 * MENU_ROW_H + 8.
+    pub(super) fn pane_menu_height(&self, pane: &str, level: u8) -> f32 {
+        self.header_menu(pane, level).len() as f32 * MENU_ROW_H + 8.
     }
     /// The pane menu, anchored at the press that opened it.
     pub fn pane_menu_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        let (pane, x, y) = self.pane_menu.clone()?;
+        let (pane, x, y, level) = self.pane_menu.clone()?;
         let mut list = div().absolute().left(px(x)).top(px(y)).w(px(MENU_W)).py(px(4.)).rounded_md().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).flex().flex_col().text_xs()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-        for item in self.header_menu(&pane) {
+        for item in self.header_menu(&pane, level) {
             let colour = if !item.enabled { 0x5a6e64 } else if item.id == "close" { 0xe07a6a } else { 0xd9e8e1 };
             let mut row = div().h(px(MENU_ROW_H)).px(px(10.)).flex().items_center().whitespace_nowrap().overflow_hidden().text_color(rgb(colour)).child(item.title.clone());
             if item.enabled {
@@ -235,35 +277,61 @@ impl Client {
 
     // MARK: The header's buttons
 
+    /// The level `pane`'s header falls to for its width (PaneHeader.levels): the first whose
+    /// buttons leave the title its ideal width.
+    pub fn header_level(&self, pane: &str) -> u8 {
+        let (leaves, _) = self.scene();
+        leaves.iter().find(|p| p.leaf.id == pane).map_or(0, |p| self.header_level_for(&p.leaf.kind, p.rect.w))
+    }
+    /// The level of a header `width` points wide over a pane of `kind`.
+    pub(super) fn header_level_for(&self, kind: &str, width: f32) -> u8 {
+        self.header_layout.borrow().layout.level(pane_header::kind_name(kind), width - 2. * HEADER_PAD - DOT, TITLE_MIN, buttons_width)
+    }
+    /// The buttons `pane`'s header draws at `level`, left to right: the controls its kind's layout
+    /// puts in the bar, the pane menu, then Close.
+    pub fn header_buttons_at(&self, pane: &str, level: u8) -> Vec<HeaderButton> {
+        let Some((kind, has_agent)) = self.space_holding(pane).and_then(|s| s.shown().find(|l| l.id == pane)).map(|l| (pane_header::kind_name(&l.kind), l.agent.is_some())) else { return vec![] };
+        let (zoom_enabled, zoomed) = self.zoom_button(pane);
+        let popped = self.site_of(pane) == Some(PaneSite::Popped);
+        let mut out = vec![];
+        for control in self.header_layout.borrow().layout.bar(kind, level) {
+            if control == Control::Close {
+                out.push(HeaderButton { id: "menu", symbol: "ellipsis", label: "Pane menu", enabled: true, on: false });
+            }
+            out.push(match control {
+                Control::Conversations => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Conversations", enabled: has_agent, on: false },
+                Control::SplitRight => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Right", enabled: true, on: false },
+                Control::SplitDown => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Down", enabled: true, on: false },
+                Control::Pop => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Pop out", enabled: true, on: popped },
+                Control::Background => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Background", enabled: true, on: false },
+                Control::Zoom if zoomed => HeaderButton { id: control.id(), symbol: "arrow.down.right.and.arrow.up.left", label: "Unzoom Pane (⇧⌘↩)", enabled: zoom_enabled, on: true },
+                Control::Zoom => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Zoom Pane (⇧⌘↩)", enabled: zoom_enabled, on: false },
+                Control::Close => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Close Pane", enabled: true, on: false },
+            });
+        }
+        if !out.iter().any(|b| b.id == "menu") {
+            out.push(HeaderButton { id: "menu", symbol: "ellipsis", label: "Pane menu", enabled: true, on: false });
+        }
+        out
+    }
     /// The buttons on `pane`'s header, right of its title; each press stops before the header's
     /// own press, so a click never starts a drag.
-    pub(super) fn header_buttons(&self, pane: &str, cx: &mut Context<Self>) -> gpui::Div {
-        let popped = self.site_of(pane) == Some(PaneSite::Popped);
-        let mut row = div().flex().items_center().gap(px(2.)).flex_none();
-        let (zoom_enabled, zoomed) = self.zoom_button(pane);
-        for (id, symbol, _label) in HEADER_BUTTONS {
-            let symbol = if id == "zoom" && zoomed { "arrow.down.right.and.arrow.up.left" } else { symbol };
-            let colour = match id {
-                "pop" if popped => 0x7fb89a,
-                "zoom" if zoomed => 0x7fb89a,
-                "zoom" if !zoom_enabled => 0x55665d,
-                _ => 0xb7cbc1,
-            };
-            let icon = self.symbol(symbol, 11., colour).unwrap_or_else(|| div().text_xs().child(symbol).into_any_element());
-            let pane = pane.to_owned();
+    pub(super) fn header_buttons(&self, pane: &str, level: u8, cx: &mut Context<Self>) -> gpui::Div {
+        let mut row = div().flex().items_center().gap(px(BUTTON_GAP)).flex_none();
+        for button in self.header_buttons_at(pane, level) {
+            let colour = if button.on { 0x7fb89a } else if !button.enabled { 0x55665d } else { 0xb7cbc1 };
+            let icon = self.symbol(button.symbol, 11., colour).unwrap_or_else(|| div().text_xs().child(button.symbol).into_any_element());
+            let (pane, id, enabled) = (pane.to_owned(), button.id, button.enabled);
             row = row.child(div().id(gpui::ElementId::Name(format!("hdr-{id}-{pane}").into())).w(px(BUTTON)).h(px(BUTTON)).rounded_sm().flex().items_center().justify_center().cursor_pointer()
                 .hover(|s| s.bg(rgb(0x31483e))).child(icon)
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
                     this.focus_pane(&pane);
                     if id == "menu" {
-                        this.open_pane_menu(&pane, f32::from(e.position.x) - MENU_W + BUTTON, f32::from(e.position.y) + 10.);
-                    } else if id == "zoom" {
-                        if this.zoom_button(&pane).0 {
-                            this.toggle_zoom(&pane);
-                        }
-                    } else {
-                        this.choose_header_menu(id, &pane);
+                        this.open_pane_menu(&pane, f32::from(e.position.x) - MENU_W + BUTTON, f32::from(e.position.y) + 10., level);
+                    } else if enabled {
+                        this.log(format!("pane header {pane}: {id}"));
+                        this.run_header_menu(id, &pane);
                     }
                     cx.notify();
                 })));
@@ -273,22 +341,27 @@ impl Client {
     /// Each header button's frame in window points, for `/state`.
     pub fn header_button_frames(&self, pane: &str) -> Option<Value> {
         let (leaves, _) = self.scene();
-        let r = leaves.iter().find(|p| p.leaf.id == pane)?.rect;
-        // The buttons end 8 pt (the header's padding) before the pane's right edge, the status
-        // dot's 12 pt and a 2 pt gap after them.
-        let n = HEADER_BUTTONS.len() as f32;
-        let right = r.x + r.w - 8. - 12. - 2.;
-        let left = right - n * BUTTON - (n - 1.) * 2.;
-        let (zoom_enabled, zoomed) = self.zoom_button(pane);
-        Some(Value::Object(HEADER_BUTTONS.iter().enumerate().map(|(i, (id, _, label))| {
-            let x = left + i as f32 * (BUTTON + 2.);
-            let frame = serde_json::json!([x, r.y + (TITLE - BUTTON) / 2., BUTTON, BUTTON]);
-            let entry = match *id {
-                "zoom" => serde_json::json!({"label": if zoomed { "Unzoom Pane (⇧⌘↩)" } else { label }, "frame": frame, "enabled": zoom_enabled, "on": zoomed}),
-                _ => serde_json::json!({"label": label, "frame": frame}),
-            };
-            ((*id).to_owned(), entry)
+        let placed = leaves.iter().find(|p| p.leaf.id == pane)?;
+        let r = placed.rect;
+        // The buttons end at the header's padding and the status dot, before the pane's right edge.
+        let buttons = self.header_buttons_at(pane, self.header_level_for(&placed.leaf.kind, r.w));
+        let right = r.x + r.w - HEADER_PAD - DOT;
+        let left = right - buttons_width(buttons.len());
+        Some(Value::Object(buttons.iter().enumerate().map(|(i, b)| {
+            let x = left + i as f32 * (BUTTON + BUTTON_GAP);
+            (b.id.to_owned(), serde_json::json!({"label": b.label, "frame": [x, r.y + (TITLE - BUTTON) / 2., BUTTON, BUTTON], "enabled": b.enabled, "on": b.on}))
         }).collect()))
+    }
+    /// Settings › General › Pane header, and its debug route: place `control` for `kind`.
+    pub fn set_header_placement(&mut self, control: Control, kind: &str, placement: Placement) {
+        self.header_layout.borrow_mut().set(control, kind, placement);
+        self.log(format!("pane header: {kind} {} -> {}", control.name(), placement.name()));
+        self.close_pane_menu();
+    }
+    pub fn reset_header_layout(&mut self, kind: &str) {
+        self.header_layout.borrow_mut().reset(kind);
+        self.log(format!("pane header: {kind} reset"));
+        self.close_pane_menu();
     }
 
     // MARK: Focus requests
