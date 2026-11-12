@@ -126,9 +126,11 @@ impl From<&Node> for Tree {
                 let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, home: None, status: status.clone() };
                 match kind {
                     PaneKind::Empty { .. } => leaf.kind = "empty".into(),
-                    PaneKind::Terminal { term, cwd, .. } => {
+                    PaneKind::Terminal { term, cwd, agent, .. } => {
                         leaf.kind = "terminal".into();
                         leaf.term = Some(term.clone());
+                        // The coding agent the shell runs, as its harness.
+                        leaf.harness = agent.as_ref().map(|a| a.name.clone());
                         leaf.label = cwd.clone().unwrap_or_default();
                     }
                     PaneKind::Web { artifact, .. } => {
@@ -336,6 +338,9 @@ mod tests {
         assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, home: None, status: None });
         let agent = node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}));
         assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), home: None, status: None }));
+        // A shell running a coding agent carries the agent as its harness.
+        let shell = node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","agent":{"name":"codex","conversation":"c1"}}));
+        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), home: None, status: None }));
     }
 
     #[test]

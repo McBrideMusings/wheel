@@ -3134,10 +3134,64 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "grid_view_holes": holes, "card_view_holes": own, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=background"));
     ensure!(code == 200, "background got {code}");
-    until!("the third pane backgrounded", |s: &Value| site_list(s, "backgrounded") == json!([grid_c]));
+    // The tray (wheel-ynjo.8.5): the chip at its place on the grid's right edge, cut out of the
+    // grid's terminal; a click opens its list, a drag pins it to another edge, a row brings the pane back.
+    let trayed = until!("the third pane backgrounded with the tray chip shown", |s: &Value| site_list(s, "backgrounded") == json!([grid_c]) && s["tray"]["chip"].is_array());
+    let chip = four(&trayed["tray"]["chip"]);
+    ensure!(trayed["tray"]["place"] == "right" && trayed["tray"]["rows"][0]["pane"] == grid_c.as_str() && trayed["tray"]["rows"][0]["title"] == "Terminal" && trayed["tray"]["open"] == false,
+        "the tray reads {}", trayed["tray"]);
+    ensure!((chip[0] + chip[2] + 8. - (area[0] + area[2])).abs() < 0.5, "the chip {chip:?} is not on the grid's right edge {area:?}");
+    let tray_holes = until!("the chip cut out of the grid terminal", |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["holes"].as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), chip)));
+    let chip_hit = native.call(json!({"op":"hit","point":[chip[0] + chip[2] / 2., chip[1] + chip[3] / 2.]}));
+    ensure!(chip_hit["pane"].is_null(), "a press on the chip lands in pane {}, not on the chip", chip_hit["pane"]);
+    let centre = |r: [f64; 4]| [r[0] + r[2] / 2., r[1] + r[3] / 2.];
+    let click_at = |at: [f64; 2]| {
+        native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    };
+    click_at(centre(chip));
+    let listed = until!("the tray list open", |s: &Value| s["tray"]["open"] == true && s["tray"]["list"].is_array());
+    let list = four(&listed["tray"]["list"]);
+    ensure!(list[0] + list[2] <= chip[0] + 0.5, "the list {list:?} does not open left of the chip {chip:?}");
+    let list_holes = until!("the list cut out of the grid terminal", |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["holes"].as_array().is_some_and(|h| h.len() == 2 && near(four(&h[1]), list)));
+    draw(window, Some(output.join("client-tray-list.png")), cx)?;
+    let (code, escaped) = call!("POST", "/key?keys=escape");
+    ensure!(code == 200 && escaped["taken"] == true, "Esc did not close the tray list: {escaped}");
+    until!("the tray list closed by Esc", |s: &Value| s["tray"]["open"] == false);
+    // A drag to the grid's top edge pins the chip there.
+    let from = centre(chip);
+    let to = [area[0] + area[2] * 0.5, area[1] + 20.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":from}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[from[0] - 30., from[1] - 30.]}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":to}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    let mid_drag = state!();
+    ensure!(mid_drag["tray"]["dragging"] == true && mid_drag["tray"]["open"] == false, "mid-drag the tray reads {}", mid_drag["tray"]);
+    native.call(json!({"op":"post_mouse","kind":"up","point":to}));
+    let moved_tray = until!("the chip pinned to the top edge", |s: &Value| s["tray"]["place"] == "up" && s["tray"]["dragging"].is_null());
+    let moved_chip = four(&moved_tray["tray"]["chip"]);
+    ensure!((moved_chip[1] - (area[1] + 8.)).abs() < 0.5 && (centre(moved_chip)[0] - to[0]).abs() < 0.5 && moved_tray["tray"]["open"] == false,
+        "the dragged chip sits at {moved_chip:?}, not on the top edge at {to:?}");
+    click_at(centre(moved_chip));
+    let below = until!("the list open below the moved chip", |s: &Value| s["tray"]["open"] == true);
+    let below_list = four(&below["tray"]["list"]);
+    ensure!(below_list[1] >= moved_chip[1] + moved_chip[3], "the list {below_list:?} does not open below the chip {moved_chip:?}");
+    draw(window, Some(output.join("client-tray-moved.png")), cx)?;
+    // Its row's pop-out button pops the pane out; Background puts it back in the tray.
+    click_at(centre(four(&below["tray"]["rows"][0]["pop"])));
+    until!("the tray's pop-out button popped the pane", |s: &Value| site_list(s, "popped") == json!([grid_c]) && s["tray"]["chip"].is_null() && s["tray"]["open"] == false);
     let (ok, _, err) = run_pumped(&["pane", "background", &grid_c], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane background failed: {err}");
-    until!("the third pane back from the tray", |s: &Value| grid_panes(s).contains(&grid_c) && s["panes"][grid_c.as_str()]["site"] == "grid");
+    let again = until!("the pane back in the tray", |s: &Value| site_list(s, "backgrounded") == json!([grid_c]) && s["tray"]["chip"].is_array());
+    click_at(centre(four(&again["tray"]["chip"])));
+    let reopened = until!("the tray list open again", |s: &Value| s["tray"]["open"] == true);
+    click_at(centre(four(&reopened["tray"]["rows"][0]["frame"])));
+    let back_from_tray = until!("the row brought the pane back to the grid", |s: &Value| grid_panes(s).contains(&grid_c) && s["panes"][grid_c.as_str()]["site"] == "grid" && s["tray"]["chip"].is_null());
+    ensure!(back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid terminal kept holes after the chip went: {}", back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"]);
+    let tray_report = json!({"chip": chip, "list": list, "grid_view_holes": tray_holes["panes"][grid_a.as_str()]["bridge"]["holes"], "with_list": list_holes["panes"][grid_a.as_str()]["bridge"]["holes"],
+        "moved_place": moved_tray["tray"]["place"], "moved_chip": moved_chip, "list_below": below_list, "row": reopened["tray"]["rows"][0]});
     // The menu drawn, and Esc closing it.
     let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_a}&x=420&y=120"));
     ensure!(code == 200, "panemenu open got {code}");
@@ -3162,7 +3216,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         ensure!(ok, "wheel space close {space} failed: {err}");
     }
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
-    let pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report,
+    let pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
         "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
     let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
         "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});

@@ -17,6 +17,7 @@ mod settings;
 mod sidebar;
 mod title;
 mod toasts;
+mod tray;
 mod windows;
 pub use windows::{CloseAnswer, NameEdit, NameTarget};
 pub use commands::{Confirmation, Pending};
@@ -57,6 +58,10 @@ pub struct Client {
     /// Where this client left each popped card, and the card being moved or resized.
     popped_frames: Rc<RefCell<crate::popped::Frames>>,
     card_drag: Option<CardDrag>,
+    /// Where the tray chip sits (shared by every window), the space whose tray list is open, and a press on the chip.
+    tray_store: Rc<RefCell<crate::tray::Store>>,
+    tray_open: Option<String>,
+    tray_drag: Option<crate::tray::Drag>,
     /// Panes drawn by the native views in the space shown, in layout order.
     pub native_panes: Vec<String>,
     /// Every pane that has a native view, with its kind, and where it was last placed.
@@ -359,7 +364,7 @@ impl Client {
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         let mut client = Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            popped_frames, card_drag: None,
+            popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), tray_open: None, tray_drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
@@ -1369,6 +1374,11 @@ impl Client {
             self.close_pane_menu();
             return true;
         }
+        if k.key == "escape" && (self.tray_is_open() || self.tray_drag.is_some()) {
+            self.tray_drag = None;
+            self.close_tray();
+            return true;
+        }
         if k.key == "escape" && (self.space_drag.is_some() || self.pane_drag.is_some() || self.space_menu.is_some()) {
             self.cancel_space_drag(true);
             self.cancel_pane_drag();
@@ -1523,8 +1533,10 @@ impl Client {
         self.native_panes.clear();
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
         let at = |r: Rect| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)];
+        // The tray chip and its list draw over every layer.
+        let tray = self.tray_holes();
         for (n, layer) in layers.iter().enumerate() {
-            let holes: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).map(at).collect();
+            let holes: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).chain(tray.iter().copied()).map(at).collect();
             for p in &layer.leaves {
                 if self.quarantine.isolates_pane(&p.leaf.id) {
                     continue;
@@ -1594,6 +1606,14 @@ impl Client {
             self.move_drag(x, y);
             cx.notify();
         }
+        if self.tray_drag.is_some() {
+            if e.pressed_button.is_none() {
+                self.tray_release(x, y);
+            } else {
+                self.tray_move(x, y);
+            }
+            cx.notify();
+        }
         if self.card_drag.is_some() {
             // A release GPUI never saw ends the drag where it is.
             if e.pressed_button.is_none() {
@@ -1609,9 +1629,10 @@ impl Client {
         }
     }
     /// The button came up anywhere in the window.
-    fn window_mouse_up(&mut self, e: &MouseUpEvent, cx: &mut Context<Self>) {
+    pub(super) fn window_mouse_up(&mut self, e: &MouseUpEvent, cx: &mut Context<Self>) {
         self.end_drag();
         self.end_card_drag();
+        self.tray_release(f32::from(e.position.x), f32::from(e.position.y));
         self.pointer_up();
         if self.pending_down.is_some() || self.selection.as_ref().is_some_and(|s| s.dragging) {
             self.pending_move = Some(e.position);
@@ -1844,6 +1865,10 @@ impl Render for Client {
                     this.close_pane_menu();
                     cx.notify();
                 }
+                if this.tray_open.is_some() {
+                    this.close_tray();
+                    cx.notify();
+                }
                 if let Some(rn) = &this.rename
                     && !this.space_hit_rect(&rn.space.clone()).is_some_and(|r| crate::sidebar::contains(r, x, y))
                 {
@@ -1884,13 +1909,24 @@ impl Render for Client {
         if let Some(h) = self.grid_drop_highlight() {
             root = root.child(div().absolute().left(px(h.x)).top(px(h.y)).w(px(h.w)).h(px(h.h)).rounded_md().bg(rgba(0x7fb89a24)).border_2().border_color(rgb(0x7fb89a)));
         }
+        // The tray chip over the grid and its cards, and its list while open.
+        if self.tray_open.is_some() && !self.tray_is_open() {
+            self.close_tray();
+        }
+        // A press on a chip that went away (the tray emptied, the space changed) ends with it.
+        if self.tray_drag.is_some() && self.tray_panes().is_empty() {
+            self.tray_drag = None;
+        }
+        if !space_held && !desk {
+            root = root.children(self.tray_elements(cx));
+        }
         if !little && self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.sidebar_element(cx));
         }
         root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.drag_chip());
         // While a card, a divider or a pane is dragged, a layer over the whole window takes the
         // pointer: a card's backdrop occludes the root, whose listeners hear only a pointer over nothing else.
-        if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() {
+        if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() || self.tray_drag.is_some() {
             let resize = self.card_drag.as_ref().is_some_and(|d| d.resize);
             let layer = div().absolute().left_0().top_0().size_full().occlude()
                 .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| this.window_mouse_move(e, cx)))

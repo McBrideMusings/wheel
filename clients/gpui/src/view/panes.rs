@@ -100,10 +100,14 @@ impl Client {
     /// (AppModel.toggleSite).
     pub fn toggle_site(&mut self, pane: &str, site: PaneSite) {
         let Some(now) = self.site_of(pane) else { return };
-        let to = if now == site { PaneSite::Grid } else { site };
-        self.log(format!("pane {pane}: {} -> {}", now.name(), to.name()));
+        self.set_site(pane, if now == site { PaneSite::Grid } else { site });
+    }
+    /// Put `pane` at `site` outright (AppModel.setSite); nothing when it is there already.
+    pub fn set_site(&mut self, pane: &str, site: PaneSite) {
+        let Some(now) = self.site_of(pane).filter(|now| *now != site) else { return };
+        self.log(format!("pane {pane}: {} -> {}", now.name(), site.name()));
         let pane = pane.to_owned();
-        self.send_layout(|req| ClientMsg::PaneSetSite { req: Some(req), pane, site: to });
+        self.send_layout(|req| ClientMsg::PaneSetSite { req: Some(req), pane, site });
     }
 
     // MARK: The header's menu
