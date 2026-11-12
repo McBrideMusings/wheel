@@ -88,7 +88,7 @@ targets:
       testTargets:
         - WheelPhoneUITests
   # Drives the phone with real taps where a launch variable cannot reach: the title menu's popover
-  # and a row's long-press menu. `.claude/skills/project/tools/ios-title-menu.sh` runs it against
+  # and a row's long-press menu. `.claude/skills/project-verify/tools/ios-title-menu.sh` runs it against
   # its own wheeld, passing the pairing code and a shots folder as TEST_RUNNER_ variables.
   WheelPhoneUITests:
     type: bundle.ui-testing

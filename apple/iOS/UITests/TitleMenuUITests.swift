@@ -1,7 +1,7 @@
 import XCTest
 
 /// Drives the title menu with real taps and long presses, against a wheeld that
-/// `.claude/skills/project/tools/ios-title-menu.sh` set up: session "wheel" holding spaces wheel
+/// `.claude/skills/project-verify/tools/ios-title-menu.sh` set up: session "wheel" holding spaces wheel
 /// (two agents working, two panes), alpha and beta; session "games" holding chess.
 ///
 /// The script passes `WHEEL_PAIR_JSON` (a one-time pairing code), `WHEEL_SYNC_DIR` and `WHEEL_SHOTS`

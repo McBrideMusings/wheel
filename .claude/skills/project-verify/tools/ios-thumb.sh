@@ -10,7 +10,7 @@
 # will wait on a permission, one idle) and beta (one waiting, one idle); session Mobile holds app;
 # session Games holds chess and twelve fillers.
 #
-# Needs WHEEL_IOS_DERIVED_DATA: a build-for-testing of the WheelPhone scheme (verify.md § iOS
+# Needs WHEEL_IOS_DERIVED_DATA: a build-for-testing of the WheelPhone scheme (project-verify § iOS
 # title menu). Run with `env -u WHEEL_SPACE -u WHEEL_PANE`.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 SIM=~/.claude/tools/sim

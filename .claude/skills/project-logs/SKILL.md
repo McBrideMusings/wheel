@@ -1,3 +1,8 @@
+---
+name: project-logs
+description: "wheel: where wheeld, the Mac app and the iOS app write their logs, how they reach Loki, and the command that fetches them by device and time. Read when something happened while wheel ran \u2014 on the Mac, on the phone, at a time; fetch the lines yourself, never ask for a pasted log."
+---
+
 # Logs — wheel
 
 wheeld keeps three files and ships them to Loki whenever the machine setting `logs.push_url`
@@ -101,5 +106,5 @@ appear in wheeld.log on the Mac it is paired with.
 
 ## From a line to a fix
 
-`wheel status` and the Mac app's debug server (`verify.md` § 4) reproduce what a line shows;
+`wheel status` and the Mac app's debug server (`project-verify` § 4) reproduce what a line shows;
 from there it is `diagnose`, an `implement` pass, and `wrap-up`.

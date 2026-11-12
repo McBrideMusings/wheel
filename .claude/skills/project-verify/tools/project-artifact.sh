@@ -2,8 +2,8 @@
 # § Project artifact (wheel-z3b7): artifacts/project/collect.py against a fixture beads repo, a
 # folder with no tracker and one whose tracker is broken, and (when it is there) this repo. Needs
 # bd and /usr/bin/python3; no daemon, no app. Prints one ok / FAIL line per check, then the
-# snapshot-size measure perf.md § project limits. The page itself is checked in the Mac app
-# (verify.md § 16).
+# snapshot-size measure project-perf § project limits. The page itself is checked in the Mac app
+# (project-verify § 16).
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 COLLECT="$REPO/artifacts/project/collect.py"
@@ -98,7 +98,7 @@ git -C "$F" worktree add -q "$SCR/wt" 2>/dev/null && {
   check "a worktree resolves to its main checkout" "d['repo'] == '$F'" < "$SCR/wt.json"
 }
 
-# perf.md § project: the snapshot this repo pushes every 30 s.
+# project-perf § project: the snapshot this repo pushes every 30 s.
 if [ -d "$REPO/.beads" ]; then
   t0=$(perl -MTime::HiRes=time -e 'print time')
   collect "$REPO" > "$SCR/repo.json"

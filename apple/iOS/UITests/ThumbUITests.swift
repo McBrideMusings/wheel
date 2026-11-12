@@ -1,7 +1,7 @@
 import XCTest
 
 /// Drives the Thumb navigation with real taps and swipes, against a wheeld that
-/// `.claude/skills/project/tools/ios-thumb.sh` set up. The script passes `WHEEL_PAIR_JSON`,
+/// `.claude/skills/project-verify/tools/ios-thumb.sh` set up. The script passes `WHEEL_PAIR_JSON`,
 /// `WHEEL_SYNC_DIR` and `WHEEL_SHOTS` as TEST_RUNNER_ variables; at each step the test writes
 /// `<sync>/step-<name>` and waits for the script's `<sync>/ack-<name>`.
 final class ThumbUITests: XCTestCase {

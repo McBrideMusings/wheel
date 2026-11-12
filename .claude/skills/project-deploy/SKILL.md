@@ -1,3 +1,8 @@
+---
+name: project-deploy
+description: "wheel: which layer a landed change needs and the order to deploy it \u2014 the client (Wheel.app), the server (wheeld, with the person's yes), built-in artifacts, then the phone. Read before deploying or restarting anything."
+---
+
 # Deploy — wheel
 
 Two layers run separately (ADR-0020): the **client** (`/Applications/Wheel.app`, with the `wheel` command in `Contents/Helpers`) and the **server** (the running `wheeld`, which ships as `Contents/Helpers/Wheel Server.wheelserver`, is copied by the app at launch to `~/Library/Application Support/Wheel/Server/Versions/<source hash>/Wheel Server.app` and runs from there as its own launch agent; macOS lists it in Privacy & Security as Wheel Server with its Desktop, Documents, Downloads and network-volume switches). A client deploy copies the new `wheeld` there but never runs it; a server restart ends every terminal and agent session, so it waits for the person's yes. Never `pkill` Wheel, and never start a deploy before the change has landed on origin/main.

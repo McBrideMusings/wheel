@@ -5,7 +5,7 @@
 # running. The last space is on screen and idle. Records 4 s of idle and four sidebar toggles
 # (POST /sidebar?open=toggle, 0.8 s apart) with POST /metrics, every POST with quiet=1, and keeps
 # a window shot with the sidebar open and closed. A hidden space's running turn must not animate:
-# idle main-thread CPU stays where it is with no turn running. Limits are in perf.md.
+# idle main-thread CPU stays where it is with no turn running. Limits are in project-perf.
 # WHEEL_SHOTS=<dir> keeps the shots and the table as perf-hidden-turns.txt.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"

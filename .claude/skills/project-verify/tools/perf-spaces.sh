@@ -8,7 +8,7 @@
 # Then eight switches among the first four spaces (POST /spacetap, what a click on a sidebar row
 # runs, 0.6 s apart), recorded the same way, with each tap's time from the press to
 # the frame that moves the selection and title and to the frame after the grid shows the space; BIG=<n> gives the second of those spaces n replies, so the switch draws a long transcript.
-# Limits are in perf.md. WHEEL_SHOTS=<dir> keeps the table as perf-spaces.txt.
+# Limits are in project-perf. WHEEL_SHOTS=<dir> keeps the table as perf-spaces.txt.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/mac-lib.sh"
 trap 'app_cleanup; cleanup' EXIT

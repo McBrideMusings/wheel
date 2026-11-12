@@ -1,3 +1,8 @@
+---
+name: project-swarm
+description: "wheel: how swarm workers build and test it side by side \u2014 heavy cargo and xcodebuild commands, the cheap check, shared caches, per-worker daemon ports and support directories. Read before the first build or test in a swarm worktree."
+---
+
 # Swarm — wheel
 
 `H="$HOME/.claude/skills/swarm/swarm"`. Run each command below from the worktree root.
@@ -41,12 +46,12 @@ Offline, the build works only when the Ghostty source is local (`GHOSTTY_SOURCE_
 ## Per-worker resources
 
 The integration tests bind `127.0.0.1:0` and use per-process temp directories, so they already
-run side by side. Everything verify.md and the check scripts use by a fixed name
+run side by side. Everything project-verify and the check scripts use by a fixed name
 does not. Derive your own from the bead id before your first run:
 
 ```bash
 N=$(( $(printf %s "$SWARM_WORKER" | cksum | cut -d' ' -f1) % 400 ))
-WHEEL_PORT=$(( 7500 + N ))             # replaces verify.md's 7499 and any 7498
+WHEEL_PORT=$(( 7500 + N ))             # replaces project-verify's 7499 and any 7498
 WHEEL_DEBUG_PORT=$(( 8000 + N ))       # replaces the Mac debug server's 7421 / 7431
 SCR=/private/tmp/claude/Projects-wheel/swarm-$SWARM_WORKER
 INST=$SCR/inst LOGS=$SCR/logs DD=$SCR/DerivedData
@@ -59,14 +64,14 @@ otherwise asks the real wheeld for the space holding `WHEEL_PANE` and acts on th
   Never start one without `--support-dir` and `--machine-file`: the defaults are the person's real
   instance and `~/.wheel/wheel.toml`.
 - **wheel CLI:** `--url ws://127.0.0.1:$WHEEL_PORT/ws --token-file $INST/token` on every call.
-- **Check scripts** in `.claude/skills/project/tools/` start their own wheeld on a free
+- **Check scripts** in `.claude/skills/project-verify/tools/` start their own wheeld on a free
   port (from `$SWARM_WORKER`) in a `mktemp` directory and remove both on exit, so run them as
-  they are, through `heavy`: `"$H" heavy -- bash .claude/skills/project/tools/all.sh`.
+  they are, through `heavy`: `"$H" heavy -- bash .claude/skills/project-verify/tools/all.sh`.
 - **Mac app:** build with `-derivedDataPath $DD`. Launch with
   `open -g -n --env WHEEL_URL=ws://127.0.0.1:$WHEEL_PORT/ws --env WHEEL_TOKEN_FILE=$INST/token --env WHEEL_DEBUG_PORT=$WHEEL_DEBUG_PORT $DD/Build/Products/Debug/Wheel.app`.
   Never install into `/Applications`. Quit it by PID or by its path under `$DD`, never with
   `pkill Wheel`, which also kills the person's own copy. A worker drives and screenshots the app
-  itself through `$WHEEL_DEBUG_PORT` (verify.md §4); a change the app shows is never left
+  itself through `$WHEEL_DEBUG_PORT` (project-verify §4); a change the app shows is never left
   as "needs a person to look".
 - **Processes:** stop every wheeld you started by its PID. `make kill` stops every wheeld built in
   the checkout it runs from, a check script's included, so a worker never runs it.
@@ -84,4 +89,4 @@ a commit: the person reads it first.
 
 ## Per-worker resources, added for the Mac app's checks
 
-The windows, menu bar, drag, server and pairing checks (`.claude/skills/project/tools/windows.sh`, `menubar.sh`, `window-commands.sh`, `drag.sh`, `server.sh`, `pairing-window.sh`) launch the built app with `open -g -n`, each on its own debug port and its own preferences domain (`WHEEL_PREFS_SUITE`), and start their own wheeld. Run them as they are through `"$H" heavy -- bash .claude/skills/project/tools/<name>.sh` with `WHEEL_DERIVED_DATA=$DD`. They never call `screencapture` and never touch the person's windows or daemon.
+The windows, menu bar, drag, server and pairing checks (`.claude/skills/project-verify/tools/windows.sh`, `menubar.sh`, `window-commands.sh`, `drag.sh`, `server.sh`, `pairing-window.sh`) launch the built app with `open -g -n`, each on its own debug port and its own preferences domain (`WHEEL_PREFS_SUITE`), and start their own wheeld. Run them as they are through `"$H" heavy -- bash .claude/skills/project-verify/tools/<name>.sh` with `WHEEL_DERIVED_DATA=$DD`. They never call `screencapture` and never touch the person's windows or daemon.

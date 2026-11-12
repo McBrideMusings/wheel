@@ -4,7 +4,7 @@
 
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 WHEEL_DERIVED_DATA ?= $(ROOT)/DerivedData
-PROJECT_TOOLS := $(ROOT)/.claude/skills/project/tools
+PROJECT_TOOLS := $(ROOT)/.claude/skills/project-verify/tools
 
 .PHONY: help build-server build-client dev test test-rust test-wheelkit vet fmt kill \
 	deploy-client deploy-dev restart-server restart-server-dev deploy-phone ios-check \

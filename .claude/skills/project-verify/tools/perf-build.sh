@@ -1,5 +1,5 @@
 #!/bin/bash
-# perf.md § build: a test run and a build that follows it recompile nothing a build before them
+# project-perf § build: a test run and a build that follows it recompile nothing a build before them
 # already compiled. Prints the crates each step compiled; exits non-zero over the limit.
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
