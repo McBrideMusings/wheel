@@ -142,6 +142,19 @@ impl Motion {
     }
 }
 
+/// How opaque grid pane `pane` draws under Reduce Motion, where a zoom keeps the other panes in
+/// place and fades them (SpaceGrid's opacity): `zoomed` is the pane shown alone, `unzoomed` the
+/// one a zoom just put back, `progress` the running motion's. The others fade out as the zoomed
+/// pane grows, stay out while it is zoomed, and fade back in as it shrinks.
+pub fn faded(pane: &str, zoomed: Option<&str>, unzoomed: Option<&str>, progress: Option<f32>) -> f32 {
+    match (zoomed, unzoomed, progress) {
+        (Some(z), _, _) if z == pane => 1.,
+        (Some(_), _, p) => 1. - p.unwrap_or(1.),
+        (None, Some(u), Some(p)) if u != pane => p,
+        _ => 1.,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +235,16 @@ mod tests {
         assert!(!m.done(start + Duration::from_millis(219)) && m.done(start + Duration::from_millis(220)));
     }
 
+    #[test]
+    fn reduced_motion_fades_the_others_out_and_back() {
+        assert_eq!(faded("a", Some("a"), None, Some(0.5)), 1.);
+        assert_eq!(faded("b", Some("a"), None, Some(0.25)), 0.75);
+        assert_eq!(faded("b", Some("a"), None, None), 0.);
+        assert_eq!(faded("b", None, Some("a"), Some(0.25)), 0.25);
+        assert_eq!(faded("a", None, Some("a"), Some(0.25)), 1.);
+        assert_eq!(faded("b", None, Some("a"), None), 1.);
+        assert_eq!(faded("b", None, None, Some(0.5)), 1.);
+    }
     #[test]
     fn shape_ignores_what_a_pane_shows() {
         let split = |ratio: f64, a: Tree| Tree::Split { id: "s".into(), horizontal: true, ratio, a: Box::new(a), b: Box::new(leaf("b")) };

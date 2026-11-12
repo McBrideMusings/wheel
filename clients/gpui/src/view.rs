@@ -34,7 +34,7 @@ use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, 
 
 pub const TITLE: f32 = 22.0;
 /// Where a native view was last put: its rect, whether it was hidden, and the holes cut in it.
-type Placement = ([f64; 4], bool, Vec<[f64; 4]>);
+type Placement = ([f64; 4], bool, Vec<[f64; 4]>, f64);
 /// The title row's height; the grid starts under it and ends over the bottom row (`BOTTOM`).
 pub const HEADER: f32 = header::HEIGHT;
 
@@ -64,6 +64,14 @@ pub struct Client {
     motion: Option<crate::motion::Motion>,
     grid_drawn: HashMap<String, Rect>,
     resizes_held: bool,
+    /// The system's Reduce Motion, as the bridge reports it: a zoom keeps the other panes in
+    /// place and fades them instead of sliding them out (SpaceGrid's `reduceMotion`).
+    reduce_motion: bool,
+    /// The pane a zoom just put back under Reduce Motion: the others fade in while the grid moves.
+    unzoomed: Option<String>,
+    /// The running motion is a zoom's or an unzoom's, so its progress is the fade's: a layout
+    /// motion that starts meanwhile leaves the covered panes faded out.
+    zoom_fade: bool,
     drag: Option<(String, bool, Rect)>,
     /// Where this client left each popped card, and the card being moved or resized.
     popped_frames: Rc<RefCell<crate::popped::Frames>>,
@@ -377,7 +385,7 @@ impl Client {
         let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         let mut client = Self {
-            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, grid_drawn: HashMap::new(), resizes_held: false, drag: None,
+            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
@@ -1157,6 +1165,12 @@ impl Client {
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
             Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
+            Frame::Event(BrowserEvent::ReduceMotion { on }) => {
+                if self.reduce_motion != on {
+                    self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
+                }
+                self.reduce_motion = on;
+            }
             // A press in a terminal or page view closes the open popovers, as one on GPUI's drawing does.
             Frame::Event(BrowserEvent::Pressed { pane, point: [x, y] }) => {
                 if self.press_away(x, y) {
@@ -1651,20 +1665,22 @@ impl Client {
                     "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
                     _ => (TITLE, false),
                 };
-                let failed = failed || gone;
+                // Under Reduce Motion a grid view fades as its pane does, and a faded-out one hides.
+                let alpha = if n == 0 { f64::from(self.grid_opacity(&p.leaf.id)) } else { 1. };
+                let failed = failed || gone || alpha <= 0.;
                 let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
-                if self.placed.get(&p.leaf.id).is_none_or(|(r, f, h)| (*r, *f) != (rect, failed) || *h != holes) {
-                    self.native.place(&p.leaf.id, rect, failed, &holes);
-                    self.placed.insert(p.leaf.id.clone(), (rect, failed, holes.clone()));
+                if self.placed.get(&p.leaf.id).is_none_or(|(r, f, h, a)| (*r, *f, *a) != (rect, failed, alpha) || *h != holes) {
+                    self.native.place(&p.leaf.id, rect, failed, &holes, alpha);
+                    self.placed.insert(p.leaf.id.clone(), (rect, failed, holes.clone(), alpha));
                 }
                 self.native_panes.push(p.leaf.id.clone());
             }
         }
         let shown: HashSet<&String> = self.native_panes.iter().collect();
-        let to_hide: Vec<(String, [f64; 4])> = self.placed.iter().filter(|(id, (_, hidden, _))| !shown.contains(id) && !hidden).map(|(id, (rect, _, _))| (id.clone(), *rect)).collect();
+        let to_hide: Vec<(String, [f64; 4])> = self.placed.iter().filter(|(id, (_, hidden, _, _))| !shown.contains(id) && !hidden).map(|(id, (rect, _, _, _))| (id.clone(), *rect)).collect();
         for (id, rect) in to_hide {
-            self.native.place(&id, rect, true, &[]);
-            self.placed.insert(id, (rect, true, vec![]));
+            self.native.place(&id, rect, true, &[], 1.);
+            self.placed.insert(id, (rect, true, vec![], 1.));
         }
         let alive: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| l.id.as_str()).collect();
         for id in self.opened.keys().cloned().collect::<Vec<_>>() {
@@ -1980,7 +1996,14 @@ impl Render for Client {
                 el = el.child(card_backdrop(card));
             }
             for p in &layer.leaves {
-                el = el.child(self.pane_element(p, window, cx));
+                let pane = self.pane_element(p, window, cx);
+                // Under Reduce Motion the panes a zoom covers fade (SpaceGrid's opacity).
+                // A pane faded out draws nothing and takes no press meant for the zoomed one.
+                let faded = if layer.card.is_none() { self.grid_opacity(&p.leaf.id) } else { 1. };
+                if faded <= 0. {
+                    continue;
+                }
+                el = el.child(if faded < 1. { pane.opacity(faded) } else { pane });
             }
             for d in &layer.dividers {
                 el = el.child(divider_element(d, cx));

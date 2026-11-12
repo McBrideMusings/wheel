@@ -3430,6 +3430,77 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(motions.iter().any(|m| m.as_str().is_some_and(|t| t.contains("grid motion: layout"))), "no layout change animated: {motions:?}");
     let zoom_report = json!({"area": zoom_area, "from": a_from, "mid": a_mid, "mid_progress": mid["grid_motion"]["progress"], "zoomed": frame(&zoomed, &grid_a),
         "slid_out": [frame(&zoomed, &grid_b), frame(&zoomed, &grid_c)], "sent_grids": sent_now, "grids": grids, "lagged_reports": zoomed["panes"][grid_a.as_str()]["bridge"]["lagged_reports"], "normal_ms": normal_ms, "motions": motions});
+    // Reduce Motion (wheel-ynjo.8.6), stood in for by the bridge's override: the zoom grows the
+    // first pane over the others, which keep their frames and fade, their views hidden by the end;
+    // the unzoom fades them back. Slowed ten times again so a frame mid-way can be read.
+    let reduced = native.call(json!({"op":"reduce_motion","set":true}));
+    ensure!(reduced["reduce_motion"] == true, "the bridge's reduce_motion override answered {reduced}");
+    let still = until!("the view heard Reduce Motion on", |s: &Value| s["grid_motion"]["reduce_motion"] == true);
+    let (b_from, c_from) = (frame(&still, &grid_b), frame(&still, &grid_c));
+    let still_button = four(&still["panes"][grid_a.as_str()]["header_buttons"]["zoom"]["frame"]);
+    unsafe { std::env::set_var("WHEEL_SLOW_ANIMATIONS", "10") };
+    for kind in ["down", "up"] {
+        native.call(json!({"op":"post_mouse","kind":kind,"point":centre(still_button)}));
+    }
+    pump(&mut connection, 600, &mut layouts, window, cx).await?;
+    draw(window, Some(output.join("client-grid-zoom-reduced-mid.png")), cx)?;
+    let rmid = state!();
+    let opacity = |s: &Value, p: &str| s["panes"][p]["opacity"].as_f64().unwrap_or(-1.);
+    let alpha = |s: &Value, p: &str| s["panes"][p]["bridge"]["alpha"].as_f64().unwrap_or(-1.);
+    ensure!(rmid["grid_motion"]["moving"] == true && rmid["grid_motion"]["zoomed"] == grid_a.as_str(), "600 ms into the reduced zoom the motion reads {}", rmid["grid_motion"]);
+    ensure!(near(frame(&rmid, &grid_b), b_from) && near(frame(&rmid, &grid_c), c_from), "mid reduced zoom the others moved: {:?} {:?} from {b_from:?} {c_from:?}", frame(&rmid, &grid_b), frame(&rmid, &grid_c));
+    let (o_mid, a_mid_alpha) = (opacity(&rmid, &grid_c), alpha(&rmid, &grid_c));
+    ensure!(o_mid > 0.05 && o_mid < 0.95 && (a_mid_alpha - o_mid).abs() < 0.2 && rmid["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
+        "mid reduced zoom the third pane draws at {o_mid}, its view at alpha {a_mid_alpha}: {}", rmid["panes"][grid_c.as_str()]["bridge"]);
+    let rzoomed = until!("the reduced zoom finished", |s: &Value| s["grid_motion"]["moving"] == false && s["grid_motion"]["resizes_held"] == false && near(frame(s, &grid_a), zoom_area));
+    for pane in [&grid_b, &grid_c] {
+        ensure!(opacity(&rzoomed, pane) == 0., "{pane} draws at {} after the reduced zoom", opacity(&rzoomed, pane));
+    }
+    ensure!(near(frame(&rzoomed, &grid_b), b_from) && near(frame(&rzoomed, &grid_c), c_from) && rzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == true,
+        "after the reduced zoom the others are at {:?} {:?}, the third view {}", frame(&rzoomed, &grid_b), frame(&rzoomed, &grid_c), rzoomed["panes"][grid_c.as_str()]["bridge"]);
+    draw(window, Some(output.join("client-grid-zoomed-reduced.png")), cx)?;
+    // A layout change while zoomed starts a layout motion, which is no fade: the covered panes stay out.
+    let zsplit = window.update(cx, |c, _, _| c.splits_to(&grid_c))?.into_iter().next().ok_or_else(|| anyhow::anyhow!("the third pane has no split above it"))?;
+    let set_ratio = |ratio: f64| -> Result<()> {
+        let out = std::process::Command::new(&cli)
+            .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "ratio", &zsplit.id, &ratio.to_string()]).output()?;
+        ensure!(out.status.success(), "pane ratio {} {ratio}: {}", zsplit.id, String::from_utf8_lossy(&out.stderr));
+        Ok(())
+    };
+    set_ratio(if zsplit.ratio > 0.45 { 0.35 } else { 0.55 })?;
+    // until! skips frames read mid-motion, so this one polls for the motion itself.
+    let mut laid = Value::Null;
+    for _ in 0..40 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        laid = state!();
+        if laid["grid_motion"]["moving"] == true {
+            break;
+        }
+    }
+    ensure!(laid["grid_motion"]["moving"] == true, "the zoomed grid never moved for the new ratio: {}", laid["grid_motion"]);
+    ensure!(opacity(&laid, &grid_c) == 0. && laid["panes"][grid_c.as_str()]["bridge"]["hidden"] == true,
+        "a layout change while zoomed showed the third pane at {}: {} {}", opacity(&laid, &grid_c), laid["grid_motion"], laid["panes"][grid_c.as_str()]["bridge"]);
+    until!("the layout motion ended", |s: &Value| s["grid_motion"]["moving"] == false);
+    set_ratio(zsplit.ratio)?;
+    until!("the ratio went back", |s: &Value| s["grid_motion"]["moving"] == false && near(frame(s, &grid_c), c_from) && opacity(s, &grid_c) == 0.);
+    let unzoom_at = four(&rzoomed["panes"][grid_a.as_str()]["header_buttons"]["zoom"]["frame"]);
+    for kind in ["down", "up"] {
+        native.call(json!({"op":"post_mouse","kind":kind,"point":centre(unzoom_at)}));
+    }
+    pump(&mut connection, 600, &mut layouts, window, cx).await?;
+    let rback = state!();
+    let o_back = opacity(&rback, &grid_c);
+    ensure!(rback["grid_motion"]["zoomed"].is_null() && o_back > 0.05 && o_back < 0.95 && rback["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
+        "600 ms into the reduced unzoom the third pane draws at {o_back}: {} {}", rback["grid_motion"], rback["panes"][grid_c.as_str()]["bridge"]);
+    let rdone = until!("the reduced unzoom finished", |s: &Value| s["grid_motion"]["moving"] == false && near(frame(s, &grid_a), a_from));
+    ensure!(opacity(&rdone, &grid_c) == 1. && alpha(&rdone, &grid_c) == 1. && rdone["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
+        "after the reduced unzoom the third pane draws at {}, its view {}", opacity(&rdone, &grid_c), rdone["panes"][grid_c.as_str()]["bridge"]);
+    unsafe { std::env::remove_var("WHEEL_SLOW_ANIMATIONS") };
+    native.call(json!({"op":"reduce_motion","set":null}));
+    let mut zoom_report = zoom_report;
+    zoom_report["reduced"] = json!({"others": [b_from, c_from], "mid": {"progress": rmid["grid_motion"]["progress"], "opacity": o_mid, "alpha": a_mid_alpha, "zoomed_pane": frame(&rmid, &grid_a)},
+        "zoomed": {"opacity": opacity(&rzoomed, &grid_c), "hidden": rzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"]}, "unzoom_mid_opacity": o_back});
     // The header's layout (wheel-ynjo.8.4.1): a placement moves a control from the bar to the
     // menu or out of both, Reset puts it back, and a pane narrowed by every split above it
     // drops controls group by group, its ⋯ menu offering each one dropped, until widened again.

@@ -159,9 +159,9 @@ impl Native {
         self.call(json!({"op":"terminal_look","space":space,"settings":terminal}));
     }
     /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin), with `holes`
-    /// (the same coordinates) cut out of it: the cards drawn over it.
-    pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool, holes: &[[f64; 4]]) {
-        self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden,"holes":holes}));
+    /// (the same coordinates) cut out of it: the cards drawn over it. `alpha` is how opaque it draws.
+    pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool, holes: &[[f64; 4]], alpha: f64) {
+        self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden,"holes":holes,"alpha":alpha}));
     }
     /// Hold every terminal's resizes while the grid animates; on release each sends the grid it ended at.
     pub fn hold_resizes(&self, held: bool) {
@@ -226,6 +226,9 @@ pub enum BrowserEvent {
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
+    /// The system's Reduce Motion, sent once the window attaches and on every change (or the
+    /// check's override, `reduce_motion` with `set`).
+    ReduceMotion { on: bool },
 }
 /// The answer to `render_pane` or `inspect_pane` `id`.
 #[derive(Debug, Deserialize)]
@@ -251,6 +254,8 @@ mod tests {
         assert!(matches!(console, Frame::Event(BrowserEvent::Console { reset: true, ref entries, .. }) if entries.len() == 1 && entries[0].text == "hi"));
         let pressed: Frame = serde_json::from_str(r#"{"event":"pressed","pane":"p4","point":[12.5,40]}"#).unwrap();
         assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
+        let reduced: Frame = serde_json::from_str(r#"{"event":"reduce_motion","on":true}"#).unwrap();
+        assert!(matches!(reduced, Frame::Event(BrowserEvent::ReduceMotion { on: true })));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();
         assert!(matches!(answer, Frame::Answer(Answer::Recorded { id: 7, frames: 12, .. })));
         let refused: Frame = serde_json::from_str(r#"{"answer":"refused","id":8,"message":"not shown"}"#).unwrap();

@@ -192,6 +192,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var sends: [String] = []
     var monitor: Any?
     var pressMonitor: Any?
+    var motionObserver: Any?
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
@@ -219,7 +220,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             pressed(root.hitTest(at), at: root.convert(at, from: superview))
             return event
         }
+        // The GPUI view keeps the system's Reduce Motion: sent once its frames are registered, after
+        // `attach` returns, and on every change.
+        motionObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.emitReduceMotion() }
+        }
+        DispatchQueue.main.async { [weak self] in self?.emitReduceMotion() }
     }
+    func emitReduceMotion() { emit(["event": "reduce_motion", "on": reduceMotion()]) }
     /// The pane whose native view `view` is or lies inside.
     func owner(of view: NSView?) -> PaneHost? {
         guard let view else { return nil }
@@ -257,6 +265,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func detach() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
+        if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
+        motionObserver = nil
         monitor = nil
         pressMonitor = nil
         for id in Array(panes.keys) { close(id) }
@@ -588,6 +598,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func place(_ value: [String: Any]) {
         guard let host = panes[value["pane"] as! String] else { return }
         host.slot.isHidden = value["hidden"] as? Bool == true
+        host.slot.alphaValue = CGFloat(value["alpha"] as? Double ?? 1)
         let a = value["rect"] as! [Double]
         var frame = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
         if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
@@ -676,6 +687,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             pageClient = nil
         case "place": place(value)
         case "hold_resizes": holdResizes(value)
+        case "reduce_motion":
+            // With `set`, the check stands in for the system setting (null hands it back), and
+            // every window hears the new value.
+            if value.keys.contains("set") {
+                reduceMotionOverride = value["set"] as? Bool
+                natives.values.forEach { $0.emitReduceMotion() }
+            }
+            return ["reduce_motion": reduceMotion()]
         case "focus":
             // A pane with no native view is drawn by GPUI: its view takes the keyboard.
             let target = panes[value["pane"] as! String]?.content ?? root
@@ -839,7 +858,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         var panesOut: [String: Any] = [:]
         for (id, host) in panes {
             let f = host.slot.frame
-            var entry: [String: Any] = ["kind": host.kind, "hidden": host.slot.isHidden,
+            var entry: [String: Any] = ["kind": host.kind, "hidden": host.slot.isHidden, "alpha": Double(host.slot.alphaValue),
                 "frame_top": [f.minX, root.isFlipped ? f.minY : root.bounds.height - f.maxY, f.width, f.height],
                 "masked": host.slot.layer?.mask != nil, "holes": host.holesTop, "mask_rects": host.slot.shown,
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
@@ -995,6 +1014,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
 }
 @MainActor private var app: AppNative?
+/// The check's stand-in for the system's Reduce Motion (`reduce_motion` with `set`); nil reads the system's.
+@MainActor private var reduceMotionOverride: Bool?
+@MainActor func reduceMotion() -> Bool { reduceMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
 /// One Native per GPUI window, by the id `attach` hands back.
 @MainActor private var natives: [Int32: Native] = [:]

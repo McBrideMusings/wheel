@@ -1,6 +1,6 @@
 //! Grid motion and zoom (GridMotion.swift, AppModel.toggleZoom, SpaceGrid): a layout change
 //! animates the grid's panes from where they were drawn, and a zoomed pane fills its space while
-//! the others slide out past the grid's edge.
+//! the others slide out past the grid's edge, or, under Reduce Motion, stay in place and fade.
 use super::*;
 use crate::motion::{self, Motion};
 use std::time::Instant;
@@ -31,7 +31,11 @@ impl Client {
         } else {
             self.zoomed.remove(&space_id);
         }
-        self.start_motion(&space_id, if zoom { "zoom" } else { "unzoom" });
+        // Under Reduce Motion the others fade with this motion: out as the pane grows, back in as it shrinks.
+        if self.start_motion(&space_id, if zoom { "zoom" } else { "unzoom" }) {
+            self.zoom_fade = true;
+            self.unzoomed = (!zoom).then(|| pane.to_owned());
+        }
         self.log(format!("pane {pane}: {}", if zoom { "zoomed" } else { "unzoomed" }));
     }
     /// The header's zoom button: (enabled, on). Disabled while the space's grid holds one pane
@@ -56,14 +60,17 @@ impl Client {
             self.zoomed.remove(&space);
         }
     }
-    /// Animate the shown grid from where its panes were drawn last.
-    pub(super) fn start_motion(&mut self, space: &str, why: &str) {
+    /// Animate the shown grid from where its panes were drawn last. Returns whether it started.
+    pub(super) fn start_motion(&mut self, space: &str, why: &str) -> bool {
         if self.space_id.as_deref() != Some(space) || self.grid_drawn.is_empty() {
-            return;
+            return false;
         }
+        self.unzoomed = None;
+        self.zoom_fade = false;
         let length = motion::duration();
         self.log(format!("grid motion: {why}, {} pane(s) over {} ms", self.grid_drawn.len(), length.as_millis()));
         self.motion = Some(Motion::new(space, self.grid_drawn.clone(), Instant::now(), length));
+        true
     }
     /// A new layout for the shown space that moves its panes animates (AppModel.apply's `animated`).
     /// The old tree is compared with the ratios a divider drag drew (`dragged`), so wheeld
@@ -78,13 +85,19 @@ impl Client {
         }
     }
     /// The grid's panes as the zoom and a running animation draw them: the zoomed pane takes the
-    /// whole grid and draws last, every other one slides out past its nearest edge, and no
-    /// divider shows while zoomed or moving.
+    /// whole grid and draws last, every other one slides out past its nearest edge (stays in place
+    /// under Reduce Motion, faded by `grid_opacity`), and no divider shows while zoomed or moving.
     pub(super) fn move_grid(&self, space: &Space, area: Rect, leaves: &mut Vec<Placed>, dividers: &mut Vec<Divider>) {
         let zoomed = self.zoomed_pane(space).map(str::to_owned);
         if let Some(z) = &zoomed {
             for p in leaves.iter_mut() {
-                p.rect = if &p.leaf.id == z { area } else { motion::slid_out(p.rect, area) };
+                p.rect = if &p.leaf.id == z {
+                    area
+                } else if self.reduce_motion {
+                    p.rect
+                } else {
+                    motion::slid_out(p.rect, area)
+                };
             }
             // Stable: the zoomed pane goes last and the others keep their order.
             leaves.sort_by_key(|p| &p.leaf.id == z);
@@ -120,6 +133,8 @@ impl Client {
             }
             Some(_) => {
                 self.motion = None;
+                self.unzoomed = None;
+                self.zoom_fade = false;
                 self.log("grid motion: done".to_owned());
                 false
             }
@@ -149,6 +164,15 @@ impl Client {
         }
         cuts
     }
+    /// How opaque grid pane `pane` draws: under Reduce Motion the panes a zoom covers fade out
+    /// and back in (`motion::faded`); otherwise every one draws whole.
+    pub(super) fn grid_opacity(&self, pane: &str) -> f32 {
+        if !self.reduce_motion {
+            return 1.;
+        }
+        let progress = self.motion.as_ref().filter(|m| self.zoom_fade && self.space_id.as_deref() == Some(m.space.as_str())).map(|m| m.progress(Instant::now()));
+        motion::faded(pane, self.zoomed_here(), self.unzoomed.as_deref(), progress)
+    }
     /// What `/state` reports of the grid's motion and zoom.
     pub(super) fn motion_json(&self) -> serde_json::Value {
         let now = Instant::now();
@@ -159,6 +183,7 @@ impl Client {
             "length_ms": motion::duration().as_millis() as u64,
             "resizes_held": self.resizes_held,
             "zoomed": self.zoomed_here(),
+            "reduce_motion": self.reduce_motion,
         })
     }
 }

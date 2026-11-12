@@ -635,6 +635,7 @@ impl Client {
                     "header_level": level,
                     "more_menu": self.header_menu(&leaf.id, level).iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
                     "frame": placed.map(|p| json!([p.rect.x, p.rect.y, p.rect.w, p.rect.h])),
+                    "opacity": self.grid_opacity(&leaf.id),
                     "native": self.native_panes.contains(&leaf.id), "focused": self.focus.current.as_deref() == Some(leaf.id.as_str()),
                     "palette": self.palettes.get(&leaf.id).map(|p| json!({"query": p.query, "rows": p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), "selected": p.selected})),
                     "browser": self.browsers.get(&leaf.id).map(|b| json!({"address": b.address, "failure": b.failure})),
