@@ -9,6 +9,12 @@ use crate::strip::{clock, local_time};
 use std::collections::HashMap;
 use wheel_proto::ConversationInfo;
 
+/// Whether a harness can fork a conversation at a turn (`AgentPanes.canFork`): Claude Code and
+/// Codex can, Pi cannot.
+pub fn can_fork(harness: Option<&str>) -> bool {
+    matches!(harness, Some("claude" | "codex"))
+}
+
 /// One page of the popover (`ConversationPaging.popover`).
 pub const PAGE: u32 = 20;
 /// The note under the list while nothing was refused.

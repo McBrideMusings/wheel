@@ -6,7 +6,10 @@
 //! transcript line per user and assistant message and a `turn_duration` entry when a turn is over,
 //! in Claude Code's own shape. A conversation is
 //! written out when its first prompt arrives; `--resume` of an id with no transcript exits 1, as
-//! Claude Code does.
+//! Claude Code does. Each user and assistant line carries a `uuid`. `--resume <from>
+//! --fork-session --session-id <id>` copies conversation `from` into `id` before it starts, and
+//! with `--resume-session-at <uuid>` the copy ends at the line with that uuid, as Claude Code's
+//! fork does.
 //!
 //! A user message that carries a `uuid` is echoed back with `isReplay: true` when the process takes
 //! it in, as Claude Code does under `--replay-user-messages`. A message that arrives while a turn
@@ -111,7 +114,8 @@ const MODELS: [(&str, &str, &str); 3] = [
 const WINDOW: u64 = 200_000;
 
 /// The flags `claude --print` takes that carry a value.
-const VALUED: [&str; 13] = [
+const VALUED: [&str; 14] = [
+    "--resume-session-at",
     "--tools",
     "--setting-sources",
     "--permission-mode",
@@ -147,9 +151,14 @@ fn transcript(id: &str) -> PathBuf {
     store_dir().join(format!("{id}.jsonl"))
 }
 
-/// Append one entry to conversation `id`'s transcript, creating it on the first.
+/// Append one entry to conversation `id`'s transcript, creating it on the first. A user or
+/// assistant entry gets a `uuid`, as Claude Code gives each message one.
 fn keep(id: &str, mut entry: Value) {
     entry["sessionId"] = json!(id);
+    if matches!(entry["type"].as_str(), Some("user" | "assistant")) && entry["uuid"].is_null() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        entry["uuid"] = json!(format!("{}-{:06x}", made_up_id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+    }
     let path = transcript(id);
     let _ = std::fs::create_dir_all(store_dir());
     if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -168,6 +177,27 @@ fn user_entry(content: Value) -> Value {
 /// The entry Claude Code writes once a turn, stop hooks included, is over.
 fn turn_over() -> Value {
     json!({"type": "system", "subtype": "turn_duration"})
+}
+
+/// Copy conversation `from` into `to`, through the line whose uuid is `at` when one is given. A
+/// uuid the conversation does not hold exits 1 with nothing copied, so a fork cut at the wrong
+/// message fails where it is asked for.
+fn fork(from: &str, to: &str, at: Option<&str>) {
+    let text = std::fs::read_to_string(transcript(from)).unwrap_or_default();
+    let entries: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let end = match at {
+        Some(at) => match entries.iter().position(|e| e["uuid"].as_str() == Some(at)) {
+            Some(i) => i + 1,
+            None => {
+                eprintln!("No message found with uuid {at} in session {from}");
+                std::process::exit(1);
+            }
+        },
+        None => entries.len(),
+    };
+    for entry in entries.into_iter().take(end) {
+        keep(to, entry);
+    }
 }
 
 fn made_up_id() -> String {
@@ -421,6 +451,11 @@ struct Args {
     replay_secs: f64,
     session: String,
     resume: bool,
+    /// The conversation `--resume` named, which `--fork-session` copies from.
+    resumed: Option<String>,
+    fork: bool,
+    /// The uuid of the line a fork's copy ends at (`--resume-session-at`).
+    fork_at: Option<String>,
     brief: Option<String>,
     allowed: Option<String>,
     disallowed: Option<String>,
@@ -841,6 +876,9 @@ async fn main() {
         replay_secs: f64::INFINITY,
         session: String::new(),
         resume: false,
+        resumed: None,
+        fork: false,
+        fork_at: None,
         brief: None,
         allowed: None,
         disallowed: None,
@@ -864,9 +902,12 @@ async fn main() {
             ("--replay-secs", Some(n)) => args.replay_secs = n.parse().unwrap_or(f64::INFINITY),
             ("--session-id", Some(id)) => args.session = id,
             ("--resume", Some(id)) => {
-                args.session = id;
+                args.session = id.clone();
+                args.resumed = Some(id);
                 args.resume = true;
             }
+            ("--fork-session", _) => args.fork = true,
+            ("--resume-session-at", Some(at)) => args.fork_at = Some(at),
             ("--append-system-prompt", Some(text)) => args.brief = Some(text),
             ("--allowedTools", Some(tools)) => args.allowed = Some(tools),
             ("--disallowedTools", Some(tools)) => args.disallowed = Some(tools),
@@ -877,9 +918,16 @@ async fn main() {
             _ => {}
         }
     }
-    if args.resume && !transcript(&args.session).is_file() {
-        eprintln!("No conversation found with session ID: {}", args.session);
+    let source = args.resumed.clone().unwrap_or_else(|| args.session.clone());
+    if args.resume && !transcript(&source).is_file() {
+        eprintln!("No conversation found with session ID: {source}");
         std::process::exit(1);
+    }
+    if args.fork {
+        if args.session == source {
+            args.session = made_up_id();
+        }
+        fork(&source, &args.session, args.fork_at.as_deref());
     }
     if args.session.is_empty() {
         args.session = made_up_id();

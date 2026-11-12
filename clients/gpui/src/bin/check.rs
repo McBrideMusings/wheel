@@ -1418,6 +1418,82 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             break;
         }
     }
+    // Fork from a reply (wheel-ynjo.10.5.2): the last reply of the resumed conversation's first
+    // turn draws the branch button on a line under it; a press forks the conversation through that
+    // turn into a new agent pane right of this one, and `wheel agent read` gives the fork's rows,
+    // which hold that one prompt and end at that reply.
+    let fork_lines: Vec<usize> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["fork_lines"][agent_name.as_str()].clone())?).unwrap_or_default();
+    let (fork_row, fork_text) = window.update(cx, |c, _, _| {
+        let t = &c.transcripts[&agent_name];
+        let ix = fork_lines.first().copied();
+        let text = ix.and_then(|i| match &t.rows[i].kind { Kind::Reply(x) => Some(x.clone()), _ => None });
+        (ix, text.unwrap_or_default())
+    })?;
+    let fork_row = fork_row.ok_or_else(|| anyhow::anyhow!("no reply of {agent_name} draws a fork line: {fork_lines:?}"))?;
+    let first_turn = window.update(cx, |c, _, _| c.transcripts[&agent_name].fork_turns(fork_row, c.can_fork(&agent_name)))?;
+    ensure!(first_turn == Some(1), "the first fork line, row {fork_row}, forks through {first_turn:?} turns");
+    window.update(cx, |c, _, _| c.reveal(&agent_name, fork_row))?;
+    let mut fork_at = None;
+    for _ in 0..20 {
+        draw(window, None, cx)?;
+        fork_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("fork:{fork_row}")))?;
+        if fork_at.is_some() {
+            break;
+        }
+        tick(cx, 100).await;
+    }
+    let fork_at = fork_at.ok_or_else(|| anyhow::anyhow!("row {fork_row} of {agent_name} drew no fork button"))?;
+    press(&native, fork_at);
+    let mut forked = None;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        forked = log_now(cx)?.iter().rev().find_map(|l| l.strip_prefix("forked into ").map(str::to_owned));
+        if forked.is_some() {
+            break;
+        }
+    }
+    let refused = window.update(cx, |c, _, _| c.state_json()["composer_errors"][agent_name.as_str()].clone())?;
+    let forked = forked.ok_or_else(|| anyhow::anyhow!("the fork never started: refused {refused}, log {:?}", log_now(cx).unwrap_or_default().iter().rev().take(6).collect::<Vec<_>>()))?;
+    let (fork_agent, fork_pane) = forked.split_once(" in pane ").map(|(a, p)| (a.to_owned(), p.to_owned())).unwrap_or_default();
+    let mut fork_rows = vec![];
+    for _ in 0..50 {
+        let read: Value = serde_json::from_str(&wheel(&["agent", "read", &fork_agent, "--json"])?)?;
+        let events: Vec<wheel_proto::StampedEvent> = serde_json::from_value(read["events"].clone())?;
+        let mut t = wheel_gpui::transcript::Transcript::default();
+        for e in &events {
+            t.event(&e.event);
+        }
+        fork_rows = t.rows;
+        if !fork_rows.is_empty() {
+            break;
+        }
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    }
+    let prompts = fork_rows.iter().filter(|r| matches!(r.kind, Kind::User { .. })).count();
+    let ends_at_reply = matches!(fork_rows.iter().rev().find(|r| matches!(r.kind, Kind::Reply(_))).map(|r| &r.kind), Some(Kind::Reply(x)) if *x == fork_text);
+    ensure!(prompts == 1 && ends_at_reply, "the fork {fork_agent} holds {prompts} prompts and ends {:?}, not at {fork_text:?}", fork_rows.last().map(|r| &r.kind));
+    let mut fork_pane_right = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let panes = window.update(cx, |c, _, _| c.state_json()["panes"].clone())?;
+        let (a, f) = (&panes[agent_pane.as_str()]["frame"], &panes[fork_pane.as_str()]["frame"]);
+        if let (Some(a), Some(f)) = (a.as_array(), f.as_array()) {
+            fork_pane_right = f[0].as_f64() > a[0].as_f64();
+            break;
+        }
+    }
+    draw(window, Some(output.join("client-fork.png")), cx)?;
+    ensure!(fork_pane_right, "the fork's pane {fork_pane} is not right of {agent_pane}");
+    wheel(&["pane", "close", &fork_pane])?;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.state_json()["panes"][fork_pane.as_str()].is_null())? {
+            break;
+        }
+    }
+    let fork_report = json!({"row": fork_row, "lines": fork_lines, "agent": fork_agent, "pane": fork_pane, "prompts": prompts, "ends_at_reply": ends_at_reply, "right_of_source": fork_pane_right});
+    let fork_rows = fork_rows.len();
     click_pane(&native, &agent_pane, cx)?;
     tick(cx, 300).await;
     // A 1000-message conversation scrolls without dropping frames (wheel-ynjo.10.6): the check
@@ -3953,6 +4029,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["composer"]["attachment_path_in_message"] = attachments_report["attachment_path_in_message"].clone();
     report["composer"]["attachments"] = attachments_report;
     report["conversations"] = conversations_report;
+    report["conversations"]["fork_rows"] = json!(fork_rows);
+    report["conversations"]["fork"] = fork_report;
     report["scroll"] = scroll_report;
     // Last: it closes every window.
     report["menu_bar"] = menu_bar_check(&bridge, &agent_name, &mut connection, &mut layouts, window, &output, cx).await?;

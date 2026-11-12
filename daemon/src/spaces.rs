@@ -1716,9 +1716,11 @@ impl AppState {
             .ok_or_else(|| format!("agent {agent} has no conversation to fork yet"))?;
         // Refused before a pane is made: Claude Code's transcript says at once whether it holds
         // that many turns. Codex says so when its fork starts.
+        // The home the agent runs with: the pane's own, else `agent.claude.home`, else Claude
+        // Code's default, as the launch picks it.
         if Harness::parse(&harness) == Some(Harness::Claude) {
-            let home = crate::claude::store(place.home.as_deref().map(std::path::Path::new))
-                .or_else(|| self.agent_home("claude").map(std::path::PathBuf::from))
+            let configured = place.home.as_deref().map(std::path::PathBuf::from).or_else(|| self.agent_home("claude"));
+            let home = crate::claude::store(configured.as_deref())
                 .ok_or("the agent's configuration directory is not known")?;
             let cwd = place.cwd.clone().unwrap_or(space_cwd);
             let source = conversation.clone();

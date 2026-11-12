@@ -76,6 +76,36 @@ impl Client {
             None => ClientMsg::AgentConversationNew { req: Some(req), agent },
         });
     }
+    /// Whether `agent`'s harness and wheeld can fork its conversation at a turn (`AppModel`'s
+    /// `canFork`: `AgentPanes.canFork` and protocol 28).
+    pub fn can_fork(&self, agent: &str) -> bool {
+        self.server_protocol.is_some_and(|p| p >= 28)
+            && self.spaces.iter().flat_map(|s| s.all()).find(|l| l.agent.as_deref() == Some(agent)).is_some_and(|l| conv::can_fork(l.harness.as_deref()))
+    }
+    /// Fork `agent`'s conversation through the turn of reply `ix` (`ChatFork.swift`'s `fork`):
+    /// wheeld splits a new agent pane right of this one holding it through that reply.
+    pub fn fork(&mut self, agent: &str, ix: usize) {
+        let can = self.can_fork(agent);
+        let Some(turns) = self.transcripts.get(agent).and_then(|t| t.fork_turns(ix, can)) else { return };
+        self.press(format!("fork {agent} {ix}"));
+        self.log(format!("transcript {agent}: fork at row {ix}, turn {turns}"));
+        let req = self.agent_req(agent, false, None);
+        self.send(&ClientMsg::AgentFork { req: Some(req), agent: agent.to_owned(), turns });
+    }
+    /// The branch button under or over reply `ix`, with RowView.swift's tooltip.
+    pub(super) fn fork_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let a = agent.to_owned();
+        let glyph = title::symbol(&self.native, &self.symbols, "arrow.triangle.branch", 11., 0x8fa89b).unwrap_or_else(|| "fork".into_any_element());
+        div().id(gpui::ElementId::Name(format!("fork-{agent}-{ix}").into())).relative().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
+            .tooltip(crate::tooltip::tip("Fork the conversation through this turn into a new pane"))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.fork(&a, ix);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(glyph)
+            .child(recorded(agent, &format!("fork:{ix}"), &self.controls))
+    }
     /// Why the rows cannot be picked now, or None.
     fn conversation_block(&self, agent: &str) -> Option<&'static str> {
         let t = self.transcripts.get(agent);

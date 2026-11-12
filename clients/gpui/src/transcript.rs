@@ -140,6 +140,66 @@ impl Transcript {
         })
     }
 
+    /// How many turns the conversation holds through row `ix`: the prompts at or before it, a turn
+    /// being one prompt and what the agent did after it, as wheeld counts (`ChatFork.swift`'s
+    /// `turnCount`). None for a row before any prompt.
+    pub fn turn_count(&self, ix: usize) -> Option<u32> {
+        let through = self.rows.get(..=ix)?;
+        let turns = through.iter().filter(|r| matches!(r.kind, Kind::User { .. })).count() as u32;
+        (turns > 0).then_some(turns)
+    }
+
+    /// The turn count to fork at for row `ix`, or None when it cannot be forked from: the harness
+    /// or wheeld cannot (`can_fork` false), or its turn is the one running (`forkTurns`). A
+    /// message queued behind the running turn is no turn yet, so it leaves that turn running.
+    pub fn fork_turns(&self, ix: usize, can_fork: bool) -> Option<u32> {
+        let turns = self.turn_count(ix).filter(|_| can_fork)?;
+        let total = self.rows.iter().filter(|r| matches!(r.kind, Kind::User { queued: false, .. })).count() as u32;
+        (!(self.busy() && turns >= total)).then_some(turns)
+    }
+
+    /// Whether row `ix` is the last reply of a finished turn, which keeps a line for its buttons
+    /// under it; an earlier reply shows them over its corner while the pointer is on it
+    /// (`TranscriptView.swift`'s `lastRepliesOfFinishedTurns`). A queued message ends no turn.
+    pub fn ends_turn(&self, ix: usize) -> bool {
+        if !matches!(self.rows.get(ix).map(|r| &r.kind), Some(Kind::Reply(_))) {
+            return false;
+        }
+        for row in &self.rows[ix + 1..] {
+            match row.kind {
+                Kind::Reply(_) => return false,
+                Kind::User { queued: false, .. } => return true,
+                _ => {}
+            }
+        }
+        !self.busy()
+    }
+
+    /// The replies that draw the fork button on a line of their own under them: the ends of
+    /// finished turns that follow a prompt, in row order (`ends_turn` and `fork_turns` for every
+    /// row, in one pass from the end).
+    pub fn fork_lines(&self, can_fork: bool) -> Vec<usize> {
+        if !can_fork {
+            return vec![];
+        }
+        let (mut ends, mut finished, mut found) = (vec![], !self.busy(), false);
+        for (ix, row) in self.rows.iter().enumerate().rev() {
+            match row.kind {
+                Kind::User { queued: false, .. } => (finished, found) = (true, false),
+                Kind::Reply(_) if finished && !found => {
+                    ends.push(ix);
+                    found = true;
+                }
+                _ => {}
+            }
+        }
+        ends.reverse();
+        // A reply above every prompt forks nothing.
+        let first_prompt = self.rows.iter().position(|r| matches!(r.kind, Kind::User { .. }));
+        ends.retain(|&ix| first_prompt.is_some_and(|p| p < ix));
+        ends
+    }
+
     /// Rows above the queued messages.
     fn settled(&self) -> usize {
         self.rows.len() - self.queued_turns.len()
@@ -531,6 +591,51 @@ mod tests {
     fn ev(t: &mut Transcript, event: serde_json::Value) {
         t.on_message(&msg(json!({"ev":"agent","agent":"a1","event":event})), "a1");
     }
+    /// The fork button's rules (`ChatFork.swift`, `lastRepliesOfFinishedTurns`): each reply forks
+    /// through the prompts at or above it, the running turn's replies do not, a reply before any
+    /// prompt does not, and only the last reply of a finished turn keeps a line under it.
+    #[test]
+    fn fork_turns_and_turn_ends() {
+        let mut t = Transcript::default();
+        ev(&mut t, json!({"kind":"text","text":"hello before any prompt"}));
+        for (turn, prompt) in [(1, "one"), (2, "two")] {
+            ev(&mut t, json!({"kind":"user","text":prompt,"turn":turn}));
+            ev(&mut t, json!({"kind":"turn_start","turn":turn}));
+            ev(&mut t, json!({"kind":"text","text":format!("first of {prompt}")}));
+            ev(&mut t, json!({"kind":"tool_call","id":format!("t{turn}"),"title":"Read","tool_kind":"read","status":"completed"}));
+            ev(&mut t, json!({"kind":"text","text":format!("last of {prompt}")}));
+            ev(&mut t, json!({"kind":"turn_end","turn":turn,"stop_reason":"end_turn"}));
+        }
+        t.state = "ready".into();
+        let replies: Vec<usize> = t.rows.iter().enumerate().filter(|(_, r)| matches!(r.kind, Kind::Reply(_))).map(|(i, _)| i).collect();
+        assert_eq!(replies.len(), 5, "{:?}", kinds(&t));
+        assert_eq!(replies.iter().map(|&i| t.fork_turns(i, true)).collect::<Vec<_>>(), vec![None, Some(1), Some(1), Some(2), Some(2)]);
+        assert_eq!(t.fork_turns(replies[1], false), None);
+        assert_eq!(t.fork_lines(true), vec![replies[2], replies[4]]);
+        assert!(t.fork_lines(false).is_empty());
+        // A third turn running: its replies cannot fork and the second turn's end keeps its line.
+        ev(&mut t, json!({"kind":"user","text":"three","turn":3}));
+        ev(&mut t, json!({"kind":"turn_start","turn":3}));
+        ev(&mut t, json!({"kind":"text","text":"working on three"}));
+        t.state = "busy".into();
+        let running = t.rows.len() - 1;
+        assert!(matches!(t.rows[running].kind, Kind::Reply(_)));
+        assert_eq!(t.fork_turns(running, true), None);
+        assert!(!t.ends_turn(running));
+        assert_eq!(t.fork_lines(true), vec![replies[2], replies[4]]);
+        // A message queued behind the running turn ends nothing and leaves it running.
+        ev(&mut t, json!({"kind":"user","text":"four","turn":4}));
+        assert!(!t.ends_turn(running));
+        assert_eq!(t.fork_turns(running, true), None);
+        assert_eq!(t.fork_lines(true), vec![replies[2], replies[4]]);
+        assert_eq!(t.fork_lines(true), (0..t.rows.len()).filter(|&i| t.ends_turn(i) && t.fork_turns(i, true).is_some()).collect::<Vec<_>>());
+        // Once it is over, its last reply forks through three turns.
+        t.state = "ready".into();
+        assert!(t.ends_turn(running));
+        assert_eq!(t.fork_turns(running, true), Some(3));
+        assert_eq!(t.fork_lines(true), vec![replies[2], replies[4], running]);
+    }
+
     fn kinds(t: &Transcript) -> Vec<&Kind> {
         t.rows.iter().map(|r| &r.kind).collect()
     }

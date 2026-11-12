@@ -715,6 +715,8 @@ impl Client {
             "edge": self.card_hot_edge().map(|e| crate::grid_drop::Zone::Edge(e).label())})));
         out["space_menu"] = json!(self.space_menu.as_ref().map(|(space, x, y)| json!({"space": space, "at": [x, y]})));
         out["edge_bar"] = json!(self.edge_bar().map(|b| [b.x, b.y, b.w, b.h]));
+        out["composer_errors"] = json!(self.composer_errors);
+        out["fork_lines"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.fork_lines))).collect::<serde_json::Map<_, _>>());
         out
     }
 }

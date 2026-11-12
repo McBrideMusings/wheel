@@ -555,6 +555,10 @@ impl Client {
                         }
                         ServerMsg::AgentQueued { req, agent, turn } => self.on_queued(*req, agent, *turn),
                         ServerMsg::Ok { req } => self.on_agent_answer(*req, None),
+                        ServerMsg::Started { req, pane, agent: Some(forked), .. } if self.agent_reqs.contains_key(req) => {
+                            self.log(format!("forked into {forked} in pane {pane}"));
+                            self.on_agent_answer(*req, None);
+                        }
                         ServerMsg::Agent { agent, event } => {
                             if let wheel_proto::AgentEvent::Retract { turn } = event.event {
                                 self.on_retract(agent, turn);
@@ -1263,6 +1267,7 @@ impl Client {
         let agents: Vec<String> = self.transcripts.keys().cloned().collect();
         for agent in agents {
             let queue = self.queue_view(&agent);
+            let can_fork = self.can_fork(&agent);
             let Some(t) = self.transcripts.get_mut(&agent) else { continue };
             let changed = t.take_changed();
             let replaced = t.take_replaced();
@@ -1270,9 +1275,17 @@ impl Client {
             let column = self.columns.entry(agent.clone()).or_insert_with(|| {
                 let state = ListState::new(0, ListAlignment::Bottom, px(OVERDRAW));
                 state.set_follow_mode(FollowMode::Tail);
-                Column { state, count: 0, queue: composer::QueueView::default() }
+                Column { state, count: 0, queue: composer::QueueView::default(), fork_lines: vec![] }
             });
             let mut from = changed.unwrap_or(usize::MAX);
+            // A turn that ends gives its last reply the fork line, which makes that row taller.
+            let fork_lines = t.fork_lines(can_fork);
+            if column.fork_lines != fork_lines {
+                let differs = column.fork_lines.iter().zip(&fork_lines).position(|(a, b)| a != b).unwrap_or(column.fork_lines.len().min(fork_lines.len()));
+                let first = column.fork_lines.get(differs).into_iter().chain(fork_lines.get(differs)).min().copied();
+                from = from.min(first.unwrap_or(usize::MAX));
+                column.fork_lines = fork_lines;
+            }
             if column.queue != queue {
                 // A queue line comes or goes under the row of the turn it is about.
                 let turns: HashSet<u64> = column.queue.turns().chain(queue.turns()).collect();
@@ -2258,6 +2271,8 @@ struct Column {
     state: ListState,
     count: usize,
     queue: composer::QueueView,
+    /// The replies drawn with the fork button on a line under them (`Transcript::fork_lines`).
+    fork_lines: Vec<usize>,
 }
 /// How far past the visible rows the column lays out, in points, so a scroll finds them ready.
 const OVERDRAW: f32 = 600.;
@@ -2337,6 +2352,20 @@ impl Client {
                 let mut col = div().flex().flex_col().gap_1().text_color(rgb(0xd9e8e1));
                 for block in blocks.iter() {
                     col = col.child(block_el(block, &mut texts, &self.highlights, cx));
+                }
+                // The fork button (RowView.swift's `actions`): on a line of its own under the last
+                // reply of a finished turn, over the top right corner of an earlier one while the
+                // pointer is on it, so the parts of a turn stay close.
+                let line = self.columns.get(agent).is_some_and(|c| c.fork_lines.binary_search(&ix).is_ok());
+                if line || t.fork_turns(ix, self.can_fork(agent)).is_some() {
+                    let button = self.fork_button(agent, ix, cx);
+                    if line {
+                        col = col.child(div().flex().gap(px(6.)).child(button));
+                    } else {
+                        let group: gpui::SharedString = format!("reply-{agent}-{ix}").into();
+                        col = col.relative().group(group.clone())
+                            .child(div().absolute().top(px(-2.)).right_0().invisible().group_hover(group, |s| s.visible()).child(button));
+                    }
                 }
                 col
             }

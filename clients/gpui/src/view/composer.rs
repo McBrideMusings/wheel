@@ -180,7 +180,7 @@ impl Client {
     }
 
     /// A request id for an op on `agent`'s messages, kept until wheeld answers it.
-    fn agent_req(&mut self, agent: &str, now: bool, editing: Option<u64>) -> u64 {
+    pub(super) fn agent_req(&mut self, agent: &str, now: bool, editing: Option<u64>) -> u64 {
         self.composer_errors.remove(agent);
         let req = self.req();
         self.agent_reqs.insert(req, AgentReq { agent: agent.to_owned(), now, editing });
