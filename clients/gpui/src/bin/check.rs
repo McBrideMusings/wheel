@@ -3800,6 +3800,25 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     let after_new = state(cx);
     let popover_window_open = popover_any.update(cx, |_, _, _| ()).is_ok();
     ensure!(after_new["popover"]["open"] == false && !popover_window_open, "the popover stayed open after New Window: handle held {}, window open {popover_window_open}", after_new["popover"]["open"]);
+    // A Dock click with every window minimised (wheel-ynjo.7.6): AppKit finds no visible window and
+    // GPUI calls `reopen` though windows are open; it opens one on the first session no window shows.
+    let windows_before_dock = wheel_gpui::windows::with(|r| r.windows.len());
+    let (sessions_now, _) = window.update(cx, |c, _, _| c.layout_lists())?;
+    let dock_session = wheel_gpui::windows::with(|r| {
+        sessions_now.iter().find(|s| !r.shows_session(&s.id)).map(|s| s.id.clone()).or_else(|| r.focused().and_then(|w| w.session.clone()))
+    });
+    cx.update(|cx| wheel_gpui::view::reopen(cx));
+    let mut windows_after_dock = windows_before_dock;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        windows_after_dock = wheel_gpui::windows::with(|r| r.windows.len());
+        if windows_after_dock > windows_before_dock {
+            break;
+        }
+    }
+    let dock_opened = wheel_gpui::windows::with(|r| r.windows.last().and_then(|w| w.session.clone()));
+    ensure!(windows_after_dock == windows_before_dock + 1 && dock_opened == dock_session,
+        "a Dock click with {windows_before_dock} window(s) open and none visible left {windows_after_dock} open, the newest on {dock_opened:?}; wanted one more, on {dock_session:?}");
     // Answer the permission, so the fixture is left as it was.
     let answered = window.update(cx, |c, _, cx| {
         let perm = c.perms.first().cloned();
@@ -3830,6 +3849,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         "fixture_waiting": fixture_waiting, "rows_waiting": row_waiting, "dock_while_waiting": waiting_state["item"]["dock"], "answered": answered,
         "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
         "new_window": {"before": windows_before, "after": windows_after, "popover_closed": after_new["popover"]["open"] == false},
+        "dock_reopen": {"before": windows_before_dock, "after": windows_after_dock, "session": dock_opened, "wanted": dock_session},
         "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space},
         "log": still["log"]}))
 }

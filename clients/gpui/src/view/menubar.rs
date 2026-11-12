@@ -87,17 +87,20 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     menu
 }
 
-/// The Dock icon was clicked: with no main window open, open one on the first session no window
-/// shows (AppDelegate.applicationShouldHandleReopen, AppModel.openWindowForBackground).
+/// The Dock icon was clicked with no window visible: open one on the first session no window
+/// shows, or on the focused window's session when every session is shown
+/// (AppDelegate.applicationShouldHandleReopen, AppModel.openWindowForBackground). GPUI calls this
+/// only when AppKit's `hasVisibleWindows` is false (gpui_macos platform.rs `should_handle_reopen`),
+/// and a minimised window is not visible, so this opens one whether the windows are all closed or
+/// all minimised.
 pub fn reopen(cx: &mut App) {
     let Some(menu) = menu_bar() else { return };
-    if crate::windows::with(|r| r.windows.is_empty()) {
-        menu.update(cx, |m, cx| {
-            let session = m.background_sessions().into_iter().next();
-            m.log(format!("dock icon: no window open; opening one on {}", session.as_deref().unwrap_or("no session")));
-            m.open_window(session, cx);
-        });
-    }
+    menu.update(cx, |m, cx| {
+        let session = m.background_sessions().into_iter().next();
+        let open = crate::windows::with(|r| r.windows.len());
+        m.log(format!("dock icon: no window visible ({open} open); opening one on {}", session.as_deref().unwrap_or("the focused window's session")));
+        m.open_window(session, cx);
+    });
 }
 
 impl MenuBar {
