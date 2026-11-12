@@ -2971,7 +2971,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
                 pump(&mut connection, 100, &mut layouts, window, cx).await?;
                 draw(window, None, cx)?;
                 got = state!();
-                if ($cond)(&got) {
+                // A frame read while the grid animates is a step of the motion, not where it ends.
+                if got["grid_motion"]["moving"] != true && ($cond)(&got) {
                     held = true;
                     break;
                 }
@@ -3192,6 +3193,67 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid terminal kept holes after the chip went: {}", back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"]);
     let tray_report = json!({"chip": chip, "list": list, "grid_view_holes": tray_holes["panes"][grid_a.as_str()]["bridge"]["holes"], "with_list": list_holes["panes"][grid_a.as_str()]["bridge"]["holes"],
         "moved_place": moved_tray["tray"]["place"], "moved_chip": moved_chip, "list_below": below_list, "row": reopened["tray"]["rows"][0]});
+    // Zoom and grid motion (wheel-ynjo.8.2): the header's zoom button grows the first pane over
+    // the grid while the others slide out past their nearest edge, slowed ten times by
+    // WHEEL_SLOW_ANIMATIONS so a frame mid-way can be read. Its terminal sends no resize until the
+    // motion ends, then one. A double-click on the header puts the grid back, and ⇧⌘↩ zooms again.
+    let zoom_area = four(&json!(window.update(cx, |c, _, _| { let r = c.grid_area(); [r.x, r.y, r.w, r.h] })?));
+    let before_zoom = state!();
+    let a_from = frame(&before_zoom, &grid_a);
+    let sent = |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["sent_grids"].as_array().cloned().unwrap_or_default();
+    let sent_before = sent(&before_zoom).len();
+    let zoom_button = before_zoom["panes"][grid_a.as_str()]["header_buttons"]["zoom"].clone();
+    ensure!(zoom_button["enabled"] == true && zoom_button["on"] == false && before_zoom["grid_motion"]["zoomed"].is_null(), "the zoom button reads {zoom_button} before a zoom");
+    // SAFETY: only the main thread reads the variable (`motion::duration`), and this runs on it.
+    unsafe { std::env::set_var("WHEEL_SLOW_ANIMATIONS", "10") };
+    let zoom_at = centre(four(&zoom_button["frame"]));
+    native.call(json!({"op":"post_mouse","kind":"down","point":zoom_at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":zoom_at}));
+    pump(&mut connection, 400, &mut layouts, window, cx).await?;
+    draw(window, Some(output.join("client-grid-zoom-mid.png")), cx)?;
+    let mid = state!();
+    let a_mid = frame(&mid, &grid_a);
+    ensure!(mid["grid_motion"]["moving"] == true && mid["grid_motion"]["zoomed"] == grid_a.as_str() && mid["grid_motion"]["resizes_held"] == true && mid["grid_motion"]["length_ms"] == 2200,
+        "400 ms after the zoom button the motion reads {}", mid["grid_motion"]);
+    ensure!(a_mid[2] > a_from[2] + 1. && a_mid[2] < zoom_area[2] - 1. && a_mid[3] > a_from[3] + 1. && a_mid[3] < zoom_area[3] - 1., "mid-zoom the first pane is {a_mid:?}, not between {a_from:?} and the grid {zoom_area:?}");
+    ensure!(sent(&mid).len() == sent_before, "the terminal sent a resize mid-zoom: {:?}", sent(&mid));
+    let zoomed = until!("the zoom finished and the terminal's size sent", |s: &Value| s["grid_motion"]["resizes_held"] == false && sent(s).len() > sent_before);
+    let apart = |f: [f64; 4], a: [f64; 4]| f[0] >= a[0] + a[2] || a[0] >= f[0] + f[2] || f[1] >= a[1] + a[3] || a[1] >= f[1] + f[3];
+    ensure!(near(frame(&zoomed, &grid_a), zoom_area), "the zoomed pane is {:?}, not the grid {zoom_area:?}", frame(&zoomed, &grid_a));
+    for pane in [&grid_b, &grid_c] {
+        ensure!(apart(frame(&zoomed, pane), zoom_area), "{pane} is at {:?}, inside the grid {zoom_area:?} while another is zoomed", frame(&zoomed, pane));
+    }
+    ensure!(zoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == true, "the slid-out terminal's view still shows: {}", zoomed["panes"][grid_c.as_str()]["bridge"]);
+    let (grids, sent_now) = (zoomed["panes"][grid_a.as_str()]["bridge"]["grids"].clone(), sent(&zoomed));
+    ensure!(sent_now.len() == sent_before + 1 && grids.as_array().and_then(|g| g.last()) == sent_now.last(), "the zoom sent {:?} after {sent_before}, the terminal's last grid is {:?}", sent_now, grids.as_array().and_then(|g| g.last()));
+    let unzoom_button = &zoomed["panes"][grid_a.as_str()]["header_buttons"]["zoom"];
+    ensure!(unzoom_button["on"] == true && unzoom_button["label"] == "Unzoom Pane (⇧⌘↩)", "the zoomed pane's button reads {unzoom_button}");
+    draw(window, Some(output.join("client-grid-zoomed.png")), cx)?;
+    let title_at = [zoom_area[0] + 40., zoom_area[1] + 11.];
+    for clicks in [1, 2] {
+        native.call(json!({"op":"post_mouse","kind":"down","point":title_at,"clicks":clicks}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":title_at,"clicks":clicks}));
+    }
+    let unzoomed = until!("the header's double-click put the grid back", |s: &Value| s["grid_motion"]["zoomed"].is_null() && near(frame(s, &grid_a), a_from));
+    ensure!(unzoomed["sidebar"]["pane_drag"].is_null() && unzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == false, "after the unzoom the drag reads {} and the third view {}", unzoomed["sidebar"]["pane_drag"], unzoomed["panes"][grid_c.as_str()]["bridge"]);
+    unsafe { std::env::remove_var("WHEEL_SLOW_ANIMATIONS") };
+    let (code, keyed) = call!("POST", "/key?keys=shift%2Bcmd%2Benter");
+    ensure!(code == 200 && keyed["taken"] == true, "⇧⌘↩ got {code} {keyed}");
+    let keyed_zoom = until!("⇧⌘↩ zoomed the focused pane", |s: &Value| s["grid_motion"]["zoomed"] == grid_a.as_str() && near(frame(s, &grid_a), zoom_area));
+    let normal_ms = keyed_zoom["grid_motion"]["length_ms"].clone();
+    ensure!(normal_ms == 220, "the motion lasts {normal_ms} ms with WHEEL_SLOW_ANIMATIONS unset");
+    // A split ends the zoom: its new pane would sit hidden behind the zoomed one.
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_a}&item=split-right"));
+    ensure!(code == 200, "split-right got {code}");
+    let split_unzoomed = until!("the split ended the zoom", |s: &Value| grid_panes(s).len() == 4 && s["grid_motion"]["zoomed"].is_null());
+    let grid_d = grid_panes(&split_unzoomed).into_iter().find(|p| ![&grid_a, &grid_b, &grid_c].contains(&p)).unwrap_or_default();
+    let (ok, _, err) = run_pumped(&["pane", "close", &grid_d], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane close {grid_d} failed: {err}");
+    until!("the split's pane closed", |s: &Value| grid_panes(s).len() == 3);
+    let motions: Vec<Value> = state!()["log"].as_array().map(|l| l.iter().filter(|x| x.as_str().is_some_and(|t| t.contains("grid motion: ") && !t.ends_with("done"))).cloned().collect()).unwrap_or_default();
+    ensure!(motions.iter().any(|m| m.as_str().is_some_and(|t| t.contains("grid motion: layout"))), "no layout change animated: {motions:?}");
+    let zoom_report = json!({"area": zoom_area, "from": a_from, "mid": a_mid, "mid_progress": mid["grid_motion"]["progress"], "zoomed": frame(&zoomed, &grid_a),
+        "slid_out": [frame(&zoomed, &grid_b), frame(&zoomed, &grid_c)], "sent_grids": sent_now, "grids": grids, "lagged_reports": zoomed["panes"][grid_a.as_str()]["bridge"]["lagged_reports"], "normal_ms": normal_ms, "motions": motions});
     // The menu drawn, and Esc closing it.
     let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_a}&x=420&y=120"));
     ensure!(code == 200, "panemenu open got {code}");
@@ -3216,8 +3278,9 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         ensure!(ok, "wheel space close {space} failed: {err}");
     }
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
-    let pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
+    let mut pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
         "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
+    pane_grid_report["zoom"] = zoom_report;
     let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
         "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
     drop(debug);

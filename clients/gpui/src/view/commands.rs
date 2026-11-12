@@ -88,7 +88,7 @@ impl Client {
         self.space().is_some_and(|s| leaves_of(&s.root).len() > 1)
     }
     /// Whether the action means anything now. The surfaces other parity beads own (settings,
-    /// usage, the sidebar, the window modes, zoom, the agent pane's two views, renaming) are
+    /// usage, the sidebar, the window modes, the agent pane's two views, renaming) are
     /// listed and unbound until those beads land.
     pub fn action_enabled(&self, id: &str) -> bool {
         self.enabled(id, false)
@@ -113,7 +113,8 @@ impl Client {
             "last-space" => spaces() > 0,
             "settings" => true,
             "toggle-sidebar" | "usage" | "mode-spaces" | "mode-desk" => true,
-            "zoom-pane" | "switch-view" => false,
+            "zoom-pane" => self.zoom_enabled(),
+            "switch-view" => false,
             other => {
                 if let Some(n) = other.strip_prefix("space-").and_then(|n| n.parse::<usize>().ok()) {
                     return spaces() >= n;
@@ -203,6 +204,11 @@ impl Client {
             }
             "focus-previous" | "focus-next" => self.cycle_focus(id == "focus-next"),
             "equalize-splits" => self.equalize_splits(),
+            "zoom-pane" => {
+                if let Some(pane) = focused {
+                    self.toggle_zoom(&pane);
+                }
+            }
             "pane-terminal" | "pane-browser" => {
                 if let Some(pane) = focused {
                     self.ask_set_kind(&pane, if id == "pane-terminal" { NewPaneKind::Terminal } else { NewPaneKind::Browser });
@@ -691,7 +697,9 @@ impl Client {
                 let Some(pane) = self.focus.current.clone() else { return };
                 let req = self.req();
                 self.palette_reqs.artifact_after_split.insert(req, info);
-                self.send(&ClientMsg::PaneSplit { req: Some(req), pane, dir: Some(Dir::Right), focus: false, site: None });
+                let split = ClientMsg::PaneSplit { req: Some(req), pane, dir: Some(Dir::Right), focus: false, site: None };
+                self.unzoom_for(&split);
+                self.send(&split);
             }
             Item::Recent { dir } | Item::NewSpaceHere { dir, .. } | Item::Folder { path: dir, .. } => self.create_space(&dir),
             Item::Target { verb: Verb::CloseSpace, id, .. } => self.ask_close_space(&id),

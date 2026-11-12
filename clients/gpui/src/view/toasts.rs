@@ -80,7 +80,9 @@ impl Client {
         self.toast_sources.layout_error = None;
         let req = self.req();
         self.layout_reqs.insert(req);
-        self.send(&make(req));
+        let message = make(req);
+        self.unzoom_for(&message);
+        self.send(&message);
         req
     }
     /// A message the stack is built from. Returns whether it was one.

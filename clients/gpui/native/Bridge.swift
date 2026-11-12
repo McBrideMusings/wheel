@@ -84,6 +84,13 @@ final class Slot: NSView {
     var browser: BrowserPane?
     var browserChanges: AnyCancellable?
     var grids: [[Int]] = []
+    /// The grids sent to wheeld as `term_resize`; the report waiting while the grid moves; and a
+    /// count of reports, so a lagging one's fallback knows a newer one came.
+    var sent: [[Int]] = []
+    var heldReport: InMemoryTerminalViewport?
+    var reports = 0
+    /// The reports that did not fit the view when they came.
+    var lagged = 0
     var writes: [String] = []
     init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
     var content: NSView { (pageShown ? pageView : nil) ?? web ?? terminal! }
@@ -371,7 +378,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 Task { @MainActor in
                     guard let self, let host else { return }
                     host.grids.append([Int(viewport.columns), Int(viewport.rows)])
-                    self.send(["op": "term_resize", "id": term, "cols": viewport.columns, "rows": viewport.rows])
+                    self.resized(host, viewport)
                 }
             })
             terminal.controller = controller(for: host.space)
@@ -495,6 +502,66 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             host.web?.isHidden = host.pageShown
         }
     }
+    /// While the grid animates (`hold_resizes`), a terminal's resizes wait: only the grid it ends
+    /// at goes to wheeld, as AppModel.settle sends a terminal's size when the layout animation ends.
+    var resizesHeld = false
+    /// A report can lag its view: the surface reflows a display frame after the view moved, so a
+    /// report whose pixels are not the view's is a grid of an earlier frame and waits for the one
+    /// that follows, sent anyway after `lagLimit` with no newer report (AppModel.settle's rules).
+    static let lagLimit: Duration = .milliseconds(100)
+    static let paddingPoints: CGFloat = 24
+    func resized(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
+        if resizesHeld { host.heldReport = vp; return }
+        host.reports += 1
+        guard fitsView(host, vp) else {
+            host.lagged += 1
+            sendUnlessNewer(host, vp)
+            return
+        }
+        sendSize(host, vp)
+    }
+    /// Send `vp` after `lagLimit` unless a newer report came meanwhile.
+    func sendUnlessNewer(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
+        let report = host.reports
+        Task { @MainActor [weak self, weak host] in
+            try? await Task.sleep(for: Self.lagLimit)
+            guard let self, let host, host.reports == report else { return }
+            // A motion that began meanwhile holds it, so its end sends it when nothing newer comes.
+            if self.resizesHeld { host.heldReport = host.heldReport ?? vp } else { self.sendSize(host, vp) }
+        }
+    }
+    func sendSize(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
+        let grid = [Int(vp.columns), Int(vp.rows)]
+        guard host.sent.last != grid, let term = host.termID else { return }
+        host.sent.append(grid)
+        send(["op": "term_resize", "id": term, "cols": grid[0], "rows": grid[1]])
+    }
+    /// Whether report `vp` is of the terminal view's present frame: its pixels are the view's
+    /// less the padding and less than a cell.
+    func fitsView(_ host: PaneHost, _ vp: InMemoryTerminalViewport) -> Bool {
+        guard let view = host.terminal, vp.widthPixels > 0, vp.heightPixels > 0, vp.columns > 0, vp.rows > 0 else { return true }
+        let scale = view.window?.backingScaleFactor ?? 2
+        let slack = Self.paddingPoints * scale
+        let cw = max(CGFloat(vp.cellWidthPixels), CGFloat(vp.widthPixels) / CGFloat(vp.columns))
+        let ch = max(CGFloat(vp.cellHeightPixels), CGFloat(vp.heightPixels) / CGFloat(vp.rows))
+        let dw = view.bounds.width * scale - CGFloat(vp.widthPixels)
+        let dh = view.bounds.height * scale - CGFloat(vp.heightPixels)
+        return (0...slack + cw).contains(dw) && (0...slack + ch).contains(dh)
+    }
+    func holdResizes(_ value: [String: Any]) {
+        resizesHeld = value["held"] as? Bool == true
+        guard !resizesHeld else { return }
+        // The report held last is of a frame before the motion's end, a cell short of its view
+        // or more: the surface reports the grid of its end frame a display frame later, and only
+        // when that grid differs. So it waits for that report, and goes when none comes.
+        for host in panes.values {
+            if let vp = host.heldReport {
+                host.heldReport = nil
+                host.reports += 1
+                sendUnlessNewer(host, vp)
+            }
+        }
+    }
     func place(_ value: [String: Any]) {
         guard let host = panes[value["pane"] as! String] else { return }
         host.slot.isHidden = value["hidden"] as? Bool == true
@@ -585,6 +652,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             pageClient?.stop()
             pageClient = nil
         case "place": place(value)
+        case "hold_resizes": holdResizes(value)
         case "focus":
             // A pane with no native view is drawn by GPUI: its view takes the keyboard.
             let target = panes[value["pane"] as! String]?.content ?? root
@@ -656,7 +724,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             if kind == "down" || kind == "move" { mouseTarget = root.hitTest(root.convert(point, to: root.superview)) }
             if let event = NSEvent.mouseEvent(with: eventType, location: root.convert(point, to: nil), modifierFlags: flags,
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,
-                context: nil, eventNumber: mouseNumber, clickCount: 1, pressure: kind == "up" ? 0 : 1), let target = mouseTarget {
+                context: nil, eventNumber: mouseNumber, clickCount: value["clicks"] as? Int ?? 1, pressure: kind == "up" ? 0 : 1), let target = mouseTarget {
                 switch kind {
                 case "down": target.mouseDown(with: event)
                 case "drag": target.mouseDragged(with: event)
@@ -766,7 +834,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                                      "components": page.surface?.components.count ?? 0, "diagnostics": page.diagnostics]
                 }
             }
-            else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["writes"] = host.writes
+            else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["sent_grids"] = host.sent; entry["lagged_reports"] = host.lagged; entry["writes"] = host.writes
                    entry["pixels"] = host.terminal?.layer?.contents != nil
                    let space = host.space ?? ""
                    entry["space"] = host.space ?? NSNull()

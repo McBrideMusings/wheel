@@ -21,6 +21,7 @@ mod title;
 mod toasts;
 mod tray;
 mod windows;
+mod zoom;
 pub use windows::{CloseAnswer, NameEdit, NameTarget};
 pub use commands::{Confirmation, Pending};
 pub use title::{BOTTOM, MenuRow, Symbols, TitleMenu, symbol};
@@ -56,6 +57,13 @@ pub struct Client {
     space_id: Option<String>,
     /// Ratios being dragged, until the daemon confirms them in its next layout.
     overrides: HashMap<String, f64>,
+    /// The pane each space shows alone (AppModel.zoomedPanes), the grid's running animation, where
+    /// the shown grid's panes were drawn last (where the next animation starts), and whether the
+    /// bridge holds the terminals' resizes while it runs.
+    zoomed: HashMap<String, String>,
+    motion: Option<crate::motion::Motion>,
+    grid_drawn: HashMap<String, Rect>,
+    resizes_held: bool,
     drag: Option<(String, bool, Rect)>,
     /// Where this client left each popped card, and the card being moved or resized.
     popped_frames: Rc<RefCell<crate::popped::Frames>>,
@@ -365,7 +373,7 @@ impl Client {
         let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         let mut client = Self {
-            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
+            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, grid_drawn: HashMap::new(), resizes_held: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), tray_open: None, tray_drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
@@ -632,9 +640,11 @@ impl Client {
         if keep_statuses {
             layout.keep_statuses(&self.spaces);
         }
+        let old_root = self.space().map(|s| s.root.clone());
         self.spaces = layout.spaces;
         self.sessions = layout.sessions;
-        self.overrides.clear();
+        let dragged = std::mem::take(&mut self.overrides);
+        self.animate_layout(old_root, &dragged);
         if self.follow_little_space() {
             return;
         }
@@ -791,6 +801,7 @@ impl Client {
         let area = self.grid_area();
         let (mut leaves, mut dividers) = (vec![], vec![]);
         place(&space.root, area, &self.overrides, &mut leaves, &mut dividers);
+        self.move_grid(space, area, &mut leaves, &mut dividers);
         let mut layers = vec![Layer { card: None, leaves, dividers }];
         for index in crate::popped::order(&space.popped, self.focus.current.as_deref()) {
             let tree = &space.popped[index];
@@ -1537,9 +1548,13 @@ impl Client {
         let at = |r: Rect| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)];
         // The tray chip and its list draw over every layer.
         let tray = self.tray_holes();
+        let area = self.grid_area();
         for (n, layer) in layers.iter().enumerate() {
-            let holes: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).chain(tray.iter().copied()).map(at).collect();
+            let over: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).chain(tray.iter().copied()).map(at).collect();
             for p in &layer.leaves {
+                // A grid view sliding past the grid's edge, or under the zoomed pane, has those parts cut out too.
+                let (cuts, gone) = if n == 0 { (self.grid_cuts(&p.leaf.id, area, &layer.leaves), crate::motion::apart(p.rect, area)) } else { (vec![], false) };
+                let holes: Vec<[f64; 4]> = over.iter().copied().chain(cuts.into_iter().map(at)).collect();
                 if self.quarantine.isolates_pane(&p.leaf.id) {
                     continue;
                 }
@@ -1568,6 +1583,7 @@ impl Client {
                     "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
                     _ => (TITLE, false),
                 };
+                let failed = failed || gone;
                 let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
                 if self.placed.get(&p.leaf.id).is_none_or(|(r, f, h)| (*r, *f) != (rect, failed) || *h != holes) {
                     self.native.place(&p.leaf.id, rect, failed, &holes);
@@ -1745,6 +1761,14 @@ impl Client {
                             cx.notify();
                             return;
                         }
+                        // A double-click zooms the pane, or puts the grid back (the header's onTapGesture(count: 2)).
+                        if e.click_count == 2 && this.site_of(&id) == Some(wheel_proto::PaneSite::Grid) {
+                            cx.stop_propagation();
+                            this.cancel_pane_drag();
+                            this.toggle_zoom(&id);
+                            cx.notify();
+                            return;
+                        }
                         // In a card the header moves the card (PoppedWindowDrag); in the grid it drags the pane.
                         if this.site_of(&id) == Some(wheel_proto::PaneSite::Popped) {
                             this.card_press(&id, false, x, y);
@@ -1835,7 +1859,10 @@ impl Render for Client {
         let desk = self.mode == "desk";
         let layers = if space_held || desk { vec![] } else { layers };
         let leaves: Vec<Placed> = layers.iter().flat_map(|l| l.leaves.iter().cloned()).collect();
+        self.grid_drawn = layers.first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default();
+        let moving = self.tick_motion(window);
         self.sync_native(&layers);
+        self.release_resizes();
         self.sync_agents(&leaves);
         self.frames += 1;
         self.settle_selection();
@@ -1893,20 +1920,32 @@ impl Render for Client {
         if !little && desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.desk_element());
         }
+        // While the grid moves or a pane is zoomed, panes slide past the grid's edge: they draw
+        // clipped to it, in window coordinates inside a layer the grid's size.
+        let clipped = moving || self.zoomed_here().is_some();
+        let mut grid = div().absolute().left_0().top_0().size_full();
         for layer in &layers {
             if let Some(card) = &layer.card {
-                root = root.child(card_backdrop(card));
+                grid = grid.child(card_backdrop(card));
             }
             for p in &layer.leaves {
-                root = root.child(self.pane_element(p, window, cx));
+                grid = grid.child(self.pane_element(p, window, cx));
             }
             for d in &layer.dividers {
-                root = root.child(divider_element(d, cx));
+                grid = grid.child(divider_element(d, cx));
             }
             if let Some(card) = &layer.card {
-                root = root.child(self.card_grip(card, cx));
+                grid = grid.child(self.card_grip(card, cx));
             }
         }
+        root = if clipped {
+            let a = self.grid_area();
+            let (w, h) = self.viewport;
+            root.child(div().absolute().left(px(a.x)).top(px(a.y)).w(px(a.w)).h(px(a.h)).overflow_hidden()
+                .child(grid.left(px(-a.x)).top(px(-a.y)).w(px(w)).h(px(h))))
+        } else {
+            root.child(grid)
+        };
         // The part of the target a dragged pane would take: all of it to swap, a half to dock.
         if let Some(h) = self.grid_drop_highlight() {
             root = root.child(div().absolute().left(px(h.x)).top(px(h.y)).w(px(h.w)).h(px(h.h)).rounded_md().bg(rgba(0x7fb89a24)).border_2().border_color(rgb(0x7fb89a)));

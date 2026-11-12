@@ -163,6 +163,10 @@ impl Native {
     pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool, holes: &[[f64; 4]]) {
         self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden,"holes":holes}));
     }
+    /// Hold every terminal's resizes while the grid animates; on release each sends the grid it ended at.
+    pub fn hold_resizes(&self, held: bool) {
+        self.call(json!({"op":"hold_resizes","held":held}));
+    }
     /// Drop the bridge's daemon socket, so the next terminal opened connects anew.
     pub fn disconnect(&self) {
         self.call(json!({"op":"disconnect"}));

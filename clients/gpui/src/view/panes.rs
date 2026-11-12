@@ -22,13 +22,14 @@ pub const MENU_ROW_H: f32 = 22.0;
 /// The side of one header button.
 const BUTTON: f32 = 18.0;
 
-/// The header's buttons, in the Swift order (Split Right, Split Down, Pop Out, Background, the
-/// pane menu, Close): (id, SF Symbol, label).
-pub const HEADER_BUTTONS: [(&str, &str, &str); 6] = [
+/// The header's buttons, in the Swift order (Split Right, Split Down, Pop Out, Background, Zoom,
+/// the pane menu, Close): (id, SF Symbol, label). Zoom's symbol and label change while zoomed.
+pub const HEADER_BUTTONS: [(&str, &str, &str); 7] = [
     ("split-right", "square.split.2x1", "Split Right"),
     ("split-down", "square.split.1x2", "Split Down"),
     ("pop", "rectangle.on.rectangle", "Pop out"),
     ("background", "tray.and.arrow.down", "Background"),
+    ("zoom", "arrow.up.left.and.arrow.down.right", "Zoom Pane (⇧⌘↩)"),
     ("menu", "ellipsis", "Pane menu"),
     ("close", "xmark", "Close Pane"),
 ];
@@ -90,7 +91,7 @@ impl Client {
 
     // MARK: Sites
 
-    fn space_holding(&self, pane: &str) -> Option<&Space> {
+    pub(super) fn space_holding(&self, pane: &str) -> Option<&Space> {
         self.spaces.iter().find(|s| s.site_of(pane).is_some())
     }
     pub(super) fn site_of(&self, pane: &str) -> Option<PaneSite> {
@@ -239,8 +240,15 @@ impl Client {
     pub(super) fn header_buttons(&self, pane: &str, cx: &mut Context<Self>) -> gpui::Div {
         let popped = self.site_of(pane) == Some(PaneSite::Popped);
         let mut row = div().flex().items_center().gap(px(2.)).flex_none();
+        let (zoom_enabled, zoomed) = self.zoom_button(pane);
         for (id, symbol, _label) in HEADER_BUTTONS {
-            let colour = if id == "pop" && popped { 0x7fb89a } else { 0xb7cbc1 };
+            let symbol = if id == "zoom" && zoomed { "arrow.down.right.and.arrow.up.left" } else { symbol };
+            let colour = match id {
+                "pop" if popped => 0x7fb89a,
+                "zoom" if zoomed => 0x7fb89a,
+                "zoom" if !zoom_enabled => 0x55665d,
+                _ => 0xb7cbc1,
+            };
             let icon = self.symbol(symbol, 11., colour).unwrap_or_else(|| div().text_xs().child(symbol).into_any_element());
             let pane = pane.to_owned();
             row = row.child(div().id(gpui::ElementId::Name(format!("hdr-{id}-{pane}").into())).w(px(BUTTON)).h(px(BUTTON)).rounded_sm().flex().items_center().justify_center().cursor_pointer()
@@ -250,6 +258,10 @@ impl Client {
                     this.focus_pane(&pane);
                     if id == "menu" {
                         this.open_pane_menu(&pane, f32::from(e.position.x) - MENU_W + BUTTON, f32::from(e.position.y) + 10.);
+                    } else if id == "zoom" {
+                        if this.zoom_button(&pane).0 {
+                            this.toggle_zoom(&pane);
+                        }
                     } else {
                         this.choose_header_menu(id, &pane);
                     }
@@ -267,9 +279,15 @@ impl Client {
         let n = HEADER_BUTTONS.len() as f32;
         let right = r.x + r.w - 8. - 12. - 2.;
         let left = right - n * BUTTON - (n - 1.) * 2.;
+        let (zoom_enabled, zoomed) = self.zoom_button(pane);
         Some(Value::Object(HEADER_BUTTONS.iter().enumerate().map(|(i, (id, _, label))| {
             let x = left + i as f32 * (BUTTON + 2.);
-            ((*id).to_owned(), serde_json::json!({"label": label, "frame": [x, r.y + (TITLE - BUTTON) / 2., BUTTON, BUTTON]}))
+            let frame = serde_json::json!([x, r.y + (TITLE - BUTTON) / 2., BUTTON, BUTTON]);
+            let entry = match *id {
+                "zoom" => serde_json::json!({"label": if zoomed { "Unzoom Pane (⇧⌘↩)" } else { label }, "frame": frame, "enabled": zoom_enabled, "on": zoomed}),
+                _ => serde_json::json!({"label": label, "frame": frame}),
+            };
+            ((*id).to_owned(), entry)
         }).collect()))
     }
 

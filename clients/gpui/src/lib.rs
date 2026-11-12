@@ -15,6 +15,7 @@ pub mod keymap;
 pub mod layout;
 pub mod markdown;
 pub mod menubar;
+pub mod motion;
 pub mod native;
 pub mod pairing;
 pub mod perms;
