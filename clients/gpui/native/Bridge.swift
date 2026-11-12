@@ -191,6 +191,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var termOutputs = 0
     var sends: [String] = []
     var monitor: Any?
+    var pressMonitor: Any?
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
@@ -210,6 +211,26 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             self?.routeKey(event)
             return event
         }
+        // A press lands on a native view before GPUI sees it, so the GPUI view hears of it here
+        // and closes what a press away closes (its popovers), as a Swift popover closes on one.
+        pressMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self, event.window === root.window, let superview = root.superview else { return event }
+            let at = superview.convert(event.locationInWindow, from: nil)
+            pressed(root.hitTest(at), at: root.convert(at, from: superview))
+            return event
+        }
+    }
+    /// The pane whose native view `view` is or lies inside.
+    func owner(of view: NSView?) -> PaneHost? {
+        guard let view else { return nil }
+        return panes.values.first { view === $0.content || view.isDescendant(of: $0.content) }
+    }
+    /// A press reached `hit` at `point` (the root's coordinates): when that is a pane's native
+    /// view, say so with the point from the window's top left.
+    func pressed(_ hit: NSView?, at point: NSPoint) {
+        guard let host = owner(of: hit) else { return }
+        let y = root.isFlipped ? point.y : root.bounds.height - point.y
+        emit(["event": "pressed", "pane": host.id, "point": [Double(point.x), Double(y)]])
     }
     /// Send one JSON object to the Rust side: a browser pane's state or report, or the answer to a
     /// daemon request the Rust side relayed.
@@ -235,7 +256,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     /// The window is closing: drop every view, the socket and the key monitor.
     func detach() {
         if let monitor { NSEvent.removeMonitor(monitor) }
+        if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
         monitor = nil
+        pressMonitor = nil
         for id in Array(panes.keys) { close(id) }
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
@@ -722,6 +745,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // does after its own step: hit test, then the view gets the NSEvent. A drag or release
             // goes to the view that took the press.
             if kind == "down" || kind == "move" { mouseTarget = root.hitTest(root.convert(point, to: root.superview)) }
+            if kind == "down" { pressed(mouseTarget, at: point) }
             if let event = NSEvent.mouseEvent(with: eventType, location: root.convert(point, to: nil), modifierFlags: flags,
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,
                 context: nil, eventNumber: mouseNumber, clickCount: value["clicks"] as? Int ?? 1, pressure: kind == "up" ? 0 : 1), let target = mouseTarget {
@@ -738,8 +762,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             var point = NSPoint(x: a[0], y: a[1])
             if !root.isFlipped { point.y = root.bounds.height - point.y }
             let hit = root.hitTest(root.convert(point, to: root.superview))
-            let owner = panes.values.first { host in hit.map { $0 === host.content || $0.isDescendant(of: host.content) } ?? false }
-            return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": owner?.id ?? NSNull()]
+            let host = owner(of: hit)
+            return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": host?.id ?? NSNull()]
         case "qr":
             // The modules of a QR code for `text`, one row per line of "1"s (dark) and "0"s, with
             // CoreImage's one-module quiet zone; what the Devices page draws as cells. With

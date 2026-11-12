@@ -712,6 +712,7 @@ impl Client {
         out["grid_motion"] = self.motion_json();
         out["card_drag"] = json!(self.card_drag.as_ref().map(|d| json!({"pane": d.pane, "resize": d.resize, "delta": [d.delta.0, d.delta.1],
             "edge": self.card_hot_edge().map(|e| crate::grid_drop::Zone::Edge(e).label())})));
+        out["space_menu"] = json!(self.space_menu.as_ref().map(|(space, x, y)| json!({"space": space, "at": [x, y]})));
         out["edge_bar"] = json!(self.edge_bar().map(|b| [b.x, b.y, b.w, b.h]));
         out
     }

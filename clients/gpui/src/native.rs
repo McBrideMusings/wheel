@@ -223,6 +223,9 @@ pub enum BrowserEvent {
     Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
     /// The person picked a folder in Open Folder's system picker (`choose_folder`).
     FolderChosen { path: String },
+    /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
+    /// where the GPUI view never sees it.
+    Pressed { pane: String, point: [f32; 2] },
 }
 /// The answer to `render_pane` or `inspect_pane` `id`.
 #[derive(Debug, Deserialize)]
@@ -246,6 +249,8 @@ mod tests {
         assert!(matches!(typed, Frame::Event(BrowserEvent::Typed { ref text, .. }) if text == "example.com"));
         let console: Frame = serde_json::from_str(r#"{"event":"console","pane":"p3","reset":true,"entries":[{"time":5,"level":"log","text":"hi"}]}"#).unwrap();
         assert!(matches!(console, Frame::Event(BrowserEvent::Console { reset: true, ref entries, .. }) if entries.len() == 1 && entries[0].text == "hi"));
+        let pressed: Frame = serde_json::from_str(r#"{"event":"pressed","pane":"p4","point":[12.5,40]}"#).unwrap();
+        assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();
         assert!(matches!(answer, Frame::Answer(Answer::Recorded { id: 7, frames: 12, .. })));
         let refused: Frame = serde_json::from_str(r#"{"answer":"refused","id":8,"message":"not shown"}"#).unwrap();

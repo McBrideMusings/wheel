@@ -3298,6 +3298,30 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (code, escaped) = call!("POST", "/key?keys=escape");
     ensure!(code == 200 && escaped["taken"] == true, "Esc did not close the tray list: {escaped}");
     until!("the tray list closed by Esc", |s: &Value| s["tray"]["open"] == false);
+    // A press inside the grid terminal's native view closes the tray list, the pane menu and the
+    // space menu (wheel-ynjo.27): the press goes to the terminal alone, never GPUI's drawing.
+    let in_term = { let f = frame(&listed, &grid_a); [f[0] + 30., f[1] + f[3] - 30.] };
+    let term_hit = native.call(json!({"op":"hit","point":in_term}));
+    ensure!(term_hit["pane"] == grid_a.as_str(), "a press at {in_term:?} lands in {term_hit}, not the grid terminal");
+    let press_term = |what: &str| -> Result<Value> {
+        let down = native.call(json!({"op":"post_mouse","kind":"down","point":in_term}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":in_term}));
+        ensure!(down["target"] == term_hit["class"], "the press with the {what} open went to {}, not the terminal's {}", down["target"], term_hit["class"]);
+        Ok(down["target"].clone())
+    };
+    click_at(centre(chip));
+    until!("the tray list open again for the terminal press", |s: &Value| s["tray"]["open"] == true);
+    let press_target = press_term("tray list")?;
+    until!("the tray list closed by a press in the terminal", |s: &Value| s["tray"]["open"] == false);
+    draw(window, Some(output.join("client-tray-terminal-press.png")), cx)?;
+    let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_a}&x=420&y=120"));
+    ensure!(code == 200 && state!()["pane_menu"]["pane"] == grid_a.as_str(), "the pane menu did not open for the terminal press");
+    press_term("pane menu")?;
+    until!("the pane menu closed by a press in the terminal", |s: &Value| s["pane_menu"].is_null());
+    let (code, _) = call!("POST", format!("/spacemenu?space={grid}"));
+    ensure!(code == 200 && state!()["space_menu"]["space"] == grid.as_str(), "the space menu did not open for the terminal press");
+    press_term("space menu")?;
+    until!("the space menu closed by a press in the terminal", |s: &Value| s["space_menu"].is_null());
     // A drag to the grid's top edge pins the chip there.
     let from = centre(chip);
     let to = [area[0] + area[2] * 0.5, area[1] + 20.];
@@ -3331,7 +3355,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let back_from_tray = until!("the row brought the pane back to the grid", |s: &Value| grid_panes(s).contains(&grid_c) && s["panes"][grid_c.as_str()]["site"] == "grid" && s["tray"]["chip"].is_null());
     ensure!(back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid terminal kept holes after the chip went: {}", back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"]);
     let tray_report = json!({"chip": chip, "list": list, "grid_view_holes": tray_holes["panes"][grid_a.as_str()]["bridge"]["holes"], "with_list": list_holes["panes"][grid_a.as_str()]["bridge"]["holes"],
-        "moved_place": moved_tray["tray"]["place"], "moved_chip": moved_chip, "list_below": below_list, "row": reopened["tray"]["rows"][0]});
+        "moved_place": moved_tray["tray"]["place"], "moved_chip": moved_chip, "list_below": below_list, "row": reopened["tray"]["rows"][0],
+        "terminal_press": {"at": in_term, "target": press_target, "closed": ["tray list", "pane menu", "space menu"]}});
     // Zoom and grid motion (wheel-ynjo.8.2): the header's zoom button grows the first pane over
     // the grid while the others slide out past their nearest edge, slowed ten times by
     // WHEEL_SLOW_ANIMATIONS so a frame mid-way can be read. Its terminal sends no resize until the

@@ -1098,6 +1098,35 @@ impl Client {
         let host = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host).trim_matches(['[', ']']);
         !matches!(host, "127.0.0.1" | "localhost" | "::1" | "")
     }
+    /// A press at (`x`, `y`) that no popover took, on GPUI's drawing or a native pane's view:
+    /// it closes the space, title and pane menus and the tray list, and ends a rename outside its
+    /// row, as a click away does. True when something closed.
+    fn press_away(&mut self, x: f32, y: f32) -> bool {
+        let mut closed = false;
+        if self.space_menu.is_some() {
+            self.close_space_menu();
+            closed = true;
+        }
+        if self.title_menu.is_some() {
+            self.close_title_menu();
+            closed = true;
+        }
+        if self.pane_menu.is_some() {
+            self.close_pane_menu();
+            closed = true;
+        }
+        if self.tray_open.is_some() {
+            self.close_tray();
+            closed = true;
+        }
+        if let Some(rn) = &self.rename
+            && !self.space_hit_rect(&rn.space.clone()).is_some_and(|r| crate::sidebar::contains(r, x, y))
+        {
+            self.cancel_rename();
+            closed = true;
+        }
+        closed
+    }
     /// A frame the bridge sent on its own: a browser pane's state is kept for its chrome, its
     /// reports go to wheeld as this connection's requests, and an answer to a relayed daemon
     /// request goes back as the reply wheeld waits for.
@@ -1128,6 +1157,12 @@ impl Client {
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
             Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
+            // A press in a terminal or page view closes the open popovers, as one on GPUI's drawing does.
+            Frame::Event(BrowserEvent::Pressed { pane, point: [x, y] }) => {
+                if self.press_away(x, y) {
+                    self.log(format!("a press in {pane}'s view at {x},{y} closed the open popovers"));
+                }
+            }
             Frame::Answer(Answer::Rendered { id, png }) => self.send(&ClientMsg::Rendered { id, png }),
             Frame::Answer(Answer::Inspected { id, text }) => self.send(&ClientMsg::Inspected { id, text }),
             Frame::Answer(Answer::Recorded { id, mov, frames, millis }) => self.send(&ClientMsg::Recorded { id, mov, frames, millis }),
@@ -1913,28 +1948,7 @@ impl Render for Client {
                 }
             })).size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
             .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                // A press anywhere else closes the space menu and ends a rename, as a click away does.
-                let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
-                if this.space_menu.is_some() {
-                    this.close_space_menu();
-                    cx.notify();
-                }
-                if this.title_menu.is_some() {
-                    this.close_title_menu();
-                    cx.notify();
-                }
-                if this.pane_menu.is_some() {
-                    this.close_pane_menu();
-                    cx.notify();
-                }
-                if this.tray_open.is_some() {
-                    this.close_tray();
-                    cx.notify();
-                }
-                if let Some(rn) = &this.rename
-                    && !this.space_hit_rect(&rn.space.clone()).is_some_and(|r| crate::sidebar::contains(r, x, y))
-                {
-                    this.cancel_rename();
+                if this.press_away(f32::from(e.position.x), f32::from(e.position.y)) {
                     cx.notify();
                 }
             }))
