@@ -541,7 +541,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // offers, sorted model first. A click on the meter reads the raw figures; a click on a
     // control opens its menu; picking a value asks wheeld and the control follows the agent's
     // own list.
-    let footer_before = window.update(cx, |c, _, _| c.footer_texts(&agent_name))?;
+    let footer_before = window.update(cx, |c, _, _| c.footer_items_all(&agent_name))?;
     let item = |items: &[(String, String)], name: &str| items.iter().find(|(i, _)| i == name).map(|(_, t)| t.clone());
     let context_text = item(&footer_before, "context").ok_or_else(|| anyhow::anyhow!("no context item in the footer: {footer_before:?}"))?;
     ensure!(context_text.ends_with('%') && context_text != "0%", "the context meter after three turns reads {context_text:?} (items {footer_before:?})");
@@ -558,7 +558,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     press(&native, meter);
     tick(cx, 200).await;
     draw(window, None, cx)?;
-    let raw_text = item(&window.update(cx, |c, _, _| c.footer_texts(&agent_name))?, "context").unwrap_or_default();
+    let raw_text = item(&window.update(cx, |c, _, _| c.footer_texts(&agent_name))?.0, "context").unwrap_or_default();
     ensure!(raw_text.contains(" / "), "the meter after a click reads {raw_text:?}, wanted the raw figures");
     draw(window, Some(output.join("client-footer.png")), cx)?;
     let model = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "model"))?.ok_or_else(|| anyhow::anyhow!("the model control was not drawn"))?;
@@ -585,7 +585,114 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let model_after = window.update(cx, |c, _, _| c.config_controls(&agent_name))?.into_iter().find(|(id, _)| id == "model").map(|(_, t)| t).unwrap_or_default();
     press(&native, meter);
     tick(cx, 200).await;
-    let footer_report = json!({"items": footer_before, "raw_text": raw_text, "controls": controls, "model_before": before_set, "model_after": model_after});
+    draw(window, None, cx)?;
+    // The menu from the keyboard (wheel-ynjo.21): reopened, it starts on the value in force
+    // (Haiku, the last of default, sonnet, haiku); Up moves to Sonnet and Return picks it.
+    let model = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "model"))?.ok_or_else(|| anyhow::anyhow!("the model control was not drawn after the pick"))?;
+    press(&native, model);
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let row_opened = window.update(cx, |c, _, _| (c.open_menu(), c.menu_row()))?;
+    ensure!(row_opened == (Some((agent_name.clone(), "model".into())), 2), "the reopened model menu (menu, row) is {row_opened:?}, wanted the model menu on row 2 (Haiku)");
+    native.call(json!({"op":"post_key","text":"\u{f700}","code":126}));
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    let row_up = window.update(cx, |c, _, _| c.menu_row())?;
+    ensure!(row_up == 1, "after Up the menu is on row {row_up}, wanted 1 (presses {:?})", window.update(cx, |c, _, _| c.presses.clone())?);
+    draw(window, Some(output.join("client-config-menu-keys.png")), cx)?;
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+    let mut model_keyed = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        model_keyed = window.update(cx, |c, _, _| c.transcripts.get(&agent_name).and_then(|t| t.config.iter().find(|o| o.id == "model")).map(wheel_gpui::footer::control_current))?;
+        if model_keyed.as_deref() == Some("sonnet") {
+            break;
+        }
+    }
+    ensure!(model_keyed.as_deref() == Some("sonnet"), "after Return on row 1 the model is {model_keyed:?}, wanted sonnet");
+    ensure!(window.update(cx, |c, _, _| c.open_menu())?.is_none(), "the menu stayed open after Return");
+    draw(window, None, cx)?;
+    // Tooltips: resting the pointer on the meter, a control and the pane's status dot shows the
+    // Swift client's words for each.
+    let any: gpui::AnyWindowHandle = window.into();
+    let mut tips = serde_json::Map::new();
+    let (status_label, context_help, model_help) = window.update(cx, |c, _, _| {
+        let t = c.transcripts.get(&agent_name);
+        (c.pane_status(&agent_pane).map(|s| wheel_gpui::status::label(&s)),
+         t.and_then(|t| t.context.as_ref()).map(wheel_gpui::footer::help_text),
+         t.and_then(|t| t.config.iter().find(|o| o.id == "model")).map(wheel_gpui::footer::control_help))
+    })?;
+    for (what, owner, control, want) in [("context", agent_name.as_str(), "context", context_help), ("model", agent_name.as_str(), "model", model_help), ("dot", agent_pane.as_str(), "status-dot", status_label)] {
+        let b = window.update(cx, |c, _, _| c.control_bounds(owner, control))?.ok_or_else(|| anyhow::anyhow!("{control} was not drawn for a hover"))?;
+        let position = gpui::point(gpui::px(b.0 + b.2 / 2.), gpui::px(b.1 + b.3 / 2.));
+        wheel_gpui::tooltip::take_shown();
+        let mut shown = None;
+        for _ in 0..20 {
+            any.update(cx, |_, w, cx| {
+                w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position, pressed_button: None, modifiers: Default::default() }), cx);
+                w.draw(cx).clear();
+            })?;
+            tick(cx, 100).await;
+            if let Some(text) = wheel_gpui::tooltip::take_shown() {
+                shown = Some(text);
+                break;
+            }
+        }
+        if what == "context" {
+            draw(window, Some(output.join("client-footer-tooltip.png")), cx)?;
+        }
+        ensure!(want.is_some() && shown == want, "hovering {what} at {b:?} showed {shown:?}, wanted {want:?}");
+        tips.insert(what.into(), json!(shown));
+        // Away from it, so the next hover starts a new tooltip.
+        any.update(cx, |_, w, cx| {
+            w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: gpui::point(gpui::px(1.), gpui::px(1.)), pressed_button: None, modifiers: Default::default() }), cx);
+            w.draw(cx).clear();
+        })?;
+        tick(cx, 100).await;
+    }
+    // A narrow pane: every split above the agent pane gives it 0.1 of its room, and the footer
+    // keeps whole items from the front with "…" for the rest, each drawn inside the row.
+    // A wide pane first (0.9 of every split above it), where every item fits.
+    let set_split = |split: &str, ratio: f64| -> Result<()> {
+        let out = std::process::Command::new(&cli_path)
+            .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "ratio", split, &ratio.to_string()]).output()?;
+        ensure!(out.status.success(), "pane ratio {split} {ratio}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        Ok(())
+    };
+    let restore = window.update(cx, |c, _, _| c.splits_to(&agent_pane))?;
+    let mut sized = vec![];
+    for (share, other) in [(0.9, 0.1), (0.1, 0.9)] {
+        for (split, first, _) in &restore {
+            set_split(split, if *first { share } else { other })?;
+        }
+        for _ in 0..50 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().all(|(_, first, r)| (*r - if *first { share } else { other }).abs() < 0.01))? {
+                break;
+            }
+        }
+        draw(window, None, cx)?;
+        draw(window, Some(output.join(if share > 0.5 { "client-footer-wide.png" } else { "client-footer-narrow.png" })), cx)?;
+        sized.push(window.update(cx, |c, _, _| c.footer_texts(&agent_name))?);
+    }
+    let (footer_wide, footer_narrow) = (sized[0].clone(), sized[1].clone());
+    let all_items = window.update(cx, |c, _, _| c.footer_items_all(&agent_name))?;
+    for (split, _, ratio) in &restore {
+        set_split(split, *ratio)?;
+    }
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.splits_to(&agent_pane).iter().zip(&restore).all(|((_, _, r), (_, _, was))| (r - was).abs() < 0.01))? {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    ensure!(!footer_wide.1 && footer_wide.0 == all_items, "the wide footer {footer_wide:?} does not show every item of {all_items:?}");
+    ensure!(footer_narrow.1 && footer_narrow.0.len() < all_items.len() && all_items.starts_with(&footer_narrow.0),
+        "the narrow footer {footer_narrow:?} is not a shorter prefix of {all_items:?} with \u{2026}");
+    let footer_report = json!({"items": footer_before, "raw_text": raw_text, "controls": controls, "model_before": before_set, "model_after": model_after,
+        "menu_rows": {"opened": row_opened.1, "after_up": row_up}, "model_keyed": model_keyed, "tooltips": tips,
+        "wide": {"items": footer_wide.0, "more": footer_wide.1}, "narrow": {"items": footer_narrow.0, "more": footer_narrow.1}});
     // Statuses: the pane's dot and the space chip's marks follow `status_changed`. A slow turn
     // shows `working`; a permission request shows `needs_you` with the agent's reason until the
     // CLI answers it; after that the pane is idle again.

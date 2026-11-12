@@ -5,7 +5,7 @@
 //! wheeld says the agent is in it. The model is `crate::conversations`.
 use super::*;
 use super::settings::{BOX, DIM, LINE, PANEL, TEXT, now_ms};
-use super::perms::tip;
+use crate::tooltip::tip;
 use crate::conversations::{self as conv, Listing, Popover, PAGE};
 use serde_json::Value;
 

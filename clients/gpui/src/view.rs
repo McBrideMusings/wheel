@@ -114,6 +114,11 @@ pub struct Client {
     raw_context: HashSet<String>,
     /// The config control whose menu is open: (agent, option id).
     menu: Option<(String, String)>,
+    /// The row of the open config menu the arrow keys are on.
+    menu_at: usize,
+    /// What each agent's footer drew in the last frame: the items that fit, in order, and whether
+    /// the "…" stands for the rest.
+    footer_shown: RefCell<HashMap<String, (Vec<(String, String)>, bool)>>,
     /// Where the footer's controls were drawn in the last frame, so a check can press them.
     controls: Rc<RefCell<Vec<Control>>>,
     /// The last presses the window's listeners took, in order, for a failing check to read.
@@ -350,7 +355,7 @@ impl Client {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
-            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
+            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
@@ -866,9 +871,14 @@ impl Client {
         let (marks, more) = status::agent_statuses(space, &self.status_dots, status::AGENT_DOT_LIMIT);
         (marks.iter().map(status::rank).collect(), more)
     }
-    /// The footer's items for `agent` as drawn, (item, text), in order; an item with nothing to
-    /// show is left out, as the Swift client leaves it out.
-    pub fn footer_texts(&self, agent: &str) -> Vec<(String, String)> {
+    /// The footer's items for `agent` as the last frame drew them, (item, text), in order: the
+    /// ones that fit the pane's width, and whether the "…" stood for the rest.
+    pub fn footer_texts(&self, agent: &str) -> (Vec<(String, String)>, bool) {
+        self.footer_shown.borrow().get(agent).cloned().unwrap_or_default()
+    }
+    /// Every footer item `agent` has to show, (item, text), in order, whether or not it fits; an
+    /// item with nothing to show is left out, as the Swift client leaves it out.
+    pub fn footer_items_all(&self, agent: &str) -> Vec<(String, String)> {
         let Some(t) = self.transcripts.get(agent) else { return vec![] };
         let (space, leaf) = self.spaces.iter().find_map(|s| leaves_of(&s.root).into_iter().find(|l| l.agent.as_deref() == Some(agent)).map(|l| (s.id.clone(), l.clone()))).unzip();
         let pane = leaf.as_ref().map(|l| l.id.clone()).unwrap_or_default();
@@ -893,6 +903,63 @@ impl Client {
     /// The config control whose menu is open, (agent, option id).
     pub fn open_menu(&self) -> Option<(String, String)> {
         self.menu.clone()
+    }
+    /// Open `agent`'s menu for config option `option`, or close it when it is the one open; the
+    /// arrow keys start on the value in force.
+    fn toggle_menu(&mut self, agent: &str, option: &str) {
+        let key = (agent.to_owned(), option.to_owned());
+        if self.menu.as_ref() == Some(&key) {
+            self.menu = None;
+            return;
+        }
+        self.menu = Some(key);
+        self.menu_at = self.menu_option().and_then(|o| {
+            let current = footer::control_current(o);
+            footer::control_choices(o).iter().position(|(v, _)| *v == current)
+        }).unwrap_or(0);
+    }
+    /// The option whose menu is open.
+    fn menu_option(&self) -> Option<&wheel_proto::ConfigOption> {
+        let (agent, option) = self.menu.as_ref()?;
+        self.transcripts.get(agent)?.config.iter().find(|o| &o.id == option)
+    }
+    /// Pick value `value` of option `option`: the value in force needs no request, so the menu
+    /// just closes.
+    fn pick_config(&mut self, agent: &str, option: &str, value: &str) {
+        self.press(format!("menu {option} {value}"));
+        let current = self.transcripts.get(agent).and_then(|t| t.config.iter().find(|o| o.id == option)).map(footer::control_current);
+        if current.as_deref() == Some(value) {
+            self.menu = None;
+        } else {
+            self.set_config(agent, option, value);
+        }
+    }
+    /// A key while a config menu is open: Up and Down move along its values, Return picks the one
+    /// they are on. Other keys are not the menu's.
+    fn menu_key(&mut self, key: &str) -> bool {
+        let Some(choices) = self.menu_option().map(footer::control_choices) else {
+            // The agent's new list dropped the option: nothing is drawn, so nothing is open.
+            self.menu = None;
+            return false;
+        };
+        let Some((agent, option)) = self.menu.clone() else { return false };
+        // The agent may have sent a shorter list since the menu opened.
+        let last = choices.len().saturating_sub(1);
+        match key {
+            "up" => self.menu_at = self.menu_at.min(last).saturating_sub(1),
+            "down" => self.menu_at = (self.menu_at + 1).min(last),
+            "enter" => {
+                if let Some((value, _)) = choices.get(self.menu_at.min(last)) {
+                    self.pick_config(&agent, &option, value);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+    /// The row of the open config menu the arrow keys are on.
+    pub fn menu_row(&self) -> usize {
+        self.menu_at
     }
     /// Ask the agent to set option `config` to `value`; the new list comes back as `agent_config`.
     pub fn set_config(&mut self, agent: &str, config: &str, value: &str) {
@@ -1228,6 +1295,9 @@ impl Client {
         if k.key == "escape" && self.menu.take().is_some() {
             return true;
         }
+        if self.menu.is_some() && self.menu_key(&k.key) {
+            return true;
+        }
         if k.key == "escape" && self.pane_menu.is_some() {
             self.close_pane_menu();
             return true;
@@ -1446,6 +1516,7 @@ impl Render for Client {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let v = window.viewport_size();
         self.viewport = (f32::from(v.width), f32::from(v.height));
+        self.footer_shown.borrow_mut().clear();
         let (leaves, dividers) = self.scene();
         if !self.handle.is_focused(window) {
             window.focus(&self.handle, cx);
@@ -1577,6 +1648,11 @@ impl Render for Client {
                     });
                     let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
                     let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents, self.raw_context.contains(&p.leaf.id));
+                    // The pane's padding and its 1 px border on each side.
+                    let (items, more) = fit_footer(window, items, t, r.w - 2. * PAD - 2.);
+                    if let Some(a) = agent {
+                        self.footer_shown.borrow_mut().insert(a.to_owned(), (items.clone(), more));
+                    }
                     let menu = self.menu.clone().filter(|(a, _)| Some(a.as_str()) == agent).map(|(_, o)| o);
                     // Directly above the composer, where a person answering has their hands: this agent's oldest waiting request.
                     let body = r.h - TITLE - 2. * PAD;
@@ -1586,7 +1662,8 @@ impl Render for Client {
                     let list_h = composer::command_list_height(rows.len());
                     let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
                     let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
-                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h, list, error, items, menu, &self.controls, cx)
+                    let footer = FooterRow { items, more, harness: harness.to_owned(), menu, menu_at: self.menu_at };
+                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h, list, error, footer, &self.controls, cx)
                 }
                 "empty" => {
                     let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -1664,7 +1741,8 @@ impl Render for Client {
                             _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
                         }))
                         .child(self.header_buttons(&p.leaf.id, cx))
-                        .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))))
+                        .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))
+                            .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
                     .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
                     .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, r.w, r.h - TITLE, cx))),
             );
@@ -1882,7 +1960,7 @@ const LABEL: f32 = 24.;
 /// rows), and the composer with the draft.
 #[allow(clippy::too_many_arguments)]
 fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, error: Option<&str>,
-    items: Vec<(String, String)>, menu: Option<String>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+    footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
         .h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)))
@@ -1898,7 +1976,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
             .flex().justify_between().gap_2()
             .child(format!("{draft}{}", if focused { "▏" } else { "" }))
             .children(error.map(|e| div().flex_none().max_w(px(260.)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned()))))
-        .child(footer_row(pane, agent.unwrap_or(""), t, items, menu, controls, cx))
+        .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls, cx))
 }
 
 impl Client {
@@ -1976,19 +2054,60 @@ pub fn recorded(agent: &str, id: &str, controls: &Rc<RefCell<Vec<Control>>>) -> 
     canvas(move |bounds, _, _| controls.borrow_mut().push(Control { agent, id, bounds }), |_, _, _, _| ()).absolute().top_0().left_0().size_full()
 }
 
+/// What an agent's status line draws: the footer items that fit and whether "…" follows them,
+/// the pane's agent, the config option whose menu is open and the menu row the keys are on.
+struct FooterRow {
+    items: Vec<(String, String)>,
+    more: bool,
+    harness: String,
+    menu: Option<String>,
+    menu_at: usize,
+}
+
+/// The size of the footer's text (`text_xs`) and the room around its pieces.
+const FOOTER_TEXT: f32 = 12.;
+const FOOTER_GAP: f32 = 10.;
+const CONTROL_GAP: f32 = 6.;
+/// The context meter's bar and the gap between it and its figure.
+const METER: f32 = 28.;
+const METER_GAP: f32 = 6.;
+/// A control's padding, both sides together.
+const CONTROL_PAD: f32 = 8.;
+
+/// The footer items that fit a status line `width` wide beside the agent's config controls, and
+/// whether some were hidden (`ChatView.swift`'s `PriorityRow`): items are measured whole and
+/// dropped from the end, never clipped.
+fn fit_footer(window: &Window, items: Vec<(String, String)>, t: Option<&Transcript>, width: f32) -> (Vec<(String, String)>, bool) {
+    let measure = |text: &str| title::text_width(window, text, FOOTER_TEXT).ceil();
+    let config = t.map(|t| t.config.as_slice()).unwrap_or_default();
+    let controls: f32 = config.iter().map(|o| measure(&footer::control_text(o)) + CONTROL_PAD).sum::<f32>() + CONTROL_GAP * config.len().saturating_sub(1) as f32;
+    // An item with no text draws nothing and takes no slot, as `PriorityRow` skips a zero-width one.
+    let mut items = items;
+    items.retain(|(_, text)| !text.is_empty());
+    let widths: Vec<f32> = items.iter().map(|(item, text)| measure(text) + if item == "context" { METER + METER_GAP } else { 0. }).collect();
+    let keep = footer::fit(&widths, FOOTER_GAP, measure("\u{2026}"), width - controls - FOOTER_GAP);
+    let more = keep < items.len();
+    items.truncate(keep);
+    (items, more)
+}
+
 /// The status line under the composer (the Swift client's `ConfigRow`): the footer's items in the
-/// order `chat.footer.items` says, then the agent's config controls at the right, each a menu
-/// of its choices. The context meter is a 28 by 4 bar with the percent beside it; a click on it
-/// reads the raw figures instead.
-fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, items: Vec<(String, String)>, menu: Option<String>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
-    let mut left = div().flex().items_center().gap(px(10.)).overflow_hidden().whitespace_nowrap().flex_1().text_xs().text_color(rgb(0x8fa89b));
+/// order `chat.footer.items` says, as many as fit with "…" for the rest, then the agent's config
+/// controls at the right, each a menu of its choices the pointer or the arrow keys and Return
+/// pick from. The context meter is a 28 by 4 bar with the percent beside it; a click on it reads
+/// the raw figures instead. Each piece names itself in a tooltip, in the Swift client's words.
+fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+    let FooterRow { items, more, harness, menu, menu_at } = footer;
+    let mut left = div().flex().items_center().gap(px(FOOTER_GAP)).overflow_hidden().whitespace_nowrap().flex_1().min_w_0().text_xs().text_color(rgb(0x8fa89b));
     for (item, text) in &items {
+        let help = footer::item_help(item, text, t.and_then(|t| t.context.as_ref()), t.and_then(|t| t.footer.as_ref()), &harness);
+        let id = gpui::ElementId::Name(format!("footer-{pane}-{item}").into());
         if item == "context" {
             let context = t.and_then(|t| t.context);
             let fraction = context.as_ref().map(footer::fraction).unwrap_or(0.);
             let tint = context.as_ref().map(footer::tint).unwrap_or(0x7fb89a);
             let pane = pane.to_owned();
-            left = left.child(div().relative().flex().items_center().gap(px(6.)).flex_none().cursor_pointer()
+            left = left.child(div().id(id).when_some(help.clone(), |d, h| d.tooltip(crate::tooltip::tip(&h))).relative().flex().items_center().gap(px(METER_GAP)).flex_none().cursor_pointer()
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                     this.press("context".into());
                     if !this.raw_context.remove(&pane) {
@@ -1996,20 +2115,23 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, items: Vec<(Strin
                     }
                     cx.notify();
                 }))
-                .child(div().w(px(28.)).h(px(4.)).rounded_full().bg(rgba(0xffffff26)).overflow_hidden()
-                    .child(div().w(px(28. * fraction)).h(px(4.)).rounded_full().bg(rgb(tint))))
+                .child(div().w(px(METER)).h(px(4.)).rounded_full().bg(rgba(0xffffff26)).overflow_hidden()
+                    .child(div().w(px(METER * fraction)).h(px(4.)).rounded_full().bg(rgb(tint))))
                 .child(div().text_color(rgb(if context.is_some() { 0x8fa89b } else { 0x4f6a5c })).child(text.clone()))
                 .child(recorded(agent, "context", controls)));
         } else {
-            left = left.child(div().flex_none().child(text.clone()));
+            left = left.child(div().id(id).when_some(help.clone(), |d, h| d.tooltip(crate::tooltip::tip(&h))).relative().flex_none().child(text.clone()).child(recorded(agent, &format!("footer:{item}"), controls)));
         }
     }
-    let mut right = div().flex().items_center().gap(px(6.)).flex_none().text_xs();
+    if more {
+        left = left.child(div().id(gpui::ElementId::Name(format!("footer-{pane}-more").into())).tooltip(crate::tooltip::tip(footer::MORE_HELP)).flex_none().child("\u{2026}"));
+    }
+    let mut right = div().flex().items_center().gap(px(CONTROL_GAP)).flex_none().text_xs();
     for option in t.map(|t| t.config.as_slice()).unwrap_or_default() {
         let choices = footer::control_choices(option);
         let settable = !choices.is_empty();
         let (agent_id, option_id) = (agent.to_owned(), option.id.clone());
-        let mut control = div().relative().flex().items_center().px_1().rounded_sm().bg(rgb(0x22302a)).text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
+        let mut control = div().id(gpui::ElementId::Name(format!("control-{pane}-{}", option.id).into())).tooltip(crate::tooltip::tip(&footer::control_help(option))).relative().flex().items_center().px(px(CONTROL_PAD / 2.)).rounded_sm().bg(rgb(0x22302a)).text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
             .child(footer::control_text(option))
             .child(recorded(agent, &option.id, controls));
         if settable {
@@ -2017,34 +2139,28 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, items: Vec<(Strin
                 // The pane under the control closes any menu on a press; this press is the control's.
                 cx.stop_propagation();
                 this.press(format!("control {option_id}"));
-                let key = (agent_id.clone(), option_id.clone());
-                this.menu = if this.menu.as_ref() == Some(&key) { None } else { Some(key) };
+                this.toggle_menu(&agent_id, &option_id);
                 cx.notify();
             }));
         }
         if menu.as_deref() == Some(option.id.as_str()) {
             let mut list = div().flex().flex_col().min_w(px(120.)).rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).py_1().text_xs().text_color(rgb(0xd9e8e1))
                 .child(div().px_2().py_1().text_color(rgb(0x8fa89b)).child(option.name.clone()));
-            let current = match &option.kind {
-                wheel_proto::ConfigKind::Select { current, .. } => current.clone(),
-                wheel_proto::ConfigKind::Boolean { current } => current.to_string(),
-                wheel_proto::ConfigKind::Unknown => String::new(),
-            };
-            for (value, name) in choices {
+            let current = footer::control_current(option);
+            for (row, (value, name)) in choices.into_iter().enumerate() {
                 let (agent_id, option_id, value_id) = (agent.to_owned(), option.id.clone(), value.clone());
                 let unchanged = value == current;
-                list = list.child(div().relative().px_2().py_1().cursor_pointer().flex().gap_2()
+                let mut entry = div().relative().px_2().py_1().cursor_pointer().flex().gap_2();
+                if row == menu_at {
+                    entry = entry.bg(rgb(0x31483e));
+                }
+                list = list.child(entry
                     .child(div().w(px(12.)).child(if unchanged { "✓" } else { "" }))
                     .child(name)
                     .child(recorded(agent, &format!("{}:{value}", option.id), controls))
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        // The value in force needs no request; the menu just closes.
-                        if unchanged {
-                            this.menu = None;
-                        } else {
-                            this.set_config(&agent_id, &option_id, &value_id);
-                        }
+                        this.pick_config(&agent_id, &option_id, &value_id);
                         cx.notify();
                     })));
             }
@@ -2052,7 +2168,7 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, items: Vec<(Strin
         }
         right = right.child(control);
     }
-    div().h(px(FOOTER)).mt_1().flex().items_center().gap(px(10.)).child(left).child(right)
+    div().h(px(FOOTER)).mt_1().flex().items_center().gap(px(FOOTER_GAP)).child(left).child(right)
 }
 
 /// The footer's items for a transcript as text, (item, text), in the order the setting says; an

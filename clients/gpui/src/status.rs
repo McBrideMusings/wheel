@@ -82,14 +82,16 @@ const RED: u32 = 0xff453a;
 const BLUE: u32 = 0x0a84ff;
 const GREEN: u32 = 0x30d158;
 
-/// The mark for `status`, or none for a rank `shown` leaves out. `id` keeps the arc's turn going
-/// from frame to frame; a working mark takes the arc's 12 px slot, every other a 9 px dot
+/// The mark for `status`, or none for a rank `shown` leaves out, its tooltip the status's
+/// `label`. `id` keeps the arc's turn going from frame to frame; a working mark takes the arc's 12 px slot, every other a 9 px dot
 /// centred in the same slot so a mark never moves its neighbours when its rank changes.
 pub fn dot(status: &PaneStatus, shown: &HashSet<&'static str>, id: impl Into<gpui::ElementId>) -> Option<AnyElement> {
     if !shown.contains(rank(status)) {
         return None;
     }
-    let slot = div().w(px(12.)).h(px(12.)).flex().items_center().justify_center().flex_none();
+    let id: gpui::ElementId = id.into();
+    // Hovering the mark names its status, as the Swift client's `.help(status.label)` does.
+    let slot = div().id(id.clone()).tooltip(crate::tooltip::tip(&label(status))).w(px(12.)).h(px(12.)).flex().items_center().justify_center().flex_none();
     let mark = match status {
         PaneStatus::Working => return Some(slot.child(arc(id)).into_any_element()),
         PaneStatus::NeedsYou { .. } => div().w(px(9.)).h(px(9.)).rounded_full().bg(rgb(ORANGE)),

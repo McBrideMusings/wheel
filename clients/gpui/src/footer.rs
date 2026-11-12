@@ -151,6 +151,65 @@ pub fn control_text(option: &ConfigOption) -> String {
     }
 }
 
+/// A control's tooltip (`ChatView.swift`'s `ConfigControl`): the option's name and description,
+/// or why it cannot be set.
+pub fn control_help(option: &ConfigOption) -> String {
+    match &option.kind {
+        wheel_proto::ConfigKind::Select { choices, .. } if choices.is_empty() => format!("The agent offers no values for \u{201c}{}\u{201d}.", option.name),
+        wheel_proto::ConfigKind::Unknown => format!("This version of Wheel can't show a \u{201c}{}\u{201d} control.", option.name),
+        _ => option.description.as_ref().map(|d| format!("{}: {d}", option.name)).unwrap_or_else(|| option.name.clone()),
+    }
+}
+
+/// The environment variable `harness` reads its home from (`AgentInfo.homeVariable`).
+pub fn home_variable(harness: &str) -> &'static str {
+    match harness {
+        "codex" => "CODEX_HOME",
+        "pi" => "PI_CODING_AGENT_DIR",
+        _ => "CLAUDE_CONFIG_DIR",
+    }
+}
+
+/// An item's tooltip, as the Swift client's footer writes it: `text` is what the item shows,
+/// `harness` the pane's agent.
+pub fn item_help(item: &str, text: &str, context: Option<&ContextUse>, footer: Option<&AgentFooter>, harness: &str) -> Option<String> {
+    Some(match item {
+        "context" => context.map(help_text).unwrap_or_else(|| "The agent has not reported its context use yet".into()),
+        "background" => "Background tasks the agent has running".into(),
+        "directory" => format!("The directory the agent works in: {}", footer.map(|f| f.directory.as_str()).unwrap_or(text)),
+        "home" => format!("{} is {text}. Set by agent.{harness}.home; chat.footer.items places this text.", home_variable(harness)),
+        "branch" => "The branch checked out in the directory".into(),
+        "changes" => "Lines added and removed against HEAD, untracked files not counted".into(),
+        _ => return None,
+    })
+}
+
+/// The stand-in's tooltip when items are hidden.
+pub const MORE_HELP: &str = "More items don't fit in this width";
+
+/// How many of the items, at `widths` and `spacing` apart, the row keeps in `available` points
+/// (`ChatView.swift`'s `PriorityRow`): all of them while they fit, else as many from the front as
+/// fit with the `marker`-wide "…" after them. Fewer than all means the row shows the "…".
+pub fn fit(widths: &[f32], spacing: f32, marker: f32, available: f32) -> usize {
+    let used = |count: usize| widths[..count].iter().sum::<f32>() + spacing * count.saturating_sub(1) as f32;
+    let mut keep = widths.len();
+    if used(keep) > available {
+        while keep > 0 && used(keep) + spacing + marker > available {
+            keep -= 1;
+        }
+    }
+    keep
+}
+
+/// The value a control's option has in force, as its menu names values.
+pub fn control_current(option: &ConfigOption) -> String {
+    match &option.kind {
+        wheel_proto::ConfigKind::Select { current, .. } => current.clone(),
+        wheel_proto::ConfigKind::Boolean { current } => current.to_string(),
+        wheel_proto::ConfigKind::Unknown => String::new(),
+    }
+}
+
 /// The values a control's menu offers, (value, name); empty for one that cannot be set.
 pub fn control_choices(option: &ConfigOption) -> Vec<(String, String)> {
     match &option.kind {
@@ -190,6 +249,31 @@ mod tests {
         assert_eq!(changes_text(&AgentFooter { branch: None, ..f.clone() }), None);
         assert_eq!(shown_home(None, "claude", None), "~/.claude");
         assert_eq!(shown_home(Some(""), "codex", Some("/opt/codex")), "/opt/codex");
+    }
+
+    #[test]
+    fn the_row_keeps_whole_items_from_the_front_and_leaves_room_for_the_marker() {
+        let widths = [40., 30., 50.];
+        // 40 + 10 + 30 + 10 + 50 = 140 fits exactly.
+        assert_eq!(fit(&widths, 10., 8., 140.), 3);
+        // One point short: the last goes, and 40 + 10 + 30 + 10 + 8 = 98 fits.
+        assert_eq!(fit(&widths, 10., 8., 139.), 2);
+        assert_eq!(fit(&widths, 10., 8., 97.), 1);
+        assert_eq!(fit(&widths, 10., 8., 57.), 0);
+        assert_eq!(fit(&[], 10., 8., 0.), 0);
+    }
+
+    #[test]
+    fn tooltips_read_as_the_swift_client_writes_them() {
+        let f = AgentFooter { directory: "/Users/me/x".into(), ..AgentFooter::default() };
+        assert_eq!(item_help("directory", "~/x", None, Some(&f), "claude").as_deref(), Some("The directory the agent works in: /Users/me/x"));
+        assert_eq!(item_help("home", "~/.codex", None, None, "codex").as_deref(), Some("CODEX_HOME is ~/.codex. Set by agent.codex.home; chat.footer.items places this text."));
+        assert_eq!(item_help("context", "0%", None, None, "claude").as_deref(), Some("The agent has not reported its context use yet"));
+        assert_eq!(item_help("bogus", "x", None, None, "claude"), None);
+        let option = |kind| ConfigOption { id: "model".into(), name: "Model".into(), description: Some("Which model answers".into()), category: None, kind };
+        assert_eq!(control_help(&option(ConfigKind::Boolean { current: true })), "Model: Which model answers");
+        assert_eq!(control_help(&option(ConfigKind::Select { current: "a".into(), choices: vec![] })), "The agent offers no values for \u{201c}Model\u{201d}.");
+        assert_eq!(control_help(&option(ConfigKind::Unknown)), "This version of Wheel can't show a \u{201c}Model\u{201d} control.");
     }
 
     #[test]

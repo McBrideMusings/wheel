@@ -25,6 +25,7 @@ pub mod sidebar;
 pub mod status;
 pub mod strip;
 pub mod toasts;
+pub mod tooltip;
 pub mod transcript;
 pub mod view;
 pub mod windows;

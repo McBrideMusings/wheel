@@ -2,6 +2,7 @@
 //! who asks, why, the request, and its buttons; Return, Command-Return and Esc answer it from the
 //! focused pane's empty composer. The model is `crate::perms`.
 use super::*;
+use crate::tooltip::tip;
 use crate::perms::{self, ANSWER_GAP, ANSWER_PAD, Answer, BUTTON, GAP, LINE, MARGIN, PADDING};
 use serde_json::{Value, json};
 use wheel_proto::PermInfo;
@@ -68,20 +69,6 @@ impl Client {
     }
 }
 
-/// A tooltip's view: one line of text in a dark box.
-struct Tip(String);
-
-/// A tooltip reading `text`.
-pub(super) fn tip(text: &str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
-    let text = text.to_owned();
-    move |_, cx| cx.new(|_| Tip(text.clone())).into()
-}
-
-impl Render for Tip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().px_2().py_1().rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(0x2c3d34)).text_xs().text_color(rgb(0xd9e8e1)).child(self.0.clone())
-    }
-}
 
 /// One line of the card, exactly `LINE` tall, cut with `…` when it is too wide.
 fn line(text: &str, color: u32) -> gpui::Div {
