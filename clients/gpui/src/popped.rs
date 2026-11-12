@@ -24,6 +24,40 @@ pub fn size(base: Rect, grow: (f32, f32), w: f32, h: f32) -> (f32, f32) {
     ((base.w + grow.0).max(LEAST.0).min((w - base.x).max(LEAST.0)), (base.h + grow.1).max(LEAST.1).min((h - base.y).max(LEAST.1)))
 }
 
+/// How near the grid's edge a card's pointer is to send the card's panes to the tray.
+pub const EDGE_REACH: f32 = 14.;
+/// How thick the bar lit along that edge is.
+pub const EDGE_BAR: f32 = 8.;
+
+/// The edge of a grid at `area` that a card dragged with the pointer at (`x`, `y`) is dropped on
+/// (PoppedWindow's edge(of:)): within `EDGE_REACH` of it, left and right before up and down.
+pub fn hot_edge(x: f32, y: f32, area: Rect) -> Option<wheel_proto::Dir> {
+    use wheel_proto::Dir;
+    let (x, y) = (x - area.x, y - area.y);
+    if x < EDGE_REACH {
+        Some(Dir::Left)
+    } else if x > area.w - EDGE_REACH {
+        Some(Dir::Right)
+    } else if y < EDGE_REACH {
+        Some(Dir::Up)
+    } else if y > area.h - EDGE_REACH {
+        Some(Dir::Down)
+    } else {
+        None
+    }
+}
+
+/// The bar lit along `edge` of a grid at `area` (EdgeBar).
+pub fn edge_bar(edge: wheel_proto::Dir, area: Rect) -> Rect {
+    use wheel_proto::Dir;
+    match edge {
+        Dir::Left => Rect { w: EDGE_BAR, ..area },
+        Dir::Right => Rect { x: area.x + area.w - EDGE_BAR, w: EDGE_BAR, ..area },
+        Dir::Up => Rect { h: EDGE_BAR, ..area },
+        Dir::Down => Rect { y: area.y + area.h - EDGE_BAR, h: EDGE_BAR, ..area },
+    }
+}
+
 /// The order the cards draw in, bottom first: the one holding the focus last, so it is on top,
 /// and the others in the order wheeld lists them.
 pub fn order(trees: &[Tree], focus: Option<&str>) -> Vec<usize> {
@@ -116,6 +150,21 @@ mod tests {
 
     fn tree(id: &str) -> Tree {
         Tree::Pane(Leaf { id: id.into(), kind: "empty".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, home: None, status: None })
+    }
+
+    #[test]
+    fn a_card_near_the_grid_edge_lights_that_edge() {
+        use wheel_proto::Dir;
+        let area = Rect { x: 100., y: 50., w: 400., h: 300. };
+        assert_eq!(hot_edge(110., 200., area), Some(Dir::Left));
+        assert_eq!(hot_edge(490., 200., area), Some(Dir::Right));
+        assert_eq!(hot_edge(300., 60., area), Some(Dir::Up));
+        assert_eq!(hot_edge(300., 340., area), Some(Dir::Down));
+        assert_eq!(hot_edge(300., 200., area), None);
+        // A corner counts as its side edge, as the Swift client's does.
+        assert_eq!(hot_edge(105., 55., area), Some(Dir::Left));
+        assert_eq!(edge_bar(Dir::Left, area), Rect { x: 100., y: 50., w: EDGE_BAR, h: 300. });
+        assert_eq!(edge_bar(Dir::Down, area), Rect { x: 100., y: 350. - EDGE_BAR, w: 400., h: EDGE_BAR });
     }
 
     #[test]

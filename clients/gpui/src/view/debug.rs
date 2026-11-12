@@ -710,7 +710,9 @@ impl Client {
         out["header_layout"] = self.header_layout.borrow().layout.choices_json();
         out["header_settings_kind"] = json!(self.header_settings_kind);
         out["grid_motion"] = self.motion_json();
-        out["card_drag"] = json!(self.card_drag.as_ref().map(|d| json!({"pane": d.pane, "resize": d.resize, "delta": [d.delta.0, d.delta.1]})));
+        out["card_drag"] = json!(self.card_drag.as_ref().map(|d| json!({"pane": d.pane, "resize": d.resize, "delta": [d.delta.0, d.delta.1],
+            "edge": self.card_hot_edge().map(|e| crate::grid_drop::Zone::Edge(e).label())})));
+        out["edge_bar"] = json!(self.edge_bar().map(|b| [b.x, b.y, b.w, b.h]));
         out
     }
 }

@@ -59,17 +59,27 @@ pub fn focus_target(windows: &crate::windows::Registry, sessions: &[Session], sp
 impl Client {
     // MARK: The drag inside the space
 
-    /// The drop the pointer at (`x`, `y`) is over in this window's grid.
+    /// The drop the pointer at (`x`, `y`) is over in this window's grid. A card floats over the
+    /// grid, so over one the drop is on the topmost card's pane there, never the grid under it.
     pub fn grid_drop_at(&self, x: f32, y: f32, pane: &str) -> Option<GridDrop> {
         let layers = self.layers();
         let (grid, cards) = layers.split_first()?;
-        if cards.iter().any(|l| l.card.as_ref().is_some_and(|c| crate::sidebar::contains(c.frame, x, y))) {
-            return None;
+        if let Some(card) = cards.iter().rev().find(|l| l.card.as_ref().is_some_and(|c| crate::sidebar::contains(c.frame, x, y))) {
+            return grid_drop::card_drop_at(x, y, &card.leaves, pane);
         }
         grid_drop::drop_at(x, y, &grid.leaves, pane)
     }
+    /// Whether `target` is a pane of `pane`'s space in another of its trees (the grid, a card, the
+    /// tray), where the two can dock but never swap.
+    fn in_another_tree(&self, pane: &str, target: &str) -> bool {
+        let Some(home) = self.space_holding(pane).filter(|s| s.site_of(target).is_some()) else { return false };
+        std::iter::once(&home.root).chain(&home.popped).chain(&home.backgrounded).find(|t| t.holds(pane)).is_some_and(|t| !t.holds(target))
+    }
     /// Name where the dragged pane docks in its space, as the pointer or the debug route says.
     pub fn hover_grid_drop(&mut self, drop: Option<GridDrop>) {
+        let Some(dragged) = self.pane_drag.as_ref().map(|d| d.pane.clone()) else { return };
+        // Panes in two trees of one space never swap: the middle docks on the right (AppModel.hoverPaneDrag).
+        let drop = drop.map(|d| if d.zone == Zone::Center && self.in_another_tree(&dragged, &d.target) { GridDrop { zone: Zone::Edge(wheel_proto::Dir::Right), ..d } } else { d });
         let Some(drag) = &mut self.pane_drag else { return };
         if drag.drop == drop {
             return;

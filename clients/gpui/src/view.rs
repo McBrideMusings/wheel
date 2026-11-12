@@ -858,6 +858,18 @@ impl Client {
         }
         let area = self.grid_area();
         let held = self.space().and_then(|s| s.popped.iter().enumerate().find(|(_, t)| t.holds(&drag.pane)).map(|(i, t)| (i, t.clone())));
+        // Released on the grid's edge or the tray chip, every pane in the card goes to the tray
+        // and the card keeps the frame it had (PoppedWindow's ended).
+        if self.card_hot_edge().is_some() || self.card_over_tray_chip() {
+            self.card_drag = None;
+            let Some((_, tree)) = held else { return };
+            let panes: Vec<String> = leaves_of(&tree).iter().map(|l| l.id.clone()).collect();
+            self.log(format!("popped card {}: dropped on the edge, backgrounded", panes.join(",")));
+            for pane in panes {
+                self.set_site(&pane, wheel_proto::PaneSite::Backgrounded);
+            }
+            return;
+        }
         // The frame is measured with the drag still applied, then the drag ends.
         let frame = held.as_ref().map(|(index, tree)| self.card_frame(tree, *index, area));
         self.card_drag = None;
@@ -865,6 +877,23 @@ impl Client {
         let left = Rect { x: f.x - area.x, y: f.y - area.y, w: f.w, h: f.h };
         self.popped_frames.borrow_mut().set(&tree, left);
         self.log(format!("popped card {}: {} to ({:.0},{:.0}) {:.0}x{:.0}", drag.pane, if drag.resize { "resized" } else { "moved" }, left.x, left.y, left.w, left.h));
+    }
+    /// Where the pointer is while a card is moved by its header.
+    fn card_pointer(&self) -> Option<(f32, f32)> {
+        let drag = self.card_drag.as_ref().filter(|d| !d.resize && d.delta != (0., 0.))?;
+        Some((drag.start.0 + drag.delta.0, drag.start.1 + drag.delta.1))
+    }
+    /// The grid edge a card moved by its header is over, which a release there sends to the tray.
+    pub fn card_hot_edge(&self) -> Option<wheel_proto::Dir> {
+        let (x, y) = self.card_pointer()?;
+        crate::popped::hot_edge(x, y, self.grid_area())
+    }
+    fn card_over_tray_chip(&self) -> bool {
+        self.card_pointer().zip(self.tray_chip_rect()).is_some_and(|((x, y), chip)| crate::sidebar::contains(chip, x, y))
+    }
+    /// The bar lit along the grid's edge while a card is held over it (EdgeBar).
+    pub fn edge_bar(&self) -> Option<Rect> {
+        self.card_hot_edge().map(|edge| crate::popped::edge_bar(edge, self.grid_area()))
     }
     pub fn tree_ratio(&self, split: &str) -> Option<f64> {
         fn find(t: &Tree, id: &str) -> Option<f64> {
@@ -1551,7 +1580,7 @@ impl Client {
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
         let at = |r: Rect| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)];
         // The tray chip and its list draw over every layer.
-        let tray = self.tray_holes();
+        let tray: Vec<Rect> = self.tray_holes().into_iter().chain(self.edge_bar()).collect();
         let area = self.grid_area();
         for (n, layer) in layers.iter().enumerate() {
             let over: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).chain(tray.iter().copied()).map(at).collect();
@@ -1928,19 +1957,24 @@ impl Render for Client {
         // clipped to it, in window coordinates inside a layer the grid's size.
         let clipped = moving || self.zoomed_here().is_some();
         let mut grid = div().absolute().left_0().top_0().size_full();
+        let hot = self.card_hot_edge().and(self.card_drag.as_ref()).map(|d| d.pane.clone());
         for layer in &layers {
+            // The card held over the grid's edge draws faded (PoppedWindow's opacity).
+            let fade = layer.card.as_ref().is_some_and(|c| hot.as_ref().is_some_and(|p| c.panes.contains(p)));
+            let mut el = div().absolute().left_0().top_0().size_full();
             if let Some(card) = &layer.card {
-                grid = grid.child(card_backdrop(card));
+                el = el.child(card_backdrop(card));
             }
             for p in &layer.leaves {
-                grid = grid.child(self.pane_element(p, window, cx));
+                el = el.child(self.pane_element(p, window, cx));
             }
             for d in &layer.dividers {
-                grid = grid.child(divider_element(d, cx));
+                el = el.child(divider_element(d, cx));
             }
             if let Some(card) = &layer.card {
-                grid = grid.child(self.card_grip(card, cx));
+                el = el.child(self.card_grip(card, cx));
             }
+            grid = grid.child(if fade { el.opacity(0.7) } else { el });
         }
         root = if clipped {
             let a = self.grid_area();
@@ -1953,6 +1987,9 @@ impl Render for Client {
         // The part of the target a dragged pane would take: all of it to swap, a half to dock.
         if let Some(h) = self.grid_drop_highlight() {
             root = root.child(div().absolute().left(px(h.x)).top(px(h.y)).w(px(h.w)).h(px(h.h)).rounded_md().bg(rgba(0x7fb89a24)).border_2().border_color(rgb(0x7fb89a)));
+        }
+        if let Some(b) = self.edge_bar() {
+            root = root.child(div().absolute().left(px(b.x)).top(px(b.y)).w(px(b.w)).h(px(b.h)).bg(rgba(0x7fb89a99)));
         }
         // The tray chip over the grid and its cards, and its list while open.
         if self.tray_open.is_some() && !self.tray_is_open() {

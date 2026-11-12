@@ -43,16 +43,24 @@ pub struct GridDrop {
 /// How much of a pane, measured in from each edge, counts as that edge's drop zone.
 pub const EDGE_SHARE: f32 = 0.25;
 
-/// The zone of a pane at `frame` that (`x`, `y`) is in; the nearest edge when it is in two.
-pub fn zone(x: f32, y: f32, frame: Rect) -> Zone {
+/// The edge of `frame` nearest (`x`, `y`) and how far in it is, as a share of the frame's width
+/// or height (PaneDragging.nearestEdge); right for an empty frame.
+fn nearest(x: f32, y: f32, frame: Rect) -> (f32, Dir) {
     if frame.w <= 0. || frame.h <= 0. {
-        return Zone::Center;
+        return (f32::INFINITY, Dir::Right);
     }
     let fx = (x - frame.x) / frame.w;
     let fy = (y - frame.y) / frame.h;
     let near = [(fx, Dir::Left), (1. - fx, Dir::Right), (fy, Dir::Up), (1. - fy, Dir::Down)];
-    let best = near.iter().copied().fold(near[0], |a, b| if b.0 < a.0 { b } else { a });
-    if best.0 < EDGE_SHARE { Zone::Edge(best.1) } else { Zone::Center }
+    near.iter().copied().fold(near[0], |a, b| if b.0 < a.0 { b } else { a })
+}
+
+/// The zone of a pane at `frame` that (`x`, `y`) is in; the nearest edge when it is in two.
+pub fn zone(x: f32, y: f32, frame: Rect) -> Zone {
+    match nearest(x, y, frame) {
+        (share, dir) if share < EDGE_SHARE => Zone::Edge(dir),
+        _ => Zone::Center,
+    }
 }
 
 /// The drop under (`x`, `y`): the pane holding it, other than the one dragged. None outside every
@@ -63,6 +71,17 @@ pub fn drop_at(x: f32, y: f32, leaves: &[Placed], dragging: &str) -> Option<Grid
         return None;
     }
     Some(GridDrop { target: placed.leaf.id.clone(), zone: zone(x, y, placed.rect) })
+}
+
+/// The drop under (`x`, `y`) on a popped card holding `leaves` (AppModel.poppedDrop): the card's
+/// pane there, docked on its nearest side, since a card's tree and the grid's never swap. None
+/// over the dragged pane itself or a gap between the card's panes.
+pub fn card_drop_at(x: f32, y: f32, leaves: &[Placed], dragging: &str) -> Option<GridDrop> {
+    let placed = leaves.iter().find(|p| crate::sidebar::contains(p.rect, x, y))?;
+    if placed.leaf.id == dragging {
+        return None;
+    }
+    Some(GridDrop { target: placed.leaf.id.clone(), zone: Zone::Edge(nearest(x, y, placed.rect).1) })
 }
 
 /// The part of the target's frame that lights up for `zone`: all of it for a swap, the half on
@@ -114,6 +133,16 @@ mod tests {
         assert_eq!(drop_at(105., 50., &leaves, "p1"), None);
         assert_eq!(drop_at(160., 50., &leaves, "p1"), Some(GridDrop { target: "p2".into(), zone: Zone::Center }));
         assert_eq!(drop_at(115., 50., &leaves, "p1"), Some(GridDrop { target: "p2".into(), zone: Zone::Edge(Dir::Left) }));
+    }
+
+    #[test]
+    fn a_card_pane_takes_its_nearest_side_even_in_its_middle() {
+        let leaves = [placed("p3", 100., 200.)];
+        assert_eq!(card_drop_at(200., 50., &leaves, "p1").map(|d| d.zone), Some(Zone::Edge(Dir::Left)));
+        assert_eq!(card_drop_at(210., 50., &leaves, "p1").map(|d| d.zone), Some(Zone::Edge(Dir::Right)));
+        assert_eq!(card_drop_at(200., 40., &leaves, "p1").map(|d| d.zone), Some(Zone::Edge(Dir::Up)));
+        assert_eq!(card_drop_at(150., 50., &leaves, "p3"), None);
+        assert_eq!(card_drop_at(50., 50., &leaves, "p1"), None);
     }
 
     #[test]

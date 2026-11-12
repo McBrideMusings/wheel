@@ -3218,6 +3218,60 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     until!("the third pane back in the grid again", |s: &Value| grid_panes(s).contains(&grid_c));
     let popped_card_report = json!({"pane": grid_c, "grid": area, "before": card_before, "moved": card_moved, "resized": card_resized, "popped_again": card_now(&again),
         "grid_view_holes": holes, "card_view_holes": own, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
+    // Drops onto and off a card (wheel-ynjo.26): the second pane dragged by its header onto the
+    // card's pane docks on that pane's nearest side inside the card (the two trees never swap), and
+    // the card dragged by its header to the grid's left edge lights that edge, then sends both its
+    // panes to the tray. Both come back to the grid after.
+    let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane pop for the card drops failed: {err}");
+    let recarded = until!("the third pane in its card again", |s: &Value| s["cards"].as_array().is_some_and(|c| c.len() == 1) && s["panes"][grid_b.as_str()]["frame"].is_array());
+    let card = card_now(&recarded);
+    let b_at = frame(&recarded, &grid_b);
+    let b_grip = [b_at[0] + 30., b_at[1] + 11.];
+    let in_card = |p: [f64; 2], f: [f64; 4]| p[0] >= f[0] && p[0] <= f[0] + f[2] && p[1] >= f[1] && p[1] <= f[1] + f[3];
+    ensure!(!in_card(b_grip, card), "the second pane's header at {b_grip:?} is under the card {card:?}");
+    let onto = [card[0] + 20., card[1] + card[3] * 0.5];
+    native.call(json!({"op":"post_mouse","kind":"down","point":b_grip}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[b_grip[0] + 20., b_grip[1] + 20.]}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":onto}));
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    let over_card = state!();
+    let c_at = frame(&over_card, &grid_c);
+    ensure!(over_card["sidebar"]["pane_drag"]["drop"] == json!({"target": grid_c, "zone": "left"}), "the drag onto the card's pane at {onto:?} reads {} (card {card:?})", over_card["sidebar"]["pane_drag"]);
+    ensure!(over_card["grid_drop_highlight"] == json!([c_at[0], c_at[1], c_at[2] * 0.5, c_at[3]]), "the dock onto the card lights {}, not the left half of {c_at:?}", over_card["grid_drop_highlight"]);
+    draw(window, Some(output.join("client-card-dock.png")), cx)?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":onto}));
+    let docked_in_card = until!("the second pane docked left of the third in the card", |s: &Value| site_list(s, "popped") == json!([grid_b, grid_c])
+        && s["cards"].as_array().is_some_and(|c| c.len() == 1 && c[0]["panes"] == json!([grid_b, grid_c])));
+    let (b_in, c_in) = (frame(&docked_in_card, &grid_b), frame(&docked_in_card, &grid_c));
+    ensure!(b_in[0] < c_in[0] && b_in[1] == c_in[1] && !grid_panes(&docked_in_card).contains(&grid_b), "in the card the second pane is at {b_in:?} and the third at {c_in:?}");
+    // The card's header dragged to the grid's left edge.
+    let card = card_now(&docked_in_card);
+    let head = [card[0] + 40., card[1] + 11.];
+    let edge_at = [area[0] + 6., head[1]];
+    native.call(json!({"op":"post_mouse","kind":"down","point":head}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    for step in 1..=4 {
+        let k = f64::from(step) / 4.;
+        native.call(json!({"op":"post_mouse","kind":"drag","point":[head[0] + (edge_at[0] - head[0]) * k, head[1]]}));
+        pump(&mut connection, 60, &mut layouts, window, cx).await?;
+    }
+    let bar = [area[0], area[1], f64::from(wheel_gpui::popped::EDGE_BAR), area[3]];
+    let at_edge = until!("the left edge lit with the card held over it", |s: &Value| s["card_drag"]["edge"] == "left" && near(four(&s["edge_bar"]), bar)
+        && grid_panes(s).iter().any(|p| s["panes"][p.as_str()]["bridge"]["holes"].as_array().is_some_and(|h| h.iter().any(|r| near(four(r), bar)))));
+    draw(window, Some(output.join("client-card-edge.png")), cx)?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":edge_at}));
+    let to_tray = until!("both card panes in the tray", |s: &Value| s["cards"].as_array().is_some_and(Vec::is_empty) && s["edge_bar"].is_null()
+        && site_list(s, "backgrounded").as_array().is_some_and(|b| b.len() == 2 && b.contains(&json!(grid_b)) && b.contains(&json!(grid_c))));
+    let card_drops_report = json!({"dock": over_card["sidebar"]["pane_drag"]["drop"], "dock_highlight": over_card["grid_drop_highlight"], "card_panes": docked_in_card["cards"][0]["panes"],
+        "edge": at_edge["card_drag"]["edge"], "edge_bar": at_edge["edge_bar"], "backgrounded": site_list(&to_tray, "backgrounded"), "tray_chip": to_tray["tray"]["chip"]});
+    for pane in [&grid_b, &grid_c] {
+        let (ok, _, err) = run_pumped(&["pane", "background", pane], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel pane background {pane} back to the grid failed: {err}");
+    }
+    until!("both panes back in the grid", |s: &Value| grid_panes(s).contains(&grid_b) && grid_panes(s).contains(&grid_c) && s["tray"]["chip"].is_null());
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=background"));
     ensure!(code == 200, "background got {code}");
     // The tray (wheel-ynjo.8.5): the chip at its place on the grid's right edge, cut out of the
@@ -3300,7 +3354,10 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let a_mid = frame(&mid, &grid_a);
     ensure!(mid["grid_motion"]["moving"] == true && mid["grid_motion"]["zoomed"] == grid_a.as_str() && mid["grid_motion"]["resizes_held"] == true && mid["grid_motion"]["length_ms"] == 2200,
         "400 ms after the zoom button the motion reads {}", mid["grid_motion"]);
-    ensure!(a_mid[2] > a_from[2] + 1. && a_mid[2] < zoom_area[2] - 1. && a_mid[3] > a_from[3] + 1. && a_mid[3] < zoom_area[3] - 1., "mid-zoom the first pane is {a_mid:?}, not between {a_from:?} and the grid {zoom_area:?}");
+    // Each side the pane does not already fill grows part of the way; at least one does.
+    let between = |i: usize| a_from[i] >= zoom_area[i] - 1. || (a_mid[i] > a_from[i] + 1. && a_mid[i] < zoom_area[i] - 1.);
+    let grows = a_from[2] < zoom_area[2] - 1. || a_from[3] < zoom_area[3] - 1.;
+    ensure!(grows && between(2) && between(3), "mid-zoom the first pane is {a_mid:?}, not between {a_from:?} and the grid {zoom_area:?}");
     ensure!(sent(&mid).len() == sent_before, "the terminal sent a resize mid-zoom: {:?}", sent(&mid));
     let zoomed = until!("the zoom finished and the terminal's size sent", |s: &Value| s["grid_motion"]["resizes_held"] == false && sent(s).len() > sent_before);
     let apart = |f: [f64; 4], a: [f64; 4]| f[0] >= a[0] + a[2] || a[0] >= f[0] + f[2] || f[1] >= a[1] + a[3] || a[1] >= f[1] + f[3];
@@ -3447,6 +3504,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let mut pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
         "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
     pane_grid_report["zoom"] = zoom_report;
+    pane_grid_report["card_drops"] = card_drops_report;
     pane_grid_report["header"] = header_report;
     let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
         "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
