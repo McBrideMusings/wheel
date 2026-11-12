@@ -54,6 +54,8 @@ pub struct Transcript {
     pub footer: Option<AgentFooter>,
     /// The controls the agent offers, in draw order (`footer::sorted_config`).
     pub config: Vec<ConfigOption>,
+    /// The commands the agent's session says it accepts (`agent_commands`); none until it has.
+    pub commands: Option<Vec<String>>,
     next_id: usize,
     tool_rows: HashMap<String, usize>,
     plan_row: Option<usize>,
@@ -101,12 +103,34 @@ impl Transcript {
                 self.config = crate::footer::sorted_config(options);
                 true
             }
+            ServerMsg::AgentCommands { agent: a, commands } if a == agent => {
+                self.commands = Some(commands.clone());
+                true
+            }
             _ => false,
         }
     }
 
     pub fn busy(&self) -> bool {
         self.state == "busy"
+    }
+
+    /// The turns of the messages waiting behind the running turn, in the order they will run.
+    pub fn queued_turns(&self) -> &[u64] {
+        &self.queued_turns
+    }
+
+    /// The turn that started and has said nothing yet, so its message can still be taken back.
+    pub fn unanswered_turn(&self) -> Option<u64> {
+        self.unanswered_turn
+    }
+
+    /// The text of the person's message sent as `turn`.
+    pub fn user_text(&self, turn: u64) -> Option<&str> {
+        self.rows.iter().rev().find(|r| r.turn == Some(turn)).and_then(|r| match &r.kind {
+            Kind::User { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
     }
 
     /// Rows above the queued messages.

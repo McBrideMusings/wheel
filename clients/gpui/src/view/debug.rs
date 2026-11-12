@@ -101,6 +101,7 @@ impl Client {
                     }
                     "/agent/draft" => {
                         self.drafts.insert(agent.clone(), request.body.clone());
+                        self.draft_edited(&agent.clone());
                     }
                     _ => self.focus_pane(&pane),
                 }
@@ -621,6 +622,7 @@ impl Client {
                     entry["draft"] = json!(self.drafts.get(agent).cloned().unwrap_or_default());
                     entry["rows"] = json!(self.transcripts.get(agent).map(|t| t.rows.len()).unwrap_or(0));
                     entry["perm_card"] = self.perm_card_json(&leaf.id);
+                    entry["composer"] = self.composer_json(agent, leaf.harness.as_deref().unwrap_or(""));
                 }
                 panes.insert(leaf.id.clone(), entry);
             }

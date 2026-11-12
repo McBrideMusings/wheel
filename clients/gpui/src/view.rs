@@ -4,6 +4,7 @@
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod commands;
+mod composer;
 mod debug;
 mod little;
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
@@ -65,6 +66,16 @@ pub struct Client {
     /// The pane with the keyboard, and what has been typed to each agent and not yet sent.
     pub focus: Focus,
     drafts: HashMap<String, String>,
+    /// Each composer's command list: its highlight and whether Esc shut it.
+    pickers: HashMap<String, crate::composer::Picker>,
+    /// Messages taken back to edit, by (agent, turn): their text goes to the draft on `retract`.
+    editing: HashMap<(String, u64), String>,
+    /// Queued turns asked to run now and not yet started, by (agent, turn).
+    sending_now: HashSet<(String, u64)>,
+    /// Requests about agents' messages waiting for wheeld's answer, by request id.
+    agent_reqs: HashMap<u64, composer::AgentReq>,
+    /// wheeld's last refusal of a request about an agent's messages, shown under its composer.
+    composer_errors: HashMap<String, String>,
     /// GPUI delivers keys only to a focused element: the root holds this for good, while the
     /// keyboard itself moves between the window's views by AppKit's first responder.
     handle: FocusHandle,
@@ -328,7 +339,7 @@ impl Client {
         let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
         let mut client = Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
@@ -398,6 +409,7 @@ impl Client {
                             return false;
                         }
                         ServerMsg::Error { req: Some(req), message, .. } => {
+                            self.on_agent_answer(*req, Some(message));
                             if let Some(palette) = self.palettes.values_mut().find(|p| p.req == Some(*req)) {
                                 palette.req = None;
                                 palette.failed(message);
@@ -487,6 +499,13 @@ impl Client {
                             let line = self.server_watch.stopping(settings::now_ms());
                             self.log(line);
                             return false;
+                        }
+                        ServerMsg::AgentQueued { req, agent, turn } => self.on_queued(*req, agent, *turn),
+                        ServerMsg::Ok { req } => self.on_agent_answer(*req, None),
+                        ServerMsg::Agent { agent, event } => {
+                            if let wheel_proto::AgentEvent::Retract { turn } = event.event {
+                                self.on_retract(agent, turn);
+                            }
                         }
                         _ => {}
                     }
@@ -1130,7 +1149,13 @@ impl Client {
                 self.focus.current = held;
             }
         }
+        if self.picker_key(e) {
+            return true;
+        }
         if self.perm_key(e) {
+            return true;
+        }
+        if self.queue_key(e) {
             return true;
         }
         if self.run_key(k, cx) {
@@ -1155,9 +1180,14 @@ impl Client {
         let draft = self.drafts.entry(agent.clone()).or_default();
         match type_into(draft, &k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
             Typed::Nothing => false,
-            Typed::Edited => true,
+            Typed::Edited => {
+                self.draft_edited(&agent);
+                true
+            }
+            // `send_draft` keeps the text in the box when wheeld is out of reach.
             Typed::Send(text) => {
-                self.send(&ClientMsg::AgentSend { req: None, agent: agent.clone(), text });
+                self.drafts.insert(agent.clone(), text);
+                self.send_draft(&agent, false);
                 true
             }
         }
@@ -1434,6 +1464,8 @@ impl Render for Client {
                 "agent" => {
                     // A pane whose agent has not started yet shares no draft or scroll state with another.
                     let agent = p.leaf.agent.as_deref();
+                    let harness = p.leaf.harness.as_deref().unwrap_or("");
+                    let queue = agent.map(|a| self.queue_view(a)).unwrap_or_default();
                     let t = agent.and_then(|a| self.transcripts.get(a));
                     let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
                     let scroll = agent.map(|a| self.scrolls.entry(a.to_owned()).or_default().clone());
@@ -1445,7 +1477,11 @@ impl Render for Client {
                     let body = r.h - TITLE - 2. * PAD;
                     let card_h = self.card_height(agent, body);
                     let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, position, self.perms.len(), focused, card_h, &self.controls, cx));
-                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, scroll, body, card, card_h, selection, &self.drawn, &self.highlights, &self.parsed, items, menu, &self.controls, cx)
+                    let (rows, at, prefix) = agent.map(|a| self.command_matches(a, harness)).unwrap_or_default();
+                    let list_h = composer::command_list_height(rows.len());
+                    let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
+                    let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
+                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, scroll, body, card, card_h + list_h, list, &queue, error, selection, &self.drawn, &self.highlights, &self.parsed, items, menu, &self.controls, cx)
                 }
                 "empty" => {
                     let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -1471,7 +1507,8 @@ impl Render for Client {
                         let id = p.leaf.id.clone();
                         // A press in an agent pane's transcript band starts a pointer selection.
                         let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
-                        let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD);
+                        let listed = agent.as_deref().map_or(0, |a| self.command_matches(a, p.leaf.harness.as_deref().unwrap_or("")).0.len());
+                        let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD) + composer::command_list_height(listed);
                         let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - FOOTER - 8. - card_h);
                         move |this, e: &MouseDownEvent, _, cx| {
                             this.press(format!("pane {id} at {:?}", e.position));
@@ -1723,7 +1760,7 @@ const LABEL: f32 = 24.;
 /// stream, a running line while a turn is in progress, and the composer with the draft. Every
 /// text it draws is recorded in `drawn` with its layout, so a pointer selection can find it.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32, card: Option<gpui::Div>, card_h: f32,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, queue: &composer::QueueView, error: Option<&str>,
     selection: Option<&Selection>, drawn: &Rc<RefCell<Vec<Drawn>>>, highlights: &Highlights, parsed: &Parsed, items: Vec<(String, String)>, menu: Option<String>,
     controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
@@ -1737,9 +1774,11 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
         texts.row = i;
         texts.next = 0;
         col = col.child(match &row.kind {
-            Kind::User { text, queued } => div().flex().gap_2().text_color(rgb(0xe0b070))
-                .child(div().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
-                .child(div().child(texts.plain("user", text, 0xe0b070))),
+            Kind::User { text, queued } => div().flex().flex_col()
+                .child(div().flex().gap_2().text_color(rgb(0xe0b070))
+                    .child(div().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
+                    .child(div().child(texts.plain("user", text, 0xe0b070))))
+                .children(row.turn.zip(agent).and_then(|(turn, a)| composer::queue_line(a, turn, *queued, queue, controls, cx))),
             Kind::Reply(x) => {
                 let blocks = {
                     let mut cache = parsed.borrow_mut();
@@ -1789,10 +1828,13 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
         .child(div().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
         .child(col)
         .children(card)
+        .children(list)
         .child(div().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
             .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
             .text_color(rgb(0xd9e8e1)).overflow_hidden()
-            .child(format!("{draft}{}", if focused { "▏" } else { "" })))
+            .flex().justify_between().gap_2()
+            .child(format!("{draft}{}", if focused { "▏" } else { "" }))
+            .children(error.map(|e| div().flex_none().max_w(px(260.)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned()))))
         .child(footer_row(pane, agent.unwrap_or(""), t, items, menu, controls, cx))
 }
 

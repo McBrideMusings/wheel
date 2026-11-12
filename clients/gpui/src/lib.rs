@@ -2,6 +2,7 @@
 pub mod actions;
 pub mod browser;
 pub mod command_palette;
+pub mod composer;
 pub mod crash_guard;
 pub mod daemon;
 pub mod debug;

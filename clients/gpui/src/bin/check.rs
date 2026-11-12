@@ -758,6 +758,214 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(question_answer == r#"allow answers={"Which color?":"Red","Which size?":"Small"}"#, "clicks on each question's first answer gave {question_answer:?}: cards clicked {clicked:?}, card now {}, presses {:?}, replies {:?}",
         card_now(cx)?, window.update(cx, |c, _, _| c.presses.clone())?, replies_since(&rows(cx)?.1, rows_before_question));
+    // The composer (wheel-ynjo.10.4.1): `/` lists the fake agent's commands (its `slash_commands`),
+    // the arrows with Return, Tab and a click each pick one, and Esc shuts the list. Messages sent
+    // during a slow turn show queued with their actions; Edit, Clear queue and Send now pressed
+    // with the pointer, and Control-Return, change what wheeld holds.
+    let pane_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()].clone());
+    let key = |native: &Native, text: &str, code: u16| {
+        native.call(json!({"op":"post_key","text":text,"code":code}));
+    };
+    let draft_now = |cx: &mut AsyncApp| -> Result<String> { Ok(pane_now(cx)?["draft"].as_str().unwrap_or_default().to_owned()) };
+    async fn erase(native: &Native, count: usize, cx: &mut AsyncApp) {
+        for _ in 0..count {
+            native.call(json!({"op":"post_key","text":"\u{7f}","code":51}));
+            tick(cx, 10).await;
+        }
+        tick(cx, 100).await;
+    }
+    async fn type_text(native: &Native, text: &str, cx: &mut AsyncApp) {
+        for ch in text.chars() {
+            native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+            tick(cx, 15).await;
+        }
+        tick(cx, 150).await;
+    }
+    ensure!(draft_now(cx)?.is_empty(), "the composer holds {:?} before the command list check", draft_now(cx)?);
+    type_text(&native, "/", cx).await;
+    draw(window, None, cx)?;
+    let first_list = pane_now(cx)?["composer"].clone();
+    let commands_listed: Vec<String> = serde_json::from_value(first_list["listed"].clone()).unwrap_or_default();
+    ensure!(commands_listed == ["clear", "compact", "review"], "a `/` draft listed {commands_listed:?}: composer {first_list}, draft {:?}", draft_now(cx)?);
+    draw(window, Some(output.join("client-composer-commands.png")), cx)?;
+    let list_rows_drawn = ["clear", "compact", "review"].iter().all(|n| window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("command:{n}"))).ok().flatten().is_some());
+    ensure!(list_rows_drawn, "the list drew no row for each command: controls {:?}", window.update(cx, |c, _, _| c.control_bounds(&agent_name, "command-list"))?);
+    key(&native, "\u{f701}", 125);
+    tick(cx, 50).await;
+    key(&native, "\u{f701}", 125);
+    tick(cx, 100).await;
+    let highlighted = pane_now(cx)?["composer"]["highlighted"].clone();
+    key(&native, "\r", 36);
+    tick(cx, 200).await;
+    let by_arrows = draft_now(cx)?;
+    ensure!(highlighted == 2 && by_arrows == "/review ", "Down Down Return: highlight {highlighted}, draft {by_arrows:?}");
+    erase(&native, by_arrows.chars().count(), cx).await;
+    type_text(&native, "/co", cx).await;
+    let co_listed = pane_now(cx)?["composer"]["listed"].clone();
+    key(&native, "\t", 48);
+    tick(cx, 200).await;
+    let by_tab = draft_now(cx)?;
+    ensure!(co_listed[0] == "compact" && by_tab == "/compact ", "`/co` listed {co_listed} and Tab left {by_tab:?}");
+    erase(&native, by_tab.chars().count(), cx).await;
+    type_text(&native, "/", cx).await;
+    draw(window, None, cx)?;
+    let clear_row = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "command:clear"))?.ok_or_else(|| anyhow::anyhow!("no clear row drawn"))?;
+    press(&native, clear_row);
+    tick(cx, 200).await;
+    let by_click = draft_now(cx)?;
+    ensure!(by_click == "/clear ", "a click on the clear row left {by_click:?}");
+    erase(&native, by_click.chars().count() - 1, cx).await;
+    key(&native, "\u{1b}", 53);
+    tick(cx, 200).await;
+    let shut = pane_now(cx)?;
+    ensure!(shut["draft"] == "/" && shut["composer"]["listed"] == json!([]), "Esc on the open list: {}", shut["composer"]);
+    erase(&native, 1, cx).await;
+    // The queue: a slow turn runs while two messages wait behind it.
+    let queued_now = |cx: &mut AsyncApp| -> Result<Vec<u64>> { Ok(serde_json::from_value(pane_now(cx)?["composer"]["queued"].clone()).unwrap_or_default()) };
+    type_line(&native, "work slowly 20", cx).await;
+    let mut slow_busy = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "busy" {
+            slow_busy = true;
+            break;
+        }
+    }
+    ensure!(slow_busy, "the slow turn never ran: state {:?}", rows(cx)?.0);
+    type_line(&native, "queued one", cx).await;
+    tick(cx, 100).await;
+    type_line(&native, "queued two", cx).await;
+    let mut waiting = vec![];
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        waiting = queued_now(cx)?;
+        if waiting.len() == 2 {
+            break;
+        }
+    }
+    ensure!(waiting.len() == 2, "two messages sent during the slow turn left the queue {waiting:?}: state {:?}", rows(cx)?.0);
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-composer-queued.png")), cx)?;
+    let (q1, q2) = (waiting[0], waiting[1]);
+    let queue_ids = [format!("queue:now:{q1}"), format!("queue:edit:{q1}"), format!("queue:remove:{q1}"), "queue:clear".to_owned(), format!("queue:now:{q2}"), format!("queue:edit:{q2}")];
+    let queue_drawn: Vec<bool> = queue_ids.iter().map(|id| window.update(cx, |c, _, _| c.control_bounds(&agent_name, id)).ok().flatten().is_some()).collect();
+    ensure!(queue_drawn.iter().all(|d| *d), "the queued rows' actions {queue_ids:?} drawn: {queue_drawn:?}");
+    let edit_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("queue:edit:{q2}")))?.unwrap_or_default();
+    press(&native, edit_at);
+    let mut took_back = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if draft_now(cx)? == "queued two" && queued_now(cx)? == [q1] {
+            took_back = true;
+            break;
+        }
+    }
+    ensure!(took_back, "Edit on the second queued message: draft {:?}, queue {:?}, presses {:?}", draft_now(cx)?, queued_now(cx)?, window.update(cx, |c, _, _| c.presses.clone())?);
+    erase(&native, "queued two".len(), cx).await;
+    type_line(&native, "queued three", cx).await;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if queued_now(cx)?.len() == 2 {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    let clear_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "queue:clear"))?.ok_or_else(|| anyhow::anyhow!("no Clear queue with two queued: {:?}", queued_now(cx)))?;
+    press(&native, clear_at);
+    let mut cleared_queue = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if queued_now(cx)?.is_empty() && !rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text.starts_with("queued "))) {
+            cleared_queue = true;
+            break;
+        }
+    }
+    let agent_read = || -> Result<String> {
+        let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "read", &agent_pane]).output()?;
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    };
+    let read_after_clear = agent_read()?;
+    ensure!(cleared_queue && !read_after_clear.contains("(queued)"), "Clear queue: queue {:?}, wheeld's transcript still queues: {}", queued_now(cx)?, read_after_clear.lines().filter(|l| l.contains("(queued)")).collect::<Vec<_>>().join(" | "));
+    type_line(&native, "send me now", cx).await;
+    let mut now_turn = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if let [t] = queued_now(cx)?[..] {
+            now_turn = Some(t);
+            break;
+        }
+    }
+    let now_turn = now_turn.ok_or_else(|| anyhow::anyhow!("`send me now` was never queued: state {:?}", rows(cx).map(|r| r.0)))?;
+    draw(window, None, cx)?;
+    let now_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("queue:now:{now_turn}")))?.ok_or_else(|| anyhow::anyhow!("no Send now on turn {now_turn}"))?;
+    press(&native, now_at);
+    let mut queued_then_sent = false;
+    let mut saw_sending = false;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        saw_sending |= pane_now(cx)?["composer"]["sending_now"].as_array().is_some_and(|s| !s.is_empty());
+        if rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, queued: false } if text == "send me now")) {
+            queued_then_sent = true;
+            break;
+        }
+    }
+    let read_after_now = agent_read()?;
+    ensure!(queued_then_sent && read_after_now.contains("> send me now") && !read_after_now.contains("> send me now (queued)"),
+        "Send now on turn {now_turn}: ran {queued_then_sent}, wheeld's transcript tail: {}", read_after_now.lines().rev().take(6).collect::<Vec<_>>().join(" | "));
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "ready" {
+            break;
+        }
+    }
+    // Control-Return while a turn runs sends the draft to go first.
+    type_line(&native, "work slowly 20", cx).await;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "busy" {
+            break;
+        }
+    }
+    type_text(&native, "urgent", cx).await;
+    native.call(json!({"op":"post_key","text":"\r","code":36,"control":true}));
+    let mut control_return_ran = false;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, queued: false } if text == "urgent")) {
+            control_return_ran = true;
+            break;
+        }
+    }
+    ensure!(control_return_ran, "Control-Return during the slow turn: draft {:?}, queue {:?}, state {:?}", draft_now(cx)?, queued_now(cx)?, rows(cx)?.0);
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "ready" {
+            break;
+        }
+    }
+    // Esc with text in the box still stops a running turn, and the text stays.
+    type_line(&native, "work slowly 20", cx).await;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "busy" {
+            break;
+        }
+    }
+    type_text(&native, "abc", cx).await;
+    key(&native, "\u{1b}", 53);
+    let mut esc_stopped = false;
+    for _ in 0..80 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "ready" {
+            esc_stopped = true;
+            break;
+        }
+    }
+    let kept = draft_now(cx)?;
+    ensure!(esc_stopped && kept == "abc", "Esc with `abc` typed during a slow turn: stopped {esc_stopped}, state {:?}, draft {kept:?}", rows(cx)?.0);
+    erase(&native, 3, cx).await;
+    let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
+        "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     for (split, _, ratio) in &splits_above {
         set_ratio(split, *ratio)?;
     }
@@ -2681,6 +2889,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // Past the one `json!` the recursion limit allows.
     report["terminal"] = terminal_report;
     report["perms"] = perms_report;
+    report["composer"] = composer_report;
     Ok(report)
 }
 
