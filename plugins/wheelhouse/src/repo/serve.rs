@@ -14,6 +14,7 @@ use rmcp::{schemars, service::RequestContext, tool, tool_router, ErrorData, Role
 use serde_json::{json, Value};
 
 use super::*;
+use crate::core::list::{self, Filter, Item, List, Spec};
 use crate::core::page::{self, ago, cell, now, Page};
 use crate::core::project::Origin;
 use crate::core::table;
@@ -23,14 +24,88 @@ pub const NAME: &str = "repo";
 const URI: &str = "a2ui://repo";
 const SURFACE: &str = "repo";
 
-#[derive(Default)]
 struct Ui {
-    q: String,
+    /// The search, filters, sort and selection, as every list page holds them. The History tab takes only the search.
+    list: List,
     /// "history" shows stashes and commits; anything else shows the branches.
     tab: String,
-    show: String,
     sel: Option<String>,
     notice: Option<(bool, String)>,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Ui { list: List::new("state", true), tab: String::new(), sel: None, notice: None }
+    }
+}
+
+/// What the branch list narrows by.
+const SPEC: Spec = Spec {
+    filters: &[
+        Filter { key: "state", name: "state", hidden: None },
+        Filter { key: "has", name: "has", hidden: None },
+        Filter { key: "checks", name: "checks", hidden: None },
+    ],
+    sorts: &["branch", "worktree", "vs", "pr", "ci", "state", "updated"],
+};
+
+fn ci(b: &Branch) -> &'static str {
+    match b.pr.as_ref().and_then(|p| p.ci) {
+        Some("pass") => "passing",
+        Some("fail") => "failing",
+        Some(_) => "pending",
+        None => "none",
+    }
+}
+
+fn changed(b: &Branch) -> bool {
+    b.worktree.as_ref().is_some_and(|w| w.status.staged + w.status.unstaged + w.status.untracked + w.status.conflicted > 0)
+}
+
+impl Item for Branch {
+    fn haystack(&self) -> String {
+        format!("{} {} {}", self.branch, self.subject, self.pr.as_ref().map(|p| p.title.as_str()).unwrap_or(""))
+    }
+    fn has(&self, key: &str, value: &str) -> bool {
+        match (key, value) {
+            ("state", v) => kinds(self) == v,
+            ("has", "worktree") => self.worktree.is_some(),
+            ("has", "pr") => self.pr.is_some(),
+            ("has", "changes") => changed(self),
+            ("has", "local-only") => self.local_only > 0,
+            ("checks", v) => ci(self) == v,
+            _ => false,
+        }
+    }
+}
+
+fn compare(key: &str, a: &Branch, b: &Branch) -> std::cmp::Ordering {
+    let wt = |x: &Branch| x.worktree.as_ref().map(|w| w.path.rsplit('/').next().unwrap_or(&w.path).to_lowercase()).unwrap_or_default();
+    let rank = |c: &str| match c { "failing" => 0, "pending" => 1, "passing" => 2, _ => 3 };
+    match key {
+        "branch" => a.branch.to_lowercase().cmp(&b.branch.to_lowercase()),
+        "worktree" => wt(a).cmp(&wt(b)),
+        "vs" => a.ahead.unwrap_or(-1).cmp(&b.ahead.unwrap_or(-1)),
+        "pr" => a.pr.as_ref().map_or(0, |p| p.number).cmp(&b.pr.as_ref().map_or(0, |p| p.number)),
+        "ci" => rank(ci(a)).cmp(&rank(ci(b))),
+        "state" => group(a).cmp(&group(b)),
+        _ => a.ts.cmp(&b.ts),
+    }
+}
+
+/// Safe-to-delete first, then blocked, then live.
+fn group(b: &Branch) -> usize {
+    match kinds(b) { "dead" => 0, "blocked" => 1, _ => 2 }
+}
+
+/// The branches the page lists now, in the order shown; what the sort leaves equal goes newest first, then by name.
+fn listed<'a>(s: &'a Snapshot, ui: &Ui) -> Vec<&'a Branch> {
+    ui.list.sorted(&SPEC, &s.branches, compare, |a, b| b.ts.cmp(&a.ts).then(a.branch.cmp(&b.branch)))
+}
+
+/// The branch names the list actions take: the selected listed branches, else every listed one.
+fn ids(s: &Snapshot, ui: &Ui) -> Vec<String> {
+    list::taken(listed(s, ui).iter().map(|b| b.branch.clone()).collect(), &ui.list)
 }
 
 #[derive(Default)]
@@ -57,25 +132,6 @@ fn kinds(b: &Branch) -> &'static str {
     }
 }
 
-fn matches(b: &Branch, ui: &Ui) -> bool {
-    let q = ui.q.to_lowercase();
-    let hay = format!("{} {} {}", b.branch, b.subject, b.pr.as_ref().map(|p| p.title.as_str()).unwrap_or("")).to_lowercase();
-    q.split_whitespace().all(|w| hay.contains(w))
-        && match ui.show.as_str() {
-            "dead" => b.dead.is_some(),
-            "worktrees" => b.worktree.is_some(),
-            "prs" => b.pr.is_some(),
-            _ => true,
-        }
-}
-
-/// The page's own order: safe-to-delete, blocked, then live, the newest first, then the name. A click on a
-/// column header re-sorts the rows in the client.
-fn order(a: &Branch, b: &Branch) -> std::cmp::Ordering {
-    let group = |x: &Branch| match kinds(x) { "dead" => 0, "blocked" => 1, _ => 2 };
-    group(a).cmp(&group(b)).then(b.ts.cmp(&a.ts)).then(a.branch.cmp(&b.branch))
-}
-
 fn row(b: &Branch, ui: &Ui, at: i64) -> Value {
     let wt = b.worktree.as_ref().map(|w| {
         let name = w.path.rsplit('/').next().unwrap_or(&w.path).to_string();
@@ -86,11 +142,11 @@ fn row(b: &Branch, ui: &Ui, at: i64) -> Value {
         _ => String::new(),
     };
     let pr = b.pr.as_ref().map(|p| format!("#{}", p.number)).unwrap_or_default();
-    let ci = match b.pr.as_ref().and_then(|p| p.ci) {
-        Some("pass") => cell("passing", json!({ "chip": true, "tone": "ok", "sort": 2 })),
-        Some("fail") => cell("failing", json!({ "chip": true, "tone": "bad", "sort": 0 })),
-        Some(_) => cell("pending", json!({ "chip": true, "tone": "warn", "sort": 1 })),
-        None => cell("", json!({ "sort": 3 })),
+    let ci = match ci(b) {
+        "passing" => cell("passing", json!({ "chip": true, "tone": "ok", "sort": 2 })),
+        "failing" => cell("failing", json!({ "chip": true, "tone": "bad", "sort": 0 })),
+        "pending" => cell("pending", json!({ "chip": true, "tone": "warn", "sort": 1 })),
+        _ => cell("", json!({ "sort": 3 })),
     };
     let state = match (b.dead, &b.blocked) {
         (Some(why), None) => cell(why, json!({ "chip": true, "tone": "ok" })),
@@ -121,13 +177,10 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let at = now();
     let mut page = vec![];
     // No page title or subtitle: the pane's own bar says which page it is.
-    let n = |f: &dyn Fn(&Branch) -> bool| s.branches.iter().filter(|b| f(b)).count();
-    let kpis = [("Branches", s.branches.len(), "fg"), ("Safe to delete", n(&|b| kinds(b) == "dead"), "ok"),
-        ("Worktrees", n(&|b| b.worktree.is_some()), "fg"), ("Open PRs", n(&|b| b.pr.is_some()), "fg")];
-    let cards: Vec<String> = kpis.iter().enumerate().map(|(i, (l, v, tone))| {
-        p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), if *v == 0 { "muted" } else { tone })
-    }).collect();
-    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));
+    // The boxes set one filter each: a tap picks it, a tap on the chosen one clears it.
+    let n = |key: &str, v: &str| s.branches.iter().filter(|b| b.has(key, v)).count();
+    page.push(list::boxes(&mut p, &ui.list, &[("Safe to delete", "state", "dead", n("state", "dead"), true), ("Blocked", "state", "blocked", n("state", "blocked"), false),
+        ("Worktrees", "has", "worktree", n("has", "worktree"), false), ("With a PR", "has", "pr", n("has", "pr"), false)]));
     for (i, e) in s.error.iter().chain(s.pr_error.iter()).enumerate() {
         let l = p.label(&format!("problem{i}.t"), e, json!({ "tone": "bad" }));
         page.push(p.boxed(&format!("problem{i}"), "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
@@ -140,20 +193,19 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
         let history = ui.tab == "history";
         p.choose("tab", "/set_tab", if history { "history" } else { "branches" },
             vec![json!({ "value": "branches", "text": "Branches" }), json!({ "value": "history", "text": "History" })], true, false);
-        p.search("search", "set_query", &ui.q, "Search");
-        // The views choice keeps its place on the History tab, disabled, so no control moves between tabs.
-        p.choose("views", "/set_show", if ui.show.is_empty() { "all" } else { &ui.show }, vec![
-            json!({ "value": "all", "text": "All" }), json!({ "value": "dead", "text": "Safe to delete" }),
-            json!({ "value": "worktrees", "text": "Worktrees" }), json!({ "value": "prs", "text": "With a PR" })], true, history);
-        let q = ui.q.to_lowercase();
-        let stashes: Vec<&(String, String, String)> = s.stashes.iter().filter(|(r, subj, _)| q.is_empty() || format!("{r} {subj}").to_lowercase().contains(&q)).collect();
-        let commits: Vec<&Commit> = s.commits.iter().filter(|c| q.is_empty() || format!("{} {} {}", c.sha, c.subject, c.author).to_lowercase().contains(&q)).collect();
-        let mut shown: Vec<&Branch> = s.branches.iter().filter(|b| matches(b, ui)).collect();
-        shown.sort_by(|a, b| order(a, b));
-        let count_text = if history { format!("{} of {}", stashes.len() + commits.len(), s.stashes.len() + s.commits.len()) } else { format!("{} of {}", shown.len(), s.branches.len()) };
-        let count = p.label("count", &count_text, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
-        page.push(p.boxed("tools", "h", vec!["tab".into(), "search".into(), "views".into(), count],
-            json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": [null, "flex", null, 96], "trailing": 1 })));
+        page.push(list::find(&mut p, &ui.list, vec!["tab".into()]));
+        let q = ui.list.q.to_lowercase();
+        let words = |hay: String| { let hay = hay.to_lowercase(); q.split_whitespace().all(|w| hay.contains(w)) };
+        let stashes: Vec<&(String, String, String)> = s.stashes.iter().filter(|(r, subj, _)| words(format!("{r} {subj}"))).collect();
+        let commits: Vec<&Commit> = s.commits.iter().filter(|c| words(format!("{} {} {}", c.sha, c.subject, c.author))).collect();
+        let shown = listed(s, ui);
+        let options = vec![
+            list::fixed("state", &s.branches, &[("dead", "safe to delete"), ("blocked", "blocked"), ("live", "live")]),
+            list::fixed("has", &s.branches, &[("worktree", "worktree"), ("pr", "PR"), ("changes", "uncommitted changes"), ("local-only", "local-only commits")]),
+            list::fixed("checks", &s.branches, &[("failing", "failing"), ("pending", "pending"), ("passing", "passing"), ("none", "none")]),
+        ];
+        let actions = crate::core::buttons::actions(&mut p, &s.scripts, &ids(s, ui), shown.len(), "branch names", "branches");
+        page.push(list::bar(&mut p, &SPEC, &ui.list, options, actions));
         let mut t = if history {
             let default = s.default.as_deref().unwrap_or("the default branch");
             let stash_rows: Vec<Value> = stashes.iter().map(|(r, subj, when)| json!({ "id": r, "path": r, "depth": 0, "kids": 0, "collapsed": false, "dim": false,
@@ -184,8 +236,9 @@ fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
                 table::column("pr", "PR", json!(60), false, false), table::column("ci", "Checks", json!(84), false, false),
                 table::column("state", "State", json!(150), false, true), table::column("updated", "Updated", json!(70), false, false),
             ].into_iter().map(table::sortable).collect();
-            table::component(columns, sections, "select_branch", "select_branch", "", ("updated", false),
-                if s.branches.is_empty() { "No branches besides the default." } else { "Nothing matches the search." })
+            let t = table::component(columns, sections, "select_branch", "select_branch", "set_sort", (&ui.list.sort.0, ui.list.sort.1),
+                if s.branches.is_empty() { "No branches besides the default." } else { "Nothing matches the search and filters." });
+            table::selectable(t, "select_rows", &ui.list.selected.iter().cloned().collect::<Vec<_>>())
         };
         t["id"] = json!("table");
         p.put(t);
@@ -208,10 +261,9 @@ struct Value1 {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct Query {
-    /// The search text.
-    #[serde(alias = "value")]
-    q: String,
+struct ListScript {
+    /// The button's name in `[repo.list.<name>]`.
+    script: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -238,6 +290,7 @@ impl Server {
         let mut s = self.shared.lock().unwrap();
         let snap = s.project(&o.dir).clone();
         let ui = s.panes.entry(o.pane).or_default();
+        ui.notice = None;
         f(&snap, ui);
         answer(&snap, ui)
     }
@@ -254,22 +307,32 @@ impl Server {
         self.with(&meta, |_, _| {})
     }
 
-    #[tool(description = "Search the branches", meta = ui_meta())]
-    fn set_query(&self, meta: RequestMetaObject, Parameters(Query { q }): Parameters<Query>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.q = q)
-    }
-
     #[tool(description = "Show the branches or the history", meta = ui_meta())]
     fn set_tab(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
         self.with(&meta, |_, ui| ui.tab = value)
     }
 
-    #[tool(description = "Show all, dead, worktrees or prs", meta = ui_meta())]
-    fn set_show(&self, meta: RequestMetaObject, Parameters(Value1 { value }): Parameters<Value1>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.show = if value == "all" { String::new() } else { value })
+    #[tool(description = "Run one of the project's list buttons over the branches the page lists now", meta = ui_meta())]
+    fn run_list_script(&self, meta: RequestMetaObject, Parameters(ListScript { script }): Parameters<ListScript>) -> CallToolResult {
+        let o = Origin::of(&meta);
+        let (snap, names) = {
+            let mut s = self.shared.lock().unwrap();
+            let snap = s.project(&o.dir).clone();
+            let ui = s.panes.entry(o.pane.clone()).or_default();
+            let names = ids(&snap, ui);
+            (snap, names)
+        };
+        let mut env = vec![("REPO_PATH", snap.top.as_str())];
+        if let Some(d) = &o.data {
+            env.push(("WHEEL_DATA_DIR", d.as_str()));
+        }
+        match crate::core::buttons::run_list(&snap.scripts, &script, &names, "BRANCHES", &env, &o.dir, &o.pane, "branches") {
+            Ok(said) => self.with(&meta, |_, ui| ui.notice = Some((true, said))),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
+        }
     }
 
-    #[tool(description = "Select a branch's row", meta = ui_meta())]
+    #[tool(description = "Open a branch's row (a double-click or Return)", meta = ui_meta())]
     fn select_branch(&self, meta: RequestMetaObject, Parameters(RowId { id: branch }): Parameters<RowId>) -> CallToolResult {
         self.with(&meta, |_, ui| ui.sel = if ui.sel.as_deref() == Some(&branch) { None } else { Some(branch) })
     }
@@ -308,10 +371,15 @@ impl View for RepoView {
     }
 
     fn tools(&self) -> Vec<Tool> {
-        self.server.tool_router.list_all()
+        let mut t = self.server.tool_router.list_all();
+        t.extend(list::tools(&ui_meta()));
+        t
     }
 
     async fn call(&self, params: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, ErrorData> {
+        if let Some(op) = list::op(&params) {
+            return Ok(self.server.with(&context.meta, |_, ui| ui.list.apply(&SPEC, op)).into());
+        }
         self.server.tool_router.call(ToolCallContext::new(&self.server, params, context)).await
     }
 
@@ -377,7 +445,8 @@ mod tests {
         let table = c.iter().find(|v| v["id"] == "table").unwrap();
         assert_eq!(table["sections"][0]["title"], "Stashes");
         assert_eq!(table["sections"][0]["rows"][0]["cells"][1]["text"], "On main: wip");
-        assert!(c.iter().any(|v| v["id"] == "views.seg" && v["modifiers"][0]["disabled"] == true));
+        let page = c.iter().find(|v| v["id"] == "page").unwrap()["children"].clone();
+        assert_eq!(page, json!(["kpis", "find", "bar", "table.b"]), "the History tab keeps every control where the Branches tab has it");
     }
 
     #[test]

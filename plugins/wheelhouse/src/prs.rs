@@ -18,7 +18,6 @@ pub mod serve;
 
 const QUERY: &str = "query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:25,after:$after,orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{
 number title bodyText headRefName isDraft mergeable updatedAt reviewDecision url additions deletions changedFiles
-closingIssuesReferences(first:3){nodes{number}}
 author{login __typename}
 assignees(first:10){nodes{login}}
 reviewRequests(first:10){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}
@@ -45,8 +44,9 @@ pub struct Pr {
     pub bucket: &'static str,
     /// The viewer's standing on a PR they did not write.
     pub my: Option<&'static str>,
-    /// A for no assignee, R for no reviewer, L for no label.
-    pub gaps: String,
+    /// Where the review stands from the viewer's side, one of [`STANDINGS`]: whether it is their turn to review, it is
+    /// approved, or someone else is up.
+    pub standing: &'static str,
     pub updated: i64,
     pub url: String,
     pub fix: bool,
@@ -56,12 +56,45 @@ pub struct Pr {
     pub commits: i64,
     pub labels: Vec<String>,
     pub reviewers: Vec<String>,
-    /// What has to happen next, in a few words.
-    pub next: String,
     /// The start of the description, one line.
     pub summary: String,
-    /// The issues the PR closes.
-    pub issues: Vec<i64>,
+}
+
+/// Every review standing: its key, the words the Review column shows, its tone, and whether it is the viewer's turn.
+/// The order is the column's sort: the viewer's turn first, approved last.
+pub const STANDINGS: [(&str, &str, &str, bool); 10] = [
+    ("review", "Review requested", "warn", true),
+    ("re-review", "New commits to review", "warn", true),
+    ("reply", "Replied to you", "warn", true),
+    ("changes-requested", "Changes requested", "bad", true),
+    ("comments", "Comments to answer", "bad", true),
+    ("no-reviewer", "No reviewer", "warn", false),
+    ("waiting-reviewer", "Waiting on reviewer", "muted", false),
+    ("waiting-author", "Waiting on author", "muted", false),
+    ("not-asked", "Not asked", "muted", false),
+    ("approved", "Approved", "ok", false),
+];
+
+/// Where a PR's review stands for the viewer, as a key of [`STANDINGS`].
+fn standing(n: &Value, bucket: &str, my: Option<&str>, review: &str) -> &'static str {
+    let approved = n["reviewDecision"] == "APPROVED";
+    match (bucket, my) {
+        ("mine", _) => match review {
+            "changes-requested" => "changes-requested",
+            "needs-response" => "comments",
+            _ if approved => "approved",
+            _ if has_reviewer(n) => "waiting-reviewer",
+            _ => "no-reviewer",
+        },
+        (_, Some("updated")) => "re-review",
+        (_, Some("replied")) => "reply",
+        ("needs-me", _) => "review",
+        (_, Some("approved")) => "approved",
+        _ if approved => "approved",
+        (_, Some("changes" | "commented")) => "waiting-author",
+        _ if has_reviewer(n) => "waiting-reviewer",
+        _ => "not-asked",
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -76,6 +109,9 @@ pub struct Snapshot {
     /// The project's `[prs.buttons]`; the CLI does not print them.
     #[serde(skip)]
     pub buttons: Vec<detail::Button>,
+    /// The project's `[prs.list]` buttons, run over the listed PRs.
+    #[serde(skip)]
+    pub scripts: Vec<crate::core::buttons::Script>,
 }
 
 fn login(a: &Value) -> Option<&str> {
@@ -259,61 +295,24 @@ pub fn convert(n: &Value, me: &str) -> Pr {
         Some("FAILURE" | "ERROR") => "failing",
         _ => "none",
     };
-    let gaps: String = [('A', nodes(n, "assignees").is_empty()), ('R', !has_reviewer(n)), ('L', nodes(n, "labels").is_empty())]
-        .iter().filter(|(_, missing)| *missing).map(|(k, _)| *k).collect();
     let review = author_class(n);
     // Any PR with red checks or conflicts needs a fix; review feedback only counts on mine.
     let fix = checks == "failing" || n["mergeable"] == "CONFLICTING" || (bucket == "mine" && matches!(review, "changes-requested" | "needs-response"));
-    let next = next_step(n, bucket, my, checks, review, fix);
+    let standing = standing(n, bucket, my, review);
     let summary: String = n["bodyText"].as_str().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
-    let issues = nodes(n, "closingIssuesReferences").iter().filter_map(|i| i["number"].as_i64()).collect();
     let num = |k: &str| n[k].as_i64().unwrap_or(0);
     let text = |k: &str| n[k].as_str().unwrap_or("").to_string();
     Pr {
         number: num("number"), title: text("title"), author, branch: text("headRefName"), draft: n["isDraft"] == true,
-        mergeable: text("mergeable"), checks, review, bucket, my, gaps, updated: ts(&n["updatedAt"]).unwrap_or(0), url: text("url"), fix,
+        mergeable: text("mergeable"), checks, review, bucket, my, standing, updated: ts(&n["updatedAt"]).unwrap_or(0), url: text("url"), fix,
         additions: num("additions"), deletions: num("deletions"), files: num("changedFiles"), commits: n["commits"]["totalCount"].as_i64().unwrap_or(0),
         labels: nodes(n, "labels").iter().filter_map(|l| l["name"].as_str().map(String::from)).collect(),
         reviewers: nodes(n, "reviewRequests").iter().filter_map(|r| {
             let x = &r["requestedReviewer"];
             login(x).or_else(|| x["slug"].as_str()).map(String::from)
         }).collect(),
-        next, summary, issues,
+        summary,
     }
-}
-
-/// What has to happen to this PR next, from the viewer's side.
-fn next_step(n: &Value, bucket: &str, my: Option<&str>, checks: &str, review: &str, fix: bool) -> String {
-    let words = if n["isDraft"] == true {
-        "Mark ready"
-    } else if n["mergeable"] == "CONFLICTING" {
-        "Resolve conflicts"
-    } else if checks == "failing" {
-        "Fix failing checks"
-    } else if bucket == "mine" && review == "changes-requested" {
-        "Address requested changes"
-    } else if bucket == "mine" && review == "needs-response" {
-        "Reply to comments"
-    } else if checks == "pending" {
-        "Wait for checks"
-    } else if bucket == "mine" && review == "approved" {
-        "Merge"
-    } else if bucket == "mine" && !has_reviewer(n) {
-        "Request a review"
-    } else if bucket == "mine" {
-        "Waiting on a reviewer"
-    } else {
-        match my {
-            Some("not-reviewed") => "Review",
-            Some("updated") => "Re-review",
-            Some("replied") => "Reply",
-            Some("approved") => "Approved: waiting on author",
-            Some("changes") => "Waiting on author",
-            _ if fix => "Waiting on author",
-            _ => "Waiting on author",
-        }
-    };
-    words.to_string()
 }
 
 /// How long a read of a repo's PRs, or of one PR, is shared by every pane and project asking for it.
@@ -444,6 +443,9 @@ pub fn collect_with(dir: &str, force: bool) -> Snapshot {
     let mut s = Snapshot { name: crate::core::project::name_of(dir), ..Default::default() };
     let (buttons, problem) = detail::buttons(dir);
     s.buttons = buttons;
+    let (scripts, problems) = crate::core::buttons::scripts(dir, "prs");
+    s.scripts = scripts;
+    let problem = problem.or(problems.into_iter().next());
     let repo = match repo_of(dir) {
         Ok(r) => r,
         Err(e) => {
@@ -500,21 +502,24 @@ mod tests {
     }
 
     #[test]
-    fn the_next_step_follows_the_pr_and_who_is_looking() {
-        let step = |author: &str, f: &dyn Fn(&mut Value)| convert(&node(author, |n| f(n)), "me").next;
-        assert_eq!(step("me", &|n| n["isDraft"] = json!(true)), "Mark ready");
-        assert_eq!(step("me", &|n| n["mergeable"] = json!("CONFLICTING")), "Resolve conflicts");
-        assert_eq!(step("me", &|n| n["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = json!("FAILURE")), "Fix failing checks");
-        assert_eq!(step("me", &|n| n["reviewDecision"] = json!("APPROVED")), "Merge");
-        assert_eq!(step("you", &|n| n["reviewRequests"]["nodes"] = json!([{ "requestedReviewer": { "login": "me" } }])), "Review");
-        let p = convert(&node("me", |n| { n["bodyText"] = json!("A  long\n description"); n["closingIssuesReferences"] = json!({ "nodes": [{ "number": 12 }] }); }), "me");
-        assert_eq!((p.summary.as_str(), p.issues), ("A long description", vec![12]));
+    fn the_standing_says_whose_turn_the_review_is() {
+        let at = |author: &str, f: &dyn Fn(&mut Value)| convert(&node(author, |n| f(n)), "me").standing;
+        assert_eq!(at("me", &|_| {}), "no-reviewer");
+        assert_eq!(at("me", &|n| n["reviewRequests"]["nodes"] = json!([{ "requestedReviewer": { "login": "you" } }])), "waiting-reviewer");
+        assert_eq!(at("me", &|n| n["reviewDecision"] = json!("APPROVED")), "approved");
+        assert_eq!(at("me", &|n| n["reviews"]["nodes"] = json!([{ "author": { "login": "you" }, "state": "CHANGES_REQUESTED", "submittedAt": "2026-11-02T00:00:00Z" }])), "changes-requested");
+        assert_eq!(at("you", &|n| n["reviewRequests"]["nodes"] = json!([{ "requestedReviewer": { "login": "me" } }])), "review");
+        assert_eq!(at("you", &|_| {}), "not-asked");
+        assert_eq!(at("you", &|n| n["reviewDecision"] = json!("APPROVED")), "approved");
+        let p = convert(&node("me", |n| n["bodyText"] = json!("A  long\n description")), "me");
+        assert_eq!(p.summary, "A long description");
+        assert!(STANDINGS.iter().any(|s| s.0 == p.standing));
     }
 
     #[test]
     fn my_pr_is_mine_and_red_checks_need_a_fix() {
         let p = convert(&node("me", |_| {}), "me");
-        assert_eq!((p.bucket, p.checks, p.fix, p.gaps.as_str()), ("mine", "passing", false, "ARL"));
+        assert_eq!((p.bucket, p.checks, p.fix), ("mine", "passing", false));
         let p = convert(&node("me", |n| n["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = json!("FAILURE")), "me");
         assert!(p.fix && p.checks == "failing");
     }
@@ -533,8 +538,8 @@ mod tests {
             n["commits"]["nodes"][0]["commit"]["committedDate"] = json!(commit);
         });
         let p = convert(&reviewed("2026-11-01T00:00:00Z"), "me");
-        assert_eq!((p.bucket, p.my), ("waiting", Some("approved")));
+        assert_eq!((p.bucket, p.my, p.standing), ("waiting", Some("approved"), "approved"));
         let p = convert(&reviewed("2026-11-03T00:00:00Z"), "me");
-        assert_eq!((p.bucket, p.my), ("needs-me", Some("updated")));
+        assert_eq!((p.bucket, p.my, p.standing), ("needs-me", Some("updated"), "re-review"));
     }
 }
