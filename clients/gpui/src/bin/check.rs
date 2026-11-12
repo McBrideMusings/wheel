@@ -1496,6 +1496,96 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let fork_rows = fork_rows.len();
     click_pane(&native, &agent_pane, cx)?;
     tick(cx, 300).await;
+    // The message menu (wheel-ynjo.10.5.3): a control-click on the reply the fork came from opens
+    // its three items; Copy message as Markdown puts the reply's source on the clipboard, Copy
+    // message the text as drawn, and Attach message as context quotes it at the top of the draft
+    // and gives the composer the keyboard. A right press on the person's message opens it too, and
+    // a press on a tool row opens none.
+    let menu_window: gpui::AnyWindowHandle = window.into();
+    let message_at = |row: usize, cx: &mut AsyncApp| -> Result<Option<(f32, f32, f32, f32)>> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("message:{row}")))?) };
+    let menu_now = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["message_menu"].clone())?) };
+    let open_on = |row: usize, cx: &mut AsyncApp| -> Result<(f32, f32, f32, f32)> {
+        window.update(cx, |c, _, _| c.reveal(&agent_name, row))?;
+        for _ in 0..20 {
+            draw(window, None, cx)?;
+            if let Some(b) = message_at(row, cx)? {
+                return Ok(b);
+            }
+        }
+        Err(anyhow::anyhow!("row {row} of {agent_name} recorded no message bounds"))
+    };
+    let mut message_menu_report = json!({});
+    let mut menu_items = Value::Null;
+    for (action, then) in [("markdown", "copied_markdown"), ("copy", "copied_plain"), ("attach", "attached")] {
+        let b = open_on(fork_row, cx)?;
+        let p = [f64::from(b.0 + 12.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p,"control":true}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p,"control":true}));
+        tick(cx, 150).await;
+        draw(window, None, cx)?;
+        let menu = menu_now(cx)?;
+        ensure!(menu["open"]["row"] == json!(fork_row) && menu["open"]["agent"] == json!(agent_name), "a control-click on reply {fork_row} at {p:?} left the message menu {menu} (presses {:?})", window.update(cx, |c, _, _| c.presses.clone())?);
+        if menu_items.is_null() {
+            menu_items = menu["items"].clone();
+            draw(window, Some(output.join("client-message-menu.png")), cx)?;
+        }
+        let item = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("message-menu:{action}")))?.ok_or_else(|| anyhow::anyhow!("the message menu drew no {action} item"))?;
+        press(&native, item);
+        tick(cx, 150).await;
+        draw(window, None, cx)?;
+        ensure!(menu_now(cx)?["open"].is_null(), "the message menu stayed open after {action}");
+        let clipboard = cx.update(|app| app.read_from_clipboard().and_then(|i| i.text())).unwrap_or_default();
+        match action {
+            "markdown" => {
+                ensure!(clipboard == fork_text, "Copy message as Markdown put {clipboard:?} on the clipboard, not {fork_text:?}");
+                message_menu_report[then] = json!(true);
+            }
+            "copy" => {
+                ensure!(!clipboard.is_empty() && fork_text.contains(clipboard.lines().next().unwrap_or_default().trim()), "Copy message put {clipboard:?} on the clipboard for {fork_text:?}");
+                message_menu_report[then] = json!(clipboard);
+            }
+            _ => {
+                let draft = draft_now(cx)?;
+                let quote_first = fork_text.lines().next().unwrap_or_default();
+                let focused = window.update(cx, |c, _, _| c.state_json()["focus_key"].clone())?;
+                ensure!(draft.starts_with(&format!("> {quote_first}")) && draft.ends_with("\n\n"), "after Attach message as context the draft is {draft:?}");
+                ensure!(focused == json!(agent_pane), "after Attach message as context the focus is {focused}, not {agent_pane}");
+                message_menu_report["attached_draft_starts_with_quote"] = json!(true);
+                message_menu_report["draft"] = json!(draft);
+                message_menu_report["focus_after_attach"] = focused;
+                draw(window, Some(output.join("client-message-attached.png")), cx)?;
+                erase(&native, draft.chars().count(), cx).await;
+                ensure!(draft_now(cx)?.is_empty(), "the attached quote did not erase: {:?}", draft_now(cx)?);
+            }
+        }
+    }
+    message_menu_report["copied_markdown"] = json!(message_menu_report["copied_markdown"] == true);
+    message_menu_report["items"] = json!(menu_items.as_array().map(|a| a.iter().filter(|t| *t != "-").cloned().collect::<Vec<_>>()).unwrap_or_default());
+    message_menu_report["lines"] = menu_items;
+    // A right press on the person's message, then a press away closes it.
+    let user_row = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.iter().take(fork_row).rposition(|r| matches!(r.kind, Kind::User { .. })))?
+        .ok_or_else(|| anyhow::anyhow!("no message of the person's before reply {fork_row}"))?;
+    let b = open_on(user_row, cx)?;
+    let at = gpui::point(gpui::px(b.0 + 12.), gpui::px(b.1 + b.3 / 2.));
+    menu_window.update(cx, |_, w, cx| {
+        w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Right, position: at, modifiers: Default::default(), click_count: 1, first_mouse: false }), cx);
+        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Right, position: at, modifiers: Default::default(), click_count: 1 }), cx);
+    })?;
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    let on_user = menu_now(cx)?;
+    ensure!(on_user["open"]["row"] == json!(user_row), "a right press on the person's message {user_row} left the menu {on_user}");
+    message_menu_report["right_press_on_user_row"] = json!(user_row);
+    key(&native, "\u{1b}", 53);
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    ensure!(menu_now(cx)?["open"].is_null(), "Escape left the message menu open: {}", menu_now(cx)?);
+    let tool_row = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.iter().position(|r| matches!(r.kind, Kind::Tool { .. })))?;
+    if let Some(row) = tool_row {
+        let opened = window.update(cx, |c, _, _| c.open_message_menu(&agent_name, row, 300., 300.))?;
+        ensure!(!opened && menu_now(cx)?["open"].is_null(), "tool row {row} opened a message menu");
+        message_menu_report["tool_row_opens_none"] = json!(row);
+    }
     // A 1000-message conversation scrolls without dropping frames (wheel-ynjo.10.6): the check
     // writes a Claude Code transcript of 500 turns beside the one the agent is in, resumes it,
     // scrolls the column from its end to its top and back with wheel events, and times each frame
@@ -4031,6 +4121,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["conversations"] = conversations_report;
     report["conversations"]["fork_rows"] = json!(fork_rows);
     report["conversations"]["fork"] = fork_report;
+    report["message_menu"] = message_menu_report;
     report["scroll"] = scroll_report;
     // Last: it closes every window.
     report["menu_bar"] = menu_bar_check(&bridge, &agent_name, &mut connection, &mut layouts, window, &output, cx).await?;

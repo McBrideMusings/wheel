@@ -164,6 +164,13 @@ pub fn message(typed: &str, paths: &[String]) -> String {
     [typed.trim(), listed.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n")
 }
 
+/// The draft with a message quoted at its top (`attachAsContext`): each line of the Markdown after
+/// `> ` (a blank one as `>`), a blank line, then the draft as it was.
+pub fn attach_as_context(draft: &str, markdown: &str) -> String {
+    let quoted = markdown.split('\n').map(|l| if l.is_empty() { ">".to_owned() } else { format!("> {l}") }).collect::<Vec<_>>().join("\n");
+    format!("{quoted}\n\n{draft}")
+}
+
 /// One file a composer holds for its next message: what its chip shows and the path that goes
 /// out at send.
 #[derive(Clone, Debug, PartialEq)]
@@ -305,6 +312,12 @@ pub fn stamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attaching_a_message_quotes_it_above_the_draft() {
+        assert_eq!(attach_as_context("", "one\n\ntwo"), "> one\n>\n> two\n\n");
+        assert_eq!(attach_as_context("my words", "**yes**"), "> **yes**\n\nmy words");
+    }
 
     fn commands(names: &[&str]) -> Vec<Command> {
         names.iter().map(|n| Command { name: (*n).into(), description: String::new() }).collect()

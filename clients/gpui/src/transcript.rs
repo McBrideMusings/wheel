@@ -70,7 +70,51 @@ pub struct Transcript {
     replaced: bool,
 }
 
+/// What a right-click on a message offers (WheelUI's `MessageMenu.swift`): its two copies, then,
+/// after a separator, attaching it to the next send. The same three on the person's messages and
+/// the agent's replies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageAction {
+    CopyPlain,
+    CopyMarkdown,
+    Attach,
+}
+
+impl MessageAction {
+    pub const ALL: [MessageAction; 3] = [MessageAction::CopyPlain, MessageAction::CopyMarkdown, MessageAction::Attach];
+    pub fn id(self) -> &'static str {
+        match self {
+            MessageAction::CopyPlain => "copy",
+            MessageAction::CopyMarkdown => "markdown",
+            MessageAction::Attach => "attach",
+        }
+    }
+    pub fn title(self) -> &'static str {
+        match self {
+            MessageAction::CopyPlain => "Copy message",
+            MessageAction::CopyMarkdown => "Copy message as Markdown",
+            MessageAction::Attach => "Attach message as context",
+        }
+    }
+    /// A separator sits before this item.
+    pub fn separated_above(self) -> bool {
+        self == MessageAction::Attach
+    }
+    /// The menu's lines as `lastMessageMenu` holds them: each title, "-" for a separator.
+    pub fn lines() -> Vec<&'static str> {
+        MessageAction::ALL.iter().flat_map(|a| a.separated_above().then_some("-").into_iter().chain([a.title()])).collect()
+    }
+}
+
 impl Transcript {
+    /// Row `ix`'s Markdown source when it is a message (`messageTexts`): the person's message as
+    /// typed, or the agent's reply. None for every other row, which opens no message menu.
+    pub fn message_markdown(&self, ix: usize) -> Option<&str> {
+        match &self.rows.get(ix)?.kind {
+            Kind::User { text, .. } | Kind::Reply(text) => Some(text),
+            _ => None,
+        }
+    }
     /// Take one server message. Returns whether it was about `agent`.
     pub fn on_message(&mut self, message: &ServerMsg, agent: &str) -> bool {
         match message {
@@ -584,6 +628,19 @@ pub fn line_counts(old: Option<&str>, new: &str) -> (usize, usize) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_message_menu_matches_the_swift_one_and_opens_only_on_messages() {
+        assert_eq!(MessageAction::lines(), ["Copy message", "Copy message as Markdown", "-", "Attach message as context"]);
+        let mut t = Transcript::default();
+        t.rows.push(Row { id: 0, kind: Kind::User { text: "hi".into(), queued: false }, turn: None, open: false });
+        t.rows.push(Row { id: 1, kind: Kind::Thought("hm".into()), turn: None, open: false });
+        t.rows.push(Row { id: 2, kind: Kind::Reply("**yes**".into()), turn: None, open: false });
+        assert_eq!(t.message_markdown(0), Some("hi"));
+        assert_eq!(t.message_markdown(1), None);
+        assert_eq!(t.message_markdown(2), Some("**yes**"));
+        assert_eq!(t.message_markdown(3), None);
+    }
 
     fn msg(wire: serde_json::Value) -> ServerMsg {
         serde_json::from_value(wire).unwrap()

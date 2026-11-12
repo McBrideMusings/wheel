@@ -302,6 +302,7 @@ impl Client {
         let h = self.menu_height(space);
         let y = y.min(self.viewport.1 - h - 4.).max(0.);
         self.pane_menu = None;
+        self.message_menu = None;
         self.space_menu = Some((space.to_owned(), x, y));
         self.sync_sidebar_overlay();
     }
@@ -574,6 +575,8 @@ impl Client {
             Some(Rect { x, y, w: sidebar::MENU_W, h: self.menu_height(&space) })
         } else if let Some((pane, x, y, level)) = self.pane_menu.clone() {
             Some(Rect { x, y, w: super::panes::MENU_W, h: self.pane_menu_height(&pane, level) })
+        } else if let Some(m) = self.message_menu.as_ref() {
+            Some(Rect { x: m.x, y: m.y, w: super::messages::MENU_W, h: Self::message_menu_height() })
         } else if let Some(h) = self.grid_drop_highlight() {
             Some(h)
         } else {

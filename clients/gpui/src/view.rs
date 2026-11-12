@@ -9,6 +9,7 @@ mod conversations;
 mod debug;
 mod little;
 mod menubar;
+mod messages;
 pub use menubar::{MenuBar, Popover, menu_bar, reopen, start as start_menu_bar};
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
 mod panes;
@@ -273,6 +274,8 @@ pub struct Client {
     pub space_menu: Option<(String, f32, f32)>,
     /// The open pane menu: its pane, where it opened, and the header level it offers what was dropped at.
     pub pane_menu: Option<(String, f32, f32, u8)>,
+    /// The message menu a right-click on a message opened.
+    message_menu: Option<messages::MessageMenu>,
     /// A space or pane to show once this window's layout lists it (a focus request that came
     /// before the layout, a split's new pane): (space, pane, since when in unix ms).
     pending_focus: Option<(Option<String>, Option<String>, u64)>,
@@ -404,7 +407,7 @@ impl Client {
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
             server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         };
         client.register_server();
@@ -1132,6 +1135,10 @@ impl Client {
             self.close_pane_menu();
             closed = true;
         }
+        if self.message_menu.is_some() {
+            self.close_message_menu();
+            closed = true;
+        }
         if self.tray_open.is_some() {
             self.close_tray();
             closed = true;
@@ -1485,6 +1492,10 @@ impl Client {
         }
         if k.key == "escape" && self.pane_menu.is_some() {
             self.close_pane_menu();
+            return true;
+        }
+        if k.key == "escape" && self.message_menu.is_some() {
+            self.close_message_menu();
             return true;
         }
         if k.key == "escape" && (self.tray_is_open() || self.tray_drag.is_some()) {
@@ -2079,7 +2090,7 @@ impl Render for Client {
         if !little && self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.sidebar_element(cx));
         }
-        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.drag_chip());
+        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.message_menu_overlay(cx)).children(self.drag_chip());
         // While a card, a divider or a pane is dragged, a layer over the whole window takes the
         // pointer: a card's backdrop occludes the root, whose listeners hear only a pointer over nothing else.
         if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() || self.tray_drag.is_some() {
@@ -2398,6 +2409,12 @@ impl Client {
         if let Some(kept) = texts.kept {
             self.row_texts.borrow_mut().entry(agent.to_owned()).or_default().insert(ix, kept);
         }
+        // A message's right-click opens the message menu; its bounds are recorded for the check.
+        let el = if matches!(row.kind, Kind::User { .. } | Kind::Reply(_)) {
+            messages::message_presses(el.relative(), agent, ix, cx).child(recorded(agent, &format!("message:{ix}"), &self.controls))
+        } else {
+            el
+        };
         // The gap between rows.
         el.pb_1()
     }

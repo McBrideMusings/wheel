@@ -250,6 +250,7 @@ impl Client {
     /// Open the menu of a header at `level` (0 for a right-click, the header's own for ⋯).
     pub fn open_pane_menu(&mut self, pane: &str, x: f32, y: f32, level: u8) {
         self.close_space_menu();
+        self.message_menu = None;
         let h = self.pane_menu_height(pane, level);
         let x = x.min(self.viewport.0 - MENU_W - 4.).max(0.);
         let y = y.min(self.viewport.1 - h - 4.).max(0.);
