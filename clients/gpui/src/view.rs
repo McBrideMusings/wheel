@@ -24,9 +24,9 @@ pub use title::{BOTTOM, MenuRow, TitleMenu};
 pub use debug::Answer as DebugAnswer;
 pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, status, transcript::{Kind, ToolRow, Transcript}};
-use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, prelude::*, px, rgb, rgba};
+use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FollowMode, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, list, prelude::*, px, rgb, rgba};
 use wheel_proto::{TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
-use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
+use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
 /// The title row's height; the grid starts under it and ends over the bottom row (`BOTTOM`).
@@ -61,8 +61,13 @@ pub struct Client {
     /// The conversation of every agent pane seen, by agent name, and the agents attached to on
     /// this connection.
     pub transcripts: HashMap<String, Transcript>,
-    /// The transcript column's scroll position per agent; it follows the stream at the bottom.
-    scrolls: HashMap<String, ScrollHandle>,
+    /// Each agent's transcript column, a list that lays out only the rows in view.
+    columns: HashMap<String, Column>,
+    /// The texts of every transcript row drawn since it last changed, by (agent, row), block by
+    /// block: a copy reads the selection from here, rows scrolled out of view included.
+    row_texts: RefCell<HashMap<String, BTreeMap<usize, Vec<String>>>>,
+    /// Frames this client has rendered.
+    pub frames: u64,
     attached: HashSet<String>,
     /// The pane with the keyboard, and what has been typed to each agent and not yet sent.
     pub focus: Focus,
@@ -343,7 +348,7 @@ impl Client {
         let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
         let mut client = Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), scrolls: HashMap::new(), attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
@@ -514,15 +519,7 @@ impl Client {
                         _ => {}
                     }
                     for (agent, t) in &mut self.transcripts {
-                        // Follow the stream only while the column is at its bottom; a reader who
-                        // scrolled up stays where they are.
-                        let at_bottom = self.scrolls.get(agent).map(|s| -f32::from(s.offset().y) >= f32::from(s.max_offset().y) - 8.);
-                        if t.on_message(&message, agent)
-                            && at_bottom == Some(true)
-                            && let Some(scroll) = self.scrolls.get(agent)
-                        {
-                            scroll.scroll_to_bottom();
-                        }
+                        t.on_message(&message, agent);
                     }
                     false
                 }
@@ -820,18 +817,21 @@ impl Client {
     /// The selected text, texts joined by newlines; none while nothing is selected.
     pub fn selected_text(&self) -> Option<String> {
         let sel = self.selection.as_ref().filter(|s| !s.is_empty())?;
-        let drawn = self.drawn.borrow();
+        let (first, last) = sel.range();
+        let kept = self.row_texts.borrow();
         let mut parts = vec![];
-        for d in drawn.iter().filter(|d| d.agent == sel.agent) {
-            if let Some(range) = sel.slice(d.row, d.block, d.text.len()) {
-                let (mut a, mut b) = (range.start, range.end);
-                while !d.text.is_char_boundary(a) {
-                    a -= 1;
+        for (&row, texts) in kept.get(&sel.agent).into_iter().flat_map(|rows| rows.range(first.row..=last.row)) {
+            for (block, text) in texts.iter().enumerate() {
+                if let Some(range) = sel.slice(row, block, text.len()) {
+                    let (mut a, mut b) = (range.start, range.end);
+                    while !text.is_char_boundary(a) {
+                        a -= 1;
+                    }
+                    while !text.is_char_boundary(b) {
+                        b += 1;
+                    }
+                    parts.push(text[a..b].to_owned());
                 }
-                while !d.text.is_char_boundary(b) {
-                    b += 1;
-                }
-                parts.push(d.text[a..b].to_owned());
             }
         }
         (!parts.is_empty()).then(|| parts.join("\n"))
@@ -854,7 +854,7 @@ impl Client {
             let b = d.layout.bounds();
             format!("{}:{}:{} {:?} at ({:.0},{:.0}) {:.0}x{:.0}", d.row, d.block, d.kind, d.text.chars().take(16).collect::<String>(), f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height))
         }).collect();
-        format!("pending_down={:?} pending_move={:?} selection={:?} drawn={} [{}]", self.pending_down, self.pending_move, self.selection, drawn.len(), boxes.join("; "))
+        format!("pending_down={:?} pending_move={:?} selection={:?} drawn={} [{}] presses={:?}", self.pending_down, self.pending_move, self.selection, drawn.len(), boxes.join("; "), self.presses.iter().rev().take(4).collect::<Vec<_>>())
     }
     /// The status the daemon holds for `pane`, whichever space holds it.
     pub fn pane_status(&self, pane: &str) -> Option<PaneStatus> {
@@ -1000,9 +1000,91 @@ impl Client {
     }
     /// Scroll `agent`'s column so row `row` is in view.
     pub fn reveal(&self, agent: &str, row: usize) {
-        if let Some(scroll) = self.scrolls.get(agent) {
-            scroll.scroll_to_item(row);
+        if let Some(column) = self.columns.get(agent) {
+            // Revealing a row moves the column away from its end, as a scroll up does, and a
+            // scroll up is what stops the list following the stream.
+            column.state.scroll_by(px(-1.));
+            column.state.scroll_to_reveal_item(row);
         }
+    }
+    /// Where `agent`'s column is scrolled: the row at its top (the row count at the end), how far
+    /// into that row, and whether it follows the stream.
+    pub fn column_scroll(&self, agent: &str) -> Option<(usize, f32, bool)> {
+        let column = self.columns.get(agent)?;
+        let top = column.state.logical_scroll_top();
+        Some((top.item_ix, f32::from(top.offset_in_item), column.state.is_following_tail()))
+    }
+    /// Tell each agent's column which of its rows changed since the last frame, so the list lays
+    /// out those rows again and keeps the measured heights of the rest. A transcript replaced from
+    /// its first row (an attach, a resume) follows the stream again from its end.
+    fn sync_columns(&mut self) {
+        let transcripts = &self.transcripts;
+        self.columns.retain(|a, _| transcripts.contains_key(a));
+        self.row_texts.get_mut().retain(|a, _| transcripts.contains_key(a));
+        let agents: Vec<String> = self.transcripts.keys().cloned().collect();
+        for agent in agents {
+            let queue = self.queue_view(&agent);
+            let Some(t) = self.transcripts.get_mut(&agent) else { continue };
+            let changed = t.take_changed();
+            let replaced = t.take_replaced();
+            let count = t.rows.len() + usize::from(t.busy());
+            let column = self.columns.entry(agent.clone()).or_insert_with(|| {
+                let state = ListState::new(0, ListAlignment::Bottom, px(OVERDRAW));
+                state.set_follow_mode(FollowMode::Tail);
+                Column { state, count: 0, queue: composer::QueueView::default() }
+            });
+            let mut from = changed.unwrap_or(usize::MAX);
+            if column.queue != queue {
+                // A queue line comes or goes under the row of the turn it is about.
+                let turns: HashSet<u64> = column.queue.turns().chain(queue.turns()).collect();
+                if let Some(i) = t.rows.iter().position(|r| r.turn.is_some_and(|turn| turns.contains(&turn))) {
+                    from = from.min(i);
+                }
+            }
+            let kept = column.count.min(count);
+            if column.count != count {
+                from = from.min(kept);
+            }
+            if from == usize::MAX && !replaced {
+                continue;
+            }
+            if replaced {
+                column.state.splice(0..column.count, count);
+                column.state.set_follow_mode(FollowMode::Tail);
+                from = 0;
+            } else {
+                // Rows that are still there are measured again where they stand, so a reader
+                // scrolled into one keeps their place; only the tail is added or taken away.
+                from = from.min(kept);
+                if from < kept {
+                    column.state.remeasure_items(from..kept);
+                }
+                if column.count != count {
+                    column.state.splice(kept..column.count, count - kept);
+                }
+            }
+            column.count = count;
+            column.queue = queue;
+            if let Some(rows) = self.row_texts.get_mut().get_mut(&agent) {
+                rows.split_off(&from);
+            }
+        }
+    }
+    /// Give every row inside the selection its texts, building the ones the list has not drawn
+    /// since they changed and drawing them nowhere, so a copy holds the whole range.
+    fn fill_selection_texts(&self, cx: &mut Context<Self>) {
+        let Some(sel) = self.selection.as_ref().filter(|s| !s.is_empty()) else { return };
+        let (a, b) = sel.range();
+        let rows = self.transcripts.get(&sel.agent).map_or(0, |t| t.rows.len());
+        for row in a.row..(b.row + 1).min(rows) {
+            if !self.texts_kept(&sel.agent, row) {
+                drop(self.row_el(&sel.agent, row, cx));
+            }
+        }
+    }
+    /// Whether row `row` of `agent`'s transcript has its texts in `row_texts`.
+    fn texts_kept(&self, agent: &str, row: usize) -> bool {
+        self.row_texts.borrow().get(agent).is_some_and(|rows| rows.contains_key(&row))
     }
     /// Copy the selection to the clipboard. Returns whether there was one.
     pub fn copy_selection(&self, cx: &mut App) -> bool {
@@ -1394,7 +1476,10 @@ impl Render for Client {
         let (leaves, dividers) = if space_held || desk { (vec![], vec![]) } else { (leaves, dividers) };
         self.sync_native(&leaves);
         self.sync_agents(&leaves);
+        self.frames += 1;
         self.settle_selection();
+        self.sync_columns();
+        self.fill_selection_texts(cx);
         self.drawn.borrow_mut().clear();
         self.check_client_update();
         self.tick_pairing(cx);
@@ -1485,12 +1570,12 @@ impl Render for Client {
                     // A pane whose agent has not started yet shares no draft or scroll state with another.
                     let agent = p.leaf.agent.as_deref();
                     let harness = p.leaf.harness.as_deref().unwrap_or("");
-                    let queue = agent.map(|a| self.queue_view(a)).unwrap_or_default();
                     let t = agent.and_then(|a| self.transcripts.get(a));
                     let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
-                    let scroll = agent.map(|a| self.scrolls.entry(a.to_owned()).or_default().clone());
+                    let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
+                        list(state, cx.processor(move |this, ix, _, cx| this.row_el(&a, ix, cx).into_any_element())).size_full()
+                    });
                     let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
-                    let selection = self.selection.as_ref().filter(|s| Some(s.agent.as_str()) == agent);
                     let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents, self.raw_context.contains(&p.leaf.id));
                     let menu = self.menu.clone().filter(|(a, _)| Some(a.as_str()) == agent).map(|(_, o)| o);
                     // Directly above the composer, where a person answering has their hands: this agent's oldest waiting request.
@@ -1501,7 +1586,7 @@ impl Render for Client {
                     let list_h = composer::command_list_height(rows.len());
                     let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
                     let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
-                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, scroll, body, card, card_h + list_h, list, &queue, error, selection, &self.drawn, &self.highlights, &self.parsed, items, menu, &self.controls, cx)
+                    agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h, list, error, items, menu, &self.controls, cx)
                 }
                 "empty" => {
                     let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -1777,38 +1862,68 @@ const COMPOSER: f32 = 44.;
 /// The status line under the composer: the footer's items at the left, the config controls at
 /// the right.
 const FOOTER: f32 = 22.;
+/// An agent's transcript column: the list's state, and what the list was last told about the
+/// rows (how many, and which queue lines they carry), so a change lays out only the rows it touched.
+struct Column {
+    state: ListState,
+    count: usize,
+    queue: composer::QueueView,
+}
+/// How far past the visible rows the column lays out, in points, so a scroll finds them ready.
+const OVERDRAW: f32 = 600.;
+
 static EMPTY: std::sync::LazyLock<Transcript> = std::sync::LazyLock::new(Transcript::default);
 /// The pane body's padding (`p_2`, above and below) and the label line above the transcript
 /// column. The composer and the footer each sit 4 px (`mt_1`) under what is above them.
 const PAD: f32 = 8.;
 const LABEL: f32 = 24.;
 
-/// An agent pane's body: its label and state, the transcript column scrolled to follow the
-/// stream, a running line while a turn is in progress, and the composer with the draft. Every
-/// text it draws is recorded in `drawn` with its layout, so a pointer selection can find it.
+/// An agent pane's body: its label and state, the transcript column (`column`, the list of its
+/// rows), and the composer with the draft.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, scroll: Option<ScrollHandle>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, queue: &composer::QueueView, error: Option<&str>,
-    selection: Option<&Selection>, drawn: &Rc<RefCell<Vec<Drawn>>>, highlights: &Highlights, parsed: &Parsed, items: Vec<(String, String)>, menu: Option<String>,
-    controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, error: Option<&str>,
+    items: Vec<(String, String)>, menu: Option<String>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
-    let mut col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into())).flex().flex_col().gap_1().overflow_y_scroll()
-        .h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)));
-    if let Some(scroll) = &scroll {
-        col = col.track_scroll(scroll);
-    }
-    let mut texts = Texts { agent: agent.unwrap_or("").to_owned(), row: 0, next: 0, selection, drawn };
-    for (i, row) in t.map(|t| t.rows.as_slice()).unwrap_or_default().iter().enumerate() {
-        texts.row = i;
-        texts.next = 0;
-        col = col.child(match &row.kind {
+    let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
+        .h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)))
+        .children(column);
+    div().flex().flex_col().h(px(height.max(1.)))
+        .child(div().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
+        .child(col)
+        .children(card)
+        .children(list)
+        .child(div().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
+            .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
+            .text_color(rgb(0xd9e8e1)).overflow_hidden()
+            .flex().justify_between().gap_2()
+            .child(format!("{draft}{}", if focused { "▏" } else { "" }))
+            .children(error.map(|e| div().flex_none().max_w(px(260.)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned()))))
+        .child(footer_row(pane, agent.unwrap_or(""), t, items, menu, controls, cx))
+}
+
+impl Client {
+    /// Row `ix` of `agent`'s transcript, or the running line after the last row while a turn is
+    /// in progress. Its texts are recorded in `drawn` with their layouts when they are painted, so
+    /// a pointer selection can find them, and kept in `row_texts` until the row changes, so a copy
+    /// can read them.
+    fn row_el(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Div {
+        let Some(t) = self.transcripts.get(agent) else { return div() };
+        let Some(row) = t.rows.get(ix) else {
+            return if t.busy() { div().pb_1().text_color(rgb(0xe0b070)).child("working…") } else { div() };
+        };
+        let queue = self.columns.get(agent).map(|c| &c.queue);
+        let selection = self.selection.as_ref().filter(|s| s.agent == agent);
+        let kept = (!self.texts_kept(agent, ix)).then(Vec::new);
+        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept };
+        let el = match &row.kind {
             Kind::User { text, queued } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
                     .child(div().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
                     .child(div().child(texts.plain("user", text, 0xe0b070))))
-                .children(row.turn.zip(agent).and_then(|(turn, a)| composer::queue_line(a, turn, *queued, queue, controls, cx))),
+                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, queue, &self.controls, cx))),
             Kind::Reply(x) => {
                 let blocks = {
-                    let mut cache = parsed.borrow_mut();
+                    let mut cache = self.parsed.borrow_mut();
                     let entry = cache.entry((texts.agent.clone(), row.id)).or_insert_with(|| (String::new(), Rc::new(vec![])));
                     if entry.0 != *x {
                         *entry = (x.clone(), Rc::new(markdown::parse(x)));
@@ -1817,7 +1932,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
                 };
                 let mut col = div().flex().flex_col().gap_1().text_color(rgb(0xd9e8e1));
                 for block in blocks.iter() {
-                    col = col.child(block_el(block, &mut texts, highlights, cx));
+                    col = col.child(block_el(block, &mut texts, &self.highlights, cx));
                 }
                 col
             }
@@ -1846,23 +1961,13 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
             Kind::Mode(m) => div().text_xs().text_color(rgb(0x8fa89b)).child(format!("Mode: {m}")),
             Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(texts.plain("notice", x, 0x8fa89b)),
             Kind::Error(x) => div().text_color(rgb(0xe07070)).child(texts.plain("error", x, 0xe07070)),
-        });
+        };
+        if let Some(kept) = texts.kept {
+            self.row_texts.borrow_mut().entry(agent.to_owned()).or_default().insert(ix, kept);
+        }
+        // The gap between rows.
+        el.pb_1()
     }
-    if t.is_some_and(Transcript::busy) {
-        col = col.child(div().text_color(rgb(0xe0b070)).child("working…"));
-    }
-    div().flex().flex_col().h(px(height.max(1.)))
-        .child(div().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
-        .child(col)
-        .children(card)
-        .children(list)
-        .child(div().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
-            .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
-            .text_color(rgb(0xd9e8e1)).overflow_hidden()
-            .flex().justify_between().gap_2()
-            .child(format!("{draft}{}", if focused { "▏" } else { "" }))
-            .children(error.map(|e| div().flex_none().max_w(px(260.)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned()))))
-        .child(footer_row(pane, agent.unwrap_or(""), t, items, menu, controls, cx))
 }
 
 /// A zero-size element that records where its parent was drawn, so a check can press it.
@@ -1989,21 +2094,29 @@ struct Texts<'a> {
     next: usize,
     selection: Option<&'a Selection>,
     drawn: &'a Rc<RefCell<Vec<Drawn>>>,
+    /// The row's texts in block order, when the row's are not kept yet.
+    kept: Option<Vec<String>>,
 }
 impl Texts<'_> {
-    /// A text with `runs` already flat; `base` is its colour where no run says otherwise.
-    fn styled(&mut self, kind: &'static str, text: &str, runs: &[Run], base: u32, language: Option<&str>, highlighted: bool) -> StyledText {
+    /// A text with `runs` already flat; `base` is its colour where no run says otherwise. It is
+    /// recorded in `drawn` when it is painted: the list builds some rows only to measure them,
+    /// and those are never painted.
+    fn styled(&mut self, kind: &'static str, text: &str, runs: &[Run], base: u32, language: Option<&str>, highlighted: bool) -> gpui::Div {
         let block = self.next;
         self.next += 1;
         let selected = self.selection.and_then(|s| s.slice(self.row, block, text.len()));
         let styled = StyledText::new(text.to_owned()).with_highlights(highlight_runs(text, runs, selected, base));
-        self.drawn.borrow_mut().push(Drawn { agent: self.agent.clone(), row: self.row, block, kind, language: language.map(str::to_owned), highlighted, text: text.to_owned(), layout: styled.layout().clone() });
-        styled
+        if let Some(kept) = &mut self.kept {
+            kept.push(text.to_owned());
+        }
+        let entry = Drawn { agent: self.agent.clone(), row: self.row, block, kind, language: language.map(str::to_owned), highlighted, text: text.to_owned(), layout: styled.layout().clone() };
+        let drawn = self.drawn.clone();
+        div().relative().child(styled).child(canvas(move |_, _, _| drawn.borrow_mut().push(entry), |_, _, _, _| ()).absolute().size_0())
     }
-    fn plain(&mut self, kind: &'static str, text: &str, base: u32) -> StyledText {
+    fn plain(&mut self, kind: &'static str, text: &str, base: u32) -> gpui::Div {
         self.styled(kind, text, &[], base, None, false)
     }
-    fn inline(&mut self, kind: &'static str, text: &Text, base: u32) -> StyledText {
+    fn inline(&mut self, kind: &'static str, text: &Text, base: u32) -> gpui::Div {
         self.styled(kind, &text.text, &text.runs, base, None, false)
     }
 }

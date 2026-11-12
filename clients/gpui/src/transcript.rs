@@ -63,6 +63,11 @@ pub struct Transcript {
     queued_turns: Vec<u64>,
     /// The turn that has started and produced nothing yet, so its message can still be taken back.
     unanswered_turn: Option<u64>,
+    /// The first row whose content or place changed since the view last took it, so the view
+    /// lays out again only the rows from there on.
+    changed: Option<usize>,
+    /// The rows were replaced whole (an attach) since the view last took it.
+    replaced: bool,
 }
 
 impl Transcript {
@@ -73,6 +78,8 @@ impl Transcript {
                 self.context = *context;
                 self.config = crate::footer::sorted_config(config);
                 self.rows.clear();
+                self.touch(0);
+                self.replaced = true;
                 self.tool_rows.clear();
                 self.plan_row = None;
                 self.queued_turns.clear();
@@ -146,7 +153,23 @@ impl Transcript {
         let at = self.settled();
         self.rows.insert(at, Row { id: self.next_id, kind, turn: None, open: false });
         self.next_id += 1;
+        self.touch(at);
         at
+    }
+
+    /// Note that row `at` and every row after it may have changed.
+    fn touch(&mut self, at: usize) {
+        self.changed = Some(self.changed.map_or(at, |c| c.min(at)));
+    }
+
+    /// The first row that changed since the last call, if any; the next call starts afresh.
+    pub fn take_changed(&mut self) -> Option<usize> {
+        self.changed.take()
+    }
+
+    /// Whether the rows were replaced whole since the last call; the next call starts afresh.
+    pub fn take_replaced(&mut self) -> bool {
+        std::mem::take(&mut self.replaced)
     }
 
     fn close_all(&mut self) {
@@ -170,6 +193,7 @@ impl Transcript {
         }
         match event {
             AgentEvent::User { turn, text } => {
+                self.touch(self.rows.len());
                 self.rows.push(Row { id: self.next_id, kind: Kind::User { text: text.clone(), queued: true }, turn: Some(*turn), open: false });
                 self.next_id += 1;
                 self.queued_turns.push(*turn);
@@ -183,48 +207,59 @@ impl Transcript {
                     *queued = false;
                 }
                 self.rows.insert(settled, row);
+                self.touch(settled);
                 self.unanswered_turn = Some(*turn);
             }
             AgentEvent::Retract { turn } => {
                 if let Some(position) = self.queued_turns.iter().position(|t| t == turn) {
                     let settled = self.settled();
                     self.rows.remove(settled + position);
+                    self.touch(settled + position);
                     self.queued_turns.remove(position);
                 } else if self.unanswered_turn == Some(*turn) {
                     let settled = self.settled();
                     if let Some(index) = self.rows[..settled].iter().rposition(|r| r.turn == Some(*turn)) {
                         self.rows.remove(index);
+                        self.touch(index);
                     }
                 }
                 if self.unanswered_turn == Some(*turn) {
                     self.unanswered_turn = None;
                 }
             }
-            AgentEvent::Text { text } => match self.last_settled().map(|i| &mut self.rows[i].kind) {
-                Some(Kind::Reply(t)) => t.push_str(text),
+            AgentEvent::Text { text } => match self.last_settled().map(|i| (i, &mut self.rows[i].kind)) {
+                Some((i, Kind::Reply(t))) => {
+                    t.push_str(text);
+                    self.touch(i);
+                }
                 _ => {
                     self.append(Kind::Reply(text.clone()));
                 }
             },
-            AgentEvent::Thought { text } => match self.last_settled().map(|i| &mut self.rows[i]) {
-                Some(Row { kind: Kind::Thought(t), open: true, .. }) => t.push_str(text),
+            AgentEvent::Thought { text } => match self.last_settled().map(|i| (i, &mut self.rows[i])) {
+                Some((i, Row { kind: Kind::Thought(t), open: true, .. })) => {
+                    t.push_str(text);
+                    self.touch(i);
+                }
                 _ => {
                     let at = self.append(Kind::Thought(text.clone()));
                     self.rows[at].open = true;
                 }
             },
             AgentEvent::TextRevised { streamed, text } => {
-                if let Some(Kind::Reply(t)) = self.last_settled().map(|i| &mut self.rows[i].kind)
+                if let Some((i, Kind::Reply(t))) = self.last_settled().map(|i| (i, &mut self.rows[i].kind))
                     && let Some(kept) = replacing_end(t, streamed, text)
                 {
                     *t = kept;
+                    self.touch(i);
                 }
             }
             AgentEvent::ThoughtRevised { streamed, text } => {
-                if let Some(Kind::Thought(t)) = self.last_settled().map(|i| &mut self.rows[i].kind)
+                if let Some((i, Kind::Thought(t))) = self.last_settled().map(|i| (i, &mut self.rows[i].kind))
                     && let Some(kept) = replacing_end(t, streamed, text)
                 {
                     *t = kept;
+                    self.touch(i);
                 }
             }
             AgentEvent::ToolCall { id, title, tool_kind, status, content, detail } => {
@@ -251,9 +286,13 @@ impl Transcript {
                 if let Some(c) = new_content {
                     *content = c.clone();
                 }
+                self.touch(at);
             }
             AgentEvent::Plan { entries } => match self.plan_row {
-                Some(at) => self.rows[at].kind = Kind::Plan(entries.clone()),
+                Some(at) => {
+                    self.rows[at].kind = Kind::Plan(entries.clone());
+                    self.touch(at);
+                }
                 None => self.plan_row = Some(self.append(Kind::Plan(entries.clone()))),
             },
             AgentEvent::Mode { mode } => {
@@ -601,6 +640,24 @@ mod tests {
         let mut t = Transcript::default();
         assert!(!t.on_message(&msg(json!({"ev":"agent","agent":"a2","event":{"kind":"text","text":"x"}})), "a1"));
         assert!(t.rows.is_empty());
+    }
+
+    #[test]
+    fn the_first_changed_row_is_taken_once() {
+        let mut t = Transcript::default();
+        ev(&mut t, json!({"kind":"text","text":"a"}));
+        ev(&mut t, json!({"kind":"tool_call","id":"c1","title":"Read x","tool_kind":"read","status":"pending"}));
+        ev(&mut t, json!({"kind":"text","text":"b"}));
+        assert_eq!(t.take_changed(), Some(0));
+        assert_eq!(t.take_changed(), None);
+        ev(&mut t, json!({"kind":"text","text":"c"}));
+        assert_eq!(t.take_changed(), Some(2));
+        ev(&mut t, json!({"kind":"tool_update","id":"c1","status":"completed"}));
+        ev(&mut t, json!({"kind":"text","text":"d"}));
+        assert_eq!(t.take_changed(), Some(1));
+        ev(&mut t, json!({"kind":"user","turn":4,"text":"later"}));
+        ev(&mut t, json!({"kind":"retract","turn":4}));
+        assert_eq!(t.take_changed(), Some(3));
     }
 
     #[test]

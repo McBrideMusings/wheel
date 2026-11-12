@@ -1088,6 +1088,148 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     click_pane(&native, &agent_pane, cx)?;
     tick(cx, 300).await;
+    // A 1000-message conversation scrolls without dropping frames (wheel-ynjo.10.6): the check
+    // writes a Claude Code transcript of 500 turns beside the one the agent is in, resumes it,
+    // scrolls the column from its end to its top and back with wheel events, and times each frame
+    // (the event and the whole draw). The column follows the stream at its end and stops while
+    // scrolled up.
+    let store = [std::env::var("CLAUDE_CONFIG_DIR").ok().map(PathBuf::from), std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".claude"))]
+        .into_iter()
+        .flatten()
+        .flat_map(|home| std::fs::read_dir(home.join("projects")).into_iter().flatten().flatten().map(|e| e.path()))
+        .find(|dir| dir.join(format!("{old_id}.jsonl")).exists())
+        .ok_or_else(|| anyhow::anyhow!("no Claude Code store holds {old_id}.jsonl"))?;
+    let seed_id = format!("00000000-0000-4000-8000-{:012x}", now_ms() & 0xffff_ffff_ffff);
+    let seed_path = store.join(format!("{seed_id}.jsonl"));
+    let mut seed = String::new();
+    for i in 0..500 {
+        let reply = match i % 4 {
+            0 => format!("Turn {i} reads the **parser** and the `lexer` together.\n\nThe second paragraph says what pass {i} changed, long enough to wrap across the column at its usual width, so the row takes two or three lines of the pane."),
+            1 => format!("Three things in turn {i}:\n\n- the first item\n- the second, with `code`\n- the third"),
+            2 => format!("Turn {i} runs:\n\n```rust\nfn main() {{\n    println!(\"{i}\");\n}}\n```"),
+            _ => format!("## Turn {i}\n\n| file | lines |\n| --- | --- |\n| a.rs | {i} |\n| b.rs | 4 |"),
+        };
+        for entry in [
+            json!({"type": "user", "sessionId": seed_id, "message": {"role": "user", "content": format!("Question {i}: what does pass {i} change?")}}),
+            json!({"type": "assistant", "sessionId": seed_id, "message": {"role": "assistant", "content": [{"type": "text", "text": reply}]}}),
+            json!({"type": "system", "subtype": "turn_duration", "sessionId": seed_id}),
+        ] {
+            seed.push_str(&entry.to_string());
+            seed.push('\n');
+        }
+    }
+    // The seeded transcript sits in the Claude Code store the fake agent reads, so it goes on every
+    // way out of this section, a failed step included.
+    struct RemovedOnDrop(PathBuf);
+    impl Drop for RemovedOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    std::fs::write(&seed_path, seed)?;
+    let seed_file = RemovedOnDrop(seed_path);
+    window.update(cx, |c, _, _| c.switch_conversation(&agent_name, Some(&seed_id)))?;
+    let mut seeded = 0;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (state, held) = rows(cx)?;
+        if state == "ready" && held.len() >= 1000 {
+            seeded = held.len();
+            break;
+        }
+    }
+    ensure!(seeded >= 1000, "resuming the seeded {seed_id}: {} rows, state {:?}", rows(cx)?.1.len(), rows(cx)?.0);
+    draw(window, None, cx)?;
+    let pane_frame: Vec<f64> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["frame"].clone())?)?;
+    let wheel_at = gpui::point(gpui::px((pane_frame[0] + pane_frame[2] / 2.) as f32), gpui::px((pane_frame[1] + pane_frame[3] * 0.3) as f32));
+    let column_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.column_scroll(&agent_name));
+    // One wheel step and the frame it causes, timed together, in milliseconds.
+    let step = |dy: f32, cx: &mut AsyncApp| -> Result<f64> {
+        let any: gpui::AnyWindowHandle = window.into();
+        let started = std::time::Instant::now();
+        any.update(cx, |_, w, cx| {
+            w.dispatch_event(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: wheel_at, delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(dy))), modifiers: Default::default(), touch_phase: gpui::TouchPhase::Moved }), cx);
+            w.draw(cx).clear();
+        })?;
+        Ok(started.elapsed().as_secs_f64() * 1000.)
+    };
+    let at_end = column_now(cx)?;
+    ensure!(at_end.is_some_and(|(top, _, following)| top == seeded && following), "the resumed column is not at its end and following: {at_end:?} of {seeded} rows");
+    let frames_before = window.update(cx, |c, _, _| c.frames)?;
+    let mut times = vec![];
+    let mut tops = std::collections::HashSet::new();
+    let mut reached_top = false;
+    for _ in 0..4000 {
+        times.push(step(120., cx)?);
+        let now = column_now(cx)?.unwrap_or_default();
+        tops.insert(now.0);
+        if now.0 == 0 && now.1 == 0. {
+            reached_top = true;
+            break;
+        }
+    }
+    ensure!(reached_top, "4000 wheel steps up never reached the top: {:?}", column_now(cx)?);
+    let first_drawn = window.update(cx, |c, _, _| c.drawn_texts(&agent_name).iter().any(|d| d.row == 0 && d.text.starts_with("Question 0")))?;
+    ensure!(first_drawn, "at the top the first row is not drawn: {:?}", window.update(cx, |c, _, _| c.drawn_texts(&agent_name).iter().take(3).map(|d| (d.row, d.text.clone())).collect::<Vec<_>>())?);
+    let drawn_at_top = window.update(cx, |c, _, _| c.drawn_texts(&agent_name).iter().map(|d| d.row).collect::<std::collections::BTreeSet<_>>().len())?;
+    draw(window, Some(output.join("client-transcript-top.png")), cx)?;
+    // Scrolled up, a new reply leaves the column where it is.
+    type_line(&native, "while scrolled up", cx).await;
+    let mut answered_up = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let (state, held) = rows(cx)?;
+        if state == "ready" && held.iter().any(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("while scrolled up"))) {
+            answered_up = true;
+            break;
+        }
+    }
+    let stayed = column_now(cx)?;
+    ensure!(answered_up && stayed.is_some_and(|(top, offset, following)| top == 0 && offset == 0. && !following), "a reply while scrolled to the top moved the column: answered {answered_up}, column {stayed:?}");
+    let total = rows(cx)?.1.len();
+    let mut reached_end = false;
+    for _ in 0..4000 {
+        times.push(step(-120., cx)?);
+        if column_now(cx)?.is_some_and(|(top, _, following)| top == total && following) {
+            reached_end = true;
+            break;
+        }
+    }
+    ensure!(reached_end, "4000 wheel steps down never reached the end and followed again: {:?} of {total}", column_now(cx)?);
+    let frames = window.update(cx, |c, _, _| c.frames)? - frames_before;
+    // Back at the end, the next reply is followed.
+    type_line(&native, "back at the end", cx).await;
+    let mut followed = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let (state, held) = rows(cx)?;
+        if state == "ready" && held.iter().any(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("back at the end"))) {
+            let now = column_now(cx)?;
+            followed = now.is_some_and(|(top, _, following)| top == held.len() && following);
+            break;
+        }
+    }
+    ensure!(followed, "the reply at the end was not followed: {:?} of {}", column_now(cx)?, rows(cx)?.1.len());
+    draw(window, Some(output.join("client-transcript-end.png")), cx)?;
+    let worst = times.iter().copied().fold(0., f64::max);
+    let mut sorted = times.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median = sorted[sorted.len() / 2];
+    let dropped = times.iter().filter(|t| **t > 1000. / 60.).count();
+    let scroll_report = json!({"rows": seeded, "steps": times.len(), "frames": frames, "worst_frame_ms": (worst * 100.).round() / 100., "median_frame_ms": (median * 100.).round() / 100., "dropped": dropped, "rows_passed": tops.len(), "rows_drawn_at_top": drawn_at_top, "stayed_while_scrolled_up": true, "followed_at_end": followed});
+    ensure!(dropped == 0 && worst <= 1000. / 60., "scrolling 1000 rows dropped frames: {scroll_report}");
+    drop(seed_file);
+    // Back to the conversation the later sections know.
+    window.update(cx, |c, _, _| c.switch_conversation(&agent_name, Some(&old_id)))?;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "ready" && rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")) {
+            break;
+        }
+    }
+    ensure!(rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")), "switching back to {old_id} after the scroll check");
     let conversations_report = json!({"listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
@@ -3016,6 +3158,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["perms"] = perms_report;
     report["composer"] = composer_report;
     report["conversations"] = conversations_report;
+    report["scroll"] = scroll_report;
     Ok(report)
 }
 

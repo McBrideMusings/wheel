@@ -16,12 +16,18 @@ pub(super) fn command_list_height(count: usize) -> f32 {
     if count == 0 { 0. } else { count.min(COMMAND_ROWS) as f32 * COMMAND_ROW + 4. }
 }
 
-/// What a queued or unanswered message's line offers, for `agent_pane`.
-#[derive(Default)]
+/// What a queued or unanswered message's line offers, for the row it sits under.
+#[derive(Clone, Default, PartialEq)]
 pub(super) struct QueueView {
     pub queued: Vec<u64>,
     pub unanswered: Option<u64>,
     pub sending_now: HashSet<u64>,
+}
+impl QueueView {
+    /// Every turn a line is drawn for.
+    pub fn turns(&self) -> impl Iterator<Item = u64> + '_ {
+        self.queued.iter().copied().chain(self.unanswered).chain(self.sending_now.iter().copied())
+    }
 }
 
 /// A request about an agent's messages waiting for wheeld's answer (`AppModel.agentReqs`): a
