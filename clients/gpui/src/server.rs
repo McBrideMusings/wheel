@@ -132,6 +132,7 @@ impl Control {
             Control::LaunchAgent(service) => service.run(op.verb()),
             Control::Commands { stop, start } => match op {
                 Op::Start => run(start.as_deref()),
+                Op::Stop => run(stop.as_deref()),
                 Op::Restart => run(stop.as_deref()).and_then(|_| run(start.as_deref())),
                 Op::RollbackTarget => Err("no earlier version is kept".into()),
                 Op::Rollback => Err(NO_ROLLBACK.into()),
@@ -145,6 +146,8 @@ impl Control {
 pub enum Op {
     /// Copy the bundled server out and load its agent unless one runs (DaemonService.register).
     Start,
+    /// Unload and disable the launch agent, so it stays down (Stop Server).
+    Stop,
     Restart,
     /// Ask which version a rollback would run.
     RollbackTarget,
@@ -156,6 +159,7 @@ impl Op {
     fn verb(self) -> &'static str {
         match self {
             Op::Start => "start",
+            Op::Stop => "stop",
             Op::Restart => "restart",
             Op::RollbackTarget => "rollbackable",
             Op::Rollback => "rollback",
@@ -223,7 +227,11 @@ pub const YELLOW: u32 = 0xffd60a;
 pub const ORANGE: u32 = 0xff9f0a;
 pub const GREEN: u32 = 0x30d158;
 
-pub fn status(link: LinkKind, waiting: bool, remote: Option<Remote>) -> Status {
+/// `stopped`: Stop Server ran from the menu, whatever the link says now.
+pub fn status(link: LinkKind, waiting: bool, remote: Option<Remote>, stopped: bool) -> Status {
+    if stopped {
+        return Status { word: "Stopped".into(), colour: GREY };
+    }
     let (word, colour) = match link {
         LinkKind::Connecting => ("Starting…", YELLOW),
         LinkKind::Unreachable => ("Stopped", GREY),
@@ -235,6 +243,105 @@ pub fn status(link: LinkKind, waiting: bool, remote: Option<Remote>) -> Status {
         },
     };
     Status { word: word.into(), colour }
+}
+
+/// "1 space", "3 spaces".
+pub fn spaces(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "space" } else { "spaces" })
+}
+
+/// How long wheeld has run, in at most two units of days, hours and minutes, written out
+/// (`Duration.formatted(.units(allowed: [.days, .hours, .minutes], width: .wide, maximumUnitCount: 2))`).
+pub fn uptime(secs: u64) -> String {
+    let units = [(secs / 86_400, "day"), (secs % 86_400 / 3_600, "hour"), (secs % 3_600 / 60, "minute")];
+    let parts: Vec<String> = units.into_iter().skip_while(|(n, _)| *n == 0).take(2).filter(|(n, _)| *n > 0)
+        .map(|(n, unit)| format!("{n} {unit}{}", if n == 1 { "" } else { "s" })).collect();
+    if parts.is_empty() { "0 minutes".into() } else { parts.join(", ") }
+}
+
+/// The remote listener as the details line reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Listener {
+    Failed(String),
+    Listening { address: String, port: u16 },
+    Off,
+}
+
+/// What the lines under the server's header are made from (AppModel.serverDetails).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    pub stopped: bool,
+    /// None while connecting; Some(reason) while unreachable; connected otherwise.
+    pub down: Option<Option<String>>,
+    pub waiting: bool,
+    pub uptime_secs: Option<u64>,
+    pub spaces: usize,
+    /// None before wheeld answered `remote_info`.
+    pub listener: Option<Listener>,
+    pub paired: Vec<String>,
+}
+
+/// The lines under the server's header while it is open.
+pub fn details(f: &Facts) -> Vec<String> {
+    if f.stopped {
+        return vec![format!("Stopped from this menu. Terminals and agents in {} are not running.", spaces(f.spaces))];
+    }
+    match &f.down {
+        Some(Some(reason)) => return vec![format!("wheeld unreachable: {reason}")],
+        Some(None) => return vec!["Connecting to wheeld…".into()],
+        None => {}
+    }
+    let mut lines = vec![];
+    if f.waiting {
+        lines.push(UPDATED.to_owned());
+    }
+    if let Some(secs) = f.uptime_secs {
+        lines.push(format!("wheeld up {} · {}", uptime(secs), spaces(f.spaces)));
+    }
+    match &f.listener {
+        Some(Listener::Failed(problem)) => lines.push(format!("Remote listener failed: {problem}")),
+        Some(Listener::Listening { address, port }) => lines.push(format!("Listening on {address}:{port}")),
+        Some(Listener::Off) => lines.push("Remote access is off".into()),
+        None => {}
+    }
+    lines.push(match f.paired.len() {
+        0 => "No paired devices".into(),
+        n => format!("{n} paired {}: {}", if n == 1 { "device" } else { "devices" }, f.paired.join(", ")),
+    });
+    lines
+}
+
+/// One item of the status item's right-click menu; `id` "-" is a separator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuItem {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub key: &'static str,
+}
+
+/// The right-click menu (StatusItemMenu.menu): Stop Server… while it runs, which asks first;
+/// otherwise Start Server, and Stop Server too while it is unreachable but was not stopped from
+/// the menu (a server restarting itself in a loop); then Restart Server and Quit Wheel.
+pub fn menu(running: bool, stopped_by_menu: bool) -> Vec<MenuItem> {
+    let item = |id, title| MenuItem { id, title, key: "" };
+    let mut items = vec![];
+    if running {
+        items.push(item("stop", "Stop Server…"));
+    } else {
+        items.push(item("start", "Start Server"));
+        if !stopped_by_menu {
+            items.push(item("stop", "Stop Server"));
+        }
+    }
+    items.push(item("restart", "Restart Server"));
+    items.push(item("-", ""));
+    items.push(MenuItem { id: "quit", title: "Quit Wheel", key: "q" });
+    items
+}
+
+/// What the stop question says (StatusItemMenu.stopServer, ServerDetails' confirm card).
+pub fn stop_question(spaces_count: usize) -> (&'static str, String) {
+    ("Stop Wheel Server?", format!("Terminals and running agents in {} stop.", spaces(spaces_count)))
 }
 
 /// What the "Rolling back" notice counts down to (RollbackOffer).
@@ -446,13 +553,41 @@ mod tests {
 
     #[test]
     fn the_header_word_follows_the_link() {
-        assert_eq!(status(LinkKind::Connecting, false, None).word, "Starting…");
-        assert_eq!(status(LinkKind::Unreachable, false, None).word, "Stopped");
-        assert_eq!(status(LinkKind::Connected, true, None), Status { word: "Running · restart to update".into(), colour: ORANGE });
-        assert_eq!(status(LinkKind::Connected, false, Some(Remote { problem: true, listening: false })).word, "Remote listener failed");
-        assert_eq!(status(LinkKind::Connected, false, Some(Remote { problem: false, listening: false })).word, "Running · remote access off");
-        assert_eq!(status(LinkKind::Connected, false, Some(Remote { problem: false, listening: true })), Status { word: "Running".into(), colour: GREEN });
-        assert_eq!(status(LinkKind::Connected, false, None).word, "Running");
+        assert_eq!(status(LinkKind::Connecting, false, None, false).word, "Starting…");
+        assert_eq!(status(LinkKind::Unreachable, false, None, false).word, "Stopped");
+        assert_eq!(status(LinkKind::Connected, true, None, false), Status { word: "Running · restart to update".into(), colour: ORANGE });
+        assert_eq!(status(LinkKind::Connected, false, Some(Remote { problem: true, listening: false }), false).word, "Remote listener failed");
+        assert_eq!(status(LinkKind::Connected, false, Some(Remote { problem: false, listening: false }), false).word, "Running · remote access off");
+        assert_eq!(status(LinkKind::Connected, false, Some(Remote { problem: false, listening: true }), false), Status { word: "Running".into(), colour: GREEN });
+        assert_eq!(status(LinkKind::Connected, false, None, false).word, "Running");
+        assert_eq!(status(LinkKind::Connected, true, None, true), Status { word: "Stopped".into(), colour: GREY }, "stopped from the menu wins");
+    }
+
+    #[test]
+    fn the_details_follow_the_link_the_listener_and_the_devices() {
+        assert_eq!(uptime(0), "0 minutes");
+        assert_eq!(uptime(61), "1 minute");
+        assert_eq!(uptime(3_600 * 2 + 60 * 5 + 9), "2 hours, 5 minutes");
+        assert_eq!(uptime(86_400 + 3_600 + 60), "1 day, 1 hour");
+        assert_eq!(uptime(86_400 * 3 + 60 * 4), "3 days", "a zero middle unit still counts toward two");
+        let up = Facts { uptime_secs: Some(125), spaces: 1, listener: Some(Listener::Off), ..Facts::default() };
+        assert_eq!(details(&up), ["wheeld up 2 minutes · 1 space", "Remote access is off", "No paired devices"]);
+        let busy = Facts { waiting: true, uptime_secs: Some(3_600), spaces: 4, listener: Some(Listener::Listening { address: "100.64.0.1".into(), port: 7421 }), paired: vec!["Phone".into(), "Pad".into()], ..Facts::default() };
+        assert_eq!(details(&busy), ["The server was updated.", "wheeld up 1 hour · 4 spaces", "Listening on 100.64.0.1:7421", "2 paired devices: Phone, Pad"]);
+        assert_eq!(details(&Facts { listener: Some(Listener::Failed("port taken".into())), paired: vec!["Phone".into()], ..Facts::default() }), ["Remote listener failed: port taken", "1 paired device: Phone"]);
+        assert_eq!(details(&Facts { down: Some(Some("refused".into())), ..Facts::default() }), ["wheeld unreachable: refused"]);
+        assert_eq!(details(&Facts { down: Some(None), ..Facts::default() }), ["Connecting to wheeld…"]);
+        assert_eq!(details(&Facts { stopped: true, spaces: 2, down: Some(Some("refused".into())), ..Facts::default() }), ["Stopped from this menu. Terminals and agents in 2 spaces are not running."]);
+    }
+
+    #[test]
+    fn the_right_click_menu_follows_whether_the_server_runs() {
+        let titles = |items: Vec<MenuItem>| items.iter().map(|i| if i.id == "-" { "-" } else { i.title }).collect::<Vec<_>>();
+        assert_eq!(titles(menu(true, false)), ["Stop Server…", "Restart Server", "-", "Quit Wheel"]);
+        assert_eq!(titles(menu(false, true)), ["Start Server", "Restart Server", "-", "Quit Wheel"]);
+        assert_eq!(titles(menu(false, false)), ["Start Server", "Stop Server", "Restart Server", "-", "Quit Wheel"]);
+        assert_eq!(menu(true, false).last().map(|i| i.key), Some("q"));
+        assert_eq!(stop_question(1), ("Stop Wheel Server?", "Terminals and running agents in 1 space stop.".to_owned()));
     }
 
     #[test]

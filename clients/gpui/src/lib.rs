@@ -92,6 +92,8 @@ pub fn create_window(
     hidden: bool,
     opening: Opening,
 ) -> Result<WindowHandle<view::Client>> {
+    // The app's one server control, made by the first window or the menu bar.
+    view::server::ensure(cx, endpoint.service.clone(), hidden);
     let native = native::Native::new(bridge);
     let (b, n) = (bridge.clone(), native.clone());
     let window_id = format!("gpui-{}-{}", std::process::id(), WINDOWS.fetch_add(1, Ordering::Relaxed));

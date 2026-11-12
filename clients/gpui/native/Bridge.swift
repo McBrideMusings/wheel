@@ -966,6 +966,12 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var label = ""
     var dock: String?
     var clicks = 0
+    var rightClicks = 0
+    /// The right-click menu's items as the client sent them last, and their titles ("-" a separator).
+    var menuItems: [[String: Any]] = []
+    var menuTitles: [String] = []
+    /// A question a hidden check answers itself (`answer_alert`): a hidden app shows no alert.
+    var pendingAlert: [String: Any]?
 
     init(hidden: Bool, emit: @escaping Emit) {
         self.hidden = hidden
@@ -991,6 +997,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             made.isVisible = !hidden
             made.button?.target = self
             made.button?.action = #selector(pressed(_:))
+            // A right press sends the action too, keeping whatever the left press sends it on.
+            if let button = made.button {
+                let previous = button.sendAction(on: .leftMouseUp)
+                button.sendAction(on: NSEvent.EventTypeMask(rawValue: UInt64(previous)).union(.rightMouseDown))
+            }
             item = made
             badge = -1
         }
@@ -1016,14 +1027,119 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
 
     @objc func pressed(_ sender: Any?) {
+        if let type = NSApp.currentEvent?.type, type == .rightMouseDown || type == .rightMouseUp {
+            rightPressed()
+            return
+        }
         clicks += 1
         emit(["event": "status_item", "button": "left", "frame": frame()])
+    }
+
+    func rightPressed() {
+        rightClicks += 1
+        emit(["event": "status_item", "button": "right", "frame": frame()])
+    }
+
+    /// The right-click menu from `items` (`id`, `title`, `key`; id "-" a separator). Opened under
+    /// the item after this call returns, so the menu's tracking loop never runs inside the client's
+    /// call; a pick comes back as a `status_menu` event. A hidden item builds it and opens nothing.
+    func statusMenu(_ value: [String: Any]) -> [String: Any] {
+        menuItems = value["items"] as? [[String: Any]] ?? []
+        let menu = NSMenu()
+        for entry in menuItems {
+            let id = entry["id"] as? String ?? ""
+            if id == "-" {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: entry["title"] as? String ?? id, action: #selector(chose(_:)), keyEquivalent: entry["key"] as? String ?? "")
+            item.target = self
+            item.representedObject = id
+            menu.addItem(item)
+        }
+        menuTitles = menu.items.map { $0.isSeparatorItem ? "-" : $0.title }
+        if !hidden, let statusItem = item, let button = statusItem.button {
+            DispatchQueue.main.async {
+                statusItem.menu = menu
+                button.performClick(nil)
+                statusItem.menu = nil
+            }
+        }
+        return ["menu": menuTitles]
+    }
+
+    @objc func chose(_ sender: NSMenuItem) {
+        emit(["event": "status_menu", "item": sender.representedObject as? String ?? ""])
+    }
+
+    /// Ask `message` with `buttons` in an alert, after this call returns; the answer comes back as
+    /// an `alert` event with the button's index. A hidden app keeps the question for the check.
+    func alert(_ value: [String: Any]) -> [String: Any] {
+        if hidden {
+            pendingAlert = value.filter { $0.key != "op" && $0.key != "window" }
+            return ["alert": pendingAlert ?? [:]]
+        }
+        let id = value["id"] as? String ?? ""
+        let message = value["message"] as? String ?? ""
+        let informative = value["informative"] as? String ?? ""
+        let buttons = value["buttons"] as? [String] ?? ["OK"]
+        let activate = value["activate"] as? Bool ?? true
+        DispatchQueue.main.async { [weak self] in
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.informativeText = informative
+            alert.alertStyle = .warning
+            for title in buttons { alert.addButton(withTitle: title) }
+            if activate { NSApp.activate() }
+            let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            self?.emit(["event": "alert", "id": id, "button": index])
+        }
+        return ["alert": "shown"]
+    }
+
+    /// Size the window holding `view` to `width` by `height` points of content, keeping its top
+    /// edge where it is (AppKit keeps the bottom one): the popover grows down from under the item.
+    /// After this call returns, as GPUI's own resize does: the client's resize callback cannot
+    /// reach its app while the client's call into the bridge holds it, and drops the size.
+    func fitWindow(_ value: [String: Any]) -> [String: Any] {
+        guard let raw = (value["view"] as? NSNumber)?.uintValue, let pointer = UnsafeRawPointer(bitPattern: raw) else { return ["fitted": false] }
+        let view = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue()
+        guard view.window != nil else { return ["fitted": false] }
+        let width = value["width"] as? Double
+        let height = value["height"] as? Double
+        DispatchQueue.main.async { [weak view] in
+            guard let window = view?.window else { return }
+            var frame = window.frame
+            let top = frame.maxY
+            let content = NSRect(x: 0, y: 0, width: width ?? Double(window.contentLayoutRect.width), height: height ?? Double(window.contentLayoutRect.height))
+            frame.size = window.frameRect(forContentRect: content).size
+            frame.origin.y = top - frame.height
+            window.setFrame(frame, display: true)
+        }
+        return ["fitted": "queued"]
+    }
+
+    /// The app's icon as a PNG, `size` points square at the screen's scale (ServerHeader's icon).
+    func appIcon(_ value: [String: Any]) -> [String: Any] {
+        let size = value["size"] as? Double ?? 36
+        let scale = Double(NSScreen.main?.backingScaleFactor ?? 2)
+        let pixels = Int((size * scale).rounded(.up))
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return ["missing": true] }
+        rep.size = NSSize(width: size, height: size)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSApp.applicationIconImage.draw(in: NSRect(x: 0, y: 0, width: size, height: size), from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let data = rep.representation(using: .png, properties: [:]) else { return ["missing": true] }
+        return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": size, "height": size]
     }
 
     func state() -> [String: Any] {
         let size = item?.button?.image?.size ?? .zero
         return ["status_item": item != nil, "in_menu_bar": item?.isVisible ?? false, "badge": badge, "update": update, "label": label,
-                "dock": dock ?? NSNull(), "image": [size.width, size.height], "template": item?.button?.image?.isTemplate ?? false, "clicks": clicks]
+                "dock": dock ?? NSNull(), "image": [size.width, size.height], "template": item?.button?.image?.isTemplate ?? false, "clicks": clicks,
+                "right_clicks": rightClicks, "menu": menuTitles, "alert": pendingAlert ?? NSNull()]
     }
 
     func command(_ value: [String: Any]) -> [String: Any] {
@@ -1031,8 +1147,22 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "status_item": return statusItem(value)
         // The check presses the item as a click does; a hidden item has no window to click in.
         case "press_status_item":
-            pressed(nil)
+            if value["button"] as? String == "right" { rightPressed() } else { pressed(nil) }
             return state()
+        case "status_menu": return statusMenu(value)
+        // The check picks an item as the menu's action does.
+        case "choose_status_menu":
+            emit(["event": "status_menu", "item": value["item"] as? String ?? ""])
+            return state()
+        case "alert": return alert(value)
+        // The check answers the question a hidden app kept.
+        case "answer_alert":
+            guard let asked = pendingAlert else { return state() }
+            pendingAlert = nil
+            emit(["event": "alert", "id": asked["id"] as? String ?? "", "button": value["button"] as? Int ?? -1])
+            return state()
+        case "fit_window": return fitWindow(value)
+        case "app_icon": return appIcon(value)
         case "symbol": return symbolPNG(value, scale: Double(NSScreen.main?.backingScaleFactor ?? 2))
         case "pointer_on_item":
             let on = item?.button?.window.map { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? false

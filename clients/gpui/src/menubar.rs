@@ -42,8 +42,11 @@ pub fn unseen(registry: &Registry, waiting: &HashMap<String, usize>) -> usize {
 }
 
 /// What VoiceOver reads for the item (MenuBarLabel.accessibility).
-pub fn accessibility(background: usize, waiting: usize) -> String {
+pub fn accessibility(background: usize, waiting: usize, update: bool) -> String {
     let mut parts = vec!["Wheel".to_owned()];
+    if update {
+        parts.push("a new server waits for a restart".into());
+    }
     if background > 0 {
         parts.push(format!("{background} {} in sessions with no window", if background == 1 { "space" } else { "spaces" }));
     }
@@ -110,12 +113,16 @@ pub fn card_height(card: &Card) -> f32 {
     2. + 2. * CARD_PAD + CARD_HEAD + ROW * card.rows.len().max(1) as f32
 }
 
-/// How tall the popover is for `cards`: the cards, then the divider with New Window and Quit
-/// Wheel. A pop-up window has no size of its own, so the window opens at this height.
+/// The server line's height while its details are closed: the app icon's (ServerHeader).
+pub const SERVER_LINE: f32 = 36.;
+
+/// The popover's height with the server line closed: the server line, a divider, the cards, a
+/// divider and New Window and Quit, `GAP` apart. The popover opens at this height and then fits
+/// the height its content measures.
 pub fn height(cards: &[Card]) -> f32 {
-    let sections = cards.len() + 2;
+    let sections = cards.len() + 4;
     let cards: f32 = cards.iter().map(card_height).sum();
-    2. * PAD + cards + 1. + 2. * ROW + ROW_GAP + GAP * (sections - 1) as f32
+    2. * PAD + SERVER_LINE + 1. + cards + 1. + 2. * ROW + ROW_GAP + GAP * (sections - 1) as f32
 }
 
 #[cfg(test)]
@@ -169,9 +176,10 @@ mod tests {
         // A little window on a space wheeld no longer lists counts for nothing.
         registry.put_little(Little { id: "l3".into(), space: "gone".into(), owner: None, pinned: false });
         assert_eq!(windowless(&registry, &sessions, &spaces), ["s4", "s5"]);
-        assert_eq!(accessibility(2, 0), "Wheel, 2 spaces in sessions with no window");
-        assert_eq!(accessibility(1, 3), "Wheel, 1 space in sessions with no window, 3 waiting for approval");
-        assert_eq!(accessibility(0, 0), "Wheel");
+        assert_eq!(accessibility(2, 0, false), "Wheel, 2 spaces in sessions with no window");
+        assert_eq!(accessibility(1, 3, false), "Wheel, 1 space in sessions with no window, 3 waiting for approval");
+        assert_eq!(accessibility(0, 0, false), "Wheel");
+        assert_eq!(accessibility(1, 0, true), "Wheel, a new server waits for a restart, 1 space in sessions with no window");
     }
 
     #[test]
@@ -202,6 +210,6 @@ mod tests {
         assert!(cards[1].rows[0].shown);
         assert!(cards[2].rows.is_empty());
         // Three cards: 2 rows, 1 row, and the empty one's line; then the divider and two rows.
-        assert_eq!(height(&cards), 2. * PAD + (3. * (2. + 2. * CARD_PAD + CARD_HEAD) + 4. * ROW) + 1. + 2. * ROW + ROW_GAP + 4. * GAP);
+        assert_eq!(height(&cards), 2. * PAD + SERVER_LINE + 1. + (3. * (2. + 2. * CARD_PAD + CARD_HEAD) + 4. * ROW) + 1. + 2. * ROW + ROW_GAP + 6. * GAP);
     }
 }

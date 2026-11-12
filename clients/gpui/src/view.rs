@@ -17,6 +17,7 @@ pub use panes::focus_target;
 mod perms;
 mod procs;
 mod settings;
+pub mod server;
 mod sidebar;
 mod title;
 mod toasts;
@@ -245,17 +246,6 @@ pub struct Client {
     pub procs: crate::procs::Procs,
     /// The protocol the connected wheeld speaks, from its last `status`; None before it answered.
     pub server_protocol: Option<u32>,
-    /// How this client stops and starts wheeld: the launch agent of the wheeld it carries, or commands.
-    pub server_control: crate::server::Control,
-    /// The command running on its thread now, if one is; outcomes wait in `server_ops` for the next tick.
-    pub server_busy: Option<crate::server::Op>,
-    server_ops: std::sync::Arc<std::sync::Mutex<Vec<toasts::ServerOutcome>>>,
-    /// Why the last restart, start or rollback did not work.
-    pub server_problem: Option<String>,
-    /// What the last registration or restart did (DaemonService.status), for `/state` and the log.
-    pub service_status: String,
-    /// The restart window and the rollback after a wheeld that said it is stopping.
-    pub server_watch: crate::server::Watch,
     /// The source line last logged, so one connection logs it once.
     server_source_logged: Option<String>,
     /// When the connected wheeld started (unix ms), from its `status` uptime.
@@ -389,10 +379,9 @@ impl Link {
 impl Client {
     #[allow(clippy::too_many_arguments)]
     pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
-        let server_control = crate::server::Control::for_service(endpoint.service.clone());
-        let toast_sources = crate::toasts::Sources { server_restart_available: server_control.available(), ..Default::default() };
+        let toast_sources = crate::toasts::Sources { server_restart_available: server::with(|s| s.control.available()).unwrap_or(false), ..Default::default() };
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
-        let mut client = Self {
+        Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
@@ -405,13 +394,10 @@ impl Client {
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), pinned: false, usage_open: false, usage_refreshing: false,
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
-            server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
-            server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
+            server_protocol: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(), little: false,
-        };
-        client.register_server();
-        client
+        }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
     pub fn on_event(&mut self, event: Event) -> bool {
@@ -552,8 +538,7 @@ impl Client {
                         // wheeld is restarting, or stopping for good: a stop this app asked for is
                         // the second; anything else is waited for instead of being called a crash.
                         ServerMsg::Stopping => {
-                            let line = self.server_watch.stopping(settings::now_ms());
-                            self.log(line);
+                            server::stopping();
                             return false;
                         }
                         ServerMsg::AgentQueued { req, agent, turn } => self.on_queued(*req, agent, *turn),
@@ -614,9 +599,7 @@ impl Client {
                 }
                 self.endpoint = endpoint;
                 self.link = Link::Up;
-                if self.server_watch.answered() {
-                    self.log("server: wheeld answers again".into());
-                }
+                server::link(true);
                 // The notice follows the next `status`; closing it stays closed for the same key
                 // (the bundled hash, else the protocol), as the Swift app keeps `serverBannerDismissed`.
                 self.toast_sources.server_updated = None;
@@ -638,6 +621,7 @@ impl Client {
             }
             Event::Down(reason) => {
                 self.link = Link::Down(reason);
+                server::link(false);
                 false
             }
             Event::Incompatible { server, client } => {
@@ -648,8 +632,10 @@ impl Client {
                     self.log(format!("server protocol {server}, this app's {client}: restart offered"));
                 }
                 self.link = Link::Incompatible { server, client };
+                // wheeld answers, at another protocol: whatever the watch waited for is over.
+                server::link(true);
                 self.server_protocol = Some(server);
-                self.toast_sources.server_updated = Some(crate::server::banner_key(self.bundled_source(), self.server_protocol));
+                self.toast_sources.server_updated = Some(crate::server::banner_key(self.bundled_source().as_deref(), self.server_protocol));
                 // A window that was up on a newer wheeld shows nothing of it: the older one's
                 // layout is not read, so the old one's panes would be stale. The next `Up` applies
                 // a layout again.

@@ -2,12 +2,18 @@
 //! runs, with or without a window, so it holds its own connection to wheeld for the sessions,
 //! spaces and waiting approvals, and reads the app's list of windows for what they show. The
 //! bridge owns the NSStatusItem (`native::APP`); a click on it opens the popover, a GPUI pop-up
-//! window under the item, with a card per session and New Window and Quit Wheel.
+//! window under the item, with the server line, a card per session and New Window and Quit Wheel;
+//! a right-click opens the native menu of StatusItemMenu.swift. Stop, Start and Restart run
+//! through the app's one server control (`view::server`).
 use super::settings::{BOX, DIM, LINE, PANEL, TEXT};
+use super::server;
 use super::*;
+use crate::server::{Facts, LinkKind, Listener};
 use crate::menubar::{self, CARD_HEAD, CARD_PAD, Card, GAP, PAD, ROW, ROW_GAP, WIDTH};
 use futures::StreamExt as _;
-use gpui::{Entity, WindowBounds, WindowHandle, WindowKind, WindowOptions, point, size};
+use gpui::{Entity, Image, ImageFormat, ImageSource, WindowBounds, WindowHandle, WindowKind, WindowOptions, img, point, size};
+use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+use std::{cell::Cell, sync::Arc};
 use serde_json::{Value, json};
 use wheel_proto::PermInfo;
 
@@ -24,6 +30,10 @@ pub fn menu_bar() -> Option<Entity<MenuBar>> {
 /// Orange behind a waiting count and green for the shown dot (SpaceRow).
 const ORANGE: u32 = 0xff9f0a;
 const GREEN: u32 = 0x30d158;
+const RED: u32 = 0xff453a;
+const ACCENT: u32 = 0x0a84ff;
+/// The details' indent: past the app icon and its gap (ServerDetails' `.padding(.leading, 46)`).
+const DETAILS_INDENT: f32 = 46.;
 
 pub struct MenuBar {
     /// The bridge's app half: the status item and the Dock tile.
@@ -32,13 +42,29 @@ pub struct MenuBar {
     endpoint: Endpoint,
     hidden: bool,
     /// The connection's sender; dropping it closes the socket.
-    _send: mpsc::Sender<String>,
+    send: mpsc::Sender<String>,
     up: bool,
+    /// The link as the server line reads it, and why it is down.
+    link: LinkKind,
+    down_reason: Option<String>,
+    /// wheeld answered at another protocol: it waits for a restart.
+    incompatible: bool,
+    /// From wheeld's last `status`: its source hash, protocol and start (unix ms).
+    running_source: Option<String>,
+    protocol: Option<u32>,
+    started: Option<u64>,
+    /// The remote listener and the paired devices, for the server line's details.
+    remote: Option<crate::settings::Remote>,
+    paired: Vec<String>,
+    /// The right-click menu as the bridge built it last.
+    status_menu: Value,
+    app_icon: RefCell<Option<Option<(Arc<Image>, f32)>>>,
     sessions: Vec<Session>,
     spaces: Vec<Space>,
     perms: Vec<PermInfo>,
-    /// What the item was last told: the badge, the accessibility label and the Dock tile's badge.
-    told: Option<(usize, String, Option<String>)>,
+    /// What the item was last told: the badge, the accessibility label, the Dock tile's badge and
+    /// whether a new server waits for a restart (the update dot).
+    told: Option<(usize, String, Option<String>, bool)>,
     /// The bridge's account of the item after it was last told.
     item: Value,
     popover: Option<WindowHandle<Popover>>,
@@ -51,11 +77,13 @@ pub struct MenuBar {
 pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool) -> Entity<MenuBar> {
     let (frames, mut clicks) = futures::channel::mpsc::unbounded::<String>();
     let native = Native::app(bridge, hidden, frames);
+    server::ensure(cx, endpoint.service.clone(), hidden);
     let crate::daemon::Connection { send, mut incoming } = crate::daemon::Connection::open(endpoint.clone());
     let mut changes = crate::windows::with(|r| r.watch());
     let menu = cx.new(|_| MenuBar {
-        native, bridge: bridge.clone(), endpoint, hidden, _send: send, up: false, sessions: vec![], spaces: vec![], perms: vec![],
-        told: None, item: Value::Null, popover: None, symbols: RefCell::default(), log: vec![],
+        native, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
+        running_source: None, protocol: None, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
+        sessions: vec![], spaces: vec![], perms: vec![], told: None, item: Value::Null, popover: None, symbols: RefCell::default(), log: vec![],
     });
     MENU_BAR.with(|m| *m.borrow_mut() = Some(menu.clone()));
     menu.update(cx, |m, cx| m.refresh(cx));
@@ -70,9 +98,21 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     cx.spawn(async move |cx| {
         while let Some(frame) = clicks.next().await {
             let Ok(frame) = serde_json::from_str::<Value>(&frame) else { continue };
-            if frame["event"] == "status_item" {
-                let at = frame["frame"].as_array().filter(|f| f.len() == 4).map(|f| [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(0.) as f32));
-                held.update(cx, |m, cx| m.toggle_popover(at, cx));
+            match frame["event"].as_str() {
+                Some("status_item") if frame["button"] == "right" => held.update(cx, |m, _| m.open_status_menu()),
+                Some("status_item") => {
+                    let at = frame["frame"].as_array().filter(|f| f.len() == 4).map(|f| [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(0.) as f32));
+                    held.update(cx, |m, cx| m.toggle_popover(at, cx));
+                }
+                Some("status_menu") => {
+                    let item = frame["item"].as_str().unwrap_or_default().to_owned();
+                    held.update(cx, |m, cx| m.choose(&item, cx));
+                }
+                Some("alert") => {
+                    let (id, button) = (frame["id"].as_str().unwrap_or_default().to_owned(), frame["button"].as_i64().unwrap_or(-1));
+                    held.update(cx, |m, cx| m.alert_answered(&id, button, cx));
+                }
+                _ => {}
             }
         }
     })
@@ -117,18 +157,165 @@ impl MenuBar {
         // agents' streams and every other frame pass by.
         let changed = match event {
             Event::Message(message) => {
+                let server_line = self.on_server_message(&message);
                 let layout = crate::layout::parse_layout(&message).map(|layout| {
                     self.sessions = layout.sessions;
                     self.spaces = layout.spaces;
                 });
-                crate::perms::follow(&mut self.perms, &message) || layout.is_some()
+                crate::perms::follow(&mut self.perms, &message) || layout.is_some() || server_line
             }
-            Event::Up(_) => !std::mem::replace(&mut self.up, true),
-            Event::Down(_) | Event::Incompatible { .. } => std::mem::replace(&mut self.up, false),
+            Event::Up(_) => {
+                (self.link, self.down_reason, self.incompatible) = (LinkKind::Connected, None, false);
+                server::link(true);
+                self.ask_remote();
+                self.up = true;
+                true
+            }
+            Event::Down(reason) => {
+                (self.link, self.down_reason, self.incompatible) = (LinkKind::Unreachable, Some(reason), false);
+                server::link(false);
+                self.up = false;
+                true
+            }
+            Event::Incompatible { server: protocol, .. } => {
+                (self.link, self.down_reason, self.incompatible, self.protocol) = (LinkKind::Connected, None, true, Some(protocol));
+                server::link(true);
+                self.up = false;
+                true
+            }
         };
         if changed {
             self.refresh(cx);
         }
+    }
+
+    /// What the server line reads from wheeld's frames: its `status`, the remote listener and the
+    /// paired devices; a `stopping` frame goes to the app's watch. True when the line changed.
+    fn on_server_message(&mut self, message: &ServerMsg) -> bool {
+        match message {
+            ServerMsg::Status { protocol, uptime_secs, host, .. } => {
+                self.protocol = Some(*protocol);
+                self.started = Some(super::settings::now_ms().saturating_sub(uptime_secs * 1000));
+                self.running_source = Some(host.source.clone());
+                true
+            }
+            ServerMsg::Remote { listen, addresses, port, fingerprint, problem, .. } => {
+                self.remote = Some(crate::settings::Remote { listen: listen.clone(), addresses: addresses.clone(), port: *port, fingerprint: fingerprint.clone(), problem: problem.clone() });
+                true
+            }
+            ServerMsg::Devices { devices, .. } | ServerMsg::DevicesChanged { devices } => {
+                self.paired = devices.iter().map(|d| d.name.clone()).collect();
+                true
+            }
+            ServerMsg::Stopping => {
+                server::stopping();
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Ask wheeld for its remote listener and paired devices: on each connection and each popover open.
+    fn ask_remote(&self) {
+        let _ = self.send.send(crate::daemon::frame(&ClientMsg::RemoteInfo { req: Some(1) }));
+        let _ = self.send.send(crate::daemon::frame(&ClientMsg::DeviceList { req: Some(2) }));
+    }
+
+    /// A newer server is installed and waits for a restart (AppModel.serverRestartWaiting): the
+    /// update dot on the item, the orange word and Restart Server in the details.
+    fn restart_waiting(&self) -> bool {
+        let bundled = server::with(|s| s.control.service().and_then(|s| s.bundled_source.clone())).flatten();
+        self.incompatible || crate::server::restart_waiting(self.up, self.running_source.as_deref(), bundled.as_deref(), self.protocol, crate::daemon::PROTOCOL)
+    }
+
+    fn stopped_by_menu(&self) -> bool {
+        server::with(|s| s.stopped_by_menu).unwrap_or(false)
+    }
+
+    /// Whether the server runs, so the right-click menu's first item stops it (StatusItemMenu.running).
+    fn running(&self) -> bool {
+        self.up && !self.stopped_by_menu()
+    }
+
+    /// The server line's word and dot (AppModel.serverStatus).
+    pub fn server_status(&self) -> crate::server::Status {
+        let remote = self.remote.as_ref().map(|r| crate::server::Remote { problem: r.problem.is_some(), listening: r.listen.is_some() });
+        crate::server::status(self.link, self.restart_waiting(), remote, self.stopped_by_menu())
+    }
+
+    /// The lines under the server line while it is open (AppModel.serverDetails).
+    pub fn server_details(&self) -> Vec<String> {
+        let listener = self.remote.as_ref().map(|r| match (&r.problem, &r.listen, r.default_address()) {
+            (Some(problem), _, _) => Listener::Failed(problem.clone()),
+            (None, Some(_), Some(address)) => Listener::Listening { address: address.to_owned(), port: r.port },
+            _ => Listener::Off,
+        });
+        crate::server::details(&Facts {
+            stopped: self.stopped_by_menu(),
+            down: match self.link {
+                LinkKind::Connected => None,
+                LinkKind::Connecting => Some(None),
+                LinkKind::Unreachable => Some(Some(self.down_reason.clone().unwrap_or_default())),
+            },
+            waiting: self.restart_waiting(),
+            uptime_secs: self.started.filter(|_| self.link == LinkKind::Connected).map(|t| super::settings::now_ms().saturating_sub(t) / 1000),
+            spaces: self.spaces.len(),
+            listener,
+            paired: self.paired.clone(),
+        })
+    }
+
+    /// A right-click on the item: the bridge builds the native menu from these items and opens
+    /// it under the item; a pick comes back as a `status_menu` event.
+    fn open_status_menu(&mut self) {
+        let items: Vec<Value> = crate::server::menu(self.running(), self.stopped_by_menu()).iter().map(|i| json!({"id": i.id, "title": i.title, "key": i.key})).collect();
+        self.status_menu = self.native.call(json!({"op": "status_menu", "items": items}));
+        self.log(format!("status item menu: {}", self.status_menu["menu"]));
+    }
+
+    /// A pick from the right-click menu (StatusItemMenu's actions). Stop Server… on a running
+    /// server asks first in an alert; one that is not running has nothing to lose and stops at once.
+    pub fn choose(&mut self, item: &str, cx: &mut Context<Self>) {
+        self.log(format!("status item menu: {item} chosen"));
+        let spaces = self.spaces.len();
+        match item {
+            "stop" if self.running() => {
+                let (message, informative) = crate::server::stop_question(spaces);
+                self.native.call(json!({"op": "alert", "id": "stop", "message": message, "informative": informative, "buttons": ["Stop Server", "Cancel"], "activate": !self.hidden}));
+            }
+            "stop" => server::stop(spaces),
+            "start" => server::start(),
+            "restart" => server::restart(spaces),
+            "quit" => cx.quit(),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// The stop question was answered: its first button stops the server.
+    fn alert_answered(&mut self, id: &str, button: i64, cx: &mut Context<Self>) {
+        self.log(format!("alert {id} answered with button {button}"));
+        if id == "stop" && button == 0 {
+            server::stop(self.spaces.len());
+        }
+        cx.notify();
+    }
+
+    /// The bridge's app half, for the check's presses and picks.
+    pub fn bridge_call(&self, value: Value) -> Value {
+        self.native.call(value)
+    }
+
+    /// The app's icon as the bridge drew it, `size` points square, cached.
+    fn app_icon(&self, size: f32) -> Option<gpui::AnyElement> {
+        let mut cache = self.app_icon.borrow_mut();
+        if cache.is_none() {
+            let answer = self.native.call(json!({"op": "app_icon", "size": size}));
+            let Some(hex) = answer["png_hex"].as_str() else { return None };
+            let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
+            *cache = Some(Some((Arc::new(Image::from_bytes(ImageFormat::Png, bytes)), size)));
+        }
+        cache.as_ref().and_then(|c| c.as_ref()).map(|(image, s)| img(ImageSource::Image(image.clone())).w(px(*s)).h(px(*s)).flex_none().into_any_element())
     }
 
     /// The sessions no main window shows, in wheeld's order (WindowLayout.backgroundSessions).
@@ -140,25 +327,19 @@ impl MenuBar {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let waiting = menubar::waiting(&self.perms, &self.spaces);
         let (background, unseen) = crate::windows::with(|r| (menubar::windowless(r, &self.sessions, &self.spaces).len(), menubar::unseen(r, &waiting)));
-        let told = (background, menubar::accessibility(background, unseen), (unseen > 0).then(|| unseen.to_string()));
+        let update = self.restart_waiting();
+        let told = (background, menubar::accessibility(background, unseen, update), (unseen > 0).then(|| unseen.to_string()), update);
         if self.told.as_ref() != Some(&told) {
             if self.told.as_ref().map(|t| t.0) != Some(background) {
                 self.log(format!("menu bar badge: {}", if background == 0 { "none".to_owned() } else { background.to_string() }));
             }
-            self.item = self.native.call(json!({"op": "status_item", "badge": told.0, "label": told.1, "dock": told.2}));
+            if self.told.as_ref().map(|t| t.3) != Some(update) {
+                self.log(format!("menu bar update dot: {}", if update { "shown" } else { "none" }));
+            }
+            self.item = self.native.call(json!({"op": "status_item", "badge": told.0, "label": told.1, "dock": told.2, "update": told.3}));
             self.told = Some(told);
         }
-        if let Some(popover) = self.popover {
-            let height = menubar::height(&self.cards());
-            // After this update: a resize can draw the popover, which reads this model.
-            cx.defer(move |cx| {
-                let _ = popover.update(cx, |_, window, _| {
-                    if (window.viewport_size().height.as_f32() - height).abs() > 0.5 {
-                        window.resize(size(px(WIDTH), px(height)));
-                    }
-                });
-            });
-        }
+        // An open popover redraws from this model and fits the height its content measures.
         cx.notify();
     }
 
@@ -182,6 +363,7 @@ impl MenuBar {
         if !hidden {
             cx.activate(true);
         }
+        self.ask_remote();
         let menu = cx.entity();
         // Opened after this update: a new window draws at once, and the popover reads this model.
         cx.defer(move |cx| {
@@ -203,7 +385,9 @@ impl MenuBar {
                             held.update(cx, |m, _| m.popover = None);
                         })
                         .detach();
-                        Popover { menu: menu.clone() }
+                        let focus = cx.focus_handle();
+                        window.focus(&focus, cx);
+                        Popover { menu: menu.clone(), focus, content: Rc::default(), controls: Rc::default() }
                     })
                 },
             );
@@ -247,14 +431,23 @@ impl MenuBar {
     pub fn state_json(&self, cx: &mut App) -> Value {
         let cards = self.cards();
         // The content's size: a window that is on no screen (the check's) reports a default frame.
-        let popover = self.popover.and_then(|p| p.update(cx, |_, window, _| (window.bounds().origin, window.viewport_size())).ok()).map(|(o, s)| {
-            json!({"open": true, "frame": [o.x.as_f32(), o.y.as_f32(), s.width.as_f32(), s.height.as_f32()]})
+        let popover = self.popover.and_then(|p| p.update(cx, |pop, window, _| (window.bounds().origin, window.viewport_size(), pop.content.get(), pop.controls.borrow().clone())).ok()).map(|(o, s, content, controls)| {
+            json!({"open": true, "frame": [o.x.as_f32(), o.y.as_f32(), s.width.as_f32(), s.height.as_f32()], "content_height": content, "controls": controls})
         });
+        let status = self.server_status();
+        let server = server::with(|s| json!({
+            "word": status.word, "colour": format!("{:06x}", status.colour), "expanded": s.expanded, "confirming": s.confirming,
+            "stopped_by_menu": s.stopped_by_menu, "running": self.running(), "waiting": self.restart_waiting(), "details": self.server_details(),
+            "problem": s.problem, "busy": s.busy.map(|op| format!("{op:?}")), "available": s.control.available(), "log": s.log,
+        })).unwrap_or(Value::Null);
         json!({
             "up": self.up,
             "item": self.item,
-            "told": self.told.as_ref().map(|t| json!({"badge": t.0, "label": t.1, "dock": t.2})),
+            "told": self.told.as_ref().map(|t| json!({"badge": t.0, "label": t.1, "dock": t.2, "update": t.3})),
+            "server": server,
+            "status_menu": self.status_menu,
             "waiting": self.perms.len(),
+            "spaces": self.spaces.len(),
             "cards": cards.iter().map(|c| json!({"session": c.session, "name": c.name, "windows": c.windows,
                 "rows": c.rows.iter().map(|r| json!({"space": r.space, "name": r.name, "waiting": r.waiting, "shown": r.shown, "little": r.ownerless_little})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "height": menubar::height(&cards),
@@ -319,16 +512,133 @@ impl MenuBar {
     }
 }
 
-/// The popover's view: it draws the menu bar's model.
+/// The popover's view: it draws the menu bar's model, and fits its window to the height its
+/// content measures (MenuBarExtra sizes its window to the SwiftUI content).
 pub struct Popover {
     menu: Entity<MenuBar>,
+    focus: gpui::FocusHandle,
+    /// The content's height as last laid out.
+    content: Rc<Cell<f32>>,
+    /// Each named control's frame in the popover, as last laid out, for the check's presses.
+    controls: Rc<RefCell<HashMap<&'static str, [f32; 4]>>>,
+}
+
+/// How a popover button looks: prominent (`.borderedProminent`), red prominent (the confirm's
+/// Stop Server), destructive (`role: .destructive`) or plain.
+#[derive(Clone, Copy)]
+enum Look {
+    Prominent,
+    Red,
+    Destructive,
+    Plain,
+}
+
+impl Popover {
+    /// Record `el`'s frame under `name` each time it is laid out.
+    fn recorded(&self, el: gpui::Div, name: &'static str) -> gpui::Div {
+        let controls = self.controls.clone();
+        el.relative().child(canvas(move |b, _, _| {
+            controls.borrow_mut().insert(name, [b.origin.x.as_f32(), b.origin.y.as_f32(), b.size.width.as_f32(), b.size.height.as_f32()]);
+        }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+    }
+
+    fn button(&self, label: &str, look: Look, name: &'static str, act: impl Fn(&mut Window, &mut App) + 'static) -> gpui::Div {
+        let (bg, fg, border) = match look {
+            Look::Prominent => (ACCENT, 0xffffff, ACCENT),
+            Look::Red => (RED, 0xffffff, RED),
+            Look::Destructive => (BOX, RED, LINE),
+            Look::Plain => (BOX, TEXT, LINE),
+        };
+        let el = div().px(px(10.)).py(px(3.)).rounded(px(5.)).bg(rgb(bg)).border_1().border_color(rgb(border)).text_color(rgb(fg)).cursor_pointer()
+            .child(label.to_owned())
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| act(window, cx));
+        self.recorded(el, name)
+    }
+
+    /// The server's line (ServerHeader): the app icon, its name, a dot with a word, and the
+    /// chevron; pressing it opens the details.
+    fn server_line(&self, menu: &MenuBar) -> gpui::Div {
+        let status = menu.server_status();
+        let expanded = server::with(|s| s.expanded).unwrap_or(false);
+        let icon = menu.app_icon(menubar::SERVER_LINE).unwrap_or_else(|| div().w(px(menubar::SERVER_LINE)).h(px(menubar::SERVER_LINE)).into_any_element());
+        let line = div().h(px(menubar::SERVER_LINE)).flex().items_center().gap(px(10.)).cursor_pointer()
+            .child(icon)
+            .child(div().flex().flex_col().gap(px(2.))
+                .child(div().text_color(rgb(TEXT)).font_weight(gpui::FontWeight::SEMIBOLD).child("Wheel Server"))
+                .child(div().flex().items_center().gap(px(5.))
+                    .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(rgb(status.colour)))
+                    .child(div().text_xs().text_color(rgb(DIM)).child(status.word))))
+            .child(div().flex_1())
+            .children(menu.symbol(if expanded { "chevron.up" } else { "chevron.down" }, 11., DIM))
+            .on_mouse_up(MouseButton::Left, |_, window, _| {
+                server::toggle_expanded();
+                window.refresh();
+            });
+        let mut col = div().flex().flex_col().gap(px(8.)).child(self.recorded(line, "server"));
+        if expanded {
+            col = col.child(self.server_details(menu));
+        }
+        col
+    }
+
+    /// The details (ServerDetails): the lines, why the last command failed, and Restart, Start
+    /// or Stop Server with its question.
+    fn server_details(&self, menu: &MenuBar) -> gpui::Div {
+        let (stopped, confirming, problem, unavailable) = server::with(|s| (s.stopped_by_menu, s.confirming, s.problem.clone(), s.control.unavailable())).unwrap_or((false, false, None, Some(crate::server::UNAVAILABLE)));
+        let spaces = menu.spaces.len();
+        let mut col = div().pl(px(DETAILS_INDENT)).flex().flex_col().gap(px(6.));
+        for line in menu.server_details() {
+            col = col.child(div().text_sm().text_color(rgb(DIM)).child(line));
+        }
+        if let Some(problem) = problem {
+            col = col.child(div().flex().items_center().gap_1().text_xs().text_color(rgb(crate::server::ORANGE))
+                .children(menu.symbol("exclamationmark.triangle.fill", 10., crate::server::ORANGE)).child(problem));
+        }
+        let row = |el: gpui::Div| div().flex().child(el);
+        if menu.restart_waiting() && unavailable.is_none() {
+            col = col.child(row(self.button("Restart Server", Look::Prominent, "restart", move |window, _| {
+                server::restart(spaces);
+                window.refresh();
+            })));
+        }
+        if let Some(why) = unavailable {
+            col = col.child(div().text_xs().text_color(rgb(DIM)).child(why));
+        } else if stopped || !menu.up {
+            col = col.child(row(self.button("Start Server", Look::Prominent, "start", |window, _| {
+                server::start();
+                window.refresh();
+            })));
+        } else if confirming {
+            let (question, informative) = crate::server::stop_question(spaces);
+            col = col.child(div().flex().flex_col().gap(px(6.)).p(px(10.)).rounded(px(8.)).bg(rgb(BOX)).border_1().border_color(rgb(LINE))
+                .child(div().text_color(rgb(TEXT)).font_weight(gpui::FontWeight::SEMIBOLD).child(question))
+                .child(div().text_sm().text_color(rgb(DIM)).child(informative))
+                .child(div().flex().gap_2().child(div().flex_1())
+                    .child(self.button("Cancel", Look::Plain, "cancel", |window, _| {
+                        server::cancel_stop();
+                        window.refresh();
+                    }))
+                    .child(self.button("Stop Server", Look::Red, "confirm-stop", move |window, _| {
+                        server::stop(spaces);
+                        window.refresh();
+                    }))));
+        } else {
+            col = col.child(row(self.button("Stop Server", Look::Destructive, "stop", |window, _| {
+                server::ask_stop();
+                window.refresh();
+            })));
+        }
+        col
+    }
 }
 
 impl Render for Popover {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let menu = self.menu.read(cx);
         let cards = menu.cards();
-        let mut col = div().size_full().flex().flex_col().gap(px(GAP)).p(px(PAD)).bg(rgb(PANEL)).text_sm().text_color(rgb(TEXT));
+        let mut col = div().w_full().flex().flex_col().gap(px(GAP)).p(px(PAD)).text_sm().text_color(rgb(TEXT))
+            .child(self.server_line(menu))
+            .child(div().h(px(1.)).bg(rgb(LINE)));
         for card in &cards {
             col = col.child(menu.card(card));
         }
@@ -344,6 +654,32 @@ impl Render for Popover {
             });
         });
         let quit = menu.row("power", "Quit Wheel", Some("⌘Q")).on_mouse_up(MouseButton::Left, |_, _, cx| cx.quit());
-        col.child(div().h(px(1.)).bg(rgb(LINE))).child(div().flex().flex_col().gap(px(ROW_GAP)).child(new_window).child(quit))
+        col = col.child(div().h(px(1.)).bg(rgb(LINE))).child(div().flex().flex_col().gap(px(ROW_GAP)).child(new_window).child(quit));
+        // The window follows the content's height, keeping its top edge under the item.
+        let (content, native) = (self.content.clone(), menu.native.clone());
+        let fit = canvas(move |b, window, cx| {
+            let height = b.size.height.as_f32();
+            content.set(height);
+            if (window.viewport_size().height.as_f32() - height).abs() > 0.5
+                && let Ok(handle) = window.window_handle()
+                && let RawWindowHandle::AppKit(appkit) = handle.as_raw()
+            {
+                let view = appkit.ns_view.as_ptr() as usize as u64;
+                cx.defer(move |cx| {
+                    // The view is the popover's: a popover closed since this draw is not touched.
+                    if menu_bar().is_some_and(|m| m.read(cx).popover.is_some()) {
+                        native.call(json!({"op": "fit_window", "view": view, "width": WIDTH, "height": height}));
+                    }
+                });
+            }
+        }, |_, _, _, _| {}).absolute().top_0().left_0().size_full();
+        // The confirm's Cancel answers Escape (`.keyboardShortcut(.cancelAction)`).
+        let keys = div().track_focus(&self.focus).on_key_down(|event: &KeyDownEvent, window, _| {
+            if event.keystroke.key == "escape" && server::with(|s| s.confirming).unwrap_or(false) {
+                server::cancel_stop();
+                window.refresh();
+            }
+        });
+        keys.size_full().bg(rgb(PANEL)).child(col.relative().child(fit))
     }
 }

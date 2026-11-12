@@ -3979,7 +3979,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     for _ in 0..50 {
         pump(&mut older_connection, 100, &mut older_layouts, older_window, cx).await?;
         draw(older_window, None, cx)?;
-        restart_log = older_window.update(cx, |c, _, _| c.toast_log.iter().rev().find(|l| l.starts_with("server: restart")).cloned())?;
+        restart_log = wheel_gpui::view::server::with(|s| s.log.iter().rev().find(|l| l.starts_with("server: restart")).cloned()).flatten();
         if restart_log.as_deref() == Some("server: restarted from the app") {
             break;
         }
@@ -3987,7 +3987,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(restart_log.as_deref() == Some("server: restarted from the app"), "Restart Server ended with {restart_log:?}");
     ensure!(stop_file.exists() && start_file.exists(), "Restart Server did not run both commands: stop {} start {}", stop_file.exists(), start_file.exists());
     older_window.update(cx, |c, _, _| c.dismiss_toast(&server_toast))?;
-    let (after_dismiss, older_log): (Vec<String>, Vec<String>) = older_window.update(cx, |c, _, _| (c.toasts().iter().map(|t| t.id.clone()).collect(), c.toast_log.iter().filter(|l| l.starts_with("server")).cloned().collect()))?;
+    let (after_dismiss, older_log): (Vec<String>, Vec<String>) = older_window.update(cx, |c, _, _| (c.toasts().iter().map(|t| t.id.clone()).collect(), c.toast_log.iter().chain(wheel_gpui::view::server::with(|s| s.log.clone()).unwrap_or_default().iter()).filter(|l| l.starts_with("server")).cloned().collect()))?;
     ensure!(after_dismiss.is_empty(), "the server notice stayed after its close: {after_dismiss:?}");
     older_window.update(cx, |_, w, _| w.remove_window())?;
     drop(older_connection);
@@ -4011,8 +4011,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // logged (there is no bundled source to compare). A terminated wheeld sends `stopping` first:
     // the client expects it back for 10 s, with no "unreachable" notice meanwhile, and says so when
     // it answers again.
-    let log_lines = |c: &Client, prefix: &str| -> Vec<String> { c.toast_log.iter().filter(|l| l.starts_with(prefix)).cloned().collect() };
-    let (control_kind, word_before, control_log): (String, String, Vec<String>) = window.update(cx, |c, _, _| (c.server_control.kind().into(), c.server_status_word().word, log_lines(c, "daemon ")))?;
+    // The window's own lines and the app's server control's: one control serves every window.
+    let log_lines = |c: &Client, prefix: &str| -> Vec<String> {
+        c.toast_log.iter().chain(wheel_gpui::view::server::with(|s| s.log.clone()).unwrap_or_default().iter()).filter(|l| l.starts_with(prefix)).cloned().collect()
+    };
+    let restart_expected = || wheel_gpui::view::server::with(|s| s.watch.restart_expected).unwrap_or(false);
+    let control_kind = wheel_gpui::view::server::with(|s| s.control.kind().to_owned()).unwrap_or_default();
+    let (word_before, control_log): (String, Vec<String>) = window.update(cx, |c, _, _| (c.server_status_word().word, log_lines(c, "daemon ")))?;
     ensure!(control_kind == "commands" && word_before == "Running", "over the fixture wheeld the control is {control_kind} and the word {word_before}");
     ensure!(control_log.is_empty(), "a bundled-server line over the fixture wheeld: {control_log:?}");
     std::fs::write(&request, "1.5")?;
@@ -4023,7 +4028,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         pump(&mut connection, 50, &mut layouts, window, cx).await?;
         let (link, banner, expected, unreachable, word) = window.update(cx, |c, _, cx| {
             c.tick_server(cx);
-            (c.link.clone(), c.link.banner(), c.server_watch.restart_expected, c.toasts().iter().any(|t| t.id == "unreachable"), c.server_status_word().word)
+            (c.link.clone(), c.link.banner(), restart_expected(), c.toasts().iter().any(|t| t.id == "unreachable"), c.server_status_word().word)
         })?;
         if let Link::Down(reason) = &link {
             saw_down = true;
@@ -4040,7 +4045,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(saw_down, "the client never reported wheeld down");
     ensure!(up_again, "the client did not come back up after the restart (layouts {layouts})");
-    let (expected_after, server_log): (bool, Vec<String>) = window.update(cx, |c, _, _| (c.server_watch.restart_expected, log_lines(c, "server: wheeld")))?;
+    let (expected_after, server_log): (bool, Vec<String>) = window.update(cx, |c, _, _| (restart_expected(), log_lines(c, "server: wheeld")))?;
     ensure!(expected_while_down, "wheeld's `stopping` did not put the client in its restart window: {server_log:?}");
     ensure!(!unreachable_while_expected, "an unreachable notice showed while a restart was expected");
     ensure!(word_while_down == "Stopped", "the word while wheeld was down reads {word_while_down}");
@@ -4186,6 +4191,9 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     ensure!(open_state["popover"]["open"] == true, "pressing the status item ({clicked}) opened no popover: {}", open_state["popover"]);
     let popover = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?;
     let popover_any: gpui::AnyWindowHandle = popover.into();
+    // The popover fits the height its content measures (fit_window), keeping its top edge.
+    open_state = popover_settle(popover_any, &menu, cx, popover_fitted).await;
+    ensure!(popover_fitted(&open_state), "the popover never fitted its content: {}", open_state["popover"]);
     let picture = output.join("client-menubar-popover.png");
     let drawn = popover_any.update(cx, |_, w, cx| -> Result<(u32, u32)> {
         w.draw(cx).clear();
@@ -4194,7 +4202,10 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         Ok((image.width(), image.height()))
     })??;
     let frame_h = open_state["popover"]["frame"][3].as_f64().unwrap_or(0.);
-    ensure!((frame_h - open_state["height"].as_f64().unwrap_or(-1.)).abs() < 1., "the popover is {frame_h} tall, its cards need {}", open_state["height"]);
+    ensure!((frame_h - open_state["height"].as_f64().unwrap_or(-1.)).abs() < 1., "the popover is {frame_h} tall, its closed server line and cards need {}", open_state["height"]);
+    let server_line = server_line_check(popover_any, &menu, window, output, frame_h, cx).await?;
+    let open_state = state(cx);
+    let frame_h = open_state["popover"]["frame"][3].as_f64().unwrap_or(0.);
     // New Window: a press and release on its row, as the person clicks it.
     let windows_before = wheel_gpui::windows::with(|r| r.windows.len());
     let new_y = frame_h as f32 - wheel_gpui::menubar::PAD - 2. * wheel_gpui::menubar::ROW - wheel_gpui::menubar::ROW_GAP + wheel_gpui::menubar::ROW / 2.;
@@ -4266,9 +4277,160 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         "fixture_waiting": fixture_waiting, "rows_waiting": row_waiting, "dock_while_waiting": waiting_state["item"]["dock"], "answered": answered,
         "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
         "new_window": {"before": windows_before, "after": windows_after, "popover_closed": after_new["popover"]["open"] == false},
+        "server_line": server_line,
         "dock_reopen": {"before": windows_before_dock, "after": windows_after_dock, "session": dock_opened, "wanted": dock_session},
         "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space},
         "log": still["log"]}))
+}
+
+/// The popover's frame is the height its content measured.
+fn popover_fitted(s: &Value) -> bool {
+    let (frame, content) = (s["popover"]["frame"][3].as_f64().unwrap_or(0.), s["popover"]["content_height"].as_f64().unwrap_or(-1.));
+    content > 0. && (frame - content).abs() < 1.
+}
+
+/// Draw the popover and wait, up to 5 s, until the menu bar's state passes `until`; the last state.
+async fn popover_settle(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &mut AsyncApp, until: impl Fn(&Value) -> bool) -> Value {
+    let mut s = Value::Null;
+    for _ in 0..50 {
+        let _ = popover.update(cx, |_, w, cx| {
+            w.draw(cx).clear();
+        });
+        tick(cx, 100).await;
+        s = menu.update(cx, |m, cx| m.state_json(cx));
+        if until(&s) {
+            break;
+        }
+    }
+    s
+}
+
+/// Press and release the popover's control `name` at its centre, as the person clicks it.
+fn popover_press(popover: gpui::AnyWindowHandle, s: &Value, name: &str, cx: &mut AsyncApp) -> Result<()> {
+    let c = &s["popover"]["controls"][name];
+    let r: Vec<f32> = c.as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default();
+    ensure!(r.len() == 4, "the popover has no {name} control: {}", s["popover"]["controls"]);
+    let at = gpui::point(gpui::px(r[0] + r[2] / 2.), gpui::px(r[1] + r[3] / 2.));
+    popover.update(cx, |_, w, cx| {
+        w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: at, pressed_button: None, modifiers: Default::default() }), cx);
+        w.draw(cx).clear();
+        w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Left, position: at, modifiers: Default::default(), click_count: 1, first_mouse: false }), cx);
+        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position: at, modifiers: Default::default(), click_count: 1 }), cx);
+    })?;
+    Ok(())
+}
+
+fn popover_picture(popover: gpui::AnyWindowHandle, path: &std::path::Path, cx: &mut AsyncApp) -> Result<()> {
+    popover.update(cx, |_, w, cx| -> Result<()> {
+        w.draw(cx).clear();
+        w.render_to_image()?.save(path)?;
+        Ok(())
+    })?
+}
+
+/// The menu bar's server line and the status item's right-click menu (wheel-ynjo.7.4.2), over the
+/// fixture wheeld, whose control is `WHEEL_SERVER_STOP` and `WHEEL_SERVER_START` (each touches a
+/// file and leaves wheeld running): the word, the details opened, Stop Server's question cancelled
+/// and then answered, Start Server, the right-click menu stopped and running, Stop Server… asking
+/// in an alert that is cancelled, and Restart Server from the menu running both commands.
+async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<wheel_gpui::view::MenuBar>, window: gpui::WindowHandle<Client>, output: &std::path::Path, closed_height: f64, cx: &mut AsyncApp) -> Result<Value> {
+    let server_log = || wheel_gpui::view::server::with(|s| s.log.clone()).unwrap_or_default();
+    let bridge_state = |cx: &mut AsyncApp| menu.update(cx, |m, _| m.bridge_call(json!({"op": "state"})));
+    let (stop_file, start_file) = (output.join("server.stop"), output.join("server.start"));
+    let closed = menu.update(cx, |m, cx| m.state_json(cx));
+    let word = closed["server"]["word"].as_str().unwrap_or_default().to_owned();
+    ensure!(word.starts_with("Running") && closed["server"]["colour"] == "30d158" && closed["server"]["expanded"] == false,
+        "over the fixture wheeld the server line reads {}", closed["server"]);
+    // Pressing the line opens the details, and the popover grows to hold them.
+    popover_press(popover, &closed, "server", cx)?;
+    let open = popover_settle(popover, menu, cx, |s| s["server"]["expanded"] == true && popover_fitted(s)).await;
+    let details: Vec<String> = open["server"]["details"].as_array().map(|a| a.iter().filter_map(|l| l.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    let open_height = open["popover"]["frame"][3].as_f64().unwrap_or(0.);
+    ensure!(open["server"]["expanded"] == true && popover_fitted(&open) && open_height > closed_height, "the details did not open: {} tall, {closed_height} closed; {}", open_height, open["popover"]);
+    ensure!(details.iter().any(|l| l.starts_with("wheeld up ") && l.ends_with(" spaces")) && details.last().is_some_and(|l| l.contains("paired")),
+        "the details read {details:?}");
+    ensure!(open["popover"]["controls"]["stop"].is_array(), "no Stop Server under the details: {}", open["popover"]["controls"]);
+    let picture_open = output.join("client-menubar-server.png");
+    popover_picture(popover, &picture_open, cx)?;
+    // Stop Server asks first; Cancel leaves it running.
+    popover_press(popover, &open, "stop", cx)?;
+    let asking = popover_settle(popover, menu, cx, |s| s["server"]["confirming"] == true && s["popover"]["controls"]["confirm-stop"].is_array()).await;
+    ensure!(asking["server"]["confirming"] == true && asking["popover"]["controls"]["cancel"].is_array(), "Stop Server asked nothing: {}", asking["server"]);
+    let picture_question = output.join("client-menubar-stop-question.png");
+    popover_picture(popover, &picture_question, cx)?;
+    popover_press(popover, &asking, "cancel", cx)?;
+    let cancelled = popover_settle(popover, menu, cx, |s| s["server"]["confirming"] == false).await;
+    ensure!(cancelled["server"]["confirming"] == false && cancelled["server"]["stopped_by_menu"] == false, "Cancel did not take the question back: {}", cancelled["server"]);
+    // Asked again and answered: the stop command runs and the line reads Stopped.
+    let _ = std::fs::remove_file(&stop_file);
+    popover_press(popover, &cancelled, "stop", cx)?;
+    let asking = popover_settle(popover, menu, cx, |s| s["popover"]["controls"]["confirm-stop"].is_array() && s["server"]["confirming"] == true).await;
+    popover_press(popover, &asking, "confirm-stop", cx)?;
+    let stopped = popover_settle(popover, menu, cx, |s| s["server"]["stopped_by_menu"] == true && s["popover"]["controls"]["start"].is_array()).await;
+    let stopped_details = stopped["server"]["details"].clone();
+    ensure!(stopped["server"]["stopped_by_menu"] == true && stopped["server"]["word"] == "Stopped" && stop_file.exists()
+        && stopped_details[0].as_str().is_some_and(|l| l.starts_with("Stopped from this menu.")), "Stop Server ended with {} (stop command ran: {})", stopped["server"], stop_file.exists());
+    let window_word = window.update(cx, |c, _, _| c.server_status_word().word)?;
+    ensure!(window_word == "Stopped", "the window's word reads {window_word} after Stop Server");
+    let picture_stopped = output.join("client-menubar-stopped.png");
+    popover_picture(popover, &picture_stopped, cx)?;
+    // The right-click menu while stopped: Start Server first.
+    menu.update(cx, |m, _| m.bridge_call(json!({"op": "press_status_item", "button": "right"})));
+    let menu_stopped = popover_settle(popover, menu, cx, |s| s["status_menu"]["menu"][0] == "Start Server").await["status_menu"]["menu"].clone();
+    ensure!(menu_stopped == json!(["Start Server", "Restart Server", "-", "Quit Wheel"]), "the right-click menu while stopped reads {menu_stopped}");
+    // Start Server runs the start command and the line reads Running again.
+    let _ = std::fs::remove_file(&start_file);
+    popover_press(popover, &stopped, "start", cx)?;
+    let started = popover_settle(popover, menu, cx, |s| s["server"]["stopped_by_menu"] == false && s["popover"]["controls"]["stop"].is_array()).await;
+    ensure!(started["server"]["stopped_by_menu"] == false && started["server"]["word"].as_str().is_some_and(|w| w.starts_with("Running")) && start_file.exists(),
+        "Start Server ended with {} (start command ran: {})", started["server"], start_file.exists());
+    // The right-click menu while running: Stop Server… asks in an alert; Cancel leaves it running.
+    menu.update(cx, |m, _| m.bridge_call(json!({"op": "press_status_item", "button": "right"})));
+    let menu_running = popover_settle(popover, menu, cx, |s| s["status_menu"]["menu"][0] == "Stop Server…").await["status_menu"]["menu"].clone();
+    ensure!(menu_running == json!(["Stop Server…", "Restart Server", "-", "Quit Wheel"]), "the right-click menu while running reads {menu_running}");
+    menu.update(cx, |m, _| m.bridge_call(json!({"op": "choose_status_menu", "item": "stop"})));
+    let mut alert = Value::Null;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        alert = bridge_state(cx)["alert"].clone();
+        if alert.is_object() {
+            break;
+        }
+    }
+    let spaces = menu.update(cx, |m, cx| m.state_json(cx))["spaces"].as_u64().unwrap_or(0);
+    ensure!(alert["message"] == "Stop Wheel Server?" && alert["informative"] == format!("Terminals and running agents in {spaces} spaces stop.") && alert["buttons"] == json!(["Stop Server", "Cancel"]),
+        "Stop Server… from the menu asked {alert}");
+    menu.update(cx, |m, _| m.bridge_call(json!({"op": "answer_alert", "button": 1})));
+    let after_alert = popover_settle(popover, menu, cx, |s| s["log"].as_array().is_some_and(|l| l.iter().any(|l| l == "alert stop answered with button 1"))).await;
+    ensure!(after_alert["server"]["stopped_by_menu"] == false && after_alert["server"]["busy"].is_null(), "cancelling the alert stopped the server: {}", after_alert["server"]);
+    // Restart Server from the menu runs the stop and start commands.
+    let _ = std::fs::remove_file(&stop_file);
+    let _ = std::fs::remove_file(&start_file);
+    let restarts_before = server_log().iter().filter(|l| *l == "server: restarted from the app").count();
+    menu.update(cx, |m, _| m.bridge_call(json!({"op": "choose_status_menu", "item": "restart"})));
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        if server_log().iter().filter(|l| *l == "server: restarted from the app").count() > restarts_before {
+            break;
+        }
+    }
+    let restarts_after = server_log().iter().filter(|l| *l == "server: restarted from the app").count();
+    ensure!(restarts_after == restarts_before + 1 && stop_file.exists() && start_file.exists(),
+        "Restart Server from the menu: {restarts_before} restarts before, {restarts_after} after, stop ran {}, start ran {}", stop_file.exists(), start_file.exists());
+    // Pressing the line again closes the details, and the popover shrinks back.
+    let now = menu.update(cx, |m, cx| m.state_json(cx));
+    popover_press(popover, &now, "server", cx)?;
+    let closed_again = popover_settle(popover, menu, cx, |s| s["server"]["expanded"] == false && popover_fitted(s)).await;
+    let closed_again_height = closed_again["popover"]["frame"][3].as_f64().unwrap_or(0.);
+    ensure!((closed_again_height - closed_height).abs() < 1., "closing the details left the popover {closed_again_height} tall, {closed_height} before");
+    let log = server_log();
+    Ok(json!({"word": word, "colour": closed["server"]["colour"], "details": details, "heights": {"closed": closed_height, "open": open_height, "closed_again": closed_again_height},
+        "stop_question": {"shown": asking["server"]["confirming"], "cancelled": cancelled["server"]["confirming"] == false},
+        "stopped": {"word": stopped["server"]["word"], "details": stopped_details, "window_word": window_word, "stop_ran": true},
+        "started": {"word": started["server"]["word"], "start_ran": true},
+        "menu": {"stopped": menu_stopped, "running": menu_running}, "alert": alert, "restart": {"before": restarts_before, "after": restarts_after},
+        "update_dot": closed["told"]["update"], "pictures": [picture_open, picture_question, picture_stopped],
+        "log": log.iter().filter(|l| l.starts_with("server: ")).cloned().collect::<Vec<_>>()}))
 }
 
 /// The fixture wheeld as an older one: a loopback WebSocket in front of it that passes every frame
