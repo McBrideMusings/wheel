@@ -191,7 +191,7 @@ pub fn pace(resets_at: Option<&str>, length_secs: Option<u64>, now: i64) -> Opti
 pub fn reset_clock(iso: Option<&str>, now: i64) -> Option<String> {
     let at = parse_rfc3339(iso?)?;
     let local = local_time(at);
-    let clock = format!("{}:{:02} {}", if local.hour % 12 == 0 { 12 } else { local.hour % 12 }, local.minute, if local.hour < 12 { "AM" } else { "PM" });
+    let clock = clock(&local);
     Some(if at - now < 86_400 { clock } else { format!("{} {clock}", local.weekday) })
 }
 
@@ -199,6 +199,16 @@ pub struct LocalTime {
     pub hour: u32,
     pub minute: u32,
     pub weekday: &'static str,
+    /// Days since the epoch in this Mac's time zone.
+    pub day_number: i64,
+    /// 0 for January.
+    pub month: usize,
+    pub mday: u32,
+}
+
+/// "7:00 PM".
+pub fn clock(l: &LocalTime) -> String {
+    format!("{}:{:02} {}", if l.hour % 12 == 0 { 12 } else { l.hour % 12 }, l.minute, if l.hour < 12 { "AM" } else { "PM" })
 }
 
 /// `unix` broken into the local hour, minute and weekday through the C library.
@@ -209,7 +219,7 @@ pub fn local_time(unix: i64) -> LocalTime {
         libc::localtime_r(&t, &mut tm);
     }
     const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    LocalTime { hour: tm.tm_hour as u32, minute: tm.tm_min as u32, weekday: DAYS[(tm.tm_wday.clamp(0, 6)) as usize] }
+    LocalTime { hour: tm.tm_hour as u32, minute: tm.tm_min as u32, weekday: DAYS[(tm.tm_wday.clamp(0, 6)) as usize], day_number: (unix + tm.tm_gmtoff).div_euclid(86_400), month: tm.tm_mon.clamp(0, 11) as usize, mday: tm.tm_mday as u32 }
 }
 
 /// An RFC 3339 time (`2026-10-17T20:00:00Z`, `…T20:00:00.5+02:00`) as seconds since the Unix epoch.

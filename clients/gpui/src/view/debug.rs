@@ -623,6 +623,7 @@ impl Client {
                     entry["rows"] = json!(self.transcripts.get(agent).map(|t| t.rows.len()).unwrap_or(0));
                     entry["perm_card"] = self.perm_card_json(&leaf.id);
                     entry["composer"] = self.composer_json(agent, leaf.harness.as_deref().unwrap_or(""));
+                    entry["conversation_error"] = json!(self.conversations.errors.get(agent));
                 }
                 panes.insert(leaf.id.clone(), entry);
             }
@@ -657,6 +658,7 @@ impl Client {
             "active": self.space_id,
             "spaces": self.spaces.iter().map(|s| json!({"id": s.id, "name": s.name, "cwd": s.cwd, "status": s.status, "panes": leaves_of(&s.root).iter().map(|l| l.id.clone()).collect::<Vec<_>>(),
                 "popped": s.popped.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>(), "backgrounded": s.backgrounded.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "conversations": self.conversations_json(),
             "pane_menu": self.pane_menu.as_ref().map(|(pane, x, y)| json!({"pane": pane, "at": [x, y]})),
             "grid_drop_highlight": self.grid_drop_highlight().map(|h| json!([h.x, h.y, h.w, h.h])),
             "focus_key": self.focus.current,

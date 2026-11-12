@@ -186,6 +186,11 @@ def fixture():
             cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
             cli('config', 'set', 'agent.claude.command', str(built('wheel-fake-agent')), '--machine')
             cli('config', 'set', 'usage.agents', 'claude,codex', '--machine')
+            # A Codex pane runs the same stand-in as `codex app-server`, its threads in a home of its own.
+            codex_home = root / 'codex-home'
+            codex_home.mkdir()
+            cli('config', 'set', 'agent.codex.command', str(built('wheel-fake-agent')), '--machine')
+            cli('config', 'set', 'agent.codex.home', str(codex_home), '--machine')
             agent_pane = cli('pane', 'split', browser, 'down').splitlines()[-1]
             started = json.loads(cli('pane', 'start', agent_pane, 'agent', '--agent', 'claude'))
 

@@ -71,6 +71,12 @@ impl Client {
 /// A tooltip's view: one line of text in a dark box.
 struct Tip(String);
 
+/// A tooltip reading `text`.
+pub(super) fn tip(text: &str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    let text = text.to_owned();
+    move |_, cx| cx.new(|_| Tip(text.clone())).into()
+}
+
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().px_2().py_1().rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(0x2c3d34)).text_xs().text_color(rgb(0xd9e8e1)).child(self.0.clone())
@@ -98,7 +104,7 @@ pub(super) fn perm_card(perm: &PermInfo, position: usize, count: usize, keys: bo
                 this.answer_perm(&id, &choice);
                 cx.stop_propagation();
             }))
-            .tooltip(move |_, cx| cx.new(|_| Tip(help.clone())).into())
+            .tooltip(tip(&help))
             .child(recorded(agent, &format!("perm:{}", option.id), controls));
         if tall {
             b = b.w_full().py(px(ANSWER_PAD)).flex().flex_col().child(line(&option.name, 0xd9e8e1));

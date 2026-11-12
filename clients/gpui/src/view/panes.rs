@@ -136,6 +136,9 @@ impl Client {
             items.push(item("kind:artifact".into(), "Change Type ▸ Artifact…".into(), true));
             items.push(item("kind:empty".into(), "Change Type ▸ Empty".into(), leaf.kind != "empty"));
         }
+        if leaf.kind == "agent" && leaf.agent.is_some() {
+            items.push(item("conversations".into(), "Conversations…".into(), true));
+        }
         items.push(item("move-new-space".into(), "Move Pane to New Space".into(), true));
         items.push(item("move-new-little".into(), "Move Pane to New Little Window".into(), false));
         items.push(item("close".into(), "Close Pane".into(), true));
@@ -158,6 +161,9 @@ impl Client {
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
             "kind:empty" => self.ask_set_kind(&pane, NewPaneKind::Empty),
             "kind:artifact" => self.open_palette(&pane),
+            "conversations" => {
+                self.open_conversations(&pane);
+            }
             "move-new-space" => self.send_layout(|req| ClientMsg::PaneMove { req: Some(req), pane, to: MoveTarget::NewSpace { name: None, focus: false } }),
             other => {
                 if let Some(agent) = other.strip_prefix("kind:agent:") {

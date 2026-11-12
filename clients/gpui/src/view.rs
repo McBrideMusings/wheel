@@ -5,6 +5,7 @@
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod commands;
 mod composer;
+mod conversations;
 mod debug;
 mod little;
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
@@ -74,6 +75,9 @@ pub struct Client {
     sending_now: HashSet<(String, u64)>,
     /// Requests about agents' messages waiting for wheeld's answer, by request id.
     agent_reqs: HashMap<u64, composer::AgentReq>,
+    /// The Conversations popover, the switches waiting and their requests.
+    pub conversations: crate::conversations::Conversations,
+    conversations_scroll: ScrollHandle,
     /// wheeld's last refusal of a request about an agent's messages, shown under its composer.
     composer_errors: HashMap<String, String>,
     /// GPUI delivers keys only to a focused element: the root holds this for good, while the
@@ -351,7 +355,7 @@ impl Client {
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_control, server_busy: None, server_ops: std::sync::Arc::default(), server_problem: None, service_status: "not registered yet".into(),
             server_watch: crate::server::Watch::default(), server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         };
         client.register_server();
@@ -386,7 +390,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
+                    if self.on_conversations_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -548,6 +552,7 @@ impl Client {
                     self.posted.clear();
                     self.perms.clear();
                     self.layout_reqs.clear();
+                    self.conversations.link_lost();
                     // Answers to the last connection's listings never come: a palette open across
                     // a reconnect lists again, against the layout the new daemon sends.
                     for palette in self.palettes.values_mut() {
@@ -1117,6 +1122,21 @@ impl Client {
             self.procs_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control);
             return true;
         }
+        // The Conversations popover takes typed keys while it is open: its search, ⌘V pasting into
+        // it, and Esc to close. Other chords (⌘W, ⌘K, ⌘Q) go on to their actions.
+        if self.conversations.open.is_some() && self.confirmation.is_none() {
+            let chord = k.modifiers.platform || k.modifiers.control;
+            if k.modifiers.platform && k.key == "v" {
+                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                    self.conversations_key("", Some(&text.replace(['\n', '\r'], " ")), false);
+                }
+                return true;
+            }
+            if !chord {
+                self.conversations_key(&k.key, k.key_char.as_deref(), false);
+                return true;
+            }
+        }
         if self.overlay_key(&k.key) {
             return true;
         }
@@ -1587,6 +1607,13 @@ impl Render for Client {
         }
         if self.procs.open.is_some() {
             root = root.child(self.processes_overlay(w, h, cx));
+        }
+        // The popover closes when its pane is gone or holds another agent.
+        if let Some(p) = &self.conversations.open && self.agent_in(&p.pane).as_ref() != Some(&p.agent) {
+            self.close_conversations();
+        }
+        if self.conversations.open.is_some() {
+            root = root.child(self.conversations_overlay(w, h, cx));
         }
         if let Some(palette) = &self.command_palette {
             root = root.child(commands::command_palette_overlay(palette, w, h, cx));

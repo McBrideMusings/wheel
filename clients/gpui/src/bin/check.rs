@@ -964,6 +964,131 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let kept = draft_now(cx)?;
     ensure!(esc_stopped && kept == "abc", "Esc with `abc` typed during a slow turn: stopped {esc_stopped}, state {:?}, draft {kept:?}", rows(cx)?.0);
     erase(&native, 3, cx).await;
+    // The Conversations popover (wheel-ynjo.10.5.1): the pane menu's Conversations… lists the
+    // fake agent's conversations for its directory, New conversation empties the transcript and
+    // wheeld names a new id, and the earlier conversation's row brings its rows back.
+    let convs_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.conversations_json());
+    let log_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.toast_log.clone());
+    let rows_before_new = rows(cx)?.1.len();
+    ensure!(rows_before_new > 0, "the agent has no rows before the conversations check");
+    ensure!(window.update(cx, |c, _, _| c.choose_header_menu("conversations", &agent_pane))?, "the agent pane's menu offers no Conversations…: {}", pane_now(cx)?["menu"]);
+    let mut listing = Value::Null;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        listing = convs_now(cx)?;
+        if listing["listing"] != "loading" {
+            break;
+        }
+    }
+    ensure!(listing["listing"] == "loaded", "the conversations popover never listed: {listing}");
+    let listed = listing["rows"].as_array().map(Vec::len).unwrap_or(0);
+    let old_id = listing["rows"].as_array().and_then(|r| r.iter().find(|r| r["current"] == true)).and_then(|r| r["id"].as_str()).map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("no conversation listed as current: {listing}"))?;
+    draw(window, Some(output.join("client-conversations.png")), cx)?;
+    // A search for words no conversation holds lists none; Backspace brings them back.
+    type_text(&native, "zq", cx).await;
+    let searched = convs_now(cx)?;
+    ensure!(searched["query"] == "zq" && searched["rows"].as_array().is_some_and(Vec::is_empty), "searching `zq`: {searched}");
+    erase(&native, 2, cx).await;
+    ensure!(convs_now(cx)?["rows"].as_array().map(Vec::len) == Some(listed), "Backspace did not bring the {listed} rows back: {}", convs_now(cx)?);
+    draw(window, None, cx)?;
+    let new_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "conversation:new"))?.ok_or_else(|| anyhow::anyhow!("no New conversation row drawn"))?;
+    press(&native, new_at);
+    let mut emptied = false;
+    for _ in 0..150 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if convs_now(cx)?.is_null() && rows(cx)?.1.is_empty() {
+            emptied = true;
+            break;
+        }
+    }
+    let new_id = log_now(cx)?.iter().rev().find_map(|l| l.strip_prefix(&format!("agent {agent_name} is in conversation ")).map(str::to_owned));
+    ensure!(emptied && new_id.is_some(), "New conversation: popover {}, {} rows, log {:?}", convs_now(cx)?, rows(cx)?.1.len(), log_now(cx)?.iter().rev().take(6).collect::<Vec<_>>());
+    let new_id = new_id.unwrap_or_default();
+    let new_id_differs = new_id != old_id;
+    ensure!(new_id_differs, "New conversation kept id {old_id}");
+    type_line(&native, "in the new one", cx).await;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if rows(cx)?.0 == "ready" && rows(cx)?.1.len() >= 2 {
+            break;
+        }
+    }
+    ensure!(window.update(cx, |c, _, _| c.choose_header_menu("conversations", &agent_pane))?, "Conversations… is gone after the switch");
+    let mut old_row = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        old_row = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("conversation:{old_id}")))?;
+        if old_row.is_some() {
+            break;
+        }
+    }
+    let old_row = old_row.ok_or_else(|| anyhow::anyhow!("the second listing has no row for {old_id}: {}", convs_now(cx).unwrap_or_default()))?;
+    let relisted = convs_now(cx)?;
+    ensure!(relisted["rows"].as_array().is_some_and(|r| r.iter().any(|r| r["id"] == new_id.as_str() && r["current"] == true)), "the new conversation {new_id} is not the current row: {relisted}");
+    press(&native, old_row);
+    let mut resumed_rows = 0;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (_, held) = rows(cx)?;
+        if convs_now(cx)?.is_null() && held.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")) {
+            resumed_rows = held.len();
+            break;
+        }
+    }
+    ensure!(resumed_rows > 0, "resuming {old_id}: popover {}, rows {:?}", convs_now(cx)?, rows(cx)?.1.iter().take(4).map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>());
+    // A Codex pane (wheel-fake-agent app-server) streams a reply to a message typed into it.
+    let wheel = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?;
+        ensure!(out.status.success(), "wheel {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let codex_pane = wheel(&["pane", "split", &agent_pane, "right"])?.lines().last().unwrap_or_default().to_owned();
+    let codex_started: Value = serde_json::from_str(&wheel(&["pane", "start", &codex_pane, "agent", "--agent", "codex"])?)?;
+    let codex_agent = codex_started["agent"].as_str().unwrap_or_default().to_owned();
+    let codex_rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&codex_agent).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
+    for _ in 0..150 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if codex_rows(cx)?.0 == "ready" {
+            break;
+        }
+    }
+    ensure!(codex_rows(cx)?.0 == "ready", "the Codex pane {codex_pane} ({codex_agent}) never came up ready: {:?}", codex_rows(cx)?.0);
+    // A click on a pane's body gives it the keyboard, as it does the agent pane above.
+    let click_pane = |native: &Native, pane: &str, cx: &mut AsyncApp| -> Result<()> {
+        draw(window, None, cx)?;
+        let f = window.update(cx, |c, _, _| c.state_json()["panes"][pane]["frame"].clone())?;
+        let f: Vec<f64> = serde_json::from_value(f.clone()).map_err(|_| anyhow::anyhow!("pane {pane} has no frame: {f}"))?;
+        let at = [f[0] + f[2] / 2., f[1] + f[3] / 2.];
+        native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+        Ok(())
+    };
+    click_pane(&native, &codex_pane, cx)?;
+    tick(cx, 300).await;
+    ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(codex_pane.as_str()), "clicking the Codex pane did not focus it");
+    type_line(&native, "hello codex", cx).await;
+    let mut codex_pane_streams = false;
+    for _ in 0..150 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if codex_rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::Reply(t) if !t.is_empty())) {
+            codex_pane_streams = true;
+            break;
+        }
+    }
+    draw(window, Some(output.join("client-codex-pane.png")), cx)?;
+    ensure!(codex_pane_streams, "the Codex pane streamed no reply: state {:?}, rows {:?}", codex_rows(cx)?.0, codex_rows(cx)?.1.iter().map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>());
+    wheel(&["pane", "close", &codex_pane])?;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.state_json()["panes"][codex_pane.as_str()].is_null())? {
+            break;
+        }
+    }
+    click_pane(&native, &agent_pane, cx)?;
+    tick(cx, 300).await;
+    let conversations_report = json!({"listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     for (split, _, ratio) in &splits_above {
@@ -2890,6 +3015,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["terminal"] = terminal_report;
     report["perms"] = perms_report;
     report["composer"] = composer_report;
+    report["conversations"] = conversations_report;
     Ok(report)
 }
 
