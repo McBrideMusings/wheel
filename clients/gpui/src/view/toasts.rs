@@ -99,6 +99,7 @@ impl Client {
             }
             ServerMsg::Error { req: Some(req), message, .. } if self.layout_reqs.remove(req) => {
                 self.toast_sources.layout_error = Some(message.clone());
+                super::sidebar::pane_layout_refused(*req);
             }
             ServerMsg::Ok { req } if self.layout_reqs.remove(req) => {}
             _ => return false,
@@ -265,18 +266,16 @@ impl Client {
         }
         self.sync_overlay();
     }
-    /// The menu bar's pairing row (PairingRow): ask wheeld how phones reach it, and copy the code or
-    /// show the pairing window on its answer, so a window that never opened Settings acts too.
-    pub fn pairing_from_menu(&mut self, ask: pairing::Ask) {
-        self.pairing.asked = Some(ask);
+    /// The menu bar's Show QR code (PairingRow): ask wheeld how phones reach it, and show the
+    /// pairing window on its answer, so a window that never opened Settings acts too.
+    pub fn show_pairing_from_menu(&mut self) {
+        self.pairing.show_asked = true;
         self.settings_reqs.pairing_remote = self.ask_remote();
     }
     /// wheeld said how phones reach it: the menu bar's ask runs now.
     pub(super) fn pairing_asked(&mut self) {
-        match self.pairing.asked.take() {
-            Some(pairing::Ask::Copy) => self.copy_pairing_code(),
-            Some(pairing::Ask::Show) => self.show_pairing_window(),
-            None => {}
+        if std::mem::take(&mut self.pairing.show_asked) {
+            self.show_pairing_window();
         }
     }
     /// Copy a fresh pairing code as a concealed clipboard item, cleared after a minute if unchanged.
@@ -293,13 +292,10 @@ impl Client {
             && let Some(json) = self.settings.devices.pairing_json(now_ms())
         {
             // A new copy replaces the old one, whose minute no longer runs.
-            if let Some((old, _)) = self.pairing.copied.take()
-                && old != token
-            {
+            let (old, answer) = super::pairing_copy::copy(&self.native, token, &json);
+            if let Some(old) = old {
                 self.send(&ClientMsg::PairingCancel { req: None, token: old });
             }
-            self.pairing.copied = Some((token.to_owned(), now_ms() + pairing::CLIPBOARD_LIFE_MS));
-            let answer = self.native.call(serde_json::json!({"op": "clipboard_concealed", "text": json, "clear_after_ms": pairing::CLIPBOARD_LIFE_MS}));
             self.log(format!("pairing code copied to the clipboard as a concealed item: {answer}"));
         }
     }
@@ -310,7 +306,7 @@ impl Client {
         }
     }
     /// What the pairing window and the copied code do on a timer: a new code every four minutes,
-    /// the window closing after a device connected, the copied code's minute running out.
+    /// the window closing after a device connected.
     pub fn tick_pairing(&mut self, cx: &mut Context<Self>) {
         let now = now_ms();
         if self.pairing.open && self.pairing.refresh_at.is_some_and(|at| now >= at) {
@@ -319,9 +315,6 @@ impl Client {
         }
         if self.pairing.open && self.pairing.close_at.is_some_and(|at| now >= at) {
             self.close_pairing_window();
-        }
-        if let Some(token) = self.pairing.copy_expired(now) {
-            self.send(&ClientMsg::PairingCancel { req: None, token });
         }
         if let Some(next) = self.pairing.next_tick() {
             self.redraw_in(next.saturating_sub(now).max(50), cx);

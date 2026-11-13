@@ -15,8 +15,11 @@ pub use menubar::{MenuBar, Popover, focused_client, menu_bar, reopen, start as s
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
 mod pane_image;
 mod pane_info;
+mod pairing_copy;
 mod panes;
 pub use panes::focus_target;
+pub use pairing_copy::{copied as copied_pairing_code, ensure as ensure_pairing_copy};
+pub use sidebar::pane_window_closed;
 mod perms;
 mod procs;
 mod settings;

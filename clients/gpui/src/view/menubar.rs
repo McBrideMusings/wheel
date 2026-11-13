@@ -84,6 +84,8 @@ pub struct MenuBar {
     next_req: u64,
     /// The `session_close` the popover's alert sent and wheeld has not answered: its id and session.
     closing: Option<(u64, String)>,
+    /// The `pairing_issue` the popover's Copy pairing code sent and wheeld has not answered.
+    copying: Option<u64>,
 }
 
 /// Make the menu bar item: its own connection over `endpoint`, the status item, and the tasks
@@ -92,13 +94,14 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     let (frames, mut clicks) = futures::channel::mpsc::unbounded::<String>();
     let native = Native::app(bridge, hidden, frames);
     server::ensure(cx, endpoint.service.clone(), hidden);
+    super::pairing_copy::ensure(cx);
     let crate::daemon::Connection { send, mut incoming } = crate::daemon::Connection::open(endpoint.clone());
     let mut changes = crate::windows::with(|r| r.watch());
     let menu = cx.new(|_| MenuBar {
         native, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
         running_source: None, protocol: None, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
         sessions: vec![], spaces: vec![], perms: vec![], told: None, item: Value::Null, popover: None, symbols: RefCell::default(), log: vec![],
-        status_dots: crate::status::all_ranks(), space_menu: None, context_menu: Value::Null, next_req: 100, closing: None,
+        status_dots: crate::status::all_ranks(), space_menu: None, context_menu: Value::Null, next_req: 100, closing: None, copying: None,
     });
     MENU_BAR.with(|m| *m.borrow_mut() = Some(menu.clone()));
     menu.update(cx, |m, cx| m.refresh(cx));
@@ -177,6 +180,7 @@ impl MenuBar {
         let changed = match event {
             Event::Message(message) => {
                 let server_line = self.on_server_message(&message);
+                self.on_pairing_code(&message, cx);
                 let layout = crate::layout::parse_layout(&message).map(|layout| {
                     self.sessions = layout.sessions;
                     self.spaces = layout.spaces;
@@ -251,6 +255,48 @@ impl MenuBar {
             }
             _ => false,
         }
+    }
+
+    /// The pairing code Copy pairing code asked for arrived, or wheeld refused one: copy it as the
+    /// concealed item through the app's one copier, with the address the focused window picked
+    /// (AppModel.copyPairingCode).
+    fn on_pairing_code(&mut self, message: &ServerMsg, cx: &mut Context<Self>) {
+        match message {
+            ServerMsg::Pairing { req, token, expires_ms } if self.copying == Some(*req) => {
+                self.copying = None;
+                let mut devices = self.pairing_devices(cx);
+                devices.code = Some((token.clone(), *expires_ms));
+                let Some(json) = devices.pairing_json(super::settings::now_ms()) else {
+                    return self.log(format!("popover: pairing code not copied: {}", devices.unavailable()));
+                };
+                let (old, answer) = super::pairing_copy::copy(&self.native, token, &json);
+                if let Some(old) = old {
+                    self.cancel_pairing(old);
+                }
+                self.log(format!("pairing code copied to the clipboard as a concealed item: {answer}"));
+            }
+            ServerMsg::Error { req: Some(req), message, .. } if self.copying == Some(*req) => {
+                self.copying = None;
+                self.log(format!("popover: pairing code not copied: {message}"));
+            }
+            _ => {}
+        }
+    }
+
+    /// Cancel a pairing code on this connection.
+    pub fn cancel_pairing(&self, token: String) {
+        let _ = self.send.send(crate::daemon::frame(&ClientMsg::PairingCancel { req: None, token }));
+    }
+
+    /// Copy a fresh pairing code with no window (AppModel.copyPairingCode): the row is enabled only
+    /// when wheeld's listener is known and on, so this asks for the code on this connection.
+    fn copy_pairing_code(&mut self, cx: &mut Context<Self>) {
+        if !self.up || crate::pairing::Pairing::disabled_reason(self.pairing_link(), &self.pairing_devices(cx)).is_some() {
+            return;
+        }
+        self.next_req += 1;
+        self.copying = Some(self.next_req);
+        let _ = self.send.send(crate::daemon::frame(&ClientMsg::PairingIssue { req: Some(self.next_req) }));
     }
 
     /// Ask wheeld for its remote listener and paired devices: on each connection and each popover open.
@@ -390,7 +436,10 @@ impl MenuBar {
     /// The pairing row's buttons (AppModel.copyPairingCode, showPairingWindow).
     fn pair(&mut self, ask: crate::pairing::Ask, cx: &mut Context<Self>) {
         self.log(format!("popover: pairing {} asked", if ask == crate::pairing::Ask::Copy { "copy" } else { "window" }));
-        self.in_window(None, (None, None), ask == crate::pairing::Ask::Show, move |c, _| c.pairing_from_menu(ask), cx);
+        match ask {
+            crate::pairing::Ask::Copy => self.copy_pairing_code(cx),
+            crate::pairing::Ask::Show => self.in_window(None, (None, None), true, |c, _| c.show_pairing_from_menu(), cx),
+        }
     }
 
     /// Settings… (`openSettings`): the focused window's Settings, brought front.
