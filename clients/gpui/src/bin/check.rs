@@ -24,6 +24,14 @@ use std::{path::PathBuf, time::Duration};
 use wheel_proto::{ClientMsg, ServerMsg};
 use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Drawn, Link, TITLE}};
 
+/// The CPU time this thread has used, in milliseconds.
+fn thread_cpu_ms() -> f64 {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime writes only the timespec it is handed.
+    let failed = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
+    assert_eq!(failed, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+    t.tv_sec as f64 * 1000. + t.tv_nsec as f64 / 1e6
+}
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
@@ -1514,18 +1522,66 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         let copied = cx.update(|app| app.read_from_clipboard().and_then(|i| i.text())).unwrap_or_default();
         ensure!(copied == fork_text, "the copy button put {copied:?} on the clipboard, not {fork_text:?}");
         let playing_now = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["read_aloud"].clone())?) };
-        press(&native, at("play", cx)?.unwrap());
-        tick(cx, 150).await;
-        draw(window, Some(output.join("client-reply-buttons.png")), cx)?;
-        let playing = playing_now(cx)?;
-        ensure!(playing == json!(key), "after the play button the app reads {playing}, not {key}");
-        let heard = log_now(cx)?.iter().rev().find(|l| l.contains("read aloud row")).cloned().unwrap_or_default();
-        press(&native, at("play", cx)?.unwrap());
-        tick(cx, 150).await;
+        // Each press logs the bridge's answer, what the synthesizer reads after it.
+        let answers = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(log_now(cx)?.into_iter().filter(|l| l.contains(&format!("read aloud row {fork_row}: "))).collect()) };
+        // The press logs its answer as it runs, so the log changing (it is capped, so never its
+        // length) means the newest answer line is this press's.
+        macro_rules! play_answer {
+            () => {{
+                let before = log_now(cx)?;
+                press(&native, at("play", cx)?.unwrap());
+                let mut answer = None;
+                for _ in 0..100 {
+                    if log_now(cx)? != before {
+                        answer = answers(cx)?.last().cloned();
+                        break;
+                    }
+                    tick(cx, 20).await;
+                }
+                answer.ok_or_else(|| anyhow::anyhow!("the play button got no answer from the bridge"))?
+            }};
+        }
+        let want = json!(key).to_string();
+        let heard = play_answer!();
+        ensure!(heard.ends_with(&format!(": {want}")), "the play button's press answered {heard:?}, not {want}");
+        // The window hears what the synthesizer reads by an event and draws the stop button; a
+        // press then stops it. A reply that finished first (the event of a short one can come
+        // after its end) is spoken again, and the press that restarts it is the next try.
+        let (mut playing, mut stopped, mut restarts) = (Value::Null, false, 0);
+        while !stopped && restarts < 8 {
+            playing = Value::Null;
+            let mut shown = false;
+            for _ in 0..100 {
+                tick(cx, 20).await;
+                if playing_now(cx)? == json!(key) {
+                    shown = true;
+                    break;
+                }
+            }
+            if shown {
+                draw(window, Some(output.join("client-reply-buttons.png")), cx)?;
+                playing = json!(key);
+            }
+            let answer = play_answer!();
+            if answer.ends_with(": null") {
+                stopped = true;
+            } else {
+                ensure!(answer.ends_with(&format!(": {want}")), "a press on play answered {answer:?}");
+                restarts += 1;
+            }
+        }
+        ensure!(stopped && playing == json!(key), "the play button never showed and stopped the reply: shown {playing}, {restarts} restart(s)");
+        let mut cleared = Value::Null;
+        for _ in 0..100 {
+            cleared = playing_now(cx)?;
+            if cleared.is_null() {
+                break;
+            }
+            tick(cx, 20).await;
+        }
         draw(window, None, cx)?;
-        let stopped = playing_now(cx)?;
-        ensure!(stopped.is_null(), "a second press on play left the app reading {stopped}");
-        json!({"row": fork_row, "buttons": buttons, "x": lefts, "copied": copied == fork_text, "playing": playing, "log": heard, "stopped": stopped.is_null()})
+        ensure!(cleared.is_null(), "a second press on play left the window reading {cleared}");
+        json!({"row": fork_row, "buttons": buttons, "x": lefts, "copied": copied == fork_text, "playing": playing, "log": heard, "stopped": stopped, "restarts": restarts})
     };
     press(&native, fork_at);
     let mut forked = None;
@@ -1729,24 +1785,27 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let pane_frame: Vec<f64> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["frame"].clone())?)?;
     let wheel_at = gpui::point(gpui::px((pane_frame[0] + pane_frame[2] / 2.) as f32), gpui::px((pane_frame[1] + pane_frame[3] * 0.3) as f32));
     let column_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.column_scroll(&agent_name));
-    // One wheel step and the frame it causes, timed together, in milliseconds.
-    let step = |dy: f32, cx: &mut AsyncApp| -> Result<f64> {
+    // One wheel step and the frame it causes, timed together in milliseconds: the main thread's
+    // CPU time, which a busy machine's preemption leaves alone, and the wall time beside it.
+    let step = |dy: f32, cx: &mut AsyncApp| -> Result<(f64, f64)> {
         let any: gpui::AnyWindowHandle = window.into();
-        let started = std::time::Instant::now();
+        let (started, cpu_started) = (std::time::Instant::now(), thread_cpu_ms());
         any.update(cx, |_, w, cx| {
             w.dispatch_event(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: wheel_at, delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(dy))), modifiers: Default::default(), touch_phase: gpui::TouchPhase::Moved }), cx);
             w.draw(cx).clear();
         })?;
-        Ok(started.elapsed().as_secs_f64() * 1000.)
+        Ok((thread_cpu_ms() - cpu_started, started.elapsed().as_secs_f64() * 1000.))
     };
     let at_end = column_now(cx)?;
     ensure!(at_end.is_some_and(|(top, _, following)| top == seeded && following), "the resumed column is not at its end and following: {at_end:?} of {seeded} rows");
     let frames_before = window.update(cx, |c, _, _| c.frames)?;
-    let mut times = vec![];
+    let (mut times, mut walls) = (vec![], vec![]);
     let mut tops = std::collections::HashSet::new();
     let mut reached_top = false;
     for _ in 0..4000 {
-        times.push(step(120., cx)?);
+        let (cpu, wall) = step(120., cx)?;
+        times.push(cpu);
+        walls.push(wall);
         let now = column_now(cx)?.unwrap_or_default();
         tops.insert(now.0);
         if now.0 == 0 && now.1 == 0. {
@@ -1780,7 +1839,9 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let total = rows(cx)?.1.len();
     let mut reached_end = false;
     for _ in 0..4000 {
-        times.push(step(-120., cx)?);
+        let (cpu, wall) = step(-120., cx)?;
+        times.push(cpu);
+        walls.push(wall);
         if column_now(cx)?.is_some_and(|(top, _, following)| top == total && following) {
             reached_end = true;
             break;
@@ -1808,8 +1869,15 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     sorted.sort_by(f64::total_cmp);
     let median = sorted[sorted.len() / 2];
     let dropped = times.iter().filter(|t| **t > 1000. / 60.).count();
-    let scroll_report = json!({"rows": seeded, "steps": times.len(), "frames": frames, "worst_frame_ms": (worst * 100.).round() / 100., "median_frame_ms": (median * 100.).round() / 100., "dropped": dropped, "rows_passed": tops.len(), "rows_drawn_at_top": drawn_at_top, "stayed_while_scrolled_up": true, "followed_at_end": followed});
-    ensure!(dropped == 0 && worst <= 1000. / 60., "scrolling 1000 rows dropped frames: {scroll_report}");
+    let worst_wall = walls.iter().copied().fold(0., f64::max);
+    let mut walls_sorted = walls.clone();
+    walls_sorted.sort_by(f64::total_cmp);
+    let median_wall = walls_sorted[walls_sorted.len() / 2];
+    let scroll_report = json!({"rows": seeded, "steps": times.len(), "frames": frames, "worst_frame_ms": (worst * 100.).round() / 100., "median_frame_ms": (median * 100.).round() / 100., "worst_wall_ms": (worst_wall * 100.).round() / 100., "median_wall_ms": (median_wall * 100.).round() / 100., "dropped": dropped, "rows_passed": tops.len(), "rows_drawn_at_top": drawn_at_top, "stayed_while_scrolled_up": true, "followed_at_end": followed});
+    ensure!(dropped == 0 && worst <= 1000. / 60., "scrolling 1000 rows took over a frame's CPU time: {scroll_report}");
+    // A step that waits without working (a blocking read, a lock) costs no CPU time; the median
+    // wall time catches one that every step pays, while a busy machine's stray preemptions do not.
+    ensure!(median_wall <= 1000. / 60., "scrolling 1000 rows took over a frame of wall time at the median: {scroll_report}");
     drop(seed_file);
     // Back to the conversation the later sections know.
     window.update(cx, |c, _, _| c.switch_conversation(&agent_name, Some(&old_id)))?;
@@ -1994,8 +2062,16 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     };
     native.call(json!({"op":"post_mouse","kind":"down","point":close_at}));
     native.call(json!({"op":"post_mouse","kind":"up","point":close_at}));
-    pump(&mut connection, 800, &mut layouts, window, cx).await?;
-    ensure!(window.update(cx, |c, _, _| c.confirmation.is_none())? && !session_order(cx)?.iter().any(|(id, _)| id == &sb5), "sb5 is still listed after its close button");
+    // The row goes when wheeld's layout without sb5 arrives.
+    let mut sb5_gone = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if !session_order(cx)?.iter().any(|(id, _)| id == &sb5) {
+            sb5_gone = true;
+            break;
+        }
+    }
+    ensure!(window.update(cx, |c, _, _| c.confirmation.is_none())? && sb5_gone, "sb5 is still listed 10 s after its close button");
     // Move to <the other session> takes a row out of this window's list.
     let second_session_id = std::env::var("WHEEL_CLIENT_SECOND_SESSION")?;
     window.update(cx, |c, _, cx| c.run_space_menu(&format!("session:{second_session_id}"), &sb4, cx))?;
@@ -4094,6 +4170,24 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             got
         }};
     }
+    // A motion's frame mid-way: the check holds the grid's motion clock at a fraction of its
+    // length (`Client::motion_hold`) before the step that starts it, and this waits for the motion.
+    macro_rules! held_motion {
+        ($what:expr) => {{
+            let mut got = Value::Null;
+            for _ in 0..60 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                if got["grid_motion"]["moving"] == true {
+                    break;
+                }
+            }
+            ensure!(got["grid_motion"]["moving"] == true, "{} never started a motion: {}", $what, got["grid_motion"]);
+            got
+        }};
+    }
+    let hold_motion = |at: Option<f32>, cx: &mut AsyncApp| window.update(cx, |c, _, _| c.motion_hold = at);
     let grid_dir = std::env::temp_dir().join(format!("wheel-gpui-grid-{}", std::process::id()));
     std::fs::create_dir_all(&grid_dir)?;
     let (ok, out, err) = run_pumped(&["space", "new", &grid_dir.to_string_lossy(), "--name", "grid", "--session", &first_session_id], &mut connection, &mut layouts, window, cx).await?;
@@ -4398,20 +4492,23 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(zoom_button["enabled"] == true && zoom_button["on"] == false && before_zoom["grid_motion"]["zoomed"].is_null(), "the zoom button reads {zoom_button} before a zoom");
     // SAFETY: only the main thread reads the variable (`motion::duration`), and this runs on it.
     unsafe { std::env::set_var("WHEEL_SLOW_ANIMATIONS", "10") };
+    hold_motion(Some(0.3), cx)?;
     let zoom_at = centre(four(&zoom_button["frame"]));
     native.call(json!({"op":"post_mouse","kind":"down","point":zoom_at}));
     native.call(json!({"op":"post_mouse","kind":"up","point":zoom_at}));
-    pump(&mut connection, 400, &mut layouts, window, cx).await?;
+    let mid = held_motion!("the zoom button");
     draw(window, Some(output.join("client-grid-zoom-mid.png")), cx)?;
-    let mid = state!();
     let a_mid = frame(&mid, &grid_a);
-    ensure!(mid["grid_motion"]["moving"] == true && mid["grid_motion"]["zoomed"] == grid_a.as_str() && mid["grid_motion"]["resizes_held"] == true && mid["grid_motion"]["length_ms"] == 2200,
-        "400 ms after the zoom button the motion reads {}", mid["grid_motion"]);
+    ensure!(mid["grid_motion"]["zoomed"] == grid_a.as_str() && mid["grid_motion"]["resizes_held"] == true && mid["grid_motion"]["length_ms"] == 2200,
+        "held at 0.3 of its length the zoom's motion reads {}", mid["grid_motion"]);
+    let held_progress = mid["grid_motion"]["progress"].as_f64().unwrap_or(-1.);
+    ensure!((held_progress - 0.561).abs() < 0.01, "held at 0.3 of its length the zoom reads progress {held_progress}, not 0.561");
     // Each side the pane does not already fill grows part of the way; at least one does.
     let between = |i: usize| a_from[i] >= zoom_area[i] - 1. || (a_mid[i] > a_from[i] + 1. && a_mid[i] < zoom_area[i] - 1.);
     let grows = a_from[2] < zoom_area[2] - 1. || a_from[3] < zoom_area[3] - 1.;
     ensure!(grows && between(2) && between(3), "mid-zoom the first pane is {a_mid:?}, not between {a_from:?} and the grid {zoom_area:?}");
     ensure!(sent(&mid).len() == sent_before, "the terminal sent a resize mid-zoom: {:?}", sent(&mid));
+    hold_motion(None, cx)?;
     let zoomed = until!("the zoom finished and the terminal's size sent", |s: &Value| s["grid_motion"]["resizes_held"] == false && sent(s).len() > sent_before);
     let apart = |f: [f64; 4], a: [f64; 4]| f[0] >= a[0] + a[2] || a[0] >= f[0] + f[2] || f[1] >= a[1] + a[3] || a[1] >= f[1] + f[3];
     ensure!(near(frame(&zoomed, &grid_a), zoom_area), "the zoomed pane is {:?}, not the grid {zoom_area:?}", frame(&zoomed, &grid_a));
@@ -4467,19 +4564,20 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (b_from, c_from) = (frame(&still, &grid_b), frame(&still, &grid_c));
     let still_button = four(&still["panes"][grid_a.as_str()]["header_buttons"]["zoom"]["frame"]);
     unsafe { std::env::set_var("WHEEL_SLOW_ANIMATIONS", "10") };
+    hold_motion(Some(0.3), cx)?;
     for kind in ["down", "up"] {
         native.call(json!({"op":"post_mouse","kind":kind,"point":centre(still_button)}));
     }
-    pump(&mut connection, 600, &mut layouts, window, cx).await?;
+    let rmid = held_motion!("the zoom button under Reduce Motion");
     draw(window, Some(output.join("client-grid-zoom-reduced-mid.png")), cx)?;
-    let rmid = state!();
     let opacity = |s: &Value, p: &str| s["panes"][p]["opacity"].as_f64().unwrap_or(-1.);
     let alpha = |s: &Value, p: &str| s["panes"][p]["bridge"]["alpha"].as_f64().unwrap_or(-1.);
-    ensure!(rmid["grid_motion"]["moving"] == true && rmid["grid_motion"]["zoomed"] == grid_a.as_str(), "600 ms into the reduced zoom the motion reads {}", rmid["grid_motion"]);
+    ensure!(rmid["grid_motion"]["zoomed"] == grid_a.as_str(), "held at 0.3 of its length the reduced zoom's motion reads {}", rmid["grid_motion"]);
     ensure!(near(frame(&rmid, &grid_b), b_from) && near(frame(&rmid, &grid_c), c_from), "mid reduced zoom the others moved: {:?} {:?} from {b_from:?} {c_from:?}", frame(&rmid, &grid_b), frame(&rmid, &grid_c));
     let (o_mid, a_mid_alpha) = (opacity(&rmid, &grid_c), alpha(&rmid, &grid_c));
     ensure!(o_mid > 0.05 && o_mid < 0.95 && (a_mid_alpha - o_mid).abs() < 0.2 && rmid["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
         "mid reduced zoom the third pane draws at {o_mid}, its view at alpha {a_mid_alpha}: {}", rmid["panes"][grid_c.as_str()]["bridge"]);
+    hold_motion(None, cx)?;
     let rzoomed = until!("the reduced zoom finished", |s: &Value| s["grid_motion"]["moving"] == false && s["grid_motion"]["resizes_held"] == false && near(frame(s, &grid_a), zoom_area));
     for pane in [&grid_b, &grid_c] {
         ensure!(opacity(&rzoomed, pane) == 0., "{pane} draws at {} after the reduced zoom", opacity(&rzoomed, pane));
@@ -4495,20 +4593,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         ensure!(out.status.success(), "pane ratio {} {ratio}: {}", zsplit.id, String::from_utf8_lossy(&out.stderr));
         Ok(())
     };
+    hold_motion(Some(0.3), cx)?;
     set_ratio(if zsplit.ratio > 0.45 { 0.35 } else { 0.55 })?;
-    // until! skips frames read mid-motion, so this one polls for the motion itself.
-    let mut laid = Value::Null;
-    for _ in 0..40 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        draw(window, None, cx)?;
-        laid = state!();
-        if laid["grid_motion"]["moving"] == true {
-            break;
-        }
-    }
-    ensure!(laid["grid_motion"]["moving"] == true, "the zoomed grid never moved for the new ratio: {}", laid["grid_motion"]);
+    let laid = held_motion!("the new ratio of the zoomed grid");
     ensure!(opacity(&laid, &grid_c) == 0. && laid["panes"][grid_c.as_str()]["bridge"]["hidden"] == true,
         "a layout change while zoomed showed the third pane at {}: {} {}", opacity(&laid, &grid_c), laid["grid_motion"], laid["panes"][grid_c.as_str()]["bridge"]);
+    hold_motion(None, cx)?;
     until!("the layout motion ended", |s: &Value| s["grid_motion"]["moving"] == false);
     set_ratio(zsplit.ratio)?;
     until!("the ratio went back", |s: &Value| s["grid_motion"]["moving"] == false && near(frame(s, &grid_c), c_from) && opacity(s, &grid_c) == 0.);
