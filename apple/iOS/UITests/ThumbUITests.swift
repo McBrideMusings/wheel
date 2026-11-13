@@ -89,14 +89,15 @@ final class ThumbUITests: XCTestCase {
         let agentRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'agentrow '"))
         XCTAssertTrue(waitUntil { agentRows.count == 9 }, "All lists the session's nine agents, has \(agentRows.count)")
         XCTAssertTrue(app.buttons["tab agents"].label.contains("3"), "the tab control shows 3 waiting, reads '\(app.buttons["tab agents"].label)'")
-        let needs = app.staticTexts["NEEDS YOU"].frame.minY
-        let working = app.staticTexts["WORKING"].frame.minY
-        let idle = app.staticTexts["IDLE"].frame.minY
-        XCTAssertTrue(needs < working && working < idle, "Needs you first, then Working, then Idle: \(needs) \(working) \(idle)")
+        // One flat column, no rank headings: the three waiting tiles come first, each with Allow inline.
         let list = app.scrollViews["agents list"]
-        let allows = list.buttons.matching(identifier: "Allow")
+        XCTAssertEqual(list.staticTexts.matching(NSPredicate(format: "label IN {'NEEDS YOU', 'WORKING', 'IDLE'}")).count, 0, "no rank headings")
+        let tiles = list.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'agent tile '")).allElementsBoundByIndex
+        XCTAssertEqual(tiles.prefix(3).map { $0.buttons["tile allow"].exists }, [true, true, true], "the waiting tiles come first")
+        XCTAssertFalse(tiles.dropFirst(3).contains { $0.buttons["tile allow"].exists }, "no other tile waits")
+        let allows = list.buttons.matching(identifier: "tile allow")
         XCTAssertEqual(allows.count, 3, "each waiting agent has Allow inline")
-        XCTAssertEqual(list.buttons.matching(identifier: "Deny").count, 3, "each waiting agent has Deny inline")
+        XCTAssertEqual(list.buttons.matching(identifier: "tile deny").count, 3, "each waiting agent has Deny inline")
         shot("agents")
         XCTAssertEqual(["tab spaces", "tab agents", "session Main", "session Mobile", "session Games"].map(rect), Array(mainRects[1...]),
                        "the tab control and the session bar keep their rects in the Agents tab")

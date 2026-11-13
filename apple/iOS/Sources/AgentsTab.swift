@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import WheelKit
 import WheelUI
@@ -17,8 +18,6 @@ struct AgentRow: Identifiable {
     let space: SpaceInfo
     let status: PaneStatus?
     let perm: PermInfo?
-    /// The context window's use for an agent in a terminal, from the daemon; an agent pane's is in its chat.
-    let context: ContextUse?
     var id: String { pane }
 
     /// Where the row sorts: waiting on a permission, then stopped, working, done, idle.
@@ -34,14 +33,14 @@ extension PhoneModel {
         let spaces = scope == .all ? sessionSpaces : sessionSpaces.filter { $0.id == active }
         let rows = spaces.flatMap { space in
             space.allPanes.compactMap { pane -> AgentRow? in
-                let agent: String, harness: String, context: ContextUse?
+                let agent: String, harness: String
                 switch pane.kind {
-                case let .agent(name, program, _): (agent, harness, context) = (name, program, nil)
-                case let .terminal(_, found?): (agent, harness, context) = (found.name, found.name, found.context)
+                case let .agent(name, program, _): (agent, harness) = (name, program)
+                case let .terminal(_, found?): (agent, harness) = (found.name, found.name)
                 default: return nil
                 }
                 return AgentRow(pane: pane.id, agent: agent, harness: harness, space: space,
-                                status: space.paneStatuses[pane.id], perm: perms.first { $0.agent == agent }, context: context)
+                                status: space.paneStatuses[pane.id], perm: perms.first { $0.agent == agent })
             }
         }
         return StatusRank.allCases.flatMap { rank in rows.filter { $0.rank == rank } }
@@ -51,116 +50,178 @@ extension PhoneModel {
     var sessionNeedsYou: Int { Self.needsYou(in: sessionSpaces) }
 }
 
-/// The Agents tab: every agent of the shown session, the ones waiting on a permission first, then
-/// by state. A waiting request carries its answers inline.
+/// Every agent of the shown session as one flat column of full-width tiles, most in need first.
+/// The eye button's sheet shows it for the whole session; the title menu's Agents tab shows it too,
+/// narrowed by its filter. A tile carries no status dot and nothing an agent declares through the
+/// person's own skills: only its pane's status, its conversation's title, its chat and its request.
 struct AgentsList: View {
     let model: PhoneModel
     let scope: AgentScope
-    /// Closes the sheet once a row has taken the phone to its pane.
+    /// Where the list shows, for phone.log: `agents sheet` or `agents tab`.
+    let place: String
+    /// Closes the sheet once a tile has taken the phone to its pane.
     let done: () -> Void
 
     var body: some View {
         let rows = model.agentRows(scope: scope)
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(spacing: 10) {
                 if rows.isEmpty {
                     Text(scope == .all ? "No agents in this session" : "No agents in this space")
-                        .font(.subheadline).foregroundStyle(.secondary).padding(16)
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 24)
+                        .accessibilityIdentifier("no agents")
                 }
-                ForEach(StatusRank.allCases) { rank in
-                    let members = rows.filter { $0.rank == rank }
-                    if !members.isEmpty {
-                        Text(rank.title.uppercased()).font(.caption).foregroundStyle(.secondary)
-                            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
-                        ForEach(members) { row in
-                            AgentRowView(model: model, row: row, chat: model.chats[row.agent], done: done)
-                            Divider().padding(.leading, 16)
-                        }
-                    }
+                ForEach(rows) { row in
+                    AgentTile(model: model, row: row, chat: model.chats[row.agent], place: place, done: done)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.vertical, 12)
         }
         .accessibilityIdentifier("agents list")
-        .onAppear { Log.info("agents tab \(scope == .all ? "all" : "this space"): \(rows.map { "\($0.agent)=\($0.rank.title)" }.joined(separator: ", "))") }
+        .onAppear { Log.info("\(place) \(scope == .all ? "all" : "this space"): \(rows.map { "\($0.agent)=\($0.rank.title)" }.joined(separator: ", "))") }
     }
 }
 
-private struct AgentRowView: View {
+/// One agent: its program's logo (orange when it needs the person), its conversation's title, the
+/// system spinner while it works and its space at the right; then its last message to the person,
+/// two lines, three while it waits. A waiting request adds the command and Deny, Allow and an
+/// open control. A tap anywhere else opens the agent's pane.
+private struct AgentTile: View {
     let model: PhoneModel
     let row: AgentRow
     let chat: AgentChat?
+    let place: String
     let done: () -> Void
 
+    private var needsYou: Bool { row.rank == .needsYou }
+    private var waiting: PermInfo? { needsYou ? row.perm : nil }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                Log.info("agents tab: open \(row.agent) in \(row.space.id)/\(row.pane)")
-                model.focus(space: row.space.id, pane: row.pane)
-                done()
-            } label: {
-                HStack(alignment: .top, spacing: 10) {
-                    AgentLogo(agent: row.harness).frame(width: 20, height: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            StatusDot(status: row.status, shown: Set(StatusRank.allCases))
-                            Text(row.agent).font(.body.weight(.semibold)).foregroundStyle(.primary)
-                            Text(row.space.name).font(.subheadline).foregroundStyle(.secondary)
-                            Spacer(minLength: 8)
-                            if let chat { ContextPercent(chat: chat) } else if let context = row.context { Text("\(context.percent)%").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: open) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        AgentLogo(agent: row.harness, tint: needsYou ? .orange : nil).frame(width: 18, height: 18)
+                        if let chat { ChatTitle(chat: chat, fallback: row.agent) } else { Text(row.agent).font(.body.weight(.semibold)) }
+                        Spacer(minLength: 8)
+                        if row.rank == .working {
+                            ProgressView().controlSize(.small).accessibilityIdentifier("working spinner")
                         }
-                        .lineLimit(1)
-                        if let perm = row.perm, row.rank == .needsYou {
-                            Text(perm.title).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
-                        } else if let chat {
-                            LastLine(chat: chat)
-                        }
+                        Label(row.space.name, systemImage: "folder")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .labelStyle(SpaceLabelStyle())
                     }
+                    .lineLimit(1)
+                    if let chat { LastMessage(chat: chat, lines: needsYou ? 3 : 2) }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("agentrow \(row.agent)")
-            if let perm = row.perm, row.rank == .needsYou {
-                PhonePermissionChoices(perm: perm, answer: model.answer)
+            if let perm = waiting {
+                if perm.isQuestion {
+                    Text(perm.title).font(.subheadline).lineLimit(3)
+                } else {
+                    Text(perm.title).font(.footnote.monospaced()).foregroundStyle(.orange).lineLimit(3)
+                        .accessibilityIdentifier("tile command")
+                }
+                TileChoices(perm: perm, answer: model.answer, open: open)
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
+        .padding(14)
+        .background(needsYou ? AnyShapeStyle(Color.orange.opacity(0.08)) : AnyShapeStyle(.background.secondary),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .strokeBorder(needsYou ? AnyShapeStyle(Color.orange.opacity(0.7)) : AnyShapeStyle(.quaternary)))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("agent tile \(row.agent)")
+    }
+
+    private func open() {
+        Log.info("\(place): open \(row.agent) in \(row.space.id)/\(row.pane)")
+        model.focus(space: row.space.id, pane: row.pane)
+        done()
     }
 }
 
-/// The share of the context window in use, once the agent has reported it.
-private struct ContextPercent: View {
-    @ObservedObject var chat: AgentChat
-
-    var body: some View {
-        if let context = chat.context {
-            Text("\(context.percent)%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-        }
+/// The space at a tile's right: the folder icon before the name, both muted.
+private struct SpaceLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) { configuration.icon; configuration.title }
     }
 }
 
-/// The last line of the conversation: the agent's last words, its last tool call or what the
-/// person last sent.
-private struct LastLine: View {
+/// The conversation's title, held by wheeld; the agent's name until it has a first message.
+private struct ChatTitle: View {
     @ObservedObject var chat: AgentChat
+    let fallback: String
 
     var body: some View {
-        if let line = Self.line(of: chat.transcript.rows.last?.kind) {
-            Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        Text(chat.title ?? fallback).font(.body.weight(.semibold)).foregroundStyle(.primary)
+    }
+}
+
+/// A waiting request's answers on a tile: Deny, a filled Allow and an open control, equal and 44 pt
+/// tall. A question has no Deny or Allow: the open control takes the person to its choices.
+private struct TileChoices: View {
+    let perm: PermInfo
+    let answer: (PermInfo, String) -> Void
+    let open: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if !perm.isQuestion {
+                if let deny = PermissionKey.deny.option(in: perm) {
+                    Button { answer(perm, deny.id) } label: { Text("Deny").frame(maxWidth: .infinity, minHeight: 44) }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("tile deny")
+                }
+                if let allow = PermissionKey.allow.option(in: perm) {
+                    Button { answer(perm, allow.id) } label: { Text("Allow").frame(maxWidth: .infinity, minHeight: 44) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("tile allow")
+                }
+            }
+            Button(action: open) { Image(systemName: "eye").frame(maxWidth: .infinity, minHeight: 44) }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Open")
+                .accessibilityIdentifier("tile open")
+        }
+        .controlSize(.large)
+    }
+}
+
+/// The agent's last message to the person: its latest reply in the transcript, never a tool call,
+/// a thought or what the person sent. Read again only when a row is added or removed or the agent's
+/// state changes (a turn ends), never per streamed chunk or draft keystroke.
+private struct LastMessage: View {
+    let chat: AgentChat
+    let lines: Int
+    @State private var text: String?
+
+    var body: some View {
+        Group {
+            if let text {
+                Text(text).font(.subheadline).foregroundStyle(.secondary).lineLimit(lines)
+                    .multilineTextAlignment(.leading)
+                    .accessibilityIdentifier("last message")
+            }
+        }
+        .onReceive(chat.$rows.combineLatest(chat.$state)) { _ in
+            let latest = Self.text(in: chat.transcript.rows)
+            if latest != text { text = latest }
         }
     }
 
-    static func line(of kind: TranscriptRow.Kind?) -> String? {
-        let text: String
-        switch kind {
-        case let .user(message, _): text = message
-        case let .agent(message): text = message
-        case let .thought(message): text = message
-        case let .tool(title, _, _, _, _): text = title
-        case let .notice(message), let .error(message): text = message
-        case .plan, .mode, nil: return nil
+    static func text(in rows: [TranscriptRow]) -> String? {
+        for row in rows.reversed() {
+            if case let .agent(message) = row.kind {
+                let flat = message.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+                if !flat.isEmpty { return flat }
+            }
         }
-        return text.split(whereSeparator: \.isNewline).last.map(String.init)
+        return nil
     }
 }

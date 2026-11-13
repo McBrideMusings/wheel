@@ -4,17 +4,20 @@ import SwiftUI
 /// foreground style (grey, never the vendor's colours); an SF Symbol for an agent Wheel has no logo for.
 struct AgentLogo: View {
     let agent: String
+    /// A colour in place of the grey: orange on an agent that needs the person.
+    var tint: Color?
 
     static let logos: Set<String> = ["claude", "codex", "pi"]
 
     var body: some View {
+        let style = tint.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary)
         if Self.logos.contains(agent) {
             Image("AgentLogo-\(agent)").renderingMode(.template).resizable().scaledToFit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(style)
                 .accessibilityLabel(agent)
         } else {
             Image(systemName: "bubble.left.and.text.bubble.right").resizable().scaledToFit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(style)
                 .accessibilityLabel(agent)
         }
     }

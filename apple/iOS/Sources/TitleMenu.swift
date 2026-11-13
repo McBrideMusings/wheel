@@ -59,7 +59,7 @@ struct TitleMenu: View {
             if tab == .spaces {
                 spaceList
             } else {
-                AgentsList(model: model, scope: scope) { done(nil) }
+                AgentsList(model: model, scope: scope, place: "agents tab") { done(nil) }
             }
             Divider()
             VStack(spacing: 10) {

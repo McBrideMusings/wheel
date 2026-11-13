@@ -13,6 +13,8 @@ struct SpaceCarousel: View {
     @State private var sheetTab = ThumbTab.spaces
     @State private var sheetScope = AgentScope.all
     @State private var paletteOpen = false
+    /// The eye button's sheet: every agent of the shown session.
+    @State private var agentsOpen = false
     /// What the title menu asked for, presented once its sheet has closed.
     @State private var queued: TitleMenuRequest?
     @State private var renaming: (space: String, name: String)?
@@ -52,18 +54,8 @@ struct SpaceCarousel: View {
             }
             .onChange(of: trayIDs) { _, ids in trayChanged(ids) }
         }
-        .onChange(of: model.activeSpace?.focus, initial: true) { _, focus in
-            // The daemon moved focus (the Mac, or the CLI): the page follows. A backgrounded pane is
-            // on the last page, open in place.
-            guard let focus, page != focus else { return }
-            if model.activeSpace?.site(of: focus) == .backgrounded {
-                openTray = focus
-                page = Pages.trayID
-            } else {
-                page = focus
-            }
-        }
-        .onChange(of: model.activeSpace?.id) { _, _ in page = model.activeSpace?.focus }
+        .onChange(of: model.activeSpace?.focus, initial: true) { _, focus in follow(focus) }
+        .onChange(of: model.activeSpace?.id) { _, _ in follow(model.activeSpace?.focus) }
         .onChange(of: page, initial: true) { _, new in model.show(pane: new == Pages.trayID ? openTray : new) }
         .onChange(of: openTray) { _, open in
             guard page == Pages.trayID else { return }
@@ -117,6 +109,18 @@ struct SpaceCarousel: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(model.spaceError ?? "")
+        }
+    }
+
+    /// The daemon moved focus (the Mac, the CLI, or a tile in the agent sheet), or the phone changed
+    /// space: the page follows. A backgrounded pane is on the last page, open in place.
+    private func follow(_ focus: String?) {
+        guard let focus else { return }
+        if model.activeSpace?.site(of: focus) == .backgrounded {
+            if openTray != focus { openTray = focus }
+            if page != Pages.trayID { page = Pages.trayID }
+        } else if page != focus {
+            page = focus
         }
     }
 
@@ -196,6 +200,15 @@ struct SpaceCarousel: View {
             Spacer()
             if landscape && dots.kinds.count > 1 {
                 dots
+            }
+            AgentsButton(needsYou: model.sessionNeedsYou > 0) {
+                Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
+                agentsOpen = true
+            }
+            .sheet(isPresented: $agentsOpen) {
+                AgentsList(model: model, scope: .all, place: "agents sheet") { agentsOpen = false }
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
             Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
                 .accessibilityLabel("Search")
@@ -384,6 +397,27 @@ struct SpaceCarousel: View {
             }
         }
         #endif
+    }
+}
+
+/// The eye at the top: no text and no number, and one orange dot above it only while an agent in
+/// the shown session needs the person. A tap opens the agent sheet.
+private struct AgentsButton: View {
+    let needsYou: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "eye")
+                .overlay(alignment: .topTrailing) {
+                    Circle().fill(Color.orange).frame(width: 7, height: 7)
+                        .offset(x: 4, y: -4)
+                        .opacity(needsYou ? 1 : 0)
+                }
+        }
+        .accessibilityLabel("Agents")
+        .accessibilityValue(needsYou ? "needs you" : "")
+        .accessibilityIdentifier("agents")
     }
 }
 
