@@ -70,7 +70,6 @@ launch_app
 check "the app connects" wait_st '.connection == "connected"' 30
 PID="$(app_pid)"
 app_post "/focus?space=$S" >/dev/null
-app_post "/window/front" >/dev/null
 cpu() { ps -o %cpu= -p "$PID" | tr -d ' '; }
 
 t0="$(date +%s)"; settle=""

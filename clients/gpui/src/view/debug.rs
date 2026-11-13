@@ -663,6 +663,7 @@ impl Client {
                 "busy": sv.busy.map(|op| format!("{op:?}")),
                 "problem": sv.problem,
                 "stopped_by_menu": sv.stopped_by_menu,
+                "notice": self.server_stopped_notice().then(|| json!({"title": super::title::SERVER_STOPPED_TITLE, "hint": super::title::SERVER_STOPPED_HINT, "grid_drawn": self.grid_drawn.len()})),
                 "restart_waiting": self.restart_waiting(),
                 "banner": self.toasts().iter().any(|t| t.id == "server-update"),
                 "restart_expected": sv.watch.restart_expected,

@@ -116,6 +116,12 @@ public struct ChatAppearance: Sendable, Equatable {
     /// 1.2 times its size).
     public func lineSpacing(for size: Double) -> Double { Swift.max(0, size * (lineHeight - 1.2)) }
 
+    /// Points between two blocks of body text set `points` apart, as a stylesheet draws them: the
+    /// gap plus the whole line spacing, half from the line box below the upper block's last line and
+    /// half from the box above the lower block's first, since SwiftUI adds line spacing only between
+    /// the lines inside one block.
+    public func blockGap(_ points: Double) -> Double { points + lineSpacing(for: size) }
+
     /// Space above a message that starts a turn.
     public var turnGap: Double { switch density { case .compact: 14; case .comfortable: 24; case .spacious: 36 } }
     /// Space between a message and the reply under it.

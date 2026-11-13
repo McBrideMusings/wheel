@@ -21,6 +21,15 @@ import Testing
         #expect(look.lineHeight == 1.625)
     }
 
+    @Test func aBlockGapAddsTheLineSpacingAStylesheetSplitsAroundEachLineBox() {
+        let look = ChatAppearance.standard
+        // 14 pt at 1.625: 5.95 pt of line spacing, so 14 pt between paragraphs is 19.95 pt between
+        // the last line's text and the next paragraph's, as Codex's stylesheet draws it.
+        #expect(abs(look.lineSpacing(for: look.size) - 5.95) < 0.001)
+        #expect(abs(look.blockGap(look.paragraphSpacing) - 19.95) < 0.001)
+        #expect(abs(look.blockGap(0) - 5.95) < 0.001)
+    }
+
     @Test func noneMeansFullWidthAndAnEmptyListMeansTheDefaults() {
         let none = SettingInfo(key: "chat.max_width", value: "none", origin: .default, default: "none", help: "")
         #expect(ChatAppearance(settings: [none]).maxWidth == nil)

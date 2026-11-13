@@ -188,7 +188,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var mouseNumber = 0
     var heldBeforeKey: String?
     var mouseTarget: NSView?
-    var snapshotsPending = 0
+    /// The panes whose WKWebView snapshot has not answered yet.
+    var snapshotsPending: Set<String> = []
     var termOutputs = 0
     var sends: [String] = []
     var monitor: Any?
@@ -951,14 +952,18 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             return ["pinned": root.window?.level == .floating]
         case "snapshot":
             let directory = value["directory"] as! String
-            snapshotsPending = 0
+            snapshotsPending = []
+            // The page as it is drawn now: waiting for the next screen update (the default) can wait
+            // forever in a window that is never on screen, when the page schedules no update.
+            let configuration = WKSnapshotConfiguration()
+            configuration.afterScreenUpdates = false
             for host in panes.values where !host.slot.isHidden {
                 if let web = host.web {
-                    snapshotsPending += 1
-                    web.takeSnapshot(with: nil) { image, error in
+                    snapshotsPending.insert(host.id)
+                    web.takeSnapshot(with: configuration) { image, error in
                         _ = self.png(image, "\(directory)/\(host.id)-web.png")
                         if let error { self.errors.append(error.localizedDescription) }
-                        self.snapshotsPending -= 1
+                        self.snapshotsPending.remove(host.id)
                     }
                 }
                 if let terminal = host.terminal { _ = png(terminalPixels(terminal), "\(directory)/\(host.id)-terminal.png") }
@@ -974,7 +979,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
 
     func status() -> [String: Any] {
         var out: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "errors": errors,
-            "snapshots_pending": snapshotsPending,
+            "snapshots_pending": snapshotsPending.count,
+            "snapshots_waiting": snapshotsPending.sorted(),
             "resizes_held": resizesHeld, "live_resize": liveResizing,
             "root_focused": root.window?.firstResponder === root, "held_before_key": heldBeforeKey ?? "",
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
