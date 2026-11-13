@@ -620,7 +620,7 @@ impl Client {
         for space in &self.spaces {
             for leaf in space.shown() {
                 let placed = leaves.iter().find(|p| p.leaf.id == leaf.id);
-                let level = placed.map_or(0, |p| self.header_level_for(&leaf.kind, p.rect.w));
+                let level = placed.map_or(0, |p| self.header_level_for(leaf, p.rect.w));
                 let mut entry = json!({
                     "space": space.id, "kind": leaf.kind, "label": leaf.label, "term": leaf.term, "url": leaf.url, "agent": leaf.agent,
                     "harness": leaf.harness, "status": leaf.status, "visible": placed.is_some(), "site": space.site_of(&leaf.id).map(|s| s.name()),

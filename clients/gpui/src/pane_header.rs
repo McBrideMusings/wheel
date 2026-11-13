@@ -10,6 +10,7 @@ use std::rc::Rc;
 /// A control a pane's header can draw as an icon button, in the order Settings lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
+    SwitchView,
     Conversations,
     SplitRight,
     SplitDown,
@@ -20,11 +21,12 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Control; 7] = [Control::Conversations, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Close];
+    pub const ALL: [Control; 8] = [Control::SwitchView, Control::Conversations, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Close];
 
     /// The name the Swift client stores it under.
     pub fn name(self) -> &'static str {
         match self {
+            Control::SwitchView => "switchView",
             Control::Conversations => "conversations",
             Control::SplitRight => "splitRight",
             Control::SplitDown => "splitDown",
@@ -39,6 +41,7 @@ impl Control {
     }
     pub fn title(self) -> &'static str {
         match self {
+            Control::SwitchView => "Chat / terminal switch",
             Control::Conversations => "Conversations",
             Control::SplitRight => "Split right",
             Control::SplitDown => "Split down",
@@ -50,6 +53,7 @@ impl Control {
     }
     pub fn symbol(self) -> &'static str {
         match self {
+            Control::SwitchView => "bubble.left.and.text.bubble.right",
             Control::Conversations => "clock.arrow.circlepath",
             Control::SplitRight => "square.split.2x1",
             Control::SplitDown => "square.split.1x2",
@@ -62,6 +66,7 @@ impl Control {
     /// The id the header's button and its menu item go by (`header_buttons`, `/panemenu`).
     pub fn id(self) -> &'static str {
         match self {
+            Control::SwitchView => "switch-view",
             Control::SplitRight => "split-right",
             Control::SplitDown => "split-down",
             other => other.name(),
@@ -71,6 +76,7 @@ impl Control {
     pub fn drop_level(self) -> u8 {
         match self {
             Control::Conversations | Control::Pop | Control::Background => 1,
+            Control::SwitchView => 2,
             Control::SplitRight | Control::SplitDown => 3,
             Control::Zoom => 4,
             Control::Close => u8::MAX,
@@ -79,6 +85,7 @@ impl Control {
     /// Whether panes of `kind` (a kind name, `unknown` for one this client does not know) have it.
     pub fn applies(self, kind: &str) -> bool {
         match self {
+            Control::SwitchView => kind == "terminal" || kind == "agent",
             Control::Conversations => kind == "agent",
             Control::SplitRight | Control::SplitDown => kind != "unknown",
             Control::Pop | Control::Background | Control::Zoom | Control::Close => true,
@@ -174,9 +181,11 @@ impl Layout {
     }
     /// The first level whose buttons leave the title `title_min` points in a header with
     /// `room` points for the title and the buttons (ViewThatFits picks the first row that
-    /// fits); the last level when none does. `buttons` is the width `n` buttons take.
-    pub fn level(&self, kind: &str, room: f32, title_min: f32, buttons: impl Fn(usize) -> f32) -> u8 {
-        let count = |level: u8| Control::ALL.into_iter().filter(|c| self.in_bar(*c, kind, level)).count();
+    /// fits); the last level when none does. `buttons` is the width `n` buttons take, and
+    /// `drawn` says whether the pane has a button for a control that applies to its kind (the
+    /// switch is drawn only for a pane with another view).
+    pub fn level(&self, kind: &str, room: f32, title_min: f32, buttons: impl Fn(usize) -> f32, drawn: impl Fn(Control) -> bool) -> u8 {
+        let count = |level: u8| Control::ALL.into_iter().filter(|c| drawn(*c) && self.in_bar(*c, kind, level)).count();
         LEVELS.into_iter().find(|level| title_min + buttons(count(*level) + 1) <= room).unwrap_or(*LEVELS.end())
     }
     /// The choices as the Swift client writes them: `{"choices": {kind: {control: placement}}}`.
@@ -253,18 +262,23 @@ mod tests {
     fn a_narrowing_header_drops_each_group_in_turn_and_keeps_close() {
         let layout = Layout::default();
         let names = |level| layout.bar("agent", level).iter().map(|c| c.id()).collect::<Vec<_>>();
-        assert_eq!(names(0), ["conversations", "split-right", "split-down", "pop", "background", "zoom", "close"]);
-        assert_eq!(names(1), ["split-right", "split-down", "zoom", "close"]);
+        assert_eq!(names(0), ["switch-view", "conversations", "split-right", "split-down", "pop", "background", "zoom", "close"]);
+        assert_eq!(names(1), ["switch-view", "split-right", "split-down", "zoom", "close"]);
+        assert_eq!(names(2), ["split-right", "split-down", "zoom", "close"]);
         assert_eq!(names(3), ["zoom", "close"]);
         assert_eq!(names(4), ["close"]);
-        // Room for the title and all eight buttons (seven and the menu) keeps level 0.
-        assert_eq!(layout.level("agent", 64. + width(8), 64., width), 0);
-        assert_eq!(layout.level("agent", 64. + width(8) - 1., 64., width), 1);
-        // Levels 1 and 2 draw the same for an agent pane, so the next step down is 3.
-        assert_eq!(layout.level("agent", 64. + width(5) - 1., 64., width), 3);
-        assert_eq!(layout.level("agent", 10., 64., width), 4);
-        // A terminal pane has no Conversations button: seven buttons fit where an agent's eight do not.
-        assert_eq!(layout.level("terminal", 64. + width(7), 64., width), 0);
+        let all = |_| true;
+        // Room for the title and all nine buttons (eight and the menu) keeps level 0.
+        assert_eq!(layout.level("agent", 64. + width(9), 64., width, all), 0);
+        assert_eq!(layout.level("agent", 64. + width(9) - 1., 64., width, all), 1);
+        assert_eq!(layout.level("agent", 64. + width(6) - 1., 64., width, all), 2);
+        assert_eq!(layout.level("agent", 64. + width(5) - 1., 64., width, all), 3);
+        assert_eq!(layout.level("agent", 10., 64., width, all), 4);
+        // A terminal pane has no Conversations button: seven buttons fit where an agent's nine do
+        // not, and the switch takes room only on a pane that has another view.
+        let no_switch = |c| c != Control::SwitchView;
+        assert_eq!(layout.level("terminal", 64. + width(7), 64., width, no_switch), 0);
+        assert_eq!(layout.level("terminal", 64. + width(7), 64., width, all), 1);
     }
 
     #[test]

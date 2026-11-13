@@ -114,7 +114,7 @@ impl Client {
             "settings" => true,
             "toggle-sidebar" | "usage" | "mode-spaces" | "mode-desk" => true,
             "zoom-pane" => self.zoom_enabled(),
-            "switch-view" => false,
+            "switch-view" => self.focused_leaf().is_some_and(|l| self.other_view(&l).is_some()),
             other => {
                 if let Some(n) = other.strip_prefix("space-").and_then(|n| n.parse::<usize>().ok()) {
                     return spaces() >= n;
@@ -207,6 +207,11 @@ impl Client {
             "zoom-pane" => {
                 if let Some(pane) = focused {
                     self.toggle_zoom(&pane);
+                }
+            }
+            "switch-view" => {
+                if let Some(pane) = focused {
+                    self.switch_view(&pane);
                 }
             }
             "pane-terminal" | "pane-browser" => {

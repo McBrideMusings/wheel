@@ -7,7 +7,7 @@ use super::commands::capitalized;
 use serde_json::Value;
 use crate::grid_drop::{self, GridDrop, Zone};
 use crate::pane_header::{self, Control, Placement};
-use wheel_proto::{MoveTarget, PaneSite};
+use wheel_proto::{MoveTarget, PaneSite, PaneView};
 
 /// One entry of a pane header's menu (AppModel.HeaderMenuItem).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +28,14 @@ const HEADER_PAD: f32 = 8.0;
 const DOT: f32 = 14.0;
 /// The title's ideal width: a header that would squeeze it below this drops controls instead.
 const TITLE_MIN: f32 = 64.0;
+
+/// The agents whose conversation a pane shows either in a terminal or as a chat.
+const SWITCHABLE_AGENTS: [&str; 2] = ["claude", "codex"];
+
+/// The menu item and button title for switching to `view`.
+fn switch_title(view: PaneView) -> &'static str {
+    if view == PaneView::Agent { "Show as Chat" } else { "Show in Terminal" }
+}
 
 /// The width `n` header buttons take.
 fn buttons_width(n: usize) -> f32 {
@@ -139,6 +147,27 @@ impl Client {
         self.send_layout(|req| ClientMsg::PaneSetSite { req: Some(req), pane, site });
     }
 
+    // MARK: The chat / terminal switch
+
+    /// The other way `leaf` can show its conversation (PaneKind.otherView): a chat for a terminal
+    /// running Claude Code or Codex whose program wheeld found, the agent's own terminal for an
+    /// agent pane running one; none otherwise.
+    pub fn other_view(&self, leaf: &Leaf) -> Option<PaneView> {
+        let switchable = |harness: &Option<String>| harness.as_deref().filter(|h| SWITCHABLE_AGENTS.contains(h)).map(str::to_owned);
+        match leaf.kind.as_str() {
+            "terminal" => switchable(&leaf.harness).filter(|h| self.agents.iter().any(|a| a.found && &a.name == h)).map(|_| PaneView::Agent),
+            "agent" => switchable(&leaf.harness).map(|_| PaneView::Terminal),
+            _ => None,
+        }
+    }
+    /// Show `pane`'s conversation the other way (AppModel.switchView); a refusal shows above the grid.
+    pub fn switch_view(&mut self, pane: &str) {
+        let Some(view) = self.space_holding(pane).and_then(|s| s.shown().find(|l| l.id == pane)).and_then(|l| self.other_view(l)) else { return };
+        self.log(format!("pane {pane}: show as {view:?}"));
+        let pane = pane.to_owned();
+        self.send_layout(|req| ClientMsg::PaneView { req: Some(req), pane, to: Some(view) });
+    }
+
     // MARK: The header's menu
 
     /// What the pane menu of a header at `level` offers (PaneMenuItems over AppModel.headerMenu):
@@ -157,7 +186,7 @@ impl Client {
         let store = self.header_layout.borrow();
         let layout = &store.layout;
         let mut items = vec![];
-        for control in [Control::Conversations, Control::Pop, Control::Background, Control::Zoom] {
+        for control in [Control::Conversations, Control::Pop, Control::Background, Control::SwitchView, Control::Zoom] {
             if !layout.in_menu(control, kind, level) {
                 continue;
             }
@@ -165,6 +194,11 @@ impl Client {
                 Control::Conversations if leaf.agent.is_some() => items.push(item("conversations".into(), "Conversations…".into(), true)),
                 Control::Pop => items.push(item("pop".into(), "Pop out".into(), true)),
                 Control::Background => items.push(item("background".into(), "Background".into(), true)),
+                Control::SwitchView => {
+                    if let Some(view) = self.other_view(&leaf) {
+                        items.push(item("switch-view".into(), switch_title(view).into(), true));
+                    }
+                }
                 Control::Zoom => {
                     let (enabled, zoomed) = self.zoom_button(pane);
                     items.push(item("zoom".into(), if zoomed { "Unzoom Pane (⇧⌘↩)" } else { "Zoom Pane (⇧⌘↩)" }.into(), enabled));
@@ -221,6 +255,7 @@ impl Client {
             "pop" => self.toggle_site(&pane, PaneSite::Popped),
             "background" => self.toggle_site(&pane, PaneSite::Backgrounded),
             "zoom" => self.toggle_zoom(&pane),
+            "switch-view" => self.switch_view(&pane),
             "close" => self.ask_close_pane(&pane),
             "kind:shell" => self.ask_set_kind(&pane, NewPaneKind::Terminal),
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
@@ -300,16 +335,18 @@ impl Client {
     /// buttons leave the title its ideal width.
     pub fn header_level(&self, pane: &str) -> u8 {
         let (leaves, _) = self.scene();
-        leaves.iter().find(|p| p.leaf.id == pane).map_or(0, |p| self.header_level_for(&p.leaf.kind, p.rect.w))
+        leaves.iter().find(|p| p.leaf.id == pane).map_or(0, |p| self.header_level_for(&p.leaf, p.rect.w))
     }
-    /// The level of a header `width` points wide over a pane of `kind`.
-    pub(super) fn header_level_for(&self, kind: &str, width: f32) -> u8 {
-        self.header_layout.borrow().layout.level(pane_header::kind_name(kind), width - 2. * HEADER_PAD - DOT, TITLE_MIN, buttons_width)
+    /// The level of a header `width` points wide over `leaf`.
+    pub(super) fn header_level_for(&self, leaf: &Leaf, width: f32) -> u8 {
+        let drawn = |control: Control| control != Control::SwitchView || self.other_view(leaf).is_some();
+        self.header_layout.borrow().layout.level(pane_header::kind_name(&leaf.kind), width - 2. * HEADER_PAD - DOT, TITLE_MIN, buttons_width, drawn)
     }
     /// The buttons `pane`'s header draws at `level`, left to right: the controls its kind's layout
     /// puts in the bar, the pane menu, then Close.
     pub fn header_buttons_at(&self, pane: &str, level: u8) -> Vec<HeaderButton> {
-        let Some((kind, has_agent)) = self.space_holding(pane).and_then(|s| s.shown().find(|l| l.id == pane)).map(|l| (pane_header::kind_name(&l.kind), l.agent.is_some())) else { return vec![] };
+        let Some(leaf) = self.space_holding(pane).and_then(|s| s.shown().find(|l| l.id == pane)) else { return vec![] };
+        let (kind, has_agent, other_view) = (pane_header::kind_name(&leaf.kind), leaf.agent.is_some(), self.other_view(leaf));
         let (zoom_enabled, zoomed) = self.zoom_button(pane);
         let popped = self.site_of(pane) == Some(PaneSite::Popped);
         let mut out = vec![];
@@ -317,7 +354,15 @@ impl Client {
             if control == Control::Close {
                 out.push(HeaderButton { id: "menu", symbol: "ellipsis", label: "Pane menu", enabled: true, on: false });
             }
+            // The switch is drawn only for a pane with another view.
+            if control == Control::SwitchView && other_view.is_none() {
+                continue;
+            }
             out.push(match control {
+                Control::SwitchView => {
+                    let view = other_view.unwrap_or(PaneView::Agent);
+                    HeaderButton { id: control.id(), symbol: if view == PaneView::Agent { control.symbol() } else { "terminal" }, label: switch_title(view), enabled: true, on: false }
+                }
                 Control::Conversations => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Conversations", enabled: has_agent, on: false },
                 Control::SplitRight => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Right", enabled: true, on: false },
                 Control::SplitDown => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Down", enabled: true, on: false },
@@ -363,7 +408,7 @@ impl Client {
         let placed = leaves.iter().find(|p| p.leaf.id == pane)?;
         let r = placed.rect;
         // The buttons end at the header's padding and the status dot, before the pane's right edge.
-        let buttons = self.header_buttons_at(pane, self.header_level_for(&placed.leaf.kind, r.w));
+        let buttons = self.header_buttons_at(pane, self.header_level_for(&placed.leaf, r.w));
         let right = r.x + r.w - HEADER_PAD - DOT;
         let left = right - buttons_width(buttons.len());
         Some(Value::Object(buttons.iter().enumerate().map(|(i, b)| {

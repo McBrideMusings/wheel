@@ -5251,7 +5251,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
         narrow_ratio(&s.id, s.ratio)?;
     }
     let widened = until!("the widened header drawing every control again", |s: &Value| s["panes"][grid_a.as_str()]["header_level"] == 0 && strings(&s["panes"][grid_a.as_str()]["header_order"]) == wide_order);
-    let header_report = json!({"kind": header_kind, "wide": wide_order, "placed": {"bar": placed_order, "menu": placed_menu}, "reset": strings(&reset["panes"][grid_a.as_str()]["header_order"]), "narrowed": narrowed,
+    let mut header_report = json!({"kind": header_kind, "wide": wide_order, "placed": {"bar": placed_order, "menu": placed_menu}, "reset": strings(&reset["panes"][grid_a.as_str()]["header_order"]), "narrowed": narrowed,
         "dots_level": dots_open["pane_menu"]["level"], "widened": frame(&widened, &grid_a)});
     // The menu drawn, and Esc closing it.
     let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_a}&x=420&y=120"));
@@ -5261,6 +5261,61 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     draw(window, Some(output.join("client-pane-menu.png")), cx)?;
     let (code, escaped) = call!("POST", "/key?keys=escape");
     ensure!(code == 200 && escaped["taken"] == true && state!()["pane_menu"].is_null(), "Esc left the pane menu open: {escaped}");
+    // The chat / terminal switch (wheel-ynjo.8.4.5). A shell with no agent has no other view: its
+    // header and menu carry no switch and the command is disabled.
+    let (focused_ok, disabled) = window.update(cx, |c, _, _| { c.show_requested(&grid, Some(&grid_a)); (c.focus.current.as_deref() == Some(grid_a.as_str()), !c.action_enabled("switch-view")) })?;
+    ensure!(focused_ok && disabled, "switch-view should be disabled on the shell {grid_a}");
+    ensure!(!strings(&state!()["panes"][grid_a.as_str()]["menu"]).contains(&"switch-view".to_owned()), "a shell's menu offers the switch");
+    // A Claude Code agent pane with a conversation: the header's button shows it as a terminal on
+    // the same conversation, wheeld reporting the pane as a terminal running the agent.
+    let (ok, _, err) = run_pumped(&["pane", "start", &grid_b, "agent", "--agent", "claude"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane start {grid_b} agent failed: {err}");
+    let started = until!("the second pane an agent pane", |s: &Value| s["panes"][grid_b.as_str()]["kind"] == "agent" && s["panes"][grid_b.as_str()]["harness"] == "claude");
+    let (ok, _, err) = run_pumped(&["agent", "send", &grid_b, "a message to resume", "--timeout", "30"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel agent send {grid_b} failed: {err}");
+    let agent_menu = started["panes"][grid_b.as_str()]["menu"].as_array().cloned().unwrap_or_default();
+    ensure!(agent_menu.iter().any(|i| i["id"] == "switch-view" && i["title"] == "Show in Terminal" && i["enabled"] == true), "an agent pane's menu offers {agent_menu:?}");
+    // The header's switch by a real press when the pane is wide enough to draw it, else the ⋯ menu
+    // that offers it once dropped.
+    let switch_state = state!();
+    let switch_from = if let Some(f) = switch_state["panes"][grid_b.as_str()]["header_buttons"]["switch-view"]["frame"].as_array().cloned() {
+        let at = [f[0].as_f64().unwrap_or(0.) + 9., f[1].as_f64().unwrap_or(0.) + 9.];
+        native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+        "button"
+    } else {
+        ensure!(strings(&switch_state["panes"][grid_b.as_str()]["more_menu"]).contains(&"switch-view".to_owned()), "the agent pane's header offers the switch nowhere: {}", switch_state["panes"][grid_b.as_str()]);
+        let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_b}&x=420&y=120&level=header"));
+        ensure!(code == 200, "panemenu open got {code}");
+        let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=switch-view"));
+        ensure!(code == 200, "the ⋯ menu's Show in Terminal got {code}");
+        "menu"
+    };
+    let as_terminal = until!("the header's switch showing the agent pane as a terminal", |s: &Value| s["panes"][grid_b.as_str()]["kind"] == "terminal" && s["panes"][grid_b.as_str()]["harness"] == "claude");
+    let terminal_menu = as_terminal["panes"][grid_b.as_str()]["menu"].as_array().cloned().unwrap_or_default();
+    ensure!(terminal_menu.iter().any(|i| i["id"] == "switch-view" && i["title"] == "Show as Chat"), "the terminal's menu offers {terminal_menu:?}");
+    // Set to the ⋯ menu, the switch is a menu item there and the bar leaves it out; the menu item
+    // shows the chat again.
+    let (code, _) = call!("POST", "/paneheader?kind=terminal&control=switchView&placement=menu");
+    ensure!(code == 200, "paneheader switchView menu got {code}");
+    let in_menu = state!();
+    ensure!(!strings(&in_menu["panes"][grid_b.as_str()]["header_order"]).contains(&"switch-view".to_owned()) && strings(&in_menu["panes"][grid_b.as_str()]["more_menu"]).contains(&"switch-view".to_owned()),
+        "the switch set to the ⋯ menu: bar {:?}, menu {:?}", in_menu["panes"][grid_b.as_str()]["header_order"], in_menu["panes"][grid_b.as_str()]["more_menu"]);
+    let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_b}&x=420&y=120&level=header"));
+    ensure!(code == 200, "panemenu open got {code}");
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=switch-view"));
+    ensure!(code == 200, "the ⋯ menu's Show as Chat got {code}");
+    until!("the ⋯ menu item showing the terminal as a chat", |s: &Value| s["panes"][grid_b.as_str()]["kind"] == "agent");
+    let (code, _) = call!("POST", "/paneheader?kind=terminal&reset=1");
+    ensure!(code == 200, "paneheader terminal reset got {code}");
+    // shift+cmd+t on the focused pane: to the terminal and back.
+    for (what, kind) in [("the terminal", "terminal"), ("the chat", "agent")] {
+        window.update(cx, |c, _, _| c.show_requested(&grid, Some(&grid_b)))?;
+        let (code, pressed) = call!("POST", "/key?keys=shift+cmd+t");
+        ensure!(code == 200 && pressed["taken"] == true, "shift+cmd+t was not taken: {pressed}");
+        until!(format!("shift+cmd+t showing {what}"), |s: &Value| s["panes"][grid_b.as_str()]["kind"] == kind);
+    }
+    header_report["switch"] = json!({"from": switch_from, "shell_disabled": disabled, "agent_menu": agent_menu, "terminal_menu": terminal_menu});
     // Move Pane to New Space: the second pane leaves for a space of its own.
     let spaces_before = state!()["spaces"].as_array().map(Vec::len).unwrap_or(0);
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=move-new-space"));

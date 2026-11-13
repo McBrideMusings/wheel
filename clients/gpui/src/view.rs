@@ -1936,7 +1936,7 @@ impl Client {
                     ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
                     _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
                 }))
-                .child(self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf.kind, r.w), cx))
+                .child(self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx))
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
             .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
