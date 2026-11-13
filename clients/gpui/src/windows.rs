@@ -3,7 +3,7 @@
 //! wheeld forwards a window command to answers from these records and acts on the other windows
 //! through their handles. Every window is still its own client of wheeld (ADR-0022); this is
 //! the app-side list the Swift client keeps as `WindowLayout.windows`.
-use crate::layout::{Session, Space, leaves_of};
+use crate::layout::{Session, Space};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 
@@ -113,13 +113,6 @@ impl Registry {
     pub fn focused(&self) -> Option<&Record> {
         self.focused.as_deref().and_then(|id| self.get(id)).or(self.windows.last())
     }
-    /// Closing `id` ends what its session shows: no other window shows the session, and it holds
-    /// spaces (AppModel.windowCloseNeedsAnswer).
-    pub fn close_needs_answer(&self, id: &str, sessions: &[Session]) -> bool {
-        let Some(session) = self.get(id).and_then(|w| w.session.as_deref()) else { return false };
-        let shown_elsewhere = self.windows.iter().any(|w| w.id != id && w.session.as_deref() == Some(session));
-        !shown_elsewhere && sessions.iter().find(|s| s.id == session).is_some_and(|s| !s.spaces.is_empty())
-    }
 }
 
 thread_local! {
@@ -205,21 +198,6 @@ pub fn ls(registry: &Registry, sessions: &[Session], spaces: &[Space]) -> Value 
     })
 }
 
-/// "The “Main” session holds 3 spaces with 6 panes. 1 of them is in a little window."
-/// (AppModel.closeSummary)
-pub fn close_summary(registry: &Registry, window: &Record, sessions: &[Session], spaces: &[Space]) -> String {
-    let held = spaces_of(window.session.as_deref(), sessions, spaces);
-    let panes: usize = held.iter().map(|s| leaves_of(&s.root).len()).sum();
-    let name = sessions.iter().find(|s| Some(&s.id) == window.session.as_ref()).map(|s| s.name.as_str()).unwrap_or("This");
-    let noun = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
-    let mut text = format!("The “{name}” session holds {} {} with {panes} {}.", held.len(), noun(held.len(), "space", "spaces"), noun(panes, "pane", "panes"));
-    let away = held.iter().filter(|s| registry.little_showing(&s.id).is_some()).count();
-    if away > 0 {
-        text += &format!(" {away} of them {} in a little window.", noun(away, "is", "are"));
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,24 +270,6 @@ mod tests {
         let twice = vec![space("a", "x", 1), space("b", "x", 1)];
         assert_eq!(space_id("x", &twice), Err("2 spaces are named x; use one of their ids: a, b".into()));
         assert_eq!(space_id("y", &twice), Err("no space y; the spaces are x (a), x (b)".into()));
-    }
-
-    #[test]
-    fn only_the_last_window_on_a_session_with_spaces_asks_before_closing() {
-        let (mut registry, sessions, spaces) = fixture();
-        // Two windows show Main: either closes with no question.
-        assert!(!registry.close_needs_answer("w1", &sessions));
-        registry.remove("w2");
-        assert!(registry.close_needs_answer("w1", &sessions));
-        assert_eq!(close_summary(&registry, registry.get("w1").unwrap(), &sessions, &spaces), "The “Main” session holds 2 spaces with 3 panes.");
-        registry.put_little(Little { id: "l1".into(), space: "s2".into(), owner: Some("w1".into()), pinned: false });
-        assert_eq!(close_summary(&registry, registry.get("w1").unwrap(), &sessions, &spaces), "The “Main” session holds 2 spaces with 3 panes. 1 of them is in a little window.");
-        registry.remove("l1");
-        // A window on a session with no spaces closes.
-        registry.put(window("w3", "n3", ""));
-        assert!(!registry.close_needs_answer("w3", &sessions));
-        let side = window("w4", "n2", "s3");
-        assert_eq!(close_summary(&registry, &side, &sessions, &spaces), "The “Side” session holds 1 space with 3 panes.");
     }
 
     #[test]

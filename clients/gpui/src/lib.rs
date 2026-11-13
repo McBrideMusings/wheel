@@ -174,8 +174,6 @@ pub fn create_window(
         windows::with(|r| r.focused = Some(registered.clone()));
     }
     window.update(cx, |_, window, cx| -> Result<()> {
-        // The red light asks the window first: the last window on a session that holds spaces
-        // shows its close question and stays open.
         // The focused window is the one that became key last (NSApp.keyWindow in the Swift app).
         let id = registered.clone();
         cx.observe_window_activation(window, move |_, window, _| {
@@ -189,13 +187,7 @@ pub fn create_window(
             }
         })
         .detach();
-        window.on_window_should_close(cx, |window, cx| {
-            let Some(Some(client)) = window.root::<view::Client>() else { return true };
-            client.update(cx, |client, cx| {
-                cx.notify();
-                client.ask_close_window()
-            })
-        });
+        window.on_window_should_close(cx, red_light);
         let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|e| anyhow::anyhow!("{e:?}"))?.as_raw() else {
             anyhow::bail!("not an AppKit window")
         };
@@ -411,19 +403,12 @@ fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &W
         }
         WindowCommand::Close { window } => {
             let (id, handle) = target(window)?;
-            let closes = handle.update(cx, |client, _, cx| {
-                cx.notify();
-                client.ask_close_window()
-            });
-            // The window may be the one answering: it goes after its answer is queued.
-            match closes {
-                // Its connection writes every frame queued before the window's sender drops.
-                Ok(true) => cx.defer(move |cx| {
+            // The window may be the one answering: it goes after its answer is queued, and its
+            // connection writes every frame queued before the window's sender drops.
+            if handle.update(cx, |client, _, _| client.log_close()).is_ok() {
+                cx.defer(move |cx| {
                     let _ = handle.update(cx, |_, window, _| window.remove_window());
-                }),
-                // The question shows on that window: bring it front, as the Swift app does.
-                Ok(false) => bring_front(cx, handle),
-                Err(_) => {}
+                });
             }
             Ok(serde_json::json!({"window": id}))
         }
@@ -509,6 +494,15 @@ pub fn new_window(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
     });
     bring_front(cx, handle);
     Ok(handle)
+}
+
+/// The red light: the window closes at once, and a session no other window shows stays in the
+/// background.
+pub fn red_light(window: &mut gpui::Window, cx: &mut App) -> bool {
+    if let Some(Some(client)) = window.root::<view::Client>() {
+        client.update(cx, |client, _| client.log_close());
+    }
+    true
 }
 
 /// Bring a window front and make it key, unless the app runs hidden for a check.

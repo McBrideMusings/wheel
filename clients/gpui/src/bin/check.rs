@@ -1033,7 +1033,17 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     erase(&native, 1, cx).await;
     // The queue: a slow turn runs while two messages wait behind it.
     let queued_now = |cx: &mut AsyncApp| -> Result<Vec<u64>> { Ok(serde_json::from_value(pane_now(cx)?["composer"]["queued"].clone()).unwrap_or_default()) };
+    // Scrolled to the first row, the column stops following; sending takes it back to its end and
+    // it follows again, so the queue lines under the new messages draw.
+    window.update(cx, |c, _, _| c.reveal(&agent_name, 0))?;
+    draw(window, None, cx)?;
+    let before_send = window.update(cx, |c, _, _| c.column_scroll(&agent_name))?;
+    ensure!(before_send.is_some_and(|(top, _, following)| top == 0 && !following), "revealing the first row left the column at {before_send:?}");
     type_line(&native, "work slowly 20", cx).await;
+    draw(window, None, cx)?;
+    let after_send = window.update(cx, |c, _, _| c.column_scroll(&agent_name))?;
+    let rows_after_send = rows(cx)?.1.len();
+    ensure!(after_send.is_some_and(|(top, _, following)| top >= rows_after_send && following), "a sent message left the column away from its end: before {before_send:?}, after {after_send:?} of {rows_after_send} rows");
     let mut slow_busy = false;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -1679,8 +1689,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(first_drawn, "at the top the first row is not drawn: {:?}", window.update(cx, |c, _, _| c.drawn_texts(&agent_name).iter().take(3).map(|d| (d.row, d.text.clone())).collect::<Vec<_>>())?);
     let drawn_at_top = window.update(cx, |c, _, _| c.drawn_texts(&agent_name).iter().map(|d| d.row).collect::<std::collections::BTreeSet<_>>().len())?;
     draw(window, Some(output.join("client-transcript-top.png")), cx)?;
-    // Scrolled up, a new reply leaves the column where it is.
-    type_line(&native, "while scrolled up", cx).await;
+    // Scrolled up, a reply to a message sent from elsewhere (the CLI) leaves the column where it
+    // is; a message the person sends from the composer takes it back to the end instead.
+    let sent_up = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, "while scrolled up", "--timeout", "30"])
+        .output()?;
+    ensure!(sent_up.status.success(), "agent send while scrolled up failed: {}{}", String::from_utf8_lossy(&sent_up.stdout), String::from_utf8_lossy(&sent_up.stderr));
     let mut answered_up = false;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -2411,24 +2425,62 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         tick(cx, 100).await;
     }
     ensure!(cx.update(|_| wheel_gpui::window_handle(&new_id)).is_none(), "the second window on a shared session stayed open");
-    // The last window on a session with spaces asks; Escape and Cancel keep it, as the sheet does.
-    let (ok, _, err) = run_pumped(&["window", "close", &id1], &mut connection, &mut layouts, window, cx).await?;
-    ensure!(ok, "wheel window close on the last window failed: {err}");
-    let summary = window.update(cx, |c, _, _| c.closing_window.then(|| c.close_summary()))?;
-    let expect_summary = window.update(cx, |c, _, _| {
-        let held = c.session_spaces();
-        let panes: usize = held.iter().map(|s| wheel_gpui::layout::leaves_of(&s.root).len()).sum();
-        let session = c.layout_lists().0.into_iter().find(|s| Some(s.id.as_str()) == c.session_id()).map(|s| s.name).unwrap_or_default();
-        format!("The “{session}” session holds {} {} with {panes} {}.", held.len(), if held.len() == 1 { "space" } else { "spaces" }, if panes == 1 { "pane" } else { "panes" })
-    })?;
-    ensure!(summary.as_deref() == Some(expect_summary.as_str()), "the close question reads {summary:?}, not {expect_summary:?}");
-    draw(window, Some(output.join("client-window-close.png")), cx)?;
-    let escape = wheel_gpui::keymap::KeyChord::parse("escape").unwrap().keystroke();
-    window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: escape.clone(), is_held: false, prefer_character_input: false }, cx))?;
-    ensure!(window.update(cx, |c, _, _| !c.closing_window)?, "Escape left the close question up");
-    ensure!(!window.update(cx, |c, _, cx| { let now = c.ask_close_window(); cx.notify(); now })?, "the last window closed with no question");
-    window.update(cx, |c, _, _| c.answer_window_close(wheel_gpui::view::CloseAnswer::Cancel))?;
-    ensure!(window.update(cx, |c, _, _| !c.closing_window)? && cx.update(|_| wheel_gpui::window_handle(&id1)).is_some(), "Cancel closed the window");
+    // The last window on a session that holds spaces closes at once, by `wheel window close` and
+    // by Close Window and by the red light: its session runs on in the background, and a new
+    // window shows it again.
+    let (ok, out, err) = run_pumped(&["window", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel window ls failed: {err}");
+    let listed_now = window_ls(&out)?;
+    let background_space = listed_now["background"][0]["id"].as_str().map(str::to_owned).ok_or_else(|| anyhow::anyhow!("no background space to open a window on: {listed_now}"))?;
+    let mut closed_last = vec![];
+    for how in ["wheel window close", "Close Window", "the red light"] {
+        let (ok, out, err) = run_pumped(&["window", "new", "--name", "Last", "--space", &background_space], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel window new --space {background_space} failed: {err}");
+        let last_id = out.trim().to_owned();
+        let last = cx.update(|_| wheel_gpui::window_handle(&last_id)).ok_or_else(|| anyhow::anyhow!("wheel window new printed {last_id:?}, which is no window"))?;
+        let mut session = None;
+        for _ in 0..30 {
+            session = last.update(cx, |c, _, _| (c.space_id() == Some(background_space.as_str())).then(|| c.session_id().map(str::to_owned)).flatten())?;
+            if session.is_some() {
+                break;
+            }
+            tick(cx, 100).await;
+        }
+        let session = session.ok_or_else(|| anyhow::anyhow!("the window opened on {background_space} never showed it"))?;
+        ensure!(wheel_gpui::windows::with(|r| r.windows.iter().filter(|w| w.session.as_deref() == Some(session.as_str())).count()) == 1, "another window shows session {session}");
+        if how == "Close Window" {
+            last.update(cx, |c, _, cx| c.run_action("close-window", cx))?;
+            // A hidden window renders only when drawn, and its render is what removes it.
+            draw(last, None, cx)?;
+        } else if how == "the red light" {
+            let closes = gpui::AnyWindowHandle::from(last).update(cx, |_, window, cx| {
+                let now = wheel_gpui::red_light(window, cx);
+                if now {
+                    window.remove_window();
+                }
+                now
+            })?;
+            ensure!(closes, "the red light on the last window of session {session} kept it open");
+        } else {
+            let (ok, _, err) = run_pumped(&["window", "close", &last_id], &mut connection, &mut layouts, window, cx).await?;
+            ensure!(ok, "wheel window close on the last window of session {session} failed: {err}");
+        }
+        for _ in 0..20 {
+            if cx.update(|_| wheel_gpui::window_handle(&last_id)).is_none() {
+                break;
+            }
+            tick(cx, 100).await;
+        }
+        ensure!(cx.update(|_| wheel_gpui::window_handle(&last_id)).is_none(), "{how} left the last window of session {session} open");
+        pump(&mut connection, 300, &mut layouts, window, cx).await?;
+        let (ok, out, err) = run_pumped(&["window", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel window ls failed: {err}");
+        let after = window_ls(&out)?;
+        let running = window.update(cx, |c, _, _| c.layout_lists().0.iter().any(|s| s.id == session && s.spaces.contains(&background_space)))?;
+        ensure!(running && after["background"].as_array().is_some_and(|b| b.iter().any(|s| s["id"] == json!(background_space))),
+            "after {how} closed the last window, session {session} is listed {running} and the background reads {}", after["background"]);
+        closed_last.push(json!({"how": how, "window": last_id, "session": session, "running": running, "background": after["background"]}));
+    }
     // Rename Window… from the palette's action: the title row shows the field over the tabs.
     window.update(cx, |c, _, cx| c.run_action("rename-window", cx))?;
     for ch in ["D", "e", "s", "k"] {
@@ -2464,7 +2516,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let back = first_session.clone().unwrap_or_default();
     connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::SessionRename { req: None, session: back, name: old_session_name.clone() }))?;
     pump(&mut connection, 300, &mut layouts, window, cx).await?;
-    let windows_report = json!({"ls": listed, "new": new_id, "moved": moved, "close_summary": summary, "session_renamed_from": old_session_name});
+    let windows_report = json!({"ls": listed, "new": new_id, "moved": moved, "closed_last": closed_last, "session_renamed_from": old_session_name});
     // Little windows (wheel-ynjo.7.5.1; LittleWindow.swift, AppModel+Windows.swift): the space
     // menu's Open in Little Window opens the shown space in a window of its own, owned by this one,
     // whose tab and row dim and whose grid shows the placeholder; the strip's back icon, the red
@@ -2569,8 +2621,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // The red light: the window may close at once, and the space comes home.
     let little = open_little(cx)?;
     let red_id = little.update(cx, |c, _, _| c.window_id().to_owned())?;
-    let closes = little.update(cx, |c, window, _| {
-        let now = c.ask_close_window();
+    let closes = gpui::AnyWindowHandle::from(little).update(cx, |_, window, cx| {
+        let now = wheel_gpui::red_light(window, cx);
         if now {
             window.remove_window();
         }

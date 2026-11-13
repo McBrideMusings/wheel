@@ -416,21 +416,6 @@ impl Client {
                 }
                 None
             }
-            // The close question: `ask` runs what the red light runs; `answer=background|stop|cancel` presses a button.
-            "/windowclose" => {
-                match (q("action").as_deref(), q("answer").as_deref()) {
-                    (Some("ask"), _) => self.request_close_window(),
-                    (_, Some(answer)) => {
-                        let answer = match answer { "background" => CloseAnswer::Background, "stop" => CloseAnswer::Stop, "cancel" => CloseAnswer::Cancel, _ => return refuse(BAD, "answer is background, stop or cancel") };
-                        if !self.closing_window {
-                            return refuse("409 Conflict", "no close question is showing");
-                        }
-                        self.answer_window_close(answer);
-                    }
-                    _ => return refuse(BAD, "action=ask, or answer=background|stop|cancel"),
-                }
-                None
-            }
             // Renaming as the field does it: `action` is begin (the menu item), commit (Return, with `name`) or cancel (Escape).
             "/rename" => {
                 let Some(id) = q("id") else { return refuse(BAD, "kind=space|window|session is required, with id= for a space or a session") };
@@ -529,11 +514,7 @@ impl Client {
             "/little" => {
                 let space = q("space").map(|s| crate::windows::space_id(&s, &self.spaces));
                 match (q("action").as_deref(), space) {
-                    (Some("close"), None) if self.is_little() => {
-                        if self.ask_close_window() {
-                            self.close_window_requested = true;
-                        }
-                    }
+                    (Some("close"), None) if self.is_little() => self.request_close_window(),
                     (Some("back"), None) if self.is_little() => self.little_back(),
                     (Some(_), Some(Err(e))) => return refuse("404 Not Found", &e),
                     (Some("open"), Some(Ok(space))) => {

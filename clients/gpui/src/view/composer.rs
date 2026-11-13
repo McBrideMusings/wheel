@@ -175,6 +175,9 @@ impl Client {
         }
         self.log(format!("send to {agent}, {} chars, {} attachments", text.chars().count(), paths.len()));
         self.draft_edited(agent);
+        // Sending is going back to the conversation's end: the person wants to see what they sent
+        // and what comes back, wherever they had scrolled.
+        self.follow_end(agent);
         let req = self.agent_req(agent, now, None);
         self.send(&ClientMsg::AgentSend { req: Some(req), agent: agent.to_owned(), text });
     }
