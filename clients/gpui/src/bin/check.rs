@@ -1353,6 +1353,41 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let new_id = new_id.unwrap_or_default();
     let new_id_differs = new_id != old_id;
     ensure!(new_id_differs, "New conversation kept id {old_id}");
+    // The empty transcript's Recent shortcut (wheel-ynjo.10.5.4): the conversation just left is
+    // among at most three cards, and Show all… opens the Conversations popover.
+    let recent_report = {
+        let recent_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.recent_json(&agent_name));
+        let mut recent = Value::Null;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            recent = recent_now(cx)?;
+            if recent["listing"] == "loaded" {
+                break;
+            }
+        }
+        let cards = recent["cards"].as_array().cloned().unwrap_or_default();
+        ensure!(recent["listing"] == "loaded" && (1..=3).contains(&cards.len()), "the empty transcript's Recent shortcut: {recent}");
+        ensure!(cards.iter().any(|c| c["id"] == old_id.as_str()) && cards.iter().all(|c| c["id"] != new_id.as_str()), "Recent should list {old_id} and not the current {new_id}: {recent}");
+        draw(window, Some(output.join("client-recent-conversations.png")), cx)?;
+        let card_drawn = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("recent:{old_id}")))?.is_some();
+        ensure!(card_drawn, "the Recent card for {old_id} was listed but not drawn: {recent}");
+        let show_all = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "recent:show-all"))?.ok_or_else(|| anyhow::anyhow!("no Show all… drawn: {recent}"))?;
+        press(&native, show_all);
+        let mut opened = Value::Null;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            opened = convs_now(cx)?;
+            if opened["listing"] == "loaded" {
+                break;
+            }
+        }
+        let show_all_opens = opened["pane"] == agent_pane.as_str() && opened["listing"] == "loaded";
+        ensure!(show_all_opens, "Show all… did not open the Conversations popover over {agent_pane}: {opened}");
+        window.update(cx, |c, _, _| c.close_conversations())?;
+        json!({"cards": cards.len(), "card_drawn": card_drawn, "show_all_opens": show_all_opens, "titles": cards.iter().map(|c| c["title"].clone()).collect::<Vec<_>>(),
+            "ages": cards.iter().map(|c| c["age"].clone()).collect::<Vec<_>>()})
+    };
     type_line(&native, "in the new one", cx).await;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -1750,7 +1785,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     ensure!(rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")), "switching back to {old_id} after the scroll check");
-    let conversations_report = json!({"listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
+    let conversations_report = json!({"recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     for s in &splits_above {

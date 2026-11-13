@@ -1804,6 +1804,16 @@ impl Client {
                 // A pane whose agent has not started yet shares no draft or scroll state with another.
                 let agent = p.leaf.agent.as_deref();
                 let harness = p.leaf.harness.as_deref().unwrap_or("");
+                // An empty transcript shows the prompt and the Recent shortcut in place of the
+                // column; rows arriving drop the shortcut's list, so the next empty one asks again.
+                let empty = match agent {
+                    Some(a) if self.transcripts.get(a).is_some_and(|t| t.rows.is_empty()) => Some(self.empty_conversation(&p.leaf.id, a, cx)),
+                    Some(a) => {
+                        self.conversations.recent.remove(a);
+                        None
+                    }
+                    None => None,
+                };
                 let t = agent.and_then(|a| self.transcripts.get(a));
                 let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
                 let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
@@ -1830,7 +1840,7 @@ impl Client {
                 let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
                 let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h + chips_h, list, Attach { chips, clip, over }, error, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h, list, Attach { chips, clip, over }, error, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2305,14 +2315,17 @@ struct Attach {
 }
 
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
-/// rows), and the composer with the draft. Files dropped on the composer or its chips attach.
+/// rows, or `empty` while it has none), and the composer with the draft. Files dropped on the composer or its chips attach.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, attach: Attach, error: Option<&str>,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, attach: Attach, error: Option<&str>,
     footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
-        .flex_none().overflow_hidden().h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)))
-        .children(column);
+        .flex_none().overflow_hidden().h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)));
+    let col = match empty {
+        Some(empty) => col.child(empty),
+        None => col.children(column),
+    };
     // Only the transcript gives up room; the label, a request card, the composer and the footer
     // keep their heights, and whatever still does not fit is clipped at the pane's edge, as
     // Swift's AgentBody stack is.
