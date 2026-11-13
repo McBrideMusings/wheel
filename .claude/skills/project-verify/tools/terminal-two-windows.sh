@@ -30,8 +30,6 @@ w term send "$P" "echo second-$$" --enter >/dev/null
 check "both surfaces show new output" wait_st "($surf | map(test(\"second-$$\")) | all)" 10
 
 app_post "/windows?action=closebutton&window=$B" >/dev/null
-wait_st '.window_close != null or (.windows | length == 1)' 5
-[ "$(st '.window_close')" = "null" ] || app_post "/windows?action=closeanswer&answer=background" >/dev/null
 check "the second window closes" wait_st '.windows | length == 1' 10
 check "one surface is left" wait_st "($surf | length) == 1" 10
 w term send "$P" "echo third-$$" --enter >/dev/null
