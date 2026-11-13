@@ -7,6 +7,7 @@ mod commands;
 mod composer;
 mod conversations;
 mod debug;
+pub mod float;
 mod little;
 mod menubar;
 mod messages;

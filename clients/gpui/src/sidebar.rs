@@ -90,17 +90,19 @@ pub struct SpaceDrag {
     pub at: (f32, f32),
     /// Where the pointer is on screen (top left origin), once the windows are measured.
     pub screen: Option<(f32, f32)>,
-    /// The window the pointer is in and where in it: that window draws the chip.
+    /// The window the pointer is in and where in it.
     pub chip: Option<(String, (f32, f32))>,
 }
 
-/// Where releasing a dragged space would put it (SpaceDropping.SpaceDropTarget). A window's
-/// tabs are no target yet: a window whose sidebar is hidden takes the space at its end.
+/// Where releasing a dragged space would put it (SpaceDropping.SpaceDropTarget).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpaceDropTarget {
     /// Between `window`'s sidebar rows: `index` counts the rows above the bar, in the list as it
     /// was before the drag.
     Sidebar { window: String, index: usize },
+    /// Between `window`'s tabs while its sidebar is hidden: `index` counts the tabs left of the
+    /// bar.
+    Tabs { window: String, index: usize },
     /// A window's body: the space goes to the end of the window's session.
     Window(String),
     /// A session's card in the menu bar popover: `index` counts the card's rows above the bar.
@@ -119,6 +121,10 @@ pub struct DropWindow {
     pub sidebar: Option<Rect>,
     /// The sidebar's rows, top to bottom.
     pub rows: Vec<Rect>,
+    /// The tab strip's rectangle while the window shows tabs instead of a sidebar.
+    pub tab_strip: Option<Rect>,
+    /// The tabs, left to right, at their place in the strip, scrolled out of it or not.
+    pub tabs: Vec<Rect>,
 }
 
 /// A card in the popover: one session's spaces (DropCard).
@@ -141,6 +147,11 @@ fn index_above(rows: &[Rect], y: f32) -> usize {
     rows.iter().position(|r| y < r.y + r.h / 2.0).unwrap_or(rows.len())
 }
 
+/// The bar goes left of the first rectangle whose middle is right of `x`, else after the last.
+pub fn index_left(tabs: &[Rect], x: f32) -> usize {
+    tabs.iter().position(|r| x < r.x + r.w / 2.0).unwrap_or(tabs.len())
+}
+
 /// What releasing at (`x`, `y`) would do (SpaceDropping.target). `windows` runs front to back
 /// and the first under the pointer decides; the popover, when open, is in front of them all.
 pub fn space_target(x: f32, y: f32, windows: &[DropWindow], popover: Option<&DropPopover>) -> SpaceDropTarget {
@@ -155,14 +166,17 @@ pub fn space_target(x: f32, y: f32, windows: &[DropWindow], popover: Option<&Dro
     let Some(window) = windows.iter().find(|w| contains(w.frame, x, y)) else { return SpaceDropTarget::Desktop };
     match window.sidebar {
         Some(bar) if contains(bar, x, y) => SpaceDropTarget::Sidebar { window: window.id.clone(), index: index_above(&window.rows, y) },
-        _ => SpaceDropTarget::Window(window.id.clone()),
+        _ => match window.tab_strip {
+            Some(strip) if contains(strip, x, y) => SpaceDropTarget::Tabs { window: window.id.clone(), index: index_left(&window.tabs, x) },
+            _ => SpaceDropTarget::Window(window.id.clone()),
+        },
     }
 }
 
 /// The words under a space drag (SpaceDropping.hint).
 pub fn space_hint(target: &SpaceDropTarget, space: &str, session_name: impl Fn(&str) -> String, window_title: impl Fn(&str) -> String) -> String {
     match target {
-        SpaceDropTarget::Sidebar { window, .. } => format!("Place “{space}” here in “{}”", window_title(window)),
+        SpaceDropTarget::Sidebar { window, .. } | SpaceDropTarget::Tabs { window, .. } => format!("Place “{space}” here in “{}”", window_title(window)),
         SpaceDropTarget::Window(window) => format!("Move “{space}” to “{}”", window_title(window)),
         SpaceDropTarget::Card { session, .. } => format!("Move “{space}” to the “{}” session", session_name(session)),
         SpaceDropTarget::Desktop => format!("Release to open “{space}” in a little window"),
@@ -179,9 +193,29 @@ pub fn drop_move(index: Option<usize>, held: &[String], space: &str) -> Option<O
     }
 }
 
-/// Where a little window opened by a drop on the desktop goes: its content centred on the drop.
+/// Where a little window opened by a drop on the desktop goes: its content centred on the drop,
+/// which is the preview card's centre.
 pub fn little_origin(x: f32, y: f32, size: (f32, f32)) -> (f32, f32) {
     (x - size.0 / 2.0, y - size.1 / 2.0)
+}
+
+/// The preview card that follows a space dragged over the desktop (SpaceCardView).
+pub const CARD_W: f32 = 230.0;
+pub const CARD_H: f32 = 150.0;
+/// Where the chip window sits from the pointer: right of it and below it (DragChipWindow).
+pub const CHIP_OFFSET: f32 = 12.0;
+
+/// The preview card's frame, centred on the pointer, in screen points with a top left origin.
+pub fn card_frame(x: f32, y: f32) -> Rect {
+    Rect { x: x - CARD_W / 2.0, y: y - CARD_H / 2.0, w: CARD_W, h: CARD_H }
+}
+
+/// The chip window's top left: right of and below the pointer, kept inside `screen` (the
+/// pointer's screen's visible frame, top left origin) as DragChipWindow.follow clamps it.
+pub fn chip_origin(x: f32, y: f32, size: (f32, f32), screen: Rect) -> (f32, f32) {
+    let ox = (x + CHIP_OFFSET).min(screen.x + screen.w - size.0).max(screen.x);
+    let oy = (y + CHIP_OFFSET).min(screen.y + screen.h - size.1).max(screen.y);
+    (ox, oy)
 }
 
 /// A pane held by its header (PaneMove.swift's PaneDrag), as far as the sidebar is its target:
@@ -324,7 +358,34 @@ mod tests {
     fn window(id: &str, x: f32, sidebar: bool) -> DropWindow {
         let frame = Rect { x, y: 0., w: 1200., h: 720. };
         let bar = Rect { x: x + 10., y: 32., w: WIDTH, h: 600. };
-        DropWindow { id: id.into(), frame, sidebar: sidebar.then_some(bar), rows: rows(&ids(3), bar).into_iter().map(|r| r.rect).collect() }
+        DropWindow { id: id.into(), frame, sidebar: sidebar.then_some(bar), rows: rows(&ids(3), bar).into_iter().map(|r| r.rect).collect(), tab_strip: None, tabs: vec![] }
+    }
+
+    #[test]
+    fn a_window_without_its_sidebar_takes_the_space_between_its_tabs() {
+        let mut w = window("w1", 0., false);
+        // Three tabs 100 wide from x 80; the third starts past the strip's right edge.
+        w.tab_strip = Some(Rect { x: 80., y: 0., w: 240., h: 32. });
+        w.tabs = (0..3).map(|i| Rect { x: 80. + i as f32 * 100., y: 4., w: 100., h: 24. }).collect();
+        let w = [w];
+        assert_eq!(space_target(100., 16., &w, None), SpaceDropTarget::Tabs { window: "w1".into(), index: 0 });
+        assert_eq!(space_target(140., 16., &w, None), SpaceDropTarget::Tabs { window: "w1".into(), index: 1 });
+        assert_eq!(space_target(250., 16., &w, None), SpaceDropTarget::Tabs { window: "w1".into(), index: 2 });
+        // Below the strip the body takes it.
+        assert_eq!(space_target(140., 400., &w, None), SpaceDropTarget::Window("w1".into()));
+        assert_eq!(index_left(&w[0].tabs, 500.), 3);
+        assert_eq!(index_left(&[], 500.), 0);
+        assert_eq!(space_hint(&SpaceDropTarget::Tabs { window: "w1".into(), index: 1 }, "x", |s| s.to_owned(), |_| "T".into()), "Place “x” here in “T”");
+    }
+
+    #[test]
+    fn the_card_centres_on_the_pointer_and_the_chip_stays_on_its_screen() {
+        assert_eq!(card_frame(1000., 500.), Rect { x: 885., y: 425., w: CARD_W, h: CARD_H });
+        let screen = Rect { x: 0., y: 25., w: 1920., h: 1055. };
+        assert_eq!(chip_origin(300., 400., (120., 24.), screen), (312., 412.));
+        // At the right and bottom edges it stays inside the visible frame.
+        assert_eq!(chip_origin(1900., 1070., (120., 24.), screen), (1800., 1056.));
+        assert_eq!(chip_origin(-50., 0., (120., 24.), screen), (0., 25.));
     }
 
     #[test]

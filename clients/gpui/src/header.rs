@@ -102,6 +102,9 @@ pub struct Row {
     pub tab_width: f32,
     /// The tabs run past the track and the strip is shifted to keep the active one in view.
     pub scrolls: bool,
+    /// Every tab's rectangle in session order at its shifted place, including tabs the track
+    /// scrolls out of view (`chips` holds only the ones it shows): a space drop counts them all.
+    pub tabs: Vec<Rect>,
 }
 
 /// The id a chip's frame is recorded under (`GET /geometry` `title_buttons`), as the Swift app names them.
@@ -214,6 +217,7 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
     let mut track = None;
     let mut tab_w = TAB_WIDEST;
     let mut scrolls = false;
+    let mut tabs = vec![];
     if sidebar_open {
         let x0 = left_end + GAP + TITLE_LEAD;
         chips.push(Chip { hit: Hit::Title, rect: Rect { x: x0, y: BUTTON_Y, w: (right_start - SPACER - x0).max(0.), h: BUTTON_H }, label: space_name.to_owned(), active: false, icon: String::new(), badge: None, tint: None, enabled: true, pressable: false });
@@ -234,6 +238,7 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
         let ty = (HEIGHT - TAB_H) / 2.;
         for (i, (id, name)) in spaces.iter().enumerate() {
             let tx = x0 + TAB_INSET + i as f32 * tab_w - offset;
+            tabs.push(Rect { x: tx, y: ty + TAB_INSET, w: tab_w, h: TAB_H - 2. * TAB_INSET });
             if tx + 0.5 < x0 || tx + tab_w > x0 + track_w + 0.5 {
                 continue;
             }
@@ -242,7 +247,7 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
         track = Some(Rect { x: x0, y: ty, w: track_w, h: TAB_H });
     }
     chips.extend(right_chips);
-    Row { chips, track, tab_width: tab_w, scrolls }
+    Row { chips, track, tab_width: tab_w, scrolls, tabs }
 }
 
 #[cfg(test)]
@@ -337,6 +342,11 @@ mod tests {
         let track = many.track.unwrap();
         assert!(tabs.iter().all(|c| c.rect.x >= track.x && c.rect.x + c.rect.w <= track.x + track.w + 0.5));
         assert_eq!(tabs.last().unwrap().hit, Hit::Space("s30".into()));
+        // Every tab keeps a rectangle, the ones scrolled off to the left too.
+        assert_eq!(many.tabs.len(), 30);
+        assert!(many.tabs[0].x < track.x);
+        assert_eq!(many.tabs[29], tabs.last().unwrap().rect);
+        assert!(one.tabs.len() == 1 && row(1200., true, &[], &named("s", 3), Some("s1"), "s 1", false, "spaces").tabs.is_empty());
         let first = row(900., false, &[], &named("s", 30), Some("s1"), "s 1", false, "spaces");
         assert_eq!(first.chips.iter().find(|c| matches!(c.hit, Hit::Space(_))).unwrap().hit, Hit::Space("s1".into()));
         // The right group stays put whatever the tabs do.

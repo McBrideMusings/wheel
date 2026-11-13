@@ -2092,7 +2092,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session did not come back");
     wait(&native, "the first space's views shown again", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     // New Window opens a second window with a connection of its own, showing the same space.
-    let before_windows = cx.update(|app| app.windows().len());
+    // A drag's chip and card are app windows too; only the main windows count.
+    let before_windows = cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count());
     window.update(cx, |c, _, cx| c.run_action("new-window", cx))?;
     for _ in 0..3 {
         tick(cx, 100).await;
@@ -2205,6 +2206,27 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         && over_window["measured"]["windows"].as_array().map(Vec::len) == Some(2),
         "the drag from window 1 did not aim at window 2's sidebar: {over_window}; window 1 at {f1:?}, window 2 at {f2:?}, aimed at {aim:?}");
     ensure!(window2_sees["insertion"] == 0 && window2_sees["chip"].is_array() && window1_chip.is_null(), "window 2 does not draw the bar and the chip: it sees {window2_sees}, window 1's chip {window1_chip}");
+    // The chip is a window of its own beside the pointer (DragChipWindow), kept on the pointer's
+    // screen, and the window under the pointer draws none of its own; its frame is measured
+    // through the bridge, since a hidden check orders no window front.
+    let floats = |cx: &mut AsyncApp| cx.update(|_| wheel_gpui::view::float::state());
+    let rect4 = |v: &Value| -> Vec<f32> { v.as_array().map(|a| a.iter().map(|n| n.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
+    let near = |a: &[f32], b: &[f32]| a.len() == 4 && b.len() == 4 && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.);
+    let mut chip_over_window = Value::Null;
+    for _ in 0..20 {
+        tick(cx, 100).await;
+        chip_over_window = floats(cx)["chip"].clone();
+        if chip_over_window["shown"] == true && near(&rect4(&chip_over_window["frame"]), &rect4(&chip_over_window["asked"])) {
+            break;
+        }
+    }
+    let chip_asked = rect4(&chip_over_window["asked"]);
+    let aim_screen = rect4(&native.call(json!({"op":"screen_at","point":[aim.0, aim.1]}))["frame"]);
+    ensure!(chip_asked.len() == 4 && aim_screen.len() == 4, "no chip window over window 2's sidebar: {chip_over_window}, screen {aim_screen:?}");
+    let chip_expect = wheel_gpui::sidebar::chip_origin(aim.0, aim.1, (chip_asked[2], chip_asked[3]), wheel_gpui::layout::Rect { x: aim_screen[0], y: aim_screen[1], w: aim_screen[2], h: aim_screen[3] });
+    ensure!(chip_over_window["shown"] == true && chip_over_window["text"] == "dragged" && (chip_asked[0] - chip_expect.0).abs() <= 1. && (chip_asked[1] - chip_expect.1).abs() <= 1.
+        && near(&rect4(&chip_over_window["frame"]), &chip_asked) && window2_sees["floating"] == true && floats(cx)["card"]["shown"] != true,
+        "the chip window does not follow the pointer at {aim:?}: {chip_over_window}, expected its top left at {chip_expect:?} on the screen {aim_screen:?}; window 2 sees {window2_sees}");
     native.call(json!({"op":"post_mouse","kind":"up","point":local1}));
     let mut moved_over = false;
     for _ in 0..50 {
@@ -2239,6 +2261,27 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let over_desk = second.update(cx, |c, _, _| c.sidebar_json())?["drag"].clone();
     ensure!(over_desk["target"] == "the desktop" && over_desk["hint"] == "Release to open “dragged” in a little window" && over_desk["screen"] == json!([desk.0, desk.1]),
         "the drag from window 2 did not aim at the desktop at {desk:?}: {over_desk}");
+    // Over the desktop the preview card replaces the chip, centred on the pointer (DesktopDropOverlay).
+    let card_expect = wheel_gpui::sidebar::card_frame(desk.0, desk.1);
+    let card_expect = [card_expect.x, card_expect.y, card_expect.w, card_expect.h];
+    let mut over_desk_floats = Value::Null;
+    for _ in 0..20 {
+        tick(cx, 100).await;
+        over_desk_floats = floats(cx);
+        if over_desk_floats["card"]["shown"] == true && near(&rect4(&over_desk_floats["card"]["frame"]), &card_expect) {
+            break;
+        }
+    }
+    ensure!(over_desk_floats["card"]["shown"] == true && over_desk_floats["card"]["text"] == "dragged" && near(&rect4(&over_desk_floats["card"]["asked"]), &card_expect)
+        && near(&rect4(&over_desk_floats["card"]["frame"]), &card_expect) && over_desk_floats["chip"]["shown"] == false,
+        "over the desktop at {desk:?} the card is not at {card_expect:?} with the chip hidden: {over_desk_floats}");
+    if let Some(card_window) = cx.update(|_| wheel_gpui::view::float::card_window()) {
+        let _ = card_window.update(cx, |_, w, cx| -> Result<()> {
+            w.draw(cx).clear();
+            w.render_to_image()?.save(output.join("client-space-drag-desk-card.png"))?;
+            Ok(())
+        });
+    }
     native2.call(json!({"op":"post_mouse","kind":"up","point":local2}));
     let mut little = None;
     for _ in 0..30 {
@@ -2249,6 +2292,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     let (little_id, little_owner) = little.ok_or_else(|| anyhow::anyhow!("the drop on the desktop opened no little window for {dragged}"))?;
+    let after_drop_floats = floats(cx);
+    ensure!(after_drop_floats["card"]["shown"] == false && after_drop_floats["chip"]["shown"] == false, "the card or the chip stayed up after the drop: {after_drop_floats}");
     let little_handle = cx.update(|_| wheel_gpui::window_handle(&little_id)).ok_or_else(|| anyhow::anyhow!("no handle for little window {little_id}"))?;
     let little_native = little_handle.update(cx, |c, _, _| c.native())?;
     let expect = (desk.0 - 240., desk.1 - 165.);
@@ -2327,6 +2372,62 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(on_first, "the drop on the card left the first session with {:?}", window.update(cx, |c, _, _| spaces_of(c, &first_card))?);
     cx.update(|cx| menu.update(cx, |m, cx| m.toggle_popover(None, cx)));
+    // With both sidebars hidden, a press on window 1's tab drags the space onto window 2's tab
+    // strip, between its first and second tabs (SpaceDropping's tabs case).
+    for h in [window, second] {
+        h.update(cx, |c, _, cx| {
+            c.set_sidebar(false);
+            cx.notify();
+        })?;
+        draw(h, None, cx)?;
+    }
+    let tab_of = |c: &Client, space: &str| c.title_row().chips.iter().find(|ch| ch.hit == wheel_gpui::header::Hit::Space(space.to_owned())).map(|ch| ch.rect);
+    let mut tab_from = None;
+    for _ in 0..30 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        tab_from = window.update(cx, |c, _, _| tab_of(c, &dragged))?;
+        if tab_from.is_some() {
+            break;
+        }
+    }
+    let tab_from = tab_from.ok_or_else(|| anyhow::anyhow!("window 1 shows no tab for {dragged}: {:?}", window.update(cx, |c, _, _| c.title_row().chips.iter().map(|ch| ch.label.clone()).collect::<Vec<_>>()).ok()))?;
+    let tabs2 = second.update(cx, |c, _, _| c.title_row().tabs)?;
+    let first_tab2 = tabs2.first().copied().ok_or_else(|| anyhow::anyhow!("window 2 shows no tabs"))?;
+    // Just past the first tab's middle: the bar goes between the first and the second tab.
+    let on_tabs = (f2[0] + first_tab2.x + first_tab2.w * 0.75, f2[1] + first_tab2.y + first_tab2.h / 2.);
+    let local_tabs = [f64::from(on_tabs.0 - f1[0]), f64::from(on_tabs.1 - f1[1])];
+    let tab_centre = [f64::from(tab_from.x + tab_from.w / 2.), f64::from(tab_from.y + tab_from.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":tab_centre}));
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[tab_centre[0] + 10., tab_centre[1]]}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":local_tabs}));
+    tick(cx, 150).await;
+    draw(window, None, cx)?;
+    draw(second, Some(output.join("client-space-drag-tabs.png")), cx)?;
+    let over_tabs = window.update(cx, |c, _, _| c.sidebar_json()["drag"].clone())?;
+    let window2_tabs = second.update(cx, |c, _, _| c.sidebar_json())?["hovered"].clone();
+    ensure!(over_tabs["target"] == json!(format!("tabs of {id2} at 1")) && over_tabs["hint"].as_str().is_some_and(|h| h.starts_with("Place “dragged” here in “")) && window2_tabs["tab_bar"] == 1,
+        "the drag from window 1's tab did not aim between window 2's first two tabs at {on_tabs:?}: {over_tabs}; window 2 sees {window2_tabs}; window 2's tabs {tabs2:?}");
+    native.call(json!({"op":"post_mouse","kind":"up","point":local_tabs}));
+    let mut onto_tabs_after = vec![];
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(second, None, cx)?;
+        onto_tabs_after = second.update(cx, |c, _, _| spaces_of(c, &second_session))?;
+        if onto_tabs_after.get(1) == Some(&dragged) && window.update(cx, |c, _, _| spaces_of(c, &second_session).get(1) == Some(&dragged))? {
+            break;
+        }
+    }
+    ensure!(onto_tabs_after.get(1) == Some(&dragged), "the drop on window 2's tabs left the second session with {onto_tabs_after:?}; window 1 logged {:?}", drag_lines(window, cx)?);
+    for h in [window, second] {
+        h.update(cx, |c, _, cx| {
+            c.set_sidebar(true);
+            cx.notify();
+        })?;
+        draw(h, None, cx)?;
+    }
     let (ok, _, err) = run_pumped(&["space", "close", &dragged], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel space close for the dragged space failed: {err}");
     let _ = std::fs::remove_dir_all(&drag_dir);
@@ -2342,6 +2443,9 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "onto_window": {"target": over_window["target"], "hint": over_window["hint"], "window2_insertion": window2_sees["insertion"], "window2_chip": window2_sees["chip"], "session_after": after_window.0},
         "onto_desktop": {"drop": [desk.0, desk.1], "little": little_id, "owner": little_owner, "frame": little_frame},
         "onto_card": {"target": over_card["target"], "hint": card_hint, "card": [card.frame.x, card.frame.y, card.frame.w, card.frame.h]},
+        "chip": {"aim": [aim.0, aim.1], "frame": chip_over_window["frame"], "expected_origin": [chip_expect.0, chip_expect.1]},
+        "card": {"drop": [desk.0, desk.1], "frame": over_desk_floats["card"]["frame"], "chip_shown": over_desk_floats["chip"]["shown"]},
+        "onto_tabs": {"target": over_tabs["target"], "hint": over_tabs["hint"], "window2_tab_bar": window2_tabs["tab_bar"], "session_after": onto_tabs_after},
     });
     // Closing the second window ends its connection: wheeld forgets its view, the first stays.
     second.update(cx, |_, w, _| w.remove_window())?;
@@ -2379,12 +2483,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (ok, _, err) = run_pumped(&["window", "rename", "Nowhere", "x"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(!ok && err.contains("no window Nowhere; the windows are"), "renaming a window that is not there said {err:?}");
     // A new window, named, on the session the focused window shows.
-    let before_new = cx.update(|app| app.windows().len());
+    let before_new = cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count());
     let (ok, out, err) = run_pumped(&["window", "new", "--name", "Second"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel window new failed: {err}");
     let new_id = out.trim().to_owned();
     let made = cx.update(|_| wheel_gpui::window_handle(&new_id)).ok_or_else(|| anyhow::anyhow!("wheel window new printed {new_id:?}, which is no window"))?;
-    ensure!(cx.update(|app| app.windows().len()) == before_new + 1, "wheel window new opened no window");
+    ensure!(cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count()) == before_new + 1, "wheel window new opened no window");
     for _ in 0..30 {
         if made.update(cx, |c, _, _| c.session_id().is_some())? {
             break;

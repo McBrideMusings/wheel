@@ -197,9 +197,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
+    /// Test mode: the window is never ordered front (`float`, `grow_window`).
+    var testMode = false
+    /// The `float` op made the window a drag's floating window.
+    var floating = false
+
     init(root: NSView, window: Int32, hidden: Bool, emit: @escaping Emit) {
         self.root = root
         self.window = window
+        self.testMode = hidden
         self.emitter = emit
         super.init()
         // Test mode: no Dock icon, activation, ordering or key-window call, deaf to the pointer.
@@ -823,6 +829,72 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 window.setFrame(frame, display: true)
             }
             return ["moved": "queued"]
+        // A space drag's own window, the chip (`level` chip) or the desktop's preview card
+        // (`level` card), as DragChipWindow and DesktopDropOverlay make theirs: deaf to the
+        // pointer, clear, on every Space. Its content goes to `frame` (top left coordinates as
+        // `frame` reports), growing in from 1.6 times its size when `grow` is set and Reduce Motion
+        // is off; `show` orders it front (never in test mode) or out. After this call returns,
+        // as `move_window` does.
+        case "float":
+            guard let a = value["frame"] as? [Double], a.count == 4, root.window != nil else { return ["floated": false] }
+            let (show, card, grow) = (value["show"] as? Bool == true, value["level"] as? String == "card", value["grow"] as? Bool == true)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.root.window else { return }
+                if !self.floating {
+                    self.floating = true
+                    window.ignoresMouseEvents = true
+                    window.isOpaque = false
+                    window.backgroundColor = .clear
+                    window.hasShadow = true
+                    window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+                }
+                window.level = card ? .floating : .popUpMenu
+                let target = NSRect(x: a[0], y: mainScreenTop() - a[1] - a[3], width: a[2], height: a[3])
+                if grow, show, !reduceMotion(), !self.testMode {
+                    window.setFrame(target.insetBy(dx: -a[2] * 0.3, dy: -a[3] * 0.3), display: false)
+                    if !window.isVisible { window.orderFrontRegardless() }
+                    // The animator never holds the main thread, so the drag's moves keep coming.
+                    NSAnimationContext.runAnimationGroup { $0.duration = 0.18; window.animator().setFrame(target, display: true) }
+                } else {
+                    // A zero-length animation replaces a grow still running, so the card stays on the pointer.
+                    NSAnimationContext.runAnimationGroup { $0.duration = 0; window.animator().setFrame(target, display: true) }
+                }
+                if show, !self.testMode {
+                    if !window.isVisible { window.orderFrontRegardless() }
+                } else if !show {
+                    window.orderOut(nil)
+                }
+            }
+            return ["floated": "queued"]
+        // The visible frame of the screen holding `point` (the main screen's when none does), in
+        // the same top left coordinates: where a drag's chip window stays.
+        case "screen_at":
+            guard let a = value["point"] as? [Double], a.count == 2 else { return ["frame": NSNull()] }
+            let at = NSPoint(x: a[0], y: mainScreenTop() - a[1])
+            guard let screen = NSScreen.screens.first(where: { NSMouseInRect(at, $0.frame, false) }) ?? NSScreen.screens.first else { return ["frame": NSNull()] }
+            let v = screen.visibleFrame
+            return ["frame": [Double(v.minX), mainScreenTop() - Double(v.maxY), Double(v.width), Double(v.height)]]
+        // A little window grows from the frame `from` (a preview card's, top left coordinates) to
+        // its own size with its content's top left at `point` (WindowManager.openLittle): animated
+        // unless Reduce Motion is on or in test mode. After this call returns.
+        case "grow_window":
+            guard let f = value["from"] as? [Double], f.count == 4, let a = value["point"] as? [Double], a.count == 2, root.window != nil else { return ["grown": false] }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.root.window else { return }
+                let content = window.convertToScreen(self.root.convert(self.root.bounds, to: nil))
+                var frame = window.frame
+                let (left, top) = (frame.minX - content.minX, frame.maxY - content.maxY)
+                frame.origin.x = a[0] + left
+                frame.origin.y = mainScreenTop() - a[1] + top - frame.height
+                if !reduceMotion(), !self.testMode {
+                    // `from` is the card's content rectangle; the window's frame round it holds its chrome.
+                    window.setFrame(window.frameRect(forContentRect: NSRect(x: f[0], y: mainScreenTop() - f[1] - f[3], width: f[2], height: f[3])), display: false)
+                    NSAnimationContext.runAnimationGroup { $0.duration = 0.25; window.animator().setFrame(frame, display: true) }
+                } else {
+                    window.setFrame(frame, display: true)
+                }
+            }
+            return ["grown": "queued"]
         case "hit":
             let a = value["point"] as! [Double]
             var point = NSPoint(x: a[0], y: a[1])
