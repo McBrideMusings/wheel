@@ -29,6 +29,58 @@ thread_local! {
     static HOVER: RefCell<Option<SpaceHover>> = const { RefCell::new(None) };
     /// Where a pane drag in any window aims, and the window it started in.
     static PANE_HOVER: RefCell<Option<(String, PaneAway)>> = const { RefCell::new(None) };
+    /// What a pane drag leaves for the app to settle, which outlives the window it started in.
+    static PANE_APP: RefCell<PaneApp> = RefCell::default();
+}
+
+/// The windows a hold switched and the new space a drop waits for, held app-wide
+/// (AppModel.paneHoldSwitched, pendingNewSpace): a source window that closes mid-drag leaves them
+/// for `pane_window_closed`.
+#[derive(Default)]
+struct PaneApp {
+    /// The window whose drag the list and the record belong to.
+    source: Option<String>,
+    /// Each window a hold switched and the space it showed before.
+    switched: Vec<(String, String)>,
+    pending: Option<PendingNewSpace>,
+}
+
+/// The window `window` closed: when its pane drag had switched other windows, they show what
+/// they showed before (AppModel.endAway), and a new space it waited for is no longer waited for.
+/// Runs with the app, since the closing window can no longer update the others.
+pub fn pane_window_closed(window: &str, cx: &mut App) {
+    let taken = PANE_APP.with(|a| {
+        let mut a = a.borrow_mut();
+        if a.source.as_deref() != Some(window) {
+            return None;
+        }
+        a.source = None;
+        a.pending = None;
+        Some(std::mem::take(&mut a.switched))
+    });
+    let Some(switched) = taken.filter(|s| !s.is_empty()) else { return };
+    cx.defer(move |cx| {
+        for (window, was) in switched {
+            if let Some(handle) = crate::window_handle(&window) {
+                let _ = handle.update(cx, |c, _, cx| {
+                    if c.put_back(&was, None) {
+                        cx.notify();
+                    }
+                });
+            }
+        }
+    });
+}
+
+/// Wheeld refused layout request `req`: a new space it was to make never comes
+/// (AppModel.layoutError clears pendingNewSpace).
+pub fn pane_layout_refused(req: u64) {
+    PANE_APP.with(|a| {
+        let mut a = a.borrow_mut();
+        if a.pending.as_ref().is_some_and(|p| p.req == Some(req)) {
+            a.pending = None;
+        }
+    });
 }
 
 /// Where the pane drag in progress in any window aims.
@@ -47,11 +99,8 @@ pub struct PaneOut {
     want: Option<(String, String)>,
     hold: Option<(String, String)>,
     hold_gen: u64,
-    /// Each window a hold switched and the space it showed before.
-    switched: Vec<(String, String)>,
     /// A cancel waits for the next turn to put the windows back.
     restore: bool,
-    pending: Option<PendingNewSpace>,
 }
 
 /// A new space `pane_move` is about to make and where it goes once wheeld reports it: the first
@@ -65,6 +114,8 @@ struct PendingNewSpace {
     /// It opens in a little window, grown from a card centred on this screen point when there is one.
     little: Option<Option<(f32, f32)>>,
     at: u64,
+    /// The `pane_move` request that makes it, once sent.
+    req: Option<u64>,
 }
 const PENDING_MS: u64 = 10_000;
 
@@ -515,7 +566,7 @@ impl Client {
         self.pane_drag = Some(PaneDrag { pane: pane.to_owned(), label: label.to_owned(), away: None, drop: None, at, grab, by_pointer, screen: None });
         self.pane_out.world = None;
         // A new drag supersedes a new space an earlier drop still waits for.
-        self.pane_out.pending = None;
+        PANE_APP.with(|a| a.borrow_mut().pending = None);
         self.log(format!("pane drag {pane}: started"));
     }
     /// Measure every window for the pointer drag that just started, or again after a hold
@@ -650,9 +701,13 @@ impl Client {
             return;
         }
         let Some(was) = self.shown_in(&window, cx).filter(|w| *w != space) else { return };
-        if !self.pane_out.switched.iter().any(|(w, _)| *w == window) {
-            self.pane_out.switched.push((window.clone(), was));
-        }
+        PANE_APP.with(|a| {
+            let mut a = a.borrow_mut();
+            a.source = Some(self.window_id.clone());
+            if !a.switched.iter().any(|(w, _)| *w == window) {
+                a.switched.push((window.clone(), was));
+            }
+        });
         self.log(format!("pane drag: held over space {space} for {} s; window {window} shows it", sidebar::HOLD_SECONDS));
         self.show_in(&window, &space, cx);
         if self.pane_out.world.is_some() {
@@ -668,17 +723,29 @@ impl Client {
         self.pane_out.hold_gen += 1;
         self.pane_out.world = None;
         self.pane_out.restore = false;
-        for (window, was) in std::mem::take(&mut self.pane_out.switched) {
-            let holds = if window == self.window_id {
-                self.session_spaces().iter().any(|s| s.id == was)
+        let switched = PANE_APP.with(|a| std::mem::take(&mut a.borrow_mut().switched));
+        for (window, was) in switched {
+            let put_back = if window == self.window_id {
+                self.put_back(&was, landed)
             } else {
-                crate::window_handle(&window).and_then(|h| h.read(cx).ok().map(|c| c.session_spaces().iter().any(|s| s.id == was))).unwrap_or(false)
+                crate::window_handle(&window).and_then(|h| h.update(cx, |c, _, cx| {
+                    let done = c.put_back(&was, landed);
+                    cx.notify();
+                    done
+                }).ok()).unwrap_or(false)
             };
-            if holds && self.shown_in(&window, cx).as_deref() != landed {
+            if put_back {
                 self.log(format!("pane drag: window {window} shows {was} again"));
-                self.show_in(&window, &was, cx);
             }
         }
+    }
+    /// This window shows `was` again unless the pane landed in the space it shows; whether it did.
+    fn put_back(&mut self, was: &str, landed: Option<&str>) -> bool {
+        if !self.session_spaces().iter().any(|s| s.id == was) || self.space_id.as_deref() == landed {
+            return false;
+        }
+        self.select_space(was);
+        true
     }
     /// What a pane drag leaves for a turn with the app at hand: a cancel puts the windows back,
     /// and a new space the drop asked for goes where the drop was once wheeld reports it.
@@ -694,14 +761,14 @@ impl Client {
             });
             return;
         }
-        let Some(pending) = self.pane_out.pending.clone() else { return };
+        let Some(pending) = PANE_APP.with(|a| { let a = a.borrow(); a.pending.clone().filter(|_| a.source.as_deref() == Some(me.as_str())) }) else { return };
         if settings::now_ms().saturating_sub(pending.at) > PENDING_MS {
             self.log(format!("pane drag {}: wheeld reported no new space for it", pending.pane));
-            self.pane_out.pending = None;
+            PANE_APP.with(|a| a.borrow_mut().pending = None);
             return;
         }
         let Some(space) = self.space_holding(&pending.pane).map(|s| s.id.clone()).filter(|s| Some(s) != pending.home.as_ref()) else { return };
-        self.pane_out.pending = None;
+        PANE_APP.with(|a| a.borrow_mut().pending = None);
         cx.defer(move |cx| if let Some(h) = crate::window_handle(&me) {
             let _ = h.update(cx, |c, _, cx| {
                 c.place_new_space(&space, &pending, cx);
@@ -765,11 +832,21 @@ impl Client {
                 wheel_proto::MoveTarget::NewSpace { name: None, focus: false }
             }
         };
-        self.send_layout(|req| ClientMsg::PaneMove { req: Some(req), pane, to });
+        let req = self.send_layout_req(|req| ClientMsg::PaneMove { req: Some(req), pane, to });
+        PANE_APP.with(|a| {
+            if let Some(p) = a.borrow_mut().pending.as_mut() {
+                p.req = Some(req);
+            }
+        });
     }
     fn expect_new_space(&mut self, pane: &str, window: String, little: Option<Option<(f32, f32)>>) {
         let home = self.space_holding(pane).map(|s| s.id.clone());
-        self.pane_out.pending = Some(PendingNewSpace { pane: pane.to_owned(), home, window, little, at: settings::now_ms() });
+        let pending = PendingNewSpace { pane: pane.to_owned(), home, window, little, at: settings::now_ms(), req: None };
+        PANE_APP.with(|a| {
+            let mut a = a.borrow_mut();
+            a.source = Some(self.window_id.clone());
+            a.pending = Some(pending);
+        });
     }
     pub fn cancel_pane_drag(&mut self) {
         self.pane_press = None;
@@ -1139,7 +1216,7 @@ impl Client {
                 "chip": h.chip.filter(|(w, _)| *w == self.window_id).map(|(_, (x, y))| [x, y])})),
             "pane_drag": self.pane_drag.as_ref().map(|d| json!({"pane": d.pane, "label": d.label, "away": d.away.as_ref().map(describe_away), "drop": d.drop.as_ref().map(|g| json!({"target": g.target, "zone": g.zone.label()})), "hint": self.pane_drag_hint(), "new_space": self.pane_is_over_new_space(),
                 "screen": d.screen.map(|(x, y)| [x, y]), "measured": self.pane_out.world.as_ref().map(|w| w.windows.iter().filter(|d| !d.little).map(|d| d.id.clone()).collect::<Vec<_>>()),
-                "hold": self.pane_out.hold.as_ref().map(|(w, s)| json!([w, s])), "switched": self.pane_out.switched.iter().map(|(w, s)| json!([w, s])).collect::<Vec<_>>()})),
+                "hold": self.pane_out.hold.as_ref().map(|(w, s)| json!([w, s])), "switched": PANE_APP.with(|a| a.borrow().switched.clone()).iter().map(|(w, s)| json!([w, s])).collect::<Vec<_>>()})),
             "pane_hover": pane_hover().as_ref().map(describe_away), "pane_new_space": self.pane_is_over_new_space(),
             "renaming": self.rename.as_ref().map(|r| json!({"space": r.space, "draft": r.draft, "error": r.error})),
             "menu": self.space_menu.as_ref().map(|(space, _, _)| json!({"space": space, "items": self.space_menu_items(space).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled, "section": i.section, "destructive": i.destructive})).collect::<Vec<_>>()})),

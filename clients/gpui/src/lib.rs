@@ -154,7 +154,9 @@ pub fn create_window(
             cx.new(|cx| {
                 cx.on_release(|client: &mut view::Client, cx| {
                     view::float::release(client.window_id());
+                    let closed = client.window_id().to_owned();
                     client.shutdown();
+                    view::pane_window_closed(&closed, cx);
                     refresh_windows(cx);
                 })
                 .detach();

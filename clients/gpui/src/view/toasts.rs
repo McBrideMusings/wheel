@@ -99,6 +99,7 @@ impl Client {
             }
             ServerMsg::Error { req: Some(req), message, .. } if self.layout_reqs.remove(req) => {
                 self.toast_sources.layout_error = Some(message.clone());
+                super::sidebar::pane_layout_refused(*req);
             }
             ServerMsg::Ok { req } if self.layout_reqs.remove(req) => {}
             _ => return false,
