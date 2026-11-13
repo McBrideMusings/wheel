@@ -440,11 +440,11 @@ struct AgentText: View {
                 .font(look.body)
                 .textual.paragraphStyle(ChatParagraphStyle(
                     lineSpacing: look.lineSpacing(for: look.size) / look.size,
-                    spacing: look.paragraphSpacing))
-                .textual.headingStyle(ChatHeadingStyle(spacing: look.paragraphSpacing))
+                    spacing: look.blockGap(look.paragraphSpacing)))
+                .textual.headingStyle(ChatHeadingStyle(spacing: look.paragraphSpacing, lead: look.lineSpacing(for: look.size)))
                 .textual.inlineStyle(.chat(look))
                 .textual.unorderedListMarker(ChatListMarker(bullet: look.listBullet))
-                .textual.listItemSpacing(.fontScaled(top: look.listSpacing / look.size))
+                .textual.listItemSpacing(.fontScaled(top: look.blockGap(look.listSpacing) / look.size))
                 .textual.blockQuoteStyle(ChatBlockQuoteStyle(style: look.quoteStyle))
                 .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, agent: chat.name))
                 .textual.highlighterTheme(look.codeTheme.highlighter)
@@ -560,11 +560,14 @@ struct ChatHeadingStyle: StructuredText.HeadingStyle {
     private static let fontScales: [CGFloat] = [1.25, 1.125, 1, 1, 1, 1]
     /// The paragraph spacing, in points; a heading sits 1.5 paragraphs below the block above it.
     let spacing: Double
+    /// The body's line spacing, which a stylesheet's line boxes put half above and half below the
+    /// heading and the block above it.
+    let lead: Double
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .textual.fontScale(Self.fontScales[min(configuration.headingLevel, 6) - 1])
-            .textual.blockSpacing(StructuredText.BlockSpacing(top: spacing * 1.5, bottom: spacing * 0.5))
+            .textual.blockSpacing(StructuredText.BlockSpacing(top: spacing * 1.5 + lead, bottom: spacing * 0.5))
             .fontWeight(.semibold)
     }
 }
@@ -573,7 +576,7 @@ struct ChatHeadingStyle: StructuredText.HeadingStyle {
 struct ChatParagraphStyle: StructuredText.ParagraphStyle {
     /// Extra space between lines, as a fraction of the font size.
     let lineSpacing: CGFloat
-    /// Points above the paragraph.
+    /// Points above the paragraph, line spacing included (`ChatAppearance.blockGap`).
     let spacing: Double
 
     func makeBody(configuration: Configuration) -> some View {

@@ -2158,6 +2158,9 @@ final class DebugServer {
                         "code_theme": look.codeTheme.rawValue, "code_font": look.codeFont.rawValue,
                         "code_size": look.codeSize, "code_wrap": look.codeWrap.rawValue,
                         "code_line_numbers": look.lineNumbers, "footer_items": look.footerItems,
+                        "inline_code": look.inlineCode.rawValue, "code_block_border": look.codeBlockBorder,
+                        "code_block_spacing": look.codeBlockSpacing, "list_spacing": look.listSpacing,
+                        "list_bullet": look.listBullet.rawValue, "message_style": look.messageStyle.rawValue,
                     ] as [String: Any]
                     o["home"] = ["text": model.shownHome(agent: agent, harness: harness),
                                  "variable": AgentInfo.homeVariable(of: harness)] as [String: Any]
