@@ -59,9 +59,16 @@ impl List {
         self.f.get(key).map_or(&[], |v| v.as_slice())
     }
 
-    /// Whether a search or any filter narrows the list, which is when Clear does something.
+    /// Whether a search, any filter or an "Is not" narrows the list, which is when Clear does something.
     pub fn active(&self) -> bool {
-        !self.q.trim().is_empty() || self.f.values().any(|v| !v.is_empty())
+        !self.q.trim().is_empty() || self.f.values().any(|v| !v.is_empty()) || !self.not.is_empty()
+    }
+
+    /// A filter left with no ticks matches every row, so its "Is not" goes with the last tick: the next tick matches again.
+    fn settle(&mut self, key: &str) {
+        if self.values(key).is_empty() {
+            self.not.remove(key);
+        }
     }
 
     /// Whether `item` stays in the list: every filter holds it (a filter holds a row that has one of its values,
@@ -103,15 +110,17 @@ impl List {
                 self.selected.clear();
             }
             Op::Filter(key, value) if known(&key) => {
-                self.f.insert(key, value.split(',').filter(|s| !s.is_empty()).map(String::from).collect());
+                self.f.insert(key.clone(), value.split(',').filter(|s| !s.is_empty()).map(String::from).collect());
+                self.settle(&key);
                 self.selected.clear();
             }
             Op::Toggle(key, value, on) if known(&key) => {
-                let v = self.f.entry(key).or_default();
+                let v = self.f.entry(key.clone()).or_default();
                 v.retain(|x| *x != value);
                 if on {
                     v.push(value);
                 }
+                self.settle(&key);
                 self.selected.clear();
             }
             Op::Not(key, on) if known(&key) => {
@@ -350,6 +359,14 @@ mod tests {
         assert_eq!(names(&l), ["beta", "alpha"]);
         l.apply(&SPEC, Op::Not("state".into(), true));
         assert_eq!(names(&l), ["gamma"]);
+        l.apply(&SPEC, Op::Toggle("state".into(), "closed".into(), false));
+        l.apply(&SPEC, Op::Toggle("state".into(), "open".into(), false));
+        assert!(l.not.is_empty(), "the last tick takes its Is not with it");
+        l.apply(&SPEC, Op::Toggle("state".into(), "draft".into(), true));
+        assert_eq!(names(&l), ["gamma"], "so the next tick matches");
+        l.apply(&SPEC, Op::Not("state".into(), true));
+        l.apply(&SPEC, Op::Filter("state".into(), "".into()));
+        assert!(l.not.is_empty());
         l.apply(&SPEC, Op::Clear);
         assert!(!l.active());
         l.apply(&SPEC, Op::Query("ALP".into()));
