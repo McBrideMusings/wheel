@@ -66,11 +66,8 @@ fn draw(window: gpui::WindowHandle<Client>, path: Option<PathBuf>, cx: &mut Asyn
 async fn shot(native: &Native, directory: &std::path::Path, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(directory)?;
     native.call(json!({"op":"snapshot","directory":directory}));
-    for _ in 0..200 {
-        if native.status()["snapshots_pending"] == 0 {
-            return Ok(());
-        }
-        tick(cx, 100).await;
+    if wait(native, "WK snapshots", |s| s["snapshots_pending"] == 0, cx).await.is_ok() {
+        return Ok(());
     }
     let s = native.status();
     let waiting: Vec<Value> = s["snapshots_waiting"].as_array().cloned().unwrap_or_default().iter()
