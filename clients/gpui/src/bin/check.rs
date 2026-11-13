@@ -307,6 +307,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams) = conversations(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, fork_row, fork_text, fork_rows, reply_buttons, fork_report) = fork_and_reply_buttons(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, message_menu_report, scroll_report) = message_menu_and_scroll(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), old_id.clone(), splits_above.clone(), click.clone(), fork_row.clone(), fork_text.clone(), cx).await?;
+    let (run, running_report) = running_strip(run, agent_pane.clone(), agent_name.clone(), cx).await?;
+    let (run, running_full_report) = running_full_view(run, agent_pane.clone(), agent_name.clone(), cx).await?;
     let conversations_report = json!({"reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
@@ -403,6 +405,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["conversations"] = conversations_report;
     report["conversations"]["fork_rows"] = json!(fork_rows);
     report["conversations"]["fork"] = fork_report;
+    report["running"] = running_report;
+    report["running"]["full_view"] = running_full_report;
     report["message_menu"] = message_menu_report;
     report["scroll"] = scroll_report;
     // Last: it closes every window.
@@ -739,6 +743,105 @@ async fn agent_turns(run: Run, rects: Vec<(String, Rect)>, cx: &mut AsyncApp) ->
     let agent_report = json!({"pane": agent_pane, "agent": agent_name, "sent_seen_by_wheeld": sent_seen_by_wheeld, "tool_rows": tool_rows, "failed_rows": failed_rows,
         "thought_rows": thought_rows, "diff_paths": diff_paths, "state_after": state_after, "rows_total": rows(cx)?.1.len()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, agent_pane, agent_name, agent_rect, cli_path, agent_report))
+}
+
+/// The agent pane's pane state as `/state` reports it.
+fn pane_state(window: gpui::WindowHandle<Client>, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    Ok(window.update(cx, |c, _, _| c.state_json()["panes"][pane].clone())?)
+}
+
+/// Press a control the last frame drew, by its recorded name, with real mouse events.
+async fn press_named(native: &Native, window: gpui::WindowHandle<Client>, agent: &str, name: &str, cx: &mut AsyncApp) -> Result<()> {
+    let b = window.update(cx, |c, _, _| c.control_bounds(agent, name))?.ok_or_else(|| anyhow::anyhow!("{name} was not drawn"))?;
+    let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    tick(cx, 150).await;
+    draw(window, None, cx)
+}
+
+/// Pump wheeld's events and draw until `want` holds of the agent pane's `/state`, or fail with `what`.
+async fn wait_pane(run: &mut Run, pane: &str, what: &str, want: impl Fn(&Value) -> bool, cx: &mut AsyncApp) -> Result<Value> {
+    let mut state = Value::Null;
+    for _ in 0..100 {
+        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
+        draw(run.window, None, cx)?;
+        state = pane_state(run.window, pane, cx)?;
+        if want(&state["footer"]) {
+            return Ok(state["footer"].clone());
+        }
+    }
+    anyhow::bail!("{what}: the pane's footer is {}", state["footer"])
+}
+
+/// Background tasks (wheel-96jo): the fake agent starts a background shell and a subagent; the
+/// strip above the composer has a row for each with its latest line and running time, and the
+/// shell's call on the transcript reads `● running m:ss`.
+async fn running_strip(run: Run, agent_pane: String, _agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    let mut run = run;
+    let (window, native, output) = (run.window, run.native.clone(), run.output.clone());
+    if window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() != Some(agent_pane.as_str()) {
+        let f = pane_state(window, &agent_pane, cx)?["frame"].clone();
+        let p = [f[0].as_f64().unwrap_or(0.) + f[2].as_f64().unwrap_or(0.) / 2., f[1].as_f64().unwrap_or(0.) + f[3].as_f64().unwrap_or(0.) / 2.];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+        tick(cx, 300).await;
+    }
+    let draft = pane_state(window, &agent_pane, cx)?["draft"].as_str().unwrap_or_default().chars().count();
+    erase(&native, draft, cx).await;
+    let before = wait_pane(&mut run, &agent_pane, "before any task", |f| f["tasks"].as_array().is_some_and(Vec::is_empty) || f.is_null(), cx).await?;
+    type_line(&native, "start background", cx).await;
+    let shown = |f: &Value| f["tasks"].as_array().is_some_and(|t| t.len() == 2 && t[1]["latest"] == "2 tool calls \u{b7} last: Bash \u{b7} 26.7k tokens" && t.iter().all(|t| t["strip_row_drawn"] == true))
+        && f["marks"].as_array().is_some_and(|m| m.len() == 2);
+    let footer = wait_pane(&mut run, &agent_pane, "one shell and one subagent in the strip", shown, cx).await?;
+    let (shell, sub) = (&footer["tasks"][0], &footer["tasks"][1]);
+    ensure!(footer["background_text"] == "1 shell \u{b7} 2 agents", "the status line reads {}", footer["background_text"]);
+    ensure!(shell["id"] == "bash-1" && shell["kind"] == "shell" && shell["command"] == "make deploy-client" && shell["call"] == "bg-call-1" && shell["latest"] == "line 3" && shell["output_bytes"] == 21,
+        "the shell's strip row: {shell}");
+    ensure!(sub["id"] == "agent-1" && sub["kind"] == "agent" && sub["call"] == "bg-call-2", "the subagent's strip row: {sub}");
+    let clock = |t: &Value| t["elapsed"].as_str().is_some_and(|e| e.split(':').count() == 2 && e.split(':').all(|p| p.chars().all(|c| c.is_ascii_digit())));
+    ensure!(clock(shell) && clock(sub), "running times are not m:ss: {} {}", shell["elapsed"], sub["elapsed"]);
+    let mark = footer["marks"].as_array().and_then(|m| m.iter().find(|m| m["call"] == "bg-call-1")).cloned().unwrap_or(Value::Null);
+    let text = mark["text"].as_str().unwrap_or_default();
+    ensure!(text.starts_with("\u{25cf} running ") && clock(&json!({"elapsed": text.trim_start_matches("\u{25cf} running ")})), "the call's transcript row reads {mark}");
+    ensure!(footer["ticking"] == true, "no redraw is armed to tick the clocks: {footer}");
+    draw(window, Some(output.join("client-running-strip.png")), cx)?;
+    let report = json!({"before": before, "footer": footer, "mark": mark});
+    Ok((run, report))
+}
+
+/// The strip's row opened to its last lines, the full view over the transcript with the text
+/// `task_output` returned, its tabs, Escape, Show in Transcript, and the tasks ending.
+async fn running_full_view(run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    let mut run = run;
+    let (window, native, output) = (run.window, run.native.clone(), run.output.clone());
+    press_named(&native, window, &agent_name, "task-row:bash-1", cx).await?;
+    let open = wait_pane(&mut run, &agent_pane, "the shell's row open", |f| f["tasks"][0]["expanded"] == true, cx).await?;
+    ensure!(open["tasks"][0]["detail"] == json!(["line 1", "line 2", "line 3"]), "the open row's lines: {}", open["tasks"][0]["detail"]);
+    draw(window, Some(output.join("client-running-row-open.png")), cx)?;
+    press_named(&native, window, &agent_name, "task-full:bash-1", cx).await?;
+    let full = wait_pane(&mut run, &agent_pane, "the full view with the shell's output",
+        |f| f["full_task"] == "bash-1" && f["full_view_drawn"] == true && f["tasks"][0]["output_read"] == "line 1\nline 2\nline 3\n", cx).await?;
+    ensure!(full["tasks"][0]["output_read_bytes"] == 21, "the output read: {}", full["tasks"][0]);
+    draw(window, Some(output.join("client-running-full.png")), cx)?;
+    press_named(&native, window, &agent_name, "task-tab:agent-1", cx).await?;
+    wait_pane(&mut run, &agent_pane, "the subagent's tab", |f| f["full_task"] == "agent-1", cx).await?;
+    press_named(&native, window, &agent_name, "task-tab:bash-1", cx).await?;
+    wait_pane(&mut run, &agent_pane, "the shell's tab", |f| f["full_task"] == "bash-1", cx).await?;
+    native.call(json!({"op":"post_key","text":"\u{1b}","code":53}));
+    let escaped = wait_pane(&mut run, &agent_pane, "Escape closing the full view", |f| f["full_task"].is_null(), cx).await?;
+    press_named(&native, window, &agent_name, "task-full:bash-1", cx).await?;
+    wait_pane(&mut run, &agent_pane, "the full view again", |f| f["full_task"] == "bash-1" && f["full_view_drawn"] == true, cx).await?;
+    press_named(&native, window, &agent_name, "task-reveal:bash-1", cx).await?;
+    wait_pane(&mut run, &agent_pane, "Show in Transcript closing the full view", |f| f["full_task"].is_null(), cx).await?;
+    let revealed = window.update(cx, |c, _, _| c.toast_log.iter().any(|l| l.contains("shows call bg-call-1")))?;
+    ensure!(revealed, "the log does not say the transcript scrolled to bg-call-1");
+    type_line(&native, "end background", cx).await;
+    let ended = wait_pane(&mut run, &agent_pane, "the tasks ending",
+        |f| f["tasks"].as_array().is_some_and(Vec::is_empty) && f["background_text"].is_null() && f["marks"].as_array().is_some_and(Vec::is_empty), cx).await?;
+    ensure!(window.update(cx, |c, _, _| c.control_bounds(&agent_name, "task-row:bash-1"))?.is_none(), "a strip row is still drawn after the tasks ended");
+    draw(window, Some(output.join("client-running-ended.png")), cx)?;
+    Ok((run, json!({"open": open, "full": full, "escaped": escaped["full_task"], "revealed": revealed, "ended": ended})))
 }
 
 /// A Markdown reply drawn as blocks, its first line selected with the pointer and copied.
