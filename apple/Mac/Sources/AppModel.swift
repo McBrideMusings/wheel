@@ -666,7 +666,7 @@ final class AppModel {
         var rebuiltFocused: Set<String> = []
         for (term, terminal) in terminals {
             guard let now = spaceId(ofTerm: term), now != terminal.space else { continue }
-            if terminal.view.isFocused { rebuiltFocused.insert(term) }
+            if terminal.view?.isFocused == true { rebuiltFocused.insert(term) }
             Log.info("terminal \(term) moved from space \(terminal.space ?? "none") to \(now); surface rebuilt with its look")
             client.send(.termDetach(id: term))
             terminals[term] = nil
@@ -686,7 +686,7 @@ final class AppModel {
             return terminal
         }
         if !added.isEmpty { terminalSurfaceRevision += 1 }
-        for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
+        for (term, visible) in plan.visible { terminals[term]?.isSurfaceVisible = visible }
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
             let leaving = !spaces.contains { $0.allPanes.contains { $0.id == pane } }
@@ -773,8 +773,8 @@ final class AppModel {
             Log.info(layoutLog)
         }
         focusKey = plan.focusKey
-        if let term = plan.focus { terminals[term]?.view.requestFocus() }
-        else if let term = rebuiltFocused.first { terminals[term]?.view.requestFocus() }
+        if let term = plan.focus { terminals[term]?.view?.requestFocus() }
+        else if let term = rebuiltFocused.first { terminals[term]?.view?.requestFocus() }
         return added
     }
 
@@ -961,15 +961,15 @@ final class AppModel {
         case let .termAttached(_, id, replayBytes):
             guard let terminal = terminals[id] else { return }
             // Every attach (and every resync) replays from scratch: reset the screen first.
-            terminal.session.receive(Data("\u{1b}c".utf8))
+            terminal.receive(Data("\u{1b}c".utf8))
             terminal.attached = true
-            Log.info("attached to \(id), replay \(replayBytes) bytes")
+            Log.info("attached to \(id), replay \(replayBytes) bytes, \(terminal.surfaces.count) surface(s)")
         case let .termOutput(id, data):
-            terminals[id]?.session.receive(data)
+            terminals[id]?.receive(data)
         case let .termExited(id, code):
             guard let terminal = terminals[id] else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
-            terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
+            terminal.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
         case let .remote(_, info):
             settings.devices.received(info)
             Log.info("remote listen=\(info.listen ?? "off") port=\(info.port) addresses=\(info.addresses.joined(separator: ",")) fingerprint=\(info.fingerprint) problem=\(info.problem ?? "-")")
@@ -1212,7 +1212,7 @@ final class AppModel {
         if let term = plan.focus {
             guard let terminal = terminals[term] else { return }
             focusKey = plan.focusKey
-            terminal.view.requestFocus()
+            terminal.view?.requestFocus()
         } else {
             focusKey = plan.focusKey
         }
@@ -2309,6 +2309,14 @@ final class AppModel {
         if let size = terminal.size { client.send(.termResize(req: nil, id: terminal.term, cols: size.cols, rows: size.rows)) }
     }
 
+    /// Fill a surface made after the terminal attached: attach again, so the daemon replays the
+    /// screen to every surface. Before the first attach completes, that attach's replay fills it.
+    func replay(_ terminal: PaneTerminal) {
+        guard terminal.attached, terminals[terminal.term] === terminal else { return }
+        client.send(.termDetach(id: terminal.term))
+        attach(terminal)
+    }
+
     fileprivate func typed(_ term: String, _ data: Data) {
         guard terminals[term]?.attached == true else { return }
         client.send(.termInput(req: nil, id: term, data: data))
@@ -2392,7 +2400,7 @@ final class AppModel {
         // The wait ends by itself: it is re-checked every `retryDelay` and gives up after `holdLimit` with no new report (the surface reports every display frame while it moves),
         // so a frame that never matches the pane exactly (an inset, a rounding) cannot hold the
         // shell on a stale size.
-        if let view = terminal.view.attachedPlatformView,
+        if let view = terminal.measured?.attachedPlatformView,
            abs(view.bounds.width - layout.size.width) > 0.5 || abs(view.bounds.height - layout.size.height) > 0.5,
            terminal.holdSettle({ [weak self, weak terminal] in
                guard let self, let terminal else { return }
@@ -2409,14 +2417,61 @@ final class AppModel {
     }
 }
 
-/// One terminal pane's Ghostty surface and the in-memory session feeding it the daemon's bytes.
+/// One window's view of a terminal: its own Ghostty view state and the in-memory session feeding
+/// that view's surface. A session holds a single surface, so each window that shows the terminal
+/// has one of these, and closing a window cannot leave another window's surface unfed.
+@MainActor
+final class PaneSurface: ObservableObject {
+    let view: TerminalViewState
+    let session: InMemoryTerminalSession
+
+    init(term: String, controller: TerminalController, model: AppModel?, terminal: PaneTerminal) {
+        view = TerminalViewState(controller: controller)
+        let made = Made()
+        // Only columns and rows reach the daemon, so a divider drag's pixel-only updates are noise.
+        session = InMemoryTerminalSession(
+            write: { [weak model] data in
+                Task { @MainActor in model?.typed(term, data) }
+            },
+            resize: { [weak model, weak terminal] vp in
+                Task { @MainActor in
+                    terminal?.reporting = made.surface
+                    model?.resized(term, vp)
+                }
+            },
+            suppressesPixelOnlyResizes: true
+        )
+        view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        made.surface = self
+    }
+
+    /// Lets the session's resize callback name the surface it belongs to, which exists only after
+    /// the session is made.
+    @MainActor private final class Made { weak var surface: PaneSurface? }
+}
+
+/// One terminal pane: the daemon's stream for it, and one `PaneSurface` per window drawing it.
 @MainActor
 final class PaneTerminal: ObservableObject {
     let term: String
     /// The space whose controller styles this surface.
     let space: String?
-    let view: TerminalViewState
-    let session: InMemoryTerminalSession
+    private let controller: TerminalController
+    private weak var model: AppModel?
+    /// Made with the terminal so output that arrives before any window draws it is kept; the first
+    /// view takes it. Strong until then, since no view holds it yet.
+    private var unclaimed: PaneSurface?
+    /// Every surface a window holds. The views own them, so one goes when its window does.
+    private let claimed = NSHashTable<PaneSurface>.weakObjects()
+    /// The surface whose session last reported a grid: the one `settle` measures.
+    weak var reporting: PaneSurface?
+    /// Whether the surfaces render, for every window's view of the terminal.
+    var isSurfaceVisible = true {
+        didSet {
+            guard isSurfaceVisible != oldValue else { return }
+            for surface in surfaces { surface.view.isSurfaceVisible = isSurfaceVisible }
+        }
+    }
     /// The daemon is streaming this terminal to this connection.
     @Published var attached = false
     /// The grid size last sent to the daemon.
@@ -2457,22 +2512,59 @@ final class PaneTerminal: ObservableObject {
     init(term: String, space: String?, controller: TerminalController, model: AppModel) {
         self.term = term
         self.space = space
-        view = TerminalViewState(controller: controller)
-        // Only columns and rows reach the daemon, so a divider drag's pixel-only updates are noise.
-        session = InMemoryTerminalSession(
-            write: { [weak model] data in
-                Task { @MainActor in model?.typed(term, data) }
-            },
-            resize: { [weak model] vp in
-                Task { @MainActor in model?.resized(term, vp) }
-            },
-            suppressesPixelOnlyResizes: true
-        )
-        view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        self.controller = controller
+        self.model = model
+        unclaimed = PaneSurface(term: term, controller: controller, model: model, terminal: self)
     }
 
+    /// Every surface that exists now: the windows' and the one waiting for its first view.
+    var surfaces: [PaneSurface] { claimed.allObjects + (unclaimed.map { [$0] } ?? []) }
+
+    /// A surface for a view that is about to draw this terminal. The first view takes the surface
+    /// made with the terminal, which has had every byte; a later one gets a new, empty surface,
+    /// filled by a fresh replay. The replay waits for the end of the current update, since this
+    /// runs while SwiftUI builds the view.
+    func makeSurface() -> PaneSurface {
+        if let surface = unclaimed {
+            unclaimed = nil
+            claimed.add(surface)
+            return surface
+        }
+        let surface = PaneSurface(term: term, controller: controller, model: model, terminal: self)
+        surface.view.isSurfaceVisible = isSurfaceVisible
+        claimed.add(surface)
+        Log.info("terminal \(term): surface made, \(claimed.count) live; replaying")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.model?.replay(self)
+        }
+        return surface
+    }
+
+    /// Daemon output, given to every surface.
+    func receive(_ data: Data) {
+        let each = claimed.objectEnumerator()
+        while let surface = each.nextObject() as? PaneSurface { surface.session.receive(data) }
+        unclaimed?.session.receive(data)
+    }
+
+    /// The surface callers that act on one view use: the focused one, else the one in the key
+    /// window, else any. Nil when no surface exists; reading it never makes one.
+    private var primary: PaneSurface? {
+        let all = claimed.allObjects
+        if let focused = all.first(where: { $0.view.isFocused }) { return focused }
+        if let key = all.first(where: { $0.view.attachedPlatformView?.window?.isKeyWindow == true }) { return key }
+        return all.last ?? unclaimed
+    }
+
+    /// The view state of `primary`: focus, title, font size. Nil while no window draws the terminal.
+    var view: TerminalViewState? { primary?.view }
+
+    /// The surface `settle` measures: the one that last reported, else `primary`.
+    var measured: TerminalViewState? { (reporting ?? primary)?.view }
+
     /// The terminal's visible text, for the debug state endpoint.
-    var viewportText: String? { session.readViewportText() }
+    var viewportText: String? { primary?.session.readViewportText() }
 }
 
 extension AppModel {
