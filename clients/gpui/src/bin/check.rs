@@ -6447,7 +6447,9 @@ async fn pane_drag_over_tabs(src: &Side, dst: &Side, pumper: gpui::WindowHandle<
     let (track, tabs) = dst.h.update(cx, |c, _, _| { let r = c.title_row(); (r.track, r.tabs) })?;
     let track = track.ok_or_else(|| anyhow::anyhow!("{} has no tab strip", dst.id))?;
     let room = tabs.last().map(|t| t.x + t.w).unwrap_or(track.x);
-    ensure!(room + 8. < track.x + track.w, "{}'s tabs fill the strip ({room} of {}): no room for a new space", dst.id, track.x + track.w);
+    // The strip is the tabs' own track (SpacesView's tabStripFrames), so its room is the inset
+    // past the last tab, not a gap beyond it.
+    ensure!(room < track.x + track.w, "{}'s last tab ends at {room}, past the strip's end {}: no strip past the tabs to release on", dst.id, track.x + track.w);
     let on_room = (dst.f[0] + (room + track.x + track.w) / 2., dst.f[1] + track.y + track.h / 2.);
     src.native.call(json!({"op":"post_mouse","kind":"drag","point":local_to(src, on_room)}));
     tick(cx, 150).await;
