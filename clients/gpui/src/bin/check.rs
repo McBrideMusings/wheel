@@ -771,7 +771,9 @@ async fn wait_pane(run: &mut Run, pane: &str, what: &str, want: impl Fn(&Value) 
             return Ok(state["footer"].clone());
         }
     }
-    anyhow::bail!("{what}: the pane's footer is {}", state["footer"])
+    let (focus, menus) = run.window.update(cx, |c, _, _| { let s = c.state_json(); (s["focus"].clone(), json!({"palette": s["palette"], "pane_menu": s["pane_menu"]})) })?;
+    let shown: Value = state.as_object().map(|o| o.iter().filter(|(k, _)| k.as_str() != "footer").map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+    anyhow::bail!("{what}: the pane's footer is {}; the pane is {shown}; focus {focus}; {menus}", state["footer"])
 }
 
 /// Background tasks (wheel-96jo): the fake agent starts a background shell and a subagent; the
@@ -791,9 +793,18 @@ async fn running_strip(run: Run, agent_pane: String, _agent_name: String, cx: &m
     erase(&native, draft, cx).await;
     let before = wait_pane(&mut run, &agent_pane, "before any task", |f| f["tasks"].as_array().is_some_and(Vec::is_empty) || f.is_null(), cx).await?;
     type_line(&native, "start background", cx).await;
-    let shown = |f: &Value| f["tasks"].as_array().is_some_and(|t| t.len() == 2 && t[1]["latest"] == "2 tool calls \u{b7} last: Bash \u{b7} 26.7k tokens" && t.iter().all(|t| t["strip_row_drawn"] == true))
+    let shown = |f: &Value| f["tasks"].as_array().is_some_and(|t| t.len() == 3 && t[1]["latest"] == "2 tool calls \u{b7} last: Bash \u{b7} 26.7k tokens" && t.iter().all(|t| t["strip_row_drawn"] == true))
         && f["marks"].as_array().is_some_and(|m| m.len() == 2);
-    let footer = wait_pane(&mut run, &agent_pane, "one shell and one subagent in the strip", shown, cx).await?;
+    let footer = match wait_pane(&mut run, &agent_pane, "one shell and two subagents in the strip", shown, cx).await {
+        Ok(footer) => footer,
+        Err(e) => {
+            let read = std::process::Command::new(std::env::var("WHEEL_CLIENT_CLI")?)
+                .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "read", &agent_pane]).output()?;
+            let text = String::from_utf8_lossy(&read.stdout);
+            let tail: String = text.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+            anyhow::bail!("{e}; wheeld's transcript ends: {tail}{}", String::from_utf8_lossy(&read.stderr));
+        }
+    };
     let (shell, sub) = (&footer["tasks"][0], &footer["tasks"][1]);
     ensure!(footer["background_text"] == "1 shell \u{b7} 2 agents", "the status line reads {}", footer["background_text"]);
     ensure!(shell["id"] == "bash-1" && shell["kind"] == "shell" && shell["command"] == "make deploy-client" && shell["call"] == "bg-call-1" && shell["latest"] == "line 3" && shell["output_bytes"] == 21,
