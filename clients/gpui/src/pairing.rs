@@ -9,11 +9,38 @@ pub const REFRESH_MS: u64 = 240_000;
 /// How long the window stays after a device connects, long enough to read who it was.
 pub const LINGER_MS: u64 = 1_500;
 
-/// What the menu bar's pairing row asks a window to do once wheeld says how phones reach it.
+/// What the menu bar's pairing row asks for: the copy runs in the menu bar, the window in a Client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
     Copy,
     Show,
+}
+
+/// The pairing code on the clipboard, until its minute runs out or another copy replaces it. The
+/// app holds one, whichever window or the menu bar copied it (PairingWindow.swift's writeConcealed).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Copied(Option<(String, u64)>);
+
+impl Copied {
+    /// `token` is on the clipboard until `until` (unix ms). The code it replaced, when another,
+    /// is returned to be cancelled.
+    pub fn replace(&mut self, token: &str, until: u64) -> Option<String> {
+        let old = self.0.replace((token.to_owned(), until));
+        old.map(|(t, _)| t).filter(|t| t != token)
+    }
+    pub fn get(&self) -> Option<&(String, u64)> {
+        self.0.as_ref()
+    }
+    /// The copied code's minute ran out: its token, to be cancelled unless `shown` says a pairing
+    /// window still shows it.
+    pub fn expired(&mut self, now_ms: u64, shown: impl Fn(&str) -> bool) -> Option<String> {
+        let (token, until) = self.0.clone()?;
+        if now_ms < until {
+            return None;
+        }
+        self.0 = None;
+        (!shown(&token)).then_some(token)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,12 +55,10 @@ pub struct Pairing {
     pub events: Vec<String>,
     /// The codes the open window has shown; they stop working when it closes.
     pub window_tokens: Vec<String>,
-    /// The code on the clipboard, until its minute runs out or another copy replaces it.
-    pub copied: Option<(String, u64)>,
     /// A copy asked for a code that has not arrived yet.
     pub copy_pending: bool,
-    /// The menu bar's row asked for a copy or the window; it runs when wheeld answers how phones reach it.
-    pub asked: Option<Ask>,
+    /// The menu bar's row asked for the window; it opens when wheeld answers how phones reach it.
+    pub show_asked: bool,
     /// When the open window next asks for a code (unix ms).
     pub refresh_at: Option<u64>,
     /// When the window closes itself after a device connected (unix ms).
@@ -42,7 +67,7 @@ pub struct Pairing {
 
 impl Default for Pairing {
     fn default() -> Self {
-        Pairing { open: false, close_on_connect: true, details_open: false, connected: None, events: vec![], window_tokens: vec![], copied: None, copy_pending: false, asked: None, refresh_at: None, close_at: None }
+        Pairing { open: false, close_on_connect: true, details_open: false, connected: None, events: vec![], window_tokens: vec![], copy_pending: false, show_asked: false, refresh_at: None, close_at: None }
     }
 }
 
@@ -86,7 +111,7 @@ impl Pairing {
     /// starts over: the codes it showed are returned to be cancelled.
     pub fn open(&mut self, now_ms: u64) -> Vec<String> {
         let old = std::mem::take(&mut self.window_tokens);
-        *self = Pairing { open: true, close_on_connect: self.close_on_connect, details_open: self.details_open, copied: self.copied.take(), ..Pairing::default() };
+        *self = Pairing { open: true, close_on_connect: self.close_on_connect, details_open: self.details_open, ..Pairing::default() };
         self.refresh_at = Some(now_ms + REFRESH_MS);
         self.event(now_ms, "opened the pairing window");
         old
@@ -131,19 +156,9 @@ impl Pairing {
         }
     }
 
-    /// The copied code's minute ran out: the token to cancel, unless the open window still shows it.
-    pub fn copy_expired(&mut self, now_ms: u64) -> Option<String> {
-        let (token, until) = self.copied.clone()?;
-        if now_ms < until {
-            return None;
-        }
-        self.copied = None;
-        (!(self.open && self.window_tokens.contains(&token))).then_some(token)
-    }
-
     /// The soonest moment something timed happens, for a redraw timer.
     pub fn next_tick(&self) -> Option<u64> {
-        [self.refresh_at, self.close_at, self.copied.as_ref().map(|(_, until)| *until)].into_iter().flatten().min()
+        [self.refresh_at, self.close_at].into_iter().flatten().min()
     }
 }
 
@@ -196,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_five_events_and_expires_a_copy() {
+    fn keeps_five_events() {
         let mut p = Pairing::default();
         for i in 0..7 {
             p.event(i * 1000, &format!("e{i}"));
@@ -204,13 +219,21 @@ mod tests {
         assert_eq!(p.events.len(), 5);
         assert!(p.events[0].ends_with("e2"));
         assert!(p.events[0].starts_with("00:00:02 "));
-        p.copied = Some(("t".into(), 10_000));
-        assert_eq!(p.copy_expired(9_999), None);
-        assert_eq!(p.copy_expired(10_000), Some("t".into()));
         p.open(0);
-        p.window_tokens.push("u".into());
-        p.copied = Some(("u".into(), 10));
-        assert_eq!(p.copy_expired(20), None, "the open window keeps its code");
         assert_eq!(p.next_tick(), Some(REFRESH_MS));
+    }
+
+    #[test]
+    fn a_copy_expires_after_its_minute_and_a_new_copy_replaces_it() {
+        let mut c = Copied::default();
+        assert_eq!(c.replace("t", 10_000), None);
+        assert_eq!(c.expired(9_999, |_| false), None);
+        assert_eq!(c.expired(10_000, |_| false), Some("t".into()));
+        assert_eq!(c.get(), None);
+        assert_eq!(c.replace("u", 10), None);
+        assert_eq!(c.replace("v", 20), Some("u".into()), "the code a copy replaces is cancelled");
+        assert_eq!(c.replace("v", 30), None, "the same code again has nothing to cancel");
+        assert_eq!(c.expired(40, |t| t == "v"), None, "an open window keeps its code");
+        assert_eq!(c.get(), None);
     }
 }

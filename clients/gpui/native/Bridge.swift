@@ -183,8 +183,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         if logs.count > 200 { logs.removeFirst(logs.count - 200) }
     }
     var overlay: CGRect?
-    /// The clear of the last concealed clipboard copy, until its minute runs out.
-    var concealedClear: Task<Void, Never>?
     var mouseNumber = 0
     var heldBeforeKey: String?
     var mouseTarget: NSView?
@@ -931,17 +929,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let rows: [String] = (0..<h).reversed().map { y in String((0..<w).map { pixels[y * w + $0] < 128 ? "1" : "0" }) }
             return ["rows": rows]
         case "clipboard_concealed":
-            // The pairing window's Copy code: a concealed clipboard item, cleared after `clear_after_ms`
-            // if nothing else was copied (PairingWindow.swift's writeConcealed).
-            let text = value["text"] as? String ?? ""
-            let ms = value["clear_after_ms"] as? Int ?? 60_000
-            concealedClear?.cancel()
-            concealedClear = PairingClipboard.writeConcealed(text, life: .milliseconds(ms)) { [weak self] cleared in
-                self?.log(cleared ? "pairing code cleared from the clipboard after \(ms) ms" : "clipboard holds something else now; left alone")
-                self?.concealedClear = nil
-            }
-            log("pairing code copied to the clipboard as a concealed item; clearing it in \(ms) ms")
-            return ["copied": true, "clear_after_ms": ms]
+            return writeConcealed(value, log: log)
         case "symbol":
             // An SF Symbol drawn to PNG pixels for the GPUI view, which has no symbol font of its own.
             return symbolPNG(value, scale: Double(root.window?.backingScaleFactor ?? 2))
@@ -1312,6 +1300,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "fit_window": return fitWindow(value)
         case "view_frame": return viewFrame(value)
         case "app_icon": return appIcon(value)
+        case "clipboard_concealed": return writeConcealed(value) { FileHandle.standardError.write(Data(("wheel-gpui native: " + $0 + "\n").utf8)) }
         case "symbol": return symbolPNG(value, scale: Double(NSScreen.main?.backingScaleFactor ?? 2))
         case "pointer_on_item":
             let on = item?.button?.window.map { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? false
@@ -1330,6 +1319,22 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     return [Double(r.minX), mainScreenTop() - Double(r.maxY), Double(r.width), Double(r.height)]
 }
 @MainActor private var app: AppNative?
+/// The clear of the last concealed clipboard copy, until its minute runs out. One for the app:
+/// a copy from a window or from the menu bar replaces the other's, and a window closing leaves it.
+@MainActor private var concealedClear: Task<Void, Never>?
+/// The pairing code's concealed clipboard item, cleared after `clear_after_ms` if nothing else
+/// was copied (PairingWindow.swift's writeConcealed).
+@MainActor func writeConcealed(_ value: [String: Any], log: @escaping (String) -> Void) -> [String: Any] {
+    let text = value["text"] as? String ?? ""
+    let ms = value["clear_after_ms"] as? Int ?? 60_000
+    concealedClear?.cancel()
+    concealedClear = PairingClipboard.writeConcealed(text, life: .milliseconds(ms)) { cleared in
+        log(cleared ? "pairing code cleared from the clipboard after \(ms) ms" : "clipboard holds something else now; left alone")
+        concealedClear = nil
+    }
+    log("pairing code copied to the clipboard as a concealed item; clearing it in \(ms) ms")
+    return ["copied": true, "clear_after_ms": ms]
+}
 /// The check's stand-in for the system's Reduce Motion (`reduce_motion` with `set`); nil reads the system's.
 @MainActor private var reduceMotionOverride: Bool?
 @MainActor func reduceMotion() -> Bool { reduceMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }

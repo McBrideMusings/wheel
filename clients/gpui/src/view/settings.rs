@@ -535,9 +535,9 @@ impl Client {
     pub fn settings_reconnected(&mut self) {
         // The menu bar's pairing ask made before the link first came up goes out now; one whose
         // request the old connection carried is dropped with it.
-        let unsent = self.pairing.asked.is_some() && self.settings_reqs.pairing_remote.is_none();
+        let unsent = self.pairing.show_asked && self.settings_reqs.pairing_remote.is_none();
         if !unsent {
-            self.pairing.asked = None;
+            self.pairing.show_asked = false;
         }
         self.settings_reqs = SettingsReqs::default();
         self.settings.forget_requests();
@@ -546,7 +546,7 @@ impl Client {
             self.ask_settings_status();
             self.ask_remote();
         }
-        if self.pairing.asked.is_some() {
+        if self.pairing.show_asked {
             self.settings_reqs.pairing_remote = self.ask_remote();
         }
     }

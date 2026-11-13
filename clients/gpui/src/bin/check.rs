@@ -4401,7 +4401,7 @@ async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncAp
     let mut copied = false;
     for _ in 0..50 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        copied = window.update(cx, |c, _, _| c.pairing.copied.is_some())?;
+        copied = wheel_gpui::view::copied_pairing_code().is_some();
         if copied {
             break;
         }
@@ -5618,10 +5618,9 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     let after_new = state(cx);
     let popover_window_open = popover_any.update(cx, |_, _, _| ()).is_ok();
     ensure!(after_new["popover"]["open"] == false && !popover_window_open, "the popover stayed open after New Window: handle held {}, window open {popover_window_open}", after_new["popover"]["open"]);
-    // The pairing row and Settings… (wheel-ynjo.7.4.3): the popover opened again copies the code
-    // through the focused window (the one New Window opened, which never opened Settings, so it
-    // asks wheeld how phones reach it first), and Settings… opens that window's Settings and
-    // closes the popover.
+    // The pairing row and Settings… (wheel-ynjo.7.4.3, 7.4.6): the popover opened again copies the
+    // code through the menu bar's own connection and opens no window, and Settings… opens the
+    // focused window's Settings and closes the popover.
     let pairing = {
         cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
         let mut reopened = Value::Null;
@@ -5643,20 +5642,22 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         let height = shown["popover"]["frame"][3].as_f64().unwrap_or(0.);
         ensure!((height - shown["height"].as_f64().unwrap_or(-1.)).abs() < 1., "the popover is {height} tall, its rows need {}", shown["height"]);
         let target = cx.update(|cx| wheel_gpui::view::focused_client(cx)).ok_or_else(|| anyhow::anyhow!("no focused window"))?;
-        let copied_before = target.update(cx, |c, _, _| c.pairing.copied.clone())?;
+        let copied_before = wheel_gpui::view::copied_pairing_code();
+        let windows_before_copy = wheel_gpui::windows::with(|r| r.windows.len());
         let picture = output.join("client-menubar-pairing.png");
         popover_picture(popover, &picture, cx)?;
         popover_press(popover, &shown, "pairing-copy", cx)?;
         let mut copied = None;
         for _ in 0..100 {
             tick(cx, 100).await;
-            copied = target.update(cx, |c, _, _| c.pairing.copied.clone())?;
+            copied = wheel_gpui::view::copied_pairing_code();
             if copied.is_some() && copied != copied_before {
                 break;
             }
         }
-        ensure!(copied.is_some() && copied != copied_before, "Copy pairing code in the popover copied nothing in the focused window (had a code before: {})", copied_before.is_some());
-        let copy_line = target.update(cx, |c, _, _| c.toast_log.iter().rev().find(|l| l.starts_with("pairing code copied")).cloned())?;
+        ensure!(copied.is_some() && copied != copied_before, "Copy pairing code in the popover copied nothing (had a code before: {})", copied_before.is_some());
+        ensure!(wheel_gpui::windows::with(|r| r.windows.len()) == windows_before_copy, "Copy pairing code opened a window");
+        let copy_line = menu_log_line(&menu, "pairing code copied", cx);
         ensure!(copy_line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {copy_line:?}");
         let after_copy = popover_settle(popover, &menu, cx, |s| s["popover"]["controls"]["settings"].is_array()).await;
         ensure!(after_copy["popover"]["open"] == true, "the popover closed after Copy");
@@ -5755,6 +5756,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         "after closing every window: {open_windows} windows, the menu bar reads {still}");
     let every_space: usize = still["cards"].as_array().unwrap().iter().map(|c| c["rows"].as_array().map(|r| r.len()).unwrap_or(0)).sum();
     ensure!(still["item"]["badge"].as_u64() == Some(every_space as u64), "with no window, every space ({every_space}) is unshown; the badge reads {}", still["item"]["badge"]);
+    let closed_copy = closed_copy_check(&menu, cx).await?;
     Ok(json!({"item": menu_state["item"], "cards": menu_state["cards"], "badge_before": badge_before, "background_counted": background,
         "fixture_waiting": fixture_waiting, "rows_waiting": row_waiting, "dock_while_waiting": waiting_state["item"]["dock"], "answered": answered,
         "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
@@ -5763,8 +5765,49 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         "space_rows": space_rows,
         "server_line": server_line,
         "dock_reopen": {"before": windows_before_dock, "after": windows_after_dock, "session": dock_opened, "wanted": dock_session},
-        "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space},
+        "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space, "copy": closed_copy},
         "log": still["log"]}))
+}
+
+/// The newest line of the menu bar's log that starts with `prefix`.
+fn menu_log_line(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, prefix: &str, cx: &mut AsyncApp) -> Option<String> {
+    menu.update(cx, |m, cx| m.state_json(cx))["log"].as_array().and_then(|l| l.iter().rev().filter_map(|l| l.as_str()).find(|l| l.starts_with(prefix)).map(str::to_owned))
+}
+
+/// Copy pairing code with every window closed (wheel-ynjo.7.4.6): the popover's button copies
+/// through the menu bar's own connection, no window opens, and the bridge writes the concealed item.
+async fn closed_copy_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &mut AsyncApp) -> Result<Value> {
+    let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
+    ensure!(wheel_gpui::windows::with(|r| r.windows.len()) == 0, "a window is open before the copy");
+    cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+    let mut opened = Value::Null;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        opened = state(cx);
+        if opened["popover"]["open"] == true {
+            break;
+        }
+    }
+    ensure!(opened["popover"]["open"] == true, "the popover did not open with no window: {}", opened["popover"]);
+    let popover: gpui::AnyWindowHandle = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?.into();
+    let shown = popover_settle(popover, menu, cx, |s| popover_fitted(s) && s["popover"]["controls"]["pairing-copy"].is_array() && s["pairing"]["disabled"].is_null()).await;
+    ensure!(shown["pairing"]["disabled"].is_null() && shown["popover"]["controls"]["pairing-copy"].is_array(), "with no window the pairing row reads disabled {}", shown["pairing"]["disabled"]);
+    let before = wheel_gpui::view::copied_pairing_code();
+    popover_press(popover, &shown, "pairing-copy", cx)?;
+    let mut copied = None;
+    for _ in 0..100 {
+        tick(cx, 100).await;
+        copied = wheel_gpui::view::copied_pairing_code();
+        if copied.is_some() && copied != before {
+            break;
+        }
+    }
+    ensure!(copied.is_some() && copied != before, "Copy pairing code with no window copied nothing (had a code before: {})", before.is_some());
+    let windows = wheel_gpui::windows::with(|r| r.windows.len());
+    ensure!(windows == 0, "Copy pairing code with no window opened {windows} window(s)");
+    let line = menu_log_line(menu, "pairing code copied", cx);
+    ensure!(line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {line:?}");
+    Ok(json!({"windows": windows, "copied": true, "line": line}))
 }
 
 /// The popover's rows and cards act (wheel-ynjo.7.4.4): a click on a row's name shows its space in
