@@ -315,9 +315,9 @@ impl Client {
         }
     }
     /// Run `id` when the pane's header offers it enabled, as a button or in the menu open for it
-    /// (the right-click one when none is); false when it does not.
+    /// (the one its ⋯ button would open when none is); false when it does not.
     pub fn choose_header_menu(&mut self, id: &str, pane: &str) -> bool {
-        let level = self.pane_menu.as_ref().filter(|m| m.0 == pane).map_or(0, |m| m.3);
+        let level = self.pane_menu.as_ref().filter(|m| m.0 == pane).map_or_else(|| self.header_level(pane), |m| m.3);
         let button = id != "menu" && self.header_buttons_at(pane, self.header_level(pane)).iter().any(|b| b.id == id && b.enabled);
         let offered = button || self.header_menu(pane, level).iter().any(|i| i.id == id && i.enabled);
         if !offered {
