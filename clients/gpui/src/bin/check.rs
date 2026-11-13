@@ -5188,7 +5188,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     let wide = state!();
     let header_kind = wide["panes"][grid_a.as_str()]["kind"].as_str().unwrap_or_default().to_owned();
     let wide_order = strings(&wide["panes"][grid_a.as_str()]["header_order"]);
-    ensure!(wide["panes"][grid_a.as_str()]["header_level"] == 0 && wide_order == ["split-right", "split-down", "pop", "background", "zoom", "menu", "close"], "a wide {header_kind} header: level {} order {wide_order:?}", wide["panes"][grid_a.as_str()]["header_level"]);
+    ensure!(wide["panes"][grid_a.as_str()]["header_level"] == 0 && wide_order == ["info", "split-right", "split-down", "pop", "background", "zoom", "menu", "close"], "a wide {header_kind} header: level {} order {wide_order:?}", wide["panes"][grid_a.as_str()]["header_level"]);
     let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=zoom&placement=menu"));
     ensure!(code == 200, "paneheader zoom menu got {code}");
     let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=pop&placement=off"));
@@ -5261,6 +5261,41 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     draw(window, Some(output.join("client-pane-menu.png")), cx)?;
     let (code, escaped) = call!("POST", "/key?keys=escape");
     ensure!(code == 200 && escaped["taken"] == true && state!()["pane_menu"].is_null(), "Esc left the pane menu open: {escaped}");
+    // Pane info (wheel-ynjo.8.4.2): the header's ⓘ by a real press opens the popover with the
+    // fields `wheel pane info` lists for the pane, and a field's copy puts its value on the clipboard.
+    let (ok, cli_info, err) = run_pumped(&["pane", "info", &grid_a, "--json"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane info {grid_a} failed: {err}");
+    let cli_fields: Vec<(String, String)> = serde_json::from_str::<Value>(&cli_info)?["fields"].as_array().into_iter().flatten().map(|f| (f["label"].as_str().unwrap_or_default().to_owned(), f["value"].as_str().unwrap_or_default().to_owned())).collect();
+    ensure!(!cli_fields.is_empty(), "wheel pane info lists no fields for {grid_a}: {cli_info}");
+    let info_button = state!()["panes"][grid_a.as_str()]["header_buttons"]["info"]["frame"].clone();
+    ensure!(info_button.is_array(), "the header draws no Pane info button: {}", state!()["panes"][grid_a.as_str()]["header_order"]);
+    let at = [info_button[0].as_f64().unwrap_or(0.) + 9., info_button[1].as_f64().unwrap_or(0.) + 9.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    let info_open = until!("the ⓘ press opening the Pane info popover with its fields", |s: &Value| s["pane_info"]["pane"] == grid_a.as_str() && s["pane_info"]["fields"].is_array());
+    let shown_fields: Vec<(String, String)> = info_open["pane_info"]["fields"].as_array().into_iter().flatten().map(|f| (f["label"].as_str().unwrap_or_default().to_owned(), f["value"].as_str().unwrap_or_default().to_owned())).collect();
+    ensure!(shown_fields == cli_fields, "the popover lists {shown_fields:?}, wheel pane info {cli_fields:?}");
+    draw(window, Some(output.join("client-pane-info.png")), cx)?;
+    window.update(cx, |c, _, cx| c.copy_info_field(0, cx))?;
+    let copied = window.update(cx, |c, _, cx| (cx.read_from_clipboard().and_then(|i| i.text()), c.pane_info_json()["copied"].clone()))?;
+    ensure!(copied.0.as_deref() == Some(cli_fields[0].1.as_str()) && copied.1 == cli_fields[0].0.as_str(), "copying {} put {:?} on the clipboard ({})", cli_fields[0].0, copied.0, copied.1);
+    let (code, _) = call!("POST", "/key?keys=escape");
+    ensure!(code == 200 && state!()["pane_info"].is_null(), "Esc left the Pane info popover open");
+    // Set to the ⋯ menu, it is Pane Info there and the bar leaves it out; the menu item opens it.
+    let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=info&placement=menu"));
+    ensure!(code == 200, "paneheader info menu got {code}");
+    let info_in_menu = state!();
+    let info_item = info_in_menu["panes"][grid_a.as_str()]["menu"].as_array().and_then(|m| m.iter().find(|i| i["id"] == "info")).cloned().unwrap_or(Value::Null);
+    ensure!(info_item["title"] == "Pane Info" && !strings(&info_in_menu["panes"][grid_a.as_str()]["header_order"]).contains(&"info".to_owned()), "Pane info set to the ⋯ menu: item {info_item}, bar {:?}", info_in_menu["panes"][grid_a.as_str()]["header_order"]);
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_a}&item=info"));
+    ensure!(code == 200, "the ⋯ menu's Pane Info got {code}");
+    until!("the menu item opening the Pane info popover", |s: &Value| s["pane_info"]["pane"] == grid_a.as_str() && s["pane_info"]["fields"].is_array());
+    let (code, _) = call!("POST", "/key?keys=escape");
+    ensure!(code == 200 && state!()["pane_info"].is_null(), "Esc left the Pane info popover open");
+    let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&reset=1"));
+    ensure!(code == 200, "paneheader reset got {code}");
+    until!("the header drawing Pane info again", |s: &Value| strings(&s["panes"][grid_a.as_str()]["header_order"]) == wide_order);
+    header_report["info"] = json!({"fields": cli_fields.len(), "copied": copied.1, "menu_item": info_item["title"]});
     // The chat / terminal switch (wheel-ynjo.8.4.5). A shell with no agent has no other view: its
     // header and menu carry no switch and the command is disabled.
     let (focused_ok, disabled) = window.update(cx, |c, _, _| { c.show_requested(&grid, Some(&grid_a)); (c.focus.current.as_deref() == Some(grid_a.as_str()), !c.action_enabled("switch-view")) })?;

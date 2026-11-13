@@ -186,12 +186,13 @@ impl Client {
         let store = self.header_layout.borrow();
         let layout = &store.layout;
         let mut items = vec![];
-        for control in [Control::Conversations, Control::Pop, Control::Background, Control::SwitchView, Control::Zoom] {
+        for control in [Control::Conversations, Control::Info, Control::Pop, Control::Background, Control::SwitchView, Control::Zoom] {
             if !layout.in_menu(control, kind, level) {
                 continue;
             }
             match control {
                 Control::Conversations if leaf.agent.is_some() => items.push(item("conversations".into(), "Conversations…".into(), true)),
+                Control::Info => items.push(item("info".into(), "Pane Info".into(), true)),
                 Control::Pop => items.push(item("pop".into(), "Pop out".into(), true)),
                 Control::Background => items.push(item("background".into(), "Background".into(), true)),
                 Control::SwitchView => {
@@ -256,6 +257,7 @@ impl Client {
             "background" => self.toggle_site(&pane, PaneSite::Backgrounded),
             "zoom" => self.toggle_zoom(&pane),
             "switch-view" => self.switch_view(&pane),
+            "info" => self.toggle_pane_info(&pane),
             "close" => self.ask_close_pane(&pane),
             "kind:shell" => self.ask_set_kind(&pane, NewPaneKind::Terminal),
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
@@ -364,6 +366,7 @@ impl Client {
                     HeaderButton { id: control.id(), symbol: if view == PaneView::Agent { control.symbol() } else { "terminal" }, label: switch_title(view), enabled: true, on: false }
                 }
                 Control::Conversations => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Conversations", enabled: has_agent, on: false },
+                Control::Info => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Pane info", enabled: true, on: false },
                 Control::SplitRight => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Right", enabled: true, on: false },
                 Control::SplitDown => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Down", enabled: true, on: false },
                 Control::Pop => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Pop out", enabled: true, on: popped },

@@ -13,6 +13,7 @@ mod menubar;
 mod messages;
 pub use menubar::{MenuBar, Popover, focused_client, menu_bar, reopen, start as start_menu_bar};
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
+mod pane_info;
 mod panes;
 pub use panes::focus_target;
 mod perms;
@@ -126,6 +127,8 @@ pub struct Client {
     /// The Conversations popover, the switches waiting and their requests.
     pub conversations: crate::conversations::Conversations,
     conversations_scroll: ScrollHandle,
+    /// The Pane info popover, while one is open.
+    pub pane_info: Option<pane_info::PaneInfo>,
     /// wheeld's last refusal of a request about an agent's messages, shown under its composer.
     composer_errors: HashMap<String, String>,
     /// GPUI delivers keys only to a focused element: the root holds this for good, while the
@@ -405,7 +408,7 @@ impl Client {
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -438,7 +441,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_conversations_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
+                    if self.on_conversations_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -1461,6 +1464,10 @@ impl Client {
             self.procs_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control);
             return true;
         }
+        if self.pane_info.is_some() && self.confirmation.is_none() && k.key == "escape" {
+            self.close_pane_info();
+            return true;
+        }
         // The Conversations popover takes typed keys while it is open: its search, ⌘V pasting into
         // it, and Esc to close. Other chords (⌘W, ⌘K, ⌘Q) go on to their actions.
         if self.conversations.open.is_some() && self.confirmation.is_none() {
@@ -2138,6 +2145,13 @@ impl Render for Client {
         }
         if self.conversations.open.is_some() {
             root = root.child(self.conversations_overlay(w, h, cx));
+        }
+        // The popover closes when its pane is gone.
+        if let Some(i) = &self.pane_info && !self.spaces.iter().any(|s| s.site_of(&i.pane).is_some()) {
+            self.close_pane_info();
+        }
+        if self.pane_info.is_some() {
+            root = root.child(self.pane_info_overlay(w, h, cx));
         }
         if let Some(palette) = &self.command_palette {
             root = root.child(commands::command_palette_overlay(palette, w, h, cx));

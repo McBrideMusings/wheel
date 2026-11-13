@@ -12,6 +12,7 @@ use std::rc::Rc;
 pub enum Control {
     SwitchView,
     Conversations,
+    Info,
     SplitRight,
     SplitDown,
     Pop,
@@ -21,13 +22,14 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Control; 8] = [Control::SwitchView, Control::Conversations, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Close];
+    pub const ALL: [Control; 9] = [Control::SwitchView, Control::Conversations, Control::Info, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Close];
 
     /// The name the Swift client stores it under.
     pub fn name(self) -> &'static str {
         match self {
             Control::SwitchView => "switchView",
             Control::Conversations => "conversations",
+            Control::Info => "info",
             Control::SplitRight => "splitRight",
             Control::SplitDown => "splitDown",
             Control::Pop => "pop",
@@ -43,6 +45,7 @@ impl Control {
         match self {
             Control::SwitchView => "Chat / terminal switch",
             Control::Conversations => "Conversations",
+            Control::Info => "Pane info",
             Control::SplitRight => "Split right",
             Control::SplitDown => "Split down",
             Control::Pop => "Pop out",
@@ -55,6 +58,7 @@ impl Control {
         match self {
             Control::SwitchView => "bubble.left.and.text.bubble.right",
             Control::Conversations => "clock.arrow.circlepath",
+            Control::Info => "info.circle",
             Control::SplitRight => "square.split.2x1",
             Control::SplitDown => "square.split.1x2",
             Control::Pop => "rectangle.on.rectangle",
@@ -75,7 +79,7 @@ impl Control {
     /// The header level at which a narrow header stops drawing this control.
     pub fn drop_level(self) -> u8 {
         match self {
-            Control::Conversations | Control::Pop | Control::Background => 1,
+            Control::Conversations | Control::Info | Control::Pop | Control::Background => 1,
             Control::SwitchView => 2,
             Control::SplitRight | Control::SplitDown => 3,
             Control::Zoom => 4,
@@ -87,7 +91,7 @@ impl Control {
         match self {
             Control::SwitchView => kind == "terminal" || kind == "agent",
             Control::Conversations => kind == "agent",
-            Control::SplitRight | Control::SplitDown => kind != "unknown",
+            Control::Info | Control::SplitRight | Control::SplitDown => kind != "unknown",
             Control::Pop | Control::Background | Control::Zoom | Control::Close => true,
         }
     }
@@ -262,23 +266,23 @@ mod tests {
     fn a_narrowing_header_drops_each_group_in_turn_and_keeps_close() {
         let layout = Layout::default();
         let names = |level| layout.bar("agent", level).iter().map(|c| c.id()).collect::<Vec<_>>();
-        assert_eq!(names(0), ["switch-view", "conversations", "split-right", "split-down", "pop", "background", "zoom", "close"]);
+        assert_eq!(names(0), ["switch-view", "conversations", "info", "split-right", "split-down", "pop", "background", "zoom", "close"]);
         assert_eq!(names(1), ["switch-view", "split-right", "split-down", "zoom", "close"]);
         assert_eq!(names(2), ["split-right", "split-down", "zoom", "close"]);
         assert_eq!(names(3), ["zoom", "close"]);
         assert_eq!(names(4), ["close"]);
         let all = |_| true;
-        // Room for the title and all nine buttons (eight and the menu) keeps level 0.
-        assert_eq!(layout.level("agent", 64. + width(9), 64., width, all), 0);
-        assert_eq!(layout.level("agent", 64. + width(9) - 1., 64., width, all), 1);
+        // Room for the title and all ten buttons (nine and the menu) keeps level 0.
+        assert_eq!(layout.level("agent", 64. + width(10), 64., width, all), 0);
+        assert_eq!(layout.level("agent", 64. + width(10) - 1., 64., width, all), 1);
         assert_eq!(layout.level("agent", 64. + width(6) - 1., 64., width, all), 2);
         assert_eq!(layout.level("agent", 64. + width(5) - 1., 64., width, all), 3);
         assert_eq!(layout.level("agent", 10., 64., width, all), 4);
-        // A terminal pane has no Conversations button: seven buttons fit where an agent's nine do
+        // A terminal pane has no Conversations button: eight buttons fit where an agent's ten do
         // not, and the switch takes room only on a pane that has another view.
         let no_switch = |c| c != Control::SwitchView;
-        assert_eq!(layout.level("terminal", 64. + width(7), 64., width, no_switch), 0);
-        assert_eq!(layout.level("terminal", 64. + width(7), 64., width, all), 1);
+        assert_eq!(layout.level("terminal", 64. + width(8), 64., width, no_switch), 0);
+        assert_eq!(layout.level("terminal", 64. + width(8), 64., width, all), 1);
     }
 
     #[test]
