@@ -115,14 +115,16 @@ pub fn card_height(card: &Card) -> f32 {
 
 /// The server line's height while its details are closed: the app icon's (ServerHeader).
 pub const SERVER_LINE: f32 = 36.;
+/// The pairing row: a title over the address line, 3pt above and below (PairingRow).
+pub const PAIRING_ROW: f32 = 36.;
 
-/// The popover's height with the server line closed: the server line, a divider, the cards, a
-/// divider and New Window and Quit, `GAP` apart. The popover opens at this height and then fits
+/// The popover's height with the server line closed: the server line, a divider, the pairing row
+/// over Settings…, the cards, a divider and New Window and Quit, `GAP` apart. The popover opens at this height and then fits
 /// the height its content measures.
 pub fn height(cards: &[Card]) -> f32 {
-    let sections = cards.len() + 4;
+    let sections = cards.len() + 5;
     let cards: f32 = cards.iter().map(card_height).sum();
-    2. * PAD + SERVER_LINE + 1. + cards + 1. + 2. * ROW + ROW_GAP + GAP * (sections - 1) as f32
+    2. * PAD + SERVER_LINE + 1. + PAIRING_ROW + ROW_GAP + ROW + cards + 1. + 2. * ROW + ROW_GAP + GAP * (sections - 1) as f32
 }
 
 #[cfg(test)]
@@ -209,7 +211,8 @@ mod tests {
         ]);
         assert!(cards[1].rows[0].shown);
         assert!(cards[2].rows.is_empty());
-        // Three cards: 2 rows, 1 row, and the empty one's line; then the divider and two rows.
-        assert_eq!(height(&cards), 2. * PAD + SERVER_LINE + 1. + (3. * (2. + 2. * CARD_PAD + CARD_HEAD) + 4. * ROW) + 1. + 2. * ROW + ROW_GAP + 6. * GAP);
+        // The pairing row and Settings…, three cards (2 rows, 1 row, and the empty one's line), then
+        // the divider and two rows.
+        assert_eq!(height(&cards), 2. * PAD + SERVER_LINE + 1. + (PAIRING_ROW + ROW_GAP + ROW) + (3. * (2. + 2. * CARD_PAD + CARD_HEAD) + 4. * ROW) + 1. + 2. * ROW + ROW_GAP + 7. * GAP);
     }
 }

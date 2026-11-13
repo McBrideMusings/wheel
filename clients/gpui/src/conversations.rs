@@ -17,6 +17,11 @@ pub fn can_fork(harness: Option<&str>) -> bool {
 
 /// One page of the popover (`ConversationPaging.popover`).
 pub const PAGE: u32 = 20;
+/// The empty conversation's shortcut asks for the newest three, and one more in case the agent's
+/// own conversation is among them (`ConversationPaging.recent`).
+pub const RECENT: u32 = 4;
+/// How many cards the shortcut draws, holding their places when fewer arrive.
+pub const RECENT_CARDS: usize = 3;
 /// The note under the list while nothing was refused.
 pub const NOTE: &str = "Includes conversations started outside Wheel.";
 
@@ -50,6 +55,8 @@ pub enum Req {
     List { agent: String, listing: u64, more: bool },
     /// A switch to a new or a past conversation.
     Switch { agent: String },
+    /// The newest conversations for an empty transcript's Recent shortcut.
+    Recent { agent: String },
 }
 
 /// Every agent's switch in progress, the requests waiting, and the listing count that tells a
@@ -63,6 +70,10 @@ pub struct Conversations {
     pub errors: HashMap<String, String>,
     pub reqs: HashMap<u64, Req>,
     listings: u64,
+    /// What each agent's empty transcript lists under Recent (`RecentConversations`). An entry
+    /// lives while the transcript stays empty; rows arriving drop it, so the next empty
+    /// transcript asks again, as the Swift view's `onAppear` does.
+    pub recent: HashMap<String, Listing>,
 }
 
 impl Conversations {
@@ -97,6 +108,22 @@ impl Conversations {
             };
         }
     }
+    /// The Recent shortcut's ask for `agent` is on its way.
+    pub fn begin_recent(&mut self, req: u64, agent: &str) {
+        // An earlier ask whose transcript filled since is forgotten, so its late answer cannot
+        // fill this one's entry with an older list.
+        self.reqs.retain(|_, r| !matches!(r, Req::Recent { agent: a } if a == agent));
+        self.recent.insert(agent.to_owned(), Listing::Loading);
+        self.reqs.insert(req, Req::Recent { agent: agent.to_owned() });
+    }
+    /// The cards the Recent shortcut draws for `agent`: the newest conversations other than the
+    /// one it is in, at most three.
+    pub fn recent_cards(&self, agent: &str) -> Vec<&ConversationInfo> {
+        match self.recent.get(agent) {
+            Some(Listing::Loaded(all)) => all.iter().filter(|c| !c.current).take(RECENT_CARDS).collect(),
+            _ => vec![],
+        }
+    }
     /// A switch to `id` (`None` for a new conversation) begins; false while one is already waiting.
     pub fn begin_switch(&mut self, req: u64, agent: &str, id: Option<&str>) -> bool {
         if self.switching.contains_key(agent) {
@@ -107,9 +134,27 @@ impl Conversations {
         self.reqs.insert(req, Req::Switch { agent: agent.to_owned() });
         true
     }
+    /// Whether request `req` is a Recent shortcut's ask.
+    pub fn is_recent(&self, req: u64) -> bool {
+        matches!(self.reqs.get(&req), Some(Req::Recent { .. }))
+    }
     /// A `conversations` page. Returns whether it answered a request of ours.
     pub fn listed(&mut self, req: u64, list: &[ConversationInfo], more: bool) -> bool {
-        let Some(Req::List { agent, listing, more: adding }) = self.reqs.remove(&req) else { return false };
+        let (agent, listing, adding) = match self.reqs.remove(&req) {
+            Some(Req::List { agent, listing, more }) => (agent, listing, more),
+            // An answer for a transcript that has rows since is dropped with its entry.
+            Some(Req::Recent { agent }) => {
+                if let Some(held) = self.recent.get_mut(&agent) {
+                    *held = Listing::Loaded(list.to_vec());
+                }
+                return true;
+            }
+            Some(other) => {
+                self.reqs.insert(req, other);
+                return false;
+            }
+            None => return false,
+        };
         let current = self.listings;
         // A page of an earlier listing, or of an agent whose popover closed, changes nothing.
         let Some(p) = self.open.as_mut().filter(|p| p.agent == agent && listing == current) else { return true };
@@ -129,8 +174,17 @@ impl Conversations {
     }
     /// A `conversation` answer: the switch is done and the popover closes. Returns whether it was ours.
     pub fn switched(&mut self, req: u64) -> bool {
-        let Some(Req::Switch { agent }) = self.reqs.remove(&req) else { return false };
+        let agent = match self.reqs.remove(&req) {
+            Some(Req::Switch { agent }) => agent,
+            Some(other) => {
+                self.reqs.insert(req, other);
+                return false;
+            }
+            None => return false,
+        };
         self.switching.remove(&agent);
+        // The conversation left now lists under Recent: the next empty transcript asks again.
+        self.recent.remove(&agent);
         if self.open.as_ref().is_some_and(|p| p.agent == agent) {
             self.open = None;
         }
@@ -156,6 +210,12 @@ impl Conversations {
                 self.switching.remove(&agent);
                 self.errors.insert(agent, message.to_owned());
             }
+            // The shortcut stays hidden, as the Swift one is for a failed listing.
+            Req::Recent { agent } => {
+                if let Some(held) = self.recent.get_mut(&agent) {
+                    *held = Listing::Failed(message.to_owned());
+                }
+            }
         }
         true
     }
@@ -164,6 +224,7 @@ impl Conversations {
     pub fn link_lost(&mut self) {
         self.reqs.clear();
         self.switching.clear();
+        self.recent.clear();
         self.open = None;
     }
     /// The note under the list: the agent's last refusal, else what the list includes.
@@ -284,6 +345,28 @@ pub fn time(at: Option<i64>, day: Day) -> Option<String> {
     })
 }
 
+/// How long ago a conversation was last worked in, as a Recent card says it
+/// (`ConversationInfo.age`, a short en_US_POSIX `RelativeDateTimeFormatter`): "just now" under a
+/// minute and for any time ahead of this Mac's clock, else the largest whole unit, "5 min. ago",
+/// "2 hr. ago", "3 days ago", "1 wk. ago".
+pub fn age(at: Option<i64>, now: i64) -> Option<String> {
+    let at = at?;
+    let secs = now - at;
+    if secs < 60 {
+        return Some("just now".into());
+    }
+    let span = secs.unsigned_abs();
+    let (n, unit) = match span {
+        0..3_600 => (span / 60, "min."),
+        3_600..86_400 => (span / 3_600, "hr."),
+        86_400..604_800 => (span / 86_400, if span / 86_400 == 1 { "day" } else { "days" }),
+        604_800..2_592_000 => (span / 604_800, "wk."),
+        2_592_000..31_536_000 => (span / 2_592_000, "mo."),
+        _ => (span / 31_536_000, "yr."),
+    };
+    Some(format!("{} {unit} ago", n.max(1)))
+}
+
 /// When a conversation was last worked in, in unix seconds.
 pub fn updated(info: &ConversationInfo) -> Option<i64> {
     crate::strip::parse_rfc3339(info.updated_at.as_deref()?)
@@ -381,6 +464,54 @@ mod tests {
         assert!(c.refused(7, "busy"));
         assert!(c.switching.is_empty());
         assert_eq!(c.errors.get("w").map(String::as_str), Some("busy"));
+    }
+
+    #[test]
+    fn recent_lists_three_others_and_a_late_answer_is_dropped() {
+        let mut c = Conversations::default();
+        c.begin_recent(1, "w");
+        assert!(c.recent_cards("w").is_empty());
+        let mut list: Vec<ConversationInfo> = ["a", "b", "c", "d"].iter().map(|id| info(id, None, None)).collect();
+        list[1].current = true;
+        assert!(c.listed(1, &list, true));
+        assert_eq!(c.recent_cards("w").iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["a", "c", "d"]);
+        // The transcript filled before the answer came: the entry is gone and stays gone.
+        c.begin_recent(2, "w");
+        c.recent.remove("w");
+        assert!(c.listed(2, &list, false));
+        assert!(!c.recent.contains_key("w"));
+        // A late answer to an ask the next empty transcript replaced is not taken.
+        c.begin_recent(8, "w");
+        c.recent.remove("w");
+        c.begin_recent(9, "w");
+        assert!(c.is_recent(9) && !c.is_recent(8));
+        assert!(!c.listed(8, &list[..1], false));
+        assert_eq!(c.recent.get("w"), Some(&Listing::Loading));
+        assert!(c.listed(9, &list, false));
+        // A finished switch drops the entry, so the new empty transcript asks again.
+        c.begin_recent(3, "w");
+        c.begin_switch(4, "w", None);
+        assert!(c.switched(4));
+        assert!(!c.recent.contains_key("w"));
+        assert!(c.listed(3, &list, false));
+        assert!(!c.recent.contains_key("w"));
+        // A request of another kind is not taken by the wrong answer.
+        c.begin_switch(5, "w", None);
+        assert!(!c.listed(5, &list, false));
+        assert!(c.switched(5));
+    }
+
+    #[test]
+    fn age_reads_as_the_short_relative_formatter() {
+        let now = 1_800_000_000;
+        assert_eq!(age(Some(now - 20), now).as_deref(), Some("just now"));
+        assert_eq!(age(Some(now - 300), now).as_deref(), Some("5 min. ago"));
+        assert_eq!(age(Some(now - 7_300), now).as_deref(), Some("2 hr. ago"));
+        assert_eq!(age(Some(now - 86_400), now).as_deref(), Some("1 day ago"));
+        assert_eq!(age(Some(now - 3 * 86_400), now).as_deref(), Some("3 days ago"));
+        assert_eq!(age(Some(now - 8 * 86_400), now).as_deref(), Some("1 wk. ago"));
+        assert_eq!(age(Some(now + 7_300), now).as_deref(), Some("just now"));
+        assert_eq!(age(None, now), None);
     }
 
     #[test]

@@ -320,7 +320,7 @@ impl Client {
                         let Some(pane) = q("pane") else { return refuse(BAD, "pane= is required") };
                         let Some(leaf) = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).cloned() else { return refuse(MISSING, "no such pane") };
                         let label = self.pane_label(&leaf);
-                        self.begin_pane_drag(&pane, &label, (0., 0.), (0., 0.));
+                        self.begin_pane_drag(&pane, &label, (0., 0.), (0., 0.), false);
                     }
                     Some("hover") => {
                         if self.pane_drag.is_none() {
@@ -334,16 +334,30 @@ impl Client {
                             self.hover_pane_drag(None);
                             self.hover_grid_drop(Some(crate::grid_drop::GridDrop { target: pane, zone }));
                         } else {
+                            use crate::sidebar::PaneAway;
                             let away = match target.as_str() {
-                                "new-space" => crate::sidebar::PaneAway::NewSpace,
-                                t if t.starts_with("space:") => crate::sidebar::PaneAway::End(t[6..].to_owned()),
-                                _ => return refuse(BAD, "target is space:<id>, new-space or pane:<id>:<zone>"),
+                                "new-space" => PaneAway::NewSpace(self.window_id.clone()),
+                                "desktop" => PaneAway::Desktop,
+                                t if t.starts_with("new-space:") => PaneAway::NewSpace(t[10..].to_owned()),
+                                t if t.starts_with("space:") => PaneAway::End(t[6..].to_owned()),
+                                t if t.starts_with("beside:") => {
+                                    let Some((pane, dir)) = t[7..].rsplit_once(':').and_then(|(p, d)| match crate::grid_drop::Zone::parse(d) {
+                                        Some(crate::grid_drop::Zone::Edge(dir)) => Some((p.to_owned(), dir)),
+                                        _ => None,
+                                    }) else {
+                                        return refuse(BAD, "target is beside:<pane>:<left|right|up|down>");
+                                    };
+                                    let Some(space) = self.space_holding(&pane).map(|s| s.id.clone()) else { return refuse(MISSING, "no such pane") };
+                                    PaneAway::Beside { pane, dir, space }
+                                }
+                                _ => return refuse(BAD, "target is space:<id>, new-space[:<window>], desktop, beside:<pane>:<dir> or pane:<id>:<zone>"),
                             };
                             self.hover_grid_drop(None);
-                            self.hover_pane_drag(Some(away));
+                            self.name_pane_away(Some(away));
+                            self.arm_pane_hold(cx);
                         }
                     }
-                    Some("drop") => self.end_pane_drag(),
+                    Some("drop") => self.end_pane_drag(cx),
                     Some("cancel") => self.cancel_pane_drag(),
                     _ => return refuse(BAD, "action is start, hover, drop or cancel"),
                 }
@@ -700,7 +714,8 @@ impl Client {
         out["edge_bar"] = json!(self.edge_bar().map(|b| [b.x, b.y, b.w, b.h]));
         out["composer_errors"] = json!(self.composer_errors);
         out["message_menu"] = self.message_menu_json();
-        out["fork_lines"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.fork_lines))).collect::<serde_json::Map<_, _>>());
+        out["reply_ends"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.reply_ends))).collect::<serde_json::Map<_, _>>());
+        out["read_aloud"] = json!(self.read_aloud);
         out
     }
 }

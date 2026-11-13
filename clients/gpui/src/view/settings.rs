@@ -20,6 +20,8 @@ pub struct SettingsReqs {
     /// Built-in requests, each with the built-in it is about ("" for a listing).
     pub builtins: HashMap<u64, String>,
     pub pairing: Option<u64>,
+    /// The `remote_info` request whose answer runs the menu bar's pairing ask.
+    pub pairing_remote: Option<u64>,
 }
 
 /// What the keyboard types into while the window is open.
@@ -75,7 +77,9 @@ impl Client {
         match tab {
             Tab::Artifacts => self.ask_builtins(),
             Tab::Guidance => self.ask_guidance(),
-            Tab::Devices => self.ask_remote(),
+            Tab::Devices => {
+                self.ask_remote();
+            }
             Tab::General => self.ask_settings_status(),
             _ => {}
         }
@@ -121,14 +125,16 @@ impl Client {
         self.send(&ClientMsg::Status { req: Some(req) });
     }
 
-    fn ask_remote(&mut self) {
+    /// Ask for the remote listener and the paired devices; the listener request's id, None while the link is down.
+    pub(super) fn ask_remote(&mut self) -> Option<u64> {
         if self.link != Link::Up {
-            return;
+            return None;
         }
         let a = self.settings_req();
         let b = self.settings_req();
         self.send(&ClientMsg::RemoteInfo { req: Some(a) });
         self.send(&ClientMsg::DeviceList { req: Some(b) });
+        Some(a)
     }
 
     pub fn request_pairing_code(&mut self) {
@@ -476,8 +482,12 @@ impl Client {
                 }
                 true
             }
-            ServerMsg::Remote { listen, addresses, port, fingerprint, problem, .. } => {
+            ServerMsg::Remote { req, listen, addresses, port, fingerprint, problem } => {
                 self.settings.devices.info = Some(model::Remote { listen: listen.clone(), addresses: addresses.clone(), port: *port, fingerprint: fingerprint.clone(), problem: problem.clone() });
+                if self.settings_reqs.pairing_remote == Some(*req) {
+                    self.settings_reqs.pairing_remote = None;
+                    self.pairing_asked();
+                }
                 true
             }
             ServerMsg::Devices { devices, .. } | ServerMsg::DevicesChanged { devices } => {
@@ -523,12 +533,21 @@ impl Client {
 
     /// A new connection: answers to the old one's requests never come, and the lists are asked again.
     pub fn settings_reconnected(&mut self) {
+        // The menu bar's pairing ask made before the link first came up goes out now; one whose
+        // request the old connection carried is dropped with it.
+        let unsent = self.pairing.asked.is_some() && self.settings_reqs.pairing_remote.is_none();
+        if !unsent {
+            self.pairing.asked = None;
+        }
         self.settings_reqs = SettingsReqs::default();
         self.settings.forget_requests();
         if self.settings_open {
             self.ask_settings();
             self.ask_settings_status();
             self.ask_remote();
+        }
+        if self.pairing.asked.is_some() {
+            self.settings_reqs.pairing_remote = self.ask_remote();
         }
     }
 

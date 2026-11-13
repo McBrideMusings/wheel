@@ -55,6 +55,12 @@ fn nearest(x: f32, y: f32, frame: Rect) -> (f32, Dir) {
     near.iter().copied().fold(near[0], |a, b| if b.0 < a.0 { b } else { a })
 }
 
+/// The side of a pane at `frame` nearest (`x`, `y`): a pane arriving from another space always
+/// takes a side, never swaps.
+pub fn nearest_side(x: f32, y: f32, frame: Rect) -> Dir {
+    nearest(x, y, frame).1
+}
+
 /// The zone of a pane at `frame` that (`x`, `y`) is in; the nearest edge when it is in two.
 pub fn zone(x: f32, y: f32, frame: Rect) -> Zone {
     match nearest(x, y, frame) {

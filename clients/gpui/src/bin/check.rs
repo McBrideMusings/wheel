@@ -24,6 +24,14 @@ use std::{path::PathBuf, time::Duration};
 use wheel_proto::{ClientMsg, ServerMsg};
 use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Drawn, Link, TITLE}};
 
+/// The CPU time this thread has used, in milliseconds.
+fn thread_cpu_ms() -> f64 {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime writes only the timespec it is handed.
+    let failed = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
+    assert_eq!(failed, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+    t.tv_sec as f64 * 1000. + t.tv_nsec as f64 / 1e6
+}
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
@@ -1353,6 +1361,41 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let new_id = new_id.unwrap_or_default();
     let new_id_differs = new_id != old_id;
     ensure!(new_id_differs, "New conversation kept id {old_id}");
+    // The empty transcript's Recent shortcut (wheel-ynjo.10.5.4): the conversation just left is
+    // among at most three cards, and Show all… opens the Conversations popover.
+    let recent_report = {
+        let recent_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.recent_json(&agent_name));
+        let mut recent = Value::Null;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            recent = recent_now(cx)?;
+            if recent["listing"] == "loaded" {
+                break;
+            }
+        }
+        let cards = recent["cards"].as_array().cloned().unwrap_or_default();
+        ensure!(recent["listing"] == "loaded" && (1..=3).contains(&cards.len()), "the empty transcript's Recent shortcut: {recent}");
+        ensure!(cards.iter().any(|c| c["id"] == old_id.as_str()) && cards.iter().all(|c| c["id"] != new_id.as_str()), "Recent should list {old_id} and not the current {new_id}: {recent}");
+        draw(window, Some(output.join("client-recent-conversations.png")), cx)?;
+        let card_drawn = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("recent:{old_id}")))?.is_some();
+        ensure!(card_drawn, "the Recent card for {old_id} was listed but not drawn: {recent}");
+        let show_all = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "recent:show-all"))?.ok_or_else(|| anyhow::anyhow!("no Show all… drawn: {recent}"))?;
+        press(&native, show_all);
+        let mut opened = Value::Null;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            opened = convs_now(cx)?;
+            if opened["listing"] == "loaded" {
+                break;
+            }
+        }
+        let show_all_opens = opened["pane"] == agent_pane.as_str() && opened["listing"] == "loaded";
+        ensure!(show_all_opens, "Show all… did not open the Conversations popover over {agent_pane}: {opened}");
+        window.update(cx, |c, _, _| c.close_conversations())?;
+        json!({"cards": cards.len(), "card_drawn": card_drawn, "show_all_opens": show_all_opens, "titles": cards.iter().map(|c| c["title"].clone()).collect::<Vec<_>>(),
+            "ages": cards.iter().map(|c| c["age"].clone()).collect::<Vec<_>>()})
+    };
     type_line(&native, "in the new one", cx).await;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -1436,10 +1479,11 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // turn draws the branch button on a line under it; a press forks the conversation through that
     // turn into a new agent pane right of this one, and `wheel agent read` gives the fork's rows,
     // which hold that one prompt and end at that reply.
-    let fork_lines: Vec<usize> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["fork_lines"][agent_name.as_str()].clone())?).unwrap_or_default();
+    let fork_lines: Vec<usize> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["reply_ends"][agent_name.as_str()].clone())?).unwrap_or_default();
     let (fork_row, fork_text) = window.update(cx, |c, _, _| {
         let t = &c.transcripts[&agent_name];
-        let ix = fork_lines.first().copied();
+        let can = c.can_fork(&agent_name);
+        let ix = fork_lines.iter().copied().find(|&i| t.fork_turns(i, can).is_some());
         let text = ix.and_then(|i| match &t.rows[i].kind { Kind::Reply(x) => Some(x.clone()), _ => None });
         (ix, text.unwrap_or_default())
     })?;
@@ -1457,6 +1501,88 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         tick(cx, 100).await;
     }
     let fork_at = fork_at.ok_or_else(|| anyhow::anyhow!("row {fork_row} of {agent_name} drew no fork button"))?;
+    // The reply's other buttons (wheel-ynjo.10.5.5): copy and play on the same line, left of the
+    // fork button, as RowView.swift's `actions`. Copy puts the reply's Markdown on the clipboard;
+    // play has the app's synthesizer read it, which turns the button to stop, and a second press
+    // 150 ms later stops it, before the reply's first words are over.
+    let reply_buttons = {
+        let at = |id: &str, cx: &mut AsyncApp| -> Result<Option<(f32, f32, f32, f32)>> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("{id}:{fork_row}")))?) };
+        let mut buttons = vec![];
+        let mut lefts = vec![];
+        for id in ["copy", "play", "fork"] {
+            if let Some(b) = at(id, cx)? {
+                buttons.push(id);
+                lefts.push(b.0);
+            }
+        }
+        ensure!(buttons == ["copy", "play", "fork"] && lefts.windows(2).all(|w| w[0] < w[1]), "the turn end {fork_row} drew buttons {buttons:?} at x {lefts:?}");
+        let key = window.update(cx, |c, _, _| format!("{agent_name}#{}", c.transcripts[&agent_name].rows[fork_row].id))?;
+        press(&native, at("copy", cx)?.unwrap());
+        tick(cx, 150).await;
+        let copied = cx.update(|app| app.read_from_clipboard().and_then(|i| i.text())).unwrap_or_default();
+        ensure!(copied == fork_text, "the copy button put {copied:?} on the clipboard, not {fork_text:?}");
+        let playing_now = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["read_aloud"].clone())?) };
+        // Each press logs the bridge's answer, what the synthesizer reads after it.
+        let answers = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(log_now(cx)?.into_iter().filter(|l| l.contains(&format!("read aloud row {fork_row}: "))).collect()) };
+        // The press logs its answer as it runs, so the log changing (it is capped, so never its
+        // length) means the newest answer line is this press's.
+        macro_rules! play_answer {
+            () => {{
+                let before = log_now(cx)?;
+                press(&native, at("play", cx)?.unwrap());
+                let mut answer = None;
+                for _ in 0..100 {
+                    if log_now(cx)? != before {
+                        answer = answers(cx)?.last().cloned();
+                        break;
+                    }
+                    tick(cx, 20).await;
+                }
+                answer.ok_or_else(|| anyhow::anyhow!("the play button got no answer from the bridge"))?
+            }};
+        }
+        let want = json!(key).to_string();
+        let heard = play_answer!();
+        ensure!(heard.ends_with(&format!(": {want}")), "the play button's press answered {heard:?}, not {want}");
+        // The window hears what the synthesizer reads by an event and draws the stop button; a
+        // press then stops it. A reply that finished first (the event of a short one can come
+        // after its end) is spoken again, and the press that restarts it is the next try.
+        let (mut playing, mut stopped, mut restarts) = (Value::Null, false, 0);
+        while !stopped && restarts < 8 {
+            playing = Value::Null;
+            let mut shown = false;
+            for _ in 0..100 {
+                tick(cx, 20).await;
+                if playing_now(cx)? == json!(key) {
+                    shown = true;
+                    break;
+                }
+            }
+            if shown {
+                draw(window, Some(output.join("client-reply-buttons.png")), cx)?;
+                playing = json!(key);
+            }
+            let answer = play_answer!();
+            if answer.ends_with(": null") {
+                stopped = true;
+            } else {
+                ensure!(answer.ends_with(&format!(": {want}")), "a press on play answered {answer:?}");
+                restarts += 1;
+            }
+        }
+        ensure!(stopped && playing == json!(key), "the play button never showed and stopped the reply: shown {playing}, {restarts} restart(s)");
+        let mut cleared = Value::Null;
+        for _ in 0..100 {
+            cleared = playing_now(cx)?;
+            if cleared.is_null() {
+                break;
+            }
+            tick(cx, 20).await;
+        }
+        draw(window, None, cx)?;
+        ensure!(cleared.is_null(), "a second press on play left the window reading {cleared}");
+        json!({"row": fork_row, "buttons": buttons, "x": lefts, "copied": copied == fork_text, "playing": playing, "log": heard, "stopped": stopped, "restarts": restarts})
+    };
     press(&native, fork_at);
     let mut forked = None;
     for _ in 0..200 {
@@ -1659,24 +1785,27 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let pane_frame: Vec<f64> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["frame"].clone())?)?;
     let wheel_at = gpui::point(gpui::px((pane_frame[0] + pane_frame[2] / 2.) as f32), gpui::px((pane_frame[1] + pane_frame[3] * 0.3) as f32));
     let column_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.column_scroll(&agent_name));
-    // One wheel step and the frame it causes, timed together, in milliseconds.
-    let step = |dy: f32, cx: &mut AsyncApp| -> Result<f64> {
+    // One wheel step and the frame it causes, timed together in milliseconds: the main thread's
+    // CPU time, which a busy machine's preemption leaves alone, and the wall time beside it.
+    let step = |dy: f32, cx: &mut AsyncApp| -> Result<(f64, f64)> {
         let any: gpui::AnyWindowHandle = window.into();
-        let started = std::time::Instant::now();
+        let (started, cpu_started) = (std::time::Instant::now(), thread_cpu_ms());
         any.update(cx, |_, w, cx| {
             w.dispatch_event(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: wheel_at, delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(dy))), modifiers: Default::default(), touch_phase: gpui::TouchPhase::Moved }), cx);
             w.draw(cx).clear();
         })?;
-        Ok(started.elapsed().as_secs_f64() * 1000.)
+        Ok((thread_cpu_ms() - cpu_started, started.elapsed().as_secs_f64() * 1000.))
     };
     let at_end = column_now(cx)?;
     ensure!(at_end.is_some_and(|(top, _, following)| top == seeded && following), "the resumed column is not at its end and following: {at_end:?} of {seeded} rows");
     let frames_before = window.update(cx, |c, _, _| c.frames)?;
-    let mut times = vec![];
+    let (mut times, mut walls) = (vec![], vec![]);
     let mut tops = std::collections::HashSet::new();
     let mut reached_top = false;
     for _ in 0..4000 {
-        times.push(step(120., cx)?);
+        let (cpu, wall) = step(120., cx)?;
+        times.push(cpu);
+        walls.push(wall);
         let now = column_now(cx)?.unwrap_or_default();
         tops.insert(now.0);
         if now.0 == 0 && now.1 == 0. {
@@ -1710,7 +1839,9 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let total = rows(cx)?.1.len();
     let mut reached_end = false;
     for _ in 0..4000 {
-        times.push(step(-120., cx)?);
+        let (cpu, wall) = step(-120., cx)?;
+        times.push(cpu);
+        walls.push(wall);
         if column_now(cx)?.is_some_and(|(top, _, following)| top == total && following) {
             reached_end = true;
             break;
@@ -1738,8 +1869,15 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     sorted.sort_by(f64::total_cmp);
     let median = sorted[sorted.len() / 2];
     let dropped = times.iter().filter(|t| **t > 1000. / 60.).count();
-    let scroll_report = json!({"rows": seeded, "steps": times.len(), "frames": frames, "worst_frame_ms": (worst * 100.).round() / 100., "median_frame_ms": (median * 100.).round() / 100., "dropped": dropped, "rows_passed": tops.len(), "rows_drawn_at_top": drawn_at_top, "stayed_while_scrolled_up": true, "followed_at_end": followed});
-    ensure!(dropped == 0 && worst <= 1000. / 60., "scrolling 1000 rows dropped frames: {scroll_report}");
+    let worst_wall = walls.iter().copied().fold(0., f64::max);
+    let mut walls_sorted = walls.clone();
+    walls_sorted.sort_by(f64::total_cmp);
+    let median_wall = walls_sorted[walls_sorted.len() / 2];
+    let scroll_report = json!({"rows": seeded, "steps": times.len(), "frames": frames, "worst_frame_ms": (worst * 100.).round() / 100., "median_frame_ms": (median * 100.).round() / 100., "worst_wall_ms": (worst_wall * 100.).round() / 100., "median_wall_ms": (median_wall * 100.).round() / 100., "dropped": dropped, "rows_passed": tops.len(), "rows_drawn_at_top": drawn_at_top, "stayed_while_scrolled_up": true, "followed_at_end": followed});
+    ensure!(dropped == 0 && worst <= 1000. / 60., "scrolling 1000 rows took over a frame's CPU time: {scroll_report}");
+    // A step that waits without working (a blocking read, a lock) costs no CPU time; the median
+    // wall time catches one that every step pays, while a busy machine's stray preemptions do not.
+    ensure!(median_wall <= 1000. / 60., "scrolling 1000 rows took over a frame of wall time at the median: {scroll_report}");
     drop(seed_file);
     // Back to the conversation the later sections know.
     window.update(cx, |c, _, _| c.switch_conversation(&agent_name, Some(&old_id)))?;
@@ -1750,7 +1888,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     ensure!(rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")), "switching back to {old_id} after the scroll check");
-    let conversations_report = json!({"listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
+    let conversations_report = json!({"reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     for s in &splits_above {
@@ -1924,8 +2062,16 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     };
     native.call(json!({"op":"post_mouse","kind":"down","point":close_at}));
     native.call(json!({"op":"post_mouse","kind":"up","point":close_at}));
-    pump(&mut connection, 800, &mut layouts, window, cx).await?;
-    ensure!(window.update(cx, |c, _, _| c.confirmation.is_none())? && !session_order(cx)?.iter().any(|(id, _)| id == &sb5), "sb5 is still listed after its close button");
+    // The row goes when wheeld's layout without sb5 arrives.
+    let mut sb5_gone = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if !session_order(cx)?.iter().any(|(id, _)| id == &sb5) {
+            sb5_gone = true;
+            break;
+        }
+    }
+    ensure!(window.update(cx, |c, _, _| c.confirmation.is_none())? && sb5_gone, "sb5 is still listed 10 s after its close button");
     // Move to <the other session> takes a row out of this window's list.
     let second_session_id = std::env::var("WHEEL_CLIENT_SECOND_SESSION")?;
     window.update(cx, |c, _, cx| c.run_space_menu(&format!("session:{second_session_id}"), &sb4, cx))?;
@@ -2092,7 +2238,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session did not come back");
     wait(&native, "the first space's views shown again", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     // New Window opens a second window with a connection of its own, showing the same space.
-    let before_windows = cx.update(|app| app.windows().len());
+    // A drag's chip and card are app windows too; only the main windows count.
+    let before_windows = cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count());
     window.update(cx, |c, _, cx| c.run_action("new-window", cx))?;
     for _ in 0..3 {
         tick(cx, 100).await;
@@ -2205,6 +2352,27 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         && over_window["measured"]["windows"].as_array().map(Vec::len) == Some(2),
         "the drag from window 1 did not aim at window 2's sidebar: {over_window}; window 1 at {f1:?}, window 2 at {f2:?}, aimed at {aim:?}");
     ensure!(window2_sees["insertion"] == 0 && window2_sees["chip"].is_array() && window1_chip.is_null(), "window 2 does not draw the bar and the chip: it sees {window2_sees}, window 1's chip {window1_chip}");
+    // The chip is a window of its own beside the pointer (DragChipWindow), kept on the pointer's
+    // screen, and the window under the pointer draws none of its own; its frame is measured
+    // through the bridge, since a hidden check orders no window front.
+    let floats = |cx: &mut AsyncApp| cx.update(|_| wheel_gpui::view::float::state());
+    let rect4 = |v: &Value| -> Vec<f32> { v.as_array().map(|a| a.iter().map(|n| n.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
+    let near = |a: &[f32], b: &[f32]| a.len() == 4 && b.len() == 4 && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.);
+    let mut chip_over_window = Value::Null;
+    for _ in 0..20 {
+        tick(cx, 100).await;
+        chip_over_window = floats(cx)["chip"].clone();
+        if chip_over_window["shown"] == true && near(&rect4(&chip_over_window["frame"]), &rect4(&chip_over_window["asked"])) {
+            break;
+        }
+    }
+    let chip_asked = rect4(&chip_over_window["asked"]);
+    let aim_screen = rect4(&native.call(json!({"op":"screen_at","point":[aim.0, aim.1]}))["frame"]);
+    ensure!(chip_asked.len() == 4 && aim_screen.len() == 4, "no chip window over window 2's sidebar: {chip_over_window}, screen {aim_screen:?}");
+    let chip_expect = wheel_gpui::sidebar::chip_origin(aim.0, aim.1, (chip_asked[2], chip_asked[3]), wheel_gpui::layout::Rect { x: aim_screen[0], y: aim_screen[1], w: aim_screen[2], h: aim_screen[3] });
+    ensure!(chip_over_window["shown"] == true && chip_over_window["text"] == "dragged" && (chip_asked[0] - chip_expect.0).abs() <= 1. && (chip_asked[1] - chip_expect.1).abs() <= 1.
+        && near(&rect4(&chip_over_window["frame"]), &chip_asked) && window2_sees["floating"] == true && floats(cx)["card"]["shown"] != true,
+        "the chip window does not follow the pointer at {aim:?}: {chip_over_window}, expected its top left at {chip_expect:?} on the screen {aim_screen:?}; window 2 sees {window2_sees}");
     native.call(json!({"op":"post_mouse","kind":"up","point":local1}));
     let mut moved_over = false;
     for _ in 0..50 {
@@ -2239,6 +2407,27 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let over_desk = second.update(cx, |c, _, _| c.sidebar_json())?["drag"].clone();
     ensure!(over_desk["target"] == "the desktop" && over_desk["hint"] == "Release to open “dragged” in a little window" && over_desk["screen"] == json!([desk.0, desk.1]),
         "the drag from window 2 did not aim at the desktop at {desk:?}: {over_desk}");
+    // Over the desktop the preview card replaces the chip, centred on the pointer (DesktopDropOverlay).
+    let card_expect = wheel_gpui::sidebar::card_frame(desk.0, desk.1);
+    let card_expect = [card_expect.x, card_expect.y, card_expect.w, card_expect.h];
+    let mut over_desk_floats = Value::Null;
+    for _ in 0..20 {
+        tick(cx, 100).await;
+        over_desk_floats = floats(cx);
+        if over_desk_floats["card"]["shown"] == true && near(&rect4(&over_desk_floats["card"]["frame"]), &card_expect) {
+            break;
+        }
+    }
+    ensure!(over_desk_floats["card"]["shown"] == true && over_desk_floats["card"]["text"] == "dragged" && near(&rect4(&over_desk_floats["card"]["asked"]), &card_expect)
+        && near(&rect4(&over_desk_floats["card"]["frame"]), &card_expect) && over_desk_floats["chip"]["shown"] == false,
+        "over the desktop at {desk:?} the card is not at {card_expect:?} with the chip hidden: {over_desk_floats}");
+    if let Some(card_window) = cx.update(|_| wheel_gpui::view::float::card_window()) {
+        let _ = card_window.update(cx, |_, w, cx| -> Result<()> {
+            w.draw(cx).clear();
+            w.render_to_image()?.save(output.join("client-space-drag-desk-card.png"))?;
+            Ok(())
+        });
+    }
     native2.call(json!({"op":"post_mouse","kind":"up","point":local2}));
     let mut little = None;
     for _ in 0..30 {
@@ -2249,6 +2438,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     let (little_id, little_owner) = little.ok_or_else(|| anyhow::anyhow!("the drop on the desktop opened no little window for {dragged}"))?;
+    let after_drop_floats = floats(cx);
+    ensure!(after_drop_floats["card"]["shown"] == false && after_drop_floats["chip"]["shown"] == false, "the card or the chip stayed up after the drop: {after_drop_floats}");
     let little_handle = cx.update(|_| wheel_gpui::window_handle(&little_id)).ok_or_else(|| anyhow::anyhow!("no handle for little window {little_id}"))?;
     let little_native = little_handle.update(cx, |c, _, _| c.native())?;
     let expect = (desk.0 - 240., desk.1 - 165.);
@@ -2327,6 +2518,302 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(on_first, "the drop on the card left the first session with {:?}", window.update(cx, |c, _, _| spaces_of(c, &first_card))?);
     cx.update(|cx| menu.update(cx, |m, cx| m.toggle_popover(None, cx)));
+    // With both sidebars hidden, a press on window 1's tab drags the space onto window 2's tab
+    // strip, between its first and second tabs (SpaceDropping's tabs case).
+    for h in [window, second] {
+        h.update(cx, |c, _, cx| {
+            c.set_sidebar(false);
+            cx.notify();
+        })?;
+        draw(h, None, cx)?;
+    }
+    let tab_of = |c: &Client, space: &str| c.title_row().chips.iter().find(|ch| ch.hit == wheel_gpui::header::Hit::Space(space.to_owned())).map(|ch| ch.rect);
+    let mut tab_from = None;
+    for _ in 0..30 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        tab_from = window.update(cx, |c, _, _| tab_of(c, &dragged))?;
+        if tab_from.is_some() {
+            break;
+        }
+    }
+    let tab_from = tab_from.ok_or_else(|| anyhow::anyhow!("window 1 shows no tab for {dragged}: {:?}", window.update(cx, |c, _, _| c.title_row().chips.iter().map(|ch| ch.label.clone()).collect::<Vec<_>>()).ok()))?;
+    let tabs2 = second.update(cx, |c, _, _| c.title_row().tabs)?;
+    let first_tab2 = tabs2.first().copied().ok_or_else(|| anyhow::anyhow!("window 2 shows no tabs"))?;
+    // Just past the first tab's middle: the bar goes between the first and the second tab.
+    let on_tabs = (f2[0] + first_tab2.x + first_tab2.w * 0.75, f2[1] + first_tab2.y + first_tab2.h / 2.);
+    let local_tabs = [f64::from(on_tabs.0 - f1[0]), f64::from(on_tabs.1 - f1[1])];
+    let tab_centre = [f64::from(tab_from.x + tab_from.w / 2.), f64::from(tab_from.y + tab_from.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":tab_centre}));
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[tab_centre[0] + 10., tab_centre[1]]}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":local_tabs}));
+    tick(cx, 150).await;
+    draw(window, None, cx)?;
+    draw(second, Some(output.join("client-space-drag-tabs.png")), cx)?;
+    let over_tabs = window.update(cx, |c, _, _| c.sidebar_json()["drag"].clone())?;
+    let window2_tabs = second.update(cx, |c, _, _| c.sidebar_json())?["hovered"].clone();
+    ensure!(over_tabs["target"] == json!(format!("tabs of {id2} at 1")) && over_tabs["hint"].as_str().is_some_and(|h| h.starts_with("Place “dragged” here in “")) && window2_tabs["tab_bar"] == 1,
+        "the drag from window 1's tab did not aim between window 2's first two tabs at {on_tabs:?}: {over_tabs}; window 2 sees {window2_tabs}; window 2's tabs {tabs2:?}");
+    native.call(json!({"op":"post_mouse","kind":"up","point":local_tabs}));
+    let mut onto_tabs_after = vec![];
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(second, None, cx)?;
+        onto_tabs_after = second.update(cx, |c, _, _| spaces_of(c, &second_session))?;
+        if onto_tabs_after.get(1) == Some(&dragged) && window.update(cx, |c, _, _| spaces_of(c, &second_session).get(1) == Some(&dragged))? {
+            break;
+        }
+    }
+    ensure!(onto_tabs_after.get(1) == Some(&dragged), "the drop on window 2's tabs left the second session with {onto_tabs_after:?}; window 1 logged {:?}", drag_lines(window, cx)?);
+    for h in [window, second] {
+        h.update(cx, |c, _, cx| {
+            c.set_sidebar(true);
+            cx.notify();
+        })?;
+        draw(h, None, cx)?;
+    }
+    // A pane dragged by its header out of its window (wheel-ynjo.8.3; PaneMove.swift's awayTarget,
+    // armHold, dropAway): from a space of window 1 onto a row of window 2, held there until
+    // window 2 shows that space, then onto a side of a pane in it; from window 2 onto the
+    // desktop, where it moves into a new space in a little window; and from there onto window
+    // 1's sidebar room, where it moves into a new space of window 1's session.
+    let pane_away = {
+        let grid_of = |c: &Client| -> Vec<(String, wheel_gpui::layout::Rect)> { c.layers().first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default() };
+        let holding = |c: &Client, pane: &str| -> Option<String> { c.layout_lists().1.into_iter().find(|s| s.site_of(pane).is_some()).map(|s| s.id) };
+        let pane_lines = |h: gpui::WindowHandle<Client>, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("pane drag") || l.contains("little window")).rev().take(12).cloned().collect())?) };
+        let pane_dir = std::env::temp_dir().join(format!("wheel-gpui-pane-away-{}", std::process::id()));
+        std::fs::create_dir_all(&pane_dir)?;
+        let (ok, out, err) = run_pumped(&["space", "new", &pane_dir.to_string_lossy(), "--name", "paneaway"], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel space new for the pane drag failed: {err}");
+        let away_space = out.trim().to_owned();
+        let (ok, out, err) = run_pumped(&["space", "move", &away_space, &id1], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel space move of the pane's space to window 1 failed: {err} {out}");
+        let mut moved_pane = None;
+        for _ in 0..50 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            window.update(cx, |c, _, cx| {
+                c.select_space(&away_space);
+                cx.notify();
+            })?;
+            draw(window, None, cx)?;
+            moved_pane = window.update(cx, |c, _, _| (c.space_id() == Some(away_space.as_str())).then(|| grid_of(c)).and_then(|g| g.first().cloned()))?;
+            if moved_pane.is_some() {
+                break;
+            }
+        }
+        let (moved, moved_rect) = moved_pane.ok_or_else(|| anyhow::anyhow!("window 1 never showed {away_space} with a pane"))?;
+        let label = window.update(cx, |c, _, _| c.layout_lists().1.iter().flat_map(|s| s.shown()).find(|l| l.id == moved).map(|l| c.pane_label(l)))?.unwrap_or_default();
+        let shown2 = second.update(cx, |c, _, _| c.space_id().map(str::to_owned))?;
+        let candidates: Vec<String> = second.update(cx, |c, _, _| spaces_of(c, &second_session))?.into_iter().filter(|s| Some(s) != shown2.as_ref()).collect();
+        let held = candidates.iter().find(|s| **s == dragged).or(candidates.first()).cloned().ok_or_else(|| anyhow::anyhow!("the second session has no space window 2 does not show"))?;
+        let rows2 = second.update(cx, |c, _, _| c.sidebar_json())?;
+        let row_held = row_frame(&rows2, &held).ok_or_else(|| anyhow::anyhow!("window 2's sidebar has no row for {held}"))?;
+        let on_row = (f2[0] + row_held[0] as f32 + 20., f2[1] + row_held[1] as f32 + 5.);
+        let local_row = [f64::from(on_row.0 - f1[0]), f64::from(on_row.1 - f1[1])];
+        let grip = [f64::from(moved_rect.x + 30.), f64::from(moved_rect.y + 11.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":grip}));
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        native.call(json!({"op":"post_mouse","kind":"drag","point":[grip[0] + 20., grip[1] + 20.]}));
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        native.call(json!({"op":"post_mouse","kind":"drag","point":local_row}));
+        tick(cx, 150).await;
+        draw(window, None, cx)?;
+        draw(second, None, cx)?;
+        let over_row = window.update(cx, |c, _, _| c.sidebar_json()["pane_drag"].clone())?;
+        let row_seen = second.update(cx, |c, _, _| c.sidebar_json())?;
+        let row_outlined = row_seen["rows"].as_array().and_then(|r| r.iter().find(|r| r["id"] == held.as_str())).map(|r| r["pane_over"].clone()).unwrap_or_default();
+        ensure!(over_row["away"] == format!("the end of space {held}") && over_row["hold"] == json!([id2, held]) && over_row["measured"].as_array().map(Vec::len) == Some(2)
+            && over_row["hint"].as_str().is_some_and(|h| h.starts_with(&format!("Move “{label}” to the end of “"))) && row_outlined == true,
+            "the pane drag from window 1 did not aim at window 2's row for {held} at {on_row:?}: {over_row}; window 2's row outlined {row_outlined}; window 1 logged {:?}", pane_lines(window, cx)?);
+        let mut chip_pane = Value::Null;
+        for _ in 0..20 {
+            chip_pane = floats(cx)["chip"].clone();
+            if chip_pane["shown"] == true && chip_pane["text"] == label.as_str() {
+                break;
+            }
+            tick(cx, 100).await;
+        }
+        ensure!(chip_pane["shown"] == true && chip_pane["text"] == label.as_str(), "no chip window names {label} over window 2's row: {chip_pane}");
+        // Held over the row, window 2 shows that space after HOLD_SECONDS.
+        let held_from = std::time::Instant::now();
+        ensure!(shown(second, cx)?.1.as_deref() != Some(held.as_str()), "window 2 showed {held} before the hold ran its time");
+        let mut held_after = None;
+        for _ in 0..40 {
+            tick(cx, 50).await;
+            draw(window, None, cx)?;
+            draw(second, None, cx)?;
+            if second.update(cx, |c, _, _| c.space_id() == Some(held.as_str()))? {
+                held_after = Some(held_from.elapsed().as_millis());
+                break;
+            }
+        }
+        let switched = window.update(cx, |c, _, _| c.sidebar_json()["pane_drag"]["switched"].clone())?;
+        ensure!(held_after.is_some_and(|ms| ms >= 250) && switched == json!([[id2, shown2]]), "holding over window 2's row did not show {held} there: it shows {:?}, switched {switched}; window 1 logged {:?}", shown(second, cx)?, pane_lines(window, cx)?);
+        // Then onto the left side of a pane of that space in window 2's grid.
+        let (target, target_rect) = second.update(cx, |c, _, _| grid_of(c).into_iter().find(|(id, _)| *id != moved))?.ok_or_else(|| anyhow::anyhow!("window 2 shows no pane of {held}"))?;
+        let target_empty = second.update(cx, |c, _, _| c.layout_lists().1.iter().flat_map(|s| s.shown()).any(|l| l.id == target && l.kind == "empty"))?;
+        let on_grid = (f2[0] + target_rect.x + 8., f2[1] + target_rect.y + target_rect.h / 2.);
+        let local_grid = [f64::from(on_grid.0 - f1[0]), f64::from(on_grid.1 - f1[1])];
+        native.call(json!({"op":"post_mouse","kind":"drag","point":local_grid}));
+        tick(cx, 150).await;
+        draw(window, None, cx)?;
+        draw(second, Some(output.join("client-pane-away-grid.png")), cx)?;
+        let over_grid = window.update(cx, |c, _, _| c.sidebar_json()["pane_drag"].clone())?;
+        let lit = second.update(cx, |c, _, _| c.grid_drop_highlight())?;
+        let lit_expect = wheel_gpui::grid_drop::highlight(wheel_gpui::grid_drop::Zone::Edge(wheel_proto::Dir::Left), target_rect);
+        ensure!(over_grid["away"] == format!("{target} left in space {held}") && over_grid["hint"].as_str().is_some_and(|h| h.starts_with(&format!("Dock “{label}” on the left of {target}"))) && lit == Some(lit_expect),
+            "the pane drag did not aim at the left of {target} in window 2 at {on_grid:?}: {over_grid}; window 2 lights {lit:?}, not {lit_expect:?}");
+        native.call(json!({"op":"post_mouse","kind":"up","point":local_grid}));
+        let mut docked = false;
+        for _ in 0..50 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            draw(second, None, cx)?;
+            if second.update(cx, |c, _, _| c.space_id() == Some(held.as_str()) && holding(c, &moved).as_deref() == Some(held.as_str()) && grid_of(c).iter().any(|(id, _)| *id == moved))?
+                && window.update(cx, |c, _, _| holding(c, &moved).as_deref() == Some(held.as_str()))?
+            {
+                docked = true;
+                break;
+            }
+        }
+        let docked_grid = second.update(cx, |c, _, _| grid_of(c))?;
+        // A target space whose only pane is empty loses it to the pane that arrives (wheeld's pane_move).
+        let left_of = if target_empty {
+            docked_grid.len() == 1 && docked_grid[0].0 == moved
+        } else {
+            docked_grid.iter().find(|(id, _)| *id == moved).zip(docked_grid.iter().find(|(id, _)| *id == target)).is_some_and(|(m, t)| m.1.x < t.1.x)
+        };
+        ensure!(docked && left_of && window.update(cx, |c, _, _| c.sidebar_json()["pane_drag"].is_null())? && floats(cx)["chip"]["shown"] == false,
+            "the drop left {moved} in {:?}, window 2 showing {:?} with {docked_grid:?}; window 1 logged {:?}", window.update(cx, |c, _, _| holding(c, &moved))?, shown(second, cx)?, pane_lines(window, cx)?);
+        draw(second, Some(output.join("client-pane-away-docked.png")), cx)?;
+        // From window 2 onto the desktop: the pane moves into a new space in a little window, grown
+        // from a card centred on the drop.
+        let moved_rect2 = docked_grid.iter().find(|(id, _)| *id == moved).map(|m| m.1).unwrap();
+        let grip2 = [f64::from(moved_rect2.x + 30.), f64::from(moved_rect2.y + 11.)];
+        let desk_pane = (f1[0] + f1[2] + 100., f2[1] + 300.);
+        let local_desk = [f64::from(desk_pane.0 - f2[0]), f64::from(desk_pane.1 - f2[1])];
+        native2.call(json!({"op":"post_mouse","kind":"down","point":grip2}));
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        native2.call(json!({"op":"post_mouse","kind":"drag","point":[grip2[0] + 20., grip2[1] + 20.]}));
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(second, None, cx)?;
+        native2.call(json!({"op":"post_mouse","kind":"drag","point":local_desk}));
+        tick(cx, 150).await;
+        draw(second, None, cx)?;
+        let over_desk_pane = second.update(cx, |c, _, _| c.sidebar_json()["pane_drag"].clone())?;
+        let desk_chip_text = format!("{label} → new little window");
+        let mut desk_chip = Value::Null;
+        for _ in 0..20 {
+            desk_chip = floats(cx)["chip"].clone();
+            if desk_chip["text"] == desk_chip_text.as_str() {
+                break;
+            }
+            tick(cx, 100).await;
+        }
+        ensure!(over_desk_pane["away"] == "the desktop" && over_desk_pane["hint"] == format!("Release to move “{label}” into a new space in a little window") && desk_chip["shown"] == true && desk_chip["text"] == desk_chip_text.as_str(),
+            "the pane drag from window 2 did not aim at the desktop at {desk_pane:?}: {over_desk_pane}; chip {desk_chip}");
+        native2.call(json!({"op":"post_mouse","kind":"up","point":local_desk}));
+        let mut pane_little = None;
+        for _ in 0..50 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(second, None, cx)?;
+            let new_space = second.update(cx, |c, _, _| holding(c, &moved))?.filter(|s| *s != held);
+            pane_little = new_space.clone().and_then(|s| cx.update(|_| wheel_gpui::windows::with(|r| r.little_showing(&s).map(|l| (s.clone(), l.id.clone(), l.owner.clone())))));
+            if pane_little.is_some() {
+                break;
+            }
+        }
+        let (pane_space, pane_little_id, pane_little_owner) = pane_little.ok_or_else(|| anyhow::anyhow!("the pane's drop on the desktop opened no little window: {moved} is in {:?}; window 2 logged {:?}", second.update(cx, |c, _, _| holding(c, &moved)).ok(), pane_lines(second, cx).ok()))?;
+        let pane_little_handle = cx.update(|_| wheel_gpui::window_handle(&pane_little_id)).ok_or_else(|| anyhow::anyhow!("no handle for little window {pane_little_id}"))?;
+        let pane_little_native = pane_little_handle.update(cx, |c, _, _| c.native())?;
+        let pane_little_expect = (desk_pane.0 - 240., desk_pane.1 - 165.);
+        let mut pane_little_frame = vec![];
+        for _ in 0..20 {
+            draw(pane_little_handle, None, cx)?;
+            tick(cx, 100).await;
+            pane_little_frame = frame_of(&pane_little_native);
+            if pane_little_frame.len() == 4 && (pane_little_frame[0] - pane_little_expect.0).abs() < 2. && (pane_little_frame[1] - pane_little_expect.1).abs() < 2. {
+                break;
+            }
+        }
+        ensure!(pane_little_frame.len() == 4 && (pane_little_frame[0] - pane_little_expect.0).abs() < 2. && (pane_little_frame[1] - pane_little_expect.1).abs() < 2. && floats(cx)["chip"]["shown"] == false,
+            "the little window for {pane_space} is at {pane_little_frame:?}; expected its top left at {pane_little_expect:?}");
+        draw(pane_little_handle, Some(output.join("client-pane-away-little.png")), cx)?;
+        pane_little_handle.update(cx, |c, _, _| c.little_back())?;
+        for _ in 0..30 {
+            draw(pane_little_handle, None, cx).ok();
+            tick(cx, 100).await;
+            if cx.update(|_| wheel_gpui::window_handle(&pane_little_id)).is_none() {
+                break;
+            }
+        }
+        ensure!(cx.update(|_| wheel_gpui::window_handle(&pane_little_id)).is_none(), "the little window {pane_little_id} did not close");
+        // From window 2, which shows the new space, onto the room under window 1's rows: the pane
+        // moves into a new space in window 1's session.
+        let mut moved_rect3 = None;
+        for _ in 0..30 {
+            second.update(cx, |c, _, cx| {
+                c.select_space(&pane_space);
+                cx.notify();
+            })?;
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(second, None, cx)?;
+            moved_rect3 = second.update(cx, |c, _, _| (c.space_id() == Some(pane_space.as_str())).then(|| grid_of(c).into_iter().find(|(id, _)| *id == moved).map(|m| m.1)).flatten())?;
+            if moved_rect3.is_some() {
+                break;
+            }
+        }
+        let moved_rect3 = moved_rect3.ok_or_else(|| anyhow::anyhow!("window 2 never showed {pane_space} holding {moved}: it shows {:?}", shown(second, cx).ok()))?;
+        let grip3 = [f64::from(moved_rect3.x + 30.), f64::from(moved_rect3.y + 11.)];
+        let bar1 = window.update(cx, |c, _, _| c.sidebar_rect())?;
+        let on_room = (f1[0] + bar1.x + 30., f1[1] + bar1.y + bar1.h - 30.);
+        let local_room = [f64::from(on_room.0 - f2[0]), f64::from(on_room.1 - f2[1])];
+        native2.call(json!({"op":"post_mouse","kind":"down","point":grip3}));
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        native2.call(json!({"op":"post_mouse","kind":"drag","point":[grip3[0] + 20., grip3[1] + 20.]}));
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(second, None, cx)?;
+        native2.call(json!({"op":"post_mouse","kind":"drag","point":local_room}));
+        tick(cx, 150).await;
+        draw(second, None, cx)?;
+        draw(window, Some(output.join("client-pane-away-room.png")), cx)?;
+        let over_room = second.update(cx, |c, _, _| c.sidebar_json()["pane_drag"].clone())?;
+        let room_outlined = window.update(cx, |c, _, _| c.sidebar_json()["pane_new_space"].clone())?;
+        ensure!(over_room["away"] == format!("a new space in window {id1}") && over_room["hint"].as_str().is_some_and(|h| h.starts_with(&format!("Move “{label}” into a new space in “"))) && room_outlined == true,
+            "the pane drag from window 2 did not aim at window 1's sidebar room at {on_room:?}: {over_room}; window 1 outlines it {room_outlined}");
+        native2.call(json!({"op":"post_mouse","kind":"up","point":local_room}));
+        let mut room_space = None;
+        for _ in 0..50 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(second, None, cx)?;
+            draw(window, None, cx)?;
+            room_space = window.update(cx, |c, _, _| holding(c, &moved).filter(|s| *s != pane_space && c.session_spaces().iter().any(|x| x.id == *s)))?;
+            if room_space.is_some() && second.update(cx, |c, _, _| holding(c, &moved) == room_space)? {
+                break;
+            }
+        }
+        let room_space = room_space.ok_or_else(|| anyhow::anyhow!("the drop on window 1's sidebar room left {moved} in {:?}; window 2 logged {:?}", window.update(cx, |c, _, _| holding(c, &moved)).ok(), pane_lines(second, cx).ok()))?;
+        let pane_away = json!({
+            "pane": moved, "label": label,
+            "onto_row": {"away": over_row["away"], "hint": over_row["hint"], "hold": over_row["hold"], "row_outlined": row_outlined, "chip": chip_pane["text"], "held_ms": held_after, "switched": switched},
+            "onto_grid": {"away": over_grid["away"], "hint": over_grid["hint"], "lit": lit.map(|r| [r.x, r.y, r.w, r.h]), "pane_left_of_target": left_of, "target_was_empty": target_empty},
+            "onto_desktop": {"away": over_desk_pane["away"], "chip": desk_chip["text"], "space": pane_space, "little": pane_little_id, "owner": pane_little_owner, "frame": pane_little_frame},
+            "onto_room": {"away": over_room["away"], "hint": over_room["hint"], "outlined": room_outlined, "space": room_space},
+        });
+        for space in [&room_space, &pane_space, &away_space] {
+            // A space its last pane left may be gone already.
+            if !window.update(cx, |c, _, _| c.layout_lists().1.iter().any(|x| x.id == **space))? {
+                continue;
+            }
+            let (ok, _, err) = run_pumped(&["space", "close", space], &mut connection, &mut layouts, window, cx).await?;
+            ensure!(ok, "wheel space close {space} after the pane drags failed: {err}");
+        }
+        let _ = std::fs::remove_dir_all(&pane_dir);
+        pane_away
+    };
     let (ok, _, err) = run_pumped(&["space", "close", &dragged], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel space close for the dragged space failed: {err}");
     let _ = std::fs::remove_dir_all(&drag_dir);
@@ -2342,6 +2829,10 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "onto_window": {"target": over_window["target"], "hint": over_window["hint"], "window2_insertion": window2_sees["insertion"], "window2_chip": window2_sees["chip"], "session_after": after_window.0},
         "onto_desktop": {"drop": [desk.0, desk.1], "little": little_id, "owner": little_owner, "frame": little_frame},
         "onto_card": {"target": over_card["target"], "hint": card_hint, "card": [card.frame.x, card.frame.y, card.frame.w, card.frame.h]},
+        "chip": {"aim": [aim.0, aim.1], "frame": chip_over_window["frame"], "expected_origin": [chip_expect.0, chip_expect.1]},
+        "card": {"drop": [desk.0, desk.1], "frame": over_desk_floats["card"]["frame"], "chip_shown": over_desk_floats["chip"]["shown"]},
+        "onto_tabs": {"target": over_tabs["target"], "hint": over_tabs["hint"], "window2_tab_bar": window2_tabs["tab_bar"], "session_after": onto_tabs_after},
+        "pane_away": pane_away,
     });
     // Closing the second window ends its connection: wheeld forgets its view, the first stays.
     second.update(cx, |_, w, _| w.remove_window())?;
@@ -2379,12 +2870,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (ok, _, err) = run_pumped(&["window", "rename", "Nowhere", "x"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(!ok && err.contains("no window Nowhere; the windows are"), "renaming a window that is not there said {err:?}");
     // A new window, named, on the session the focused window shows.
-    let before_new = cx.update(|app| app.windows().len());
+    let before_new = cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count());
     let (ok, out, err) = run_pumped(&["window", "new", "--name", "Second"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel window new failed: {err}");
     let new_id = out.trim().to_owned();
     let made = cx.update(|_| wheel_gpui::window_handle(&new_id)).ok_or_else(|| anyhow::anyhow!("wheel window new printed {new_id:?}, which is no window"))?;
-    ensure!(cx.update(|app| app.windows().len()) == before_new + 1, "wheel window new opened no window");
+    ensure!(cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count()) == before_new + 1, "wheel window new opened no window");
     for _ in 0..30 {
         if made.update(cx, |c, _, _| c.session_id().is_some())? {
             break;
@@ -3679,6 +4170,24 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             got
         }};
     }
+    // A motion's frame mid-way: the check holds the grid's motion clock at a fraction of its
+    // length (`Client::motion_hold`) before the step that starts it, and this waits for the motion.
+    macro_rules! held_motion {
+        ($what:expr) => {{
+            let mut got = Value::Null;
+            for _ in 0..60 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                if got["grid_motion"]["moving"] == true {
+                    break;
+                }
+            }
+            ensure!(got["grid_motion"]["moving"] == true, "{} never started a motion: {}", $what, got["grid_motion"]);
+            got
+        }};
+    }
+    let hold_motion = |at: Option<f32>, cx: &mut AsyncApp| window.update(cx, |c, _, _| c.motion_hold = at);
     let grid_dir = std::env::temp_dir().join(format!("wheel-gpui-grid-{}", std::process::id()));
     std::fs::create_dir_all(&grid_dir)?;
     let (ok, out, err) = run_pumped(&["space", "new", &grid_dir.to_string_lossy(), "--name", "grid", "--session", &first_session_id], &mut connection, &mut layouts, window, cx).await?;
@@ -3983,20 +4492,23 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(zoom_button["enabled"] == true && zoom_button["on"] == false && before_zoom["grid_motion"]["zoomed"].is_null(), "the zoom button reads {zoom_button} before a zoom");
     // SAFETY: only the main thread reads the variable (`motion::duration`), and this runs on it.
     unsafe { std::env::set_var("WHEEL_SLOW_ANIMATIONS", "10") };
+    hold_motion(Some(0.3), cx)?;
     let zoom_at = centre(four(&zoom_button["frame"]));
     native.call(json!({"op":"post_mouse","kind":"down","point":zoom_at}));
     native.call(json!({"op":"post_mouse","kind":"up","point":zoom_at}));
-    pump(&mut connection, 400, &mut layouts, window, cx).await?;
+    let mid = held_motion!("the zoom button");
     draw(window, Some(output.join("client-grid-zoom-mid.png")), cx)?;
-    let mid = state!();
     let a_mid = frame(&mid, &grid_a);
-    ensure!(mid["grid_motion"]["moving"] == true && mid["grid_motion"]["zoomed"] == grid_a.as_str() && mid["grid_motion"]["resizes_held"] == true && mid["grid_motion"]["length_ms"] == 2200,
-        "400 ms after the zoom button the motion reads {}", mid["grid_motion"]);
+    ensure!(mid["grid_motion"]["zoomed"] == grid_a.as_str() && mid["grid_motion"]["resizes_held"] == true && mid["grid_motion"]["length_ms"] == 2200,
+        "held at 0.3 of its length the zoom's motion reads {}", mid["grid_motion"]);
+    let held_progress = mid["grid_motion"]["progress"].as_f64().unwrap_or(-1.);
+    ensure!((held_progress - 0.561).abs() < 0.01, "held at 0.3 of its length the zoom reads progress {held_progress}, not 0.561");
     // Each side the pane does not already fill grows part of the way; at least one does.
     let between = |i: usize| a_from[i] >= zoom_area[i] - 1. || (a_mid[i] > a_from[i] + 1. && a_mid[i] < zoom_area[i] - 1.);
     let grows = a_from[2] < zoom_area[2] - 1. || a_from[3] < zoom_area[3] - 1.;
     ensure!(grows && between(2) && between(3), "mid-zoom the first pane is {a_mid:?}, not between {a_from:?} and the grid {zoom_area:?}");
     ensure!(sent(&mid).len() == sent_before, "the terminal sent a resize mid-zoom: {:?}", sent(&mid));
+    hold_motion(None, cx)?;
     let zoomed = until!("the zoom finished and the terminal's size sent", |s: &Value| s["grid_motion"]["resizes_held"] == false && sent(s).len() > sent_before);
     let apart = |f: [f64; 4], a: [f64; 4]| f[0] >= a[0] + a[2] || a[0] >= f[0] + f[2] || f[1] >= a[1] + a[3] || a[1] >= f[1] + f[3];
     ensure!(near(frame(&zoomed, &grid_a), zoom_area), "the zoomed pane is {:?}, not the grid {zoom_area:?}", frame(&zoomed, &grid_a));
@@ -4052,19 +4564,20 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (b_from, c_from) = (frame(&still, &grid_b), frame(&still, &grid_c));
     let still_button = four(&still["panes"][grid_a.as_str()]["header_buttons"]["zoom"]["frame"]);
     unsafe { std::env::set_var("WHEEL_SLOW_ANIMATIONS", "10") };
+    hold_motion(Some(0.3), cx)?;
     for kind in ["down", "up"] {
         native.call(json!({"op":"post_mouse","kind":kind,"point":centre(still_button)}));
     }
-    pump(&mut connection, 600, &mut layouts, window, cx).await?;
+    let rmid = held_motion!("the zoom button under Reduce Motion");
     draw(window, Some(output.join("client-grid-zoom-reduced-mid.png")), cx)?;
-    let rmid = state!();
     let opacity = |s: &Value, p: &str| s["panes"][p]["opacity"].as_f64().unwrap_or(-1.);
     let alpha = |s: &Value, p: &str| s["panes"][p]["bridge"]["alpha"].as_f64().unwrap_or(-1.);
-    ensure!(rmid["grid_motion"]["moving"] == true && rmid["grid_motion"]["zoomed"] == grid_a.as_str(), "600 ms into the reduced zoom the motion reads {}", rmid["grid_motion"]);
+    ensure!(rmid["grid_motion"]["zoomed"] == grid_a.as_str(), "held at 0.3 of its length the reduced zoom's motion reads {}", rmid["grid_motion"]);
     ensure!(near(frame(&rmid, &grid_b), b_from) && near(frame(&rmid, &grid_c), c_from), "mid reduced zoom the others moved: {:?} {:?} from {b_from:?} {c_from:?}", frame(&rmid, &grid_b), frame(&rmid, &grid_c));
     let (o_mid, a_mid_alpha) = (opacity(&rmid, &grid_c), alpha(&rmid, &grid_c));
     ensure!(o_mid > 0.05 && o_mid < 0.95 && (a_mid_alpha - o_mid).abs() < 0.2 && rmid["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
         "mid reduced zoom the third pane draws at {o_mid}, its view at alpha {a_mid_alpha}: {}", rmid["panes"][grid_c.as_str()]["bridge"]);
+    hold_motion(None, cx)?;
     let rzoomed = until!("the reduced zoom finished", |s: &Value| s["grid_motion"]["moving"] == false && s["grid_motion"]["resizes_held"] == false && near(frame(s, &grid_a), zoom_area));
     for pane in [&grid_b, &grid_c] {
         ensure!(opacity(&rzoomed, pane) == 0., "{pane} draws at {} after the reduced zoom", opacity(&rzoomed, pane));
@@ -4080,20 +4593,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         ensure!(out.status.success(), "pane ratio {} {ratio}: {}", zsplit.id, String::from_utf8_lossy(&out.stderr));
         Ok(())
     };
+    hold_motion(Some(0.3), cx)?;
     set_ratio(if zsplit.ratio > 0.45 { 0.35 } else { 0.55 })?;
-    // until! skips frames read mid-motion, so this one polls for the motion itself.
-    let mut laid = Value::Null;
-    for _ in 0..40 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        draw(window, None, cx)?;
-        laid = state!();
-        if laid["grid_motion"]["moving"] == true {
-            break;
-        }
-    }
-    ensure!(laid["grid_motion"]["moving"] == true, "the zoomed grid never moved for the new ratio: {}", laid["grid_motion"]);
+    let laid = held_motion!("the new ratio of the zoomed grid");
     ensure!(opacity(&laid, &grid_c) == 0. && laid["panes"][grid_c.as_str()]["bridge"]["hidden"] == true,
         "a layout change while zoomed showed the third pane at {}: {} {}", opacity(&laid, &grid_c), laid["grid_motion"], laid["panes"][grid_c.as_str()]["bridge"]);
+    hold_motion(None, cx)?;
     until!("the layout motion ended", |s: &Value| s["grid_motion"]["moving"] == false);
     set_ratio(zsplit.ratio)?;
     until!("the ratio went back", |s: &Value| s["grid_motion"]["moving"] == false && near(frame(s, &grid_c), c_from) && opacity(s, &grid_c) == 0.);
@@ -4594,6 +5099,97 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     let after_new = state(cx);
     let popover_window_open = popover_any.update(cx, |_, _, _| ()).is_ok();
     ensure!(after_new["popover"]["open"] == false && !popover_window_open, "the popover stayed open after New Window: handle held {}, window open {popover_window_open}", after_new["popover"]["open"]);
+    // The pairing row and Settings… (wheel-ynjo.7.4.3): the popover opened again copies the code
+    // through the focused window (the one New Window opened, which never opened Settings, so it
+    // asks wheeld how phones reach it first), and Settings… opens that window's Settings and
+    // closes the popover.
+    let pairing = {
+        cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+        let mut reopened = Value::Null;
+        for _ in 0..50 {
+            tick(cx, 100).await;
+            reopened = state(cx);
+            if reopened["popover"]["open"] == true {
+                break;
+            }
+        }
+        ensure!(reopened["popover"]["open"] == true, "the popover did not open again: {}", reopened["popover"]);
+        let popover: gpui::AnyWindowHandle = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?.into();
+        let shown = popover_settle(popover, &menu, cx, |s| popover_fitted(s) && s["popover"]["controls"]["pairing-copy"].is_array() && s["pairing"]["disabled"].is_null()).await;
+        ensure!(popover_fitted(&shown) && shown["pairing"]["disabled"].is_null() && shown["popover"]["controls"]["pairing-copy"].is_array()
+            && shown["popover"]["controls"]["settings"].is_array() && shown["popover"]["controls"]["pairing-qr"].is_array(),
+            "the pairing row reads disabled {} with controls {}", shown["pairing"]["disabled"], shown["popover"]["controls"]);
+        let row_is_address = shown["pairing"]["row"].as_str().is_some_and(|r| r.starts_with("wss://"));
+        ensure!(row_is_address, "the pairing row's second line is not an address");
+        let height = shown["popover"]["frame"][3].as_f64().unwrap_or(0.);
+        ensure!((height - shown["height"].as_f64().unwrap_or(-1.)).abs() < 1., "the popover is {height} tall, its rows need {}", shown["height"]);
+        let target = cx.update(|cx| wheel_gpui::view::focused_client(cx)).ok_or_else(|| anyhow::anyhow!("no focused window"))?;
+        let copied_before = target.update(cx, |c, _, _| c.pairing.copied.clone())?;
+        let picture = output.join("client-menubar-pairing.png");
+        popover_picture(popover, &picture, cx)?;
+        popover_press(popover, &shown, "pairing-copy", cx)?;
+        let mut copied = None;
+        for _ in 0..100 {
+            tick(cx, 100).await;
+            copied = target.update(cx, |c, _, _| c.pairing.copied.clone())?;
+            if copied.is_some() && copied != copied_before {
+                break;
+            }
+        }
+        ensure!(copied.is_some() && copied != copied_before, "Copy pairing code in the popover copied nothing in the focused window (had a code before: {})", copied_before.is_some());
+        let copy_line = target.update(cx, |c, _, _| c.toast_log.iter().rev().find(|l| l.starts_with("pairing code copied")).cloned())?;
+        ensure!(copy_line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {copy_line:?}");
+        let after_copy = popover_settle(popover, &menu, cx, |s| s["popover"]["controls"]["settings"].is_array()).await;
+        ensure!(after_copy["popover"]["open"] == true, "the popover closed after Copy");
+        let settings_before = target.update(cx, |c, _, _| c.settings_open)?;
+        ensure!(!settings_before, "the focused window's Settings was open before Settings…");
+        popover_press(popover, &after_copy, "settings", cx)?;
+        let mut opened = false;
+        for _ in 0..50 {
+            tick(cx, 100).await;
+            opened = target.update(cx, |c, _, _| c.settings_open)?;
+            if opened && state(cx)["popover"]["open"] == false {
+                break;
+            }
+        }
+        let popover_gone = popover.update(cx, |_, _, _| ()).is_err();
+        ensure!(opened && popover_gone && state(cx)["popover"]["open"] == false, "Settings… opened Settings {opened}, closed the popover {popover_gone}");
+        target.update(cx, |c, _, cx| {
+            c.close_settings();
+            cx.notify();
+        })?;
+        // Show QR code: the focused window's pairing window opens and the popover closes.
+        cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+        let mut again = Value::Null;
+        for _ in 0..50 {
+            tick(cx, 100).await;
+            again = state(cx);
+            if again["popover"]["open"] == true {
+                break;
+            }
+        }
+        ensure!(again["popover"]["open"] == true, "the popover did not open for Show QR code: {}", again["popover"]);
+        let popover: gpui::AnyWindowHandle = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?.into();
+        let ready = popover_settle(popover, &menu, cx, |s| popover_fitted(s) && s["popover"]["controls"]["pairing-qr"].is_array()).await;
+        ensure!(ready["popover"]["controls"]["pairing-qr"].is_array(), "no Show QR code control: {}", ready["popover"]["controls"]);
+        popover_press(popover, &ready, "pairing-qr", cx)?;
+        let mut qr_open = false;
+        for _ in 0..100 {
+            tick(cx, 100).await;
+            qr_open = target.update(cx, |c, _, _| c.pairing.open && !c.pairing.window_tokens.is_empty())?;
+            if qr_open && state(cx)["popover"]["open"] == false {
+                break;
+            }
+        }
+        let qr_popover_gone = popover.update(cx, |_, _, _| ()).is_err();
+        ensure!(qr_open && qr_popover_gone, "Show QR code opened the pairing window with a code {qr_open}, closed the popover {qr_popover_gone}");
+        target.update(cx, |c, _, cx| {
+            c.close_pairing_window();
+            cx.notify();
+        })?;
+        json!({"row_is_address": row_is_address, "height": height, "copied": true, "copy_line": copy_line, "popover_stayed": true, "settings_opened": opened, "popover_closed": popover_gone,
+            "qr_window_opened": qr_open, "qr_popover_closed": qr_popover_gone, "picture": picture})
+    };
     // A Dock click with every window minimised (wheel-ynjo.7.6): AppKit finds no visible window and
     // GPUI calls `reopen` though windows are open; it opens one on the first session no window shows.
     let windows_before_dock = wheel_gpui::windows::with(|r| r.windows.len());
@@ -4643,6 +5239,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         "fixture_waiting": fixture_waiting, "rows_waiting": row_waiting, "dock_while_waiting": waiting_state["item"]["dock"], "answered": answered,
         "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
         "new_window": {"before": windows_before, "after": windows_after, "popover_closed": after_new["popover"]["open"] == false},
+        "pairing": pairing,
         "server_line": server_line,
         "dock_reopen": {"before": windows_before_dock, "after": windows_after_dock, "session": dock_opened, "wanted": dock_session},
         "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space},

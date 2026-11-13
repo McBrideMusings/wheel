@@ -90,17 +90,19 @@ pub struct SpaceDrag {
     pub at: (f32, f32),
     /// Where the pointer is on screen (top left origin), once the windows are measured.
     pub screen: Option<(f32, f32)>,
-    /// The window the pointer is in and where in it: that window draws the chip.
+    /// The window the pointer is in and where in it.
     pub chip: Option<(String, (f32, f32))>,
 }
 
-/// Where releasing a dragged space would put it (SpaceDropping.SpaceDropTarget). A window's
-/// tabs are no target yet: a window whose sidebar is hidden takes the space at its end.
+/// Where releasing a dragged space would put it (SpaceDropping.SpaceDropTarget).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpaceDropTarget {
     /// Between `window`'s sidebar rows: `index` counts the rows above the bar, in the list as it
     /// was before the drag.
     Sidebar { window: String, index: usize },
+    /// Between `window`'s tabs while its sidebar is hidden: `index` counts the tabs left of the
+    /// bar.
+    Tabs { window: String, index: usize },
     /// A window's body: the space goes to the end of the window's session.
     Window(String),
     /// A session's card in the menu bar popover: `index` counts the card's rows above the bar.
@@ -119,6 +121,26 @@ pub struct DropWindow {
     pub sidebar: Option<Rect>,
     /// The sidebar's rows, top to bottom.
     pub rows: Vec<Rect>,
+    /// The tab strip's rectangle while the window shows tabs instead of a sidebar.
+    pub tab_strip: Option<Rect>,
+    /// The tabs, left to right, at their place in the strip, scrolled out of it or not.
+    pub tabs: Vec<Rect>,
+    /// A little window: under the pointer it takes nothing, and a space drag passes through it.
+    pub little: bool,
+    /// The session's spaces in order, one per row or tab.
+    pub spaces: Vec<String>,
+    /// The space its grid shows; none while that space is away in a little window.
+    pub shown: Option<String>,
+    /// The panes its grid draws, bottom layer first: the grid, then each card over it.
+    pub layers: Vec<DropLayer>,
+}
+
+/// One layer of a window's grid as a pane drop meets it: a card's frame (none for the grid) and
+/// the panes in it, in screen points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropLayer {
+    pub card: Option<Rect>,
+    pub panes: Vec<(String, Rect)>,
 }
 
 /// A card in the popover: one session's spaces (DropCard).
@@ -127,6 +149,8 @@ pub struct DropCard {
     pub session: String,
     pub frame: Rect,
     pub rows: Vec<Rect>,
+    /// The space of each row.
+    pub spaces: Vec<String>,
 }
 
 /// The menu bar popover while it is open (DropPopover).
@@ -141,6 +165,11 @@ fn index_above(rows: &[Rect], y: f32) -> usize {
     rows.iter().position(|r| y < r.y + r.h / 2.0).unwrap_or(rows.len())
 }
 
+/// The bar goes left of the first rectangle whose middle is right of `x`, else after the last.
+pub fn index_left(tabs: &[Rect], x: f32) -> usize {
+    tabs.iter().position(|r| x < r.x + r.w / 2.0).unwrap_or(tabs.len())
+}
+
 /// What releasing at (`x`, `y`) would do (SpaceDropping.target). `windows` runs front to back
 /// and the first under the pointer decides; the popover, when open, is in front of them all.
 pub fn space_target(x: f32, y: f32, windows: &[DropWindow], popover: Option<&DropPopover>) -> SpaceDropTarget {
@@ -152,17 +181,20 @@ pub fn space_target(x: f32, y: f32, windows: &[DropWindow], popover: Option<&Dro
             return SpaceDropTarget::Card { session: card.session.clone(), index: index_above(&card.rows, y) };
         }
     }
-    let Some(window) = windows.iter().find(|w| contains(w.frame, x, y)) else { return SpaceDropTarget::Desktop };
+    let Some(window) = windows.iter().find(|w| !w.little && contains(w.frame, x, y)) else { return SpaceDropTarget::Desktop };
     match window.sidebar {
         Some(bar) if contains(bar, x, y) => SpaceDropTarget::Sidebar { window: window.id.clone(), index: index_above(&window.rows, y) },
-        _ => SpaceDropTarget::Window(window.id.clone()),
+        _ => match window.tab_strip {
+            Some(strip) if contains(strip, x, y) => SpaceDropTarget::Tabs { window: window.id.clone(), index: index_left(&window.tabs, x) },
+            _ => SpaceDropTarget::Window(window.id.clone()),
+        },
     }
 }
 
 /// The words under a space drag (SpaceDropping.hint).
 pub fn space_hint(target: &SpaceDropTarget, space: &str, session_name: impl Fn(&str) -> String, window_title: impl Fn(&str) -> String) -> String {
     match target {
-        SpaceDropTarget::Sidebar { window, .. } => format!("Place “{space}” here in “{}”", window_title(window)),
+        SpaceDropTarget::Sidebar { window, .. } | SpaceDropTarget::Tabs { window, .. } => format!("Place “{space}” here in “{}”", window_title(window)),
         SpaceDropTarget::Window(window) => format!("Move “{space}” to “{}”", window_title(window)),
         SpaceDropTarget::Card { session, .. } => format!("Move “{space}” to the “{}” session", session_name(session)),
         SpaceDropTarget::Desktop => format!("Release to open “{space}” in a little window"),
@@ -179,14 +211,35 @@ pub fn drop_move(index: Option<usize>, held: &[String], space: &str) -> Option<O
     }
 }
 
-/// Where a little window opened by a drop on the desktop goes: its content centred on the drop.
+/// Where a little window opened by a drop on the desktop goes: its content centred on the drop,
+/// which is the preview card's centre.
 pub fn little_origin(x: f32, y: f32, size: (f32, f32)) -> (f32, f32) {
     (x - size.0 / 2.0, y - size.1 / 2.0)
 }
 
-/// A pane held by its header (PaneMove.swift's PaneDrag), as far as the sidebar is its target:
-/// a drop on a row moves the pane to the end of that space, on the sidebar's empty room makes a
-/// new space for it. Its drop zones in its own space are `drop` (grid_drop.rs).
+/// The preview card that follows a space dragged over the desktop (SpaceCardView).
+pub const CARD_W: f32 = 230.0;
+pub const CARD_H: f32 = 150.0;
+/// Where the chip window sits from the pointer: right of it and below it (DragChipWindow).
+pub const CHIP_OFFSET: f32 = 12.0;
+/// How long a pane must be held over another space's tab or row before that space shows.
+pub const HOLD_SECONDS: f64 = 0.55;
+
+/// The preview card's frame, centred on the pointer, in screen points with a top left origin.
+pub fn card_frame(x: f32, y: f32) -> Rect {
+    Rect { x: x - CARD_W / 2.0, y: y - CARD_H / 2.0, w: CARD_W, h: CARD_H }
+}
+
+/// The chip window's top left: right of and below the pointer, kept inside `screen` (the
+/// pointer's screen's visible frame, top left origin) as DragChipWindow.follow clamps it.
+pub fn chip_origin(x: f32, y: f32, size: (f32, f32), screen: Rect) -> (f32, f32) {
+    let ox = (x + CHIP_OFFSET).min(screen.x + screen.w - size.0).max(screen.x);
+    let oy = (y + CHIP_OFFSET).min(screen.y + screen.h - size.1).max(screen.y);
+    (ox, oy)
+}
+
+/// A pane held by its header (PaneMove.swift's PaneDrag): its drop zones in its own space are
+/// `drop` (grid_drop.rs); anywhere else, in any window or on the desktop, `away`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaneDrag {
     pub pane: String,
@@ -197,32 +250,93 @@ pub struct PaneDrag {
     /// Where the pointer is, and where in the header it took hold.
     pub at: (f32, f32),
     pub grab: (f32, f32),
+    /// The pointer drives it, across every window and the desktop; the debug route names targets.
+    pub by_pointer: bool,
+    /// The pointer on screen, once the windows are measured.
+    pub screen: Option<(f32, f32)>,
 }
 
+/// Where a pane dragged out of its space lands (WheelKit's PaneAway).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneAway {
+    /// On the `dir` side of `pane` in `space`, another space's grid.
+    Beside { pane: String, dir: wheel_proto::Dir, space: String },
     /// The end of `space`.
     End(String),
-    /// A new space after the pane's own.
-    NewSpace,
+    /// A new space in `window`.
+    NewSpace(String),
+    /// No window under the pointer: a new space in a little window.
+    Desktop,
 }
 
-/// What releasing a pane at (`x`, `y`) would do; none outside the sidebar.
-pub fn pane_away(sidebar: Rect, rows: &[Row], x: f32, y: f32) -> Option<PaneAway> {
-    if !contains(sidebar, x, y) {
-        return None;
+/// What the pointer over the windows does with a dragged pane (AppModel.awayTarget).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaneTarget {
+    /// A drop away from its space, and the window and space a hold over a tab or row would show.
+    Away(PaneAway, Option<(String, String)>),
+    /// The grid of `window`, which shows the pane's own space: the drop zones there decide.
+    Home(String),
+    Nothing,
+}
+
+/// What releasing a pane of space `home` at (`x`, `y`) would do. `windows` runs front to back;
+/// the popover, when open, is in front of them all.
+pub fn pane_target(x: f32, y: f32, windows: &[DropWindow], popover: Option<&DropPopover>, pane: &str, home: Option<&str>) -> PaneTarget {
+    if let Some(popover) = popover.filter(|p| contains(p.frame, x, y)) {
+        for card in &popover.cards {
+            for (space, row) in card.spaces.iter().zip(&card.rows) {
+                if Some(space.as_str()) != home && contains(*row, x, y) {
+                    return PaneTarget::Away(PaneAway::End(space.clone()), None);
+                }
+            }
+        }
+        return PaneTarget::Nothing;
     }
-    Some(match row_at(rows, x, y) {
-        Some(row) => PaneAway::End(row.id.clone()),
-        None => PaneAway::NewSpace,
-    })
+    let Some(window) = windows.iter().find(|w| contains(w.frame, x, y)) else { return PaneTarget::Away(PaneAway::Desktop, None) };
+    // A little window's own grid is its drop zones' when it shows the pane's space; else nothing.
+    if window.little {
+        return if window.shown.is_some() && window.shown.as_deref() == home { PaneTarget::Home(window.id.clone()) } else { PaneTarget::Nothing };
+    }
+    let (strip, slots) = match window.sidebar {
+        Some(bar) => (Some(bar), &window.rows),
+        None => (window.tab_strip, &window.tabs),
+    };
+    if strip.is_some_and(|r| contains(r, x, y)) {
+        for (space, slot) in window.spaces.iter().zip(slots) {
+            if contains(*slot, x, y) {
+                return if Some(space.as_str()) == home { PaneTarget::Nothing } else { PaneTarget::Away(PaneAway::End(space.clone()), Some((window.id.clone(), space.clone()))) };
+            }
+        }
+        return PaneTarget::Away(PaneAway::NewSpace(window.id.clone()), None);
+    }
+    let Some(shown) = window.shown.clone() else { return PaneTarget::Nothing };
+    if Some(shown.as_str()) == home {
+        return PaneTarget::Home(window.id.clone());
+    }
+    // A card floats over the grid: over one, the pane takes a side of the card's pane there only
+    // in that side's edge zone; over the grid, the side nearest the pointer.
+    if let Some(card) = window.layers.iter().rev().find(|l| l.card.is_some_and(|c| contains(c, x, y))) {
+        return match card.panes.iter().find(|(_, r)| contains(*r, x, y)) {
+            Some((target, rect)) if target != pane => match crate::grid_drop::zone(x, y, *rect) {
+                crate::grid_drop::Zone::Edge(dir) => PaneTarget::Away(PaneAway::Beside { pane: target.clone(), dir, space: shown }, None),
+                crate::grid_drop::Zone::Center => PaneTarget::Nothing,
+            },
+            _ => PaneTarget::Nothing,
+        };
+    }
+    match window.layers.first().filter(|l| l.card.is_none()).and_then(|l| l.panes.iter().find(|(_, r)| contains(*r, x, y))) {
+        Some((target, rect)) if target != pane => PaneTarget::Away(PaneAway::Beside { pane: target.clone(), dir: crate::grid_drop::nearest_side(x, y, *rect), space: shown }, None),
+        _ => PaneTarget::Nothing,
+    }
 }
 
 /// The words under a pane drag (PaneAway.hint).
-pub fn pane_hint(away: &PaneAway, pane: &str, space_name: impl Fn(&str) -> Option<String>) -> String {
+pub fn pane_hint(away: &PaneAway, pane: &str, space_name: impl Fn(&str) -> Option<String>, window_title: impl Fn(&str) -> String) -> String {
     match away {
-        PaneAway::End(space) => format!("Move {pane} to the end of “{}”", space_name(space).unwrap_or_else(|| space.clone())),
-        PaneAway::NewSpace => format!("Move {pane} to a new space"),
+        PaneAway::Beside { pane: target, dir, space } => format!("Dock “{pane}” on the {} of {target} in “{}”", crate::grid_drop::Zone::Edge(*dir).label(), space_name(space).unwrap_or_else(|| space.clone())),
+        PaneAway::End(space) => format!("Move “{pane}” to the end of “{}”", space_name(space).unwrap_or_else(|| space.clone())),
+        PaneAway::NewSpace(window) => format!("Move “{pane}” into a new space in “{}”", window_title(window)),
+        PaneAway::Desktop => format!("Release to move “{pane}” into a new space in a little window"),
     }
 }
 
@@ -324,7 +438,34 @@ mod tests {
     fn window(id: &str, x: f32, sidebar: bool) -> DropWindow {
         let frame = Rect { x, y: 0., w: 1200., h: 720. };
         let bar = Rect { x: x + 10., y: 32., w: WIDTH, h: 600. };
-        DropWindow { id: id.into(), frame, sidebar: sidebar.then_some(bar), rows: rows(&ids(3), bar).into_iter().map(|r| r.rect).collect() }
+        DropWindow { id: id.into(), frame, sidebar: sidebar.then_some(bar), rows: rows(&ids(3), bar).into_iter().map(|r| r.rect).collect(), tab_strip: None, tabs: vec![], little: false, spaces: ids(3), shown: Some("s1".into()), layers: vec![] }
+    }
+
+    #[test]
+    fn a_window_without_its_sidebar_takes_the_space_between_its_tabs() {
+        let mut w = window("w1", 0., false);
+        // Three tabs 100 wide from x 80; the third starts past the strip's right edge.
+        w.tab_strip = Some(Rect { x: 80., y: 0., w: 240., h: 32. });
+        w.tabs = (0..3).map(|i| Rect { x: 80. + i as f32 * 100., y: 4., w: 100., h: 24. }).collect();
+        let w = [w];
+        assert_eq!(space_target(100., 16., &w, None), SpaceDropTarget::Tabs { window: "w1".into(), index: 0 });
+        assert_eq!(space_target(140., 16., &w, None), SpaceDropTarget::Tabs { window: "w1".into(), index: 1 });
+        assert_eq!(space_target(250., 16., &w, None), SpaceDropTarget::Tabs { window: "w1".into(), index: 2 });
+        // Below the strip the body takes it.
+        assert_eq!(space_target(140., 400., &w, None), SpaceDropTarget::Window("w1".into()));
+        assert_eq!(index_left(&w[0].tabs, 500.), 3);
+        assert_eq!(index_left(&[], 500.), 0);
+        assert_eq!(space_hint(&SpaceDropTarget::Tabs { window: "w1".into(), index: 1 }, "x", |s| s.to_owned(), |_| "T".into()), "Place “x” here in “T”");
+    }
+
+    #[test]
+    fn the_card_centres_on_the_pointer_and_the_chip_stays_on_its_screen() {
+        assert_eq!(card_frame(1000., 500.), Rect { x: 885., y: 425., w: CARD_W, h: CARD_H });
+        let screen = Rect { x: 0., y: 25., w: 1920., h: 1055. };
+        assert_eq!(chip_origin(300., 400., (120., 24.), screen), (312., 412.));
+        // At the right and bottom edges it stays inside the visible frame.
+        assert_eq!(chip_origin(1900., 1070., (120., 24.), screen), (1800., 1056.));
+        assert_eq!(chip_origin(-50., 0., (120., 24.), screen), (0., 25.));
     }
 
     #[test]
@@ -344,7 +485,7 @@ mod tests {
 
     #[test]
     fn the_popover_is_in_front_and_between_cards_the_nearer_one_counts() {
-        let card = |session: &str, y: f32, n: usize| DropCard { session: session.into(), frame: Rect { x: 12., y, w: 296., h: 60. }, rows: (0..n).map(|i| Rect { x: 22., y: y + 35. + i as f32 * 24., w: 276., h: 24. }).collect() };
+        let card = |session: &str, y: f32, n: usize| DropCard { session: session.into(), frame: Rect { x: 12., y, w: 296., h: 60. }, rows: (0..n).map(|i| Rect { x: 22., y: y + 35. + i as f32 * 24., w: 276., h: 24. }).collect(), spaces: (0..n).map(|i| format!("{session}-{i}")).collect() };
         let popover = DropPopover { frame: Rect { x: 0., y: 0., w: 320., h: 300. }, cards: vec![card("n1", 60., 2), card("n2", 140., 0)] };
         let w = [window("w1", 0., true)];
         assert_eq!(space_target(100., 110., &w, Some(&popover)), SpaceDropTarget::Card { session: "n1".into(), index: 1 });
@@ -395,12 +536,34 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_lands_on_a_row_or_makes_a_new_space() {
-        let rows = rows(&ids(2), bar());
-        assert_eq!(pane_away(bar(), &rows, 20., 40.), Some(PaneAway::End("s1".into())));
-        assert_eq!(pane_away(bar(), &rows, 20., 500.), Some(PaneAway::NewSpace));
-        assert_eq!(pane_away(bar(), &rows, 800., 500.), None);
-        assert_eq!(pane_hint(&PaneAway::End("s1".into()), "Terminal", |_| Some("wheel".into())), "Move Terminal to the end of “wheel”");
+    fn a_pane_lands_on_a_row_a_strip_another_grid_or_the_desktop() {
+        let mut w2 = window("w2", 1300., true);
+        w2.shown = Some("s2".into());
+        w2.layers = vec![DropLayer { card: None, panes: vec![("q1".into(), Rect { x: 1550., y: 40., w: 400., h: 600. })] }];
+        let mut little = window("l1", 1500., false);
+        little.little = true;
+        little.frame = Rect { x: 1500., y: 500., w: 200., h: 100. };
+        let row = rows(&ids(3), Rect { x: 1310., y: 32., w: WIDTH, h: 600. });
+        let (rx, ry) = (row[0].rect.x + 20., row[0].rect.y + 5.);
+        let all = [little, w2, window("w1", 0., true)];
+        let away = |a: PaneAway, hold: Option<(&str, &str)>| PaneTarget::Away(a, hold.map(|(w, s)| (w.to_owned(), s.to_owned())));
+        assert_eq!(pane_target(rx, ry, &all, None, "p1", Some("s3")), away(PaneAway::End("s1".into()), Some(("w2", "s1"))));
+        assert_eq!(pane_target(rx, ry, &all, None, "p1", Some("s1")), PaneTarget::Nothing);
+        assert_eq!(pane_target(1320., 600., &all, None, "p1", Some("s3")), away(PaneAway::NewSpace("w2".into()), None));
+        assert_eq!(pane_target(1560., 300., &all, None, "p1", Some("s3")), away(PaneAway::Beside { pane: "q1".into(), dir: wheel_proto::Dir::Left, space: "s2".into() }, None));
+        assert_eq!(pane_target(1560., 300., &all, None, "p1", Some("s2")), PaneTarget::Home("w2".into()));
+        assert_eq!(pane_target(1600., 550., &all, None, "p1", Some("s3")), PaneTarget::Nothing);
+        let mut own = all[0].clone();
+        own.shown = Some("s9".into());
+        assert_eq!(pane_target(1600., 550., &[own], None, "p1", Some("s9")), PaneTarget::Home("l1".into()));
+        // Over a card, only a pane's edge zone docks.
+        let mut carded = all[1].clone();
+        carded.layers.push(DropLayer { card: Some(Rect { x: 1600., y: 100., w: 200., h: 200. }), panes: vec![("c1".into(), Rect { x: 1600., y: 100., w: 200., h: 200. })] });
+        assert_eq!(pane_target(1700., 200., &[carded.clone()], None, "p1", Some("s3")), PaneTarget::Nothing);
+        assert_eq!(pane_target(1610., 200., &[carded], None, "p1", Some("s3")), away(PaneAway::Beside { pane: "c1".into(), dir: wheel_proto::Dir::Left, space: "s2".into() }, None));
+        assert_eq!(pane_target(2600., 300., &all, None, "p1", Some("s3")), away(PaneAway::Desktop, None));
+        assert_eq!(pane_hint(&PaneAway::End("s1".into()), "Terminal", |_| Some("wheel".into()), |_| "W".into()), "Move “Terminal” to the end of “wheel”");
+        assert_eq!(pane_hint(&PaneAway::NewSpace("w2".into()), "Terminal", |_| None, |_| "W".into()), "Move “Terminal” into a new space in “W”");
     }
 
     #[test]

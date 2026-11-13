@@ -328,8 +328,19 @@ impl Client {
         let (w, _) = self.viewport;
         let mut bar = div().absolute().left_0().top_0().w(px(w)).h(px(header::HEIGHT)).bg(rgb(0x0e1311));
         if let Some(track) = row.track {
-            bar = bar.child(div().absolute().left(px(track.x)).top(px(track.y)).w(px(track.w)).h(px(track.h)).rounded(px(9.)).bg(rgb(0x1a2420)));
+            bar = bar.child(div().absolute().left(px(track.x)).top(px(track.y)).w(px(track.w)).h(px(track.h)).rounded(px(9.)).bg(rgb(0x1a2420))
+                // A pane dragged over the strip's room makes a new space here: the strip is outlined,
+                // in a layer of its own so nothing in it moves.
+                .when(self.pane_is_over_new_space(), |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(9.)).border_2().border_color(rgb(super::sidebar::ACCENT)))));
         }
+        let dragged = self.space_drag.as_ref().map(|d| d.space.clone());
+        let tab_bar = self.space_drag_tab_bar().and_then(|i| {
+            // Left of the tab at the drop, or right of the last; kept inside the track.
+            let x = match row.tabs.get(i) { Some(t) => t.x, None => row.tabs.last().map(|t| t.x + t.w)? };
+            let track = row.track?;
+            let x = x.clamp(track.x + 1.5, track.x + track.w - 1.5);
+            row.tabs.first().map(|t| Rect { x: x - 1.5, y: t.y, w: 3., h: t.h })
+        });
         for chip in row.chips {
             let (r, hit) = (chip.rect, chip.hit.clone());
             let mut el = div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).flex().items_center().justify_center().overflow_hidden().whitespace_nowrap();
@@ -338,7 +349,11 @@ impl Client {
                     let dots = self.spaces.iter().find(|s| &s.id == id).and_then(|s| status::space_dots(s, &self.status_dots));
                     // A space in a little window draws its tab dimmed (AppModel.isDimmed).
                     let away = self.little_showing(id).is_some();
-                    el = el.when(away, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
+                    // The tab a space drag holds draws dimmed, as its sidebar row does.
+                    let held = dragged.as_deref() == Some(id.as_str());
+                    // A pane held over the tab outlines it in a layer of its own, so nothing in the tab moves.
+                    let pane_over = self.pane_is_over(id);
+                    el = el.relative().when(pane_over, |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(7.)).border_2().border_color(rgb(super::sidebar::ACCENT)))).when(held, |d| d.opacity(0.4)).when(away && !held, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
                         .text_color(rgb(if chip.active { TEXT } else { DIM }))
                         .child(div().overflow_hidden().whitespace_nowrap().child(chip.label.clone())).children(dots);
                 }
@@ -378,13 +393,23 @@ impl Client {
                 }
             }
             if chip.pressable {
-                el = el.on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                el = el.on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                     this.press_title(&hit);
+                    // A press on a tab that then moves drags its space, as a sidebar row's does.
+                    if let Hit::Space(id) = &hit
+                        && this.space_drag.is_none()
+                    {
+                        this.space_press = Some((id.clone(), f32::from(e.position.x), f32::from(e.position.y)));
+                    }
                     cx.stop_propagation();
                     cx.notify();
                 }));
             }
             bar = bar.child(el);
+        }
+        if let Some(r) = tab_bar {
+            // The sidebar's bar colour, which stands out against the active tab's fill.
+            bar = bar.child(div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).rounded_full().bg(rgb(super::sidebar::ACCENT)));
         }
         bar.children(self.title_menu_element(cx))
     }

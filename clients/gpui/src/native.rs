@@ -223,6 +223,9 @@ pub enum BrowserEvent {
     Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
     /// The person picked a folder in Open Folder's system picker (`choose_folder`).
     FolderChosen { path: String },
+    /// The reply the app's synthesizer reads now (`read_aloud`), or None once it stops; sent to
+    /// every window on every change.
+    ReadAloud { playing: Option<String> },
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
@@ -256,6 +259,8 @@ mod tests {
         assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
         let reduced: Frame = serde_json::from_str(r#"{"event":"reduce_motion","on":true}"#).unwrap();
         assert!(matches!(reduced, Frame::Event(BrowserEvent::ReduceMotion { on: true })));
+        let stopped: Frame = serde_json::from_str(r#"{"event":"read_aloud","playing":null}"#).unwrap();
+        assert!(matches!(stopped, Frame::Event(BrowserEvent::ReadAloud { playing: None })));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();
         assert!(matches!(answer, Frame::Answer(Answer::Recorded { id: 7, frames: 12, .. })));
         let refused: Frame = serde_json::from_str(r#"{"answer":"refused","id":8,"message":"not shown"}"#).unwrap();

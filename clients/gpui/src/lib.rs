@@ -153,6 +153,7 @@ pub fn create_window(
             // the other windows redraw (a little window's owner shows its space's grid again).
             cx.new(|cx| {
                 cx.on_release(|client: &mut view::Client, cx| {
+                    view::float::release(client.window_id());
                     client.shutdown();
                     refresh_windows(cx);
                 })

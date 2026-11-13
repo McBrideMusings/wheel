@@ -6,12 +6,17 @@
 use super::*;
 use super::settings::{BOX, DIM, LINE, PANEL, TEXT, now_ms};
 use crate::tooltip::tip;
-use crate::conversations::{self as conv, Listing, Popover, PAGE};
+use crate::conversations::{self as conv, Listing, Popover, PAGE, RECENT, RECENT_CARDS};
+use wheel_proto::ConversationInfo;
 use serde_json::Value;
 
 /// The popover's width, and the list's height (`ConversationPicker`'s 340 and 360).
 const WIDTH: f32 = 340.;
 const LIST_H: f32 = 360.;
+/// The Recent shortcut's widest (`RecentConversations`' `maxWidth: 360`).
+const RECENT_W: f32 = 360.;
+/// What an empty transcript says above the shortcut (`AgentTranscript`'s `empty`).
+pub(super) const EMPTY_PROMPT: &str = "Give this agent a task.";
 
 impl Client {
     pub(super) fn agent_in(&self, pane: &str) -> Option<String> {
@@ -92,12 +97,61 @@ impl Client {
         let req = self.agent_req(agent, false, None);
         self.send(&ClientMsg::AgentFork { req: Some(req), agent: agent.to_owned(), turns });
     }
+    /// Put reply `ix`'s Markdown on the clipboard, as RowView.swift's copy button does.
+    pub fn copy_reply(&mut self, agent: &str, ix: usize, cx: &mut Context<Self>) {
+        let Some(markdown) = self.transcripts.get(agent).and_then(|t| t.message_markdown(ix)).map(str::to_owned) else { return };
+        self.press(format!("copy {agent} {ix}"));
+        self.log(format!("transcript {agent}: copied reply {ix}, {} character(s)", markdown.chars().count()));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
+    }
+    /// Speak reply `ix`, or stop it when it is the one being read (`ReadAloud.toggle`): the bridge
+    /// runs the Swift app's synthesizer and tells every window what it reads now (the
+    /// `read_aloud` event, the one writer of `self.read_aloud`).
+    pub fn read_aloud(&mut self, agent: &str, ix: usize) {
+        let Some(t) = self.transcripts.get(agent) else { return };
+        let (Some(row), Some(text)) = (t.rows.get(ix), t.message_markdown(ix)) else { return };
+        let key = format!("{agent}#{}", row.id);
+        let answer = self.native.call(serde_json::json!({"op": "read_aloud", "text": text, "owner": agent, "key": key}));
+        self.press(format!("play {agent} {ix}"));
+        self.log(format!("transcript {agent}: read aloud row {ix}: {}", answer["playing"]));
+    }
+    /// The copy button on reply `ix`, with RowView.swift's glyph and tooltip.
+    pub(super) fn copy_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let a = agent.to_owned();
+        let glyph = title::symbol(&self.native, &self.symbols, "doc.on.doc", 11., 0x8fa89b).unwrap_or_else(|| "copy".into_any_element());
+        div().id(gpui::ElementId::Name(format!("copy-{agent}-{ix}").into())).relative().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
+            .tooltip(tip("Copy this reply"))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.copy_reply(&a, ix, cx);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(glyph)
+            .child(recorded(agent, &format!("copy:{ix}"), &self.controls))
+    }
+    /// The play button on reply `ix` (row id `id`): a speaker, or a stop square while the app
+    /// reads this reply, in a slot 18 points wide so the row never moves when it turns.
+    pub(super) fn play_button(&self, agent: &str, ix: usize, id: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let a = agent.to_owned();
+        let speaking = self.read_aloud.as_deref() == Some(format!("{agent}#{id}").as_str());
+        let (name, label, help) = if speaking { ("stop.fill", "stop", "Stop reading this reply") } else { ("speaker.wave.2", "play", "Read this reply aloud") };
+        let glyph = title::symbol(&self.native, &self.symbols, name, 11., 0x8fa89b).unwrap_or_else(|| label.into_any_element());
+        div().id(gpui::ElementId::Name(format!("play-{agent}-{ix}").into())).relative().w(px(18.)).flex().justify_center().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
+            .tooltip(tip(help))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.read_aloud(&a, ix);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(glyph)
+            .child(recorded(agent, &format!("play:{ix}"), &self.controls))
+    }
     /// The branch button under or over reply `ix`, with RowView.swift's tooltip.
     pub(super) fn fork_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let a = agent.to_owned();
         let glyph = title::symbol(&self.native, &self.symbols, "arrow.triangle.branch", 11., 0x8fa89b).unwrap_or_else(|| "fork".into_any_element());
         div().id(gpui::ElementId::Name(format!("fork-{agent}-{ix}").into())).relative().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
-            .tooltip(crate::tooltip::tip("Fork the conversation through this turn into a new pane"))
+            .tooltip(tip("Fork the conversation through this turn into a new pane"))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                 this.fork(&a, ix);
                 cx.stop_propagation();
@@ -111,10 +165,84 @@ impl Client {
         let t = self.transcripts.get(agent);
         conv::block(self.conversations.switching.contains_key(agent), t.is_some_and(Transcript::busy), t.is_some_and(|t| !t.queued_turns().is_empty()))
     }
+    /// An empty transcript as `TranscriptView` draws it: the prompt, and under it the Recent
+    /// shortcut, centred in the column. The shortcut asks wheeld for the newest conversations the
+    /// first time it is drawn for an agent; its three card places are always laid out, so the
+    /// prompt never moves when the list arrives.
+    pub(super) fn empty_conversation(&mut self, pane: &str, agent: &str, cx: &mut Context<Self>) -> gpui::Div {
+        if !self.conversations.recent.contains_key(agent) && self.link == Link::Up {
+            let req = self.req();
+            self.conversations.begin_recent(req, agent);
+            self.log(format!("recent conversations ask {agent}, {RECENT} at most"));
+            self.send(&ClientMsg::AgentConversationLs { req: Some(req), agent: agent.to_owned(), limit: Some(RECENT), before: None, before_id: None });
+        }
+        let cards = self.conversations.recent_cards(agent);
+        let shown = !cards.is_empty();
+        let block = self.conversation_block(agent);
+        let switching = self.conversations.switching.get(agent).cloned();
+        let rec = |id: &str| recorded(agent, id, &self.controls).into_any_element();
+        let now = (now_ms() / 1000) as i64;
+        let mut show_all = div().id(gpui::ElementId::Name(format!("recent-show-all-{agent}").into())).relative().text_xs().text_color(rgb(0x7fb89a));
+        if shown {
+            let pane = pane.to_owned();
+            show_all = show_all.cursor_pointer().hover(|s| s.underline()).child(rec("recent:show-all"))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open_conversations(&pane);
+                    cx.notify();
+                }));
+        }
+        let mut recent = div().w_full().max_w(px(RECENT_W)).flex().flex_col().gap(px(6.))
+            .child(div().flex().items_center().px(px(8.)).text_xs()
+                .child(div().flex_1().text_color(rgb(0x6d8379)).child("Recent"))
+                .child(show_all.child("Show all…")));
+        for slot in 0..RECENT_CARDS {
+            recent = recent.child(match cards.get(slot) {
+                Some(c) => {
+                    let name = conv::name(c);
+                    let busy = switching.as_deref() == Some(c.id.as_str());
+                    let mut row = card(row_base(true, block.is_none(), block.is_none()), c, &name, conv::age(conv::updated(c), now), busy.then_some("…"))
+                        .id(gpui::ElementId::Name(format!("recent-{agent}-{}", c.id).into()))
+                        .child(rec(&format!("recent:{}", c.id)))
+                        .tooltip(tip(block.unwrap_or(&name)));
+                    if shown && block.is_none() {
+                        row = row.on_mouse_down(MouseButton::Left, pick(cx, agent.to_owned(), Some(c.id.clone())));
+                    }
+                    row.into_any_element()
+                }
+                None => blank_card(row_base(true, false, true)).into_any_element(),
+            });
+        }
+        // Hidden, and deaf to the pointer, until a conversation other than this one is listed.
+        if !shown {
+            recent = recent.opacity(0.);
+        }
+        div().size_full().flex().flex_col().items_center().justify_center().gap(px(12.)).p(px(24.))
+            .child(div().text_color(rgb(0x8fa89b)).child(EMPTY_PROMPT))
+            .child(recent)
+    }
+    /// The Recent shortcut for `/state` and the check: what it holds and the cards it draws.
+    pub fn recent_json(&self, agent: &str) -> Value {
+        let now = (now_ms() / 1000) as i64;
+        let listing = match self.conversations.recent.get(agent) {
+            None => "none".to_owned(),
+            Some(Listing::Loading) => "loading".to_owned(),
+            Some(Listing::Failed(m)) => format!("failed: {m}"),
+            Some(Listing::Loaded(_)) => "loaded".to_owned(),
+        };
+        let cards: Vec<Value> = self.conversations.recent_cards(agent).into_iter()
+            .map(|c| serde_json::json!({"id": c.id, "title": conv::name(c), "age": conv::age(conv::updated(c), now)})).collect();
+        serde_json::json!({"listing": listing, "cards": cards, "block": self.conversation_block(agent)})
+    }
     /// A `conversations`, a `conversation` or a refusal of one of this popover's requests.
     pub(super) fn on_conversations_message(&mut self, message: &ServerMsg) -> bool {
         match message {
             ServerMsg::Conversations { req, agent, conversations, more } => {
+                // The Recent shortcut's answer is no popover page: it asks for no next page.
+                if self.conversations.is_recent(*req) {
+                    self.log(format!("agent {agent} listed {} recent conversations", conversations.len()));
+                    return self.conversations.listed(*req, conversations, *more);
+                }
                 let ours = self.conversations.listed(*req, conversations, *more);
                 if ours {
                     self.log(format!("agent {agent} listed {} conversations, more: {more}", conversations.len()));
@@ -216,20 +344,14 @@ impl Client {
                         let busy = switching.as_deref() == Some(c.id.as_str());
                         let name = conv::name(c);
                         let mark = if busy { "…" } else if c.current { "✓" } else { "" };
-                        let reply = c.last_reply.as_deref().map(conv::reply).unwrap_or_default();
-                        let head = div().flex().items_center().gap(px(6.)).w_full().whitespace_nowrap().overflow_hidden()
-                            .child(div().w(px(14.)).flex_none().text_color(rgb(0x7fb89a)).child(mark))
-                            .child(div().flex_1().overflow_hidden().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(name.clone()))
-                            .children(conv::time(conv::updated(c), day).map(|t| div().flex_none().text_xs().text_color(rgb(0x6d8379)).child(t)));
-                        // The reply always takes two lines, so every card is the same height.
-                        let body = div().h(px(32.)).overflow_hidden().text_xs().text_color(rgb(0x9db3a8)).child(styled_reply(reply));
-                        let mut card = row_base(true, enabled, enabled || c.current).id(gpui::ElementId::Name(format!("conversation-{}", c.id).into()))
-                            .flex_col().items_start().child(rec(&format!("conversation:{}", c.id))).child(head).child(body)
+                        let mut row = card(row_base(true, enabled, enabled || c.current), c, &name, conv::time(conv::updated(c), day), Some(mark))
+                            .id(gpui::ElementId::Name(format!("conversation-{}", c.id).into()))
+                            .child(rec(&format!("conversation:{}", c.id)))
                             .tooltip(tip(block.unwrap_or(&name)));
                         if enabled {
-                            card = card.on_mouse_down(MouseButton::Left, pick(cx, agent.clone(), Some(c.id.clone())));
+                            row = row.on_mouse_down(MouseButton::Left, pick(cx, agent.clone(), Some(c.id.clone())));
                         }
-                        list = list.child(card);
+                        list = list.child(row);
                     }
                 }
                 if p.loading_more {
@@ -283,6 +405,25 @@ fn row_base(card: bool, enabled: bool, bright: bool) -> gpui::Div {
         d = d.opacity(0.4);
     }
     d
+}
+
+/// A conversation's card (`ConversationRow` with `card: true`): its name in semibold with the
+/// time at the right, and under them its last reply, which always takes two lines, so every card
+/// is the same height. `mark` is the 14 pt slot before the name: the popover always keeps it for
+/// its tick, the Recent shortcut only while a switch to the card waits.
+fn card(base: gpui::Div, c: &ConversationInfo, name: &str, time: Option<String>, mark: Option<&str>) -> gpui::Div {
+    let reply = c.last_reply.as_deref().map(conv::reply).unwrap_or_default();
+    let head = div().flex().items_center().gap(px(6.)).w_full().whitespace_nowrap().overflow_hidden()
+        .children(mark.map(|m| div().w(px(14.)).flex_none().text_color(rgb(0x7fb89a)).child(m.to_owned())))
+        .child(div().flex_1().overflow_hidden().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(name.to_owned()))
+        .children(time.map(|t| div().flex_none().text_xs().text_color(rgb(0x6d8379)).child(t)));
+    let body = div().h(px(32.)).overflow_hidden().text_xs().text_color(rgb(0x9db3a8)).child(styled_reply(reply));
+    base.flex_col().items_start().child(head).child(body)
+}
+
+/// A card place the Recent shortcut keeps while fewer than three conversations are listed.
+fn blank_card(base: gpui::Div) -> gpui::Div {
+    base.flex_col().items_start().child(div().w_full().child(" ")).child(div().h(px(32.)))
 }
 
 fn centred(text: &str) -> gpui::Div {

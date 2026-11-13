@@ -9,6 +9,13 @@ pub const REFRESH_MS: u64 = 240_000;
 /// How long the window stays after a device connects, long enough to read who it was.
 pub const LINGER_MS: u64 = 1_500;
 
+/// What the menu bar's pairing row asks a window to do once wheeld says how phones reach it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Copy,
+    Show,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pairing {
     pub open: bool,
@@ -25,6 +32,8 @@ pub struct Pairing {
     pub copied: Option<(String, u64)>,
     /// A copy asked for a code that has not arrived yet.
     pub copy_pending: bool,
+    /// The menu bar's row asked for a copy or the window; it runs when wheeld answers how phones reach it.
+    pub asked: Option<Ask>,
     /// When the open window next asks for a code (unix ms).
     pub refresh_at: Option<u64>,
     /// When the window closes itself after a device connected (unix ms).
@@ -33,7 +42,7 @@ pub struct Pairing {
 
 impl Default for Pairing {
     fn default() -> Self {
-        Pairing { open: false, close_on_connect: true, details_open: false, connected: None, events: vec![], window_tokens: vec![], copied: None, copy_pending: false, refresh_at: None, close_at: None }
+        Pairing { open: false, close_on_connect: true, details_open: false, connected: None, events: vec![], window_tokens: vec![], copied: None, copy_pending: false, asked: None, refresh_at: None, close_at: None }
     }
 }
 
@@ -51,6 +60,26 @@ impl Pairing {
             return Some("Remote access is off. Turn it on in Settings, Devices.");
         }
         None
+    }
+
+    /// The address a phone dials, or why there is none (MenuBarView.swift pairingAddressText).
+    pub fn address_text(devices: &Devices) -> String {
+        let Some(info) = &devices.info else { return "Asking wheeld…".into() };
+        if info.listen.is_none() {
+            return "Remote access is off".into();
+        }
+        if let Some(problem) = &info.problem {
+            return format!("Listener failed: {problem}");
+        }
+        match devices.address() {
+            Some(address) => format!("wss://{address}:{}", info.port),
+            None => "No address".into(),
+        }
+    }
+
+    /// The pairing row's second line: why pairing is off, else the address (pairingRowDetail).
+    pub fn row_detail(link_up: bool, devices: &Devices) -> String {
+        Self::disabled_reason(link_up, devices).map(str::to_owned).unwrap_or_else(|| Self::address_text(devices))
     }
 
     /// Open the window, keeping the switch and the details as they were. A window already open
@@ -134,6 +163,16 @@ mod tests {
         assert_eq!(Pairing::disabled_reason(true, &devices(Some("x"), Some("bind failed"))), Some("The remote listener failed. Open Wheel Server for the reason."));
         assert_eq!(Pairing::disabled_reason(true, &devices(None, None)), Some("Remote access is off. Turn it on in Settings, Devices."));
         assert_eq!(Pairing::disabled_reason(true, &devices(Some("0.0.0.0:7430"), None)), None);
+    }
+
+    #[test]
+    fn the_row_names_the_address_or_why_not() {
+        assert_eq!(Pairing::row_detail(true, &devices(Some("0.0.0.0:7430"), None)), "wss://10.0.0.2:7430");
+        assert_eq!(Pairing::row_detail(false, &devices(Some("0.0.0.0:7430"), None)), "The server is stopped.");
+        assert_eq!(Pairing::row_detail(true, &devices(None, None)), "Remote access is off. Turn it on in Settings, Devices.");
+        assert_eq!(Pairing::address_text(&devices(None, None)), "Remote access is off");
+        assert_eq!(Pairing::address_text(&devices(Some("x"), Some("bind failed"))), "Listener failed: bind failed");
+        assert_eq!(Pairing::address_text(&Devices::default()), "Asking wheeld…");
     }
 
     #[test]

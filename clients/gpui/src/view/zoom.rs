@@ -104,7 +104,7 @@ impl Client {
         }
         let moving = self.motion.as_ref().filter(|m| m.space == space.id);
         if let Some(m) = moving {
-            let now = Instant::now();
+            let now = self.motion_now();
             for p in leaves.iter_mut() {
                 p.rect = m.frame(&p.leaf.id, p.rect, now);
             }
@@ -114,10 +114,17 @@ impl Client {
             dividers.clear();
         }
     }
+    /// The time the grid's motion is drawn at: now, or the point `motion_hold` holds it at.
+    fn motion_now(&self) -> Instant {
+        match (self.motion_hold, &self.motion) {
+            (Some(f), Some(m)) => m.started + m.length.mul_f32(f.clamp(0., 1.)),
+            _ => Instant::now(),
+        }
+    }
     /// Once per frame: keep drawing while the grid moves, and end the motion when its time is up.
     /// Returns whether it still runs.
     pub(super) fn tick_motion(&mut self, window: &mut Window) -> bool {
-        let now = Instant::now();
+        let now = self.motion_now();
         // A motion belongs to its space: showing another ends it.
         if self.motion.as_ref().is_some_and(|m| self.space_id.as_deref() != Some(m.space.as_str())) {
             self.motion = None;
@@ -179,12 +186,12 @@ impl Client {
         if !self.reduce_motion {
             return 1.;
         }
-        let progress = self.motion.as_ref().filter(|m| self.zoom_fade && self.space_id.as_deref() == Some(m.space.as_str())).map(|m| m.progress(Instant::now()));
+        let progress = self.motion.as_ref().filter(|m| self.zoom_fade && self.space_id.as_deref() == Some(m.space.as_str())).map(|m| m.progress(self.motion_now()));
         motion::faded(pane, self.zoomed_here(), self.unzoomed.as_deref(), progress)
     }
     /// What `/state` reports of the grid's motion and zoom.
     pub(super) fn motion_json(&self) -> serde_json::Value {
-        let now = Instant::now();
+        let now = self.motion_now();
         serde_json::json!({
             // Until the frame that ends it draws, so the views are placed where the layout ends.
             "moving": self.motion.is_some(),

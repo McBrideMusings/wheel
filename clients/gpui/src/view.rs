@@ -7,10 +7,11 @@ mod commands;
 mod composer;
 mod conversations;
 mod debug;
+pub mod float;
 mod little;
 mod menubar;
 mod messages;
-pub use menubar::{MenuBar, Popover, menu_bar, reopen, start as start_menu_bar};
+pub use menubar::{MenuBar, Popover, focused_client, menu_bar, reopen, start as start_menu_bar};
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
 mod panes;
 pub use panes::focus_target;
@@ -64,6 +65,9 @@ pub struct Client {
     /// bridge holds the terminals' resizes (`Client::resizes_wanted`).
     zoomed: HashMap<String, String>,
     motion: Option<crate::motion::Motion>,
+    /// The fraction of its length every grid motion stands at, set by the hidden check to read a
+    /// frame mid-way whatever the machine's load; None runs motions on the wall clock.
+    pub motion_hold: Option<f32>,
     grid_drawn: HashMap<String, Rect>,
     resizes_held: bool,
     /// The system's Reduce Motion, as the bridge reports it: a zoom keeps the other panes in
@@ -261,6 +265,7 @@ pub struct Client {
     space_press: Option<(String, f32, f32)>,
     /// A pane held by its header, and the press that may become one: (pane, label, x, y, grab).
     pub pane_drag: Option<crate::sidebar::PaneDrag>,
+    pub pane_out: sidebar::PaneOut,
     pane_press: Option<(String, String, f32, f32, (f32, f32))>,
     /// A space's name being edited in its row.
     pub rename: Option<crate::sidebar::Rename>,
@@ -270,6 +275,9 @@ pub struct Client {
     pub pane_menu: Option<(String, f32, f32, u8)>,
     /// The message menu a right-click on a message opened.
     message_menu: Option<messages::MessageMenu>,
+    /// The reply the app's one synthesizer reads now, as `agent#row id` (`ReadAloud.playing`),
+    /// told by the bridge to every window.
+    read_aloud: Option<String>,
     /// A space or pane to show once this window's layout lists it (a focus request that came
     /// before the layout, a split's new pane): (space, pane, since when in unix ms).
     pending_focus: Option<(Option<String>, Option<String>, u64)>,
@@ -384,7 +392,7 @@ impl Client {
         let toast_sources = crate::toasts::Sources { server_restart_available: server::with(|s| s.control.available()).unwrap_or(false), ..Default::default() };
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         Self {
-            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
+            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
@@ -397,7 +405,7 @@ impl Client {
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -802,8 +810,9 @@ impl Client {
     /// The window is closing: drop its native views. Its connection ends with it, and wheeld
     /// drops the window's reported view with the connection.
     pub fn shutdown(&mut self) {
-        // A space drag this window held ends with it, so no other window keeps drawing it.
+        // A space or pane drag this window held ends with it, so no other window keeps drawing it.
         self.cancel_space_drag(false);
+        self.cancel_pane_drag();
         self.native.detach();
         crate::forget_window(&self.window_id);
     }
@@ -1171,6 +1180,7 @@ impl Client {
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
             Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
+            Frame::Event(BrowserEvent::ReadAloud { playing }) => self.read_aloud = playing,
             Frame::Event(BrowserEvent::ReduceMotion { on }) => {
                 if self.reduce_motion != on {
                     self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
@@ -1271,7 +1281,6 @@ impl Client {
         let agents: Vec<String> = self.transcripts.keys().cloned().collect();
         for agent in agents {
             let queue = self.queue_view(&agent);
-            let can_fork = self.can_fork(&agent);
             let Some(t) = self.transcripts.get_mut(&agent) else { continue };
             let changed = t.take_changed();
             let replaced = t.take_replaced();
@@ -1279,16 +1288,16 @@ impl Client {
             let column = self.columns.entry(agent.clone()).or_insert_with(|| {
                 let state = ListState::new(0, ListAlignment::Bottom, px(OVERDRAW));
                 state.set_follow_mode(FollowMode::Tail);
-                Column { state, count: 0, queue: composer::QueueView::default(), fork_lines: vec![] }
+                Column { state, count: 0, queue: composer::QueueView::default(), reply_ends: vec![] }
             });
             let mut from = changed.unwrap_or(usize::MAX);
-            // A turn that ends gives its last reply the fork line, which makes that row taller.
-            let fork_lines = t.fork_lines(can_fork);
-            if column.fork_lines != fork_lines {
-                let differs = column.fork_lines.iter().zip(&fork_lines).position(|(a, b)| a != b).unwrap_or(column.fork_lines.len().min(fork_lines.len()));
-                let first = column.fork_lines.get(differs).into_iter().chain(fork_lines.get(differs)).min().copied();
+            // A turn that ends gives its last reply the buttons' line, which makes that row taller.
+            let reply_ends = t.turn_ends();
+            if column.reply_ends != reply_ends {
+                let differs = column.reply_ends.iter().zip(&reply_ends).position(|(a, b)| a != b).unwrap_or(column.reply_ends.len().min(reply_ends.len()));
+                let first = column.reply_ends.get(differs).into_iter().chain(reply_ends.get(differs)).min().copied();
                 from = from.min(first.unwrap_or(usize::MAX));
-                column.fork_lines = fork_lines;
+                column.reply_ends = reply_ends;
             }
             if column.queue != queue {
                 // A queue line comes or goes under the row of the turn it is about.
@@ -1732,6 +1741,11 @@ impl Client {
             self.measure_space_drag(cx);
             self.move_space_drag(x, y);
         }
+        if self.pane_drag.as_ref().is_some_and(|d| d.by_pointer) && self.pane_out.world.is_none() {
+            self.measure_pane_drag(cx);
+            self.move_pane_drag(x, y);
+        }
+        self.arm_pane_hold(cx);
         self.refresh_for_space_hover(cx);
         if had || self.hover.is_some() {
             cx.notify();
@@ -1796,6 +1810,16 @@ impl Client {
                 // A pane whose agent has not started yet shares no draft or scroll state with another.
                 let agent = p.leaf.agent.as_deref();
                 let harness = p.leaf.harness.as_deref().unwrap_or("");
+                // An empty transcript shows the prompt and the Recent shortcut in place of the
+                // column; rows arriving drop the shortcut's list, so the next empty one asks again.
+                let empty = match agent {
+                    Some(a) if self.transcripts.get(a).is_some_and(|t| t.rows.is_empty()) => Some(self.empty_conversation(&p.leaf.id, a, cx)),
+                    Some(a) => {
+                        self.conversations.recent.remove(a);
+                        None
+                    }
+                    None => None,
+                };
                 let t = agent.and_then(|a| self.transcripts.get(a));
                 let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
                 let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
@@ -1822,7 +1846,7 @@ impl Client {
                 let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
                 let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, body, card, card_h + list_h + chips_h, list, Attach { chips, clip, over }, error, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h, list, Attach { chips, clip, over }, error, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2276,8 +2300,8 @@ struct Column {
     state: ListState,
     count: usize,
     queue: composer::QueueView,
-    /// The replies drawn with the fork button on a line under them (`Transcript::fork_lines`).
-    fork_lines: Vec<usize>,
+    /// The replies drawn with their buttons on a line under them (`Transcript::turn_ends`).
+    reply_ends: Vec<usize>,
 }
 /// How far past the visible rows the column lays out, in points, so a scroll finds them ready.
 const OVERDRAW: f32 = 600.;
@@ -2297,14 +2321,17 @@ struct Attach {
 }
 
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
-/// rows), and the composer with the draft. Files dropped on the composer or its chips attach.
+/// rows, or `empty` while it has none), and the composer with the draft. Files dropped on the composer or its chips attach.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, attach: Attach, error: Option<&str>,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, attach: Attach, error: Option<&str>,
     footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
-        .flex_none().overflow_hidden().h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)))
-        .children(column);
+        .flex_none().overflow_hidden().h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)));
+    let col = match empty {
+        Some(empty) => col.child(empty),
+        None => col.children(column),
+    };
     // Only the transcript gives up room; the label, a request card, the composer and the footer
     // keep their heights, and whatever still does not fit is clipped at the pane's edge, as
     // Swift's AgentBody stack is.
@@ -2358,21 +2385,21 @@ impl Client {
                 for block in blocks.iter() {
                     col = col.child(block_el(block, &mut texts, &self.highlights, cx));
                 }
-                // The fork button (RowView.swift's `actions`): on a line of its own under the last
-                // reply of a finished turn, over the top right corner of an earlier one while the
-                // pointer is on it, so the parts of a turn stay close.
-                let line = self.columns.get(agent).is_some_and(|c| c.fork_lines.binary_search(&ix).is_ok());
-                if line || t.fork_turns(ix, self.can_fork(agent)).is_some() {
-                    let button = self.fork_button(agent, ix, cx);
-                    if line {
-                        col = col.child(div().flex().gap(px(6.)).child(button));
-                    } else {
-                        let group: gpui::SharedString = format!("reply-{agent}-{ix}").into();
-                        col = col.relative().group(group.clone())
-                            .child(div().absolute().top(px(-2.)).right_0().invisible().group_hover(group, |s| s.visible()).child(button));
-                    }
+                // Copy, play and, when the turn can fork, fork (RowView.swift's `actions`): on a
+                // line of their own under the last reply of a finished turn, over the top right
+                // corner of an earlier one while the pointer is on it, so the parts of a turn stay close.
+                let line = self.columns.get(agent).is_some_and(|c| c.reply_ends.binary_search(&ix).is_ok());
+                let mut actions = div().flex().items_center().gap(px(6.)).child(self.copy_button(agent, ix, cx)).child(self.play_button(agent, ix, row.id, cx));
+                if t.fork_turns(ix, self.can_fork(agent)).is_some() {
+                    actions = actions.child(self.fork_button(agent, ix, cx));
                 }
-                col
+                if line {
+                    col.child(actions)
+                } else {
+                    let group: gpui::SharedString = format!("reply-{agent}-{ix}").into();
+                    col.relative().group(group.clone())
+                        .child(actions.absolute().top(px(-2.)).right_0().invisible().group_hover(group, |s| s.visible()))
+                }
             }
             Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(texts.plain("thought", x, 0x6f8a7c)),
             Kind::Tool { title, kind, status, content, detail, .. } => {

@@ -265,6 +265,20 @@ impl Client {
         }
         self.sync_overlay();
     }
+    /// The menu bar's pairing row (PairingRow): ask wheeld how phones reach it, and copy the code or
+    /// show the pairing window on its answer, so a window that never opened Settings acts too.
+    pub fn pairing_from_menu(&mut self, ask: pairing::Ask) {
+        self.pairing.asked = Some(ask);
+        self.settings_reqs.pairing_remote = self.ask_remote();
+    }
+    /// wheeld said how phones reach it: the menu bar's ask runs now.
+    pub(super) fn pairing_asked(&mut self) {
+        match self.pairing.asked.take() {
+            Some(pairing::Ask::Copy) => self.copy_pairing_code(),
+            Some(pairing::Ask::Show) => self.show_pairing_window(),
+            None => {}
+        }
+    }
     /// Copy a fresh pairing code as a concealed clipboard item, cleared after a minute if unchanged.
     pub fn copy_pairing_code(&mut self) {
         if self.pairing_disabled_reason().is_some() {
