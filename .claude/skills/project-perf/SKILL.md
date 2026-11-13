@@ -1,7 +1,12 @@
+---
+name: project-perf
+description: "wheel: the cost scenarios (chat, live, spaces, hidden turns, layout, project artifact, build) a diff must run after project-verify, and the limits that fail it."
+---
+
 # Performance
 
 What Wheel may cost, measured in the real Mac app against its own wheeld and the fake agent.
-A pass runs the scenario for every area its diff touches, after `verify.md`; the swarm lead runs
+A pass runs the scenario for every area its diff touches, after `project-verify`; the swarm lead runs
 both after each landing. A check over its limit fails the pass. On a loaded machine (`uptime`
 load average over the core count) rerun the scenario once before counting a failure, and report
 both runs.
@@ -12,13 +17,13 @@ keeps each table.
 
 | Scenario | Run | Diff that needs it |
 | --- | --- | --- |
-| chat | `bash .claude/skills/project/tools/perf-chat.sh` | anything under `apple/`; a daemon change to agents, files, links or artifacts |
-| live | `bash .claude/skills/project/tools/perf-chat.sh --live` | every client deploy, against the installed app and running wheeld |
-| spaces | `bash .claude/skills/project/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
-| hidden turns | `bash .claude/skills/project/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
-| layout | `bash .claude/skills/project/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
-| project | `bash .claude/skills/project/tools/project-artifact.sh` | anything under `artifacts/project/` |
-| build | `bash .claude/skills/project/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
+| chat | `bash .claude/skills/project-verify/tools/perf-chat.sh` | anything under `apple/`; a daemon change to agents, files, links or artifacts |
+| live | `bash .claude/skills/project-verify/tools/perf-chat.sh --live` | every client deploy, against the installed app and running wheeld |
+| spaces | `bash .claude/skills/project-verify/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
+| hidden turns | `bash .claude/skills/project-verify/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
+| layout | `bash .claude/skills/project-verify/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
+| project | `bash .claude/skills/project-verify/tools/project-artifact.sh` | anything under `artifacts/project/` |
+| build | `bash .claude/skills/project-verify/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
 
 ## chat
 

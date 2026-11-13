@@ -6,7 +6,7 @@
 # and phone.log at each step, then acknowledges. Shots go to $WHEEL_SHOTS (default $SCR/shots).
 #
 # Needs WHEEL_IOS_DERIVED_DATA: a derived data folder holding a `build-for-testing` of the
-# WheelPhone scheme for the simulator (see verify.md § iOS title menu). Run with
+# WheelPhone scheme for the simulator (see project-verify § iOS title menu). Run with
 # `env -u WHEEL_SPACE -u WHEEL_PANE`.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 SIM=~/.claude/tools/sim

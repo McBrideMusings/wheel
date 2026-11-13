@@ -87,6 +87,9 @@ pub struct Snapshot {
     pub commits: Vec<Commit>,
     pub pr_error: Option<String>,
     pub error: Option<String>,
+    /// The project's `[repo.list]` buttons, run over the listed branches.
+    #[serde(skip)]
+    pub scripts: Vec<crate::core::buttons::Script>,
 }
 
 struct Wt {
@@ -300,7 +303,10 @@ pub fn collect(dir: &str) -> Snapshot {
             .collect()
     });
     let merged = merged_pr_heads(&top);
+    let (scripts, problems) = crate::core::buttons::scripts(dir, "repo");
+    let pr_error = pr_error.or(problems.into_iter().next());
     Snapshot {
+        scripts,
         name: crate::core::project::name_of(&top), head: git::current_branch(&top),
         branches: branch_rows(&top, dir, &default, &wts, &prs, &merged), stashes,
         commits: commits.unwrap_or_default(), pr_error, default, top, error: None,

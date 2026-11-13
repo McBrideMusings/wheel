@@ -14,6 +14,7 @@ use rmcp::{schemars, service::RequestContext, tool, tool_router, ErrorData, Role
 use serde_json::{json, Value};
 
 use super::*;
+use crate::core::list::{self, Filter, Item, List, Spec};
 use crate::core::page::{self, ago, cell, now, Page};
 use crate::core::project::Origin;
 use crate::core::table;
@@ -23,15 +24,24 @@ pub const NAME: &str = "prs";
 const URI: &str = "a2ui://prs";
 const SURFACE: &str = "prs";
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Ui {
-    q: String,
+    /// The search, filters, sort and selection, as every list page holds them.
+    list: List,
     sel: Option<i64>,
     /// The selected PR in full, as GitHub's GraphQL node; read when it is selected and after each button.
     detail: Option<Value>,
     /// The agents Wheel can run, for the modal's choice.
     agents: Vec<String>,
     ch: detail::Choices,
+    /// What the last list button did, shown once at the top of the page.
+    said: Option<String>,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Ui { list: List::new("updated", false), sel: None, detail: None, agents: vec![], ch: Default::default(), said: None }
+    }
 }
 
 #[derive(Default)]
@@ -52,25 +62,81 @@ fn ui_meta() -> MetaObject {
     MetaObject(json!({ "ui": { "resourceUri": URI, "mimeType": MIME } }).as_object().unwrap().clone())
 }
 
-/// The four counts at the top.
+/// The four boxes at the top: each sets the inbox filter to its bucket.
 const BUCKETS: [(&str, &str); 4] = [("needs-me", "Needs me"), ("mine", "Mine"), ("waiting", "Waiting on others"), ("other", "Other")];
+
+/// What the PRs list narrows by.
+const SPEC: Spec = Spec {
+    filters: &[
+        Filter { key: "inbox", name: "inbox", hidden: None },
+        Filter { key: "review", name: "review", hidden: None },
+        Filter { key: "draft", name: "draft", hidden: None },
+        Filter { key: "checks", name: "checks", hidden: None },
+        Filter { key: "author", name: "author", hidden: None },
+    ],
+    sorts: &["number", "title", "draft", "review", "checks", "branch", "author", "updated"],
+};
+
+impl Item for Pr {
+    fn haystack(&self) -> String {
+        format!("#{} {} {} {} {}", self.number, self.title, self.author, self.branch, self.labels.join(" "))
+    }
+    fn has(&self, key: &str, value: &str) -> bool {
+        match key {
+            "inbox" => self.bucket == value,
+            "review" => self.standing == value,
+            "draft" => (if self.draft { "draft" } else { "ready" }) == value,
+            "checks" => self.checks == value,
+            "author" => self.author == value,
+            _ => false,
+        }
+    }
+}
+
+fn standing(p: &Pr) -> (usize, &'static (&'static str, &'static str, &'static str, bool)) {
+    STANDINGS.iter().enumerate().find(|(_, s)| s.0 == p.standing).unwrap_or((STANDINGS.len() - 1, &STANDINGS[STANDINGS.len() - 1]))
+}
+
+fn checks_rank(c: &str) -> usize {
+    match c { "failing" => 0, "pending" => 1, "passing" => 2, _ => 3 }
+}
+
+fn compare(key: &str, a: &Pr, b: &Pr) -> std::cmp::Ordering {
+    match key {
+        "number" => a.number.cmp(&b.number),
+        "title" => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+        "draft" => b.draft.cmp(&a.draft),
+        "review" => standing(a).0.cmp(&standing(b).0),
+        "checks" => checks_rank(a.checks).cmp(&checks_rank(b.checks)),
+        "branch" => a.branch.to_lowercase().cmp(&b.branch.to_lowercase()),
+        "author" => a.author.to_lowercase().cmp(&b.author.to_lowercase()),
+        _ => a.updated.cmp(&b.updated),
+    }
+}
+
+/// The PRs the page lists now, in the order shown.
+fn listed<'a>(s: &'a Snapshot, ui: &Ui) -> Vec<&'a Pr> {
+    ui.list.sorted(&SPEC, &s.prs, compare, |a, b| a.number.cmp(&b.number))
+}
+
+/// The numbers the list actions take: the selected listed PRs, else every listed one.
+fn ids(s: &Snapshot, ui: &Ui) -> Vec<String> {
+    list::taken(listed(s, ui).iter().map(|p| p.number.to_string()).collect(), &ui.list)
+}
 
 fn row(p: &Pr, ui: &Ui, at: i64) -> Value {
     let checks_tone = match p.checks { "passing" => "ok", "failing" => "bad", "pending" => "warn", _ => "muted" };
-    let mut cells = vec![
+    let (rank, (_, words, tone, turn)) = standing(p);
+    let cells = vec![
         cell(format!("#{}", p.number), json!({ "key": "number", "mono": true, "tone": "muted", "sort": p.number })),
-        cell(if p.draft { format!("{} (draft)", p.title) } else { p.title.clone() }, json!({ "key": "title", "sort": p.title.to_lowercase() })),
+        cell(&p.title, json!({ "key": "title", "tone": if p.fix { "bad" } else { "fg" }, "sort": p.title.to_lowercase() })),
+        cell(if p.draft { "draft" } else { "ready" }, json!({ "key": "draft", "chip": p.draft, "tone": if p.draft { "warn" } else { "muted" }, "sort": if p.draft { 0 } else { 1 } })),
+        cell(*words, json!({ "key": "review", "chip": true, "tone": tone, "weight": if *turn { "semibold" } else { "regular" }, "sort": rank })),
+        cell(if p.checks == "none" { "" } else { p.checks }, json!({ "key": "checks", "chip": p.checks != "none", "tone": checks_tone, "sort": checks_rank(p.checks) })),
         cell(&p.branch, json!({ "key": "branch", "mono": true, "size": 12, "tone": "muted", "sort": p.branch.to_lowercase() })),
-        cell(&p.summary, json!({ "key": "summary", "tone": "muted", "size": 12, "sort": p.summary.to_lowercase() })),
-        cell(&p.next, json!({ "key": "next", "tone": if p.fix { "bad" } else { "fg" }, "sort": p.next })),
         cell(&p.author, json!({ "key": "author", "tone": "muted", "sort": p.author.to_lowercase() })),
-        cell(if p.checks == "none" { "" } else { p.checks }, json!({ "key": "checks", "chip": p.checks != "none", "tone": checks_tone, "sort": match p.checks { "failing" => 0, "pending" => 1, "passing" => 2, _ => 3 } })),
-        cell(p.review, json!({ "key": "review", "tone": "muted", "sort": p.review })),
-        cell(if p.mergeable == "CONFLICTING" { "conflicts".to_string() } else { p.gaps.clone() }, json!({ "key": "gaps", "mono": true, "tone": if p.mergeable == "CONFLICTING" { "bad" } else { "muted" }, "sort": if p.mergeable == "CONFLICTING" { "!".to_string() } else { p.gaps.clone() } })),
-        cell(p.issues.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(" "), json!({ "key": "issue", "mono": true, "tone": "muted", "sort": p.issues.first().copied().unwrap_or(0) })),
         cell(ago(p.updated, at), json!({ "key": "updated", "tone": "muted", "sort": p.updated })),
     ];
-    cells[1]["tone"] = json!(if p.fix { "bad" } else { "fg" });
     json!({ "id": p.number.to_string(), "path": p.number.to_string(), "depth": 0, "kids": 0, "collapsed": false, "dim": p.draft,
         "sel": ui.sel == Some(p.number), "cells": cells, "menu": [] })
 }
@@ -80,46 +146,50 @@ fn clock(ts: i64) -> String {
     crate::core::run::text("/bin/date", "/", &["-r", &ts.to_string(), "+%H:%M"]).map(|t| t.trim().to_string()).unwrap_or_default()
 }
 
-fn matches(p: &Pr, ui: &Ui) -> bool {
-    let hay = format!("{} {} {} #{}", p.title, p.author, p.branch, p.number).to_lowercase();
-    ui.q.to_lowercase().split_whitespace().all(|w| hay.contains(w))
-}
-
 fn components(s: &Snapshot, ui: &Ui) -> Vec<Value> {
     let mut p = Page { out: vec![] };
     let at = now();
     let mut page = vec![];
     // No page title or subtitle: the pane's own bar says which page it is.
     let n = |b: &str| s.prs.iter().filter(|p| p.bucket == b).count();
-    let cards: Vec<String> = BUCKETS.iter().enumerate().map(|(i, (k, l))| {
-        let v = n(k);
-        p.stat(&format!("kpi{i}"), &v.to_string(), &l.to_string(), if v == 0 { "muted" } else if *k == "needs-me" { "ok" } else { "fg" })
-    }).collect();
-    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 10, "widths": ["flex", "flex", "flex", "flex"] })));
+    let cards: Vec<(&str, &str, &str, usize, bool)> = BUCKETS.iter().map(|(k, l)| (*l, "inbox", *k, n(k), *k == "needs-me")).collect();
+    page.push(list::boxes(&mut p, &ui.list, &cards));
     if let Some(e) = &s.error {
         let l = p.label("problem.t", e, json!({ "tone": "bad" }));
         page.push(p.boxed("problem", "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
     }
+    if let Some(said) = &ui.said {
+        let l = p.label("said.t", said, json!({ "tone": "ok" }));
+        page.push(p.boxed("said", "v", vec![l], json!({ "border": "ok", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
+    }
     if s.repo.is_some() {
-        p.search("search", "set_query", &ui.q, "Search");
-        let shown: Vec<&Pr> = s.prs.iter().filter(|x| matches(x, ui)).collect();
-        let count = p.label("count", &format!("{} of {}", shown.len(), s.prs.len()), json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end" }));
         // When GitHub was last asked and the latest the page checks again, as clock times: they stay true until the next draw.
         let status = if s.fetched > 0 { format!("Updated {} · next by {}", clock(s.fetched), clock(s.fetched + 120)) } else { String::new() };
-        let status = p.label("refresh.s", &status, json!({ "tone": "muted", "size": 11, "tabular": true, "align": "end", "lineLimit": 1 }));
+        let status = p.label("refresh.s", &status, json!({ "tone": "muted", "size": 11, "tabular": true, "lineLimit": 1 }));
         let refresh = p.button("refresh", "Refresh", "refresh_prs", json!({}), json!({ "icon": "arrow.clockwise", "style": "plain", "help": "Ask GitHub again now" }));
-        page.push(p.boxed("tools", "h", vec!["search".into(), count, status, refresh], json!({ "spacing": 8, "align": "center", "padding": [12, 0, 0, 0], "widths": ["flex", 96, 190, 28], "trailing": 1 })));
-        // One list, no group headers; the newest first by default.
+        page.push(list::find(&mut p, &ui.list, vec![status, refresh]));
+        let shown = listed(s, ui);
+        let names: Vec<(&str, &str)> = BUCKETS.to_vec();
+        let words: Vec<(&str, &str)> = STANDINGS.iter().map(|x| (x.0, x.1)).collect();
+        let options = vec![
+            list::fixed("inbox", &s.prs, &names),
+            list::fixed("review", &s.prs, &words).into_iter().filter(|(_, t)| !t.ends_with("  0")).collect(),
+            list::fixed("draft", &s.prs, &[("draft", "draft"), ("ready", "ready")]),
+            list::fixed("checks", &s.prs, &[("failing", "failing"), ("pending", "pending"), ("passing", "passing"), ("none", "none")]),
+            list::counted(&s.prs, |p| vec![p.author.clone()]),
+        ];
+        let actions = crate::core::buttons::actions(&mut p, &s.scripts, &ids(s, ui), shown.len(), "PR numbers", "PRs");
+        page.push(list::bar(&mut p, &SPEC, &ui.list, options, actions));
         let rows: Vec<Value> = shown.iter().map(|x| row(x, ui, at)).collect();
         let sections = vec![table::section("", rows)];
         let columns: Vec<Value> = vec![table::column("number", "#", json!(60), false, false), table::column("title", "Title", json!("flex"), false, true),
-            table::column("summary", "Description", json!("flex"), false, true), table::column("next", "Next", json!(170), false, false),
-            table::column("branch", "Branch", json!(200), false, false), table::column("author", "Author", json!(110), false, false),
-            table::column("checks", "Checks", json!(84), false, false), table::column("review", "Review", json!(130), false, true),
-            table::column("issue", "Issue", json!(70), false, false), table::column("gaps", "Gaps", json!(80), false, false),
-            table::column("updated", "Updated", json!(70), false, false)].into_iter().map(table::sortable).collect();
-        let mut t = table::component(columns, sections, "select_pr", "select_pr", "", ("updated", false),
-            if s.prs.is_empty() { "No open PRs." } else { "Nothing matches the search." });
+            table::column("draft", "Draft", json!(64), false, false), table::column("review", "Review", json!(170), false, false),
+            table::column("checks", "Checks", json!(84), false, false), table::column("branch", "Branch", json!(200), false, true),
+            table::column("author", "Author", json!(110), false, true), table::column("updated", "Updated", json!(70), false, false)]
+            .into_iter().map(table::sortable).collect();
+        let t = table::component(columns, sections, "select_pr", "select_pr", "set_sort", (&ui.list.sort.0, ui.list.sort.1),
+            if s.prs.is_empty() { "No open PRs." } else { "Nothing matches the search and filters." });
+        let mut t = table::selectable(t, "select_rows", &ui.list.selected.iter().cloned().collect::<Vec<_>>());
         t["id"] = json!("table");
         p.put(t);
         page.push(p.boxed("table.b", "v", vec!["table".into()], json!({})));
@@ -144,13 +214,6 @@ fn answer(s: &Snapshot, ui: &Ui) -> CallToolResult {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct Query {
-    /// The search text.
-    #[serde(alias = "value")]
-    q: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Choice {
     /// The chosen value.
     value: String,
@@ -160,6 +223,12 @@ struct Choice {
 struct ButtonName {
     /// The button's name, as under `[prs.buttons]` in wheel.toml.
     name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ListScript {
+    /// The button's name in `[prs.list.<name>]`.
+    script: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -180,6 +249,7 @@ impl Server {
         let mut s = self.shared.lock().unwrap();
         let snap = s.project(&o.dir).clone();
         let ui = s.panes.entry(o.pane).or_default();
+        ui.said = None;
         f(ui);
         answer(&snap, ui)
     }
@@ -225,11 +295,6 @@ impl Server {
         self.with(&meta, |_| {})
     }
 
-    #[tool(description = "Search the PRs", meta = ui_meta())]
-    fn set_query(&self, meta: RequestMetaObject, Parameters(Query { q }): Parameters<Query>) -> CallToolResult {
-        self.with(&meta, |ui| ui.q = q)
-    }
-
     #[tool(description = "Open or close a PR's details", meta = ui_meta())]
     fn select_pr(&self, meta: RequestMetaObject, Parameters(Number { id }): Parameters<Number>) -> CallToolResult {
         let o = Origin::of(&meta);
@@ -267,6 +332,27 @@ impl Server {
             });
         }
         self.with(&meta, |_| {})
+    }
+
+    #[tool(description = "Run one of the project's list buttons over the PRs the page lists now", meta = ui_meta())]
+    fn run_list_script(&self, meta: RequestMetaObject, Parameters(ListScript { script }): Parameters<ListScript>) -> CallToolResult {
+        let o = Origin::of(&meta);
+        let (snap, numbers) = {
+            let mut s = self.shared.lock().unwrap();
+            let snap = s.project(&o.dir).clone();
+            let ui = s.panes.entry(o.pane.clone()).or_default();
+            let numbers = ids(&snap, ui);
+            (snap, numbers)
+        };
+        let repo = snap.repo.clone().unwrap_or_default();
+        let mut env = vec![("PR_REPO", repo.as_str()), ("PR_PATH", o.dir.as_str())];
+        if let Some(d) = &o.data {
+            env.push(("WHEEL_DATA_DIR", d.as_str()));
+        }
+        match crate::core::buttons::run_list(&snap.scripts, &script, &numbers, "PR_NUMBERS", &env, &o.dir, &o.pane, "PRs") {
+            Ok(said) => self.with(&meta, |ui| ui.said = Some(said)),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
+        }
     }
 
     #[tool(description = "Ask GitHub again now, for every pane showing this repo", meta = ui_meta())]
@@ -400,10 +486,15 @@ impl View for PrsView {
     }
 
     fn tools(&self) -> Vec<Tool> {
-        self.server.tool_router.list_all()
+        let mut t = self.server.tool_router.list_all();
+        t.extend(list::tools(&ui_meta()));
+        t
     }
 
     async fn call(&self, params: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, ErrorData> {
+        if let Some(op) = list::op(&params) {
+            return Ok(self.server.with(&context.meta, |ui| ui.list.apply(&SPEC, op)).into());
+        }
         self.server.tool_router.call(ToolCallContext::new(&self.server, params, context)).await
     }
 
@@ -455,13 +546,13 @@ mod tests {
 
     fn pr(n: i64, bucket: &'static str) -> Pr {
         Pr { number: n, title: format!("pr {n}"), author: "a".into(), branch: "b".into(), draft: false, mergeable: "MERGEABLE".into(), checks: "passing",
-            review: "in-review", bucket, my: None, gaps: String::new(), updated: 0, url: "u".into(), fix: false, additions: 1, deletions: 0,
-            files: 1, commits: 1, labels: vec![], reviewers: vec![], next: String::new(), summary: String::new(), issues: vec![] }
+            review: "in-review", bucket, my: None, standing: "waiting-reviewer", updated: n, url: "u".into(), fix: false, additions: 1, deletions: 0,
+            files: 1, commits: 1, labels: vec![], reviewers: vec![], summary: String::new() }
     }
 
     #[test]
     fn the_page_groups_prs_by_bucket_and_opens_one() {
-        let s = Snapshot { name: "t".into(), repo: Some("o/t".into()), me: Some("me".into()), prs: vec![pr(1, "mine"), pr(2, "needs-me")], error: None, fetched: 0, buttons: vec![] };
+        let s = Snapshot { name: "t".into(), repo: Some("o/t".into()), me: Some("me".into()), prs: vec![pr(1, "mine"), pr(2, "needs-me")], error: None, fetched: 0, buttons: vec![], scripts: vec![] };
         let c = components(&s, &Ui { sel: Some(2), ..Default::default() });
         let t = c.iter().find(|v| v["id"] == "table").unwrap();
         assert_eq!(t["sections"].as_array().unwrap().len(), 1, "one list, no group headers");
@@ -473,5 +564,32 @@ mod tests {
         assert!(acts.contains(&"pr.checkout") && acts.contains(&"pr.worktree") && acts.contains(&"pr.merge"));
         let c = components(&s, &Ui::default());
         assert_eq!(c.iter().find(|v| v["id"] == "detail").unwrap()["presented"], false);
+    }
+
+    #[test]
+    fn the_columns_say_draft_and_whose_review_it_is_and_the_list_narrows_like_beads() {
+        let mut a = pr(1, "mine");
+        a.draft = true;
+        let mut b = pr(2, "needs-me");
+        b.standing = "review";
+        let s = Snapshot { name: "t".into(), repo: Some("o/t".into()), me: Some("me".into()), prs: vec![a, b], ..Default::default() };
+        let mut ui = Ui::default();
+        let c = components(&s, &ui);
+        let t = c.iter().find(|v| v["id"] == "table").unwrap();
+        let keys: Vec<&str> = t["columns"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap()).collect();
+        assert_eq!(keys, ["number", "title", "draft", "review", "checks", "branch", "author", "updated"]);
+        let cells = |c: &[Value], row: usize| c.iter().find(|v| v["id"] == "table").unwrap()["sections"][0]["rows"][row]["cells"].clone();
+        assert_eq!((cells(&c, 0)[2]["text"].as_str(), cells(&c, 0)[3]["text"].as_str()), (Some("ready"), Some("Review requested")), "the newest first");
+        assert_eq!((cells(&c, 1)[2]["text"].as_str(), cells(&c, 1)[3]["text"].as_str()), (Some("draft"), Some("Waiting on reviewer")));
+        assert_eq!(t["sortAction"], "set_sort", "the page sorts, so Copy IDs follows the rows");
+        let page = c.iter().find(|v| v["id"] == "page").unwrap()["children"].clone();
+        assert_eq!(page, json!(["kpis", "find", "bar", "table.b", "detail"]), "the same rows as Beads: boxes, search, filters, table");
+        ui.list.apply(&SPEC, list::Op::Filter("inbox".into(), "needs-me".into()));
+        assert_eq!(ids(&s, &ui), ["2"]);
+        ui.list.apply(&SPEC, list::Op::Clear);
+        ui.list.apply(&SPEC, list::Op::Toggle("draft".into(), "draft".into(), true));
+        assert_eq!(ids(&s, &ui), ["1"]);
+        ui.list.apply(&SPEC, list::Op::Not("draft".into(), true));
+        assert_eq!(ids(&s, &ui), ["2"]);
     }
 }

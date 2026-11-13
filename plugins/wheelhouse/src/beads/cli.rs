@@ -57,10 +57,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let ix = Ix::new(&snap);
     match args.command {
         Cmd::List { view, search, status, kind, label, pri, all } => {
-            let mut ui = Ui { view, q: search, hide: !all, ..Ui::default() };
+            let mut ui = Ui { view, ..Ui::default() };
+            ui.list.q = search;
+            // --all lists done beads too: every status ticked, so none is hidden.
+            let status = status.or_else(|| all.then(|| KINDS.join(",")));
             for (k, v) in [("status", status), ("type", kind), ("label", label), ("pri", pri)] {
                 if let Some(v) = v {
-                    ui.f.insert(k.into(), v);
+                    ui.list.apply(&SPEC, crate::core::list::Op::Filter(k.into(), v));
                 }
             }
             let rows = build(&ix, &ui);

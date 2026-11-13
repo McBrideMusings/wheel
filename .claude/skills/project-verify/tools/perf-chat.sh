@@ -8,7 +8,7 @@
 #   requests     the Mac app's messages to wheeld per op, per minute, while the agent on screen
 #                replies every 2 s and its composer takes ten keys a second, from `status`'s `requests`; a client that asks again on every
 #                redraw shows here
-# Prints one table; limits are in perf.md. WHEEL_SHOTS=<dir> keeps it as perf-chat.txt.
+# Prints one table; limits are in project-perf. WHEEL_SHOTS=<dir> keeps it as perf-chat.txt.
 #
 # perf-chat.sh --live reads the installed app and the running wheeld as they are, over
 # LIVE_WINDOW_S (default 60) seconds: the app's share of one core and the daemon's file_peek lines

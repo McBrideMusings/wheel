@@ -65,7 +65,7 @@ cargo test                                  # daemon and CLI
 swift test --package-path apple/WheelKit    # shared Swift code
 ```
 
-`.claude/skills/project/verify.md` describes the end-to-end checks, which drive a throwaway daemon and the real Mac app through the CLI and the app's debug server.
+`.claude/skills/project-verify/SKILL.md` describes the end-to-end checks, which drive a throwaway daemon and the real Mac app through the CLI and the app's debug server.
 
 ## Status
 

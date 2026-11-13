@@ -1,7 +1,7 @@
 import XCTest
 
 /// Drives the phone's command palette with real taps against a wheeld that
-/// `.claude/skills/project/tools/ios-palette.sh` set up: session "wheel" holding spaces wheel (two
+/// `.claude/skills/project-verify/tools/ios-palette.sh` set up: session "wheel" holding spaces wheel (two
 /// agent panes, one working) and alpha, an artifact "dash" in wheel, and session "games" holding chess.
 /// The test writes `<sync>/step-<name>` after each step and waits for `<sync>/ack-<name>`.
 final class CommandPaletteUITests: XCTestCase {

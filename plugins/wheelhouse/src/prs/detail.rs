@@ -586,7 +586,7 @@ mod tests {
         assert!(problem.is_none());
         assert_eq!(b.len(), 2);
         let mut pr = Pr { number: 1, title: "t".into(), author: "a".into(), branch: "b".into(), draft: false, mergeable: "MERGEABLE".into(), checks: "passing", review: "in-review",
-            bucket: "mine", my: None, gaps: String::new(), updated: 0, url: "u".into(), fix: false, additions: 0, deletions: 0, files: 0, commits: 0, labels: vec![], reviewers: vec![], next: String::new(), summary: String::new(), issues: vec![] };
+            bucket: "mine", my: None, standing: "waiting-reviewer", updated: 0, url: "u".into(), fix: false, additions: 0, deletions: 0, files: 0, commits: 0, labels: vec![], reviewers: vec![], summary: String::new() };
         let fix = b.iter().find(|x| x.name == "fix").unwrap();
         assert!(fix.worktree && label(fix) == "Make mergeable");
         assert!(!wants(fix, &pr));
@@ -608,7 +608,7 @@ mod tests {
             "files": { "totalCount": 1, "nodes": [{ "path": "a.rs", "additions": 3, "deletions": 1 }] },
             "checks": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS", "contexts": { "nodes": [{ "__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS" }] } } } }] } });
         let pr = Pr { number: 7, title: "t".into(), author: "a".into(), branch: "b".into(), draft: false, mergeable: "MERGEABLE".into(), checks: "passing", review: "approved",
-            bucket: "mine", my: None, gaps: String::new(), updated: 0, url: "https://u".into(), fix: true, additions: 3, deletions: 1, files: 1, commits: 1, labels: vec![], reviewers: vec![], next: String::new(), summary: String::new(), issues: vec![] };
+            bucket: "mine", my: None, standing: "waiting-reviewer", updated: 0, url: "https://u".into(), fix: true, additions: 3, deletions: 1, files: 1, commits: 1, labels: vec![], reviewers: vec![], summary: String::new() };
         let b = Button { name: "fix".into(), label: Some("Make mergeable".into()), on: vec!["fix".into()], run: "true".into(), worktree: true };
         let mut p = Page { out: vec![] };
         modal(&mut p, &pr, &n, &["claude".into(), "codex".into()], &[b], &Choices::default());
@@ -657,8 +657,8 @@ mod tests {
     #[test]
     fn a_pr_still_loading_shows_the_list_data_a_spinner_and_disabled_buttons() {
         let pr = Pr { number: 7, title: "t".into(), author: "a".into(), branch: "b".into(), draft: false, mergeable: "MERGEABLE".into(), checks: "passing", review: "approved",
-            bucket: "mine", my: None, gaps: String::new(), updated: 0, url: "https://u".into(), fix: false, additions: 3, deletions: 1, files: 1, commits: 1, labels: vec![], reviewers: vec![],
-            next: String::new(), summary: "The start of the body".into(), issues: vec![] };
+            bucket: "mine", my: None, standing: "waiting-reviewer", updated: 0, url: "https://u".into(), fix: false, additions: 3, deletions: 1, files: 1, commits: 1, labels: vec![], reviewers: vec![],
+            summary: "The start of the body".into() };
         let mut p = Page { out: vec![] };
         modal(&mut p, &pr, &Value::Null, &[], &[], &Choices { loading: true, ..Default::default() });
         let has = |id: &str| p.out.iter().any(|c| c["id"] == id);
