@@ -2,7 +2,7 @@
 # Scripted /clear: a stand-in claude (a node script, so the daemon detects it) runs the SessionStart
 # hook command with a new agent id; the pane must save it, and a view switch must keep it.
 set -u
-T=$CARGO_TARGET_DIR/debug
+T=${CARGO_TARGET_DIR:-$(cd "$(dirname "$0")/../../../.." && pwd)/target}/debug
 SCR=$(mktemp -d)
 PORT=$((7500 + $(printf %s "${SWARM_WORKER:-x}" | cksum | cut -d" " -f1) % 400))
 mkdir -p $SCR/run/inst $SCR/run/logs $SCR/run/bin $SCR/run/cfg $SCR/run/space

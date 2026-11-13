@@ -28,12 +28,14 @@ Run the full `cargo test` once per round of edits, not after every file.
 
 ## Shared caches
 
-`swarm launch` sets `CARGO_TARGET_DIR` to your worktree's own `target/`, cloned from the main
-checkout's, so dependencies and the Ghostty build start warm and your first build recompiles only
-wheel's crates. Never override it. The daemon binary you drive is `$CARGO_TARGET_DIR/debug/wheeld`,
-the CLI is `$CARGO_TARGET_DIR/debug/wheel`, and the fake agent is
-`$CARGO_TARGET_DIR/debug/wheel-fake-agent`; only your builds write them. The Mac app's
-`embed-wheeld.sh` builds into the same `<worktree>/target`.
+`swarm launch` clones every Cargo workspace's `target/` from the main checkout into your worktree
+(`target/` for the daemon's workspace, `clients/gpui/target/` for the GPUI client's), so
+dependencies and the Ghostty build start warm and your first build recompiles only wheel's crates.
+Leave `CARGO_TARGET_DIR` unset: set, it sends both workspaces into one directory and the GPUI build
+starts cold. The daemon binary you drive is `<worktree>/target/debug/wheeld`, the CLI is
+`<worktree>/target/debug/wheel`, and the fake agent is `<worktree>/target/debug/wheel-fake-agent`;
+only your builds write them. The Mac app's `embed-wheeld.sh` builds into the same
+`<worktree>/target`.
 
 The daemon's terminal crate builds with Zig 0.16 through `tools/zig` (mise). The first build
 after a fresh target downloads Ghostty's source; `tools/zig` keeps Zig's build cache in
