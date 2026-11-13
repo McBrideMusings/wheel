@@ -12,6 +12,8 @@ final class SelectionInput {
     var active = false
     var dragging = false
     var lastPoint = CGPoint.zero
+    /// The link under a single press with no Shift, opened if the release lands on it with no drag.
+    var pressedLink: (row: Int, url: URL)?
     var scrollTimer: Timer?
 }
 
@@ -60,6 +62,13 @@ extension TranscriptSelection {
         return TextGeometry(drawnProse(of: item, in: chat), style: target.style, width: target.frame.width)
     }
 
+    /// The link drawn under a point, and the reply it is in.
+    private func link(at point: CGPoint) -> (row: Int, url: URL)? {
+        guard let row = target(at: point), let frame = targets[row]?.frame,
+              let url = drawn[row]?.link(at: CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)) else { return nil }
+        return (row, url)
+    }
+
     /// The prose block under a point, if one is.
     private func target(at point: CGPoint) -> Int? {
         targets.first { $0.value.frame.contains(point) }?.key
@@ -82,6 +91,7 @@ extension TranscriptSelection {
     /// and neither starts a drag.
     func mouseDown(at point: CGPoint, extend: Bool, clicks: Int = 1, in chat: AgentChat) {
         state.active = true
+        state.pressedLink = clicks == 1 && !extend ? link(at: point) : nil
         guard target(at: point) != nil, let position = resolve(point, in: chat) else {
             state.dragging = false
             clear()
@@ -198,11 +208,24 @@ extension TranscriptSelection {
         autoscroll(chat, window: window)
     }
 
-    func mouseUp() {
+    /// The release. With `point`, a release on the link the press landed on, with no drag between
+    /// them, is a click on that link and opens it.
+    func mouseUp(at point: CGPoint? = nil, in chat: AgentChat? = nil) {
+        let pressed = state.pressedLink
+        state.pressedLink = nil
         guard state.dragging else { return }
         state.dragging = false
         stopScrolling()
-        if anchor == head { clear() }
+        guard anchor == head else { return }
+        clear()
+        guard let pressed, let point, let chat, let released = link(at: point),
+              released.row == pressed.row, released.url == pressed.url else { return }
+        guard let open = linkOpeners[pressed.row] else {
+            Log.info("transcript \(chat.name): link clicked in row \(pressed.row), which has no link action: \(pressed.url.absoluteString)")
+            return
+        }
+        Log.info("transcript \(chat.name): link clicked in row \(pressed.row): \(pressed.url.absoluteString)")
+        open(pressed.url)
     }
 
     /// While the pointer is held past the top or bottom of the transcript, scroll toward it and
@@ -282,7 +305,7 @@ extension TranscriptSelection {
         case .leftMouseDragged:
             mouseDragged(to: point, in: chat, window: window)
         case .leftMouseUp:
-            mouseUp()
+            mouseUp(at: point, in: chat)
         case .rightMouseDown:
             guard chat.frameInWindow.contains(point), target(at: point) != nil else { return event }
             showMenu(for: event, at: point, chat: chat, window: window)

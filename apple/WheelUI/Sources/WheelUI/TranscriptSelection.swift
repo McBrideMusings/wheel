@@ -39,6 +39,9 @@ public final class TranscriptSelection: ObservableObject {
     /// links shorten some of its words, so the offsets a pointer finds count these characters and
     /// not the Markdown's own.
     public var known: [Int: Known] = [:]
+    /// What a click on a link does in each built reply, by row id: the reply's own link action. The
+    /// Mac's pointer handler runs it when a press and its release land on one link with no drag.
+    public var linkOpeners: [Int: (URL) -> Void] = [:]
 
     /// A row's drawn prose and the text it was made from, which tells a later look that the row
     /// still says the same.

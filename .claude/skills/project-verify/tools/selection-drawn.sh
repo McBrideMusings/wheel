@@ -29,7 +29,6 @@ launch_app
 check "the app connects" wait_st '.connection == "connected"' 20
 check "the reply arrives" wait_st ".panes[\"$P\"].transcript | map(select(startswith(\"agent: echo\"))) | length == 1" 20
 app_post "/focus?space=$A" >/dev/null
-app_post "/window/front" >/dev/null
 sleep 2
 
 AGENT="$(st -r ".panes[\"$P\"].agent")"

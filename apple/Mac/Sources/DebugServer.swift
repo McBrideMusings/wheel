@@ -576,8 +576,8 @@ final class DebugServer {
             // the release. Each event goes to the transcript's mouse monitor, as the application would
             // hand it, and to the view under the press, which an application that is not active never
             // hands a window's events to. `shift=1` holds Shift (extends the selection), `clicks` is
-            // the click count. The answer is the selection after the release, the copy ⌘C would make,
-            // and the file preview a click opened.
+            // the click count. The answer is the selection after the release and the copy ⌘C would
+            // make; a press and release on one link opens it, which `/state`'s `links.click` shows.
             guard let session = query["agent"], let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init) else {
                 return refuse("400 Bad Request", "session, x and y are required")
             }

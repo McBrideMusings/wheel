@@ -400,6 +400,29 @@ struct AgentText: View {
         return value
     }
 
+    /// What a click on one of the reply's links does: a timestamp shows its local time, a link the
+    /// chat knows runs its action. False for anything else, which is the system's to open.
+    private func open(_ url: URL) -> Bool {
+        UILog.info("reply \(id) of \(chat.name): link tapped \(url.absoluteString)")
+        if let iso = ChatRich.timestamp(of: url) {
+            timeShown = iso
+            return true
+        }
+        guard let links, let action = ChatLinkAction(url: url) else { return false }
+        links.click(action, look: look, agent: chat.name, row: id)
+        return true
+    }
+
+    /// The link action the Mac's pointer handler runs for a click on one of this reply's links.
+    private func registerOpener() {
+        chat.selection.linkOpeners[id] = { url in
+            guard !open(url) else { return }
+            #if os(macOS)
+            NSWorkspace.shared.open(url)
+            #endif
+        }
+    }
+
     var body: some View {
         // The reply with its existing file paths, pane ids and web links as links; the text the
         // selection counts in is the linked one, so a label that shows a file's name selects as such.
@@ -431,14 +454,13 @@ struct AgentText: View {
                 .textual.emojiAttachmentLoader(SwatchLoader(side: (look.size * 0.85).rounded()))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.openURL, OpenURLAction { url in
-                    UILog.info("reply \(id) of \(chat.name): link tapped \(url.absoluteString)")
-                    if let iso = ChatRich.timestamp(of: url) {
-                        timeShown = iso
-                        return .handled
-                    }
-                    guard let links, let action = ChatLinkAction(url: url) else { return .systemAction }
-                    links.click(action, look: look, agent: chat.name, row: id)
-                    return .handled
+                    #if os(macOS)
+                    // A pointer click is the transcript's pointer handler's to open, since it tells a
+                    // click from a drag that starts on the link; this runs for the keyboard and
+                    // accessibility only.
+                    if let type = NSApp.currentEvent?.type, type == .leftMouseDown || type == .leftMouseUp { return .handled }
+                    #endif
+                    return open(url) ? .handled : .systemAction
                 })
                 .modifier(InlineCodeBoxes(prose: look.inlineCode == .box ? reply.prose : .plain("")))
                 .selectableText(reply.prose, source: text, id: id, chat: chat, style: look.bodyProse)
@@ -452,9 +474,17 @@ struct AgentText: View {
             if hovering && !copyable { actions.offset(y: -2) }
         }
         .onHover { hovering = $0 }
-        .onAppear { ReplyCopyRegistry.shared.set(text, agent: chat.name, row: id) }
+        .onAppear {
+            ReplyCopyRegistry.shared.set(text, agent: chat.name, row: id)
+            registerOpener()
+        }
         .onChange(of: text) { ReplyCopyRegistry.shared.set(text, agent: chat.name, row: id) }
-        .onDisappear { ReplyCopyRegistry.shared.forget(agent: chat.name, row: id) }
+        .onChange(of: look) { registerOpener() }
+        .onChange(of: links.map(ObjectIdentifier.init)) { registerOpener() }
+        .onDisappear {
+            ReplyCopyRegistry.shared.forget(agent: chat.name, row: id)
+            chat.selection.linkOpeners[id] = nil
+        }
         .task(id: drawn.pending) { ChatImageRegistry.shared.waiting(drawn.pending, agent: agent, row: row) }
         .popover(item: Binding(get: { timeShown.map(TimeStamp.init) }, set: { timeShown = $0?.iso })) { stamp in
             Text(ChatRich.localTime(stamp.iso) ?? stamp.iso)
