@@ -2009,7 +2009,9 @@ impl Render for Client {
         let space_held = self.space_id.as_deref().is_some_and(|s| self.quarantine.isolates_space(s));
         // A quarantined space opens none of its views and draws its card in place of its panes.
         let desk = self.mode == "desk";
-        let layers = if space_held || desk { vec![] } else { layers };
+        // While the server is stopped from the menu, the window says so in place of the grid.
+        let server_stopped = self.server_stopped_notice();
+        let layers = if space_held || desk || server_stopped { vec![] } else { layers };
         let leaves: Vec<Placed> = layers.iter().flat_map(|l| l.leaves.iter().cloned()).collect();
         self.grid_drawn = layers.first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default();
         let moving = self.tick_motion(window);
@@ -2049,7 +2051,9 @@ impl Render for Client {
             root = root.child(self.bottom_row(window, cx));
         }
         root = root.children(self.little_placeholder(cx));
-        if !little && desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
+        if !little && server_stopped {
+            root = root.child(self.server_stopped_element());
+        } else if !little && desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.desk_element());
         }
         // While the grid moves or a pane is zoomed, panes slide past the grid's edge: they draw

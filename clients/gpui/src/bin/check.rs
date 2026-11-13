@@ -6008,6 +6008,23 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
         && stopped_details[0].as_str().is_some_and(|l| l.starts_with("Stopped from this menu.")), "Stop Server ended with {} (stop command ran: {})", stopped["server"], stop_file.exists());
     let window_word = window.update(cx, |c, _, _| c.server_status_word().word)?;
     ensure!(window_word == "Stopped", "the window's word reads {window_word} after Stop Server");
+    // The window says the server is stopped in place of its grid (ServerStoppedNotice).
+    let window_notice = |cx: &mut AsyncApp| -> Result<Value> {
+        draw(window, None, cx)?;
+        Ok(window.update(cx, |c, _, _| c.state_json()["server"]["notice"].clone())?)
+    };
+    let mut notice = Value::Null;
+    for _ in 0..50 {
+        notice = window_notice(cx)?;
+        if notice["grid_drawn"] == 0 {
+            break;
+        }
+        tick(cx, 100).await;
+    }
+    ensure!(notice["title"] == "Wheel Server is stopped" && notice["hint"] == "Start it from the Wheel item in the menu bar." && notice["grid_drawn"] == 0,
+        "the window shows {notice} while the server is stopped from the menu");
+    let picture_notice = output.join("client-server-stopped-notice.png");
+    draw(window, Some(picture_notice.clone()), cx)?;
     let picture_stopped = output.join("client-menubar-stopped.png");
     popover_picture(popover, &picture_stopped, cx)?;
     // The right-click menu while stopped: Start Server first.
@@ -6020,6 +6037,18 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
     let started = popover_settle(popover, menu, cx, |s| s["server"]["stopped_by_menu"] == false && s["popover"]["controls"]["stop"].is_array()).await;
     ensure!(started["server"]["stopped_by_menu"] == false && started["server"]["word"].as_str().is_some_and(|w| w.starts_with("Running")) && start_file.exists(),
         "Start Server ended with {} (start command ran: {})", started["server"], start_file.exists());
+    // Started again, the window draws its grid in place of the notice.
+    let mut grid_back = 0;
+    for _ in 0..50 {
+        draw(window, None, cx)?;
+        let (notice, drawn) = window.update(cx, |c, _, _| (c.state_json()["server"]["notice"].clone(), c.grid_drawn_count()))?;
+        if notice.is_null() && drawn > 0 {
+            grid_back = drawn;
+            break;
+        }
+        tick(cx, 100).await;
+    }
+    ensure!(grid_back > 0, "Start Server left the window without its grid");
     // The right-click menu while running: Stop Server… asks in an alert; Cancel leaves it running.
     menu.update(cx, |m, _| m.bridge_call(json!({"op": "press_status_item", "button": "right"})));
     let menu_running = popover_settle(popover, menu, cx, |s| s["status_menu"]["menu"][0] == "Stop Server…").await["status_menu"]["menu"].clone();
@@ -6062,8 +6091,8 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
     let log = server_log();
     Ok(json!({"word": word, "colour": closed["server"]["colour"], "details": details, "heights": {"closed": closed_height, "open": open_height, "closed_again": closed_again_height},
         "stop_question": {"shown": asking["server"]["confirming"], "cancelled": cancelled["server"]["confirming"] == false},
-        "stopped": {"word": stopped["server"]["word"], "details": stopped_details, "window_word": window_word, "stop_ran": true},
-        "started": {"word": started["server"]["word"], "start_ran": true},
+        "stopped": {"word": stopped["server"]["word"], "details": stopped_details, "window_word": window_word, "stop_ran": true, "window_notice": notice, "notice_picture": picture_notice},
+        "started": {"word": started["server"]["word"], "start_ran": true, "window_grid_panes": grid_back},
         "menu": {"stopped": menu_stopped, "running": menu_running}, "alert": alert, "restart": {"before": restarts_before, "after": restarts_after},
         "update_dot": closed["told"]["update"], "pictures": [picture_open, picture_question, picture_stopped],
         "log": log.iter().filter(|l| l.starts_with("server: ")).cloned().collect::<Vec<_>>()}))

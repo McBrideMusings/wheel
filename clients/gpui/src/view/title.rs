@@ -83,6 +83,10 @@ pub fn symbol(native: &Native, cache: &Symbols, name: &str, size: f32, color: u3
     cache.get(&key).and_then(|e| e.as_ref()).map(|(image, w, h)| img(ImageSource::Image(image.clone())).w(px(*w)).h(px(*h)).flex_none().into_any_element())
 }
 
+/// The Server stopped notice's words (ServerStoppedNotice).
+pub const SERVER_STOPPED_TITLE: &str = "Wheel Server is stopped";
+pub const SERVER_STOPPED_HINT: &str = "Start it from the Wheel item in the menu bar.";
+
 impl Client {
     // MARK: The title row
 
@@ -439,6 +443,27 @@ impl Client {
             .children(self.symbol("rectangle.3.group", 28., 0x5a7266))
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child("Desk"))
             .child(div().text_color(rgb(DIM)).child("Every agent will be a card here."))
+    }
+
+    /// Whether the window shows the Server stopped notice in place of its grid: Stop Server ran
+    /// from the menu and Start Server has not since (ContentView's `model.serverStoppedByMenu`).
+    pub fn server_stopped_notice(&self) -> bool {
+        super::server::with(|s| s.stopped_by_menu).unwrap_or(false)
+    }
+
+    /// How many panes the grid drew at the last render.
+    pub fn grid_drawn_count(&self) -> usize {
+        self.grid_drawn.len()
+    }
+
+    /// What every window says while the server is stopped from the menu (ServerStoppedNotice).
+    pub(super) fn server_stopped_element(&self) -> gpui::Div {
+        let r = self.grid_area();
+        div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).flex().flex_col().items_center().justify_center().gap(px(8.))
+            .rounded(px(10.)).border_1().border_color(rgb(0x3d5247)).bg(rgb(0x121915))
+            .children(self.symbol("powersleep", 28., DIM))
+            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(SERVER_STOPPED_TITLE))
+            .child(div().text_color(rgb(DIM)).child(SERVER_STOPPED_HINT))
     }
 
     // MARK: The bottom row
