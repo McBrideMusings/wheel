@@ -953,14 +953,17 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "snapshot":
             let directory = value["directory"] as! String
             snapshotsPending = []
-            // The page as it is drawn now: waiting for the next screen update (the default) can wait
-            // forever in a window that is never on screen, when the page schedules no update.
-            let configuration = WKSnapshotConfiguration()
-            configuration.afterScreenUpdates = false
             for host in panes.values where !host.slot.isHidden {
-                if let web = host.web {
+                if let web = host.web, web.url == nil || web.url?.absoluteString == "about:blank" {
+                    // A view showing no page has nothing for WebKit to snapshot, and its snapshot can
+                    // go unanswered: AppKit draws it instead.
+                    if let rep = web.bitmapImageRepForCachingDisplay(in: web.bounds) {
+                        web.cacheDisplay(in: web.bounds, to: rep)
+                        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: "\(directory)/\(host.id)-web.png")) }
+                    }
+                } else if let web = host.web {
                     snapshotsPending.insert(host.id)
-                    web.takeSnapshot(with: configuration) { image, error in
+                    web.takeSnapshot(with: nil) { image, error in
                         _ = self.png(image, "\(directory)/\(host.id)-web.png")
                         if let error { self.errors.append(error.localizedDescription) }
                         self.snapshotsPending.remove(host.id)
