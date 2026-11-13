@@ -181,6 +181,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         approvals: HashMap::new(),
         changes: HashMap::new(),
         streamed: HashSet::new(),
+        commands: Vec::new(),
         wrote_text: false,
         pad_text: false,
         usage: None,
@@ -262,6 +263,9 @@ struct Driver {
     changes: HashMap<String, Vec<String>>,
     /// Items whose text arrived as deltas, so their whole copy is not sent again.
     streamed: HashSet<String>,
+    /// The commands running now, each a background task in the footer while its item is in
+    /// progress; its output arrives as deltas.
+    commands: Vec<wheel_proto::BackgroundTask>,
     /// The turn has already shown some reply text, so the next message starts a new paragraph.
     wrote_text: bool,
     /// The next reply text opens with a paragraph break.
@@ -719,6 +723,15 @@ impl Driver {
                 }
             }
             "item/started" => self.item_started(&params["item"]),
+            "item/commandExecution/outputDelta" => {
+                if let (Some(id), Some(delta)) = (params["itemId"].as_str(), params["delta"].as_str()) {
+                    if self.commands.iter().any(|c| c.id == id) {
+                        self.emit(DriverEvent::TaskOutput { id: id.to_string(), chunk: delta.to_string() });
+                    } else {
+                        tracing::debug!(pid = self.pid, item = id, "output for a command not running; dropped");
+                    }
+                }
+            }
             "item/completed" => self.item_completed(&params["item"]),
             "item/agentMessage/delta" => {
                 if let (Some(id), Some(delta)) =
@@ -813,8 +826,41 @@ impl Driver {
                 if let Some(call) = tool_call(item) {
                     self.transcript(call);
                 }
+                if item["type"] == "commandExecution" {
+                    self.command_started(item);
+                }
             }
             _ => {}
+        }
+    }
+
+    /// A command item in progress is a running task, named by its command, until it completes.
+    fn command_started(&mut self, item: &Value) {
+        let Some(id) = item["id"].as_str() else { return };
+        let command = item["command"].as_str().unwrap_or_default().to_string();
+        let started_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        tracing::info!(pid = self.pid, task = id, "background task started");
+        self.commands.push(wheel_proto::BackgroundTask {
+            id: id.to_string(),
+            kind: wheel_proto::TaskKind::Shell,
+            name: command.clone(),
+            command: Some(command),
+            call: Some(id.to_string()),
+            started_ms,
+            ..Default::default()
+        });
+        self.emit(DriverEvent::Tasks(self.commands.clone()));
+    }
+
+    fn command_ended(&mut self, id: &str) {
+        let before = self.commands.len();
+        self.commands.retain(|c| c.id != id);
+        if self.commands.len() != before {
+            tracing::info!(pid = self.pid, task = id, "background task ended");
+            self.emit(DriverEvent::Tasks(self.commands.clone()));
         }
     }
 
@@ -842,6 +888,9 @@ impl Driver {
                 if let Some(update) = tool_update(item) {
                     self.transcript(update);
                 }
+                if item["type"] == "commandExecution" {
+                    self.command_ended(id);
+                }
             }
             _ => {}
         }
@@ -851,6 +900,12 @@ impl Driver {
         self.in_turn = false;
         self.turn = None;
         self.streamed.clear();
+        // A command whose item never completed (an interrupted turn) is not running any more.
+        if !self.commands.is_empty() {
+            tracing::info!(pid = self.pid, left = self.commands.len(), "turn ended with commands still listed; cleared");
+            self.commands.clear();
+            self.emit(DriverEvent::Tasks(Vec::new()));
+        }
         // Nothing asked during the turn can still be answered.
         self.approvals.clear();
         if let Some(context) = self.usage.take() {

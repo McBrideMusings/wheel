@@ -159,7 +159,8 @@ final class DebugServer {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
              ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"), ("POST", "/agent/message"),
-             ("POST", "/agent/attach"), ("POST", "/agent/pasteboard"), ("POST", "/agent/paste"), ("POST", "/agent/read-aloud"):
+             ("POST", "/agent/attach"), ("POST", "/agent/pasteboard"), ("POST", "/agent/paste"), ("POST", "/agent/read-aloud"),
+             ("POST", "/agent/task"):
             guard let agent = query["agent"], let chat = model.chats[agent] else {
                 return refuse("404 Not Found", "no agent pane shows that agent")
             }
@@ -284,6 +285,24 @@ final class DebugServer {
             case "/agent/notice/dismiss":
                 Log.info("debug: notice dismiss over \(agent)")
                 model.dismissNotice(chat)
+            case "/agent/task":
+                // Drive the running-task strip as a click does: `action` expand (toggles a row
+                // open), full (opens the full view on the task), close (closes it), reveal (Show in
+                // Transcript).
+                guard let task = query["task"], let found = chat.footer?.tasks.first(where: { $0.id == task }) else {
+                    return refuse("404 Not Found", "no running task with that id")
+                }
+                Log.info("debug: task \(task) \(query["action"] ?? "-") in \(agent)")
+                switch query["action"] {
+                case "expand":
+                    if chat.expandedTasks.contains(task) { chat.expandedTasks.remove(task) } else { chat.expandedTasks.insert(task) }
+                case "full": chat.fullTask = task
+                case "close": chat.fullTask = nil
+                case "reveal":
+                    chat.revealCall = found.call
+                    chat.fullTask = nil
+                default: return refuse("400 Bad Request", "action is expand, full, close or reveal")
+                }
             case "/agent/key":
                 // Press a scrolling key the way a keyboard does: a key event through the
                 // application's event path, so the transcript's key monitor sees it, delivered to
@@ -2256,7 +2275,20 @@ final class DebugServer {
                         return listing
                     } ?? NSNull()
                     o["context"] = contextJSON(chat?.context, pane: pane.id)
-                    o["footer"] = chat?.footer.map { ["shells": Int($0.shells), "agents": Int($0.agents), "background_text": $0.backgroundText as Any, "branch": $0.branch as Any] } ?? NSNull()
+                    o["footer"] = chat.map { chat in
+                        guard let footer = chat.footer else { return NSNull() as Any }
+                        let now = Date()
+                        let tasks: [[String: Any]] = footer.tasks.map { task in
+                            ["id": task.id, "kind": task.kind.rawValue, "name": task.name, "command": task.command as Any,
+                             "call": task.call as Any, "started_ms": task.startedMs, "elapsed": RunningTask.clock(task.elapsed(at: now)),
+                             "latest": task.latest, "tail": task.tail, "output_bytes": task.outputBytes,
+                             "quiet_secs": task.quiet(at: now).map { Int($0) } as Any, "output_error": task.outputError as Any,
+                             "expanded": chat.expandedTasks.contains(task.id),
+                             "output_read_bytes": chat.taskOutputs[task.id].map { $0.text.utf8.count } as Any]
+                        }
+                        return ["background_text": footer.backgroundText as Any, "branch": footer.branch as Any, "tasks": tasks,
+                                "full_task": chat.fullTask as Any] as Any
+                    } ?? NSNull()
                     o["request"] = model.perms.first { $0.agent == agent }?.id ?? NSNull()
                     o["config"] = chat.map { configJSON($0.config) } ?? NSNull()
                     o["transcript_redraws"] = chat.map { chat -> [String: Any] in

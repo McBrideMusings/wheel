@@ -90,7 +90,24 @@ public final class AgentChat: ObservableObject {
     @Published public var context: ContextUse?
     /// What the status line under the composer shows besides the context and controls; nil until
     /// the daemon has sent it.
-    @Published public var footer: AgentFooter?
+    @Published public var footer: AgentFooter? {
+        didSet {
+            // A task that ended takes its open row, full view and output with it.
+            let running = Set(footer?.tasks.map(\.id) ?? [])
+            expandedTasks.formIntersection(running)
+            if let shown = fullTask, !running.contains(shown) { fullTask = nil }
+            taskOutputs = taskOutputs.filter { running.contains($0.key) }
+        }
+    }
+    /// The running tasks whose strip row is open to its last lines.
+    @Published public var expandedTasks = Set<String>()
+    /// The running task the full view shows over the transcript; nil while it is closed.
+    @Published public var fullTask: String?
+    /// The output the full view last read for each task, with whether earlier output was left out.
+    @Published public var taskOutputs: [String: (text: String, truncated: Bool)] = [:]
+    /// A tool call whose transcript line to scroll to, set by "Show in transcript"; the transcript
+    /// clears it once it has scrolled.
+    @Published public var revealCall: String?
     /// The slash commands the agent accepts, by name; nil until it has listed them.
     @Published public var commands: Set<String>?
     /// What a composer's picker offers for `agent`: the commands the agent reported, each with the

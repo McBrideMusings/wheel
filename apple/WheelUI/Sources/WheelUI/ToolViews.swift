@@ -86,6 +86,7 @@ struct ToolLine: View {
                             .background(Color.orange.opacity(0.15), in: Capsule())
                     }
                     Elapsed(row: row)
+                    if let call = row.toolCall { RunningMark(chat: chat, calls: [call]) }
                     Chevron(open: expanded)
                 }
                 .contentShape(Rectangle())
@@ -153,6 +154,7 @@ struct ToolGroupView: View {
                         if total.added + total.removed > 0 { Counts(added: total.added, removed: total.removed) }
                     }
                     if !turn || running > 0 { GroupElapsed(rows: current) }
+                    RunningMark(chat: chat, calls: current.compactMap(\.toolCall))
                     Chevron(open: open)
                 }
                 .contentShape(Rectangle())

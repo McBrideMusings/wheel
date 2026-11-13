@@ -40,6 +40,7 @@ mod runner_feed;
 mod server;
 mod settings;
 mod settings_watch;
+mod task_output;
 mod skills;
 mod submit;
 mod title_buttons;

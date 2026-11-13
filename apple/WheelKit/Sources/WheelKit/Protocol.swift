@@ -133,6 +133,8 @@ public enum ClientMsg: Sendable, Equatable {
     /// than the reading interval. Replies `usage`.
     case usage(req: UInt64?, dueOnly: Bool)
     /// How remote clients reach this daemon. Replies `remote`.
+    /// Read a running background task's recent output; replies `taskOutput`.
+    case taskOutput(req: UInt64?, agent: String, task: String)
     case remoteInfo(req: UInt64?)
     /// Make a one-time pairing token; the daemon answers `pairing`. Local clients only.
     case pairingIssue(req: UInt64?)
@@ -347,6 +349,8 @@ public enum ClientMsg: Sendable, Equatable {
         case let .usage(req, dueOnly):
             o = ["op": "usage"]; put(req)
             if dueOnly { o["due_only"] = true }
+        case let .taskOutput(req, agent, task):
+            o = ["op": "task_output", "agent": agent, "task": task]; put(req)
         case let .remoteInfo(req):
             o = ["op": "remote_info"]; put(req)
         case let .pairingIssue(req):
@@ -1272,6 +1276,8 @@ public enum ServerMsg: Sendable {
     /// The usage board changed: a reading was taken or the agents, meters or labels settings were written;
     /// sent to every connection.
     case usageChanged(board: UsageBoard)
+    /// A background task's recent output, in reply to `taskOutput`: its last 256 KB, and whether earlier output was left out.
+    case taskOutput(req: UInt64, text: String, truncated: Bool)
     /// How remote clients reach the daemon, in reply to `remoteInfo`.
     case remote(req: UInt64, info: RemoteInfo)
     /// A one-time pairing token, in reply to `pairingIssue`; it stops working at `expiresMs`.
@@ -1373,7 +1379,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files
+        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1455,6 +1461,7 @@ extension ServerMsg: Decodable {
         case "title_buttons": self = .titleButtons(req: try c.decode(UInt64.self, forKey: .req), space: try c.decode(String.self, forKey: .space), buttons: try c.decode([TitleButtonInfo].self, forKey: .buttons))
         case "title_buttons_changed": self = .titleButtonsChanged(space: try c.decode(String.self, forKey: .space), buttons: try c.decode([TitleButtonInfo].self, forKey: .buttons))
         case "usage_changed": self = .usageChanged(board: try c.decode(UsageBoard.self, forKey: .board))
+        case "task_output": self = .taskOutput(req: try c.decode(UInt64.self, forKey: .req), text: try c.decode(String.self, forKey: .text), truncated: try c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false)
         case "remote":
             self = .remote(req: try c.decode(UInt64.self, forKey: .req), info: RemoteInfo(
                 listen: try c.decodeIfPresent(String.self, forKey: .listen),

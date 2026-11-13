@@ -602,13 +602,27 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         turn.out.send(json!({"type": "system", "subtype": "status", "status": null, "permissionMode": "plan", "session_id": turn.session}));
     }
     if text.contains("start background") {
+        // Shaped as Claude Code sends it: the call, the set, the start linking the two, the
+        // result naming the output file, and a subagent's progress. The command's output file
+        // holds three lines; a test appends more.
+        let dir = std::env::temp_dir().join(format!("wheel-fake-tasks-{}", turn.session));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("bash-1.output");
+        std::fs::write(&output, "line 1\nline 2\nline 3\n").unwrap();
+        turn.tool("bg-call-1", "Bash", json!({"command": "make deploy-client", "description": "Build the Release app", "run_in_background": true}));
+        turn.tool("bg-call-2", "Agent", json!({"prompt": "Find every caller of AgentFooter", "subagent_type": "Explore", "description": "find callers", "run_in_background": true}));
         let tasks = json!([
-            {"task_type": "local_bash"},
-            {"task_type": "local_agent"},
-            {"task_type": "local_agent"},
+            {"task_id": "bash-1", "task_type": "local_bash", "description": "Build the Release app"},
+            {"task_id": "agent-1", "task_type": "local_agent", "subagent_type": "Explore", "description": "find callers"},
+            {"task_id": "agent-2", "task_type": "local_agent", "subagent_type": "code-reviewer", "description": "review the diff"},
             {"task_type": "monitor", "ambient": true},
         ]);
         turn.out.send(json!({"type": "system", "subtype": "background_tasks_changed", "tasks": tasks, "session_id": turn.session}));
+        turn.out.send(json!({"type": "system", "subtype": "task_started", "task_id": "bash-1", "tool_use_id": "bg-call-1", "description": "Build the Release app", "task_type": "local_bash", "session_id": turn.session}));
+        turn.out.send(json!({"type": "system", "subtype": "task_started", "task_id": "agent-1", "tool_use_id": "bg-call-2", "description": "find callers", "task_type": "local_agent", "prompt": "Find every caller of AgentFooter", "session_id": turn.session}));
+        turn.tool_done("bg-call-1", &format!("Command running in background with ID: bash-1. Output is being written to: {}. You will be notified when it completes.", output.display()));
+        turn.tool_done("bg-call-2", "Async agent launched successfully.");
+        turn.out.send(json!({"type": "system", "subtype": "task_progress", "task_id": "agent-1", "tool_use_id": "bg-call-2", "usage": {"total_tokens": 26666, "tool_uses": 2, "duration_ms": 12063}, "last_tool_name": "Bash", "session_id": turn.session}));
     }
     if text.contains("end background") {
         turn.out.send(json!({"type": "system", "subtype": "background_tasks_changed", "tasks": [], "session_id": turn.session}));
