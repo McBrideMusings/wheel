@@ -197,12 +197,15 @@ impl MenuBar {
             }
             Event::Down(reason) => {
                 (self.link, self.down_reason, self.incompatible) = (LinkKind::Unreachable, Some(reason), false);
+                // The reply to a code asked on the lost connection never comes.
+                self.copying = None;
                 server::link(false);
                 self.up = false;
                 true
             }
             Event::Incompatible { server: protocol, .. } => {
                 (self.link, self.down_reason, self.incompatible, self.protocol) = (LinkKind::Connected, None, true, Some(protocol));
+                self.copying = None;
                 server::link(true);
                 self.up = false;
                 true
@@ -293,6 +296,11 @@ impl MenuBar {
     fn copy_pairing_code(&mut self, cx: &mut Context<Self>) {
         if !self.up || crate::pairing::Pairing::disabled_reason(self.pairing_link(), &self.pairing_devices(cx)).is_some() {
             return;
+        }
+        // A second press while a code is on its way is the same copy: the one reply copies once
+        // (copyPending in AppModel.copyPairingCode).
+        if self.copying.is_some() {
+            return self.log("popover: pairing copy already in flight; second press ignored".into());
         }
         self.next_req += 1;
         self.copying = Some(self.next_req);
