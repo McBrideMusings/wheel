@@ -150,7 +150,7 @@ mod tests {
         Session { id: id.into(), name: id.to_uppercase(), spaces: spaces.iter().map(|s| s.to_string()).collect() }
     }
     fn window(id: &str, session: &str, active: &str) -> Record {
-        Record { id: id.into(), name: None, session: Some(session.into()), active: Some(active.into()), sidebar: true }
+        Record { id: id.into(), name: None, session: Some(session.into()), active: Some(active.into()), sidebar: true, pinned: false }
     }
 
     #[test]

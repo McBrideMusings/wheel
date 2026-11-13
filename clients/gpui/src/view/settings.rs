@@ -695,7 +695,7 @@ impl Client {
         let form = self.settings_form(Layer::Global, topic, cx);
         let content = self.content(Layer::Global, form, cx);
         // The pane header is this client's own drawing, so its box shows whether or not wheeld answers.
-        if topic == Topic::General { div().flex().flex_col().gap_4().child(self.pane_header_box(cx)).child(content) } else { content }
+        if topic == Topic::General { div().flex().flex_col().gap_4().child(self.windows_box(cx)).child(self.pane_header_box(cx)).child(content) } else { content }
     }
 
     /// Settings › General › Pane header (PaneHeaderSettings): a kind picker, Reset, and for each
@@ -962,6 +962,16 @@ impl Client {
             rows = rows.child(div().p_3().text_xs().text_color(rgb(DIM)).child("wheeld has not listed its usage agents yet."));
         }
         titled("Usage agents", boxed(rows))
+    }
+
+    /// Settings › General: Restore windows at launch (WindowsSettings), this Mac's own preference,
+    /// kept with the saved windows (saved.rs).
+    fn windows_box(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let on = crate::saved::restores();
+        div().flex().flex_col().gap_1()
+            .child(div().id("restore-windows").flex().items_center().gap_2().cursor_pointer().child(checkbox(on)).child("Restore windows at launch")
+                .on_mouse_down(MouseButton::Left, click(cx, move |_| crate::saved::set_restores(!on))))
+            .child(div().text_xs().text_color(rgb(DIM)).child("On, Wheel reopens the windows as you left them. Off, it opens one window holding every space."))
     }
 
     /// What the strip prints beside each login's bars (`usage.labels`).

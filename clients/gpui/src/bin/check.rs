@@ -223,7 +223,11 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
     let mut connection = Connection::open(endpoint.clone());
-    let window = cx.update(|app| wheel_gpui::create_window(app, &bridge, connection.send.clone(), endpoint, None, std::env::var("WHEEL_CLIENT_SPACE").ok(), true, wheel_gpui::Opening::Main))?;
+    // The windows are saved as the app saves them (saved.rs), to a file of the check's own.
+    let saved_file = output.join("saved-windows.json");
+    let _ = std::fs::remove_file(&saved_file);
+    cx.update(|app| wheel_gpui::saved::start(app, Some(saved_file.clone()), true));
+    let window = cx.update(|app| wheel_gpui::create_window(app, &bridge, connection.send.clone(), endpoint, None, std::env::var("WHEEL_CLIENT_SPACE").ok(), true, wheel_gpui::Opening::Main, None))?;
     let native = window.update(cx, |c, _, _| c.native())?;
     let markers: Value = serde_json::from_str(&std::env::var("WHEEL_CLIENT_MARKERS")?)?;
     let mut layouts = 0usize;
@@ -2124,6 +2128,30 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     ensure!(f1.len() == 4 && f2.len() == 4 && f2[0] >= f1[0] + f1[2] + 150., "window 2 did not move beside window 1: {f1:?} {f2:?}");
+    // Windows restored at launch (wheel-ynjo.7.5.3; AppModel.openLaunchWindows, WindowManager's
+    // saved frames): the file names both windows with their sessions and frames; opening what it
+    // saved, as launch does, opens two windows there; with the setting off, one.
+    // Launch drops a frame whose centre is on no screen, and beside window 1 window 2 may be off
+    // this machine's screen: for the restore it moves to a place on screen, then back.
+    native2.call(json!({"op":"move_window","point":[f64::from(f1[0] + 160.), f64::from(f1[1] + 90.)]}));
+    let mut f2_on = vec![];
+    for _ in 0..20 {
+        tick(cx, 100).await;
+        f2_on = frame_of(&native2);
+        if f2_on.len() == 4 && (f2_on[0] - (f1[0] + 160.)).abs() <= 1. {
+            break;
+        }
+    }
+    ensure!(f2_on.len() == 4 && (f2_on[0] - (f1[0] + 160.)).abs() <= 1., "window 2 did not move onto the screen for the restore: {f2_on:?}");
+    let restore = restore_check(&saved_file, (&f1, &f2_on), (&first_session, &second_session), (window, second), first_space.as_deref(), cx).await?;
+    native2.call(json!({"op":"move_window","point":[f64::from(f2[0]), f64::from(f2[1])]}));
+    for _ in 0..20 {
+        tick(cx, 100).await;
+        if frame_of(&native2).first().is_some_and(|x| (x - f2[0]).abs() <= 1.) {
+            break;
+        }
+    }
+    ensure!(frame_of(&native2).first().is_some_and(|x| (x - f2[0]).abs() <= 1.), "window 2 did not move back beside window 1: {:?}", frame_of(&native2));
     let drag_dir = std::env::temp_dir().join(format!("wheel-gpui-space-drag-{}", std::process::id()));
     std::fs::create_dir_all(&drag_dir)?;
     let (ok, out, err) = run_pumped(&["space", "new", &drag_dir.to_string_lossy(), "--name", "dragged"], &mut connection, &mut layouts, window, cx).await?;
@@ -2314,7 +2342,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(gone, "wheeld still lists the closed window {id2}: {:?}", reported_views()?);
     ensure!(reported_views()?.iter().any(|w| w.0 == id1), "closing the second window dropped the first's view");
     ensure!(native.status()["panes"].as_object().is_some_and(|p| native_panes.iter().all(|(id, _)| p.contains_key(id))), "the first window lost its views");
-    let sessions_windows = json!({"space_drags": space_drags, "first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
+    let sessions_windows = json!({"restore": restore, "space_drags": space_drags, "first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
         "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
     // `wheel window` and the window menus (wheel-ynjo.7.2; AppModel+Windows.swift): this app
     // offers to run window commands; wheeld forwards each to the newest window that offered, which
@@ -4144,7 +4172,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let proxy = OlderProxy::start(&format!("{}?token={}", default_url(), std::fs::read_to_string(default_token_file())?.trim()), PROTOCOL - 1)?;
     let older = Endpoint::new(&proxy.url, &default_token_file())?;
     let mut older_connection = Connection::open(older.clone());
-    let older_window = cx.update(|app| wheel_gpui::create_window(app, &bridge, older_connection.send.clone(), older, None, None, true, wheel_gpui::Opening::Main))?;
+    let older_window = cx.update(|app| wheel_gpui::create_window(app, &bridge, older_connection.send.clone(), older, None, None, true, wheel_gpui::Opening::Main, None))?;
     let mut older_layouts = 0usize;
     let mut older_link = Link::Connecting;
     for _ in 0..100 {
@@ -4337,6 +4365,92 @@ fn app_menu_bar(bridge: &std::rc::Rc<Bridge>, cx: &mut AsyncApp) -> Result<gpui:
 /// The menu bar item (wheel-ynjo.7.4.1): its own connection lists every session's spaces, it
 /// counts a fixture permission where it waits, its popover draws the cards, New Window opens a
 /// window, and closing every window leaves the app running with the item.
+#[allow(clippy::type_complexity)]
+async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), sessions: (&Option<String>, &String), handles: (gpui::WindowHandle<Client>, gpui::WindowHandle<Client>), little_space: Option<&str>, cx: &mut AsyncApp) -> Result<Value> {
+    use wheel_gpui::saved::Saved;
+    let file = file.to_path_buf();
+    // A little window on window 1's space, saved and restored with the two main windows.
+    let little_space = little_space.ok_or_else(|| anyhow::anyhow!("window 1 shows no space"))?.to_owned();
+    let little_id = cx.update(|app| handles.0.update(app, |c, _, cx| c.open_little(&little_space, cx)))?.ok_or_else(|| anyhow::anyhow!("no little window opened on {little_space}"))?;
+    let little = wheel_gpui::window_handle(&little_id).ok_or_else(|| anyhow::anyhow!("no handle for little window {little_id}"))?;
+    let near = |a: &[f32], b: &[f32]| a.len() == 4 && b.len() == 4 && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.);
+    let names = |s: &Saved, session: Option<&str>, frame: &[f32]| s.windows.iter().any(|w| w.session.as_deref() == session && w.frame.is_some_and(|f| near(&f, frame)));
+    let mut saved = Saved::load(Some(&file));
+    for _ in 0..40 {
+        if saved.windows.len() == 2 && names(&saved, sessions.0.as_deref(), frames.0) && names(&saved, Some(sessions.1), frames.1) && saved.littles.iter().any(|l| l.space == little_space && l.frame.is_some()) {
+            break;
+        }
+        tick(cx, 100).await;
+        saved = Saved::load(Some(&file));
+    }
+    ensure!(saved.restore && saved.windows.len() == 2 && names(&saved, sessions.0.as_deref(), frames.0) && names(&saved, Some(sessions.1), frames.1),
+        "the saved windows do not name both windows at {frames:?} on {sessions:?}: {saved:?}");
+    let little_saved = saved.littles.iter().find(|l| l.space == little_space).cloned().ok_or_else(|| anyhow::anyhow!("the saved windows hold no little window on {little_space}: {saved:?}"))?;
+    ensure!(little_saved.frame.is_some(), "the little window was saved with no frame: {little_saved:?}");
+    let (bridge, endpoint, hidden) = handles.0.update(cx, |c, _, _| c.opener())?;
+    // Every handle `open_saved` returned, measured until each shows its session at its frame.
+    async fn settle(opened: &[gpui::WindowHandle<Client>], want: &[(Option<String>, Option<String>, Option<Vec<f32>>)], cx: &mut AsyncApp) -> Result<Vec<Value>> {
+        let near = |a: &[f32], b: &[f32]| a.len() == 4 && b.len() == 4 && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.);
+        let mut seen = vec![];
+        for _ in 0..80 {
+            seen.clear();
+            let mut all = true;
+            for (handle, (session, want_space, frame)) in opened.iter().zip(want) {
+                draw(*handle, None, cx)?;
+                let native = handle.update(cx, |c, _, _| c.native())?;
+                let at: Vec<f32> = native.call(json!({"op": "frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default();
+                let (on, space) = shown(*handle, cx)?;
+                all &= session.as_ref().is_none_or(|s| on.as_ref() == Some(s)) && want_space.as_ref().is_none_or(|s| space.as_ref() == Some(s)) && frame.as_ref().is_none_or(|f| near(f, &at));
+                seen.push(json!({"session": on, "space": space, "frame": at}));
+            }
+            if all {
+                return Ok(seen);
+            }
+            tick(cx, 100).await;
+        }
+        anyhow::bail!("the reopened windows never settled: want {want:?}, saw {seen:?}")
+    }
+    let close_all = |opened: &[gpui::WindowHandle<Client>], cx: &mut AsyncApp| -> Result<()> {
+        for handle in opened {
+            handle.update(cx, |_, w, _| w.remove_window())?;
+        }
+        Ok(())
+    };
+    let plan = saved.launch_plan();
+    let opened = cx.update(|app| wheel_gpui::open_saved(app, &bridge, endpoint.clone(), None, hidden, &saved))?;
+    ensure!(opened.len() == 3, "opening the saved windows opened {} window(s), not 2 and a little one", opened.len());
+    // What each reopened window must show, from the frames this check measured, not from the plan.
+    let want: Vec<(Option<String>, Option<String>, Option<Vec<f32>>)> = plan.iter().map(|l| match l {
+        wheel_gpui::saved::Launch::Main(w) => {
+            let frame = if w.session.as_deref() == Some(sessions.1.as_str()) { frames.1 } else { frames.0 };
+            (w.session.clone(), None, Some(frame.to_vec()))
+        }
+        wheel_gpui::saved::Launch::Little(l) => (None, Some(l.space.clone()), little_saved.frame.map(|f| f.to_vec())),
+    }).collect();
+    let reopened = settle(&opened, &want, cx).await?;
+    close_all(&opened, cx)?;
+    // Off: the file says so, and the same launch opens one window on the focused window's session.
+    cx.update(|_| wheel_gpui::saved::set_restores(false));
+    let off = Saved::load(Some(&file));
+    ensure!(!off.restore, "turning Restore windows at launch off left the file at {off:?}");
+    let focused_session = off.windows.iter().find(|w| w.focused).and_then(|w| w.session.clone());
+    let one = cx.update(|app| wheel_gpui::open_saved(app, &bridge, endpoint, None, hidden, &off))?;
+    ensure!(one.len() == 1, "with the setting off, launch opened {} windows", one.len());
+    let collapsed = settle(&one, &[(focused_session.clone(), None, None)], cx).await?;
+    close_all(&one, cx)?;
+    close_all(&[little], cx)?;
+    cx.update(|_| wheel_gpui::saved::set_restores(true));
+    for _ in 0..10 {
+        tick(cx, 100).await;
+    }
+    let after = Saved::load(Some(&file));
+    ensure!(after.restore && after.windows.len() == 2 && after.littles.is_empty(), "after closing the reopened windows the file holds {after:?}");
+    Ok(json!({
+        "saved": saved.windows.iter().map(|w| json!({"session": w.session, "active": w.active, "frame": w.frame, "focused": w.focused})).collect::<Vec<_>>(),
+        "saved_little": {"space": little_saved.space, "frame": little_saved.frame},
+        "reopened": reopened, "off": {"restore": off.restore, "focused_session": focused_session, "opened": collapsed}, "file_after": after.windows.len(),
+    }))
+}
 async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, output: &std::path::Path, cx: &mut AsyncApp) -> Result<Value> {
     let menu = app_menu_bar(bridge, cx)?;
     let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
