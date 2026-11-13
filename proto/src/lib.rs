@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -576,6 +576,14 @@ pub enum ClientMsg {
         /// now. A client that refreshes on a timer sets this; a refresh button leaves it off.
         #[serde(default)]
         due_only: bool,
+    },
+    /// Read the output a running background task of `agent` has written so far, its last 256 KB,
+    /// and reply `task_output`. `task` is the task's id in the agent's footer.
+    TaskOutput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        agent: String,
+        task: String,
     },
     /// Ask how remote clients reach this daemon. Replies `remote`.
     RemoteInfo {
@@ -1971,6 +1979,13 @@ pub enum ServerMsg {
         req: u64,
         board: UsageBoard,
     },
+    /// A background task's output, in reply to `task_output`: its last 256 KB as text, and
+    /// whether earlier output was left out.
+    TaskOutput {
+        req: u64,
+        text: String,
+        truncated: bool,
+    },
     /// How remote clients reach this daemon, in reply to `remote_info`. `listen` is the
     /// `remote.listen` setting the daemon started with, None when remote access is off (the other
     /// fields are then empty, and so are they when `problem` says the listener did not start). `addresses` are the machine's interface addresses and hostname, any
@@ -2581,6 +2596,7 @@ impl ServerMsg {
             | ServerMsg::StreamStarted { req, .. }
             | ServerMsg::StreamLines { req, .. }
             | ServerMsg::Usage { req, .. }
+            | ServerMsg::TaskOutput { req, .. }
             | ServerMsg::Remote { req, .. }
             | ServerMsg::Pairing { req, .. }
             | ServerMsg::WindowReply { req, .. }
@@ -3535,12 +3551,61 @@ pub struct AgentFooter {
     pub added: u32,
     #[serde(default)]
     pub removed: u32,
-    /// Background commands running.
+    /// The running background tasks, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<BackgroundTask>,
+}
+
+/// One background task an agent has running, with only what the agent's own events say about it:
+/// Claude Code's `background_tasks_changed`, `task_started`, `task_progress` and the tool call
+/// that started it; Codex's in-progress `commandExecution` items and their output deltas.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackgroundTask {
+    /// The agent's id for the task (Claude Code's `task_id`, Codex's item id).
+    pub id: String,
+    pub kind: TaskKind,
+    /// The agent's one-line description of it; for Codex, the command.
+    pub name: String,
+    /// The command a shell runs, or the brief an agent was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// The transcript tool call that started it, so a client can mark that row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
+    /// When wheeld first heard of it, unix ms.
+    pub started_ms: u64,
+    /// The file the agent writes the task's output to, when it names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
+    /// The last lines of output, at most eight, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail: Vec<String>,
+    /// Bytes of output so far.
     #[serde(default)]
-    pub shells: u32,
-    /// Background subagents running.
-    #[serde(default)]
-    pub agents: u32,
+    pub output_bytes: u64,
+    /// Why the output file named for the task could not be read, or that none was named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_error: Option<String>,
+    /// When output last grew, unix ms; none before any output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_output_ms: Option<u64>,
+    /// A subagent's progress as the agent reports it: tool calls made, the last tool's name and
+    /// tokens used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_uses: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+}
+
+/// What a background task is: a command, or a subagent.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Shell,
+    Agent,
 }
 
 /// How full an agent's context window is, as the agent last reported it: tokens in the

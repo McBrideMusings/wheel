@@ -25,11 +25,12 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{
-    AgentFooter, AgentPermissions, ConfigKind, ConfigOption, ContextUse, ConversationInfo, ServerMsg,
+    AgentFooter, AgentPermissions, BackgroundTask, ConfigKind, ConfigOption, ContextUse, ConversationInfo, ServerMsg,
     AgentEvent, AgentState, StampedEvent, ToolContent,
 };
 
 use crate::driver::{self, DriverHandle, DriverEvent, DriverInput, Conversation, Launch};
+use crate::task_output::TaskOutputs;
 use crate::checkout;
 use crate::claude::{self, History};
 use crate::perms::Perms;
@@ -195,6 +196,12 @@ pub struct Agent {
     stopped: AtomicBool,
     /// The pid of the agent process now running, 0 before the first one starts.
     agent_pid: AtomicU32,
+    /// The background tasks as the driver last named them, before their output fills them.
+    tasks: Mutex<Vec<BackgroundTask>>,
+    /// The running tasks' output: watched files and streamed text.
+    outputs: Mutex<TaskOutputs>,
+    /// Says a task's output changed; the footer is sent again at most once a second.
+    output_ping: mpsc::UnboundedSender<()>,
     /// The agent's id for this conversation, once it has one.
     conversation_id: Mutex<Option<String>>,
     /// Set until the first agent process decides whether a restored agent resumes.
@@ -333,6 +340,7 @@ impl Agent {
     ) -> Arc<Agent> {
         let (cmds, mut cmd_rx) = mpsc::unbounded_channel();
         let (tx, _) = broadcast::channel(4096);
+        let (output_ping, output_pings) = mpsc::unbounded_channel();
         let agent = Arc::new(Agent {
             name,
             inner: Mutex::new(Inner {
@@ -362,6 +370,9 @@ impl Agent {
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
             agent_pid: AtomicU32::new(0),
+            tasks: Mutex::new(Vec::new()),
+            outputs: Mutex::new(TaskOutputs::default()),
+            output_ping: output_ping.clone(),
             conversation_id: Mutex::new(config.conversation.clone()),
             restored: AtomicBool::new(config.restored || config.fork.is_some()),
             fork: Mutex::new(config.fork.clone()),
@@ -376,6 +387,7 @@ impl Agent {
             model: config.model.clone(),
             permissions: Mutex::new(config.permissions.clone()),
         });
+        agent.pump_task_output(output_pings);
         let run = agent.clone();
         let pane = pane.unwrap_or_else(|| "-".into());
         let runner = tokio::spawn(async move {
@@ -399,6 +411,8 @@ impl Agent {
                     .await;
                 perms.drop_agent(&name);
                 run.end_merged(&mut merged, "cancelled");
+                // Background tasks die with the process that ran them.
+                run.set_tasks(Vec::new());
                 // A turn the agent was on when it stopped never ends; it is not running any more.
                 {
                     let mut inner = run.inner.lock().unwrap();
@@ -951,8 +965,7 @@ impl Agent {
 
     /// How many background tasks the agent has running.
     pub fn background(&self) -> u32 {
-        let footer = &self.inner.lock().unwrap().footer;
-        footer.shells + footer.agents
+        self.tasks.lock().unwrap().len() as u32
     }
 
     /// What the status line under the composer shows besides the context and controls.
@@ -976,16 +989,75 @@ impl Agent {
         });
     }
 
-    /// Record the agent's background tasks.
-    fn set_background(&self, shells: u32, agents: u32) {
-        let now = self.footer();
-        if (now.shells, now.agents) != (shells, agents) {
-            tracing::info!(agent = %self.name, shells, agents, "background tasks");
-        }
-        self.update_footer(|footer| {
-            footer.shells = shells;
-            footer.agents = agents;
+    /// Record the agent's background tasks, watch the files they write their output to, and tell
+    /// every client. True when a task joined or ended.
+    fn set_tasks(self: &Arc<Self>, tasks: Vec<BackgroundTask>) -> bool {
+        let ids = |list: &[BackgroundTask]| list.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        let joined_or_ended = {
+            let mut held = self.tasks.lock().unwrap();
+            let changed = ids(&held) != ids(&tasks);
+            if changed {
+                let shells = tasks.iter().filter(|t| t.kind == wheel_proto::TaskKind::Shell).count();
+                tracing::info!(agent = %self.name, shells, agents = tasks.len() - shells, ids = ?ids(&tasks), "background tasks");
+            }
+            *held = tasks.clone();
+            changed
+        };
+        let ping = self.output_ping.clone();
+        self.outputs.lock().unwrap().sync(&tasks, move || {
+            let _ = ping.send(());
         });
+        let agent = self.clone();
+        tokio::task::spawn_blocking(move || agent.publish_tasks());
+        joined_or_ended
+    }
+
+    /// Take output the agent streamed for a running task; the footer follows within a second.
+    /// Output that arrives after its task ended is dropped.
+    fn take_task_output(&self, id: &str, chunk: &str) {
+        if !self.tasks.lock().unwrap().iter().any(|t| t.id == id) {
+            return;
+        }
+        self.outputs.lock().unwrap().append(id, chunk);
+        let _ = self.output_ping.send(());
+    }
+
+    /// Send the footer with each task's output read again. It reads files, so it runs on a
+    /// blocking thread. The task list stays locked until the footer is sent, so a publish that
+    /// read an older list can never overwrite the footer of a newer one.
+    fn publish_tasks(&self) {
+        let held = self.tasks.lock().unwrap();
+        let mut tasks = held.clone();
+        self.outputs.lock().unwrap().fill(&mut tasks);
+        self.update_footer(|footer| footer.tasks = tasks);
+        drop(held);
+    }
+
+    /// Send the footer again whenever a task's output changes, at most once a second: a build
+    /// writing thousands of lines a second sends one update a second, each with the latest lines.
+    fn pump_task_output(self: &Arc<Self>, mut pings: mpsc::UnboundedReceiver<()>) {
+        let agent = Arc::downgrade(self);
+        tokio::spawn(async move {
+            while pings.recv().await.is_some() {
+                while pings.try_recv().is_ok() {}
+                let Some(live) = agent.upgrade() else { break };
+                let _ = tokio::task::spawn_blocking(move || live.publish_tasks()).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    }
+
+    /// The recent output of the running task `task`: its last 256 KB, and whether earlier output
+    /// was left out.
+    pub fn task_output(&self, task: &str) -> Result<(String, bool), String> {
+        let found = self.tasks.lock().unwrap().iter().find(|t| t.id == task).cloned();
+        let task = found.ok_or_else(|| format!("no running background task {task}"))?;
+        let read = self.outputs.lock().unwrap().read(&task);
+        match &read {
+            Ok((text, truncated)) => tracing::info!(agent = %self.name, task = %task.id, bytes = text.len(), truncated, "task output read"),
+            Err(e) => tracing::warn!(agent = %self.name, task = %task.id, error = %e, "task output read failed"),
+        }
+        read
     }
 
     /// Read the branch and changes of the directory the agent works in, in a task of its own: the
@@ -1581,8 +1653,6 @@ impl Agent {
         tracing::info!(agent = %self.name, conversation = %conversation.id(), start_ms, "agent ready");
         self.ready_this_run.store(true, Ordering::SeqCst);
         self.settle(Ok(()));
-        // A new process has no background tasks, whatever the last one had.
-        self.set_background(0, 0);
         self.set_state(idle(queue.len() + steered.len()));
         self.refresh_git();
 
@@ -1725,9 +1795,10 @@ impl Agent {
                     Some(Cmd::Switch { load, reply }) => {
                         match self.switch(config, load).await {
                             Ok((next, id)) => {
-                                // The process left behind is killed as it drops; the conversation
-                                // it was in stays in the store.
+                                // The process left behind is killed as it drops, with its
+                                // background tasks; the conversation it was in stays in the store.
                                 agent = next;
+                                self.set_tasks(Vec::new());
                                 let _ = reply.send(Ok(id));
                             }
                             Err(e) => {
@@ -1760,10 +1831,13 @@ impl Agent {
                     // Folded into the `mode` option so a client has one place to read the mode
                     // from.
                     Some(DriverEvent::Mode(mode)) => self.set_current_mode(&mode),
-                    Some(DriverEvent::Background { shells, agents }) => {
-                        self.set_background(shells, agents);
-                        self.refresh_git();
+                    // A task joining or ending may have changed files; its progress did not.
+                    Some(DriverEvent::Tasks(tasks)) => {
+                        if self.set_tasks(tasks) {
+                            self.refresh_git();
+                        }
                     }
+                    Some(DriverEvent::TaskOutput { id, chunk }) => self.take_task_output(&id, &chunk),
                     Some(DriverEvent::Commands(commands)) => self.set_commands(commands),
                     // The agent wrote nothing for the new conversation yet, so its id is not
                     // saved until a prompt reaches it, and the old transcript goes.
@@ -2145,6 +2219,7 @@ mod tests {
     /// An agent with no runner: `send` queues into a channel nobody reads.
     fn idle_agent() -> (Agent, mpsc::UnboundedReceiver<Cmd>) {
         let (cmds, cmd_rx) = mpsc::unbounded_channel();
+        let (output_ping, _) = mpsc::unbounded_channel();
         let agent = Agent {
             name: "w1".into(),
             inner: Mutex::new(Inner {
@@ -2171,6 +2246,9 @@ mod tests {
             runner: Mutex::new(None),
             stopped: AtomicBool::new(false),
             agent_pid: AtomicU32::new(0),
+            tasks: Mutex::new(Vec::new()),
+            outputs: Mutex::new(TaskOutputs::default()),
+            output_ping: output_ping.clone(),
             conversation_id: Mutex::new(None),
             restored: AtomicBool::new(false),
             fork: Mutex::new(None),

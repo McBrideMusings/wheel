@@ -166,6 +166,17 @@ public struct TranscriptView: View {
                 }
             }
             .onChange(of: items.count) { follow(proxy, items) }
+            .onChange(of: chat.revealCall) {
+                guard let call = chat.revealCall else { return }
+                chat.revealCall = nil
+                guard let item = chat.item(holdingCall: call) else {
+                    UILog.info("transcript \(chat.name): no line holds call \(call)")
+                    return
+                }
+                UILog.info("transcript \(chat.name): shows call \(call), item \(item)")
+                chat.pinned = false
+                withAnimation { proxy.scrollTo(item, anchor: .center) }
+            }
             .onChange(of: chat.endRequest) {
                 if !chat.pinned {
                     UILog.info("transcript \(chat.name): follows the end (the End key)")

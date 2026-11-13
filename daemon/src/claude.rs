@@ -269,6 +269,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         streamed: HashMap::new(),
         streaming: None,
         calls: Calls::default(),
+        background: Background::default(),
         last_usage: None,
         reset_from: None,
         steered: HashMap::new(),
@@ -384,6 +385,9 @@ struct Driver {
     streaming: Option<String>,
     /// The conversation's tool calls, for their results.
     calls: Calls,
+    /// The background tasks running now, from Claude Code's task events and the calls that
+    /// started them.
+    background: Background,
     /// The model and the tokens of the last top-level request: the conversation as the model saw it.
     last_usage: Option<(String, u64)>,
     /// A `/clear` has started a new conversation, whose id is not known yet: the session id the
@@ -618,6 +622,10 @@ impl Driver {
                 for event in tool_results(&message["message"]["content"], &self.calls) {
                     self.emit(DriverEvent::Transcript(event));
                 }
+                if self.background.results(&message["message"]["content"], self.pid) {
+                    let tasks = self.background.list();
+                    self.emit(DriverEvent::Tasks(tasks));
+                }
             }
             Some("system") => self.system(&message),
             Some("result") => self.result(&message),
@@ -680,6 +688,10 @@ impl Driver {
         }
         let id = message["id"].as_str();
         for block in message["content"].as_array().into_iter().flatten() {
+            if self.background.call(block) {
+                let tasks = self.background.list();
+                self.emit(DriverEvent::Tasks(tasks));
+            }
             let kind = block["type"].as_str();
             if let Some(streamed) = id.and_then(|id| self.streamed.get_mut(id)) {
                 if let Some(kind @ ("text" | "thinking")) = kind {
@@ -766,14 +778,15 @@ impl Driver {
             // The level signal: the whole set of live background tasks, sent whenever it changes.
             // An ambient task (one that is always there, such as a monitor) is not work.
             Some("background_tasks_changed") => {
-                let live: Vec<&Value> = message["tasks"]
-                    .as_array()
-                    .map(|tasks| tasks.iter().filter(|t| t["ambient"] != true).collect())
-                    .unwrap_or_default();
-                let agents = live.iter().filter(|t| t["task_type"] == "local_agent").count() as u32;
-                let shells = live.len() as u32 - agents;
-                tracing::info!(pid = self.pid, shells, agents, "background tasks changed");
-                self.emit(DriverEvent::Background { shells, agents });
+                self.background.set(message, self.pid);
+                let tasks = self.background.list();
+                self.emit(DriverEvent::Tasks(tasks));
+            }
+            Some("task_started" | "task_progress" | "task_notification") => {
+                if self.background.update(message, self.pid) {
+                    let tasks = self.background.list();
+                    self.emit(DriverEvent::Tasks(tasks));
+                }
             }
             Some("status") => {
                 if let Some(mode) = message["permissionMode"].as_str() {
@@ -1699,8 +1712,32 @@ pub(crate) fn iso8601(at: std::time::SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_task_notification, prompt_text, reply_excerpt, words, Rest, Streamed};
+    use super::{is_task_notification, output_file_named, prompt_text, reply_excerpt, words, Background, Rest, Streamed};
     use serde_json::json;
+
+    #[test]
+    fn a_task_message_before_the_set_lists_its_task_is_applied_when_it_does() {
+        let mut bg = Background::default();
+        let started = json!({"subtype": "task_started", "task_id": "b1", "tool_use_id": "toolu_1"});
+        assert!(!bg.update(&started, 1));
+        bg.call(&json!({"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "sleep 9", "run_in_background": true}}));
+        bg.set(&json!({"tasks": [{"task_id": "b1", "task_type": "local_bash", "description": "Sleep"}]}), 1);
+        let tasks = bg.list();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].call.as_deref(), Some("toolu_1"));
+        assert_eq!(tasks[0].command.as_deref(), Some("sleep 9"));
+        bg.set(&json!({"tasks": []}), 1);
+        assert!(bg.list().is_empty());
+    }
+
+    #[test]
+    fn the_output_file_is_read_to_the_end_of_its_sentence() {
+        let said = "Command running in background with ID: b8. Output is being written to: /private/tmp/My Files/b8.output. You will be notified when it completes.";
+        assert_eq!(output_file_named(said).as_deref(), Some("/private/tmp/My Files/b8.output"));
+        assert_eq!(output_file_named("Output is being written to: /t/x.output.").as_deref(), Some("/t/x.output"));
+        assert_eq!(output_file_named("Output is being written to: /t/x.output\nmore").as_deref(), Some("/t/x.output"));
+        assert_eq!(output_file_named("no file here"), None);
+    }
 
     fn user(content: &str) -> serde_json::Value {
         json!({"type": "user", "message": {"role": "user", "content": content}})
@@ -1882,4 +1919,183 @@ mod tests {
         assert_eq!(words(r#"x "" y"#), ["x", "", "y"]);
         assert!(words("  ").is_empty());
     }
+}
+
+/// What a background command or subagent call said about itself, kept by its tool call id until
+/// its task names that id.
+#[derive(Default, Clone)]
+struct BackgroundCall {
+    command: Option<String>,
+    output_path: Option<String>,
+    shell: bool,
+    /// The call's result has arrived, so a missing output file is known to be missing.
+    answered: bool,
+}
+
+/// The background tasks Claude Code has running, built from `background_tasks_changed` (the set),
+/// `task_started` (the call that started a task), `task_progress` (a subagent's progress), and the
+/// `run_in_background` tool call with its result (the command, and the file it writes to).
+#[derive(Default)]
+struct Background {
+    tasks: Vec<wheel_proto::BackgroundTask>,
+    calls: HashMap<String, BackgroundCall>,
+    /// `task_started`, `task_progress` and `task_notification` messages for a task the set has not
+    /// listed yet, applied when it does.
+    early: HashMap<String, Vec<Value>>,
+}
+
+impl Background {
+    fn list(&self) -> Vec<wheel_proto::BackgroundTask> {
+        self.tasks.clone()
+    }
+
+    /// Note a tool call that runs in the background; true when a running task gained from it.
+    fn call(&mut self, block: &Value) -> bool {
+        if block["type"] != "tool_use" || block["input"]["run_in_background"] != true {
+            return false;
+        }
+        let Some(id) = block["id"].as_str() else { return false };
+        let input = &block["input"];
+        let shell = block["name"] == "Bash";
+        let command = input["command"].as_str().or(input["prompt"].as_str()).map(String::from);
+        let call = self.calls.entry(id.to_string()).or_default();
+        call.command = command;
+        call.shell = shell;
+        self.link(id)
+    }
+
+    /// Read the output file a background command's result names; true when a running task gained it.
+    fn results(&mut self, content: &Value, pid: u32) -> bool {
+        let mut changed = false;
+        for block in content.as_array().into_iter().flatten().filter(|b| b["type"] == "tool_result") {
+            let Some(id) = block["tool_use_id"].as_str() else { continue };
+            let Some(call) = self.calls.get_mut(id) else { continue };
+            call.answered = true;
+            let text = match &block["content"] {
+                Value::String(text) => text.clone(),
+                Value::Array(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n"),
+                _ => String::new(),
+            };
+            match output_file_named(&text) {
+                Some(path) => call.output_path = Some(path),
+                None if call.shell => {
+                    let start: String = text.chars().take(200).collect();
+                    tracing::warn!(pid, call = id, result = %start, "background task output file not named");
+                }
+                None => {}
+            }
+            changed |= self.link(id);
+        }
+        changed
+    }
+
+    /// Copy what the call `id` said onto the task it started; true when that changed the task.
+    fn link(&mut self, id: &str) -> bool {
+        let Some(call) = self.calls.get(id) else { return false };
+        let Some(task) = self.tasks.iter_mut().find(|t| t.call.as_deref() == Some(id)) else { return false };
+        let before = task.clone();
+        if call.command.is_some() {
+            task.command.clone_from(&call.command);
+        }
+        if call.output_path.is_some() {
+            task.output_path.clone_from(&call.output_path);
+        }
+        if call.shell && call.answered && task.output_path.is_none() {
+            task.output_error = Some("Claude Code named no output file for this command".into());
+        } else {
+            task.output_error = None;
+        }
+        *task != before
+    }
+
+    /// Take the whole set from `background_tasks_changed`: tasks it lists stay or join, stamped
+    /// with the time they first appear; tasks it leaves out have ended.
+    fn set(&mut self, message: &Value, pid: u32) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let live: Vec<&Value> = message["tasks"]
+            .as_array()
+            .map(|tasks| tasks.iter().filter(|t| t["ambient"] != true).collect())
+            .unwrap_or_default();
+        let mut next = Vec::with_capacity(live.len());
+        for listed in live {
+            let id = listed["task_id"].as_str().unwrap_or_default().to_string();
+            let mut task = self.tasks.iter().find(|t| t.id == id && !id.is_empty()).cloned().unwrap_or_else(|| {
+                let kind = if listed["task_type"] == "local_agent" { wheel_proto::TaskKind::Agent } else { wheel_proto::TaskKind::Shell };
+                tracing::info!(pid, task = %id, ?kind, "background task started");
+                wheel_proto::BackgroundTask { id: id.clone(), kind, started_ms: now, ..Default::default() }
+            });
+            let description = listed["description"].as_str().unwrap_or_default();
+            task.name = match listed["subagent_type"].as_str() {
+                Some(agent) if !description.is_empty() => format!("{agent}: {description}"),
+                Some(agent) => agent.to_string(),
+                None => description.to_string(),
+            };
+            next.push(task);
+        }
+        let early: Vec<Value> = next.iter().filter_map(|t| self.early.remove(&t.id)).flatten().collect();
+        // Messages for tasks that never get listed are not kept forever.
+        if self.early.len() > 64 {
+            self.early.clear();
+        }
+        for gone in self.tasks.iter().filter(|t| !next.iter().any(|n| n.id == t.id)) {
+            tracing::info!(pid, task = %gone.id, call = gone.call.as_deref().unwrap_or("-"), "background task ended");
+        }
+        self.calls.retain(|id, _| next.iter().any(|t| t.call.as_deref() == Some(id.as_str())) || !self.tasks.iter().any(|t| t.call.as_deref() == Some(id.as_str())));
+        self.tasks = next;
+        for message in early {
+            self.update(&message, pid);
+        }
+    }
+
+    /// Apply `task_started`, `task_progress` or `task_notification` to its task; true when it changed.
+    fn update(&mut self, message: &Value, pid: u32) -> bool {
+        let Some(id) = message["task_id"].as_str() else { return false };
+        let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) else {
+            self.early.entry(id.to_string()).or_default().push(message.clone());
+            return false;
+        };
+        let before = task.clone();
+        if let Some(call) = message["tool_use_id"].as_str() {
+            task.call = Some(call.to_string());
+        }
+        if let Some(prompt) = message["prompt"].as_str() {
+            task.command.get_or_insert_with(|| prompt.to_string());
+        }
+        if let Some(path) = message["output_file"].as_str() {
+            task.output_path = Some(path.to_string());
+        }
+        let usage = &message["usage"];
+        if let Some(n) = usage["tool_uses"].as_u64() {
+            task.tool_uses = Some(n as u32);
+        }
+        if let Some(n) = usage["total_tokens"].as_u64() {
+            task.tokens = Some(n);
+        }
+        if let Some(tool) = message["last_tool_name"].as_str() {
+            task.last_tool = Some(tool.to_string());
+        }
+        let call = task.call.clone();
+        let mut changed = *task != before;
+        if let Some(call) = call {
+            changed |= self.link(&call);
+        }
+        if changed {
+            tracing::info!(pid, task = id, subtype = message["subtype"].as_str().unwrap_or("-"), "background task progress");
+        }
+        changed
+    }
+}
+
+/// The file Claude Code says a background command writes to, from its result's text: "Output is
+/// being written to: <path>." It sends the path as a field only when the task ends.
+fn output_file_named(text: &str) -> Option<String> {
+    let (_, rest) = text.split_once("Output is being written to: ")?;
+    // The path runs to the sentence's end: a full stop before a space, a line break, or the text's end.
+    let end = [rest.find(". "), rest.find(".\n"), rest.find('\n')].into_iter().flatten().min().unwrap_or(rest.len());
+    let path = rest[..end].trim();
+    let path = if end == rest.len() { path.strip_suffix('.').unwrap_or(path) } else { path };
+    (!path.is_empty()).then(|| path.to_string())
 }

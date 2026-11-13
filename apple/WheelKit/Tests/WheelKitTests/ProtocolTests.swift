@@ -485,16 +485,27 @@ struct ProtocolTests {
     }
 
     @Test func decodesTheFooterAndReadsItsBackgroundTasks() throws {
-        let json = #"{"ev":"agent_footer","agent":"w3","footer":{"directory":"/p","branch":"main","added":3,"removed":1,"shells":1,"agents":2}}"#
+        let json = #"{"ev":"agent_footer","agent":"w3","footer":{"directory":"/p","branch":"main","added":3,"removed":1,"tasks":[{"id":"bash-1","kind":"shell","name":"Build","command":"make","call":"c1","started_ms":1000,"output_path":"/t/b.output","tail":["a","b"],"output_bytes":4,"last_output_ms":2000},{"id":"a1","kind":"agent","name":"Explore: find","started_ms":1000,"tool_uses":2,"last_tool":"Bash","tokens":26666},{"id":"a2","kind":"agent","name":"review","started_ms":1000}]}}"#
         guard case let .agentFooter(agent, footer) = try ServerMsg.decode(json) else { Issue.record("wrong case"); return }
         #expect(agent == "w3")
         #expect(footer.branch == "main")
         #expect(footer.backgroundText == "1 shell · 2 agents")
-        #expect(AgentFooter(directory: "/p", shells: 3).backgroundText == "3 shells")
-        #expect(AgentFooter(directory: "/p", agents: 1).backgroundText == "1 agent")
+        let shell = footer.tasks[0]
+        #expect(shell.call == "c1" && shell.tail == ["a", "b"] && shell.latest == "b")
+        #expect(footer.tasks[1].latest == "2 tool calls · last: Bash · 26.7k tokens")
+        #expect(footer.tasks[2].latest == "started")
+        // Elapsed from the start; quiet only for a shell, only after five minutes without output.
+        let now = Date(timeIntervalSince1970: 2 + 299)
+        #expect(shell.elapsed(at: now) == 300)
+        #expect(shell.quiet(at: now) == nil)
+        #expect(shell.quiet(at: Date(timeIntervalSince1970: 2 + 420)) == 420)
+        #expect(footer.tasks[1].quiet(at: Date(timeIntervalSince1970: 99_999)) == nil)
+        #expect(RunningTask.clock(2412) == "40:12" && RunningTask.clock(3725) == "1:02:05")
         #expect(AgentFooter(directory: "/p").backgroundText == nil)
         guard case let .agentFooter(_, bare) = try ServerMsg.decode(#"{"ev":"agent_footer","agent":"w3","footer":{"directory":"/p"}}"#) else { Issue.record("wrong case"); return }
-        #expect(bare.shells == 0 && bare.agents == 0 && bare.branch == nil)
+        #expect(bare.tasks.isEmpty && bare.branch == nil)
+        guard case let .taskOutput(req, text, truncated) = try ServerMsg.decode(#"{"ev":"task_output","req":4,"text":"line 1\n","truncated":true}"#) else { Issue.record("wrong case"); return }
+        #expect(req == 4 && text == "line 1\n" && truncated)
     }
 
     @Test func decodesTheSlashCommandsAnAgentAccepts() throws {

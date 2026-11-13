@@ -1397,6 +1397,24 @@ async fn handle(
             });
             None
         }
+        ClientMsg::TaskOutput { req, agent, task } => {
+            // A file read of up to 256 KB: on a blocking thread, never in the connection's loop.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let read = tokio::task::spawn_blocking(move || state.agent(&agent)?.task_output(&task)).await;
+                let reply = match read {
+                    Ok(Ok((text, truncated))) => match req {
+                        Some(req) => ServerMsg::TaskOutput { req, text, truncated },
+                        None => return,
+                    },
+                    Ok(Err(message)) => failed(req, message),
+                    Err(e) => failed(req, format!("task output read stopped: {e}")),
+                };
+                let _ = out.send(reply).await;
+            });
+            None
+        }
         ClientMsg::AgentDetach { agent } => {
             let agent = state
                 .resolve_agent(&agent)
