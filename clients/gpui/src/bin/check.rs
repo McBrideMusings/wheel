@@ -5099,6 +5099,97 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     let after_new = state(cx);
     let popover_window_open = popover_any.update(cx, |_, _, _| ()).is_ok();
     ensure!(after_new["popover"]["open"] == false && !popover_window_open, "the popover stayed open after New Window: handle held {}, window open {popover_window_open}", after_new["popover"]["open"]);
+    // The pairing row and Settings… (wheel-ynjo.7.4.3): the popover opened again copies the code
+    // through the focused window (the one New Window opened, which never opened Settings, so it
+    // asks wheeld how phones reach it first), and Settings… opens that window's Settings and
+    // closes the popover.
+    let pairing = {
+        cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+        let mut reopened = Value::Null;
+        for _ in 0..50 {
+            tick(cx, 100).await;
+            reopened = state(cx);
+            if reopened["popover"]["open"] == true {
+                break;
+            }
+        }
+        ensure!(reopened["popover"]["open"] == true, "the popover did not open again: {}", reopened["popover"]);
+        let popover: gpui::AnyWindowHandle = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?.into();
+        let shown = popover_settle(popover, &menu, cx, |s| popover_fitted(s) && s["popover"]["controls"]["pairing-copy"].is_array() && s["pairing"]["disabled"].is_null()).await;
+        ensure!(popover_fitted(&shown) && shown["pairing"]["disabled"].is_null() && shown["popover"]["controls"]["pairing-copy"].is_array()
+            && shown["popover"]["controls"]["settings"].is_array() && shown["popover"]["controls"]["pairing-qr"].is_array(),
+            "the pairing row reads disabled {} with controls {}", shown["pairing"]["disabled"], shown["popover"]["controls"]);
+        let row_is_address = shown["pairing"]["row"].as_str().is_some_and(|r| r.starts_with("wss://"));
+        ensure!(row_is_address, "the pairing row's second line is not an address");
+        let height = shown["popover"]["frame"][3].as_f64().unwrap_or(0.);
+        ensure!((height - shown["height"].as_f64().unwrap_or(-1.)).abs() < 1., "the popover is {height} tall, its rows need {}", shown["height"]);
+        let target = cx.update(|cx| wheel_gpui::view::focused_client(cx)).ok_or_else(|| anyhow::anyhow!("no focused window"))?;
+        let copied_before = target.update(cx, |c, _, _| c.pairing.copied.clone())?;
+        let picture = output.join("client-menubar-pairing.png");
+        popover_picture(popover, &picture, cx)?;
+        popover_press(popover, &shown, "pairing-copy", cx)?;
+        let mut copied = None;
+        for _ in 0..100 {
+            tick(cx, 100).await;
+            copied = target.update(cx, |c, _, _| c.pairing.copied.clone())?;
+            if copied.is_some() && copied != copied_before {
+                break;
+            }
+        }
+        ensure!(copied.is_some() && copied != copied_before, "Copy pairing code in the popover copied nothing in the focused window (had a code before: {})", copied_before.is_some());
+        let copy_line = target.update(cx, |c, _, _| c.toast_log.iter().rev().find(|l| l.starts_with("pairing code copied")).cloned())?;
+        ensure!(copy_line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {copy_line:?}");
+        let after_copy = popover_settle(popover, &menu, cx, |s| s["popover"]["controls"]["settings"].is_array()).await;
+        ensure!(after_copy["popover"]["open"] == true, "the popover closed after Copy");
+        let settings_before = target.update(cx, |c, _, _| c.settings_open)?;
+        ensure!(!settings_before, "the focused window's Settings was open before Settings…");
+        popover_press(popover, &after_copy, "settings", cx)?;
+        let mut opened = false;
+        for _ in 0..50 {
+            tick(cx, 100).await;
+            opened = target.update(cx, |c, _, _| c.settings_open)?;
+            if opened && state(cx)["popover"]["open"] == false {
+                break;
+            }
+        }
+        let popover_gone = popover.update(cx, |_, _, _| ()).is_err();
+        ensure!(opened && popover_gone && state(cx)["popover"]["open"] == false, "Settings… opened Settings {opened}, closed the popover {popover_gone}");
+        target.update(cx, |c, _, cx| {
+            c.close_settings();
+            cx.notify();
+        })?;
+        // Show QR code: the focused window's pairing window opens and the popover closes.
+        cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+        let mut again = Value::Null;
+        for _ in 0..50 {
+            tick(cx, 100).await;
+            again = state(cx);
+            if again["popover"]["open"] == true {
+                break;
+            }
+        }
+        ensure!(again["popover"]["open"] == true, "the popover did not open for Show QR code: {}", again["popover"]);
+        let popover: gpui::AnyWindowHandle = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?.into();
+        let ready = popover_settle(popover, &menu, cx, |s| popover_fitted(s) && s["popover"]["controls"]["pairing-qr"].is_array()).await;
+        ensure!(ready["popover"]["controls"]["pairing-qr"].is_array(), "no Show QR code control: {}", ready["popover"]["controls"]);
+        popover_press(popover, &ready, "pairing-qr", cx)?;
+        let mut qr_open = false;
+        for _ in 0..100 {
+            tick(cx, 100).await;
+            qr_open = target.update(cx, |c, _, _| c.pairing.open && !c.pairing.window_tokens.is_empty())?;
+            if qr_open && state(cx)["popover"]["open"] == false {
+                break;
+            }
+        }
+        let qr_popover_gone = popover.update(cx, |_, _, _| ()).is_err();
+        ensure!(qr_open && qr_popover_gone, "Show QR code opened the pairing window with a code {qr_open}, closed the popover {qr_popover_gone}");
+        target.update(cx, |c, _, cx| {
+            c.close_pairing_window();
+            cx.notify();
+        })?;
+        json!({"row_is_address": row_is_address, "height": height, "copied": true, "copy_line": copy_line, "popover_stayed": true, "settings_opened": opened, "popover_closed": popover_gone,
+            "qr_window_opened": qr_open, "qr_popover_closed": qr_popover_gone, "picture": picture})
+    };
     // A Dock click with every window minimised (wheel-ynjo.7.6): AppKit finds no visible window and
     // GPUI calls `reopen` though windows are open; it opens one on the first session no window shows.
     let windows_before_dock = wheel_gpui::windows::with(|r| r.windows.len());
@@ -5148,6 +5239,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         "fixture_waiting": fixture_waiting, "rows_waiting": row_waiting, "dock_while_waiting": waiting_state["item"]["dock"], "answered": answered,
         "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
         "new_window": {"before": windows_before, "after": windows_after, "popover_closed": after_new["popover"]["open"] == false},
+        "pairing": pairing,
         "server_line": server_line,
         "dock_reopen": {"before": windows_before_dock, "after": windows_after_dock, "session": dock_opened, "wanted": dock_session},
         "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space},

@@ -11,7 +11,7 @@ pub mod float;
 mod little;
 mod menubar;
 mod messages;
-pub use menubar::{MenuBar, Popover, menu_bar, reopen, start as start_menu_bar};
+pub use menubar::{MenuBar, Popover, focused_client, menu_bar, reopen, start as start_menu_bar};
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
 mod panes;
 pub use panes::focus_target;

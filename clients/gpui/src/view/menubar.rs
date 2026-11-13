@@ -27,6 +27,12 @@ pub fn menu_bar() -> Option<Entity<MenuBar>> {
     MENU_BAR.with(|m| m.borrow().clone())
 }
 
+/// The main window that was key last, else the newest (Registry::focused), as its Client: where
+/// the popover's pairing row and Settings… act.
+pub fn focused_client(_: &App) -> Option<WindowHandle<Client>> {
+    crate::windows::with(|r| r.focused().map(|w| w.id.clone())).and_then(|id| crate::window_handle(&id))
+}
+
 /// Orange behind a waiting count and green for the shown dot (SpaceRow).
 const ORANGE: u32 = 0xff9f0a;
 const GREEN: u32 = 0x30d158;
@@ -301,6 +307,59 @@ impl MenuBar {
         cx.notify();
     }
 
+    /// Whether the pairing row's link is up: connected, and not stopped from the menu.
+    fn pairing_link(&self) -> bool {
+        self.up && !self.stopped_by_menu()
+    }
+
+    /// The pairing row's facts: this connection's listener, with the address the focused window picked.
+    fn pairing_devices(&self, cx: &App) -> crate::settings::Devices {
+        let picked = focused_client(cx).and_then(|h| h.read(cx).ok()).and_then(|c| c.settings.devices.picked.clone());
+        crate::settings::Devices { info: self.remote.clone(), picked, ..Default::default() }
+    }
+
+    /// Run `act` in the focused window's Client, or in one opened New Window's way when no window
+    /// is open, after this update; `front` brings that window front.
+    fn in_window(&mut self, front: bool, act: impl FnOnce(&mut Client) + 'static, cx: &mut Context<Self>) {
+        let (bridge, endpoint, hidden) = (self.bridge.clone(), self.endpoint.clone(), self.hidden);
+        cx.defer(move |cx| {
+            let handle = match focused_client(cx) {
+                Some(handle) => handle,
+                None => match crate::new_window(cx, &bridge, endpoint, hidden, None, None, None) {
+                    Ok(handle) => handle,
+                    Err(error) => return eprintln!("wheel-gpui: the popover opened no window: {error:#}"),
+                },
+            };
+            if let Err(error) = handle.update(cx, |client, _, cx| {
+                act(client);
+                cx.notify();
+            }) {
+                eprintln!("wheel-gpui: the popover's window is gone: {error:#}");
+            }
+            if front {
+                if !hidden {
+                    cx.activate(true);
+                }
+                crate::bring_front(cx, handle);
+            }
+        });
+    }
+
+    /// The pairing row's buttons (AppModel.copyPairingCode, showPairingWindow).
+    fn pair(&mut self, ask: crate::pairing::Ask, cx: &mut Context<Self>) {
+        self.log(format!("popover: pairing {} asked", if ask == crate::pairing::Ask::Copy { "copy" } else { "window" }));
+        self.in_window(ask == crate::pairing::Ask::Show, move |c| c.pairing_from_menu(ask), cx);
+    }
+
+    /// Settings… (`openSettings`): the focused window's Settings, brought front.
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.in_window(true, |c| {
+            if !c.settings_open {
+                c.open_settings();
+            }
+        }, cx);
+    }
+
     /// The bridge's app half, for the check's presses and picks.
     pub fn bridge_call(&self, value: Value) -> Value {
         self.native.call(value)
@@ -456,6 +515,8 @@ impl MenuBar {
         let popover = self.popover.and_then(|p| p.update(cx, |pop, window, _| (window.bounds().origin, window.viewport_size(), pop.content.get(), pop.controls.borrow().clone())).ok()).map(|(o, s, content, controls)| {
             json!({"open": true, "frame": [o.x.as_f32(), o.y.as_f32(), s.width.as_f32(), s.height.as_f32()], "content_height": content, "controls": controls})
         });
+        let devices = self.pairing_devices(cx);
+        let pairing = json!({"disabled": crate::pairing::Pairing::disabled_reason(self.pairing_link(), &devices), "row": crate::pairing::Pairing::row_detail(self.pairing_link(), &devices)});
         let status = self.server_status();
         let server = server::with(|s| json!({
             "word": status.word, "colour": format!("{:06x}", status.colour), "expanded": s.expanded, "confirming": s.confirming,
@@ -474,6 +535,7 @@ impl MenuBar {
                 "rows": c.rows.iter().map(|r| json!({"space": r.space, "name": r.name, "waiting": r.waiting, "shown": r.shown, "little": r.ownerless_little})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "height": menubar::height(&cards),
             "popover": popover.unwrap_or(json!({"open": false})),
+            "pairing": pairing,
             "log": self.log,
         })
     }
@@ -581,6 +643,56 @@ impl Popover {
         self.recorded(el, name)
     }
 
+    /// The pairing row (PairingRow: copy the code, show it as a QR code) over Settings….
+    fn pairing_rows(&self, menu: &MenuBar, devices: &crate::settings::Devices) -> gpui::Div {
+        use crate::pairing::{Ask, Pairing};
+        let reason = Pairing::disabled_reason(menu.pairing_link(), devices);
+        let detail = Pairing::row_detail(menu.pairing_link(), devices);
+        let icon_button = |symbol: &str, name: &'static str, ask: Ask, help: &str| {
+            let tip = reason.unwrap_or(help);
+            let mut button = div().id(name).w(px(22.)).h(px(22.)).flex().items_center().justify_center().rounded_sm()
+                .tooltip(crate::tooltip::tip(tip))
+                .children(menu.symbol(symbol, 13., if reason.is_some() { DIM } else { ACCENT }));
+            if reason.is_some() {
+                button = button.opacity(0.4);
+            } else {
+                let held = self.menu.clone();
+                button = button.cursor_pointer().hover(|s| s.bg(rgb(BOX))).on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                    // The pairing window takes the person's eye; a copy leaves the popover open.
+                    if ask == Ask::Show {
+                        window.remove_window();
+                    }
+                    held.update(cx, |m, cx| {
+                        if ask == Ask::Show {
+                            m.popover = None;
+                            m.log("popover closed by Show QR code".into());
+                        }
+                        m.pair(ask, cx);
+                    });
+                });
+            }
+            self.recorded(div().child(button), name)
+        };
+        let row = div().h(px(menubar::PAIRING_ROW)).flex().items_center().gap(px(4.)).px_1()
+            .child(div().flex_1().min_w_0().flex().items_center().gap_2()
+                .child(div().w(px(18.)).flex().justify_center().children(menu.symbol("iphone", 13., DIM)))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(1.))
+                    .child(div().text_color(rgb(TEXT)).child("Pairing code"))
+                    .child(div().text_xs().text_color(rgb(DIM)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(detail))))
+            .child(icon_button("doc.on.doc", "pairing-copy", Ask::Copy, "Copy the pairing code; the clipboard clears after a minute"))
+            .child(icon_button("qrcode", "pairing-qr", Ask::Show, "Show the pairing code as a QR code"));
+        let held = self.menu.clone();
+        let settings = self.recorded(menu.row("gearshape", "Settings…", Some("⌘,")), "settings").on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            window.remove_window();
+            held.update(cx, |m, cx| {
+                m.popover = None;
+                m.log("popover closed by Settings…".into());
+                m.open_settings(cx);
+            });
+        });
+        div().flex().flex_col().gap(px(ROW_GAP)).child(self.recorded(row, "pairing")).child(settings)
+    }
+
     /// The server's line (ServerHeader): the app icon, its name, a dot with a word, and the
     /// chevron; pressing it opens the details.
     fn server_line(&self, menu: &MenuBar) -> gpui::Div {
@@ -662,9 +774,11 @@ impl Render for Popover {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let menu = self.menu.read(cx);
         let cards = menu.cards();
+        let devices = menu.pairing_devices(cx);
         let mut col = div().w_full().flex().flex_col().gap(px(GAP)).p(px(PAD)).text_sm().text_color(rgb(TEXT))
             .child(self.server_line(menu))
-            .child(div().h(px(1.)).bg(rgb(LINE)));
+            .child(div().h(px(1.)).bg(rgb(LINE)))
+            .child(self.pairing_rows(menu, &devices));
         self.cards.borrow_mut().clear();
         // A space dragged over a card outlines it (SessionCard's drop highlight).
         let over = super::sidebar::space_hover().and_then(|h| match h.target {
