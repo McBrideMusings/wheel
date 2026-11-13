@@ -283,12 +283,12 @@ async fn type_text(native: &Native, text: &str, cx: &mut AsyncApp) {
 /// Runs each step in order. A step takes the shared `Run` and what it reads from earlier steps, and
 /// hands back the `Run` and what later steps and the report read.
 async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
-    let (run, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, click, focused, typed, leaked, terminal_report, saved_file) = layout_and_terminals(output, cx).await?;
+    let (run, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file) = layout_and_terminals(output, cx).await?;
     let webs: Vec<&String> = native_panes.iter().filter(|p| p.1 == "web").map(|p| &p.0).collect();
     let terms: Vec<&String> = native_panes.iter().filter(|p| p.1 == "terminal").map(|p| &p.0).collect();
     let native_pages: Vec<&String> = webs.iter().copied().filter(|w| before["panes"][w.as_str()]["page"]["native"] == true).collect();
     let target = terms[1];
-    let (run, split, parent, start, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
+    let (run, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, footer_report) = footer(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
@@ -330,7 +330,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, settings_report) = settings_window(run, cli_path.clone(), cx).await?;
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
     let (run, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space) = debug_server_and_processes(run, terms.clone(), cx).await?;
-    let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report, own, moved) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
+    let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
     let (run, debug, card_drops_report, tray_report) = card_drops_and_tray(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), area.clone(), cx).await?;
     let (run, debug, zoom_report) = zoom(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), cli.clone(), cx).await?;
     let (run, debug, header_report, new_space) = pane_header(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), cli.clone(), fixture_space.clone(), cx).await?;
@@ -404,7 +404,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
 
 /// Layout from wheeld, one native view per pane on its body, separate terminal sessions,
 /// keyboard focus by a click, a dropped path and the `terminal.*` settings restyling the surface.
-async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Value, Value, Value, u64, Vec<(String, Rect)>, Vec<(String, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
+async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Value, Value, Value, u64, Vec<(String, Rect)>, Vec<(String, bool)>, Vec<(String, bool, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
     let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
     let mut connection = Connection::open(endpoint.clone());
@@ -552,12 +552,12 @@ async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run
     let terminal_report = json!({"dropped": dropped, "drop_line": drop_line, "target_viewport": viewport(&after_drop, target),
         "other_viewport": viewport(&after_drop, other_term), "config_before": look_before, "config_restyled": config_of(&restyled, target),
         "config_after": look_after, "grids": terms.iter().map(|t| (t.to_string(), last_grid(&restyled, t))).collect::<serde_json::Map<_, _>>()});
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, click, focused, typed, leaked, terminal_report, saved_file))
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file))
 }
 
 /// Command-] and command-[ move the keyboard; a divider drag and a window resize hold the
 /// terminals' sizes until they end; another client's ratio change is followed.
-async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &mut AsyncApp) -> Result<(Run, String, Rect, [f64; 2], Vec<Value>, Value, Vec<Value>, Value, Value, Option<f64>, std::process::ExitStatus, Value, Value, String)> {
+async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &mut AsyncApp) -> Result<(Run, String, Rect, [f64; 2], [f64; 2], Vec<Value>, Value, Vec<Value>, Value, Value, Option<f64>, std::process::ExitStatus, Value, Value, String)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let snapshot = |cx: &mut AsyncApp| window.update(cx, |c, _, _| {
@@ -665,7 +665,7 @@ async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &
     let external_status = native.status();
     draw(window, Some(output.join("client-external.png")), cx)?;
     shot(&native, &output.join("external"), cx).await?;
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, split, parent, start, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli))
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli))
 }
 
 /// The agent pane: a typed message reaches wheeld and the fake agent's turns come back as rows.
@@ -4557,7 +4557,7 @@ async fn debug_server_and_processes(run: Run, terms: Vec<&String>, cx: &mut Asyn
 }
 
 /// The pane grid: a space of its own, splits, a real header drag, dock, and a popped card.
-async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::debug::Server, bearer: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, String, String, String, String, [f64; 4], [f64; 4], Vec<String>, Value, [f64; 4], Value, Value, Value)> {
+async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::debug::Server, bearer: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, String, String, String, String, [f64; 4], [f64; 4], Vec<String>, Value, [f64; 4], Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
@@ -4689,8 +4689,8 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     // The grid's terminal has the card cut out of it, so the card's own view is the one on top there.
     let holes = carded["panes"][grid_a.as_str()]["bridge"]["holes"].clone();
     ensure!(holes.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), card_before)), "the grid terminal under the card has holes {holes}, not the card {card_before:?}");
-    let own = carded["panes"][grid_c.as_str()]["bridge"]["holes"].clone();
-    ensure!(own.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), four(&carded["cards"][0]["grip"]))), "the card's view has holes {own}, not its resize corner {}", carded["cards"][0]["grip"]);
+    let card_holes = carded["panes"][grid_c.as_str()]["bridge"]["holes"].clone();
+    ensure!(card_holes.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), four(&carded["cards"][0]["grip"]))), "the card's view has holes {card_holes}, not its resize corner {}", carded["cards"][0]["grip"]);
     // Where the card covers the grid terminal, the pointer lands on the card's view, and the grid
     // terminal's mask keeps the rects around the hole.
     let inside = [card_before[0] + 30., card_before[1] + f64::from(TITLE) + 30.];
@@ -4714,11 +4714,11 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     draw(window, Some(output.join("client-popped-card-moving.png")), cx)?;
     native.call(json!({"op":"post_mouse","kind":"up","point":[header_at[0] + moved_by[0], header_at[1] + moved_by[1]]}));
     let want = [card_before[0] + moved_by[0], card_before[1] + moved_by[1], card_before[2], card_before[3]];
-    let moved = until!("the card moved by its header", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want)
+    let card_state = until!("the card moved by its header", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want)
         && near(four(&s["panes"][grid_c.as_str()]["bridge"]["frame_top"]), body_of(want)));
-    let card_moved = card_now(&moved);
+    let card_moved = card_now(&card_state);
     // Its corner resizes it.
-    let corner = four(&moved["cards"][0]["grip"]);
+    let corner = four(&card_state["cards"][0]["grip"]);
     let at = [corner[0] + corner[2] / 2., corner[1] + corner[3] / 2.];
     native.call(json!({"op":"post_mouse","kind":"down","point":at}));
     pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -4742,8 +4742,8 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     ensure!(ok, "wheel pane pop back failed: {err}");
     until!("the third pane back in the grid again", |s: &Value| grid_panes(s).contains(&grid_c));
     let popped_card_report = json!({"pane": grid_c, "grid": area, "before": card_before, "moved": card_moved, "resized": card_resized, "popped_again": card_now(&again),
-        "grid_view_holes": holes, "card_view_holes": own, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report, own, moved))
+        "grid_view_holes": holes, "card_view_holes": card_holes, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report))
 }
 
 /// Drops onto and off a card, and the tray.
