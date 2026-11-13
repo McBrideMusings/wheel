@@ -1247,6 +1247,13 @@ impl Client {
             column.state.scroll_to_reveal_item(row);
         }
     }
+    /// Take `agent`'s column back to its end and follow the stream from there, wherever the
+    /// reader had scrolled (sending a message, as `chat.pinned = true` in `AppModel.send`).
+    pub fn follow_end(&self, agent: &str) {
+        if let Some(column) = self.columns.get(agent) {
+            column.state.set_follow_mode(FollowMode::Tail);
+        }
+    }
     /// Where `agent`'s column is scrolled: the row at its top (the row count at the end), how far
     /// into that row, and whether it follows the stream.
     pub fn column_scroll(&self, agent: &str) -> Option<(usize, f32, bool)> {

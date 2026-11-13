@@ -1033,7 +1033,17 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     erase(&native, 1, cx).await;
     // The queue: a slow turn runs while two messages wait behind it.
     let queued_now = |cx: &mut AsyncApp| -> Result<Vec<u64>> { Ok(serde_json::from_value(pane_now(cx)?["composer"]["queued"].clone()).unwrap_or_default()) };
+    // Scrolled to the first row, the column stops following; sending takes it back to its end and
+    // it follows again, so the queue lines under the new messages draw.
+    window.update(cx, |c, _, _| c.reveal(&agent_name, 0))?;
+    draw(window, None, cx)?;
+    let before_send = window.update(cx, |c, _, _| c.column_scroll(&agent_name))?;
+    ensure!(before_send.is_some_and(|(top, _, following)| top == 0 && !following), "revealing the first row left the column at {before_send:?}");
     type_line(&native, "work slowly 20", cx).await;
+    draw(window, None, cx)?;
+    let after_send = window.update(cx, |c, _, _| c.column_scroll(&agent_name))?;
+    let rows_after_send = rows(cx)?.1.len();
+    ensure!(after_send.is_some_and(|(top, _, following)| top >= rows_after_send && following), "a sent message left the column away from its end: before {before_send:?}, after {after_send:?} of {rows_after_send} rows");
     let mut slow_busy = false;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -1679,8 +1689,12 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(first_drawn, "at the top the first row is not drawn: {:?}", window.update(cx, |c, _, _| c.drawn_texts(&agent_name).iter().take(3).map(|d| (d.row, d.text.clone())).collect::<Vec<_>>())?);
     let drawn_at_top = window.update(cx, |c, _, _| c.drawn_texts(&agent_name).iter().map(|d| d.row).collect::<std::collections::BTreeSet<_>>().len())?;
     draw(window, Some(output.join("client-transcript-top.png")), cx)?;
-    // Scrolled up, a new reply leaves the column where it is.
-    type_line(&native, "while scrolled up", cx).await;
+    // Scrolled up, a reply to a message sent from elsewhere (the CLI) leaves the column where it
+    // is; a message the person sends from the composer takes it back to the end instead.
+    let sent_up = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, "while scrolled up", "--timeout", "30"])
+        .output()?;
+    ensure!(sent_up.status.success(), "agent send while scrolled up failed: {}{}", String::from_utf8_lossy(&sent_up.stdout), String::from_utf8_lossy(&sent_up.stderr));
     let mut answered_up = false;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
