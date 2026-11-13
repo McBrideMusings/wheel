@@ -1,8 +1,7 @@
 //! This window as `wheel window` and the window menus see it (AppModel+Windows.swift,
-//! ContentView.swift's WindowCloseSheet, TitleRow.swift's WindowTitle, SessionMenu.swift): the
-//! record it writes to the app's list of windows, its name and the title field that edits it,
-//! the question closing the last window on a session asks, Rename Session…, and placing a
-//! space in this window for `wheel window space-move`.
+//! TitleRow.swift's WindowTitle, SessionMenu.swift): the record it writes to the app's list of
+//! windows, its name and the title field that edits it, closing it, Rename Session…, and placing
+//! a space in this window for `wheel window space-move`.
 use super::*;
 use super::settings::{ACCENT, DIM, LINE, TEXT};
 use crate::focus::{Typed, type_into};
@@ -25,16 +24,6 @@ pub enum NameTarget {
 pub struct NameEdit {
     pub target: NameTarget,
     pub draft: String,
-}
-
-/// The close question's answers (AppModel.WindowCloseAnswer).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CloseAnswer {
-    /// Background Session and Close: the session keeps running with no window.
-    Background,
-    /// Close Session and All Processes.
-    Stop,
-    Cancel,
 }
 
 impl Client {
@@ -151,53 +140,17 @@ impl Client {
 
     // MARK: Closing
 
-    /// Close Window, the red light and `wheel window close`: the last window showing a session
-    /// that holds spaces asks what to do with the session; true when the window may close now.
-    pub fn ask_close_window(&mut self) -> bool {
-        // A little window's red light returns its space to its tab, and asks nothing.
-        if self.is_little() {
-            self.log(format!("little window {} closed by the person", self.window_id));
-            return true;
-        }
-        self.publish();
-        if !windows::with(|r| r.close_needs_answer(&self.window_id, &self.sessions)) {
-            return true;
-        }
-        if !self.closing_window {
-            self.closing_window = true;
-            let summary = self.close_summary();
-            self.log(format!("close window {} asked: {summary}", self.short_id()));
-            self.sync_overlay();
-        }
-        false
+    /// Close Window, the red light and `wheel window close` close the window at once, and each
+    /// logs it here first: a session no other window shows keeps running in the background, and a
+    /// little window's space goes back to its tab.
+    pub fn log_close(&mut self) {
+        let what = if self.is_little() { "little window" } else { "window" };
+        self.log(format!("{what} {} closed", self.short_id()));
     }
-    /// Close Window and the debug route: close now, or when the question is answered.
+    /// Close Window and the palette's action: the window goes on its next frame.
     pub fn request_close_window(&mut self) {
-        if self.ask_close_window() {
-            self.close_window_requested = true;
-        }
-    }
-    pub fn close_summary(&self) -> String {
-        let record = self.record();
-        windows::with(|r| windows::close_summary(r, &record, &self.sessions, &self.spaces))
-    }
-    /// The question's answer: close the window, close its session and then the window, or neither.
-    pub fn answer_window_close(&mut self, answer: CloseAnswer) {
-        if !std::mem::take(&mut self.closing_window) {
-            return;
-        }
-        self.sync_overlay();
-        self.log(format!("close window {} answered: {answer:?}", self.short_id()));
-        match answer {
-            CloseAnswer::Background => self.close_window_requested = true,
-            CloseAnswer::Stop => {
-                if let Some(session) = self.session_id.clone() {
-                    self.send_layout(|req| ClientMsg::SessionClose { req: Some(req), session });
-                }
-                self.close_window_requested = true;
-            }
-            CloseAnswer::Cancel => {}
-        }
+        self.log_close();
+        self.close_window_requested = true;
     }
 
     // MARK: Placing a space
@@ -260,27 +213,6 @@ impl Client {
             None => div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(label.to_owned()),
         }
     }
-    /// The close question over the window (WindowCloseSheet).
-    pub(super) fn window_close_overlay(&self, width: f32, height: f32, cx: &mut Context<Self>) -> gpui::Div {
-        let answer = |label: &'static str, answer: CloseAnswer, cx: &mut Context<Self>| {
-            let (bg, fg) = match answer { CloseAnswer::Background => (ACCENT, TEXT), CloseAnswer::Stop => (0x22302a, 0xff453a), CloseAnswer::Cancel => (0x22302a, TEXT) };
-            div().w_full().py_1().rounded_sm().flex().justify_center().cursor_pointer().bg(rgb(bg)).text_color(rgb(fg)).child(label)
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                    this.answer_window_close(answer);
-                    cx.stop_propagation();
-                    cx.notify();
-                }))
-        };
-        let card = div().w(px(300f32.min(width - 32.))).flex().flex_col().items_center().gap(px(6.)).p(px(20.)).rounded_md().bg(rgb(0x17201c)).border_1().border_color(rgb(LINE)).text_color(rgb(TEXT))
-            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
-            .child(div().font_weight(FontWeight::SEMIBOLD).text_center().child(format!("Close the “{}” window?", self.window_title())))
-            .child(div().text_xs().text_center().text_color(rgb(DIM)).child(self.close_summary()))
-            .child(div().w_full().flex().flex_col().gap_2().mt(px(12.))
-                .child(answer("Background Session and Close", CloseAnswer::Background, cx))
-                .child(answer("Close Session and All Processes", CloseAnswer::Stop, cx))
-                .child(answer("Cancel", CloseAnswer::Cancel, cx)));
-        Self::scrim(width, height, card, cx)
-    }
     /// The dimmed backdrop a card sits on; it takes every press under it.
     fn scrim(width: f32, height: f32, card: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
         div().absolute().left_0().top_0().w(px(width)).h(px(height)).bg(rgba(0x0000008c)).flex().justify_center().items_center()
@@ -308,13 +240,12 @@ impl Client {
 
     // MARK: State for checks
 
-    /// `/state` `window_info`: this window's record, its title, the close question and the name field.
+    /// `/state` `window_info`: this window's record, its title and the name field.
     pub fn window_json(&self) -> Value {
         json!({
             "id": self.window_id,
             "name": self.window_name,
             "title": self.window_title(),
-            "closing": self.closing_window.then(|| self.close_summary()),
             "name_edit": self.name_edit.as_ref().map(|e| json!({"target": match &e.target { NameTarget::Window => "window".to_owned(), NameTarget::Session(s) => format!("session:{s}") }, "draft": e.draft})),
             "windows": windows::with(|r| windows::ls(r, &self.sessions, &self.spaces)),
             "little": self.little_json(),

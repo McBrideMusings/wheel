@@ -24,7 +24,7 @@ mod toasts;
 mod tray;
 mod windows;
 mod zoom;
-pub use windows::{CloseAnswer, NameEdit, NameTarget};
+pub use windows::{NameEdit, NameTarget};
 pub use commands::{Confirmation, Pending};
 pub use title::{BOTTOM, MenuRow, Symbols, TitleMenu, symbol};
 pub use debug::Answer as DebugAnswer;
@@ -285,8 +285,6 @@ pub struct Client {
     space_for_new_session: Option<(u64, String)>,
     /// The window's name (Rename Window, `wheel window rename`); none shows the space's name.
     pub window_name: Option<String>,
-    /// The close question is over the window: the last window on a session that holds spaces.
-    pub closing_window: bool,
     /// A name field being edited: this window's in the title row, or a session's in its card.
     pub name_edit: Option<NameEdit>,
     /// A space `wheel window space-move` put in this window's session, shown once the layout holds it, and when (unix ms).
@@ -400,7 +398,7 @@ impl Client {
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
-            window_name: None, closing_window: false, name_edit: None, pending_show: None, title_set: String::new(), little: false,
+            window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -1403,15 +1401,7 @@ impl Client {
     }
     pub fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
-        // The close question and a name field take every key while they are up.
-        if self.closing_window {
-            match k.key.as_str() {
-                "enter" => self.answer_window_close(CloseAnswer::Background),
-                "escape" => self.answer_window_close(CloseAnswer::Cancel),
-                _ => {}
-            }
-            return true;
-        }
+        // A name field takes every key while it is up.
         if self.name_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
             return true;
         }
@@ -2141,9 +2131,6 @@ impl Render for Client {
         }
         if let Some(card) = self.session_name_overlay(w, h, cx) {
             root = root.child(card);
-        }
-        if self.closing_window {
-            root = root.child(self.window_close_overlay(w, h, cx));
         }
         if self.pairing.open {
             root = root.child(self.pairing_overlay(w, h, cx));
