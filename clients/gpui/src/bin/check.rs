@@ -5338,11 +5338,13 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     // the same conversation, wheeld reporting the pane as a terminal running the agent.
     let (ok, _, err) = run_pumped(&["pane", "start", &grid_b, "agent", "--agent", "claude"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane start {grid_b} agent failed: {err}");
-    let started = until!("the second pane an agent pane", |s: &Value| s["panes"][grid_b.as_str()]["kind"] == "agent" && s["panes"][grid_b.as_str()]["harness"] == "claude");
+    until!("the second pane an agent pane", |s: &Value| s["panes"][grid_b.as_str()]["kind"] == "agent" && s["panes"][grid_b.as_str()]["harness"] == "claude");
     let (ok, _, err) = run_pumped(&["agent", "send", &grid_b, "a message to resume", "--timeout", "30"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel agent send {grid_b} failed: {err}");
-    let agent_menu = started["panes"][grid_b.as_str()]["menu"].as_array().cloned().unwrap_or_default();
-    ensure!(agent_menu.iter().any(|i| i["id"] == "switch-view" && i["title"] == "Show in Terminal" && i["enabled"] == true), "an agent pane's menu offers {agent_menu:?}");
+    // The switch is offered once wheeld holds a conversation to show in a terminal: after the send.
+    let offers_switch = |s: &Value| s["panes"][grid_b.as_str()]["menu"].as_array().is_some_and(|m| m.iter().any(|i| i["id"] == "switch-view" && i["title"] == "Show in Terminal" && i["enabled"] == true));
+    let switchable = until!("the agent pane's menu offering Show in Terminal", offers_switch);
+    let agent_menu = switchable["panes"][grid_b.as_str()]["menu"].as_array().cloned().unwrap_or_default();
     // The header's switch by a real press when the pane is wide enough to draw it, else the ⋯ menu
     // that offers it once dropped.
     let switch_state = state!();
