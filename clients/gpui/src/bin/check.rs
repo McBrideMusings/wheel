@@ -5386,6 +5386,18 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
         ensure!(code == 200 && pressed["taken"] == true, "shift+cmd+t was not taken: {pressed}");
         until!(format!("shift+cmd+t showing {what}"), |s: &Value| s["panes"][grid_b.as_str()]["kind"] == kind);
     }
+    // Copy pane image of an agent pane, which the window draws itself: the PNG is the pane's
+    // rectangle of the window's frame, its size the rectangle's times the backing scale.
+    window.update(cx, |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("nothing copied yet".into())))?;
+    let agent_notice = format!("Copied {grid_b} as an image");
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=screenshot"));
+    ensure!(code == 200, "Copy pane image on the agent pane got {code}");
+    let copied_agent = until!("Copy pane image posting its notice for the agent pane", |s: &Value| s["toasts"].as_array().is_some_and(|t| t.iter().any(|x| x["id"] == "pane-image" && x["text"] == agent_notice.as_str() && x["level"] == "notice")));
+    let agent_png = png_on_clipboard(cx)?.ok_or_else(|| anyhow::anyhow!("the clipboard holds no PNG after copying the agent pane: {}", copied_agent["toasts"]))?;
+    let agent_frame = frame(&copied_agent, &grid_b);
+    let backing = window.update(cx, |_, w, _| w.scale_factor())? as f64;
+    ensure!((f64::from(agent_png.0) - agent_frame[2] * backing).abs() <= 1.5 && (f64::from(agent_png.1) - agent_frame[3] * backing).abs() <= 1.5, "the agent pane image is {agent_png:?} px, its rectangle {agent_frame:?} pt at scale {backing}");
+    header_report["agent_image"] = json!({"png": [agent_png.0, agent_png.1], "frame": agent_frame, "scale": backing});
     header_report["switch"] = json!({"from": switch_from, "shell_disabled": disabled, "agent_menu": agent_menu, "terminal_menu": terminal_menu});
     // Move Pane to New Space: the second pane leaves for a space of its own.
     let spaces_before = state!()["spaces"].as_array().map(Vec::len).unwrap_or(0);

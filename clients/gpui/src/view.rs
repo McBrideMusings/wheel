@@ -2175,7 +2175,7 @@ impl Render for Client {
             cx.open_url(&format!("file://{}", file_url_path(&path)));
         }
         self.tick_server(cx);
-        self.tick_pane_image(cx);
+        self.tick_pane_image(window, cx);
         if matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(div().absolute().left_0().top(px(HEADER)).w(px(w)).h(px(h - HEADER)).flex().justify_center().items_center()
                 .child(div().w(px(420.)).child(self.server_box(cx))));
