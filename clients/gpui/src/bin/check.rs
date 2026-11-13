@@ -227,7 +227,184 @@ async fn settle(page_of: &impl Fn(&Value) -> Value, native: &Native, connection:
     anyhow::bail!("the page's components never settled: {}", page_of(&native.status()))
 }
 
+/// What every step of the check shares: the bridge, the first window's connection and views, the
+/// count of layouts it received, the fixture's terminal markers and the output folder.
+struct Run {
+    bridge: std::rc::Rc<Bridge>,
+    connection: Connection,
+    layouts: usize,
+    window: gpui::WindowHandle<Client>,
+    native: std::rc::Rc<Native>,
+    markers: Value,
+    output: PathBuf,
+}
+
+async fn settled_once(native: &Native, terms: &[&String], before: &[Vec<Value>], before_status: &Value, what: &str) -> Result<Value> {
+    let after = native.status();
+    let mut resized = 0;
+    let mut per = serde_json::Map::new();
+    for (i, t) in terms.iter().enumerate() {
+        let sent = after["panes"][t.as_str()]["sent_grids"].as_array().cloned().unwrap_or_default();
+        let new = &sent[before[i].len().min(sent.len())..];
+        let now = last_grid(&after, t);
+        if now != last_grid(before_status, t) {
+            ensure!(new.len() == 1 && new[0] == now, "{what}: terminal {t} sent {new:?} after the move, wanted only its last grid {now}");
+            resized += 1;
+        } else {
+            ensure!(new.is_empty(), "{what}: terminal {t} kept its grid {now} and still sent {new:?}");
+        }
+        per.insert(t.to_string(), json!({"sent_new": new, "last_grid": now}));
+    }
+    ensure!(resized > 0, "{what}: no terminal changed size: {per:?}");
+    Ok(Value::Object(per))
+}
+async fn type_line(native: &Native, text: &str, cx: &mut AsyncApp) {
+    for ch in text.chars() {
+        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+        tick(cx, 15).await;
+    }
+    native.call(json!({"op":"post_key","text":"\r","code":36}));
+}
+async fn erase(native: &Native, count: usize, cx: &mut AsyncApp) {
+    for _ in 0..count {
+        native.call(json!({"op":"post_key","text":"\u{7f}","code":51}));
+        tick(cx, 10).await;
+    }
+    tick(cx, 100).await;
+}
+async fn type_text(native: &Native, text: &str, cx: &mut AsyncApp) {
+    for ch in text.chars() {
+        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+        tick(cx, 15).await;
+    }
+    tick(cx, 150).await;
+}
+
+/// Runs each step in order. A step takes the shared `Run` and what it reads from earlier steps, and
+/// hands back the `Run` and what later steps and the report read.
 async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
+    let (run, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, click, focused, typed, leaked, terminal_report, saved_file) = layout_and_terminals(output, cx).await?;
+    let webs: Vec<&String> = native_panes.iter().filter(|p| p.1 == "web").map(|p| &p.0).collect();
+    let terms: Vec<&String> = native_panes.iter().filter(|p| p.1 == "terminal").map(|p| &p.0).collect();
+    let native_pages: Vec<&String> = webs.iter().copied().filter(|w| before["panes"][w.as_str()]["page"]["native"] == true).collect();
+    let target = terms[1];
+    let (run, split, parent, start, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
+    let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
+    let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, footer_report) = footer(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, buttons_inside_short_pane, resolved_from_cli, status_report) = statuses(run, agent_pane.clone(), agent_name.clone(), agent_rect.clone(), cli_path.clone(), cx).await?;
+    let (run, splits_above, perm_card, card_shown, answered_by_key, question_card, question_options, clicked, question_answer) = perm_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped) = composer_and_queue(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, attachments_report) = attachments(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams) = conversations(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, fork_row, fork_text, fork_rows, reply_buttons, fork_report) = fork_and_reply_buttons(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, message_menu_report, scroll_report) = message_menu_and_scroll(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), old_id.clone(), splits_above.clone(), click.clone(), fork_row.clone(), fork_text.clone(), cx).await?;
+    let conversations_report = json!({"reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
+    let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
+        "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
+    let perms_report = json!({"card_shown": card_shown, "answered_by_key": answered_by_key, "resolved_from_cli": resolved_from_cli,
+        "question_options": question_options, "buttons_inside_short_pane": buttons_inside_short_pane, "question_answer": question_answer, "questions_clicked": clicked.len(), "card": perm_card, "question_card": question_card});
+    let (run, first_session_id, fixture_space, sidebar_report) = sidebar(run, click.clone(), cx).await?;
+    let (run, title_report) = title_and_bottom_rows(run, first_session_id.clone(), fixture_space.clone(), native_panes.clone(), cx).await?;
+    let (run, restore, first_session, first_space, both, distinct, hidden_native, second, second_session, native2, id1, id2, f1, f2, dragged, drag_dir, from2, over_window, window2_sees, after_window, desk, little_id, little_owner, little_frame, over_desk_floats, aim, chip_expect, chip_over_window) = second_window_and_space_drags(run, saved_file.clone(), native_panes.clone(), webs.clone(), cx).await?;
+    let (run, card, card_hint, onto_tabs_after, over_card, over_tabs, window2_tabs) = space_drag_to_popover_and_tabs(run, dragged.clone(), f1.clone(), f2.clone(), first_session.clone(), from2.clone(), id2.clone(), native2.clone(), second.clone(), second_session.clone(), cx).await?;
+    let (run, pane_away) = pane_drag_out_of_window(run, f1.clone(), f2.clone(), id1.clone(), id2.clone(), second.clone(), native2.clone(), second_session.clone(), first_space.clone(), dragged.clone(), drag_dir.clone(), native_panes.clone(), cx).await?;
+    let space_drags = json!({
+        "window_frames": [f1, f2],
+        "onto_window": {"target": over_window["target"], "hint": over_window["hint"], "window2_insertion": window2_sees["insertion"], "window2_chip": window2_sees["chip"], "session_after": after_window.0},
+        "onto_desktop": {"drop": [desk.0, desk.1], "little": little_id, "owner": little_owner, "frame": little_frame},
+        "onto_card": {"target": over_card["target"], "hint": card_hint, "card": [card.frame.x, card.frame.y, card.frame.w, card.frame.h]},
+        "chip": {"aim": [aim.0, aim.1], "frame": chip_over_window["frame"], "expected_origin": [chip_expect.0, chip_expect.1]},
+        "card": {"drop": [desk.0, desk.1], "frame": over_desk_floats["card"]["frame"], "chip_shown": over_desk_floats["chip"]["shown"]},
+        "onto_tabs": {"target": over_tabs["target"], "hint": over_tabs["hint"], "window2_tab_bar": window2_tabs["tab_bar"], "session_after": onto_tabs_after},
+        "pane_away": pane_away,
+    });
+    let sessions_windows = json!({"restore": restore, "space_drags": space_drags, "first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
+        "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
+    let (run, windows_report) = window_commands(run, first_session.clone(), id1.clone(), cx).await?;
+    let (run, little_report) = little_windows(run, id1.clone(), cx).await?;
+    let (run, page_names, web_report) = web_panes(run, webs.clone(), cli_path.clone(), before.clone(), cx).await?;
+    let (run, browser_report) = browser_pane(run, native_panes.clone(), cx).await?;
+    let (run, pages_report) = plugin_pages(run, page_names.clone(), first_session.clone(), first_space.clone(), native_panes.clone(), cx).await?;
+    let (run, commands_report) = command_palette(run, cli_path.clone(), terms.clone(), cx).await?;
+    let (run, settings_report) = settings_window(run, cli_path.clone(), cx).await?;
+    let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
+    let (run, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space) = debug_server_and_processes(run, terms.clone(), cx).await?;
+    let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report, own, moved) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
+    let (run, debug, card_drops_report, tray_report) = card_drops_and_tray(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), area.clone(), cx).await?;
+    let (run, debug, zoom_report) = zoom(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), cli.clone(), cx).await?;
+    let (run, debug, header_report, new_space) = pane_header(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), cli.clone(), fixture_space.clone(), cx).await?;
+    let frame = |s: &Value, pane: &str| -> [f64; 4] {
+        let f = &s["panes"][pane]["frame"];
+        [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(-1.))
+    };
+    let mut pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
+        "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
+    pane_grid_report["zoom"] = zoom_report;
+    pane_grid_report["card_drops"] = card_drops_report;
+    pane_grid_report["header"] = header_report;
+    let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
+        "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
+    drop(debug);
+    let (run, server_updated_report, identities_before, layouts_before_restart, done, request) = older_server(run, native_panes.clone(), cx).await?;
+    let (run, server_lifecycle_report, saw_down, down_reason, banner_while_down, typed_after, identities_after, banner_after, final_status) = server_lifecycle_and_restart(run, native_panes.clone(), terms.clone(), webs.clone(), done.clone(), request.clone(), identities_before.clone(), layouts_before_restart.clone(), cx).await?;
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let per_pane = |s: &Value| -> Value {
+        native_panes.iter().map(|(id, kind)| (id.clone(), json!({"kind":kind,"frame":frame(s,id),"grid":last_grid(s,id)}))).collect::<serde_json::Map<_, _>>().into()
+    };
+    let mut report = json!({
+        "host_pid": std::process::id(), "layouts_received": layouts, "page": {"pane": native_pages[0], "state": page_state, "png_bytes": page_bytes}, "first_layout": first,
+        "native_panes": native_panes, "loaded_at_start": loaded["panes"],
+        "native_aligned_with_panes": aligned, "own_session_only": own,
+        "keyboard": {"clicked": target, "click": click, "focused": focused, "typed_viewport": viewport(&typed, target), "leaked_to_first": leaked},
+        "before": per_pane(&before),
+        "drag": {"split": split, "from": start, "to": moved, "parent": [parent.x, parent.y, parent.w, parent.h],
+            "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved, "steps": drag_steps, "settled": drag_settled, "window_resize": window_resize},
+        "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
+        "sessions_windows": sessions_windows,
+        "agent": agent_report,
+        "markdown": markdown_report,
+        "footer": footer_report,
+        "status": status_report,
+        "web": web_report,
+        "browser": browser_report,
+        "pages": pages_report,
+        "commands": commands_report,
+        "settings": settings_report,
+        "notices": notices_report,
+        "debug": debug_report,
+        "sidebar": sidebar_report,
+        "title_row": title_report,
+        "pane_grid": pane_grid_report,
+        "windows": windows_report,
+        "little_windows": little_report,
+        "server_updated": server_updated_report,
+        "server_lifecycle": server_lifecycle_report,
+        "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
+            "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
+            "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
+        "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
+    });
+    // Past the one `json!` the recursion limit allows.
+    report["terminal"] = terminal_report;
+    report["perms"] = perms_report;
+    report["composer"] = composer_report;
+    report["composer"]["attachment_path_in_message"] = attachments_report["attachment_path_in_message"].clone();
+    report["composer"]["attachments"] = attachments_report;
+    report["conversations"] = conversations_report;
+    report["conversations"]["fork_rows"] = json!(fork_rows);
+    report["conversations"]["fork"] = fork_report;
+    report["message_menu"] = message_menu_report;
+    report["scroll"] = scroll_report;
+    // Last: it closes every window.
+    report["menu_bar"] = menu_bar_check(&bridge, &agent_name, &mut connection, &mut layouts, window, &output, cx).await?;
+    Ok(report)
+}
+
+/// Layout from wheeld, one native view per pane on its body, separate terminal sessions,
+/// keyboard focus by a click, a dropped path and the `terminal.*` settings restyling the surface.
+async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Value, Value, Value, u64, Vec<(String, Rect)>, Vec<(String, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
     let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
     let mut connection = Connection::open(endpoint.clone());
@@ -375,6 +552,20 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let terminal_report = json!({"dropped": dropped, "drop_line": drop_line, "target_viewport": viewport(&after_drop, target),
         "other_viewport": viewport(&after_drop, other_term), "config_before": look_before, "config_restyled": config_of(&restyled, target),
         "config_after": look_after, "grids": terms.iter().map(|t| (t.to_string(), last_grid(&restyled, t))).collect::<serde_json::Map<_, _>>()});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, click, focused, typed, leaked, terminal_report, saved_file))
+}
+
+/// Command-] and command-[ move the keyboard; a divider drag and a window resize hold the
+/// terminals' sizes until they end; another client's ratio change is followed.
+async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &mut AsyncApp) -> Result<(Run, String, Rect, [f64; 2], Vec<Value>, Value, Vec<Value>, Value, Value, Option<f64>, std::process::ExitStatus, Value, Value, String)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let snapshot = |cx: &mut AsyncApp| window.update(cx, |c, _, _| {
+        let (leaves, dividers) = c.scene();
+        json!({"leaves":leaves.iter().map(|p| json!({"id":p.leaf.id,"kind":p.leaf.kind,"label":p.leaf.label,"rect":[p.rect.x,p.rect.y,p.rect.w,p.rect.h],
+            "native":c.native_panes.contains(&p.leaf.id)})).collect::<Vec<_>>(),
+          "dividers":dividers.iter().map(|d| json!({"split":d.split,"horizontal":d.horizontal,"rect":[d.rect.x,d.rect.y,d.rect.w,d.rect.h]})).collect::<Vec<_>>()})
+    });
     // Command-] from the focused terminal (a native view) moves the keyboard to the next pane in
     // layout order, and command-[ moves it back.
     let order: Vec<(String, String)> = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.leaf.kind)).collect())?;
@@ -425,25 +616,6 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     draw(window, None, cx)?;
     pump(&mut connection, 800, &mut layouts, window, cx).await?;
     // Each terminal the drag resized sent once, the grid it reported last; the others sent nothing.
-    async fn settled_once(native: &Native, terms: &[&String], before: &[Vec<Value>], before_status: &Value, what: &str) -> Result<Value> {
-        let after = native.status();
-        let mut resized = 0;
-        let mut per = serde_json::Map::new();
-        for (i, t) in terms.iter().enumerate() {
-            let sent = after["panes"][t.as_str()]["sent_grids"].as_array().cloned().unwrap_or_default();
-            let new = &sent[before[i].len().min(sent.len())..];
-            let now = last_grid(&after, t);
-            if now != last_grid(before_status, t) {
-                ensure!(new.len() == 1 && new[0] == now, "{what}: terminal {t} sent {new:?} after the move, wanted only its last grid {now}");
-                resized += 1;
-            } else {
-                ensure!(new.is_empty(), "{what}: terminal {t} kept its grid {now} and still sent {new:?}");
-            }
-            per.insert(t.to_string(), json!({"sent_new": new, "last_grid": now}));
-        }
-        ensure!(resized > 0, "{what}: no terminal changed size: {per:?}");
-        Ok(Value::Object(per))
-    }
     let drag_settled = settled_once(&native, &terms, &sent_before_drag, &before_drag, "the divider drag").await?;
     ensure!(held_now(cx)?["resizes_held"] == false, "the divider drag left the resizes held");
     // A window edge dragged, smaller and back: the bridge holds from AppKit's live resize
@@ -493,6 +665,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let external_status = native.status();
     draw(window, Some(output.join("client-external.png")), cx)?;
     shot(&native, &output.join("external"), cx).await?;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, split, parent, start, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli))
+}
+
+/// The agent pane: a typed message reaches wheeld and the fake agent's turns come back as rows.
+async fn agent_turns(run: Run, rects: Vec<(String, Rect)>, cx: &mut AsyncApp) -> Result<(Run, String, String, Rect, String, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // The agent pane: a message typed into its composer reaches wheeld, and the fake agent's
     // turns come back as rows: tool calls with their statuses, a thought, an edit's path.
     let agent_pane = std::env::var("WHEEL_CLIENT_AGENT_PANE")?;
@@ -506,13 +685,6 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
     let attached = rows(cx)?;
     ensure!(attached.0 == "ready", "the agent pane did not attach to a ready agent: state {:?}", attached.0);
-    async fn type_line(native: &Native, text: &str, cx: &mut AsyncApp) {
-        for ch in text.chars() {
-            native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
-            tick(cx, 15).await;
-        }
-        native.call(json!({"op":"post_key","text":"\r","code":36}));
-    }
     type_line(&native, "show tools", cx).await;
     let mut tool_rows = 0usize;
     let mut failed_rows = 0usize;
@@ -558,6 +730,14 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let state_after = rows(cx)?.0;
     let agent_report = json!({"pane": agent_pane, "agent": agent_name, "sent_seen_by_wheeld": sent_seen_by_wheeld, "tool_rows": tool_rows, "failed_rows": failed_rows,
         "thought_rows": thought_rows, "diff_paths": diff_paths, "state_after": state_after, "rows_total": rows(cx)?.1.len()});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, agent_pane, agent_name, agent_rect, cli_path, agent_report))
+}
+
+/// A Markdown reply drawn as blocks, its first line selected with the pointer and copied.
+async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
     // Markdown: a message sent through the CLI comes back echoed as the reply, so its fenced
     // block is drawn as a code block with its language label and syntax colours; the first line
     // of that reply is selected with the pointer and copied with Command-C.
@@ -613,6 +793,14 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(clipboard.as_deref() == Some(expected_line.as_str()), "clipboard after Command-C: {clipboard:?}");
     let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
         "reply_row": md_row, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, markdown_report))
+}
+
+/// The footer under the composer: the context meter, the config controls and their menus,
+/// tooltips, and whole items in a narrow pane.
+async fn footer(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // The footer under the composer: the context meter (three turns answered, 10,000 tokens each
     // of a 200,000 window), the directory, the agent's home, and the config controls the agent
     // offers, sorted model first. A click on the meter reads the raw figures; a click on a
@@ -793,6 +981,14 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let footer_report = json!({"items": footer_before, "raw_text": raw_text, "controls": controls, "model_before": before_set, "model_after": model_after,
         "menu_rows": {"opened": row_opened.1, "after_up": row_up}, "model_keyed": model_keyed, "tooltips": tips,
         "wide": {"items": footer_wide.0, "more": footer_wide.1}, "narrow": {"items": footer_narrow.0, "more": footer_narrow.1, "shot": narrow_crop}});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, footer_report))
+}
+
+/// The pane's status dot and the space chip's marks follow `status_changed`.
+async fn statuses(run: Run, agent_pane: String, agent_name: String, agent_rect: Rect, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, bool, bool, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
     // Statuses: the pane's dot and the space chip's marks follow `status_changed`. A slow turn
     // shows `working`; a permission request shows `needs_you` with the agent's reason until the
     // CLI answers it; after that the pane is idle again.
@@ -870,6 +1066,20 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let status_report = json!({"at_rest": status_name(&at_rest), "saw_working": saw_working, "marks_while_working": marks_while_working,
         "needs_you": wheel_gpui::status::label(&needs_you), "marks_needing": marks_needing, "after_answer": status_name(&after_answer),
         "dots_setting": window.update(cx, |c, _, _| c.status_dots.iter().copied().collect::<Vec<_>>())?});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, buttons_inside_short_pane, resolved_from_cli, status_report))
+}
+
+/// Permission and question cards: Return allows, a click on each first answer answers.
+async fn perm_cards(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Vec<wheel_gpui::layout::SplitStep>, Value, bool, String, Value, usize, Vec<String>, String)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
+    let card_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.perm_card_json(&agent_pane));
     // Permission and question cards (wheel-ynjo.10.2): a described permission draws its card
     // above the composer and Return from the empty composer allows it; a question draws one
     // button per answer and a click on the first answers it.
@@ -977,6 +1187,19 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     }
     ensure!(question_answer == r#"allow answers={"Which color?":"Red","Which size?":"Small"}"#, "clicks on each question's first answer gave {question_answer:?}: cards clicked {clicked:?}, card now {}, presses {:?}, replies {:?}",
         card_now(cx)?, window.update(cx, |c, _, _| c.presses.clone())?, replies_since(&rows(cx)?.1, rows_before_question));
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, splits_above, perm_card, card_shown, answered_by_key, question_card, question_options, clicked, question_answer))
+}
+
+/// The composer's command list, the queue and its actions, Control-Return and Esc.
+async fn composer_and_queue(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Vec<String>, String, Value, String, String, [String; 6], bool, bool, bool, bool, bool, bool)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
     // The composer (wheel-ynjo.10.4.1): `/` lists the fake agent's commands (its `slash_commands`),
     // the arrows with Return, Tab and a click each pick one, and Esc shuts the list. Messages sent
     // during a slow turn show queued with their actions; Edit, Clear queue and Send now pressed
@@ -986,20 +1209,6 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         native.call(json!({"op":"post_key","text":text,"code":code}));
     };
     let draft_now = |cx: &mut AsyncApp| -> Result<String> { Ok(pane_now(cx)?["draft"].as_str().unwrap_or_default().to_owned()) };
-    async fn erase(native: &Native, count: usize, cx: &mut AsyncApp) {
-        for _ in 0..count {
-            native.call(json!({"op":"post_key","text":"\u{7f}","code":51}));
-            tick(cx, 10).await;
-        }
-        tick(cx, 100).await;
-    }
-    async fn type_text(native: &Native, text: &str, cx: &mut AsyncApp) {
-        for ch in text.chars() {
-            native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
-            tick(cx, 15).await;
-        }
-        tick(cx, 150).await;
-    }
     ensure!(draft_now(cx)?.is_empty(), "the composer holds {:?} before the command list check", draft_now(cx)?);
     type_text(&native, "/", cx).await;
     draw(window, None, cx)?;
@@ -1193,6 +1402,24 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let kept = draft_now(cx)?;
     ensure!(esc_stopped && kept == "abc", "Esc with `abc` typed during a slow turn: stopped {esc_stopped}, state {:?}, draft {kept:?}", rows(cx)?.0);
     erase(&native, 3, cx).await;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped))
+}
+
+/// Attachments: a dropped file and a pasted image become chips and go out as paths.
+async fn attachments(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
+    let pane_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()].clone());
+    let key = |native: &Native, text: &str, code: u16| {
+        native.call(json!({"op":"post_key","text":text,"code":code}));
+    };
+    let draft_now = |cx: &mut AsyncApp| -> Result<String> { Ok(pane_now(cx)?["draft"].as_str().unwrap_or_default().to_owned()) };
     // Attachments (wheel-ynjo.10.4.2): a file dropped on the composer and an image pasted with
     // Command-V become chips; × on the image's chip deletes the copy it wrote; the message goes
     // out with each path in backticks on its own line after the text, and the chips empty. A
@@ -1303,6 +1530,20 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     drop(cleanup);
     let attachments_report = json!({"dropped": dropped[0]["name"], "dropped_detail": dropped[0]["detail"], "pasted_image": image_name, "removed_copy": removed_copy,
         "message": expected_message, "attachment_path_in_message": attachment_path_in_message, "folder_alone_sent": alone_sent});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, attachments_report))
+}
+
+/// The Conversations popover, the Recent shortcut, and a Codex pane streaming a reply.
+async fn conversations(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, &'static str, usize, String, String, bool, Value, usize, bool)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
+    let pane_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()].clone());
     // The Conversations popover (wheel-ynjo.10.5.1): the pane menu's Conversations… lists the
     // fake agent's conversations for its directory, New conversation empties the transcript and
     // wheeld names a new id, and the earlier conversation's row brings its rows back.
@@ -1475,6 +1716,33 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             break;
         }
     }
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams))
+}
+
+/// Fork from a reply, and the reply's copy and play buttons.
+async fn fork_and_reply_buttons(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, usize, String, usize, Value, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
+    let wheel = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?;
+        ensure!(out.status.success(), "wheel {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let click_pane = |native: &Native, pane: &str, cx: &mut AsyncApp| -> Result<()> {
+        draw(window, None, cx)?;
+        let f = window.update(cx, |c, _, _| c.state_json()["panes"][pane]["frame"].clone())?;
+        let f: Vec<f64> = serde_json::from_value(f.clone()).map_err(|_| anyhow::anyhow!("pane {pane} has no frame: {f}"))?;
+        let at = [f[0] + f[2] / 2., f[1] + f[3] / 2.];
+        native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+        Ok(())
+    };
+    let log_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.toast_log.clone());
     // Fork from a reply (wheel-ynjo.10.5.2): the last reply of the resumed conversation's first
     // turn draws the branch button on a line under it; a press forks the conversation through that
     // turn into a new agent pane right of this one, and `wheel agent read` gives the fork's rows,
@@ -1636,6 +1904,36 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let fork_rows = fork_rows.len();
     click_pane(&native, &agent_pane, cx)?;
     tick(cx, 300).await;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, fork_row, fork_text, fork_rows, reply_buttons, fork_report))
+}
+
+/// The message menu, a 1000-message conversation scrolling within a frame, and the way
+/// back to the terminal.
+async fn message_menu_and_scroll(run: Run, agent_pane: String, agent_name: String, cli_path: String, old_id: String, splits_above: Vec<wheel_gpui::layout::SplitStep>, click: [f64; 2], fork_row: usize, fork_text: String, cx: &mut AsyncApp) -> Result<(Run, Value, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
+    let set_ratio = |split: &str, ratio: f64| -> Result<()> {
+        let out = std::process::Command::new(&cli_path)
+            .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "ratio", split, &ratio.to_string()]).output()?;
+        ensure!(out.status.success(), "pane ratio {split} {ratio}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        Ok(())
+    };
+    let pane_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()].clone());
+    let draft_now = |cx: &mut AsyncApp| -> Result<String> { Ok(pane_now(cx)?["draft"].as_str().unwrap_or_default().to_owned()) };
+    let key = |native: &Native, text: &str, code: u16| {
+        native.call(json!({"op":"post_key","text":text,"code":code}));
+    };
+    let wheel = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?;
+        ensure!(out.status.success(), "wheel {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
     // The message menu (wheel-ynjo.10.5.3): a control-click on the reply the fork came from opens
     // its three items; Copy message as Markdown puts the reply's source on the clipboard, Copy
     // message the text as drawn, and Attach message as context quotes it at the top of the draft
@@ -1888,9 +2186,6 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     ensure!(rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")), "switching back to {old_id} after the scroll check");
-    let conversations_report = json!({"reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
-    let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
-        "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     for s in &splits_above {
         set_ratio(&s.id, s.ratio)?;
     }
@@ -1901,12 +2196,18 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     draw(window, None, cx)?;
-    let perms_report = json!({"card_shown": card_shown, "answered_by_key": answered_by_key, "resolved_from_cli": resolved_from_cli,
-        "question_options": question_options, "buttons_inside_short_pane": buttons_inside_short_pane, "question_answer": question_answer, "questions_clicked": clicked.len(), "card": perm_card, "question_card": question_card});
     // Back to the terminal, so the focus checks below start where they did.
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
     tick(cx, 300).await;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, message_menu_report, scroll_report))
+}
+
+/// The spaces sidebar: rows, the context menu, rename, reorder, a pane moved by its header,
+/// the hover preview, close and the toggle.
+async fn sidebar(run: Run, click: [f64; 2], cx: &mut AsyncApp) -> Result<(Run, String, String, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // The spaces sidebar (wheel-ynjo.5). Four more spaces join the first session, so the sidebar
     // lists five rows; then each thing the Swift sidebar does is driven here with real events or
     // the client's own entry points, and the layout wheeld broadcasts shows the result.
@@ -2105,6 +2406,14 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
     tick(cx, 300).await;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first_session_id, fixture_space, sidebar_report))
+}
+
+/// The title row and the bottom row: commands, the mode menu, the session menu, tabs, the
+/// strip and the Usage window.
+async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space: String, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // The title row and the bottom row (wheel-ynjo.6; ADR-0037, ADR-0034). The fixture's machine
     // file has `build` (a state command: icon, tint and badge every second) and `vpn` entries and
     // hides the pin; the project's file puts `vpn` on the right with its own command and adds
@@ -2221,6 +2530,18 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(!window.update(cx, |c, _, _| c.usage_open)?, "Esc did not close the Usage window");
     let title_report = json!({"order": order, "build": build, "vpn": vpn, "pressed": pressed, "mode_after": mode_after, "session_menu": menu_ids, "tabs": tab_ids, "tab_width": tabs["tabs"]["tab_width"],
         "badge": tabs["connection_badge"], "strip": summary, "meters_after_full": meters, "full_row": full_row});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, title_report))
+}
+
+/// A second window with its own connection, restored windows, and a space dragged between
+/// windows and onto the desktop.
+async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_panes: Vec<(String, String)>, webs: Vec<&String>, cx: &mut AsyncApp) -> Result<(Run, Value, Option<String>, Option<String>, Vec<(String, Option<String>, Option<String>, Option<String>)>, bool, Value, gpui::WindowHandle<Client>, String, std::rc::Rc<Native>, String, String, Vec<f32>, Vec<f32>, String, PathBuf, [f64; 2], Value, Value, (Vec<String>, Vec<String>), (f32, f32), String, Option<String>, Vec<f32>, Value, (f32, f32), (f32, f32), Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let row_frame = |state: &Value, id: &str| -> Option<[f64; 4]> {
+        state["rows"].as_array()?.iter().find(|r| r["id"] == id).map(|r| [r["frame"][0].as_f64().unwrap(), r["frame"][1].as_f64().unwrap(), r["frame"][2].as_f64().unwrap(), r["frame"][3].as_f64().unwrap()])
+    };
+    let centre = |f: [f64; 4]| [f[0] + f[2] / 2., f[1] + f[3] / 2.];
     // Sessions and windows. The fixture holds two sessions; this window shows the first.
     let (first_session, first_space) = shown(window, cx)?;
     let (second_session, second_space) = (std::env::var("WHEEL_CLIENT_SECOND_SESSION")?, std::env::var("WHEEL_CLIENT_SECOND_SPACE")?);
@@ -2464,6 +2785,15 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     ensure!(cx.update(|_| wheel_gpui::window_handle(&little_id)).is_none(), "the little window {little_id} did not close");
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, restore, first_session, first_space, both, distinct, hidden_native, second, second_session, native2, id1, id2, f1, f2, dragged, drag_dir, from2, over_window, window2_sees, after_window, desk, little_id, little_owner, little_frame, over_desk_floats, aim, chip_expect, chip_over_window))
+}
+
+/// A space dragged onto the menu bar popover's session card and between title-row tabs.
+async fn space_drag_to_popover_and_tabs(run: Run, dragged: String, f1: Vec<f32>, f2: Vec<f32>, first_session: Option<String>, from2: [f64; 2], id2: String, native2: std::rc::Rc<Native>, second: gpui::WindowHandle<Client>, second_session: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::sidebar::DropCard, Value, Vec<String>, Value, Value, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let spaces_of = |c: &Client, session: &str| -> Vec<String> { c.layout_lists().0.into_iter().find(|s| s.id == session).map(|s| s.spaces).unwrap_or_default() };
+    let drag_lines = |h: gpui::WindowHandle<Client>, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("space drag") || l.contains("little window") || l.contains("layout")).rev().take(12).cloned().collect())?) };
     // From window 2 onto the first session's card in the menu bar popover, which is in front of
     // window 1: the space goes first in that session.
     let menu = app_menu_bar(&bridge, cx)?;
@@ -2574,6 +2904,19 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         })?;
         draw(h, None, cx)?;
     }
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, card, card_hint, onto_tabs_after, over_card, over_tabs, window2_tabs))
+}
+
+/// A pane dragged by its header out of its window, and the second window closing.
+async fn pane_drag_out_of_window(run: Run, f1: Vec<f32>, f2: Vec<f32>, id1: String, id2: String, second: gpui::WindowHandle<Client>, native2: std::rc::Rc<Native>, second_session: String, first_space: Option<String>, dragged: String, drag_dir: PathBuf, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let row_frame = |state: &Value, id: &str| -> Option<[f64; 4]> {
+        state["rows"].as_array()?.iter().find(|r| r["id"] == id).map(|r| [r["frame"][0].as_f64().unwrap(), r["frame"][1].as_f64().unwrap(), r["frame"][2].as_f64().unwrap(), r["frame"][3].as_f64().unwrap()])
+    };
+    let floats = |cx: &mut AsyncApp| cx.update(|_| wheel_gpui::view::float::state());
+    let spaces_of = |c: &Client, session: &str| -> Vec<String> { c.layout_lists().0.into_iter().find(|s| s.id == session).map(|s| s.spaces).unwrap_or_default() };
+    let frame_of = |n: &Native| -> Vec<f32> { n.call(json!({"op":"frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
     // A pane dragged by its header out of its window (wheel-ynjo.8.3; PaneMove.swift's awayTarget,
     // armHold, dropAway): from a space of window 1 onto a row of window 2, held there until
     // window 2 shows that space, then onto a side of a pane in it; from window 2 onto the
@@ -2824,16 +3167,6 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         })?;
     }
     pump(&mut connection, 300, &mut layouts, window, cx).await?;
-    let space_drags = json!({
-        "window_frames": [f1, f2],
-        "onto_window": {"target": over_window["target"], "hint": over_window["hint"], "window2_insertion": window2_sees["insertion"], "window2_chip": window2_sees["chip"], "session_after": after_window.0},
-        "onto_desktop": {"drop": [desk.0, desk.1], "little": little_id, "owner": little_owner, "frame": little_frame},
-        "onto_card": {"target": over_card["target"], "hint": card_hint, "card": [card.frame.x, card.frame.y, card.frame.w, card.frame.h]},
-        "chip": {"aim": [aim.0, aim.1], "frame": chip_over_window["frame"], "expected_origin": [chip_expect.0, chip_expect.1]},
-        "card": {"drop": [desk.0, desk.1], "frame": over_desk_floats["card"]["frame"], "chip_shown": over_desk_floats["chip"]["shown"]},
-        "onto_tabs": {"target": over_tabs["target"], "hint": over_tabs["hint"], "window2_tab_bar": window2_tabs["tab_bar"], "session_after": onto_tabs_after},
-        "pane_away": pane_away,
-    });
     // Closing the second window ends its connection: wheeld forgets its view, the first stays.
     second.update(cx, |_, w, _| w.remove_window())?;
     let mut gone = false;
@@ -2847,8 +3180,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(gone, "wheeld still lists the closed window {id2}: {:?}", reported_views()?);
     ensure!(reported_views()?.iter().any(|w| w.0 == id1), "closing the second window dropped the first's view");
     ensure!(native.status()["panes"].as_object().is_some_and(|p| native_panes.iter().all(|(id, _)| p.contains_key(id))), "the first window lost its views");
-    let sessions_windows = json!({"restore": restore, "space_drags": space_drags, "first_session": first_session, "second_session": second_session, "views_with_two_windows": both.iter().map(|w| json!([w.0, w.1, w.2, w.3])).collect::<Vec<_>>(),
-        "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, pane_away))
+}
+
+/// `wheel window` and the window menus: rename, new, move, close and Rename Session….
+async fn window_commands(run: Run, first_session: Option<String>, id1: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // `wheel window` and the window menus (wheel-ynjo.7.2; AppModel+Windows.swift): this app
     // offers to run window commands; wheeld forwards each to the newest window that offered, which
     // answers from the app's list of windows and acts on the others through their handles.
@@ -3008,6 +3346,14 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::SessionRename { req: None, session: back, name: old_session_name.clone() }))?;
     pump(&mut connection, 300, &mut layouts, window, cx).await?;
     let windows_report = json!({"ls": listed, "new": new_id, "moved": moved, "closed_last": closed_last, "session_renamed_from": old_session_name});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, windows_report))
+}
+
+/// Little windows: open, the short agent pane, back, the red light and Bring Back.
+async fn little_windows(run: Run, id1: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let window_ls = |out: &str| -> Result<Value> { serde_json::from_str(out).map_err(|e| anyhow::anyhow!("wheel window ls --json printed {out:?}: {e}")) };
     // Little windows (wheel-ynjo.7.5.1; LittleWindow.swift, AppModel+Windows.swift): the space
     // menu's Open in Little Window opens the shown space in a window of its own, owned by this one,
     // whose tab and row dim and whose grid shows the placeholder; the strip's back icon, the red
@@ -3128,6 +3474,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(wait_closed(&brought_id, &mut connection, &mut layouts, cx).await?, "Bring Back left the little window open");
     let little_report = json!({"short_agent_pane": little_short, "space": little_space, "owner": id1, "panes": home_panes, "ls": little_ls["little"], "closed_by": ["back", "red light", "bring back"],
         "pictures": ["client-little-placeholder.png", "client-little-window.png", "client-little-back.png"]});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, little_report))
+}
+
+/// Web panes: artifacts under the `wheel-page` scheme, reloads, and the palette's artifacts.
+async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value, cx: &mut AsyncApp) -> Result<(Run, Vec<String>, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // Web panes: an artifact's page opens under the client's own `wheel-page` scheme, fetched from
     // wheeld with the token in a header (never in the page's address), in a store of its own; the
     // page's script reached wheeld through `.wheel/client.js`; a file written into the folder
@@ -3231,6 +3584,19 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let web_report = json!({"pane": html_pane, "address": address, "http_status": http_status, "store": store, "client_state": seen_text.trim(),
         "loads_before_change": loads_before, "reloads": reloads, "title_after_change": title_after,
         "palette": {"pane": new_pane, "listed": listed, "query": query, "filtered": filtered, "footer": footer_text, "kind_after": kind_after, "opened_address": opened_address}});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, page_names, web_report))
+}
+
+/// The browser pane: `wheel pane page`, console, eval, dom, shot and record, the address
+/// field, back, and a failed load.
+async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let press = |native: &Native, b: (f32, f32, f32, f32)| {
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
     // The browser pane: `wheel pane page` sends it to a file page through wheeld; the page's
     // console reaches wheeld; `eval`, `dom`, `shot` (the pane and one element) and `record` run in
     // the pane's page; an address typed into the GPUI-drawn field goes through wheeld and the
@@ -3378,6 +3744,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "eval": {"sum": eval_out, "title": eval_title, "throw_error": eval_throw_err}, "dom_h1": dom_out, "dom_bytes": dom_all.len(),
         "shot_bytes": shot_bytes.len(), "shot_h1_bytes": element_bytes.len(), "shot_none_error": none_err, "record": {"bytes": movie_bytes, "printed": record_out},
         "typed": {"draft": typed_draft, "moved_to_two": on_two, "back_to_one": back_on_one}, "failure": failure, "cleared": cleared, "logs": browser_logs});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, browser_report))
+}
+
+/// Every plugin page drawn by the A2UI renderer in one pane of a session on this repository.
+async fn plugin_pages(run: Run, page_names: Vec<String>, first_session: Option<String>, first_space: Option<String>, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // Plugin pages: a session on this repository holds one web pane, moved by `wheel pane kind`
     // through every machine artifact the fixture serves. Each is drawn by WheelUI's A2UI renderer
     // (the Swift app's own view), reaches `ready` with every component in the catalog, and is
@@ -3438,6 +3811,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the pages did not come back");
     wait(&native, "the first space's views shown after the pages", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, pages_report))
+}
+
+/// The command palette, key bindings, Run…, the shortcut sheet and ⌘W.
+async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // The command palette, the key bindings and the shortcut sheet (CommandActions.swift,
     // KeyBindings.swift, ShortcutSheet.swift): a bound key pressed while a terminal holds the
     // keyboard runs its action; the palette lists the verbs, the actions and the fixture's
@@ -3637,6 +4017,17 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "sheet_groups": sheet.iter().map(|g| json!({"name": g.0, "rows": g.1.len()})).collect::<Vec<_>>(), "rebound_key": moved_key,
         "panes": {"before": panes_before.len(), "after_split": after_split.len(), "after_run": after_run.len(), "after_rebind": after_rebind.len(), "after_close": after_close.len()},
         "confirmation": {"title": asked.title, "message": asked.message, "button": asked.button}, "actions": window.update(cx, |c, _, _| c.actions_log.clone())?});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, commands_report))
+}
+
+/// The Settings window and each of its tabs.
+async fn settings_window(run: Run, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let post = |native: &Native, ch: char, command: bool| native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch),"command":command}));
+    let config = |args: &[&str]| -> Result<std::process::Output> {
+        Ok(std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "config"]).args(args).output()?)
+    };
     // The Settings window (SettingsWindow.swift and its tabs): ⌘, opens it over the window with
     // the daemon's rows; a field typed and typed_saved reaches wheeld's wheel.toml and `wheel config`
     // reads it; a write from another client (the CLI here) shows in the open window; the Chat
@@ -3906,6 +4297,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "typed_saved": typed_saved, "cli_write_seen": seen_other, "refusal": refusal, "cleared_to": cleared, "chat": {"switch": bool_key, "written": bool_after, "changed": chat_changed, "toml": chat_toml, "query": chat_query, "rows": chat_rows, "all": chat_all, "reset_keys": reset_keys},
         "project": {"space": project_space, "value": project_value, "machine_unchanged": machine_value_under_project, "topics": project_topics}, "builtins": builtins, "guidance": {"segments": guidance_segments, "opened": guidance_opened},
         "devices": devices_state});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, settings_report))
+}
+
+/// Notices, the pairing window and the quarantine card.
+async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // Notices (Toasts.swift), the pairing window (PairingWindow.swift) and the quarantine card
     // (QuarantineCard.swift). `wheel notify` posts a toast to every client; it names a pane, so
     // the notice gets Focus pane and Close pane after Copy; `--clear` takes it down.
@@ -4037,6 +4435,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let notices_report = json!({"toast": {"text": toast.text, "actions": toast_actions, "stack": stacked, "layout_error": layout_error},
         "pairing": {"qr_rows": pairing_rows, "connected": connected, "events": pairing_events, "closed": pairing_closed},
         "quarantine": {"pane": held, "held": held_hidden}, "log": toast_log});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, notices_report))
+}
+
+/// The debug server's routes and the Processes card.
+async fn debug_server_and_processes(run: Run, terms: Vec<&String>, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, String, u16, u16, u16, Vec<String>, Value, usize, Value, u64, bool, u16, String)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // Closing the second window above left `native_panes` as the first window's views; the
     // pane opened from the palette is one more of them.
     // wheeld stops, stays away for 1.5 s and starts again on the same port; tools/check.py does
@@ -4148,6 +4553,22 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // A hidden window refuses the routes that would show it or feed it input.
     let (front_refused, _) = call!("POST", "/window/front");
     ensure!(front_refused == 403, "a hidden window answered the front route with {front_refused}");
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space))
+}
+
+/// The pane grid: a space of its own, splits, a real header drag, dock, and a popped card.
+async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::debug::Server, bearer: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, String, String, String, String, [f64; 4], [f64; 4], Vec<String>, Value, [f64; 4], Value, Value, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
+    macro_rules! call {
+        ($method:literal, $target:expr) => {
+            http(&mut debug, $method, &$target, &auth, &mut connection, &mut layouts, window, cx).await?
+        };
+    }
+    macro_rules! state {
+        () => { call!("GET", "/state").1 };
+    }
     // The pane grid (wheel-ynjo.8.1): a space of its own, shown by a focus request; the header's
     // menu splits it; a real header drag onto another pane's middle swaps the two, a drag held
     // on an edge docks beside it; the header's buttons pop and background a pane; a focus request
@@ -4170,24 +4591,6 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             got
         }};
     }
-    // A motion's frame mid-way: the check holds the grid's motion clock at a fraction of its
-    // length (`Client::motion_hold`) before the step that starts it, and this waits for the motion.
-    macro_rules! held_motion {
-        ($what:expr) => {{
-            let mut got = Value::Null;
-            for _ in 0..60 {
-                pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                draw(window, None, cx)?;
-                got = state!();
-                if got["grid_motion"]["moving"] == true {
-                    break;
-                }
-            }
-            ensure!(got["grid_motion"]["moving"] == true, "{} never started a motion: {}", $what, got["grid_motion"]);
-            got
-        }};
-    }
-    let hold_motion = |at: Option<f32>, cx: &mut AsyncApp| window.update(cx, |c, _, _| c.motion_hold = at);
     let grid_dir = std::env::temp_dir().join(format!("wheel-gpui-grid-{}", std::process::id()));
     std::fs::create_dir_all(&grid_dir)?;
     let (ok, out, err) = run_pumped(&["space", "new", &grid_dir.to_string_lossy(), "--name", "grid", "--session", &first_session_id], &mut connection, &mut layouts, window, cx).await?;
@@ -4340,6 +4743,52 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     until!("the third pane back in the grid again", |s: &Value| grid_panes(s).contains(&grid_c));
     let popped_card_report = json!({"pane": grid_c, "grid": area, "before": card_before, "moved": card_moved, "resized": card_resized, "popped_again": card_now(&again),
         "grid_view_holes": holes, "card_view_holes": own, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report, own, moved))
+}
+
+/// Drops onto and off a card, and the tray.
+async fn card_drops_and_tray(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, grid: String, grid_a: String, grid_b: String, grid_c: String, area: [f64; 4], cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, Value, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
+    macro_rules! call {
+        ($method:literal, $target:expr) => {
+            http(&mut debug, $method, &$target, &auth, &mut connection, &mut layouts, window, cx).await?
+        };
+    }
+    macro_rules! state {
+        () => { call!("GET", "/state").1 };
+    }
+    macro_rules! until {
+        ($what:expr, $cond:expr) => {{
+            let mut got = Value::Null;
+            let mut held = false;
+            for _ in 0..60 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                // A frame read while the grid animates is a step of the motion, not where it ends.
+                if got["grid_motion"]["moving"] != true && ($cond)(&got) {
+                    held = true;
+                    break;
+                }
+            }
+            ensure!(held, "{} never happened: {}", $what, got);
+            got
+        }};
+    }
+    let grid_panes = |s: &Value| -> Vec<String> {
+        s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).and_then(|x| x["panes"].as_array())
+            .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    };
+    let frame = |s: &Value, pane: &str| -> [f64; 4] {
+        let f = &s["panes"][pane]["frame"];
+        [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(-1.))
+    };
+    let site_list = |s: &Value, key: &str| s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).map(|x| x[key].clone()).unwrap_or_default();
+    let four = |v: &Value| -> [f64; 4] { [0, 1, 2, 3].map(|i| v[i].as_f64().unwrap_or(-1.)) };
+    let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
+    let card_now = |s: &Value| four(&s["cards"][0]["frame"]);
     // Drops onto and off a card (wheel-ynjo.26): the second pane dragged by its header onto the
     // card's pane docks on that pane's nearest side inside the card (the two trees never swap), and
     // the card dragged by its header to the grid's left edge lights that edge, then sends both its
@@ -4479,6 +4928,69 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let tray_report = json!({"chip": chip, "list": list, "grid_view_holes": tray_holes["panes"][grid_a.as_str()]["bridge"]["holes"], "with_list": list_holes["panes"][grid_a.as_str()]["bridge"]["holes"],
         "moved_place": moved_tray["tray"]["place"], "moved_chip": moved_chip, "list_below": below_list, "row": reopened["tray"]["rows"][0],
         "terminal_press": {"at": in_term, "target": press_target, "closed": ["tray list", "pane menu", "space menu"]}});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, card_drops_report, tray_report))
+}
+
+/// Zoom and grid motion, Reduce Motion, and a layout change while zoomed.
+async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, grid: String, grid_a: String, grid_b: String, grid_c: String, cli: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
+    macro_rules! call {
+        ($method:literal, $target:expr) => {
+            http(&mut debug, $method, &$target, &auth, &mut connection, &mut layouts, window, cx).await?
+        };
+    }
+    macro_rules! state {
+        () => { call!("GET", "/state").1 };
+    }
+    macro_rules! until {
+        ($what:expr, $cond:expr) => {{
+            let mut got = Value::Null;
+            let mut held = false;
+            for _ in 0..60 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                // A frame read while the grid animates is a step of the motion, not where it ends.
+                if got["grid_motion"]["moving"] != true && ($cond)(&got) {
+                    held = true;
+                    break;
+                }
+            }
+            ensure!(held, "{} never happened: {}", $what, got);
+            got
+        }};
+    }
+    // A motion's frame mid-way: the check holds the grid's motion clock at a fraction of its
+    // length (`Client::motion_hold`) before the step that starts it, and this waits for the motion.
+    macro_rules! held_motion {
+        ($what:expr) => {{
+            let mut got = Value::Null;
+            for _ in 0..60 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                if got["grid_motion"]["moving"] == true {
+                    break;
+                }
+            }
+            ensure!(got["grid_motion"]["moving"] == true, "{} never started a motion: {}", $what, got["grid_motion"]);
+            got
+        }};
+    }
+    let hold_motion = |at: Option<f32>, cx: &mut AsyncApp| window.update(cx, |c, _, _| c.motion_hold = at);
+    let grid_panes = |s: &Value| -> Vec<String> {
+        s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).and_then(|x| x["panes"].as_array())
+            .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    };
+    let frame = |s: &Value, pane: &str| -> [f64; 4] {
+        let f = &s["panes"][pane]["frame"];
+        [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(-1.))
+    };
+    let four = |v: &Value| -> [f64; 4] { [0, 1, 2, 3].map(|i| v[i].as_f64().unwrap_or(-1.)) };
+    let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
+    let centre = |r: [f64; 4]| [r[0] + r[2] / 2., r[1] + r[3] / 2.];
     // Zoom and grid motion (wheel-ynjo.8.2): the header's zoom button grows the first pane over
     // the grid while the others slide out past their nearest edge, slowed ten times by
     // WHEEL_SLOW_ANIMATIONS so a frame mid-way can be read. Its terminal sends no resize until the
@@ -4619,6 +5131,48 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let mut zoom_report = zoom_report;
     zoom_report["reduced"] = json!({"others": [b_from, c_from], "mid": {"progress": rmid["grid_motion"]["progress"], "opacity": o_mid, "alpha": a_mid_alpha, "zoomed_pane": frame(&rmid, &grid_a)},
         "zoomed": {"opacity": opacity(&rzoomed, &grid_c), "hidden": rzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"]}, "unzoom_mid_opacity": o_back});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, zoom_report))
+}
+
+/// The pane header's layout and ⋯ menu, Move Pane to New Space, and the debug report.
+async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, grid: String, grid_a: String, grid_b: String, cli: String, fixture_space: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, Value, String)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
+    macro_rules! call {
+        ($method:literal, $target:expr) => {
+            http(&mut debug, $method, &$target, &auth, &mut connection, &mut layouts, window, cx).await?
+        };
+    }
+    macro_rules! state {
+        () => { call!("GET", "/state").1 };
+    }
+    macro_rules! until {
+        ($what:expr, $cond:expr) => {{
+            let mut got = Value::Null;
+            let mut held = false;
+            for _ in 0..60 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                // A frame read while the grid animates is a step of the motion, not where it ends.
+                if got["grid_motion"]["moving"] != true && ($cond)(&got) {
+                    held = true;
+                    break;
+                }
+            }
+            ensure!(held, "{} never happened: {}", $what, got);
+            got
+        }};
+    }
+    let grid_panes = |s: &Value| -> Vec<String> {
+        s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).and_then(|x| x["panes"].as_array())
+            .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    };
+    let frame = |s: &Value, pane: &str| -> [f64; 4] {
+        let f = &s["panes"][pane]["frame"];
+        [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(-1.))
+    };
     // The header's layout (wheel-ynjo.8.4.1): a placement moves a control from the bar to the
     // menu or out of both, Reset puts it back, and a pane narrowed by every split above it
     // drops controls group by group, its ⋯ menu offering each one dropped, until widened again.
@@ -4715,14 +5269,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         ensure!(ok, "wheel space close {space} failed: {err}");
     }
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
-    let mut pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
-        "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
-    pane_grid_report["zoom"] = zoom_report;
-    pane_grid_report["card_drops"] = card_drops_report;
-    pane_grid_report["header"] = header_report;
-    let debug_report = json!({"port": debug.port, "unauthorized": unauthorized, "origin_refused": origin_refused, "unknown_route": missing, "state_keys": state_keys,
-        "sleep": sleep_row, "lists_in_5s": lists_seen, "card_rows": card_rows, "snapshot_bytes": snapshot_bytes, "stopped": stopped, "front_refused_hidden": front_refused});
-    drop(debug);
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, header_report, new_space))
+}
+
+/// An older wheeld behind a protocol-lowering proxy shows only "The server was updated."
+async fn older_server(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, usize, PathBuf, PathBuf)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // An older wheeld (wheel-ynjo.2): the fixture daemon behind a proxy that lowers the protocol
     // number in its `status` by one. The window over it never comes up: it shows the notice with
     // Restart Server, whose click runs `WHEEL_SERVER_STOP` then `WHEEL_SERVER_START`.
@@ -4783,6 +5336,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let status_before_restart = native.status();
     let identities_before: Vec<(String, String)> = native_panes.iter().map(|(id, _)| (id.clone(), identity(&status_before_restart, id))).collect();
     let layouts_before_restart = layouts;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, server_updated_report, identities_before, layouts_before_restart, done, request))
+}
+
+/// The server lifecycle control, and a wheeld restart every native view survives.
+async fn server_lifecycle_and_restart(run: Run, native_panes: Vec<(String, String)>, terms: Vec<&String>, webs: Vec<&String>, done: PathBuf, request: PathBuf, identities_before: Vec<(String, String)>, layouts_before_restart: usize, cx: &mut AsyncApp) -> Result<(Run, Value, bool, String, String, Value, Vec<(String, String)>, String, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // The server lifecycle (wheel-ynjo.3): the fixture wheeld is one this app did not install, so
     // the control is the commands kind, the word over it reads Running, and no source line is
     // logged (there is no bundled source to compare). A terminated wheeld sends `stopping` first:
@@ -4858,56 +5418,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(banner_after.is_empty(), "banner still shown after reconnect: {banner_after}");
     let final_status = native.status();
     ensure!(final_status["visible"] == false && final_status["key_window"] == false && final_status["app_active"] == false, "check took screen/focus");
-    let per_pane = |s: &Value| -> Value {
-        native_panes.iter().map(|(id, kind)| (id.clone(), json!({"kind":kind,"frame":frame(s,id),"grid":last_grid(s,id)}))).collect::<serde_json::Map<_, _>>().into()
-    };
-    let mut report = json!({
-        "host_pid": std::process::id(), "layouts_received": layouts, "page": {"pane": native_pages[0], "state": page_state, "png_bytes": page_bytes}, "first_layout": first,
-        "native_panes": native_panes, "loaded_at_start": loaded["panes"],
-        "native_aligned_with_panes": aligned, "own_session_only": own,
-        "keyboard": {"clicked": target, "click": click, "focused": focused, "typed_viewport": viewport(&typed, target), "leaked_to_first": leaked},
-        "before": per_pane(&before),
-        "drag": {"split": split, "from": start, "to": moved, "parent": [parent.x, parent.y, parent.w, parent.h],
-            "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved, "steps": drag_steps, "settled": drag_settled, "window_resize": window_resize},
-        "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
-        "sessions_windows": sessions_windows,
-        "agent": agent_report,
-        "markdown": markdown_report,
-        "footer": footer_report,
-        "status": status_report,
-        "web": web_report,
-        "browser": browser_report,
-        "pages": pages_report,
-        "commands": commands_report,
-        "settings": settings_report,
-        "notices": notices_report,
-        "debug": debug_report,
-        "sidebar": sidebar_report,
-        "title_row": title_report,
-        "pane_grid": pane_grid_report,
-        "windows": windows_report,
-        "little_windows": little_report,
-        "server_updated": server_updated_report,
-        "server_lifecycle": server_lifecycle_report,
-        "restart": {"saw_down": saw_down, "down_reason": down_reason, "banner_while_down": banner_while_down, "layouts_before": layouts_before_restart,
-            "layouts_after": layouts, "views_before": identities_before, "views_after": identities_after,
-            "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
-        "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
-    });
-    // Past the one `json!` the recursion limit allows.
-    report["terminal"] = terminal_report;
-    report["perms"] = perms_report;
-    report["composer"] = composer_report;
-    report["composer"]["attachment_path_in_message"] = attachments_report["attachment_path_in_message"].clone();
-    report["composer"]["attachments"] = attachments_report;
-    report["conversations"] = conversations_report;
-    report["conversations"]["fork_rows"] = json!(fork_rows);
-    report["conversations"]["fork"] = fork_report;
-    report["message_menu"] = message_menu_report;
-    report["scroll"] = scroll_report;
-    // Last: it closes every window.
-    report["menu_bar"] = menu_bar_check(&bridge, &agent_name, &mut connection, &mut layouts, window, &output, cx).await?;
-    Ok(report)
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, server_lifecycle_report, saw_down, down_reason, banner_while_down, typed_after, identities_after, banner_after, final_status))
 }
 
 /// The app's one menu bar item, started the first time a step needs it, as the app starts it at launch.
