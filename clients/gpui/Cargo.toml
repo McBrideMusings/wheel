@@ -1,11 +1,15 @@
 # A Rust and GPUI client for wheeld. Its own workspace, so the daemon's workspace
 # and Cargo.lock never pull in GPUI (ADR-0020: the server depends on no client).
 [workspace]
+members = [".", "check"]
+default-members = [".", "check"]
 
 [package]
 name = "wheel-gpui"
 version = "0.1.0"
 edition = "2024"
+# src/bin/check.rs belongs to the check/ package; only wheel-gpui.rs is this package's binary.
+autobins = false
 
 [lib]
 name = "wheel_gpui"
@@ -13,10 +17,6 @@ name = "wheel_gpui"
 [[bin]]
 name = "wheel-gpui"
 path = "src/bin/wheel-gpui.rs"
-
-[[bin]]
-name = "wheel-gpui-check"
-path = "src/bin/check.rs"
 
 [dependencies]
 anyhow = "1"
@@ -34,6 +34,20 @@ uuid = { version = "1", features = ["v4"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy", "parsing"] }
 gpui = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", default-features = false, features = ["test-support"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", features = ["font-kit", "test-support"] }
+
+# The same profiles as the daemon's workspace (../../Cargo.toml), which this workspace does not
+# inherit: debug builds keep line tables but not variable debug info, and release builds reuse the
+# code generated for what did not change.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+incremental = true
+
+# The hidden check (check/) is glue around the optimized library, so LLVM does not optimize it:
+# check.rs is one file of about 5,600 lines and its release compile runs on one core.
+[profile.release.package.wheel-gpui-check]
+opt-level = 0
 
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }

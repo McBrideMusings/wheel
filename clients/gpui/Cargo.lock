@@ -6185,6 +6185,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wheel-gpui-check"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "gpui_platform",
+ "image",
+ "libc",
+ "serde_json",
+ "tungstenite",
+ "wheel-gpui",
+ "wheel-proto",
+]
+
+[[package]]
 name = "wheel-proto"
 version = "0.1.0"
 dependencies = [
