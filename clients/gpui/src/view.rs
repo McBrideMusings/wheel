@@ -20,6 +20,7 @@ pub use pairing_copy::{copied as copied_pairing_code, ensure as ensure_pairing_c
 pub use sidebar::pane_window_closed;
 mod perms;
 mod procs;
+mod running;
 mod settings;
 pub mod server;
 mod sidebar;
@@ -215,6 +216,8 @@ pub struct Client {
     pending_open: Option<String>,
     /// When the armed redraw timer fires (unix ms): the Settings window's countdown or running command, the pairing window's times.
     redraw_due: Option<u64>,
+    /// Each agent's running tasks beyond the footer: open rows, the full view, the output read.
+    pub(crate) running: crate::running::Running,
     /// The notices posted to this window (`notify` toasts, agents' notices), oldest first.
     pub posted: Vec<crate::toasts::Toast>,
     /// What the notice stack is built from besides the posted ones.
@@ -403,7 +406,7 @@ impl Client {
             browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
-            settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None,
+            settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), pinned: false, usage_open: false, usage_refreshing: false,
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
@@ -441,7 +444,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_conversations_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) {
+                    if self.on_conversations_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -465,6 +468,7 @@ impl Client {
                         }
                         ServerMsg::Error { req: Some(req), message, .. } => {
                             self.on_agent_answer(*req, Some(message));
+                            self.running_refused(*req, message);
                             if let Some(palette) = self.palettes.values_mut().find(|p| p.req == Some(*req)) {
                                 palette.req = None;
                                 palette.failed(message);
@@ -1488,6 +1492,11 @@ impl Client {
         if k.key == "escape" && self.menu.take().is_some() {
             return true;
         }
+        // Escape closes the full view of a task over the focused agent's transcript.
+        if k.key == "escape" && let Some((agent, _)) = self.focused_agent() && self.full_task(&agent).is_some() {
+            self.close_full_task(&agent);
+            return true;
+        }
         if self.menu.is_some() && self.menu_key(&k.key) {
             return true;
         }
@@ -1844,12 +1853,13 @@ impl Client {
                 let list_h = composer::command_list_height(rows.len());
                 let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
                 let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
+                let tasks = self.task_parts(&p.leaf.id, agent, cx);
                 let footer = FooterRow { items, more, harness: harness.to_owned(), menu, menu_at: self.menu_at };
                 let chips_h = composer::chips_height(agent.and_then(|a| self.attachments.get(a)));
                 let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
                 let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h, list, Attach { chips, clip, over }, error, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, error, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -1979,6 +1989,10 @@ impl Render for Client {
         let v = window.viewport_size();
         self.viewport = (f32::from(v.width), f32::from(v.height));
         self.footer_shown.borrow_mut().clear();
+        self.sync_tasks();
+        if self.any_task_running() {
+            self.redraw_in(1000, cx);
+        }
         // A file drag that left the window (GPUI's `FileDropEvent::Exited` sends no mouse event)
         // leaves no files held over a composer.
         if !cx.has_active_drag() {
@@ -2330,14 +2344,15 @@ struct Attach {
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
 /// rows, or `empty` while it has none), and the composer with the draft. Files dropped on the composer or its chips attach.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, attach: Attach, error: Option<&str>,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, tasks: running::TaskParts, attach: Attach, error: Option<&str>,
     footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
         .flex_none().overflow_hidden().h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)));
-    let col = match empty {
-        Some(empty) => col.child(empty),
-        None => col.children(column),
+    let col = match (tasks.full, empty) {
+        (Some(full), _) => col.child(full),
+        (None, Some(empty)) => col.child(empty),
+        (None, None) => col.children(column),
     };
     // Only the transcript gives up room; the label, a request card, the composer and the footer
     // keep their heights, and whatever still does not fit is clipped at the pane's edge, as
@@ -2345,6 +2360,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
     div().flex().flex_col().h(px(height.max(1.))).overflow_hidden()
         .child(div().flex_none().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
         .child(col)
+        .children(tasks.strip)
         .children(card)
         .children(list)
         .child(composer::drop_target(agent, attach.over, div().flex_none().flex().flex_col()
@@ -2409,7 +2425,7 @@ impl Client {
                 }
             }
             Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(texts.plain("thought", x, 0x6f8a7c)),
-            Kind::Tool { title, kind, status, content, detail, .. } => {
+            Kind::Tool { id, title, kind, status, content, detail } => {
                 let info = ToolRow::new(title, kind, status, content, detail.as_deref());
                 let mut line = div().flex().gap_2().items_center().text_color(rgb(0x8fa89b))
                     .child(div().w(px(18.)).text_color(rgb(0x6f8a7c)).child(info.glyph))
@@ -2420,6 +2436,11 @@ impl Client {
                 line = line.child(div().text_xs().text_color(rgb(match status.as_str() { "failed" => 0xe07070, "completed" => 0x4f6a5c, _ => 0xe0b070 })).child(status.clone()));
                 if let Some(reason) = info.reason {
                     line = line.child(div().text_xs().text_color(rgb(0xe07070)).child(reason));
+                }
+                // A call that started a background task still running reads `● running m:ss`.
+                if let Some(task) = t.footer.as_ref().and_then(|f| crate::running::marked(&f.tasks, id)) {
+                    let now = settings::now_ms();
+                    line = line.child(div().text_xs().text_color(rgb(crate::running::tint(task, now))).child(crate::running::mark_text(task, now)));
                 }
                 line
             }
