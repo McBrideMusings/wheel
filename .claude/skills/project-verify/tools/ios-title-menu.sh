@@ -9,27 +9,13 @@
 # WheelPhone scheme for the simulator (see project-verify § iOS title menu). Run with
 # `env -u WHEEL_SPACE -u WHEEL_PANE`.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-SIM=~/.claude/tools/sim
-BUNDLE=com.piercemakes.wheel.phone
-UDID=""
-TPID=""
-ios_cleanup() {
-  [ -n "$DPID" ] && kill -CONT "$DPID" 2>/dev/null
-  [ -n "$TPID" ] && kill "$TPID" 2>/dev/null
-  [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1
-  cleanup
-}
-trap ios_cleanup EXIT
-
-DD="${WHEEL_IOS_DERIVED_DATA:-}"
-[ -d "$DD/Build/Products" ] || { echo "set WHEEL_IOS_DERIVED_DATA to a build-for-testing of WheelPhone" >&2; exit 2; }
-SHOTS="${WHEEL_SHOTS:-$SCR/shots}"
-SYNC="$SCR/sync"
-mkdir -p "$SHOTS" "$SYNC"
+source "$(dirname "${BASH_SOURCE[0]}")/ios-ui-lib.sh"
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
 printf '[remote]\nlisten = "127.0.0.1:%s"\n' "$RPORT" >>"$INST/wheel.toml"
+# The last step shows an emptied session, so it must stay (sessions.close_empty defaults to true).
+printf '[sessions]\nclose_empty = false\n' >>"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
 
 first_pane() { w space ls | jq -r --arg s "$1" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id'; }
@@ -60,35 +46,8 @@ for _ in $(seq 1 60); do
 done
 eq "both agents in wheel are working" "$(w space ls | jq --arg s "$W" '[.spaces[] | select(.id==$s) | .root | .. | select(.status?.kind == "working")] | length')" 2
 
-UDID="$("$SIM" acquire)"
-xcrun simctl uninstall "$UDID" "$BUNDLE" >/dev/null 2>&1
-CODE="$(w remote pair --address 127.0.0.1)"
-XRUN="$(ls "$DD"/Build/Products/*.xctestrun | head -1)"
-TEST_RUNNER_WHEEL_PAIR_JSON="$CODE" TEST_RUNNER_WHEEL_SYNC_DIR="$SYNC" TEST_RUNNER_WHEEL_SHOTS="$SHOTS" \
-  xcodebuild test-without-building -xctestrun "$XRUN" -destination "id=$UDID" \
-  -only-testing:WheelPhoneUITests/TitleMenuUITests/testTitleMenu >"$SCR/xcodebuild.log" 2>&1 &
-TPID=$!
+ios_ui_start TitleMenuUITests/testTitleMenu
 
-PLOG=""
-plog() {
-  if [ -z "$PLOG" ]; then
-    local data; data="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data 2>/dev/null)" || return 1
-    PLOG="$data/Documents/phone.log"
-  fi
-  grep -q -- "$1" "$PLOG" 2>/dev/null
-}
-# step <name>: wait for the test to reach it; ack <name> lets the test go on.
-step() {
-  local i
-  for i in $(seq 1 1200); do
-    [ -f "$SYNC/step-$1" ] && return 0
-    { kill -0 "$TPID" 2>/dev/null && ! grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log"; } || { fail "the UI test reached $1" "$(grep -E 'error:|XCTAssert' "$SCR/xcodebuild.log" | head -5)"; return 1; }
-    sleep 0.25
-  done
-  fail "the UI test reached $1 within 5 minutes"
-  return 1
-}
-ack() { touch "$SYNC/ack-$1"; }
 requests() { w status --json | jq -c '.requests | with_entries(select(.key | startswith("device ")))'; }
 
 if step stall; then
@@ -153,12 +112,4 @@ if step closed-wheel; then
     "$(w session ls --json | jq -c '[.[] | {name, n: (.spaces | length)}]')" '[{"name":"wheel","n":0},{"name":"games","n":14}]'
   ack closed-wheel
 fi
-# xcodebuild can stay up after a failed test; the suite's last line is the end of the run.
-for _ in $(seq 1 120); do grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log" && break; sleep 0.5; done
-if grep -q "Test Suite 'Selected tests' passed" "$SCR/xcodebuild.log"; then TEST_EXIT=0; else TEST_EXIT=1; fi
-kill "$TPID" 2>/dev/null
-TPID=""
-eq "the UI test passed" "$TEST_EXIT" 0
-[ "$TEST_EXIT" = 0 ] || grep -E "error:|XCTAssert" "$SCR/xcodebuild.log" | head -10
-for f in "$SHOTS"/title-menu-*.png; do echo "shot $f"; done
-finish
+ios_ui_finish title-menu

@@ -615,7 +615,7 @@ final class AppModel {
         // that pane is there, else the first.
         let spaces = spaces.map { space -> SpaceInfo in
             var space = space
-            if let was = old.first(where: { $0.id == space.id }) { space.focus = space.allPanes.contains { $0.id == was.focus } ? was.focus : was.focusKept(in: space.root) }
+            if let was = old.first(where: { $0.id == space.id }) { space.focus = was.focusKept(in: space) }
             return space
         }
         // A split, close, swap or move changes a tree; a status or focus report does not, so it never animates.

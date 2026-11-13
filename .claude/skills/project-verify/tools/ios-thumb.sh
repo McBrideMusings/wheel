@@ -13,22 +13,7 @@
 # Needs WHEEL_IOS_DERIVED_DATA: a build-for-testing of the WheelPhone scheme (project-verify § iOS
 # title menu). Run with `env -u WHEEL_SPACE -u WHEEL_PANE`.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-SIM=~/.claude/tools/sim
-BUNDLE=com.piercemakes.wheel.phone
-UDID=""
-TPID=""
-ios_cleanup() {
-  [ -n "$TPID" ] && kill "$TPID" 2>/dev/null
-  [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1
-  cleanup
-}
-trap ios_cleanup EXIT
-
-DD="${WHEEL_IOS_DERIVED_DATA:-}"
-[ -d "$DD/Build/Products" ] || { echo "set WHEEL_IOS_DERIVED_DATA to a build-for-testing of WheelPhone" >&2; exit 2; }
-SHOTS="${WHEEL_SHOTS:-$SCR/shots}"
-SYNC="$SCR/sync"
-mkdir -p "$SHOTS" "$SYNC"
+source "$(dirname "${BASH_SOURCE[0]}")/ios-ui-lib.sh"
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
@@ -59,26 +44,8 @@ for _ in $(seq 1 60); do [ "$(count_status working)" = 2 ] && break; sleep 0.5; 
 eq "two agents are working" "$(count_status working)" 2
 eq "no agent waits yet" "$(count_status needs_you)" 0
 
-UDID="$("$SIM" acquire)"
-xcrun simctl uninstall "$UDID" "$BUNDLE" >/dev/null 2>&1
-CODE="$(w remote pair --address 127.0.0.1)"
-XRUN="$(ls "$DD"/Build/Products/*.xctestrun | head -1)"
-TEST_RUNNER_WHEEL_PAIR_JSON="$CODE" TEST_RUNNER_WHEEL_SYNC_DIR="$SYNC" TEST_RUNNER_WHEEL_SHOTS="$SHOTS" \
-  xcodebuild test-without-building -xctestrun "$XRUN" -destination "id=$UDID" \
-  -only-testing:WheelPhoneUITests/ThumbUITests >"$SCR/xcodebuild.log" 2>&1 &
-TPID=$!
+ios_ui_start ThumbUITests
 
-step() {
-  local i
-  for i in $(seq 1 1200); do
-    [ -f "$SYNC/step-$1" ] && return 0
-    { kill -0 "$TPID" 2>/dev/null && ! grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log"; } || { fail "the UI test reached $1" "$(grep -E 'error:|XCTAssert' "$SCR/xcodebuild.log" | head -5)"; return 1; }
-    sleep 0.25
-  done
-  fail "the UI test reached $1 within 5 minutes"
-  return 1
-}
-ack() { touch "$SYNC/ack-$1"; }
 
 if step quiet; then
   ok "with nobody waiting the top-left count slot is blank (the UI test asserts it and measures the name)"
@@ -109,21 +76,10 @@ if step opened; then
     "$(w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | "\(.session) \(.space)"')" "$SESSION $A"
   ack opened
 fi
-plog() {
-  local data; data="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data 2>/dev/null)" || return 1
-  grep -q -- "$1" "$data/Documents/phone.log" 2>/dev/null
-}
 if step handle; then
   check "phone.log has a short swipe opening the sheet on Spaces" plog 'page handle: swipe up [0-9]* pt, sheet on spaces'
   check "phone.log has a long swipe opening the sheet on Agents" plog 'page handle: swipe up [0-9]* pt, sheet on agents'
   ack handle
 fi
 
-for _ in $(seq 1 120); do grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log" && break; sleep 0.5; done
-if grep -q "Test Suite 'Selected tests' passed" "$SCR/xcodebuild.log"; then TEST_EXIT=0; else TEST_EXIT=1; fi
-kill "$TPID" 2>/dev/null
-TPID=""
-eq "the UI test passed" "$TEST_EXIT" 0
-[ "$TEST_EXIT" = 0 ] || grep -E "error:|XCTAssert" "$SCR/xcodebuild.log" | head -10
-for f in "$SHOTS"/thumb-*.png; do echo "shot $f"; done
-finish
+ios_ui_finish thumb
