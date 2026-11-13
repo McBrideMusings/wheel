@@ -5366,6 +5366,46 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
         let (ok, _, err) = run_pumped(&["space", "close", space], &mut connection, &mut layouts, window, cx).await?;
         ensure!(ok, "wheel space close {space} failed: {err}");
     }
+    // Browser controls (wheel-ynjo.8.4.4), on the fixture's browser pane in the space shown again:
+    // the header's button (or, in a header too narrow to draw it, the ⋯ menu) opens Back, Forward,
+    // Reload Page and Home; set to the ⋯ menu they are a Browser submenu of the pane menu.
+    let shown = state!();
+    let browser_pane = shown["panes"].as_object().and_then(|p| p.iter().find(|(_, v)| v["kind"] == "browser" && v["space"] == fixture_space.as_str()).map(|(k, _)| k.clone())).ok_or_else(|| anyhow::anyhow!("no browser pane in {fixture_space}"))?;
+    let browser_entry = &shown["panes"][browser_pane.as_str()];
+    let browser_from = if let Some(f) = browser_entry["header_buttons"]["browser"]["frame"].as_array().cloned() {
+        let at = [f[0].as_f64().unwrap_or(0.) + 9., f[1].as_f64().unwrap_or(0.) + 9.];
+        native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+        let opened = until!("the Browser controls button opening its menu", |s: &Value| s["pane_menu"]["pane"] == browser_pane.as_str());
+        ensure!(opened["pane_menu"]["items"] == json!(["browser:back", "browser:forward", "browser:reload", "browser:home"]), "the Browser controls menu offers {}", opened["pane_menu"]["items"]);
+        "button"
+    } else {
+        ensure!(strings(&browser_entry["more_menu"]).contains(&"browser:back".to_owned()), "a header too narrow for Browser controls offers them nowhere: {browser_entry}");
+        "menu"
+    };
+    let menu_titles = |s: &Value| -> Vec<String> { s["panes"][browser_pane.as_str()]["menu"].as_array().into_iter().flatten().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with("browser:"))).filter_map(|i| i["title"].as_str().map(str::to_owned)).collect() };
+    let presses_before = state!()["presses"].clone();
+    if browser_from == "menu" {
+        let (code, _) = call!("POST", format!("/panemenu?action=open&pane={browser_pane}&x=420&y=120&level=header"));
+        ensure!(code == 200, "panemenu open got {code}");
+    }
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={browser_pane}&item=browser:reload"));
+    ensure!(code == 200, "the Browser menu's Reload Page got {code}");
+    let reloaded = until!("Reload Page pressing the browser's reload", |s: &Value| s["presses"] != presses_before && s["presses"].as_array().and_then(|p| p.last()).and_then(Value::as_str).is_some_and(|x| x == format!("browser {browser_pane} Reload") || x == format!("browser {browser_pane} Stop")));
+    ensure!(reloaded["pane_menu"].is_null(), "the menu stayed open after Reload Page: {}", reloaded["pane_menu"]);
+    let (code, _) = call!("POST", format!("/paneheader?kind=browser&control=browser&placement=menu"));
+    ensure!(code == 200, "paneheader browser menu got {code}");
+    let in_menu = state!();
+    let titles = menu_titles(&in_menu);
+    ensure!(titles.iter().map(String::as_str).eq(["Browser ▸ Back", "Browser ▸ Forward", "Browser ▸ Reload Page", "Browser ▸ Home"]) || titles.iter().map(String::as_str).eq(["Browser ▸ Back", "Browser ▸ Forward", "Browser ▸ Stop Loading", "Browser ▸ Home"]), "Browser controls set to the ⋯ menu: items {titles:?}");
+    ensure!(!strings(&in_menu["panes"][browser_pane.as_str()]["header_order"]).contains(&"browser".to_owned()), "Browser controls set to the ⋯ menu stay in the bar: {}", in_menu["panes"][browser_pane.as_str()]["header_order"]);
+    let presses_mid = state!()["presses"].clone();
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={browser_pane}&item=browser:reload"));
+    ensure!(code == 200, "the pane menu's Browser ▸ Reload Page got {code}");
+    until!("Browser ▸ Reload Page pressing the browser's reload", |s: &Value| s["presses"] != presses_mid && s["presses"].as_array().and_then(|p| p.last()).and_then(Value::as_str).is_some_and(|x| x == format!("browser {browser_pane} Reload") || x == format!("browser {browser_pane} Stop")));
+    let (code, _) = call!("POST", "/paneheader?kind=browser&reset=1");
+    ensure!(code == 200, "paneheader browser reset got {code}");
+    header_report["browser"] = json!({"pane": browser_pane, "from": browser_from, "menu": titles});
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, header_report, new_space))
 }

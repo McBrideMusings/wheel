@@ -680,7 +680,6 @@ impl Client {
             "spaces": self.spaces.iter().map(|s| json!({"id": s.id, "name": s.name, "cwd": s.cwd, "status": s.status, "panes": leaves_of(&s.root).iter().map(|l| l.id.clone()).collect::<Vec<_>>(),
                 "popped": s.popped.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>(), "backgrounded": s.backgrounded.iter().flat_map(leaves_of).map(|l| l.id.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "conversations": self.conversations_json(),
-            "pane_menu": self.pane_menu.as_ref().map(|(pane, x, y, level)| json!({"pane": pane, "at": [x, y], "level": level})),
             "grid_drop_highlight": self.grid_drop_highlight().map(|h| json!([h.x, h.y, h.w, h.h])),
             "focus_key": self.focus.current,
             "panes": panes,
@@ -707,6 +706,7 @@ impl Client {
         out["cards"] = layers.iter().filter_map(|l| l.card.as_ref()).map(|c| json!({"panes": c.panes, "frame": [c.frame.x, c.frame.y, c.frame.w, c.frame.h], "grip": [c.grip.x, c.grip.y, c.grip.w, c.grip.h]})).collect();
         out["tray"] = self.tray_json();
         out["pane_info"] = self.pane_info_json();
+        out["pane_menu"] = json!(self.pane_menu.as_ref().map(|(pane, x, y, level)| json!({"pane": pane, "at": [x, y], "level": level, "items": self.header_menu(pane, *level).iter().map(|i| i.id.clone()).collect::<Vec<_>>()})));
         out["header_layout"] = self.header_layout.borrow().layout.choices_json();
         out["header_settings_kind"] = json!(self.header_settings_kind);
         out["grid_motion"] = self.motion_json();

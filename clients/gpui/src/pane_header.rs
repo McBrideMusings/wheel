@@ -10,6 +10,7 @@ use std::rc::Rc;
 /// A control a pane's header can draw as an icon button, in the order Settings lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
+    Browser,
     SwitchView,
     Conversations,
     Info,
@@ -22,11 +23,12 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Control; 9] = [Control::SwitchView, Control::Conversations, Control::Info, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Close];
+    pub const ALL: [Control; 10] = [Control::Browser, Control::SwitchView, Control::Conversations, Control::Info, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Close];
 
     /// The name the Swift client stores it under.
     pub fn name(self) -> &'static str {
         match self {
+            Control::Browser => "browser",
             Control::SwitchView => "switchView",
             Control::Conversations => "conversations",
             Control::Info => "info",
@@ -43,6 +45,7 @@ impl Control {
     }
     pub fn title(self) -> &'static str {
         match self {
+            Control::Browser => "Browser controls",
             Control::SwitchView => "Chat / terminal switch",
             Control::Conversations => "Conversations",
             Control::Info => "Pane info",
@@ -56,6 +59,7 @@ impl Control {
     }
     pub fn symbol(self) -> &'static str {
         match self {
+            Control::Browser => "ellipsis.circle",
             Control::SwitchView => "bubble.left.and.text.bubble.right",
             Control::Conversations => "clock.arrow.circlepath",
             Control::Info => "info.circle",
@@ -79,7 +83,7 @@ impl Control {
     /// The header level at which a narrow header stops drawing this control.
     pub fn drop_level(self) -> u8 {
         match self {
-            Control::Conversations | Control::Info | Control::Pop | Control::Background => 1,
+            Control::Browser | Control::Conversations | Control::Info | Control::Pop | Control::Background => 1,
             Control::SwitchView => 2,
             Control::SplitRight | Control::SplitDown => 3,
             Control::Zoom => 4,
@@ -89,6 +93,7 @@ impl Control {
     /// Whether panes of `kind` (a kind name, `unknown` for one this client does not know) have it.
     pub fn applies(self, kind: &str) -> bool {
         match self {
+            Control::Browser => kind == "browser",
             Control::SwitchView => kind == "terminal" || kind == "agent",
             Control::Conversations => kind == "agent",
             Control::Info | Control::SplitRight | Control::SplitDown => kind != "unknown",
@@ -278,6 +283,9 @@ mod tests {
         assert_eq!(layout.level("agent", 64. + width(6) - 1., 64., width, all), 2);
         assert_eq!(layout.level("agent", 64. + width(5) - 1., 64., width, all), 3);
         assert_eq!(layout.level("agent", 10., 64., width, all), 4);
+        // Only a browser pane has the Browser controls, first in its bar, dropped to the menu at level 1.
+        assert_eq!(layout.bar("browser", 0).first().map(|c| c.id()), Some("browser"));
+        assert!(!layout.in_bar(Control::Browser, "terminal", 0) && !layout.in_bar(Control::Browser, "browser", 1) && layout.in_menu(Control::Browser, "browser", 1));
         // A terminal pane has no Conversations button: eight buttons fit where an agent's ten do
         // not, and the switch takes room only on a pane that has another view.
         let no_switch = |c| c != Control::SwitchView;

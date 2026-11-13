@@ -29,6 +29,10 @@ const DOT: f32 = 14.0;
 /// The title's ideal width: a header that would squeeze it below this drops controls instead.
 const TITLE_MIN: f32 = 64.0;
 
+/// The level a pane menu is opened at for the Browser controls' own menu: Back, Forward, Reload
+/// Page or Stop Loading, and Home (BrowserMenu). It is the level of Close, which no header reaches.
+pub const BROWSER_MENU: u8 = u8::MAX;
+
 /// The agents whose conversation a pane shows either in a terminal or as a chat.
 const SWITCHABLE_AGENTS: [&str; 2] = ["claude", "codex"];
 
@@ -185,7 +189,24 @@ impl Client {
         let known = kind != "unknown";
         let store = self.header_layout.borrow();
         let layout = &store.layout;
+        let browser_items = |prefix: &str| {
+            let state = self.browser_state(pane);
+            let can = |f: fn(&crate::native::BrowserState) -> bool| state.is_some_and(f);
+            let reload = if state.is_some_and(|s| s.loading) { "Stop Loading" } else { "Reload Page" };
+            vec![
+                item("browser:back".into(), format!("{prefix}Back"), can(|s| s.can_go_back)),
+                item("browser:forward".into(), format!("{prefix}Forward"), can(|s| s.can_go_forward)),
+                item("browser:reload".into(), format!("{prefix}{reload}"), true),
+                item("browser:home".into(), format!("{prefix}Home"), true),
+            ]
+        };
+        if level == BROWSER_MENU {
+            return browser_items("");
+        }
         let mut items = vec![];
+        if leaf.kind == "browser" && layout.in_menu(Control::Browser, kind, level) {
+            items.extend(browser_items("Browser ▸ "));
+        }
         for control in [Control::Conversations, Control::Info, Control::Pop, Control::Background, Control::SwitchView, Control::Zoom] {
             if !layout.in_menu(control, kind, level) {
                 continue;
@@ -258,6 +279,19 @@ impl Client {
             "zoom" => self.toggle_zoom(&pane),
             "switch-view" => self.switch_view(&pane),
             "info" => self.toggle_pane_info(&pane),
+            // The Browser controls button: its menu opens under the button, as BrowserMenu hangs from it.
+            "browser" => {
+                let at = self.header_button_frames(&pane).and_then(|f| f["browser"]["frame"].as_array().cloned()).map(|f| (f[0].as_f64().unwrap_or(0.) as f32, f[1].as_f64().unwrap_or(0.) as f32));
+                let (x, y) = at.unwrap_or((40., 40.));
+                self.open_pane_menu(&pane, x + BUTTON - MENU_W, y + BUTTON + 4., BROWSER_MENU);
+            }
+            "browser:back" => self.browser_press(&pane, Press::Back),
+            "browser:forward" => self.browser_press(&pane, Press::Forward),
+            "browser:reload" => {
+                let loading = self.browser_state(&pane).is_some_and(|s| s.loading);
+                self.browser_press(&pane, if loading { Press::Stop } else { Press::Reload });
+            }
+            "browser:home" => self.browser_press(&pane, Press::Home),
             "close" => self.ask_close_pane(&pane),
             "kind:shell" => self.ask_set_kind(&pane, NewPaneKind::Terminal),
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
@@ -366,6 +400,7 @@ impl Client {
                     HeaderButton { id: control.id(), symbol: if view == PaneView::Agent { control.symbol() } else { "terminal" }, label: switch_title(view), enabled: true, on: false }
                 }
                 Control::Conversations => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Conversations", enabled: has_agent, on: false },
+                Control::Browser => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Browser controls", enabled: true, on: false },
                 Control::Info => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Pane info", enabled: true, on: false },
                 Control::SplitRight => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Right", enabled: true, on: false },
                 Control::SplitDown => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Down", enabled: true, on: false },
