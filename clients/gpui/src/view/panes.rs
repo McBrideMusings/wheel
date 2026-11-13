@@ -207,13 +207,14 @@ impl Client {
         if leaf.kind == "browser" && layout.in_menu(Control::Browser, kind, level) {
             items.extend(browser_items("Browser ▸ "));
         }
-        for control in [Control::Conversations, Control::Info, Control::Pop, Control::Background, Control::SwitchView, Control::Zoom] {
+        for control in [Control::Conversations, Control::Info, Control::Screenshot, Control::Pop, Control::Background, Control::SwitchView, Control::Zoom] {
             if !layout.in_menu(control, kind, level) {
                 continue;
             }
             match control {
                 Control::Conversations if leaf.agent.is_some() => items.push(item("conversations".into(), "Conversations…".into(), true)),
                 Control::Info => items.push(item("info".into(), "Pane Info".into(), true)),
+                Control::Screenshot => items.push(item("screenshot".into(), "Copy Pane Image".into(), true)),
                 Control::Pop => items.push(item("pop".into(), "Pop out".into(), true)),
                 Control::Background => items.push(item("background".into(), "Background".into(), true)),
                 Control::SwitchView => {
@@ -279,6 +280,7 @@ impl Client {
             "zoom" => self.toggle_zoom(&pane),
             "switch-view" => self.switch_view(&pane),
             "info" => self.toggle_pane_info(&pane),
+            "screenshot" => self.copy_pane_image(&pane),
             // The Browser controls button: its menu opens under the button, as BrowserMenu hangs from it.
             "browser" => {
                 let at = self.header_button_frames(&pane).and_then(|f| f["browser"]["frame"].as_array().cloned()).map(|f| (f[0].as_f64().unwrap_or(0.) as f32, f[1].as_f64().unwrap_or(0.) as f32));
@@ -401,6 +403,7 @@ impl Client {
                 }
                 Control::Conversations => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Conversations", enabled: has_agent, on: false },
                 Control::Browser => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Browser controls", enabled: true, on: false },
+                Control::Screenshot => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Copy pane image", enabled: true, on: false },
                 Control::Info => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Pane info", enabled: true, on: false },
                 Control::SplitRight => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Right", enabled: true, on: false },
                 Control::SplitDown => HeaderButton { id: control.id(), symbol: control.symbol(), label: "Split Down", enabled: true, on: false },

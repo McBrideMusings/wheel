@@ -20,6 +20,7 @@ path = "src/bin/wheel-gpui.rs"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

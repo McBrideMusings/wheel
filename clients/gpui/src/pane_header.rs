@@ -19,11 +19,12 @@ pub enum Control {
     Pop,
     Background,
     Zoom,
+    Screenshot,
     Close,
 }
 
 impl Control {
-    pub const ALL: [Control; 10] = [Control::Browser, Control::SwitchView, Control::Conversations, Control::Info, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Close];
+    pub const ALL: [Control; 11] = [Control::Browser, Control::SwitchView, Control::Conversations, Control::Info, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Screenshot, Control::Close];
 
     /// The name the Swift client stores it under.
     pub fn name(self) -> &'static str {
@@ -37,6 +38,7 @@ impl Control {
             Control::Pop => "pop",
             Control::Background => "background",
             Control::Zoom => "zoom",
+            Control::Screenshot => "screenshot",
             Control::Close => "close",
         }
     }
@@ -54,6 +56,7 @@ impl Control {
             Control::Pop => "Pop out",
             Control::Background => "Background",
             Control::Zoom => "Zoom",
+            Control::Screenshot => "Copy pane image",
             Control::Close => "Close",
         }
     }
@@ -68,6 +71,7 @@ impl Control {
             Control::Pop => "rectangle.on.rectangle",
             Control::Background => "tray.and.arrow.down",
             Control::Zoom => "arrow.up.left.and.arrow.down.right",
+            Control::Screenshot => "camera.viewfinder",
             Control::Close => "xmark",
         }
     }
@@ -83,7 +87,7 @@ impl Control {
     /// The header level at which a narrow header stops drawing this control.
     pub fn drop_level(self) -> u8 {
         match self {
-            Control::Browser | Control::Conversations | Control::Info | Control::Pop | Control::Background => 1,
+            Control::Browser | Control::Conversations | Control::Info | Control::Pop | Control::Background | Control::Screenshot => 1,
             Control::SwitchView => 2,
             Control::SplitRight | Control::SplitDown => 3,
             Control::Zoom => 4,
@@ -97,7 +101,7 @@ impl Control {
             Control::SwitchView => kind == "terminal" || kind == "agent",
             Control::Conversations => kind == "agent",
             Control::Info | Control::SplitRight | Control::SplitDown => kind != "unknown",
-            Control::Pop | Control::Background | Control::Zoom | Control::Close => true,
+            Control::Pop | Control::Background | Control::Zoom | Control::Screenshot | Control::Close => true,
         }
     }
 }
@@ -271,26 +275,26 @@ mod tests {
     fn a_narrowing_header_drops_each_group_in_turn_and_keeps_close() {
         let layout = Layout::default();
         let names = |level| layout.bar("agent", level).iter().map(|c| c.id()).collect::<Vec<_>>();
-        assert_eq!(names(0), ["switch-view", "conversations", "info", "split-right", "split-down", "pop", "background", "zoom", "close"]);
+        assert_eq!(names(0), ["switch-view", "conversations", "info", "split-right", "split-down", "pop", "background", "zoom", "screenshot", "close"]);
         assert_eq!(names(1), ["switch-view", "split-right", "split-down", "zoom", "close"]);
         assert_eq!(names(2), ["split-right", "split-down", "zoom", "close"]);
         assert_eq!(names(3), ["zoom", "close"]);
         assert_eq!(names(4), ["close"]);
         let all = |_| true;
-        // Room for the title and all ten buttons (nine and the menu) keeps level 0.
-        assert_eq!(layout.level("agent", 64. + width(10), 64., width, all), 0);
-        assert_eq!(layout.level("agent", 64. + width(10) - 1., 64., width, all), 1);
+        // Room for the title and all eleven buttons (ten and the menu) keeps level 0.
+        assert_eq!(layout.level("agent", 64. + width(11), 64., width, all), 0);
+        assert_eq!(layout.level("agent", 64. + width(11) - 1., 64., width, all), 1);
         assert_eq!(layout.level("agent", 64. + width(6) - 1., 64., width, all), 2);
         assert_eq!(layout.level("agent", 64. + width(5) - 1., 64., width, all), 3);
         assert_eq!(layout.level("agent", 10., 64., width, all), 4);
         // Only a browser pane has the Browser controls, first in its bar, dropped to the menu at level 1.
         assert_eq!(layout.bar("browser", 0).first().map(|c| c.id()), Some("browser"));
         assert!(!layout.in_bar(Control::Browser, "terminal", 0) && !layout.in_bar(Control::Browser, "browser", 1) && layout.in_menu(Control::Browser, "browser", 1));
-        // A terminal pane has no Conversations button: eight buttons fit where an agent's ten do
+        // A terminal pane has no Conversations button: nine buttons fit where an agent's eleven do
         // not, and the switch takes room only on a pane that has another view.
         let no_switch = |c| c != Control::SwitchView;
-        assert_eq!(layout.level("terminal", 64. + width(8), 64., width, no_switch), 0);
-        assert_eq!(layout.level("terminal", 64. + width(8), 64., width, all), 1);
+        assert_eq!(layout.level("terminal", 64. + width(9), 64., width, no_switch), 0);
+        assert_eq!(layout.level("terminal", 64. + width(9), 64., width, all), 1);
     }
 
     #[test]
@@ -319,7 +323,7 @@ mod tests {
         let text = layout.json().to_string();
         assert_eq!(text, r#"{"choices":{"agent":{"conversations":"menu"},"web":{"splitDown":"off"}}}"#);
         assert_eq!(Layout::parse(&text), layout);
-        let read = Layout::parse(r#"{"choices":{"web":{"splitDown":"off","screenshot":"menu","zoom":"sideways"}}}"#);
+        let read = Layout::parse(r#"{"choices":{"web":{"splitDown":"off","teleport":"menu","zoom":"sideways"}}}"#);
         assert_eq!(read.choices["web"].len(), 1);
         assert_eq!(Layout::parse("not json"), Layout::default());
         assert_eq!(kind_name("agent"), "agent");

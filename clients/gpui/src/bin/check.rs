@@ -5188,7 +5188,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     let wide = state!();
     let header_kind = wide["panes"][grid_a.as_str()]["kind"].as_str().unwrap_or_default().to_owned();
     let wide_order = strings(&wide["panes"][grid_a.as_str()]["header_order"]);
-    ensure!(wide["panes"][grid_a.as_str()]["header_level"] == 0 && wide_order == ["info", "split-right", "split-down", "pop", "background", "zoom", "menu", "close"], "a wide {header_kind} header: level {} order {wide_order:?}", wide["panes"][grid_a.as_str()]["header_level"]);
+    ensure!(wide["panes"][grid_a.as_str()]["header_level"] == 0 && wide_order == ["info", "split-right", "split-down", "pop", "background", "zoom", "screenshot", "menu", "close"], "a wide {header_kind} header: level {} order {wide_order:?}", wide["panes"][grid_a.as_str()]["header_level"]);
     let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=zoom&placement=menu"));
     ensure!(code == 200, "paneheader zoom menu got {code}");
     let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=pop&placement=off"));
@@ -5296,6 +5296,42 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     ensure!(code == 200, "paneheader reset got {code}");
     until!("the header drawing Pane info again", |s: &Value| strings(&s["panes"][grid_a.as_str()]["header_order"]) == wide_order);
     header_report["info"] = json!({"fields": cli_fields.len(), "copied": copied.1, "menu_item": info_item["title"]});
+    // Copy pane image (wheel-ynjo.8.4.3): the header's camera by a real press puts a PNG of the
+    // pane on the clipboard and posts "Copied <pane> as an image", which goes 3 s later; set to the
+    // ⋯ menu it is Copy Pane Image there and copies the same way.
+    let png_on_clipboard = |cx: &mut AsyncApp| -> Result<Option<(u32, u32)>> {
+        let image = window.update(cx, |_, _, cx| cx.read_from_clipboard().and_then(|item| item.entries().iter().find_map(|e| match e { gpui::ClipboardEntry::Image(i) => Some(i.clone()), _ => None })))?;
+        Ok(image.filter(|i| i.format == gpui::ImageFormat::Png && i.bytes.starts_with(&[0x89, b'P', b'N', b'G'])).and_then(|i| image::load_from_memory(&i.bytes).ok().map(|d| (d.width(), d.height()))))
+    };
+    window.update(cx, |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("nothing copied yet".into())))?;
+    let notice = format!("Copied {grid_a} as an image");
+    let has_notice = |s: &Value| s["toasts"].as_array().is_some_and(|t| t.iter().any(|x| x["id"] == "pane-image" && x["text"] == notice.as_str() && x["level"] == "notice"));
+    let camera = state!()["panes"][grid_a.as_str()]["header_buttons"]["screenshot"]["frame"].clone();
+    ensure!(camera.is_array(), "the header draws no Copy pane image button: {}", state!()["panes"][grid_a.as_str()]["header_order"]);
+    let at = [camera[0].as_f64().unwrap_or(0.) + 9., camera[1].as_f64().unwrap_or(0.) + 9.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    until!("the camera press posting the copied notice", |s: &Value| has_notice(s));
+    let posted = std::time::Instant::now();
+    let pane_png = png_on_clipboard(cx)?.ok_or_else(|| anyhow::anyhow!("the clipboard holds no PNG after Copy pane image"))?;
+    ensure!(pane_png.0 > 0 && pane_png.1 > 0, "the copied pane image is {pane_png:?}");
+    until!("the copied notice clearing after 3 s", |s: &Value| !has_notice(s));
+    let notice_ms = posted.elapsed().as_millis();
+    ensure!((1500..=5500).contains(&notice_ms), "the copied notice stayed {notice_ms} ms after it was seen, wanted about 3000");
+    window.update(cx, |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("nothing copied yet".into())))?;
+    let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=screenshot&placement=menu"));
+    ensure!(code == 200, "paneheader screenshot menu got {code}");
+    let shot_in_menu = state!();
+    let shot_item = shot_in_menu["panes"][grid_a.as_str()]["menu"].as_array().and_then(|m| m.iter().find(|i| i["id"] == "screenshot")).cloned().unwrap_or(Value::Null);
+    ensure!(shot_item["title"] == "Copy Pane Image" && !strings(&shot_in_menu["panes"][grid_a.as_str()]["header_order"]).contains(&"screenshot".to_owned()), "Copy pane image set to the ⋯ menu: item {shot_item}, bar {:?}", shot_in_menu["panes"][grid_a.as_str()]["header_order"]);
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_a}&item=screenshot"));
+    ensure!(code == 200, "the ⋯ menu's Copy Pane Image got {code}");
+    until!("the menu item posting the copied notice", |s: &Value| has_notice(s));
+    ensure!(png_on_clipboard(cx)?.is_some(), "the clipboard holds no PNG after the menu's Copy Pane Image");
+    let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&reset=1"));
+    ensure!(code == 200, "paneheader reset got {code}");
+    until!("the header drawing Copy pane image again and its notice gone", |s: &Value| strings(&s["panes"][grid_a.as_str()]["header_order"]) == wide_order && !has_notice(s));
+    header_report["screenshot"] = json!({"png": [pane_png.0, pane_png.1], "notice_ms": notice_ms, "menu_item": shot_item["title"]});
     // The chat / terminal switch (wheel-ynjo.8.4.5). A shell with no agent has no other view: its
     // header and menu carry no switch and the command is disabled.
     let (focused_ok, disabled) = window.update(cx, |c, _, _| { c.show_requested(&grid, Some(&grid_a)); (c.focus.current.as_deref() == Some(grid_a.as_str()), !c.action_enabled("switch-view")) })?;

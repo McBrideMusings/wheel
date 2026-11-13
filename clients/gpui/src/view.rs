@@ -13,6 +13,7 @@ mod menubar;
 mod messages;
 pub use menubar::{MenuBar, Popover, focused_client, menu_bar, reopen, start as start_menu_bar};
 pub use little::{MIN_SIZE as LITTLE_MIN_SIZE, SIZE as LITTLE_SIZE};
+mod pane_image;
 mod pane_info;
 mod panes;
 pub use panes::focus_target;
@@ -129,6 +130,8 @@ pub struct Client {
     conversations_scroll: ScrollHandle,
     /// The Pane info popover, while one is open.
     pub pane_info: Option<pane_info::PaneInfo>,
+    /// Copy Pane Image: the renders asked of the bridge, what came back, and when the notice goes.
+    pane_images: pane_image::PaneImages,
     /// wheeld's last refusal of a request about an agent's messages, shown under its composer.
     composer_errors: HashMap<String, String>,
     /// GPUI delivers keys only to a focused element: the root holds this for good, while the
@@ -408,7 +411,7 @@ impl Client {
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -1196,10 +1199,18 @@ impl Client {
                     self.log(format!("a press in {pane}'s view at {x},{y} closed the open popovers"));
                 }
             }
-            Frame::Answer(Answer::Rendered { id, png }) => self.send(&ClientMsg::Rendered { id, png }),
+            Frame::Answer(Answer::Rendered { id, png }) => {
+                if !self.pane_images.answered(id, Ok(png.clone())) {
+                    self.send(&ClientMsg::Rendered { id, png });
+                }
+            }
             Frame::Answer(Answer::Inspected { id, text }) => self.send(&ClientMsg::Inspected { id, text }),
             Frame::Answer(Answer::Recorded { id, mov, frames, millis }) => self.send(&ClientMsg::Recorded { id, mov, frames, millis }),
-            Frame::Answer(Answer::Refused { id, message }) => self.send(&ClientMsg::RenderRefused { id, message }),
+            Frame::Answer(Answer::Refused { id, message }) => {
+                if !self.pane_images.answered(id, Err(message.clone())) {
+                    self.send(&ClientMsg::RenderRefused { id, message });
+                }
+            }
         }
     }
     /// A press on a browser pane's chrome.
@@ -2164,6 +2175,7 @@ impl Render for Client {
             cx.open_url(&format!("file://{}", file_url_path(&path)));
         }
         self.tick_server(cx);
+        self.tick_pane_image(cx);
         if matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(div().absolute().left_0().top(px(HEADER)).w(px(w)).h(px(h - HEADER)).flex().justify_center().items_center()
                 .child(div().w(px(420.)).child(self.server_box(cx))));
