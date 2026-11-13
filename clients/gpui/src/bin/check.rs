@@ -5341,10 +5341,17 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     until!("the second pane an agent pane", |s: &Value| s["panes"][grid_b.as_str()]["kind"] == "agent" && s["panes"][grid_b.as_str()]["harness"] == "claude");
     let (ok, _, err) = run_pumped(&["agent", "send", &grid_b, "a message to resume", "--timeout", "30"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel agent send {grid_b} failed: {err}");
-    // The switch is offered once wheeld holds a conversation to show in a terminal: after the send.
-    let offers_switch = |s: &Value| s["panes"][grid_b.as_str()]["menu"].as_array().is_some_and(|m| m.iter().any(|i| i["id"] == "switch-view" && i["title"] == "Show in Terminal" && i["enabled"] == true));
-    let switchable = until!("the agent pane's menu offering Show in Terminal", offers_switch);
-    let agent_menu = switchable["panes"][grid_b.as_str()]["menu"].as_array().cloned().unwrap_or_default();
+    // The switch is a bar button while the header is wide (the menu lists only what is set to it
+    // or dropped), and a menu item once dropped: `title` names it either way.
+    let offers_switch = |s: &Value, title: &str| -> bool {
+        let pane = &s["panes"][grid_b.as_str()];
+        match pane["header_buttons"]["switch-view"].as_object() {
+            Some(button) => button["label"] == title && button["enabled"] == true,
+            None => pane["menu"].as_array().is_some_and(|m| m.iter().any(|i| i["id"] == "switch-view" && i["title"] == title && i["enabled"] == true)) || strings(&pane["more_menu"]).contains(&"switch-view".to_owned()),
+        }
+    };
+    let switchable = until!("the agent pane offering Show in Terminal", |s: &Value| offers_switch(s, "Show in Terminal"));
+    let agent_offer = switchable["panes"][grid_b.as_str()]["header_buttons"]["switch-view"]["label"].clone();
     // The header's switch by a real press when the pane is wide enough to draw it, else the ⋯ menu
     // that offers it once dropped.
     let switch_state = state!();
@@ -5362,8 +5369,8 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
         "menu"
     };
     let as_terminal = until!("the header's switch showing the agent pane as a terminal", |s: &Value| s["panes"][grid_b.as_str()]["kind"] == "terminal" && s["panes"][grid_b.as_str()]["harness"] == "claude");
-    let terminal_menu = as_terminal["panes"][grid_b.as_str()]["menu"].as_array().cloned().unwrap_or_default();
-    ensure!(terminal_menu.iter().any(|i| i["id"] == "switch-view" && i["title"] == "Show as Chat"), "the terminal's menu offers {terminal_menu:?}");
+    ensure!(offers_switch(&as_terminal, "Show as Chat"), "the terminal offers no Show as Chat: {}", as_terminal["panes"][grid_b.as_str()]);
+    let terminal_offer = as_terminal["panes"][grid_b.as_str()]["header_buttons"]["switch-view"]["label"].clone();
     // Set to the ⋯ menu, the switch is a menu item there and the bar leaves it out; the menu item
     // shows the chat again.
     let (code, _) = call!("POST", "/paneheader?kind=terminal&control=switchView&placement=menu");
@@ -5397,7 +5404,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     let backing = window.update(cx, |_, w, _| w.scale_factor())? as f64;
     ensure!((f64::from(agent_png.0) - agent_frame[2] * backing).abs() <= 1.5 && (f64::from(agent_png.1) - agent_frame[3] * backing).abs() <= 1.5, "the agent pane image is {agent_png:?} px, its rectangle {agent_frame:?} pt at scale {backing}");
     header_report["agent_image"] = json!({"png": [agent_png.0, agent_png.1], "frame": agent_frame, "scale": backing});
-    header_report["switch"] = json!({"from": switch_from, "shell_disabled": disabled, "agent_menu": agent_menu, "terminal_menu": terminal_menu});
+    header_report["switch"] = json!({"from": switch_from, "shell_disabled": disabled, "agent_offer": agent_offer, "terminal_offer": terminal_offer});
     // Move Pane to New Space: the second pane leaves for a space of its own.
     let spaces_before = state!()["spaces"].as_array().map(Vec::len).unwrap_or(0);
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=move-new-space"));
