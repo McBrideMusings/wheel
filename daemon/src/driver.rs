@@ -142,10 +142,12 @@ pub enum DriverEvent {
     /// The agent began a turn no prompt of wheel's started, as Claude Code does when a subagent or
     /// a background task finishes. Its end arrives as `TurnEnd` or `TurnFailed`.
     TurnStart,
-    /// The background tasks the agent has running now: commands and other tasks, and subagents. The
-    /// agent sends both counts each time they change; it works on after its turn ends while
-    /// either is above zero.
-    Background { shells: u32, agents: u32 },
+    /// The background tasks the agent has running now, commands and subagents, whole each time
+    /// the set or what is known about one changes; it works on after its turn ends while any runs.
+    /// Their output is not here: a task names its output file, or arrives as `TaskOutput`.
+    Tasks(Vec<wheel_proto::BackgroundTask>),
+    /// Output the agent streamed for its running task `id`.
+    TaskOutput { id: String, chunk: String },
     /// The agent refused the message [`DriverInput::steer`] sent as `turn` (no turn was running to
     /// take it, say); it was not taken in and goes back to the queue.
     SteerRefused { turn: u64 },

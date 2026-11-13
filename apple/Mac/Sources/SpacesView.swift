@@ -1091,6 +1091,10 @@ struct AgentBody: View {
     var body: some View {
         VStack(spacing: 0) {
             AgentTranscript(model: model, chat: chat, empty: "Give this agent a task.", agent: agent, pane: paneId)
+                .overlay { TaskFullView(chat: chat) { model.readTaskOutput(chat, task: $0) } }
+            // The background tasks running, above the composer while any runs.
+            RunningStrip(chat: chat)
+                .padding([.horizontal, .top], 10)
             // Directly above the composer, where a person answering has their hands: this agent's
             // oldest waiting request.
             if let perm = model.perms.first(where: { $0.agent == chat.name }) {

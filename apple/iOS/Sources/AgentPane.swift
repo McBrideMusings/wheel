@@ -29,6 +29,9 @@ struct AgentPane: View {
                 look: model.appearance(forAgent: chat.name)
             )
             .environment(\.chatLinks, model.links)
+            .overlay { TaskFullView(chat: chat) { model.readTaskOutput(chat, task: $0) } }
+            RunningStrip(chat: chat)
+                .padding([.horizontal, .top], 10)
             if let notice = chat.notice {
                 Notice(text: notice) { model.dismissNotice(chat) }
                     .padding([.horizontal, .top], 10)

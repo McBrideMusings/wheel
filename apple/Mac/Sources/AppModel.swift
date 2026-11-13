@@ -15,6 +15,8 @@ let wheelDefaultListen = "127.0.0.1:7420"
 @MainActor
 @Observable
 final class AppModel {
+    /// The `task_output` requests in flight: which agent's task each reply belongs to.
+    @ObservationIgnored private var taskOutputAsks: [UInt64: (agent: String, task: String)] = [:]
     private(set) var connection: DaemonClient.Connection = .connecting
     private(set) var spaces: [SpaceInfo] = [] {
         didSet { links.layoutChanged(spaces) }
@@ -1038,9 +1040,15 @@ final class AppModel {
             guard let chat = chats[agent] else { return }
             chat.context = context
             Log.info("agent \(agent) context: \(context?.helpText ?? "unknown")")
+        case let .taskOutput(req, text, truncated):
+            // A reply for a task that ended meanwhile is not kept.
+            if let ask = taskOutputAsks.removeValue(forKey: req), let chat = chats[ask.agent], chat.footer?.tasks.contains(where: { $0.id == ask.task }) == true {
+                chat.taskOutputs[ask.task] = (text, truncated)
+                Log.info("task output \(ask.agent) \(ask.task): \(text.utf8.count) bytes, truncated \(truncated)")
+            }
         case let .agentFooter(agent, footer):
             chats[agent]?.footer = footer
-            Log.info("agent \(agent) footer: \(footer.shells) shells, \(footer.agents) agents, branch \(footer.branch ?? "none")")
+            Log.info("agent \(agent) footer: \(footer.tasks.count) tasks \(footer.tasks.map(\.id)), branch \(footer.branch ?? "none")")
         case let .agentCommands(agent, commands):
             chats[agent]?.commands = Set(commands)
             Log.info("agent \(agent) accepts \(commands.count) slash commands")
@@ -1095,6 +1103,9 @@ final class AppModel {
                 Log.info("space \(space) renamed")
             }
         case let .error(req, term, message):
+            if let req, let ask = taskOutputAsks.removeValue(forKey: req) {
+                Log.info("task output \(ask.agent) \(ask.task) refused: \(message)")
+            }
             if let req, guidanceOpenReqs.removeValue(forKey: req) != nil {
                 Log.info("guidance: the server could not make the file: \(message)")
                 settings.guidance.failed(message)
@@ -1851,6 +1862,16 @@ final class AppModel {
 
     /// Ask the daemon for the usage board; it answers `usage`. `dueOnly` reads the endpoint only
     /// when the last read is older than the daemon's interval.
+    /// Read a running background task's recent output for the full view; the reply lands in the
+    /// chat's `taskOutputs`.
+    func readTaskOutput(_ chat: AgentChat, task: String) {
+        guard connection == .connected else { return }
+        let req = client.req()
+        taskOutputAsks[req] = (chat.name, task)
+        Log.info("task output ask \(chat.name) \(task) req \(req)")
+        client.send(.taskOutput(req: req, agent: chat.name, task: task))
+    }
+
     func askUsage(dueOnly: Bool) {
         guard connection == .connected else { return }
         if !dueOnly { usage.refreshStarted() }

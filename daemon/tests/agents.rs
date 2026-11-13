@@ -964,10 +964,10 @@ async fn a_mode_change_folds_into_the_mode_option_and_not_the_transcript() {
 
 /// The first footer broadcast for `agent` that counts `shells` and `agents`; earlier ones, such as
 /// the one sent when the agent starts, are skipped.
-async fn footer_counting(ws: &mut Ws, agent: &str, shells: u32, agents: u32) -> wheel_proto::AgentFooter {
+async fn footer_until(ws: &mut Ws, agent: &str, done: impl Fn(&wheel_proto::AgentFooter) -> bool) -> wheel_proto::AgentFooter {
     loop {
         if let ServerMsg::AgentFooter { agent: a, footer } = recv(ws).await {
-            if a == agent && (footer.shells, footer.agents) == (shells, agents) {
+            if a == agent && done(&footer) {
                 return footer;
             }
         }
@@ -975,18 +975,71 @@ async fn footer_counting(ws: &mut Ws, agent: &str, shells: u32, agents: u32) -> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn running_background_tasks_reach_clients_as_footer_counts_and_clear_at_zero() {
+async fn running_background_tasks_reach_clients_with_command_call_and_live_output() {
+    use wheel_proto::TaskKind;
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = ready_agent(&url).await;
 
     attach_and_send(&mut ws, &agent, "start background").await;
-    // The ambient monitor in the agent's list is not work, so it is not counted.
-    footer_counting(&mut ws, &agent, 1, 2).await;
-    turn_text(&mut ws).await;
+    // The ambient monitor in the agent's list is not work, so it is not a task. The command's
+    // row has its command, its call and the last lines of the file its result names; the
+    // subagent's has its brief and progress.
+    let footer = footer_until(&mut ws, &agent, |f| {
+        f.tasks.len() == 3
+            && f.tasks[0].tail.len() == 3
+            && f.tasks[1].tool_uses.is_some()
+    })
+    .await;
+    let shell = &footer.tasks[0];
+    assert_eq!((shell.id.as_str(), shell.kind), ("bash-1", TaskKind::Shell));
+    assert_eq!(shell.name, "Build the Release app");
+    assert_eq!(shell.command.as_deref(), Some("make deploy-client"));
+    assert_eq!(shell.call.as_deref(), Some("bg-call-1"));
+    assert_eq!(shell.tail, vec!["line 1", "line 2", "line 3"]);
+    assert_eq!(shell.output_bytes, 21);
+    assert!(shell.started_ms > 0 && shell.last_output_ms.is_some());
+    let sub = &footer.tasks[1];
+    assert_eq!((sub.kind, sub.name.as_str()), (TaskKind::Agent, "Explore: find callers"));
+    assert_eq!(sub.command.as_deref(), Some("Find every caller of AgentFooter"));
+    assert_eq!((sub.tool_uses, sub.last_tool.as_deref(), sub.tokens), (Some(2), Some("Bash"), Some(26666)));
+    assert_eq!(footer.tasks[2].name, "code-reviewer: review the diff");
+
+    // A write to the output file reaches every client within the second the footer waits.
+    let path = shell.output_path.clone().unwrap();
+    let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    std::io::Write::write_all(&mut file, b"line 4\n").unwrap();
+    drop(file);
+    let footer = tokio::time::timeout(Duration::from_secs(5), footer_until(&mut ws, &agent, |f| {
+        f.tasks.first().is_some_and(|t| t.tail.last().map(String::as_str) == Some("line 4"))
+    }))
+    .await
+    .expect("the new line reaches the footer");
+    assert_eq!(footer.tasks[0].output_bytes, 28);
+
+    // The full output is read on request.
+    send(&mut ws, ClientMsg::TaskOutput { req: Some(41), agent: agent.clone(), task: "bash-1".into() }).await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::TaskOutput { req: 41, text, truncated } => {
+                assert_eq!(text, "line 1\nline 2\nline 3\nline 4\n");
+                assert!(!truncated);
+                break;
+            }
+            ServerMsg::Error { req: Some(41), message, .. } => panic!("task output failed: {message}"),
+            _ => {}
+        }
+    }
 
     attach_and_send(&mut ws, &agent, "end background").await;
-    footer_counting(&mut ws, &agent, 0, 0).await;
+    footer_until(&mut ws, &agent, |f| f.tasks.is_empty()).await;
+    send(&mut ws, ClientMsg::TaskOutput { req: Some(42), agent: agent.clone(), task: "bash-1".into() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(42), message, .. } = recv(&mut ws).await {
+            assert_eq!(message, "no running background task bash-1");
+            break;
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

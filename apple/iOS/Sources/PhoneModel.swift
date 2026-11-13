@@ -10,6 +10,16 @@ import WheelUI
 /// The daemon owns the layout (ADR-0001); this model renders it and changes it only by sending ops.
 @MainActor @Observable
 final class PhoneModel {
+    /// The `task_output` requests in flight: which agent's task each reply belongs to.
+    @ObservationIgnored private var taskOutputAsks: [UInt64: (agent: String, task: String)] = [:]
+
+    /// Read a running background task's recent output for the full view.
+    func readTaskOutput(_ chat: AgentChat, task: String) {
+        guard let client else { return }
+        let req = client.req()
+        taskOutputAsks[req] = (chat.name, task)
+        client.send(.taskOutput(req: req, agent: chat.name, task: task))
+    }
     private(set) var pairing: Pairing?
     private(set) var connection: DaemonClient.Connection = .connecting
     /// Set when the Mac presented a certificate other than the one the pairing pins.
@@ -378,6 +388,11 @@ final class PhoneModel {
             chats[agent]?.setConfig(options)
         case let .agentContext(agent, context):
             chats[agent]?.context = context
+        case let .taskOutput(req, text, truncated):
+            // A reply for a task that ended meanwhile is not kept.
+            if let ask = taskOutputAsks.removeValue(forKey: req), let chat = chats[ask.agent], chat.footer?.tasks.contains(where: { $0.id == ask.task }) == true {
+                chat.taskOutputs[ask.task] = (text, truncated)
+            }
         case let .agentFooter(agent, footer):
             chats[agent]?.footer = footer
         case let .agentCommands(agent, commands):
@@ -462,6 +477,7 @@ final class PhoneModel {
             case nil: break
             }
         case let .error(req, _, message):
+            if let req { taskOutputAsks[req] = nil }
             if let req, let field = settingChangeReqs.removeValue(forKey: req) {
                 settingRefusals[field] = message
                 Log.info("setting \(field.key) refused: \(message)")
