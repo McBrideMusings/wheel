@@ -3,7 +3,7 @@
 //! `AgentCatalog.swift`, `AgentChat.swift`): the context meter's figures, the footer's
 //! directory and background tasks, the agent's home, and the order of its config controls. The
 //! `chat.footer.items` setting names the items and their order.
-use wheel_proto::{AgentFooter, ConfigOption, ContextUse};
+use wheel_proto::{AgentFooter, ConfigOption, ContextUse, TaskKind};
 
 /// What the line shows, left to right, until the daemon says: `chat.footer.items`' default.
 pub const DEFAULT_ITEMS: [&str; 6] = ["context", "background", "directory", "home", "branch", "changes"];
@@ -91,12 +91,14 @@ pub fn shown_directory(footer: &AgentFooter) -> String {
 /// The running background tasks as the status line reads them, `1 shell · 2 agents`; none when
 /// none run, so the line draws nothing at zero.
 pub fn background_text(footer: &AgentFooter) -> Option<String> {
+    let count = |kind: TaskKind| footer.tasks.iter().filter(|t| t.kind == kind).count();
+    let (shells, agents) = (count(TaskKind::Shell), count(TaskKind::Agent));
     let mut parts = vec![];
-    if footer.shells > 0 {
-        parts.push(if footer.shells == 1 { "1 shell".to_owned() } else { format!("{} shells", footer.shells) });
+    if shells > 0 {
+        parts.push(if shells == 1 { "1 shell".to_owned() } else { format!("{shells} shells") });
     }
-    if footer.agents > 0 {
-        parts.push(if footer.agents == 1 { "1 agent".to_owned() } else { format!("{} agents", footer.agents) });
+    if agents > 0 {
+        parts.push(if agents == 1 { "1 agent".to_owned() } else { format!("{agents} agents") });
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
@@ -240,7 +242,8 @@ mod tests {
 
     #[test]
     fn the_footer_words_follow_the_swift_client() {
-        let f = AgentFooter { directory: "/Users/me/Projects/x".into(), branch: Some("main".into()), added: 12, removed: 3, shells: 1, agents: 2 };
+        let f = AgentFooter { directory: "/Users/me/Projects/x".into(), branch: Some("main".into()), added: 12, removed: 3,
+            tasks: [TaskKind::Shell, TaskKind::Agent, TaskKind::Agent].into_iter().enumerate().map(|(i, kind)| wheel_proto::BackgroundTask { id: i.to_string(), kind, ..Default::default() }).collect() };
         assert_eq!(with_tilde(&f.directory, "/Users/me"), "~/Projects/x");
         assert_eq!(with_tilde("/Users/meow/x", "/Users/me"), "/Users/meow/x");
         assert_eq!(background_text(&f).as_deref(), Some("1 shell · 2 agents"));
