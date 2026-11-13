@@ -66,8 +66,16 @@ fn draw(window: gpui::WindowHandle<Client>, path: Option<PathBuf>, cx: &mut Asyn
 async fn shot(native: &Native, directory: &std::path::Path, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(directory)?;
     native.call(json!({"op":"snapshot","directory":directory}));
-    wait(native, "WK snapshots", |s| s["snapshots_pending"] == 0, cx).await?;
-    Ok(())
+    for _ in 0..200 {
+        if native.status()["snapshots_pending"] == 0 {
+            return Ok(());
+        }
+        tick(cx, 100).await;
+    }
+    let s = native.status();
+    let waiting: Vec<Value> = s["snapshots_waiting"].as_array().cloned().unwrap_or_default().iter()
+        .map(|id| { let p = &s["panes"][id.as_str().unwrap_or("")]; json!({"pane": id, "kind": p["kind"], "url": p["url"], "loads": p["loads"], "hidden": p["hidden"]}) }).collect();
+    anyhow::bail!("WK snapshots unanswered after 20 s: {waiting:?}; bridge errors {}", s["errors"])
 }
 fn identity(status: &Value, pane: &str) -> String {
     status["panes"][pane]["view_identity"].as_str().unwrap_or_default().to_owned()
