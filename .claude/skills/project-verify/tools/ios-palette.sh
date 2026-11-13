@@ -8,23 +8,7 @@
 # WheelPhone scheme for the simulator (see project-verify § iOS title menu). Run with
 # `env -u WHEEL_SPACE -u WHEEL_PANE`.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-SIM=~/.claude/tools/sim
-BUNDLE=com.piercemakes.wheel.phone
-UDID=""
-TPID=""
-ios_cleanup() {
-  [ -n "$DPID" ] && kill -CONT "$DPID" 2>/dev/null
-  [ -n "$TPID" ] && kill "$TPID" 2>/dev/null
-  [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1
-  cleanup
-}
-trap ios_cleanup EXIT
-
-DD="${WHEEL_IOS_DERIVED_DATA:-}"
-[ -d "$DD/Build/Products" ] || { echo "set WHEEL_IOS_DERIVED_DATA to a build-for-testing of WheelPhone" >&2; exit 2; }
-SHOTS="${WHEEL_SHOTS:-$SCR/shots}"
-SYNC="$SCR/sync"
-mkdir -p "$SHOTS" "$SYNC"
+source "$(dirname "${BASH_SOURCE[0]}")/ios-ui-lib.sh"
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
@@ -54,34 +38,8 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 
-UDID="$("$SIM" acquire)"
-xcrun simctl uninstall "$UDID" "$BUNDLE" >/dev/null 2>&1
-CODE="$(w remote pair --address 127.0.0.1)"
-XRUN="$(ls "$DD"/Build/Products/*.xctestrun | head -1)"
-TEST_RUNNER_WHEEL_PAIR_JSON="$CODE" TEST_RUNNER_WHEEL_SYNC_DIR="$SYNC" TEST_RUNNER_WHEEL_SHOTS="$SHOTS" \
-  xcodebuild test-without-building -xctestrun "$XRUN" -destination "id=$UDID" \
-  -only-testing:WheelPhoneUITests/CommandPaletteUITests/testPalette >"$SCR/xcodebuild.log" 2>&1 &
-TPID=$!
+ios_ui_start CommandPaletteUITests/testPalette
 
-PLOG=""
-plog() {
-  if [ -z "$PLOG" ]; then
-    local data; data="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data 2>/dev/null)" || return 1
-    PLOG="$data/Documents/phone.log"
-  fi
-  grep -q -- "$1" "$PLOG" 2>/dev/null
-}
-step() {
-  local i
-  for i in $(seq 1 1200); do
-    [ -f "$SYNC/step-$1" ] && return 0
-    { kill -0 "$TPID" 2>/dev/null && ! grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log"; } || { fail "the UI test reached $1" "$(grep -E 'error:|XCTAssert' "$SCR/xcodebuild.log" | head -5)"; return 1; }
-    sleep 0.25
-  done
-  fail "the UI test reached $1 within 5 minutes"
-  return 1
-}
-ack() { touch "$SYNC/ack-$1"; }
 pane_count() { w space ls | jq --arg s "$1" '[.spaces[] | select(.id==$s) | .root | .. | select(.node? == "pane")] | length'; }
 space_named() { w space ls | jq -r --arg n "$1" '.spaces[] | select(.name==$n) | .id'; }
 shown() { w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | "\(.session) \(.space)"'; }
@@ -118,11 +76,4 @@ if step kept; then
   check "phone.log shows the palette asked first" plog "palette run action:close-space"
   ack kept
 fi
-for _ in $(seq 1 120); do grep -qE "Test Suite 'Selected tests' (passed|failed)" "$SCR/xcodebuild.log" && break; sleep 0.5; done
-if grep -q "Test Suite 'Selected tests' passed" "$SCR/xcodebuild.log"; then TEST_EXIT=0; else TEST_EXIT=1; fi
-kill "$TPID" 2>/dev/null
-TPID=""
-eq "the UI test passed" "$TEST_EXIT" 0
-[ "$TEST_EXIT" = 0 ] || grep -E "error:|XCTAssert" "$SCR/xcodebuild.log" | head -10
-for f in "$SHOTS"/palette-*.png; do echo "shot $f"; done
-finish
+ios_ui_finish palette

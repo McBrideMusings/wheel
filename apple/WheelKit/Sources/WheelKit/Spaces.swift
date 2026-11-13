@@ -92,11 +92,12 @@ extension SpaceInfo {
         ([root] + popped + backgrounded).first { $0.panes.contains { $0.id == pane } }
     }
 
-    /// The pane this client keeps focused when the space's tree becomes `root`: the same pane while it
-    /// is there, else the pane that now sits where it was in reading order (a closed pane's neighbour).
-    public func focusKept(in root: Node) -> String {
-        let now = root.readingOrder.map(\.id)
-        if now.contains(focus) { return focus }
+    /// The pane this client keeps focused when the space becomes `new`: the same pane while `new` holds
+    /// it anywhere (grid, popped out or backgrounded), else the grid pane that now sits where it was in
+    /// reading order (a closed pane's neighbour).
+    public func focusKept(in new: SpaceInfo) -> String {
+        if new.site(of: focus) != nil { return focus }
+        let now = new.root.readingOrder.map(\.id)
         guard !now.isEmpty else { return focus }
         let was = self.root.readingOrder.map(\.id).firstIndex(of: focus) ?? 0
         return now[min(was, now.count - 1)]

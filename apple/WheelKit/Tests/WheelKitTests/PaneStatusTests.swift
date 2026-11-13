@@ -127,4 +127,17 @@ struct PaneSiteTests {
         fresh.paneStatuses = [:]
         #expect(fresh.keepingStatuses(of: spaces[0]).paneStatuses == ["p5": .needsYou(waiting: 1)])
     }
+
+    @Test func aLayoutBroadcastKeepsAFocusOffTheGrid() throws {
+        guard case let .spaces(spaces, _) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
+        var was = spaces[0]
+        // A popped or backgrounded focus stays while the new layout holds it anywhere.
+        for pane in ["p3", "p5"] {
+            was.focus = pane
+            #expect(was.focusKept(in: spaces[0]) == pane)
+        }
+        // A pane gone from the space gives way to the grid pane where it was.
+        was.focus = "p9"
+        #expect(was.focusKept(in: spaces[0]) == "p1")
+    }
 }

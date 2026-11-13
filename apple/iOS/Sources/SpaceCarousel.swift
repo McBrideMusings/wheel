@@ -65,7 +65,12 @@ struct SpaceCarousel: View {
         }
         .onChange(of: model.activeSpace?.id) { _, _ in page = model.activeSpace?.focus }
         .onChange(of: page, initial: true) { _, new in model.show(pane: new == Pages.trayID ? openTray : new) }
-        .onChange(of: openTray) { _, open in if page == Pages.trayID { model.show(pane: open) } }
+        .onChange(of: openTray) { _, open in
+            guard page == Pages.trayID else { return }
+            model.show(pane: open)
+            // A tap on a row, as a swipe does: tell the daemon what the phone shows.
+            if let space = model.activeSpace, let open, open != space.focus { model.focus(space: space.id, pane: open) }
+        }
         .onChange(of: page) { _, new in
             // Another page closes the keyboard; nothing on the new page takes it until a tap.
             let closed = UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -456,7 +461,7 @@ private struct BackgroundedPage<Content: View>: View {
         if let id = open, let pane = tray.first(where: { $0.id == id }) {
             VStack(spacing: 0) {
                 HStack {
-                    Button { open = nil } label: { Image(systemName: "chevron.left").frame(width: 44, height: 36) }
+                    Button { Log.info("tray: back"); open = nil } label: { Image(systemName: "chevron.left").frame(width: 44, height: 36) }
                         .accessibilityLabel("Back")
                         .accessibilityIdentifier("tray back")
                     Spacer()
@@ -466,7 +471,7 @@ private struct BackgroundedPage<Content: View>: View {
             }
         } else {
             List(tray, id: \.id) { pane in
-                Button { open = pane.id } label: {
+                Button { Log.info("tray: open \(pane.id)"); open = pane.id } label: {
                     HStack(spacing: 12) {
                         Image(systemName: paneSymbol(pane.kind))
                             .foregroundStyle(Color.secondary)
@@ -499,7 +504,7 @@ private func paneSymbol(_ kind: PaneKind) -> String {
 /// One mark per page: a filled dot for a grid pane, a ring for a popped-out one, and for the
 /// tray page a rounded square, which carries the needs-you badge when a backgrounded pane needs the person.
 private struct Dots: View {
-    enum Kind { case grid, popped, tray }
+    enum Kind: String { case grid, popped, tray }
 
     let kinds: [Kind]
     let current: Int
@@ -511,7 +516,19 @@ private struct Dots: View {
                 mark(kind, selected: i == current)
             }
         }
+        .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("page dots")
+        .accessibilityLabel("Page \(current + 1) of \(kinds.count)")
+        .accessibilityValue(value)
+    }
+
+    /// Each page's mark in order, `grid`, `popped` or `tray`, the current one in brackets and the
+    /// tray's badge as `tray!`: `grid [popped] tray!`.
+    var value: String {
+        kinds.enumerated().map { i, kind in
+            let name = kind == .tray && trayNeedsYou ? "tray!" : kind.rawValue
+            return i == current ? "[\(name)]" : name
+        }.joined(separator: " ")
     }
 
     @ViewBuilder private func mark(_ kind: Kind, selected: Bool) -> some View {

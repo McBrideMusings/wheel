@@ -529,7 +529,7 @@ final class PhoneModel {
         let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
         self.spaces = spaces.map { space in
             var space = space.keepingStatuses(of: held[space.id])
-            if let was = held[space.id] { space.focus = was.focusKept(in: space.root) }
+            if let was = held[space.id] { space.focus = was.focusKept(in: space) }
             return space
         }
         let old = self.sessions
