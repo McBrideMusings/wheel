@@ -8,7 +8,7 @@
 //! `WHEEL_HIDDEN=1`) opens the window in test mode: never shown, never key, never active.
 use anyhow::{Result, bail};
 use std::path::PathBuf;
-use wheel_gpui::{daemon::*, native::Bridge, open_window};
+use wheel_gpui::{daemon::*, native::Bridge};
 
 fn main() -> Result<()> {
     let (mut url, mut token_file, mut space) = (None::<String>, std::env::var_os("WHEEL_TOKEN_FILE").map(PathBuf::from), None);
@@ -51,9 +51,10 @@ fn main() -> Result<()> {
             }
             let bridge = Bridge::load()?;
             wheel_gpui::view::start_menu_bar(cx, &bridge, endpoint.clone(), hidden);
-            let window = open_window(cx, &bridge, endpoint, None, space, hidden)?;
-            if let Some(debug) = debug {
-                wheel_gpui::serve_debug(cx, window, debug);
+            let file = wheel_gpui::saved::default_file(&endpoint.ws, hidden);
+            let windows = wheel_gpui::launch(cx, &bridge, endpoint, space, hidden, file)?;
+            if let (Some(debug), Some(window)) = (debug, windows.last()) {
+                wheel_gpui::serve_debug(cx, *window, debug);
             }
             Ok(())
         })();

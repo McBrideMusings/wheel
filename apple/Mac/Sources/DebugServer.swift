@@ -2125,7 +2125,8 @@ final class DebugServer {
                 if case let .terminal(term, _) = pane.kind, let terminal = model.terminals[term] {
                     o["term"] = term
                     o["attached"] = terminal.attached
-                    o["visible"] = terminal.view.isSurfaceVisible
+                    o["visible"] = terminal.isSurfaceVisible
+                    o["surfaces"] = terminal.surfaces.map { $0.session.readViewportText() ?? "" }
                     o["cols"] = terminal.size?.cols ?? NSNull()
                     o["rows"] = terminal.size?.rows ?? NSNull()
                     o["grid_cols"] = terminal.reported.map { $0.columns } ?? NSNull()
@@ -2137,7 +2138,7 @@ final class DebugServer {
                         "theme": look.theme.rawValue, "cursor": look.cursor.rawValue, "cursor_blink": look.cursorBlink,
                     ] as [String: Any]
                     o["ghostty_config"] = model.terminalConfig(forTerm: term) ?? NSNull()
-                    o["font_points"] = terminal.view.fontSize.map { Double($0) } ?? NSNull()
+                    o["font_points"] = terminal.view?.fontSize.map { Double($0) } ?? NSNull()
                     o["look_space"] = terminal.space ?? NSNull()
                 }
                 if case let .terminal(_, agent) = pane.kind {
@@ -2646,7 +2647,7 @@ final class DebugServer {
     func responderName(_ window: NSWindow) -> String {
         guard let responder = window.firstResponder else { return "none" }
         let name = String(describing: type(of: responder))
-        if name.contains("TerminalView"), let term = model.terminals.first(where: { $0.value.view.isFocused })?.key {
+        if name.contains("TerminalView"), let term = model.terminals.first(where: { $0.value.view?.isFocused == true })?.key {
             return "terminal \(term)"
         }
         return name

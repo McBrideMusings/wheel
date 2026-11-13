@@ -483,7 +483,7 @@ extension AppModel {
     func updateVisibility() {
         let shown = shownSpaces
         let plan = SurfacePlan(spaces, active: active, shown: shown, existing: Set(terminals.keys), focusKey: focusKey)
-        for (term, visible) in plan.visible { terminals[term]?.view.isSurfaceVisible = visible }
+        for (term, visible) in plan.visible { terminals[term]?.isSurfaceVisible = visible }
         let held = Set(spaces.map(\.id))
         shownFlags = shownFlags.filter { held.contains($0.key) }
         for (space, flag) in shownFlags where flag.shown != shown.contains(space) { flag.shown = shown.contains(space) }

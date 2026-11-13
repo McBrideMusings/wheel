@@ -57,7 +57,7 @@ extension AppModel {
         Log.info("focus by keyboard: \(pane) (\(kind.name))")
         focus(pane: pane)
         switch kind {
-        case let .terminal(term, _): terminals[term]?.view.requestFocus()
+        case let .terminal(term, _): terminals[term]?.view?.requestFocus()
         case let .agent(agent, _, _): chats[agent]?.composerFocusRequest += 1
         case .empty: break
         default:

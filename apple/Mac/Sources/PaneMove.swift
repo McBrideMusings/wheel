@@ -245,7 +245,7 @@ extension AppModel {
     /// A pane's name for the chip that follows the pointer.
     func paneLabel(_ pane: String) -> String {
         switch space(holding: pane)?.allPanes.first(where: { $0.id == pane })?.kind {
-        case let .terminal(term, agent)?: agent?.name.capitalized ?? terminals[term]?.view.title.nonEmpty ?? "Terminal"
+        case let .terminal(term, agent)?: agent?.name.capitalized ?? terminals[term]?.view?.title.nonEmpty ?? "Terminal"
         case let .agent(_, agent, _)?: agent.capitalized
         case let .web(artifact)?: artifact.name
         case .browser?: "Browser"

@@ -589,7 +589,7 @@ struct PaneView: View {
                 // makeNSView runs once per view identity, so a terminal made again (its pane moved to
                 // another space, which has its own Ghostty controller) must be a new identity or the
                 // window keeps drawing the old surface, which nothing feeds any more.
-                TerminalBody(model: model, paneId: paneId, terminal: terminal, termState: terminal.view)
+                TerminalHost(model: model, paneId: paneId, terminal: terminal)
                     .id(ObjectIdentifier(terminal))
             } else {
                 ProgressView()
@@ -855,8 +855,8 @@ struct PaneHeader: View {
                 if let agent {
                     // The daemon's record of the agent decides the header, whatever title the shell set.
                     AgentName(agent: agent.name)
-                } else if let terminal = model.terminals[term] {
-                    TerminalTitle(state: terminal.view)
+                } else if let state = model.terminals[term]?.view {
+                    TerminalTitle(state: state)
                 } else {
                     Text("Terminal")
                 }
@@ -888,6 +888,26 @@ struct TerminalTitle: View {
 
     var body: some View {
         Text(state.title.isEmpty ? "Terminal" : state.title)
+    }
+}
+
+/// One window's view of a terminal pane: it owns that window's `PaneSurface`, so the surface lives
+/// exactly as long as this view does.
+struct TerminalHost: View {
+    var model: AppModel
+    let paneId: String
+    @ObservedObject var terminal: PaneTerminal
+    @StateObject private var surface: PaneSurface
+
+    init(model: AppModel, paneId: String, terminal: PaneTerminal) {
+        self.model = model
+        self.paneId = paneId
+        self.terminal = terminal
+        _surface = StateObject(wrappedValue: terminal.makeSurface())
+    }
+
+    var body: some View {
+        TerminalBody(model: model, paneId: paneId, terminal: terminal, termState: surface.view)
     }
 }
 

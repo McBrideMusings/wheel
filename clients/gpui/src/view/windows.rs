@@ -42,7 +42,17 @@ impl Client {
 
     /// What this window says about itself to the app's list of windows.
     pub fn record(&self) -> Record {
-        Record { id: self.window_id.clone(), name: self.window_name.clone(), session: self.session_id.clone(), active: self.space_id.clone(), sidebar: self.sidebar_open }
+        Record { id: self.window_id.clone(), name: self.window_name.clone(), session: self.session_id.clone(), active: self.space_id.clone(), sidebar: self.sidebar_open, pinned: self.pinned }
+    }
+    /// Measure where this window's content is on screen and write it to the app's list, which
+    /// saves it (saved.rs); a window off every screen reports no size and keeps its last frame.
+    pub fn measure_frame(&self) {
+        let answer = self.native.call(json!({"op": "frame"}));
+        let Some(f) = answer["frame"].as_array().filter(|a| a.len() == 4) else { return };
+        let frame: Vec<f32> = f.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect();
+        if frame[2] > 0. && frame[3] > 0. {
+            windows::with(|r| r.set_frame(&self.window_id, [frame[0], frame[1], frame[2], frame[3]]));
+        }
     }
     /// Write this window's record to the app's list.
     pub fn publish(&self) {

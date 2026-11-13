@@ -106,7 +106,7 @@ extension AppModel {
     /// reply, does not.
     private func holdsTextKeys(_ responder: NSResponder?) -> Bool {
         if let text = responder as? NSText { return text.isEditable }
-        if terminals.values.contains(where: { $0.view.isFocused }) { return true }
+        if terminals.values.contains(where: { $0.view?.isFocused == true }) { return true }
         guard let view = responder as? NSView else { return false }
         return (webPanes.values.map(\.view) + browserPanes.values.map(\.view) as [NSView]).contains { view === $0 || view.isDescendant(of: $0) }
     }

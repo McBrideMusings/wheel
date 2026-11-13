@@ -6,6 +6,7 @@ pub mod agents;
 pub mod buttons;
 pub mod git;
 pub mod layout;
+pub mod list;
 pub mod page;
 pub mod project;
 pub mod run;
