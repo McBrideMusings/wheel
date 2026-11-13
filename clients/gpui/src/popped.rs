@@ -90,6 +90,13 @@ pub struct CardDrag {
     pub delta: (f32, f32),
 }
 
+/// The port of the daemon at `ws`, which names the files this client keeps per daemon; "default"
+/// when the address names none.
+pub fn port_of(ws: &str) -> &str {
+    let host = ws.split("://").nth(1).unwrap_or(ws).split(['/', '?']).next().unwrap_or_default();
+    host.rsplit_once(':').map_or("default", |(_, p)| p)
+}
+
 /// The frames cards were left at, by pane id, in grid coordinates; saved to `file` when there is one.
 #[derive(Default)]
 pub struct Frames {
@@ -109,9 +116,7 @@ impl Frames {
     /// The file this client keeps them in for the daemon at `ws`: pane ids are a daemon's own, so
     /// each daemon (by port) gets its file.
     pub fn default_file(ws: &str) -> PathBuf {
-        let host = ws.split("://").nth(1).unwrap_or(ws).split(['/', '?']).next().unwrap_or_default();
-        let port = host.rsplit_once(':').map_or("default", |(_, p)| p);
-        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(format!("Library/Application Support/wheel-gpui/popped-frames-{port}.json"))
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(format!("Library/Application Support/wheel-gpui/popped-frames-{}.json", port_of(ws)))
     }
     /// The one map every window of this process reads and writes for `file` (none: kept in memory
     /// only), as the Swift app keeps one in its model.

@@ -17,6 +17,8 @@ pub struct Record {
     /// The space shown.
     pub active: Option<String>,
     pub sidebar: bool,
+    /// The pin: the window floats over every other.
+    pub pinned: bool,
 }
 
 /// One little window as it last described itself (WheelKit's LittleWindow): one space's grid
@@ -37,6 +39,8 @@ pub struct Registry {
     pub focused: Option<String>,
     /// The little windows, in the order they opened.
     pub littles: Vec<Little>,
+    /// Where each window's content was last measured on screen, by window id (saved.rs).
+    pub frames: std::collections::HashMap<String, crate::saved::Frame>,
     /// Told after every change to the windows: the menu bar item counts what no window shows.
     pub(crate) watchers: Vec<futures::channel::mpsc::UnboundedSender<()>>,
 }
@@ -85,9 +89,18 @@ impl Registry {
         }
         self.changed();
     }
+    /// Window `id` moved or resized to `frame`.
+    pub fn set_frame(&mut self, id: &str, frame: crate::saved::Frame) {
+        if self.frames.get(id) == Some(&frame) {
+            return;
+        }
+        self.frames.insert(id.to_owned(), frame);
+        self.changed();
+    }
     pub fn remove(&mut self, id: &str) {
         self.windows.retain(|w| w.id != id);
         self.littles.retain(|l| l.id != id);
+        self.frames.remove(id);
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
         }
@@ -224,7 +237,7 @@ mod tests {
         Session { id: id.into(), name: name.into(), spaces: spaces.iter().map(|s| s.to_string()).collect() }
     }
     fn window(id: &str, session: &str, active: &str) -> Record {
-        Record { id: id.into(), name: None, session: Some(session.into()), active: Some(active.into()), sidebar: true }
+        Record { id: id.into(), name: None, session: Some(session.into()), active: Some(active.into()), sidebar: true, pinned: false }
     }
     fn fixture() -> (Registry, Vec<Session>, Vec<Space>) {
         let spaces = vec![space("s1", "wheel", 2), space("s2", "docs", 1), space("s3", "site", 3)];

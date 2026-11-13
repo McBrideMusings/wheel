@@ -20,6 +20,7 @@ pub mod native;
 pub mod pairing;
 pub mod perms;
 pub mod popped;
+pub mod saved;
 pub mod palette;
 pub mod pane_header;
 pub mod procs;
@@ -101,7 +102,8 @@ pub enum Opening {
 
 /// Open a client window over `connection_out` and attach the native bridge to it. `hidden` is
 /// the test mode: the window is never shown, never key, and the application never activates.
-/// The caller feeds the window the connection's events.
+/// The caller feeds the window the connection's events. `frame` is where a restored window goes
+/// (saved.rs), in the bridge's top-left screen coordinates; none opens it at its default place.
 #[allow(clippy::too_many_arguments)]
 pub fn create_window(
     cx: &mut App,
@@ -112,6 +114,7 @@ pub fn create_window(
     prefer_space: Option<String>,
     hidden: bool,
     opening: Opening,
+    frame: Option<saved::Frame>,
 ) -> Result<WindowHandle<view::Client>> {
     // The app's one server control, made by the first window or the menu bar.
     view::server::ensure(cx, endpoint.service.clone(), hidden);
@@ -121,13 +124,22 @@ pub fn create_window(
     let registered = window_id.clone();
     let little = opening == Opening::Little;
     // A little window opens at its own small size, centred, and shrinks no further than its minimum.
-    let (bounds, min_size) = match opening {
+    let (mut bounds, min_size) = match opening {
         Opening::Main => (Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(720.)) }, None),
         Opening::Little => {
             let ((w, h), (mw, mh)) = (view::LITTLE_SIZE, view::LITTLE_MIN_SIZE);
             (Bounds::centered(None, size(px(w), px(h)), cx), Some(size(px(mw), px(mh))))
         }
     };
+    // A restored window opens at its saved size near its place; the bridge then puts its content's
+    // top left exactly where it was, as WindowManager puts a displaced window back.
+    // A frame whose centre is on no screen now (a display that went) is dropped, as AppKit moves a
+    // restored frame onto the screens it can see.
+    let on_screen = |f: &saved::Frame| cx.displays().iter().any(|d| d.bounds().contains(&point(px(f[0] + f[2] / 2.), px(f[1] + f[3] / 2.))));
+    let frame = frame.filter(|f| f[2] > 0. && f[3] > 0. && on_screen(f));
+    if let Some([x, y, w, h]) = frame {
+        bounds = Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) };
+    }
     let window = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -173,6 +185,7 @@ pub fn create_window(
                         r.focused = Some(id.clone());
                     }
                 });
+                saved::save();
             }
         })
         .detach();
@@ -187,8 +200,14 @@ pub fn create_window(
             anyhow::bail!("not an AppKit window")
         };
         native.attach_to(handle.ns_view.as_ptr(), hidden, frames);
+        // Every move and resize is saved with the window (saved.rs).
+        cx.observe_window_bounds(window, |client: &mut view::Client, _, _| client.measure_frame()).detach();
+        if let Some([x, y, ..]) = frame {
+            native.call(serde_json::json!({"op": "move_window", "point": [f64::from(x), f64::from(y)]}));
+        }
         Ok(())
     })??;
+    let _ = window.update(cx, |client, _, _| client.measure_frame());
     cx.spawn(async move |cx| {
         while let Some(frame) = incoming.next().await {
             if window.update(cx, |client, _, cx| {
@@ -259,10 +278,11 @@ pub fn open_window(
     prefer_space: Option<String>,
     hidden: bool,
 ) -> Result<WindowHandle<view::Client>> {
-    open_window_as(cx, bridge, endpoint, prefer_session, prefer_space, hidden, Opening::Main)
+    open_window_as(cx, bridge, endpoint, prefer_session, prefer_space, hidden, Opening::Main, None)
 }
 
-/// `open_window` for a main or a little window.
+/// `open_window` for a main or a little window, at `frame` when it is restored.
+#[allow(clippy::too_many_arguments)]
 pub fn open_window_as(
     cx: &mut App,
     bridge: &Rc<native::Bridge>,
@@ -271,11 +291,12 @@ pub fn open_window_as(
     prefer_space: Option<String>,
     hidden: bool,
     opening: Opening,
+    frame: Option<saved::Frame>,
 ) -> Result<WindowHandle<view::Client>> {
     // The window holds the only sender: when it closes, the socket closes with it, and wheeld
     // forgets its view and its offer to run window commands at once.
     let daemon::Connection { send, mut incoming } = daemon::Connection::open(endpoint.clone());
-    let window = create_window(cx, bridge, send, endpoint, prefer_session, prefer_space, hidden, opening)?;
+    let window = create_window(cx, bridge, send, endpoint, prefer_session, prefer_space, hidden, opening, frame)?;
     cx.spawn(async move |cx| {
         while let Some(event) = incoming.next().await {
             if cx.update(|cx| deliver(cx, window, event)).is_err() {
@@ -425,6 +446,54 @@ fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &W
             }
         }
     }
+}
+
+/// At launch (AppModel.openLaunchWindows): open what `file` saved, per `saved::Saved::launch_plan`,
+/// and keep writing the windows to it. `space` (`--space`) shows that space in the first window.
+/// The handles in the order they opened; the focused window is the last main one.
+pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, file: Option<std::path::PathBuf>) -> Result<Vec<WindowHandle<view::Client>>> {
+    let saved = saved::Saved::load(file.as_ref());
+    saved::start(cx, file, saved.restore);
+    let opened = open_saved(cx, bridge, endpoint, space, hidden, &saved);
+    if opened.is_err() {
+        saved::stop();
+    }
+    opened
+}
+
+/// Open the windows `saved` says launch opens.
+pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, saved: &saved::Saved) -> Result<Vec<WindowHandle<view::Client>>> {
+    let plan = saved.launch_plan();
+    eprintln!("wheel-gpui: launch opens {} window(s), restore windows at launch {}", plan.len(), if saved.restore { "on" } else { "off" });
+    let mut handles = vec![];
+    let mut space = space;
+    for launch in plan {
+        let handle = match launch {
+            saved::Launch::Main(w) => {
+                let handle = open_window_as(cx, bridge, endpoint.clone(), w.session, space.take().or(w.active), hidden, Opening::Main, w.frame)?;
+                let _ = handle.update(cx, |client, _, cx| {
+                    client.set_sidebar(w.sidebar);
+                    client.set_window_name(w.name);
+                    client.set_pinned(w.pinned);
+                    cx.notify();
+                });
+                handle
+            }
+            saved::Launch::Little(l) => {
+                let handle = open_window_as(cx, bridge, endpoint.clone(), None, Some(l.space), hidden, Opening::Little, l.frame)?;
+                let _ = handle.update(cx, |client, _, cx| {
+                    client.set_pinned(l.pinned);
+                    cx.notify();
+                });
+                handle
+            }
+        };
+        handles.push(handle);
+    }
+    if let Some(last) = handles.iter().rev().find(|h| h.read(cx).is_ok_and(|c| !c.is_little())) {
+        bring_front(cx, *last);
+    }
+    Ok(handles)
 }
 
 /// New Window, `wheel window new` and the Dock icon (AppModel.newWindow): a main window on

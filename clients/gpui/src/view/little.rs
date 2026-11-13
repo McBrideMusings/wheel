@@ -96,7 +96,7 @@ impl Client {
             return None;
         };
         let owner = windows::with(|r| r.window_holding(space, &self.sessions).map(|w| w.id.clone()));
-        let handle = match crate::open_window_as(cx, &self.bridge, self.endpoint.clone(), Some(session), Some(space.to_owned()), self.hidden, crate::Opening::Little) {
+        let handle = match crate::open_window_as(cx, &self.bridge, self.endpoint.clone(), Some(session), Some(space.to_owned()), self.hidden, crate::Opening::Little, None) {
             Ok(handle) => handle,
             Err(e) => {
                 self.log(format!("little window for {space} did not open: {e:#}"));
