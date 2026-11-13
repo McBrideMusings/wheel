@@ -1,10 +1,11 @@
 # The GPUI client. Not part of the daemon's workspace or `make deploy-client`.
-.PHONY: build build-dev test check run deploy deploy-dev help
+.PHONY: build build-dev fixture-binaries test check run deploy deploy-dev help
 
 help:
 	@echo "build       build the binaries, the Swift bridge and target/app/Wheel GPUI.app"
 	@echo "build-dev   the same as target/app/Wheel GPUI Dev.app (DEV icon, .gpui.dev id, Wheel Dev's daemon)"
 	@echo "test        unit tests (layout)"
+	@echo "fixture-binaries  build the programs the fixture wheeld runs"
 	@echo "check       hidden regression check against a fixture wheeld (no window shown)"
 	@echo "run         show the client against a fixture wheeld"
 	@echo "deploy      build and install /Applications/Wheel GPUI.app; wheeld keeps running"
@@ -19,10 +20,14 @@ build-dev:
 test:
 	cargo +stable test --manifest-path Cargo.toml --lib
 
-check: build
+# The programs the fixture wheeld runs, built from the repo root so a stale build never fails the check.
+fixture-binaries:
+	python3 tools/fixture.py
+
+check: build fixture-binaries
 	python3 tools/check.py
 
-run: build
+run: build fixture-binaries
 	python3 tools/run.py
 
 deploy:

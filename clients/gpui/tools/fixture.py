@@ -10,6 +10,7 @@ import contextlib, json, os, pathlib, shlex, shutil, socket, subprocess, tempfil
 REPO = pathlib.Path(__file__).resolve().parents[3]
 # The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
 TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
+# `-p wheeld` builds every binary of that package, `wheel-fake-agent` included.
 BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse -p wheel-runner'
 # The plugin pages the check opens in the GPUI client, served as the machine artifacts they are on a
 # real machine: wheelhouse for Beads, Issues and Repo, wheel-runner for Runner, and the component
@@ -17,12 +18,18 @@ BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse -p wheel-runner'
 PAGES = ['beads', 'issues', 'repo', 'runner', 'gallery']
 
 
+def build():
+    """Build every program the fixture runs, from the repo root (cargo reads .cargo/config.toml
+    there); `make check` and `make run` call it first, so a stale build never reaches the check."""
+    subprocess.run(shlex.split(BUILD), cwd=REPO, env={**os.environ, 'CARGO_TARGET_DIR': str(TARGET)}, check=True)
+
+
 def built(name):
     """The debug build of `name` under `TARGET`; the agent pane's `wheel-fake-agent` is the
     daemon's scripted stand-in for Claude Code (the same stream-json wire, no model calls)."""
     path = TARGET / 'debug' / name
     if not path.exists():
-        raise FileNotFoundError(f'{path} is missing: run `{BUILD}` in the repo')
+        raise FileNotFoundError(f'{path} is missing: run `make -C clients/gpui fixture-binaries`')
     return path
 
 
@@ -231,3 +238,7 @@ def fixture():
         finally:
             stop()
             log.close()
+
+
+if __name__ == '__main__':
+    build()
