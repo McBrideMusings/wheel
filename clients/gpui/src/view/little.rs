@@ -20,6 +20,32 @@ pub const AWAY_OPACITY: f32 = 0.5;
 pub const SIZE: (f32, f32) = (480.0, 330.0);
 pub const MIN_SIZE: (f32, f32) = (320.0, 200.0);
 
+/// Open `space` in a little window owned by the main window that holds it (none for a space
+/// whose session no window shows), or bring its open one front (AppModel.openLittle): what a
+/// window's menu and the menu bar's popover both run. The window's id, none when no session
+/// holds the space, and the line that says what happened.
+pub fn open_little(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool, sessions: &[Session], space: &str) -> (Option<String>, String) {
+    if let Some(open) = windows::with(|r| r.little_showing(space).map(|l| l.id.clone())) {
+        if let Some(handle) = crate::window_handle(&open) {
+            crate::bring_front(cx, handle);
+        }
+        return (Some(open.clone()), format!("little window {open} brought front"));
+    }
+    let Some(session) = crate::windows::session_holding(sessions, space).map(|s| s.id.clone()) else {
+        return (None, format!("little window for {space}: the layout places it nowhere"));
+    };
+    let owner = windows::with(|r| r.window_holding(space, sessions).map(|w| w.id.clone()));
+    let handle = match crate::open_window_as(cx, bridge, endpoint, Some(session), Some(space.to_owned()), hidden, crate::Opening::Little, None) {
+        Ok(handle) => handle,
+        Err(e) => return (None, format!("little window for {space} did not open: {e:#}")),
+    };
+    let Ok(id) = handle.read(cx).map(|c| c.window_id().to_owned()) else { return (None, format!("little window for {space} closed as it opened")) };
+    crate::bring_front(cx, handle);
+    crate::refresh_windows(cx);
+    let line = format!("little window {id} opened for space {space}, owner {}", owner.as_deref().unwrap_or("none"));
+    (Some(id), line)
+}
+
 impl Client {
     // MARK: This window as a little one
 
@@ -81,33 +107,11 @@ impl Client {
     pub fn space_away(&self) -> bool {
         !self.is_little() && self.space_id.as_deref().is_some_and(|s| self.little_showing(s).is_some())
     }
-    /// Open `space` in a little window owned by the main window that holds it (none for a space
-    /// whose session no window shows), or bring its open one front. None when no session holds it.
+    /// Open `space` in a little window, or bring its open one front (`open_little`).
     pub fn open_little(&mut self, space: &str, cx: &mut App) -> Option<String> {
-        if let Some(open) = self.little_showing(space) {
-            self.log(format!("little window {open} brought front"));
-            if let Some(handle) = crate::window_handle(&open) {
-                crate::bring_front(cx, handle);
-            }
-            return Some(open);
-        }
-        let Some(session) = crate::windows::session_holding(&self.sessions, space).map(|s| s.id.clone()) else {
-            self.log(format!("little window for {space}: the layout places it nowhere"));
-            return None;
-        };
-        let owner = windows::with(|r| r.window_holding(space, &self.sessions).map(|w| w.id.clone()));
-        let handle = match crate::open_window_as(cx, &self.bridge, self.endpoint.clone(), Some(session), Some(space.to_owned()), self.hidden, crate::Opening::Little, None) {
-            Ok(handle) => handle,
-            Err(e) => {
-                self.log(format!("little window for {space} did not open: {e:#}"));
-                return None;
-            }
-        };
-        let id = handle.read(cx).map(|c| c.window_id().to_owned()).ok()?;
-        self.log(format!("little window {id} opened for space {space}, owner {}", owner.as_deref().unwrap_or("none")));
-        crate::bring_front(cx, handle);
-        crate::refresh_windows(cx);
-        Some(id)
+        let (id, line) = open_little(cx, &self.bridge, self.endpoint.clone(), self.hidden, &self.sessions, space);
+        self.log(line);
+        id
     }
     /// Go to Little Window: bring the little window showing `space` front.
     pub fn go_to_little(&mut self, space: &str, cx: &mut App) {

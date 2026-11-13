@@ -5190,6 +5190,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         json!({"row_is_address": row_is_address, "height": height, "copied": true, "copy_line": copy_line, "popover_stayed": true, "settings_opened": opened, "popover_closed": popover_gone,
             "qr_window_opened": qr_open, "qr_popover_closed": qr_popover_gone, "picture": picture})
     };
+    let space_rows = space_rows_check(&menu, output, cx).await?;
     // A Dock click with every window minimised (wheel-ynjo.7.6): AppKit finds no visible window and
     // GPUI calls `reopen` though windows are open; it opens one on the first session no window shows.
     let windows_before_dock = wheel_gpui::windows::with(|r| r.windows.len());
@@ -5240,10 +5241,135 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
         "new_window": {"before": windows_before, "after": windows_after, "popover_closed": after_new["popover"]["open"] == false},
         "pairing": pairing,
+        "space_rows": space_rows,
         "server_line": server_line,
         "dock_reopen": {"before": windows_before_dock, "after": windows_after_dock, "session": dock_opened, "wanted": dock_session},
         "all_closed": {"windows": open_windows, "running": true, "badge": still["item"]["badge"], "label": still["item"]["label"], "spaces": every_space},
         "log": still["log"]}))
+}
+
+/// The popover's rows and cards act (wheel-ynjo.7.4.4): a click on a row's name shows its space in
+/// a window, the hovered row's Little Window button opens it in a little one, a right-click opens
+/// the space's menu (Rename runs in the window holding it), and a card's New Window and Close
+/// buttons open a window on the session and ask before closing it.
+async fn space_rows_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, output: &std::path::Path, cx: &mut AsyncApp) -> Result<Value> {
+    let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
+    cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
+    let mut reopened = Value::Null;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        reopened = state(cx);
+        if reopened["popover"]["open"] == true {
+            break;
+        }
+    }
+    ensure!(reopened["popover"]["open"] == true, "the popover did not open for the rows: {}", reopened["popover"]);
+    let popover: gpui::AnyWindowHandle = menu.update(cx, |m, _| m.popover()).ok_or_else(|| anyhow::anyhow!("no popover handle"))?.into();
+    let ready = popover_settle(popover, &menu, cx, |s| popover_fitted(s) && s["popover"]["controls"].as_object().is_some_and(|c| c.keys().any(|k| k.starts_with("row-")))).await;
+    let rows: Vec<(String, String, bool)> = ready["cards"].as_array().unwrap().iter()
+        .flat_map(|c| c["rows"].as_array().unwrap().iter().map(move |r| (c["session"].as_str().unwrap_or("").to_owned(), r["space"].as_str().unwrap_or("").to_owned(), r["shown"] == true && r["in_little"] == false)))
+        .collect();
+    let (session, space) = rows.iter().find(|(_, _, shown)| !shown).map(|(n, s, _)| (n.clone(), s.clone()))
+        .ok_or_else(|| anyhow::anyhow!("every row's space is shown already: {:?}", rows))?;
+    // A click on its name: a window of its session shows it.
+    popover_press(popover, &ready, &format!("row-{space}"), cx)?;
+    let mut shown_in = None;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        shown_in = wheel_gpui::windows::with(|r| r.windows.iter().find(|w| w.active.as_deref() == Some(space.as_str())).map(|w| w.id.clone()));
+        if shown_in.is_some() {
+            break;
+        }
+    }
+    ensure!(shown_in.is_some(), "clicking the row of {space} showed it in no window");
+    let after_click = popover_settle(popover, &menu, cx, |s| s["cards"].as_array().unwrap().iter().flat_map(|c| c["rows"].as_array().unwrap().iter()).any(|r| r["space"] == space.as_str() && r["shown"] == true)).await;
+    let row_shown = after_click["cards"].as_array().unwrap().iter().flat_map(|c| c["rows"].as_array().unwrap().iter()).any(|r| r["space"] == space.as_str() && r["shown"] == true);
+    ensure!(row_shown, "the row of {space} has no shown dot after its window showed it");
+    // The pointer over the row shows its Little Window button; pressing it opens a little window.
+    popover_hover(popover, &after_click, &format!("row-{space}"), cx)?;
+    let little_name = format!("little-{space}");
+    let hovered = popover_settle(popover, &menu, cx, |s| s["popover"]["controls"][little_name.as_str()].is_array()).await;
+    ensure!(hovered["popover"]["controls"][little_name.as_str()].is_array(), "hovering the row of {space} showed no Little Window button: {}", hovered["popover"]["controls"]);
+    let hover_picture = output.join("client-menubar-row-hover.png");
+    popover_picture(popover, &hover_picture, cx)?;
+    popover_press(popover, &hovered, &little_name, cx)?;
+    let mut little = None;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        little = wheel_gpui::windows::with(|r| r.little_showing(&space).map(|l| (l.id.clone(), l.owner.clone())));
+        if little.is_some() {
+            break;
+        }
+    }
+    ensure!(little.is_some(), "the Little Window button opened no little window for {space}");
+    let dimmed_state = popover_settle(popover, &menu, cx, |s| s["cards"].as_array().unwrap().iter().flat_map(|c| c["rows"].as_array().unwrap().iter()).any(|r| r["space"] == space.as_str() && r["in_little"] == true)).await;
+    let dimmed_row = dimmed_state["cards"].as_array().unwrap().iter().flat_map(|c| c["rows"].as_array().unwrap().iter()).find(|r| r["space"] == space.as_str()).cloned().unwrap_or(Value::Null);
+    let owned = little.as_ref().is_some_and(|(_, owner)| owner.is_some());
+    ensure!(dimmed_row["in_little"] == true && dimmed_row["dimmed"] == owned, "the row of {space} in a little window (owned {owned}) reads {dimmed_row}");
+    // A right-click opens the space's menu; Rename Space… opens the rename in the window holding it.
+    popover_right_press(popover, &dimmed_state, &format!("row-{space}"), cx)?;
+    let menu_open = popover_settle(popover, &menu, cx, |s| s["space_menu"]["space"] == space.as_str()).await;
+    let built = menu_open["space_menu"]["built"].clone();
+    let titles: Vec<String> = built.as_array().map(|a| a.iter().filter_map(|i| i["title"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    ensure!(menu_open["space_menu"]["space"] == space.as_str() && titles.iter().any(|t| t == "Go to Little Window") && titles.iter().any(|t| t == "Rename Space…"),
+        "the right-click opened the menu {} for {space}", menu_open["space_menu"]);
+    // The window holding it (WindowLayout.window(holding:)): the focused one when it shows the session.
+    let holder = wheel_gpui::windows::with(|r| {
+        let holds = |w: &&wheel_gpui::windows::Record| w.session.as_deref() == Some(session.as_str());
+        r.focused().filter(holds).or_else(|| r.windows.iter().find(holds)).map(|w| w.id.clone())
+    }).ok_or_else(|| anyhow::anyhow!("no window shows session {session}"))?;
+    cx.update(|cx| menu.update(cx, |m, _| m.bridge_call(json!({"op": "choose_context_menu", "item": "rename"}))));
+    let holder_handle = cx.update(|_| wheel_gpui::window_handle(&holder)).ok_or_else(|| anyhow::anyhow!("no handle for window {holder}"))?;
+    let mut renaming = None;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        renaming = holder_handle.update(cx, |c, _, _| c.rename.as_ref().map(|r| r.space.clone()))?;
+        if renaming.is_some() {
+            break;
+        }
+    }
+    ensure!(renaming.as_deref() == Some(space.as_str()), "Rename Space… from the row's menu opened the rename for {renaming:?} in window {holder}");
+    holder_handle.update(cx, |c, _, cx| {
+        c.cancel_rename();
+        cx.notify();
+    })?;
+    // The card's New Window: one more window, on the card's session.
+    let ready = popover_settle(popover, &menu, cx, |s| s["popover"]["controls"][format!("new-window-{session}").as_str()].is_array()).await;
+    let windows_before = wheel_gpui::windows::with(|r| r.windows.len());
+    popover_press(popover, &ready, &format!("new-window-{session}"), cx)?;
+    let mut opened_on = None;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        opened_on = wheel_gpui::windows::with(|r| (r.windows.len() > windows_before).then(|| r.windows.last().and_then(|w| w.session.clone())).flatten());
+        if opened_on.is_some() {
+            break;
+        }
+    }
+    ensure!(opened_on.as_deref() == Some(session.as_str()), "the card's New Window opened a window on {opened_on:?}, wanted {session}");
+    // The card's Close asks in an alert; Cancel keeps the session.
+    let ready = popover_settle(popover, &menu, cx, |s| s["popover"]["controls"][format!("close-session-{session}").as_str()].is_array()).await;
+    popover_press(popover, &ready, &format!("close-session-{session}"), cx)?;
+    let mut asked = Value::Null;
+    for _ in 0..50 {
+        tick(cx, 100).await;
+        asked = cx.update(|cx| menu.update(cx, |m, _| m.bridge_call(json!({"op": "state"}))))["alert"].clone();
+        if asked["id"] == format!("close-session:{session}").as_str() {
+            break;
+        }
+    }
+    ensure!(asked["id"] == format!("close-session:{session}").as_str() && asked["informative"].as_str().is_some_and(|i| i.ends_with("Every window showing it closes.")),
+        "the card's Close asked {asked}");
+    cx.update(|cx| menu.update(cx, |m, _| m.bridge_call(json!({"op": "answer_alert", "button": 1}))));
+    let answered_line = format!("alert close-session:{session} answered with button 1");
+    let cancelled = popover_settle(popover, &menu, cx, |s| s["log"].as_array().is_some_and(|l| l.iter().any(|x| x == answered_line.as_str()))).await;
+    let kept = cancelled["cards"].as_array().unwrap().iter().any(|c| c["session"] == session.as_str());
+    ensure!(kept && cancelled["log"].as_array().is_some_and(|l| l.iter().any(|x| x == answered_line.as_str())), "Cancel in the close question: answered {}, session kept {kept}",
+        cancelled["log"].as_array().is_some_and(|l| l.iter().any(|x| x == answered_line.as_str())));
+    let picture = output.join("client-menubar-rows.png");
+    popover_picture(popover, &picture, cx)?;
+    cx.update(|cx| menu.update(cx, |m, cx| m.toggle_popover(None, cx)));
+    Ok(json!({"space": space, "session": session, "click_showed_in": shown_in, "little": little.map(|(id, owner)| json!({"id": id, "owner": owner})), "dimmed": dimmed_row["dimmed"],
+        "menu": titles, "rename_in": holder, "new_window_on": opened_on, "close_asked": asked["message"], "close_cancelled_kept": kept, "pictures": [hover_picture, picture]}))
 }
 
 /// The popover's frame is the height its content measured.
@@ -5281,6 +5407,34 @@ fn popover_press(popover: gpui::AnyWindowHandle, s: &Value, name: &str, cx: &mut
         w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position: at, modifiers: Default::default(), click_count: 1 }), cx);
     })?;
     Ok(())
+}
+
+/// Move the pointer to the centre of the popover's control `name`, as the person hovers it.
+fn popover_hover(popover: gpui::AnyWindowHandle, s: &Value, name: &str, cx: &mut AsyncApp) -> Result<()> {
+    let at = popover_centre(s, name)?;
+    popover.update(cx, |_, w, cx| {
+        w.draw(cx).clear();
+        w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: at, pressed_button: None, modifiers: Default::default() }), cx);
+    })?;
+    Ok(())
+}
+
+/// Right-press the popover's control `name` at its centre, as the person opens its menu.
+fn popover_right_press(popover: gpui::AnyWindowHandle, s: &Value, name: &str, cx: &mut AsyncApp) -> Result<()> {
+    let at = popover_centre(s, name)?;
+    popover.update(cx, |_, w, cx| {
+        w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: at, pressed_button: None, modifiers: Default::default() }), cx);
+        w.draw(cx).clear();
+        w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Right, position: at, modifiers: Default::default(), click_count: 1, first_mouse: false }), cx);
+        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Right, position: at, modifiers: Default::default(), click_count: 1 }), cx);
+    })?;
+    Ok(())
+}
+
+fn popover_centre(s: &Value, name: &str) -> Result<gpui::Point<gpui::Pixels>> {
+    let r: Vec<f32> = s["popover"]["controls"][name].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default();
+    ensure!(r.len() == 4, "the popover has no {name} control: {}", s["popover"]["controls"]);
+    Ok(gpui::point(gpui::px(r[0] + r[2] / 2.), gpui::px(r[1] + r[3] / 2.)))
 }
 
 fn popover_picture(popover: gpui::AnyWindowHandle, path: &std::path::Path, cx: &mut AsyncApp) -> Result<()> {

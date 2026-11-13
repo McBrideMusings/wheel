@@ -11,9 +11,9 @@ use super::*;
 use crate::server::{Facts, LinkKind, Listener};
 use crate::menubar::{self, CARD_HEAD, CARD_PAD, Card, GAP, PAD, ROW, ROW_GAP, WIDTH};
 use futures::StreamExt as _;
-use gpui::{Entity, Image, ImageFormat, ImageSource, WindowBounds, WindowHandle, WindowKind, WindowOptions, img, point, size};
+use gpui::{Entity, Image, ImageFormat, ImageSource, SharedString, WindowBounds, WindowHandle, WindowKind, WindowOptions, img, point, size};
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-use std::{cell::Cell, sync::Arc};
+use std::{cell::Cell, collections::HashSet, sync::Arc};
 use serde_json::{Value, json};
 use wheel_proto::PermInfo;
 
@@ -76,6 +76,14 @@ pub struct MenuBar {
     popover: Option<WindowHandle<Popover>>,
     symbols: Symbols,
     log: Vec<String>,
+    /// The ranks the rows' agent dots show (the machine-wide `status.dots` setting).
+    status_dots: HashSet<&'static str>,
+    /// The space whose row's menu is open, and the menu as the bridge built it.
+    space_menu: Option<String>,
+    context_menu: Value,
+    next_req: u64,
+    /// The `session_close` the popover's alert sent and wheeld has not answered: its id and session.
+    closing: Option<(u64, String)>,
 }
 
 /// Make the menu bar item: its own connection over `endpoint`, the status item, and the tasks
@@ -90,6 +98,7 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
         native, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
         running_source: None, protocol: None, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
         sessions: vec![], spaces: vec![], perms: vec![], told: None, item: Value::Null, popover: None, symbols: RefCell::default(), log: vec![],
+        status_dots: crate::status::all_ranks(), space_menu: None, context_menu: Value::Null, next_req: 100, closing: None,
     });
     MENU_BAR.with(|m| *m.borrow_mut() = Some(menu.clone()));
     menu.update(cx, |m, cx| m.refresh(cx));
@@ -113,6 +122,10 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
                 Some("status_menu") => {
                     let item = frame["item"].as_str().unwrap_or_default().to_owned();
                     held.update(cx, |m, cx| m.choose(&item, cx));
+                }
+                Some("context_menu") => {
+                    let item = frame["item"].as_str().unwrap_or_default().to_owned();
+                    held.update(cx, |m, cx| m.space_menu_chosen(&item, cx));
                 }
                 Some("alert") => {
                     let (id, button) = (frame["id"].as_str().unwrap_or_default().to_owned(), frame["button"].as_i64().unwrap_or(-1));
@@ -174,6 +187,7 @@ impl MenuBar {
                 (self.link, self.down_reason, self.incompatible) = (LinkKind::Connected, None, false);
                 server::link(true);
                 self.ask_remote();
+                let _ = self.send.send(crate::daemon::frame(&ClientMsg::SettingsLs { req: Some(3), space: None }));
                 self.up = true;
                 true
             }
@@ -216,6 +230,24 @@ impl MenuBar {
             ServerMsg::Stopping => {
                 server::stopping();
                 false
+            }
+            // wheeld's answer to the popover's close, told apart by its request id.
+            ServerMsg::Ok { req } if self.closing.as_ref().is_some_and(|(r, _)| r == req) => {
+                let (_, session) = self.closing.take().unwrap_or_default();
+                self.log(format!("session {session} closed from the popover"));
+                false
+            }
+            ServerMsg::Error { req: Some(req), message, .. } if self.closing.as_ref().is_some_and(|(r, _)| r == req) => {
+                let (_, session) = self.closing.take().unwrap_or_default();
+                self.log(format!("session {session} not closed: {message}"));
+                self.native.call(json!({"op": "alert", "id": "close-session-refused", "message": "The session was not closed", "informative": message, "buttons": ["OK"], "activate": !self.hidden}));
+                false
+            }
+            // Machine-wide, whichever space the list was resolved for, as a window reads it: the
+            // agent dots on the rows.
+            ServerMsg::Settings { settings, .. } => {
+                let dots = settings.iter().find(|s| s.key == "status.dots").map(|s| crate::status::listed(&s.value));
+                dots.map(|dots| self.status_dots = dots).is_some()
             }
             _ => false,
         }
@@ -304,6 +336,16 @@ impl MenuBar {
         if id == "stop" && button == 0 {
             server::stop(self.spaces.len());
         }
+        // A session closed elsewhere while the question was up has nothing left to close.
+        if let Some(session) = id.strip_prefix("close-session:")
+            && button == 0
+            && self.sessions.iter().any(|s| s.id == session)
+        {
+            self.next_req += 1;
+            self.closing = Some((self.next_req, session.to_owned()));
+            let _ = self.send.send(crate::daemon::frame(&ClientMsg::SessionClose { req: Some(self.next_req), session: session.to_owned() }));
+            self.log(format!("session {session}: close sent"));
+        }
         cx.notify();
     }
 
@@ -318,20 +360,20 @@ impl MenuBar {
         crate::settings::Devices { info: self.remote.clone(), picked, ..Default::default() }
     }
 
-    /// Run `act` in the focused window's Client, or in one opened New Window's way when no window
-    /// is open, after this update; `front` brings that window front.
-    fn in_window(&mut self, front: bool, act: impl FnOnce(&mut Client) + 'static, cx: &mut Context<Self>) {
+    /// Run `act` after this update in window `prefer`'s Client, else the focused window's, else in
+    /// one opened on `opening` (session, space) as New Window opens one; `front` brings that window front.
+    fn in_window(&mut self, prefer: Option<String>, opening: (Option<String>, Option<String>), front: bool, act: impl FnOnce(&mut Client, &mut Context<Client>) + 'static, cx: &mut Context<Self>) {
         let (bridge, endpoint, hidden) = (self.bridge.clone(), self.endpoint.clone(), self.hidden);
         cx.defer(move |cx| {
-            let handle = match focused_client(cx) {
+            let handle = match prefer.and_then(|id| crate::window_handle(&id)).or_else(|| focused_client(cx)) {
                 Some(handle) => handle,
-                None => match crate::new_window(cx, &bridge, endpoint, hidden, None, None, None) {
+                None => match crate::new_window(cx, &bridge, endpoint, hidden, opening.0, opening.1, None) {
                     Ok(handle) => handle,
                     Err(error) => return eprintln!("wheel-gpui: the popover opened no window: {error:#}"),
                 },
             };
             if let Err(error) = handle.update(cx, |client, _, cx| {
-                act(client);
+                act(client, cx);
                 cx.notify();
             }) {
                 eprintln!("wheel-gpui: the popover's window is gone: {error:#}");
@@ -348,16 +390,113 @@ impl MenuBar {
     /// The pairing row's buttons (AppModel.copyPairingCode, showPairingWindow).
     fn pair(&mut self, ask: crate::pairing::Ask, cx: &mut Context<Self>) {
         self.log(format!("popover: pairing {} asked", if ask == crate::pairing::Ask::Copy { "copy" } else { "window" }));
-        self.in_window(ask == crate::pairing::Ask::Show, move |c| c.pairing_from_menu(ask), cx);
+        self.in_window(None, (None, None), ask == crate::pairing::Ask::Show, move |c, _| c.pairing_from_menu(ask), cx);
     }
 
     /// Settings… (`openSettings`): the focused window's Settings, brought front.
     fn open_settings(&mut self, cx: &mut Context<Self>) {
-        self.in_window(true, |c| {
+        self.in_window(None, (None, None), true, |c, _| {
             if !c.settings_open {
                 c.open_settings();
             }
         }, cx);
+    }
+
+    /// A click on a row's name (AppModel.focus(space:)): bring its little window front, else show
+    /// it in the window holding it, else in the focused window switched to its session, else in a
+    /// window opened on it; that window comes front.
+    fn focus_space(&mut self, space: &str, cx: &mut Context<Self>) {
+        if !self.spaces.iter().any(|s| s.id == space) {
+            return;
+        }
+        if let Some(little) = crate::windows::with(|r| r.little_showing(space).map(|l| l.id.clone())) {
+            self.log(format!("popover: show space {space}: its little window {little}"));
+            let hidden = self.hidden;
+            cx.defer(move |cx| {
+                if let Some(handle) = crate::window_handle(&little) {
+                    if !hidden {
+                        cx.activate(true);
+                    }
+                    crate::bring_front(cx, handle);
+                }
+            });
+            return;
+        }
+        let holder = crate::windows::with(|r| r.window_holding(space, &self.sessions).map(|w| w.id.clone()));
+        let session = crate::windows::session_holding(&self.sessions, space).map(|s| s.id.clone());
+        self.log(format!("popover: show space {space} in {}", holder.as_deref().unwrap_or("the focused window")));
+        let shown = space.to_owned();
+        self.in_window(holder, (session, Some(space.to_owned())), true, move |c, _| c.show_space_anywhere(&shown), cx);
+    }
+
+    /// A row's Little Window button (AppModel.runPlace "little", openLittle): open the space in a
+    /// little window, or bring its open one front, with or without a main window open.
+    fn open_little(&mut self, space: &str, cx: &mut Context<Self>) {
+        let (bridge, endpoint, hidden, sessions, space, menu) = (self.bridge.clone(), self.endpoint.clone(), self.hidden, self.sessions.clone(), space.to_owned(), cx.entity());
+        self.log(format!("popover place {space}: little"));
+        cx.defer(move |cx| {
+            let (_, line) = super::little::open_little(cx, &bridge, endpoint, hidden, &sessions, &space);
+            menu.update(cx, |m, _| m.log(line));
+        });
+    }
+
+    /// What a row's menu offers (SpaceMenuItems): the window's space menu, with Close Other Spaces
+    /// only while a window holds the space, since it closes that window's other spaces.
+    pub fn space_menu_items(&self, space: &str) -> Vec<crate::sidebar::MenuItem> {
+        let home = crate::windows::session_holding(&self.sessions, space);
+        let sessions: Vec<(String, String)> = self.sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
+        let (little, held) = crate::windows::with(|r| (r.little_showing(space).is_some(), r.window_holding(space, &self.sessions).is_some()));
+        let mut items = crate::sidebar::menu(space, home.map(|s| s.id.as_str()), &sessions, home.map(|s| s.spaces.as_slice()).unwrap_or(&[]), little);
+        for item in items.iter_mut().filter(|i| i.id == "close-others") {
+            item.enabled &= held;
+        }
+        items
+    }
+
+    /// A right-click on a row: the bridge opens the space's menu at the pointer; a pick comes back
+    /// as a `context_menu` event.
+    fn open_space_menu(&mut self, space: &str) {
+        let items = self.space_menu_items(space);
+        let mut listed = vec![];
+        for (i, item) in items.iter().enumerate() {
+            if i > 0 && items[i - 1].section != item.section {
+                listed.push(json!({"id": "-"}));
+            }
+            listed.push(json!({"id": item.id, "title": item.title, "enabled": item.enabled}));
+        }
+        self.space_menu = Some(space.to_owned());
+        self.context_menu = self.native.call(json!({"op": "context_menu", "items": listed}));
+        self.log(format!("popover: space menu for {space}"));
+    }
+
+    /// A pick from a row's menu (AppModel.runSpaceMenu): Open in Little Window here, the rest in
+    /// the window holding the space (else the focused one, else one opened on it), which comes
+    /// front for the items that ask or edit in it.
+    fn space_menu_chosen(&mut self, item: &str, cx: &mut Context<Self>) {
+        let Some(space) = self.space_menu.take() else { return };
+        if !self.space_menu_items(&space).iter().any(|i| i.id == item && i.enabled) {
+            self.log(format!("popover: space menu {space}: {item} not available"));
+            return;
+        }
+        self.log(format!("popover: space menu {space}: {item}"));
+        if item == "little" {
+            return self.open_little(&space, cx);
+        }
+        let holder = crate::windows::with(|r| r.window_holding(&space, &self.sessions).map(|w| w.id.clone()));
+        let session = crate::windows::session_holding(&self.sessions, &space).map(|s| s.id.clone());
+        let front = matches!(item, "rename" | "new-pane" | "close" | "close-others");
+        let (item, run) = (item.to_owned(), space.clone());
+        self.in_window(holder, (session, Some(space)), front, move |c, cx| c.run_space_menu(&item, &run, cx), cx);
+    }
+
+    /// A card's Close button (askCloseSession in an alert): closing ends every terminal and agent
+    /// in its spaces, so the bridge asks first; its first button closes the session.
+    fn ask_close_session(&mut self, session: &str) {
+        let Some(name) = self.sessions.iter().find(|s| s.id == session).map(|s| s.name.clone()) else { return };
+        let informative = menubar::close_warning(&self.sessions, &self.spaces, session);
+        self.log(format!("popover: close session {session} asked"));
+        self.native.call(json!({"op": "alert", "id": format!("close-session:{session}"), "message": format!("Close the “{name}” session?"),
+            "informative": informative, "buttons": ["Close Session", "Cancel"], "activate": !self.hidden}));
     }
 
     /// The bridge's app half, for the check's presses and picks.
@@ -446,7 +585,7 @@ impl MenuBar {
                         .detach();
                         let focus = cx.focus_handle();
                         window.focus(&focus, cx);
-                        Popover { menu: menu.clone(), focus, content: Rc::default(), controls: Rc::default(), cards: Rc::default(), view: Rc::default() }
+                        Popover { menu: menu.clone(), focus, content: Rc::default(), controls: Rc::default(), hover: None, cards: Rc::default(), view: Rc::default() }
                     })
                 },
             );
@@ -532,9 +671,11 @@ impl MenuBar {
             "waiting": self.perms.len(),
             "spaces": self.spaces.len(),
             "cards": cards.iter().map(|c| json!({"session": c.session, "name": c.name, "windows": c.windows,
-                "rows": c.rows.iter().map(|r| json!({"space": r.space, "name": r.name, "waiting": r.waiting, "shown": r.shown, "little": r.ownerless_little})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                "rows": c.rows.iter().map(|r| json!({"space": r.space, "name": r.name, "waiting": r.waiting, "shown": r.shown, "little": r.ownerless_little, "in_little": r.in_little, "dimmed": r.dimmed()})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "height": menubar::height(&cards),
             "popover": popover.unwrap_or(json!({"open": false})),
+            "space_menu": {"space": self.space_menu, "built": self.context_menu["context_menu"]},
+            "status_dots": crate::status::RANKS.iter().filter(|r| self.status_dots.contains(*r)).collect::<Vec<_>>(),
             "pairing": pairing,
             "log": self.log,
         })
@@ -561,38 +702,10 @@ impl MenuBar {
             .text_color(rgb(DIM)).text_size(px(7.)).font_weight(gpui::FontWeight::BOLD).child(number.to_string())
     }
 
-    fn card(&self, card: &Card) -> gpui::Div {
-        let mut head = div().h(px(CARD_HEAD)).pb(px(4.)).flex().items_center().gap_2()
-            .child(div().w(px(16.)).flex().justify_center().children(self.symbol("rectangle.stack", 12., DIM)))
-            .child(div().text_color(rgb(TEXT)).font_weight(gpui::FontWeight::SEMIBOLD).overflow_hidden().whitespace_nowrap().child(card.name.clone()));
-        if card.windows.is_empty() {
-            head = head.child(div().text_xs().text_color(rgb(DIM)).child("No window"));
-        } else {
-            head = head.children(card.windows.iter().map(|n| Self::window_glyph(*n)));
-        }
-        let count = card.rows.len();
-        head = head.child(div().flex_1()).child(div().text_xs().text_color(rgb(DIM)).child(format!("{count} {}", if count == 1 { "space" } else { "spaces" })));
-        let mut body = div().flex().flex_col().p(px(CARD_PAD)).rounded(px(8.)).bg(rgb(BOX)).border_1().border_color(rgb(LINE)).child(head);
-        if card.rows.is_empty() {
-            body = body.child(div().h(px(ROW)).flex().items_center().text_xs().text_color(rgb(DIM)).child("No spaces. Drop one here."));
-        }
-        for row in &card.rows {
-            let mut line = div().h(px(ROW)).flex().items_center().gap_2()
-                .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_color(rgb(TEXT)).child(row.name.clone()));
-            if row.ownerless_little {
-                // PlaceGlyph `.little`: a frame with the small window in its lower right.
-                line = line.child(div().relative().w(px(13.)).h(px(10.)).rounded(px(2.)).border_1().border_color(rgb(DIM))
-                    .child(div().absolute().right(px(1.)).bottom(px(1.)).w(px(4.)).h(px(3.)).rounded(px(1.)).bg(rgb(DIM))));
-            }
-            if row.waiting > 0 {
-                line = line.child(div().min_w(px(16.)).h(px(16.)).px(px(4.)).rounded_full().bg(rgb(ORANGE)).flex().items_center().justify_center()
-                    .text_size(px(10.)).font_weight(gpui::FontWeight::BOLD).text_color(rgb(0xffffff)).child(row.waiting.to_string()));
-            } else if row.shown {
-                line = line.child(div().w(px(7.)).h(px(7.)).rounded_full().bg(rgb(GREEN)));
-            }
-            body = body.child(line);
-        }
-        body
+    /// A little window's mark (PlaceGlyph `.little`): a frame with the small window in its lower right.
+    fn little_glyph(colour: u32) -> gpui::Div {
+        div().relative().w(px(13.)).h(px(10.)).rounded(px(2.)).border_1().border_color(rgb(colour))
+            .child(div().absolute().right(px(1.)).bottom(px(1.)).w(px(4.)).h(px(3.)).rounded(px(1.)).bg(rgb(colour)))
     }
 }
 
@@ -604,7 +717,9 @@ pub struct Popover {
     /// The content's height as last laid out.
     content: Rc<Cell<f32>>,
     /// Each named control's frame in the popover, as last laid out, for the check's presses.
-    controls: Rc<RefCell<HashMap<&'static str, [f32; 4]>>>,
+    controls: Rc<RefCell<HashMap<String, [f32; 4]>>>,
+    /// The space whose row the pointer is over: it shows its Little Window button.
+    hover: Option<String>,
     /// Each session's card frame in the popover, as last laid out: a space drag's targets.
     cards: Rc<RefCell<Vec<(String, [f32; 4])>>>,
     /// The popover's AppKit view, once drawn, for the bridge to measure and size its window.
@@ -623,10 +738,10 @@ enum Look {
 
 impl Popover {
     /// Record `el`'s frame under `name` each time it is laid out.
-    fn recorded(&self, el: gpui::Div, name: &'static str) -> gpui::Div {
-        let controls = self.controls.clone();
+    fn recorded(&self, el: gpui::Div, name: impl Into<String>) -> gpui::Div {
+        let (controls, name) = (self.controls.clone(), name.into());
         el.relative().child(canvas(move |b, _, _| {
-            controls.borrow_mut().insert(name, [b.origin.x.as_f32(), b.origin.y.as_f32(), b.size.width.as_f32(), b.size.height.as_f32()]);
+            controls.borrow_mut().insert(name.clone(), [b.origin.x.as_f32(), b.origin.y.as_f32(), b.size.width.as_f32(), b.size.height.as_f32()]);
         }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
     }
 
@@ -641,6 +756,95 @@ impl Popover {
             .child(label.to_owned())
             .on_mouse_up(MouseButton::Left, move |_, window, cx| act(window, cx));
         self.recorded(el, name)
+    }
+
+    /// A session's card (SessionCard): its head with the windows showing it, its count of spaces,
+    /// New Window and Close, then a row per space (SpaceRow).
+    fn card(&self, menu: &MenuBar, card: &Card, cx: &Context<Self>) -> gpui::Div {
+        let mut head = div().h(px(CARD_HEAD)).pb(px(4.)).flex().items_center().gap_2()
+            .child(div().w(px(16.)).flex().justify_center().children(menu.symbol("rectangle.stack", 12., DIM)))
+            .child(div().text_color(rgb(TEXT)).font_weight(gpui::FontWeight::SEMIBOLD).overflow_hidden().whitespace_nowrap().child(card.name.clone()));
+        if card.windows.is_empty() {
+            head = head.child(div().text_xs().text_color(rgb(DIM)).child("No window"));
+        } else {
+            head = head.children(card.windows.iter().map(|n| MenuBar::window_glyph(*n)));
+        }
+        let count = card.rows.len();
+        head = head.child(div().flex_1()).child(div().text_xs().text_color(rgb(DIM)).child(format!("{count} {}", if count == 1 { "space" } else { "spaces" })));
+        let head_button = |symbol: &str, name: String, help: String, act: Rc<dyn Fn(&mut MenuBar, &mut Context<MenuBar>)>| {
+            let held = self.menu.clone();
+            let button = div().id(SharedString::from(name.clone())).w(px(16.)).h(px(16.)).flex().items_center().justify_center().rounded_sm().cursor_pointer()
+                .hover(|s| s.bg(rgb(LINE))).tooltip(crate::tooltip::tip(&help)).children(menu.symbol(symbol, 12., DIM))
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| held.update(cx, |m, cx| act(m, cx)));
+            self.recorded(div().child(button), name)
+        };
+        let (session, name) = (card.session.clone(), card.name.clone());
+        head = head.child(head_button("macwindow.badge.plus", format!("new-window-{session}"), format!("Open a new window showing {name}"), Rc::new({
+            let session = session.clone();
+            move |m, cx| {
+                m.log(format!("popover: new window on session {session}"));
+                m.open_window(Some(session.clone()), cx);
+            }
+        })));
+        head = head.child(head_button("xmark.circle", format!("close-session-{session}"), format!("Close the {name} session"), Rc::new({
+            let session = session.clone();
+            move |m, _| m.ask_close_session(&session)
+        })));
+        let mut body = div().flex().flex_col().p(px(CARD_PAD)).rounded(px(8.)).bg(rgb(BOX)).border_1().border_color(rgb(LINE)).child(head);
+        if card.rows.is_empty() {
+            body = body.child(div().h(px(ROW)).flex().items_center().text_xs().text_color(rgb(DIM)).child("No spaces. Drop one here."));
+        }
+        // A space dragged over the desktop dims its row: it is about to become a little window.
+        let to_desktop = super::sidebar::space_hover().filter(|h| matches!(h.target, Some(crate::sidebar::SpaceDropTarget::Desktop))).map(|h| h.space);
+        for row in &card.rows {
+            body = body.child(self.space_row(menu, row, to_desktop.as_deref() == Some(row.space.as_str()), cx));
+        }
+        body
+    }
+
+    /// A space's row (SpaceRow): its name, which shows it when clicked, the little window mark, its
+    /// agents' dots, the waiting badge or the shown dot, and the Little Window button while the
+    /// pointer is over it; a right-click opens the space's menu.
+    fn space_row(&self, menu: &MenuBar, row: &menubar::Row, dragged_away: bool, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let space = row.space.clone();
+        let held = self.menu.clone();
+        let shown = space.clone();
+        let name = div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_color(rgb(TEXT)).cursor_pointer().child(row.name.clone())
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| held.update(cx, |m, cx| m.focus_space(&shown, cx)));
+        let (hovered, held, aimed) = (space.clone(), self.menu.clone(), space.clone());
+        let mut line = div().id(SharedString::from(format!("space-row-{space}"))).h(px(ROW)).flex().items_center().gap_2()
+            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                if *inside {
+                    this.hover = Some(hovered.clone());
+                } else if this.hover.as_deref() == Some(hovered.as_str()) {
+                    this.hover = None;
+                }
+                cx.notify();
+            }))
+            .on_mouse_down(MouseButton::Right, move |_, _, cx| held.update(cx, |m, _| m.open_space_menu(&aimed)))
+            .child(self.recorded(name, format!("row-{space}")));
+        if row.ownerless_little {
+            line = line.child(div().id(SharedString::from(format!("little-mark-{space}"))).tooltip(crate::tooltip::tip("In a little window")).child(MenuBar::little_glyph(DIM)));
+        }
+        line = line.children(menu.spaces.iter().find(|s| s.id == space).and_then(|s| crate::status::space_dots(s, &menu.status_dots)));
+        if row.waiting > 0 {
+            line = line.child(div().min_w(px(16.)).h(px(16.)).px(px(4.)).rounded_full().bg(rgb(ORANGE)).flex().items_center().justify_center()
+                .text_size(px(10.)).font_weight(gpui::FontWeight::BOLD).text_color(rgb(0xffffff)).child(row.waiting.to_string()));
+        } else if row.shown {
+            line = line.child(div().w(px(7.)).h(px(7.)).rounded_full().bg(rgb(GREEN)));
+        }
+        if self.hover.as_deref() == Some(space.as_str()) {
+            let help = if row.in_little { "Go to its little window" } else { "Open in a little window" };
+            let (held, placed) = (self.menu.clone(), space.clone());
+            let button = div().id(SharedString::from(format!("little-{space}"))).w(px(22.)).h(px(20.)).flex().items_center().justify_center().cursor_pointer()
+                .tooltip(crate::tooltip::tip(help)).child(MenuBar::little_glyph(if row.in_little { ACCENT } else { DIM }))
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| held.update(cx, |m, cx| m.open_little(&placed, cx)));
+            line = line.child(self.recorded(div().child(button), format!("little-{space}")));
+        }
+        if row.dimmed() || dragged_away {
+            line = line.opacity(super::little::AWAY_OPACITY);
+        }
+        line
     }
 
     /// The pairing row (PairingRow: copy the code, show it as a QR code) over Settings….
@@ -775,6 +979,8 @@ impl Render for Popover {
         let menu = self.menu.read(cx);
         let cards = menu.cards();
         let devices = menu.pairing_devices(cx);
+        // Each control records its frame again as it is laid out: one that is gone drops out.
+        self.controls.borrow_mut().clear();
         let mut col = div().w_full().flex().flex_col().gap(px(GAP)).p(px(PAD)).text_sm().text_color(rgb(TEXT))
             .child(self.server_line(menu))
             .child(div().h(px(1.)).bg(rgb(LINE)))
@@ -793,7 +999,7 @@ impl Render for Popover {
             let bar = aimed.and_then(|(_, index, space)| crate::sidebar::bar_index(*index, &held, space)).map(|i| {
                 div().absolute().left(px(CARD_PAD)).right(px(CARD_PAD)).top(px(1. + CARD_PAD + CARD_HEAD + i as f32 * ROW - 1.5)).h(px(3.)).rounded_full().bg(rgb(ACCENT))
             });
-            col = col.child(menu.card(card).when(aimed.is_some(), |d| d.border_color(rgb(ACCENT))).relative().children(bar).child(canvas(move |b, _, _| {
+            col = col.child(self.card(menu, card, cx).when(aimed.is_some(), |d| d.border_color(rgb(ACCENT))).relative().children(bar).child(canvas(move |b, _, _| {
                 frames.borrow_mut().push((session.clone(), [b.origin.x.as_f32(), b.origin.y.as_f32(), b.size.width.as_f32(), b.size.height.as_f32()]));
             }, |_, _, _, _| {}).absolute().top_0().left_0().size_full()));
         }

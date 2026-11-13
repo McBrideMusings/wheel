@@ -277,32 +277,9 @@ impl Client {
         } else if id == "close-session"
             && let Some(session) = self.sessions.iter().find(|s| Some(&s.id) == self.session_id.as_ref()).cloned()
         {
-            let message = self.close_warning(&session.id);
+            let message = crate::menubar::close_warning(&self.sessions, &self.spaces, &session.id);
             self.confirm(&format!("Close the “{}” session?", session.name), message, "Close Session".into(), commands::Pending::CloseSession(session.id));
         }
-    }
-    /// What closing `session` ends, as a sentence (AppModel.closeWarning).
-    pub fn close_warning(&self, session: &str) -> String {
-        let held: Vec<&Space> = self.sessions.iter().find(|s| s.id == session).map(|s| s.spaces.iter().filter_map(|id| self.spaces.iter().find(|sp| &sp.id == id)).collect()).unwrap_or_default();
-        if held.is_empty() {
-            return "It holds no spaces.".into();
-        }
-        let panes: Vec<&Leaf> = held.iter().flat_map(|s| leaves_of(&s.root)).collect();
-        let count = |n: usize, noun: &str| format!("{n} {noun}{}", if n == 1 { "" } else { "s" });
-        let shells = panes.iter().filter(|p| p.kind == "terminal").count();
-        let agents = panes.iter().filter(|p| p.kind == "agent").count();
-        let mut text = format!("It closes {} and {}", count(held.len(), "space"), count(panes.len(), "pane"));
-        let mut running = vec![];
-        if shells > 0 {
-            running.push(count(shells, "terminal"));
-        }
-        if agents > 0 {
-            running.push(count(agents, "agent"));
-        }
-        if !running.is_empty() {
-            text += &format!(", and ends {}", running.join(" and "));
-        }
-        text + ". Every window showing it closes."
     }
     /// A session this window asked for is listed now: show it.
     pub fn show_made_session(&mut self) {

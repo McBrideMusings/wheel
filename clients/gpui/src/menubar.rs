@@ -67,6 +67,16 @@ pub struct Row {
     pub shown: bool,
     /// It is in a little window that belongs to no main window.
     pub ownerless_little: bool,
+    /// A little window shows it: the row's Little Window button is lit.
+    pub in_little: bool,
+}
+
+impl Row {
+    /// The row draws dimmed while its space is in a little window a main window owns
+    /// (SpaceRow: `isDimmed && !ownerlessLittle`).
+    pub fn dimmed(&self) -> bool {
+        self.in_little && !self.ownerless_little
+    }
 }
 
 /// One session's card (SessionCard): its name, the number of each window showing it, its rows.
@@ -90,9 +100,35 @@ pub fn cards(registry: &Registry, sessions: &[Session], spaces: &[Space], waitin
             waiting: waiting.get(&space.id).copied().unwrap_or(0),
             shown: holders.iter().any(|(_, w)| w.active.as_deref() == Some(space.id.as_str())),
             ownerless_little: registry.little_showing(&space.id).is_some_and(|l| l.owner.is_none()),
+            in_little: registry.little_showing(&space.id).is_some(),
         }).collect();
         Card { session: session.id.clone(), name: session.name.clone(), windows, rows }
     }).collect()
+}
+
+/// What closing `session` ends, as a sentence (AppModel.closeWarning): the window's question
+/// and the popover's alert both say it.
+pub fn close_warning(sessions: &[Session], spaces: &[Space], session: &str) -> String {
+    let held: Vec<&Space> = sessions.iter().find(|s| s.id == session).map(|s| s.spaces.iter().filter_map(|id| spaces.iter().find(|sp| &sp.id == id)).collect()).unwrap_or_default();
+    if held.is_empty() {
+        return "It holds no spaces.".into();
+    }
+    let panes: Vec<&crate::layout::Leaf> = held.iter().flat_map(|s| crate::layout::leaves_of(&s.root)).collect();
+    let count = |n: usize, noun: &str| format!("{n} {noun}{}", if n == 1 { "" } else { "s" });
+    let shells = panes.iter().filter(|p| p.kind == "terminal").count();
+    let agents = panes.iter().filter(|p| p.kind == "agent").count();
+    let mut text = format!("It closes {} and {}", count(held.len(), "space"), count(panes.len(), "pane"));
+    let mut running = vec![];
+    if shells > 0 {
+        running.push(count(shells, "terminal"));
+    }
+    if agents > 0 {
+        running.push(count(agents, "agent"));
+    }
+    if !running.is_empty() {
+        text += &format!(", and ends {}", running.join(" and "));
+    }
+    text + ". Every window showing it closes."
 }
 
 /// The popover's width (MenuBarPopover's `.frame(width: 320)`).
@@ -194,6 +230,14 @@ mod tests {
     }
 
     #[test]
+    fn closing_a_session_names_its_spaces_panes_terminals_and_agents() {
+        let sessions = [session("n1", &["s1", "s2"]), session("n2", &[])];
+        let spaces = [space("s1", vec![agent("p1", "a1"), leaf("p2", "web", None)]), space("s2", vec![leaf("p3", "terminal", None)])];
+        assert_eq!(close_warning(&sessions, &spaces, "n1"), "It closes 2 spaces and 3 panes, and ends 1 terminal and 1 agent. Every window showing it closes.");
+        assert_eq!(close_warning(&sessions, &spaces, "n2"), "It holds no spaces.");
+    }
+
+    #[test]
     fn cards_list_every_session_with_its_windows_and_rows() {
         let sessions = [session("n1", &["s1", "s2"]), session("n2", &["s3"]), session("n3", &[])];
         let spaces = [space("s1", vec![]), space("s2", vec![]), space("s3", vec![])];
@@ -206,9 +250,14 @@ mod tests {
         let cards = cards(&registry, &sessions, &spaces, &waiting);
         assert_eq!(cards.iter().map(|c| (c.name.as_str(), c.windows.clone())).collect::<Vec<_>>(), [("N1", vec![2]), ("N2", vec![1, 3]), ("N3", vec![])]);
         assert_eq!(cards[0].rows, [
-            Row { space: "s1".into(), name: "S1".into(), waiting: 0, shown: false, ownerless_little: true },
-            Row { space: "s2".into(), name: "S2".into(), waiting: 1, shown: true, ownerless_little: false },
+            Row { space: "s1".into(), name: "S1".into(), waiting: 0, shown: false, ownerless_little: true, in_little: true },
+            Row { space: "s2".into(), name: "S2".into(), waiting: 1, shown: true, ownerless_little: false, in_little: false },
         ]);
+        // An ownerless little window marks its row; one a window owns dims it.
+        assert!(!cards[0].rows[0].dimmed());
+        registry.put_little(Little { id: "l2".into(), space: "s3".into(), owner: Some("w1".into()), pinned: false });
+        let owned = super::cards(&registry, &sessions, &spaces, &waiting);
+        assert!(owned[1].rows[0].in_little && owned[1].rows[0].dimmed());
         assert!(cards[1].rows[0].shown);
         assert!(cards[2].rows.is_empty());
         // The pairing row and Settings…, three cards (2 rows, 1 row, and the empty one's line), then

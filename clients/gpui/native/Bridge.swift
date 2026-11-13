@@ -1068,6 +1068,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     /// The right-click menu's items as the client sent them last, and their titles ("-" a separator).
     var menuItems: [[String: Any]] = []
     var menuTitles: [String] = []
+    /// The context menu as last built: each item's title and whether it is enabled, "-" a separator.
+    var contextItems: [[String: Any]] = []
     /// A question a hidden check answers itself (`answer_alert`): a hidden app shows no alert.
     var pendingAlert: [String: Any]?
 
@@ -1170,6 +1172,35 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         emit(["event": "status_menu", "item": sender.representedObject as? String ?? ""])
     }
 
+    /// A context menu from `items` (`id`, `title`, `enabled`; id "-" a separator), opened at the
+    /// pointer after this call returns, as SwiftUI's `.contextMenu` opens one; a pick comes back as
+    /// a `context_menu` event. A hidden app builds it and opens nothing.
+    func contextMenu(_ value: [String: Any]) -> [String: Any] {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for entry in value["items"] as? [[String: Any]] ?? [] {
+            let id = entry["id"] as? String ?? ""
+            if id == "-" {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: entry["title"] as? String ?? id, action: #selector(choseContext(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            item.isEnabled = entry["enabled"] as? Bool ?? true
+            menu.addItem(item)
+        }
+        contextItems = menu.items.map { $0.isSeparatorItem ? ["title": "-", "enabled": false] : ["title": $0.title, "enabled": $0.isEnabled] }
+        if !hidden {
+            DispatchQueue.main.async { menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil) }
+        }
+        return ["context_menu": contextItems]
+    }
+
+    @objc func choseContext(_ sender: NSMenuItem) {
+        emit(["event": "context_menu", "item": sender.representedObject as? String ?? ""])
+    }
+
     /// Ask `message` with `buttons` in an alert, after this call returns; the answer comes back as
     /// an `alert` event with the button's index. A hidden app keeps the question for the check.
     func alert(_ value: [String: Any]) -> [String: Any] {
@@ -1245,7 +1276,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let size = item?.button?.image?.size ?? .zero
         return ["status_item": item != nil, "in_menu_bar": item?.isVisible ?? false, "badge": badge, "update": update, "label": label,
                 "dock": dock ?? NSNull(), "image": [size.width, size.height], "template": item?.button?.image?.isTemplate ?? false, "clicks": clicks,
-                "right_clicks": rightClicks, "menu": menuTitles, "alert": pendingAlert ?? NSNull()]
+                "right_clicks": rightClicks, "menu": menuTitles, "context_menu": contextItems, "alert": pendingAlert ?? NSNull()]
     }
 
     func command(_ value: [String: Any]) -> [String: Any] {
@@ -1259,6 +1290,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         // The check picks an item as the menu's action does.
         case "choose_status_menu":
             emit(["event": "status_menu", "item": value["item"] as? String ?? ""])
+            return state()
+        case "context_menu": return contextMenu(value)
+        // The check picks a context menu item as the menu's action does.
+        case "choose_context_menu":
+            emit(["event": "context_menu", "item": value["item"] as? String ?? ""])
             return state()
         case "alert": return alert(value)
         // The check answers the question a hidden app kept.
