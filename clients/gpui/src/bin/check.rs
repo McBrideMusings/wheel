@@ -6267,6 +6267,8 @@ struct PaneRig {
     rect: Rect,
     label: String,
     dir: PathBuf,
+    /// The space `side` showed before the rig's was selected.
+    back: Option<String>,
 }
 
 fn away_grid(c: &Client) -> Vec<(String, Rect)> {
@@ -6292,6 +6294,7 @@ fn local_to(from: &Side, to: (f32, f32)) -> [f64; 2] {
 
 /// A space of its own in `side`'s session with one pane, shown in `side`.
 async fn pane_rig_open(side: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<PaneRig> {
+    let back = side.h.update(cx, |c, _, _| c.space_id().map(str::to_owned))?;
     let dir = std::env::temp_dir().join(format!("wheel-gpui-pane-rig-{}-{}", std::process::id(), side.id));
     std::fs::create_dir_all(&dir)?;
     let (ok, out, err) = run_pumped(&["space", "new", &dir.to_string_lossy(), "--name", "panerig"], connection, layouts, pumper, cx).await?;
@@ -6314,7 +6317,7 @@ async fn pane_rig_open(side: &Side, pumper: gpui::WindowHandle<Client>, connecti
     }
     let (pane, rect) = found.ok_or_else(|| anyhow::anyhow!("{} never showed the pane rig's space {space} with a pane", side.id))?;
     let label = side.h.update(cx, |c, _, _| c.layout_lists().1.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).map(|l| c.pane_label(l)))?.unwrap_or_default();
-    Ok(PaneRig { space, pane, rect, label, dir })
+    Ok(PaneRig { space, pane, rect, label, dir, back })
 }
 
 /// Close the rig's space when it is still there (a pane that left it may have taken it along).
@@ -6325,7 +6328,40 @@ async fn pane_rig_close(side: &Side, rig: PaneRig, pumper: gpui::WindowHandle<Cl
         ensure!(ok, "wheel space close {} after the pane rig failed: {err}", rig.space);
     }
     let _ = std::fs::remove_dir_all(&rig.dir);
+    // The window shows what it showed before the rig.
+    if let Some(back) = rig.back.filter(|b| *b != rig.space) {
+        side.h.update(cx, |c, _, cx| {
+            if c.layout_lists().1.iter().any(|s| s.id == back) {
+                c.select_space(&back);
+            }
+            cx.notify();
+        })?;
+        draw(side.h, None, cx)?;
+    }
     Ok(())
+}
+
+/// A second space in `side`'s session, so its sidebar and tabs have one it does not show for the
+/// pane to be held over; the space's id.
+async fn pane_spare_open(side: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<(String, PathBuf)> {
+    let dir = std::env::temp_dir().join(format!("wheel-gpui-pane-spare-{}-{}", std::process::id(), side.id));
+    std::fs::create_dir_all(&dir)?;
+    let (ok, out, err) = run_pumped(&["space", "new", &dir.to_string_lossy(), "--name", "panespare"], connection, layouts, pumper, cx).await?;
+    ensure!(ok, "wheel space new for the spare space failed: {err}");
+    let space = out.trim().to_owned();
+    let (ok, out, err) = run_pumped(&["space", "move", &space, &side.id], connection, layouts, pumper, cx).await?;
+    ensure!(ok, "wheel space move of the spare space to {} failed: {err} {out}", side.id);
+    let mut listed = false;
+    for _ in 0..50 {
+        pump(connection, 100, layouts, pumper, cx).await?;
+        draw(side.h, None, cx)?;
+        if side.h.update(cx, |c, _, _| c.session_spaces().iter().any(|s| s.id == space))? {
+            listed = true;
+            break;
+        }
+    }
+    ensure!(listed, "{} never listed the spare space {space}", side.id);
+    Ok((space, dir))
 }
 
 /// The first row of `dst`'s sidebar that is not the space it shows.
@@ -6615,11 +6651,18 @@ async fn pane_drag_source_closes(src: &Side, dst: &Side, pumper: gpui::WindowHan
 /// The pane drag cases wheel-ynjo.8.9 adds, in one place; the last closes the second window.
 async fn pane_drag_cases(first: &Side, second: &Side, bridge: &std::rc::Rc<Bridge>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     let pumper = first.h;
+    let spare_first = pane_spare_open(first, pumper, connection, layouts, cx).await?;
+    let spare_second = pane_spare_open(second, pumper, connection, layouts, cx).await?;
     let restore = pane_hold_then_release(first, second, pumper, connection, layouts, cx).await?;
     let escape = pane_hold_then_escape(first, second, pumper, connection, layouts, cx).await?;
     let tabs = pane_drag_over_tabs(first, second, pumper, connection, layouts, cx).await?;
     let popover = pane_drag_onto_popover_row(first, pumper, bridge, connection, layouts, cx).await?;
     let little = pane_drag_in_little_window(first, pumper, connection, layouts, cx).await?;
     let closes = pane_drag_source_closes(second, first, pumper, connection, layouts, cx).await?;
+    for (space, dir) in [spare_first, spare_second] {
+        // The spare may be gone with the window that held it.
+        let _ = run_pumped(&["space", "close", &space], connection, layouts, pumper, cx).await?;
+        let _ = std::fs::remove_dir_all(dir);
+    }
     Ok(json!({"restore_after_drop": restore, "escape_after_hold": escape, "tab_strip": tabs, "popover_row": popover, "little_home": little, "source_closes": closes}))
 }
