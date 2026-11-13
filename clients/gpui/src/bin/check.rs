@@ -6557,7 +6557,7 @@ async fn pane_drag_onto_popover_row(src: &Side, pumper: gpui::WindowHandle<Clien
 
 /// A drag inside a little window showing the pane's space docks in that window's own grid
 /// (PaneTarget::Home for a little window).
-async fn pane_drag_in_little_window(owner: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+async fn pane_drag_in_little_window(owner: &Side, peer: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     let rig = pane_rig_open(owner, pumper, connection, layouts, cx).await?;
     let (ok, out, err) = run_pumped(&["pane", "split", &rig.pane, "right"], connection, layouts, pumper, cx).await?;
     ensure!(ok, "wheel pane split for the little window failed: {err}");
@@ -6588,8 +6588,22 @@ async fn pane_drag_in_little_window(owner: &Side, pumper: gpui::WindowHandle<Cli
         }
     }
     ensure!(grid.len() == 2, "the little window drew {grid:?}, not the two panes of {}", rig.space);
-    let frame = little.update(cx, |c, _, _| c.native())?.call(json!({"op":"frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect::<Vec<_>>()).unwrap_or_default();
     let native = little.update(cx, |c, _, _| c.native())?;
+    let frame_now = |n: &Native| -> Vec<f32> { n.call(json!({"op":"frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
+    // Beside both main windows: windows that are never on screen have no stacking order, so the
+    // pointer must be over the little window alone for it to be the one under it.
+    let beside = (owner.f[0] + owner.f[2]).max(peer.f[0] + peer.f[2]) + 40.;
+    native.call(json!({"op": "move_window", "point": [f64::from(beside), f64::from(owner.f[1])]}));
+    let mut frame = vec![];
+    for _ in 0..30 {
+        draw(little, None, cx)?;
+        tick(cx, 100).await;
+        frame = frame_now(&native);
+        if frame.len() == 4 && (frame[0] - beside).abs() < 2. {
+            break;
+        }
+    }
+    ensure!(frame.len() == 4 && (frame[0] - beside).abs() < 2., "the little window {little_id} is at {frame:?}, not moved to x {beside}");
     let (moved, moved_rect) = grid.iter().find(|(id, _)| *id == rig.pane).cloned().unwrap();
     let (target, target_rect) = grid.iter().find(|(id, _)| *id == other).cloned().ok_or_else(|| anyhow::anyhow!("the little window shows no pane {other}: {grid:?}"))?;
     // The moved pane goes on the target's side farther from it, whichever that is.
@@ -6606,7 +6620,7 @@ async fn pane_drag_in_little_window(owner: &Side, pumper: gpui::WindowHandle<Cli
     draw(little, None, cx)?;
     let aim = little.update(cx, |c, _, _| c.sidebar_json()["pane_drag"].clone())?;
     let zone = wheel_gpui::grid_drop::Zone::Edge(side).label();
-    ensure!(aim["away"].is_null() && aim["drop"] == json!({"target": target, "zone": zone}), "the drag inside the little window {little_id} at {on:?} aims at {aim}, not the {zone} of {target}; frame {frame:?}");
+    ensure!(aim["away"].is_null() && aim["drop"] == json!({"target": target, "zone": zone}), "the drag inside the little window {little_id} at {on:?} aims at {aim}, not the {zone} of {target}; little frame {frame:?}, windows {:?} and {:?}", owner.f, peer.f);
     native.call(json!({"op":"post_mouse","kind":"up","point":[f64::from(on.0), f64::from(on.1)]}));
     let mut docked = false;
     for _ in 0..50 {
@@ -6657,7 +6671,7 @@ async fn pane_drag_cases(first: &Side, second: &Side, bridge: &std::rc::Rc<Bridg
     let escape = pane_hold_then_escape(first, second, pumper, connection, layouts, cx).await?;
     let tabs = pane_drag_over_tabs(first, second, pumper, connection, layouts, cx).await?;
     let popover = pane_drag_onto_popover_row(first, pumper, bridge, connection, layouts, cx).await?;
-    let little = pane_drag_in_little_window(first, pumper, connection, layouts, cx).await?;
+    let little = pane_drag_in_little_window(first, second, pumper, connection, layouts, cx).await?;
     let closes = pane_drag_source_closes(second, first, pumper, connection, layouts, cx).await?;
     for (space, dir) in [spare_first, spare_second] {
         // The spare may be gone with the window that held it.
