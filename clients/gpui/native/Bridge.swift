@@ -5,6 +5,7 @@ import WebKit
 import IOSurface
 import QuartzCore
 import GhosttyTerminal
+import Observation
 import SwiftUI
 import WheelKit
 import WheelUI
@@ -759,6 +760,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 guard response == .OK, let url = panel.url else { return }
                 self?.emit(["event": "folder_chosen", "path": url.path])
             }
+        case "read_aloud":
+            // The play button on a reply: the Swift app's one synthesizer speaks it or stops it.
+            watchReadAloud()
+            ReadAloud.shared.toggle(value["text"] as? String ?? "", for: value["owner"] as? String ?? "", key: value["key"] as? String ?? "")
+            return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
         case "terminal_look": restyle(value)
         case "term_drop":
             // What a drop of these files does, for the check: the drag itself needs a real pointer.
@@ -1288,12 +1294,32 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
 
 /// One Native per GPUI window, by the id `attach` hands back.
 @MainActor private var natives: [Int32: Native] = [:]
+@MainActor private var watchingReadAloud = false
+/// Tell every window which reply the synthesizer reads whenever that changes (one starts, is
+/// stopped, or ends), so each window's play button turns back.
+@MainActor func watchReadAloud() {
+    guard !watchingReadAloud else { return }
+    watchingReadAloud = true
+    observeReadAloud()
+}
+@MainActor private func observeReadAloud() {
+    withObservationTracking { _ = ReadAloud.shared.playing } onChange: {
+        Task { @MainActor in
+            let playing: Any = ReadAloud.shared.playing ?? NSNull()
+            for native in natives.values { native.emit(["event": "read_aloud", "playing": playing]) }
+            observeReadAloud()
+        }
+    }
+}
 @MainActor private var nextWindow: Int32 = 1
 @_cdecl("wheel_native_attach") @MainActor
 public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: @escaping Emit) -> Int32 {
     let id = nextWindow
     nextWindow += 1
-    natives[id] = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), window: id, hidden: hidden != 0, emit: emit)
+    let native = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), window: id, hidden: hidden != 0, emit: emit)
+    natives[id] = native
+    // A window that opens while a reply is read draws that reply's stop button.
+    if let playing = ReadAloud.shared.playing { native.emit(["event": "read_aloud", "playing": playing]) }
     return id
 }
 /// The app's own half, window id -1: the menu bar item. Its frames go to `emit` with window -1.

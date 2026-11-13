@@ -272,6 +272,9 @@ pub struct Client {
     pub pane_menu: Option<(String, f32, f32, u8)>,
     /// The message menu a right-click on a message opened.
     message_menu: Option<messages::MessageMenu>,
+    /// The reply the app's one synthesizer reads now, as `agent#row id` (`ReadAloud.playing`),
+    /// told by the bridge to every window.
+    read_aloud: Option<String>,
     /// A space or pane to show once this window's layout lists it (a focus request that came
     /// before the layout, a split's new pane): (space, pane, since when in unix ms).
     pending_focus: Option<(Option<String>, Option<String>, u64)>,
@@ -399,7 +402,7 @@ impl Client {
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -1174,6 +1177,7 @@ impl Client {
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
             Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
+            Frame::Event(BrowserEvent::ReadAloud { playing }) => self.read_aloud = playing,
             Frame::Event(BrowserEvent::ReduceMotion { on }) => {
                 if self.reduce_motion != on {
                     self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
@@ -1274,7 +1278,6 @@ impl Client {
         let agents: Vec<String> = self.transcripts.keys().cloned().collect();
         for agent in agents {
             let queue = self.queue_view(&agent);
-            let can_fork = self.can_fork(&agent);
             let Some(t) = self.transcripts.get_mut(&agent) else { continue };
             let changed = t.take_changed();
             let replaced = t.take_replaced();
@@ -1282,16 +1285,16 @@ impl Client {
             let column = self.columns.entry(agent.clone()).or_insert_with(|| {
                 let state = ListState::new(0, ListAlignment::Bottom, px(OVERDRAW));
                 state.set_follow_mode(FollowMode::Tail);
-                Column { state, count: 0, queue: composer::QueueView::default(), fork_lines: vec![] }
+                Column { state, count: 0, queue: composer::QueueView::default(), reply_ends: vec![] }
             });
             let mut from = changed.unwrap_or(usize::MAX);
-            // A turn that ends gives its last reply the fork line, which makes that row taller.
-            let fork_lines = t.fork_lines(can_fork);
-            if column.fork_lines != fork_lines {
-                let differs = column.fork_lines.iter().zip(&fork_lines).position(|(a, b)| a != b).unwrap_or(column.fork_lines.len().min(fork_lines.len()));
-                let first = column.fork_lines.get(differs).into_iter().chain(fork_lines.get(differs)).min().copied();
+            // A turn that ends gives its last reply the buttons' line, which makes that row taller.
+            let reply_ends = t.turn_ends();
+            if column.reply_ends != reply_ends {
+                let differs = column.reply_ends.iter().zip(&reply_ends).position(|(a, b)| a != b).unwrap_or(column.reply_ends.len().min(reply_ends.len()));
+                let first = column.reply_ends.get(differs).into_iter().chain(reply_ends.get(differs)).min().copied();
                 from = from.min(first.unwrap_or(usize::MAX));
-                column.fork_lines = fork_lines;
+                column.reply_ends = reply_ends;
             }
             if column.queue != queue {
                 // A queue line comes or goes under the row of the turn it is about.
@@ -2294,8 +2297,8 @@ struct Column {
     state: ListState,
     count: usize,
     queue: composer::QueueView,
-    /// The replies drawn with the fork button on a line under them (`Transcript::fork_lines`).
-    fork_lines: Vec<usize>,
+    /// The replies drawn with their buttons on a line under them (`Transcript::turn_ends`).
+    reply_ends: Vec<usize>,
 }
 /// How far past the visible rows the column lays out, in points, so a scroll finds them ready.
 const OVERDRAW: f32 = 600.;
@@ -2379,21 +2382,21 @@ impl Client {
                 for block in blocks.iter() {
                     col = col.child(block_el(block, &mut texts, &self.highlights, cx));
                 }
-                // The fork button (RowView.swift's `actions`): on a line of its own under the last
-                // reply of a finished turn, over the top right corner of an earlier one while the
-                // pointer is on it, so the parts of a turn stay close.
-                let line = self.columns.get(agent).is_some_and(|c| c.fork_lines.binary_search(&ix).is_ok());
-                if line || t.fork_turns(ix, self.can_fork(agent)).is_some() {
-                    let button = self.fork_button(agent, ix, cx);
-                    if line {
-                        col = col.child(div().flex().gap(px(6.)).child(button));
-                    } else {
-                        let group: gpui::SharedString = format!("reply-{agent}-{ix}").into();
-                        col = col.relative().group(group.clone())
-                            .child(div().absolute().top(px(-2.)).right_0().invisible().group_hover(group, |s| s.visible()).child(button));
-                    }
+                // Copy, play and, when the turn can fork, fork (RowView.swift's `actions`): on a
+                // line of their own under the last reply of a finished turn, over the top right
+                // corner of an earlier one while the pointer is on it, so the parts of a turn stay close.
+                let line = self.columns.get(agent).is_some_and(|c| c.reply_ends.binary_search(&ix).is_ok());
+                let mut actions = div().flex().items_center().gap(px(6.)).child(self.copy_button(agent, ix, cx)).child(self.play_button(agent, ix, row.id, cx));
+                if t.fork_turns(ix, self.can_fork(agent)).is_some() {
+                    actions = actions.child(self.fork_button(agent, ix, cx));
                 }
-                col
+                if line {
+                    col.child(actions)
+                } else {
+                    let group: gpui::SharedString = format!("reply-{agent}-{ix}").into();
+                    col.relative().group(group.clone())
+                        .child(actions.absolute().top(px(-2.)).right_0().invisible().group_hover(group, |s| s.visible()))
+                }
             }
             Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(texts.plain("thought", x, 0x6f8a7c)),
             Kind::Tool { title, kind, status, content, detail, .. } => {

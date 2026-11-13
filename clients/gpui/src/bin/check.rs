@@ -1471,10 +1471,11 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     // turn draws the branch button on a line under it; a press forks the conversation through that
     // turn into a new agent pane right of this one, and `wheel agent read` gives the fork's rows,
     // which hold that one prompt and end at that reply.
-    let fork_lines: Vec<usize> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["fork_lines"][agent_name.as_str()].clone())?).unwrap_or_default();
+    let fork_lines: Vec<usize> = serde_json::from_value(window.update(cx, |c, _, _| c.state_json()["reply_ends"][agent_name.as_str()].clone())?).unwrap_or_default();
     let (fork_row, fork_text) = window.update(cx, |c, _, _| {
         let t = &c.transcripts[&agent_name];
-        let ix = fork_lines.first().copied();
+        let can = c.can_fork(&agent_name);
+        let ix = fork_lines.iter().copied().find(|&i| t.fork_turns(i, can).is_some());
         let text = ix.and_then(|i| match &t.rows[i].kind { Kind::Reply(x) => Some(x.clone()), _ => None });
         (ix, text.unwrap_or_default())
     })?;
@@ -1492,6 +1493,40 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         tick(cx, 100).await;
     }
     let fork_at = fork_at.ok_or_else(|| anyhow::anyhow!("row {fork_row} of {agent_name} drew no fork button"))?;
+    // The reply's other buttons (wheel-ynjo.10.5.5): copy and play on the same line, left of the
+    // fork button, as RowView.swift's `actions`. Copy puts the reply's Markdown on the clipboard;
+    // play has the app's synthesizer read it, which turns the button to stop, and a second press
+    // 150 ms later stops it, before the reply's first words are over.
+    let reply_buttons = {
+        let at = |id: &str, cx: &mut AsyncApp| -> Result<Option<(f32, f32, f32, f32)>> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("{id}:{fork_row}")))?) };
+        let mut buttons = vec![];
+        let mut lefts = vec![];
+        for id in ["copy", "play", "fork"] {
+            if let Some(b) = at(id, cx)? {
+                buttons.push(id);
+                lefts.push(b.0);
+            }
+        }
+        ensure!(buttons == ["copy", "play", "fork"] && lefts.windows(2).all(|w| w[0] < w[1]), "the turn end {fork_row} drew buttons {buttons:?} at x {lefts:?}");
+        let key = window.update(cx, |c, _, _| format!("{agent_name}#{}", c.transcripts[&agent_name].rows[fork_row].id))?;
+        press(&native, at("copy", cx)?.unwrap());
+        tick(cx, 150).await;
+        let copied = cx.update(|app| app.read_from_clipboard().and_then(|i| i.text())).unwrap_or_default();
+        ensure!(copied == fork_text, "the copy button put {copied:?} on the clipboard, not {fork_text:?}");
+        let playing_now = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["read_aloud"].clone())?) };
+        press(&native, at("play", cx)?.unwrap());
+        tick(cx, 150).await;
+        draw(window, Some(output.join("client-reply-buttons.png")), cx)?;
+        let playing = playing_now(cx)?;
+        ensure!(playing == json!(key), "after the play button the app reads {playing}, not {key}");
+        let heard = log_now(cx)?.iter().rev().find(|l| l.contains("read aloud row")).cloned().unwrap_or_default();
+        press(&native, at("play", cx)?.unwrap());
+        tick(cx, 150).await;
+        draw(window, None, cx)?;
+        let stopped = playing_now(cx)?;
+        ensure!(stopped.is_null(), "a second press on play left the app reading {stopped}");
+        json!({"row": fork_row, "buttons": buttons, "x": lefts, "copied": copied == fork_text, "playing": playing, "log": heard, "stopped": stopped.is_null()})
+    };
     press(&native, fork_at);
     let mut forked = None;
     for _ in 0..200 {
@@ -1785,7 +1820,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         }
     }
     ensure!(rows(cx)?.1.iter().any(|r| matches!(&r.kind, Kind::User { text, .. } if text == "show tools")), "switching back to {old_id} after the scroll check");
-    let conversations_report = json!({"recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
+    let conversations_report = json!({"reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     for s in &splits_above {

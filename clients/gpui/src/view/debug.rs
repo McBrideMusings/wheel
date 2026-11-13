@@ -714,7 +714,8 @@ impl Client {
         out["edge_bar"] = json!(self.edge_bar().map(|b| [b.x, b.y, b.w, b.h]));
         out["composer_errors"] = json!(self.composer_errors);
         out["message_menu"] = self.message_menu_json();
-        out["fork_lines"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.fork_lines))).collect::<serde_json::Map<_, _>>());
+        out["reply_ends"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.reply_ends))).collect::<serde_json::Map<_, _>>());
+        out["read_aloud"] = json!(self.read_aloud);
         out
     }
 }

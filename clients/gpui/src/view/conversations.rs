@@ -97,12 +97,61 @@ impl Client {
         let req = self.agent_req(agent, false, None);
         self.send(&ClientMsg::AgentFork { req: Some(req), agent: agent.to_owned(), turns });
     }
+    /// Put reply `ix`'s Markdown on the clipboard, as RowView.swift's copy button does.
+    pub fn copy_reply(&mut self, agent: &str, ix: usize, cx: &mut Context<Self>) {
+        let Some(markdown) = self.transcripts.get(agent).and_then(|t| t.message_markdown(ix)).map(str::to_owned) else { return };
+        self.press(format!("copy {agent} {ix}"));
+        self.log(format!("transcript {agent}: copied reply {ix}, {} character(s)", markdown.chars().count()));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
+    }
+    /// Speak reply `ix`, or stop it when it is the one being read (`ReadAloud.toggle`): the bridge
+    /// runs the Swift app's synthesizer and tells every window what it reads now (the
+    /// `read_aloud` event, the one writer of `self.read_aloud`).
+    pub fn read_aloud(&mut self, agent: &str, ix: usize) {
+        let Some(t) = self.transcripts.get(agent) else { return };
+        let (Some(row), Some(text)) = (t.rows.get(ix), t.message_markdown(ix)) else { return };
+        let key = format!("{agent}#{}", row.id);
+        let answer = self.native.call(serde_json::json!({"op": "read_aloud", "text": text, "owner": agent, "key": key}));
+        self.press(format!("play {agent} {ix}"));
+        self.log(format!("transcript {agent}: read aloud row {ix}: {}", answer["playing"]));
+    }
+    /// The copy button on reply `ix`, with RowView.swift's glyph and tooltip.
+    pub(super) fn copy_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let a = agent.to_owned();
+        let glyph = title::symbol(&self.native, &self.symbols, "doc.on.doc", 11., 0x8fa89b).unwrap_or_else(|| "copy".into_any_element());
+        div().id(gpui::ElementId::Name(format!("copy-{agent}-{ix}").into())).relative().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
+            .tooltip(tip("Copy this reply"))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.copy_reply(&a, ix, cx);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(glyph)
+            .child(recorded(agent, &format!("copy:{ix}"), &self.controls))
+    }
+    /// The play button on reply `ix` (row id `id`): a speaker, or a stop square while the app
+    /// reads this reply, in a slot 18 points wide so the row never moves when it turns.
+    pub(super) fn play_button(&self, agent: &str, ix: usize, id: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let a = agent.to_owned();
+        let speaking = self.read_aloud.as_deref() == Some(format!("{agent}#{id}").as_str());
+        let (name, label, help) = if speaking { ("stop.fill", "stop", "Stop reading this reply") } else { ("speaker.wave.2", "play", "Read this reply aloud") };
+        let glyph = title::symbol(&self.native, &self.symbols, name, 11., 0x8fa89b).unwrap_or_else(|| label.into_any_element());
+        div().id(gpui::ElementId::Name(format!("play-{agent}-{ix}").into())).relative().w(px(18.)).flex().justify_center().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
+            .tooltip(tip(help))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.read_aloud(&a, ix);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(glyph)
+            .child(recorded(agent, &format!("play:{ix}"), &self.controls))
+    }
     /// The branch button under or over reply `ix`, with RowView.swift's tooltip.
     pub(super) fn fork_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let a = agent.to_owned();
         let glyph = title::symbol(&self.native, &self.symbols, "arrow.triangle.branch", 11., 0x8fa89b).unwrap_or_else(|| "fork".into_any_element());
         div().id(gpui::ElementId::Name(format!("fork-{agent}-{ix}").into())).relative().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
-            .tooltip(crate::tooltip::tip("Fork the conversation through this turn into a new pane"))
+            .tooltip(tip("Fork the conversation through this turn into a new pane"))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                 this.fork(&a, ix);
                 cx.stop_propagation();
