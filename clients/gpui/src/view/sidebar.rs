@@ -5,7 +5,7 @@
 //! the pane there; a pointer held over a row opens a preview of its grid.
 use super::*;
 use super::settings::now_ms;
-use crate::sidebar::{self, DropPopover, DropWindow, MenuItem, PaneAway, PaneDrag, Rename, Row, SpaceDrag, SpaceDropTarget};
+use crate::sidebar::{self, DropLayer, DropPopover, DropWindow, MenuItem, PaneAway, PaneDrag, PaneTarget, Rename, Row, SpaceDrag, SpaceDropTarget};
 use serde_json::json;
 use std::path::Path;
 
@@ -27,7 +27,46 @@ pub struct SpaceHover {
 
 thread_local! {
     static HOVER: RefCell<Option<SpaceHover>> = const { RefCell::new(None) };
+    /// Where a pane drag in any window aims, and the window it started in.
+    static PANE_HOVER: RefCell<Option<(String, PaneAway)>> = const { RefCell::new(None) };
 }
+
+/// Where the pane drag in progress in any window aims.
+pub fn pane_hover() -> Option<PaneAway> {
+    PANE_HOVER.with(|h| h.borrow().as_ref().map(|(_, a)| a.clone()))
+}
+
+/// A pane drag's state outside its own grid (PaneMove.swift's paneHold*, paneDragShown,
+/// pendingNewSpace).
+#[derive(Default)]
+pub struct PaneOut {
+    /// Every window and the popover, measured when the pointer drag started and again after a
+    /// hold switched a window.
+    pub world: Option<DragWorld>,
+    /// The tab or row the pointer is over (window, space), and the one whose timer runs.
+    want: Option<(String, String)>,
+    hold: Option<(String, String)>,
+    hold_gen: u64,
+    /// Each window a hold switched and the space it showed before.
+    switched: Vec<(String, String)>,
+    /// A cancel waits for the next turn to put the windows back.
+    restore: bool,
+    pending: Option<PendingNewSpace>,
+}
+
+/// A new space `pane_move` is about to make and where it goes once wheeld reports it: the first
+/// space other than `home` that holds `pane`, within `PENDING_MS`.
+#[derive(Clone, Debug)]
+struct PendingNewSpace {
+    pane: String,
+    home: Option<String>,
+    /// The window whose session takes it.
+    window: String,
+    /// It opens in a little window, grown from a card centred on this screen point when there is one.
+    little: Option<Option<(f32, f32)>>,
+    at: u64,
+}
+const PENDING_MS: u64 = 10_000;
 
 /// The space drag in progress in any window, if one is.
 pub fn space_hover() -> Option<SpaceHover> {
@@ -138,7 +177,7 @@ impl Client {
             && self.pane_drag.is_none()
             && ((x - px0).powi(2) + (y - py0).powi(2)).sqrt() >= sidebar::DRAG_DISTANCE
         {
-            self.begin_pane_drag(&pane, &label, (x, y), grab);
+            self.begin_pane_drag(&pane, &label, (x, y), grab, true);
         }
         if self.space_drag.is_some() {
             self.move_space_drag(x, y);
@@ -161,7 +200,7 @@ impl Client {
             self.end_space_drag(cx);
         }
         if self.pane_drag.is_some() {
-            self.end_pane_drag();
+            self.end_pane_drag(cx);
         }
     }
     pub fn begin_space_drag(&mut self, space: &str, by_pointer: bool, at: (f32, f32)) {
@@ -181,6 +220,12 @@ impl Client {
         if self.space_drag.is_none() || self.space_drag_world.is_some() {
             return;
         }
+        let world = self.measure_world(cx);
+        self.log(format!("space drag: {} windows, popover {}, this window at {:.0},{:.0}", world.windows.iter().filter(|w| !w.little).count(), if world.popover.is_some() { "open" } else { "closed" }, world.origin.0, world.origin.1));
+        self.space_drag_world = Some(world);
+    }
+    /// Every window front to back, little ones included, and the popover, as a drag meets them.
+    fn measure_world(&self, cx: &App) -> DragWorld {
         let me = self.window_id.clone();
         let frame_of = |native: &Native| -> Option<((f32, f32), i64, bool)> {
             let answer = native.call(json!({"op": "frame"}));
@@ -202,9 +247,6 @@ impl Client {
                 continue;
             }
             let Ok(c) = handle.read(cx) else { continue };
-            if c.is_little() {
-                continue;
-            }
             if let Some((at, order, visible)) = frame_of(&c.native)
                 && counts(visible)
             {
@@ -213,16 +255,23 @@ impl Client {
         }
         found.sort_by_key(|(order, n, _)| if *order >= 0 { (0, *order as u64) } else { (1, u64::MAX - n) });
         let popover = crate::view::menu_bar().and_then(|m| m.read(cx).drop_popover(cx));
-        let world = DragWorld { origin, windows: found.into_iter().map(|(_, _, w)| w).collect(), popover };
-        self.log(format!("space drag: {} windows, popover {}, this window at {:.0},{:.0}", world.windows.len(), if world.popover.is_some() { "open" } else { "closed" }, origin.0, origin.1));
-        self.space_drag_world = Some(world);
+        DragWorld { origin, windows: found.into_iter().map(|(_, _, w)| w).collect(), popover }
     }
-    /// This window as a space drop meets it, its content's top left at `origin` on screen: its
-    /// sidebar and rows while it shows them, else its tab strip and every tab (DropWindow).
+    /// This window as a drop meets it, its content's top left at `origin` on screen: its sidebar
+    /// and rows while it shows them, else its tab strip and every tab, and its grid's panes
+    /// (DropWindow). A little window is a frame only.
     fn drop_window(&self, origin: (f32, f32)) -> DropWindow {
         let at = |r: Rect| Rect { x: r.x + origin.0, y: r.y + origin.1, w: r.w, h: r.h };
+        if self.is_little() {
+            return DropWindow { id: self.window_id.clone(), frame: Rect { x: origin.0, y: origin.1, w: f32::MAX, h: f32::MAX }, sidebar: None, rows: vec![], tab_strip: None, tabs: vec![], little: true, spaces: vec![], shown: self.space_id.clone(), layers: vec![] };
+        }
         let row = (!self.sidebar_open).then(|| self.title_row());
+        let layers = self.layers().into_iter().map(|l| DropLayer { card: l.card.map(|c| at(c.frame)), panes: l.leaves.iter().map(|p| (p.leaf.id.clone(), at(p.rect))).collect() }).collect();
         DropWindow {
+            little: false,
+            spaces: self.session_ids(),
+            shown: self.space_id.clone().filter(|_| !self.space_away()),
+            layers,
             id: self.window_id.clone(),
             frame: Rect { x: origin.0, y: origin.1, w: f32::MAX, h: f32::MAX },
             sidebar: self.sidebar_open.then(|| at(self.sidebar_rect())),
@@ -280,6 +329,7 @@ impl Client {
     }
     /// The other windows redraw after this one's drag moved over or off them.
     pub(super) fn refresh_for_space_hover(&mut self, cx: &mut App) {
+        self.settle_pane_out(cx);
         if std::mem::take(&mut self.space_hover_changed) {
             crate::refresh_other_windows(cx, &self.window_id);
         }
@@ -290,6 +340,12 @@ impl Client {
     /// card, elsewhere the chip, once the pointer drives it and the windows are measured.
     fn float_want(&self) -> super::float::Want {
         use super::float::Want;
+        if let Some(d) = self.pane_drag.as_ref().filter(|d| d.by_pointer)
+            && let Some(at) = d.screen
+        {
+            let name = if d.away == Some(PaneAway::Desktop) { format!("{} → new little window", d.label) } else { d.label.clone() };
+            return Want::Chip { name, at };
+        }
         let Some(drag) = self.space_drag.as_ref().filter(|d| d.by_pointer) else { return Want::Nothing };
         let Some(at) = drag.screen else { return Want::Nothing };
         let name = self.space_name(&drag.space).unwrap_or_else(|| drag.space.clone());
@@ -378,8 +434,14 @@ impl Client {
             }
             return;
         };
-        let (Some((x, y)), Some(handle)) = (at, crate::window_handle(&id)) else { return };
-        // It grows from the preview card the drop was over, centred on the card (openLittle(for:from:)).
+        if let Some(at) = at {
+            self.grow_little(&id, at, cx);
+        }
+    }
+    /// Little window `id` grows from the preview card centred on (`x`, `y`) on screen, to its
+    /// place centred on the card (openLittle(for:from:)).
+    fn grow_little(&mut self, id: &str, (x, y): (f32, f32), cx: &mut App) {
+        let Some(handle) = crate::window_handle(id) else { return };
         let card = sidebar::card_frame(x, y);
         let (ox, oy) = sidebar::little_origin(card.x + card.w / 2., card.y + card.h / 2., super::little::SIZE);
         let moved = handle.read(cx).map(|c| c.native.call(json!({"op": "grow_window", "from": [card.x, card.y, card.w, card.h], "point": [ox, oy]}))).unwrap_or_default();
@@ -425,7 +487,7 @@ impl Client {
     /// While a space is held, every pointer move and the release reach this window wherever the
     /// pointer is, outside the window too, and nothing under the pointer hears them meanwhile.
     pub(super) fn space_drag_capture(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        self.space_drag.as_ref().filter(|d| d.by_pointer)?;
+        (self.space_drag.as_ref().is_some_and(|d| d.by_pointer) || self.pane_drag.as_ref().is_some_and(|d| d.by_pointer)).then_some(())?;
         let (moves, ups) = (cx.entity().downgrade(), cx.entity().downgrade());
         Some(canvas(|_, _, _| {}, move |_, _, window, _| {
             let moves = moves.clone();
@@ -445,27 +507,74 @@ impl Client {
         }).absolute().size_0())
     }
 
-    pub fn begin_pane_drag(&mut self, pane: &str, label: &str, at: (f32, f32), grab: (f32, f32)) {
+    pub fn begin_pane_drag(&mut self, pane: &str, label: &str, at: (f32, f32), grab: (f32, f32), by_pointer: bool) {
         if self.pane_drag.is_some() {
             return;
         }
         self.close_preview();
-        self.pane_drag = Some(PaneDrag { pane: pane.to_owned(), label: label.to_owned(), away: None, drop: None, at, grab });
+        self.pane_drag = Some(PaneDrag { pane: pane.to_owned(), label: label.to_owned(), away: None, drop: None, at, grab, by_pointer, screen: None });
+        self.pane_out.world = None;
+        // A new drag supersedes a new space an earlier drop still waits for.
+        self.pane_out.pending = None;
         self.log(format!("pane drag {pane}: started"));
     }
-    pub fn move_pane_drag(&mut self, x: f32, y: f32) {
-        let away = if self.sidebar_open { sidebar::pane_away(self.sidebar_rect(), &self.sidebar_rows(), x, y) } else { None };
-        let Some(drag) = &mut self.pane_drag else { return };
-        drag.at = (x, y);
-        let pane = drag.pane.clone();
-        // Off the sidebar the grid's drop zones take the pointer.
-        if away.is_none() {
-            let drop = self.grid_drop_at(x, y, &pane);
-            self.hover_pane_drag(None);
-            self.hover_grid_drop(drop);
-        } else {
-            self.hover_pane_drag(away);
+    /// Measure every window for the pointer drag that just started, or again after a hold
+    /// switched one.
+    pub(super) fn measure_pane_drag(&mut self, cx: &App) {
+        if !self.pane_drag.as_ref().is_some_and(|d| d.by_pointer) {
+            return;
         }
+        let world = self.measure_world(cx);
+        self.log(format!("pane drag: {} windows, popover {}, this window at {:.0},{:.0}", world.windows.iter().filter(|w| !w.little).count(), if world.popover.is_some() { "open" } else { "closed" }, world.origin.0, world.origin.1));
+        self.pane_out.world = Some(world);
+    }
+    /// The pointer at (`x`, `y`) in this window: what is under it in any window, or the desktop
+    /// (AppModel.movePaneDrag). Over this window's grid showing the pane's space, its drop zones.
+    pub fn move_pane_drag(&mut self, x: f32, y: f32) {
+        let Some(pane) = self.pane_drag.as_ref().map(|d| d.pane.clone()) else { return };
+        let home = self.space_holding(&pane).map(|s| s.id.clone());
+        let (target, screen) = match &self.pane_out.world {
+            Some(world) => {
+                let (gx, gy) = (world.origin.0 + x, world.origin.1 + y);
+                (sidebar::pane_target(gx, gy, &world.windows, world.popover.as_ref(), &pane, home.as_deref()), Some((gx, gy)))
+            }
+            // Measured nowhere yet: this window is the only one, and past it is nothing.
+            None => match sidebar::pane_target(x, y, &[self.drop_window((0., 0.))], None, &pane, home.as_deref()) {
+                PaneTarget::Away(PaneAway::Desktop, _) => (PaneTarget::Nothing, None),
+                t => (t, None),
+            },
+        };
+        if let Some(drag) = &mut self.pane_drag {
+            drag.at = (x, y);
+            drag.screen = screen;
+        }
+        match target {
+            PaneTarget::Away(away, hold) => {
+                self.hover_grid_drop(None);
+                self.hover_pane_drag(Some(away));
+                self.pane_out.want = hold;
+            }
+            PaneTarget::Home(window) if window == self.window_id => {
+                let drop = self.grid_drop_at(x, y, &pane);
+                self.hover_pane_drag(None);
+                self.hover_grid_drop(drop);
+                self.pane_out.want = None;
+            }
+            _ => {
+                self.hover_pane_drag(None);
+                self.hover_grid_drop(None);
+                self.pane_out.want = None;
+            }
+        }
+    }
+    /// Name where the pane lands outside its space directly, as the debug route does: over a
+    /// space's end the window whose session holds it is the one a hold switches.
+    pub fn name_pane_away(&mut self, away: Option<PaneAway>) {
+        self.pane_out.want = match &away {
+            Some(PaneAway::End(space)) => crate::windows::with(|r| r.window_holding(space, &self.sessions).map(|w| (w.id.clone(), space.clone()))),
+            _ => None,
+        };
+        self.hover_pane_drag(away);
     }
     pub fn hover_pane_drag(&mut self, away: Option<PaneAway>) {
         let Some(drag) = &mut self.pane_drag else { return };
@@ -477,30 +586,202 @@ impl Client {
             let (pane, words) = (drag.pane.clone(), drag.away.as_ref().map(describe_away).unwrap_or_else(|| "nothing".into()));
             self.log(format!("pane drag {pane}: over {words}"));
         }
+        self.publish_pane_hover();
     }
-    pub fn end_pane_drag(&mut self) {
+    /// Write where this window's pane drag aims where every window reads it.
+    pub(super) fn publish_pane_hover(&mut self) {
+        let me = self.window_id.clone();
+        let next = self.pane_drag.as_ref().and_then(|d| d.away.clone()).map(|a| (me.clone(), a));
+        let changed = PANE_HOVER.with(|h| {
+            let mut h = h.borrow_mut();
+            if next.is_none() && h.as_ref().is_some_and(|(source, _)| *source != me) {
+                return false;
+            }
+            let changed = *h != next;
+            *h = next;
+            changed
+        });
+        self.space_hover_changed |= changed;
+    }
+    /// The tab or row under the pointer changed: holding over it `HOLD_SECONDS` shows its space in
+    /// its window, unless that window shows it already (AppModel.armHold).
+    pub(super) fn arm_pane_hold(&mut self, cx: &mut Context<Self>) {
+        if self.pane_out.want == self.pane_out.hold {
+            return;
+        }
+        self.pane_out.hold = self.pane_out.want.clone();
+        self.pane_out.hold_gen += 1;
+        let Some((window, space)) = self.pane_out.hold.clone() else { return };
+        if self.shown_in(&window, cx).as_deref() == Some(space.as_str()) {
+            return;
+        }
+        let generation = self.pane_out.hold_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs_f64(sidebar::HOLD_SECONDS)).await;
+            let _ = this.update(cx, |this, cx| this.show_held(generation, cx));
+        }).detach();
+    }
+    /// The space `window` shows.
+    fn shown_in(&self, window: &str, cx: &App) -> Option<String> {
+        if window == self.window_id {
+            return self.space_id.clone();
+        }
+        crate::window_handle(window).and_then(|h| h.read(cx).ok().and_then(|c| c.space_id().map(str::to_owned)))
+    }
+    /// `window` shows `space`.
+    fn show_in(&mut self, window: &str, space: &str, cx: &mut App) {
+        if window == self.window_id {
+            self.select_space(space);
+        } else if let Some(handle) = crate::window_handle(window) {
+            let _ = handle.update(cx, |c, _, cx| {
+                c.select_space(space);
+                cx.notify();
+            });
+        }
+    }
+    /// The hold ran its time with the pane still over the tab: the window shows that space
+    /// (AppModel.showHeld), and the windows are measured again.
+    fn show_held(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if self.pane_out.hold_gen != generation {
+            return;
+        }
+        let Some((window, space)) = self.pane_out.hold.clone() else { return };
+        if !matches!(self.pane_drag.as_ref().and_then(|d| d.away.as_ref()), Some(PaneAway::End(s)) if *s == space) {
+            return;
+        }
+        let Some(was) = self.shown_in(&window, cx).filter(|w| *w != space) else { return };
+        if !self.pane_out.switched.iter().any(|(w, _)| *w == window) {
+            self.pane_out.switched.push((window.clone(), was));
+        }
+        self.log(format!("pane drag: held over space {space} for {} s; window {window} shows it", sidebar::HOLD_SECONDS));
+        self.show_in(&window, &space, cx);
+        if self.pane_out.world.is_some() {
+            self.measure_pane_drag(cx);
+        }
+        cx.notify();
+    }
+    /// The drag is over: stop waiting and, unless a window shows the space the pane landed in,
+    /// put back what each window a hold switched showed (AppModel.endAway).
+    fn end_away(&mut self, landed: Option<&str>, cx: &mut App) {
+        self.pane_out.want = None;
+        self.pane_out.hold = None;
+        self.pane_out.hold_gen += 1;
+        self.pane_out.world = None;
+        self.pane_out.restore = false;
+        for (window, was) in std::mem::take(&mut self.pane_out.switched) {
+            let holds = if window == self.window_id {
+                self.session_spaces().iter().any(|s| s.id == was)
+            } else {
+                crate::window_handle(&window).and_then(|h| h.read(cx).ok().map(|c| c.session_spaces().iter().any(|s| s.id == was))).unwrap_or(false)
+            };
+            if holds && self.shown_in(&window, cx).as_deref() != landed {
+                self.log(format!("pane drag: window {window} shows {was} again"));
+                self.show_in(&window, &was, cx);
+            }
+        }
+    }
+    /// What a pane drag leaves for a turn with the app at hand: a cancel puts the windows back,
+    /// and a new space the drop asked for goes where the drop was once wheeld reports it.
+    fn settle_pane_out(&mut self, cx: &mut App) {
+        let me = self.window_id.clone();
+        if self.pane_drag.is_none() && self.pane_out.restore {
+            self.pane_out.restore = false;
+            cx.defer(move |cx| if let Some(h) = crate::window_handle(&me) {
+                let _ = h.update(cx, |c, _, cx| {
+                    c.end_away(None, cx);
+                    cx.notify();
+                });
+            });
+            return;
+        }
+        let Some(pending) = self.pane_out.pending.clone() else { return };
+        if settings::now_ms().saturating_sub(pending.at) > PENDING_MS {
+            self.log(format!("pane drag {}: wheeld reported no new space for it", pending.pane));
+            self.pane_out.pending = None;
+            return;
+        }
+        let Some(space) = self.space_holding(&pending.pane).map(|s| s.id.clone()).filter(|s| Some(s) != pending.home.as_ref()) else { return };
+        self.pane_out.pending = None;
+        cx.defer(move |cx| if let Some(h) = crate::window_handle(&me) {
+            let _ = h.update(cx, |c, _, cx| {
+                c.place_new_space(&space, &pending, cx);
+                cx.notify();
+            });
+        });
+    }
+    /// The new space a drop made shows in its window, moved into that window's session first when
+    /// another session holds it, and opens in a little window too for a drop on the desktop
+    /// (AppModel.reconcileWindows).
+    fn place_new_space(&mut self, space: &str, pending: &PendingNewSpace, cx: &mut App) {
+        self.log(format!("pane drag {}: new space {space} for window {}{}", pending.pane, pending.window, if pending.little.is_some() { ", in a little window" } else { "" }));
+        if pending.window == self.window_id {
+            self.select_space(space);
+        } else {
+            self.place_dragged(space, &pending.window, None, cx);
+        }
+        if let Some(at) = pending.little {
+            if let Some(id) = self.open_little(space, cx)
+                && let Some(at) = at
+            {
+                self.grow_little(&id, at, cx);
+            }
+        }
+    }
+    /// Release: dock beside a pane, move to a space's end or into a new space (AppModel.dropAway).
+    pub fn end_pane_drag(&mut self, cx: &mut App) {
         let Some(drag) = self.pane_drag.take() else { return };
         self.pane_press = None;
+        self.publish_pane_hover();
         self.sync_sidebar_overlay();
+        let pane = drag.pane;
         if let Some(drop) = drag.drop {
-            return self.send_grid_drop(drag.pane, drop);
+            let here = self.space_id.clone();
+            self.end_away(here.as_deref(), cx);
+            return self.send_grid_drop(pane, drop);
         }
         let Some(away) = drag.away else {
-            self.log(format!("pane drag {}: released over nothing", drag.pane));
+            self.end_away(None, cx);
+            self.log(format!("pane drag {pane}: released over nothing"));
             return;
         };
-        self.log(format!("pane drag {}: dropped on {}", drag.pane, describe_away(&away)));
-        let pane = drag.pane;
+        self.log(format!("pane drag {pane}: dropped on {}", describe_away(&away)));
         let to = match away {
-            PaneAway::End(space) => wheel_proto::MoveTarget::End { space },
-            PaneAway::NewSpace => wheel_proto::MoveTarget::NewSpace { name: None, focus: false },
+            PaneAway::Beside { pane: target, dir, space } => {
+                self.end_away(Some(&space), cx);
+                wheel_proto::MoveTarget::Beside { pane: target, dir }
+            }
+            PaneAway::End(space) => {
+                self.end_away(Some(&space), cx);
+                wheel_proto::MoveTarget::End { space: space.clone() }
+            }
+            PaneAway::NewSpace(window) => {
+                self.end_away(None, cx);
+                self.expect_new_space(&pane, window, None);
+                wheel_proto::MoveTarget::NewSpace { name: None, focus: false }
+            }
+            PaneAway::Desktop => {
+                self.end_away(None, cx);
+                self.expect_new_space(&pane, self.window_id.clone(), Some(drag.screen));
+                wheel_proto::MoveTarget::NewSpace { name: None, focus: false }
+            }
         };
         self.send_layout(|req| ClientMsg::PaneMove { req: Some(req), pane, to });
+    }
+    fn expect_new_space(&mut self, pane: &str, window: String, little: Option<Option<(f32, f32)>>) {
+        let home = self.space_holding(pane).map(|s| s.id.clone());
+        self.pane_out.pending = Some(PendingNewSpace { pane: pane.to_owned(), home, window, little, at: settings::now_ms() });
     }
     pub fn cancel_pane_drag(&mut self) {
         self.pane_press = None;
         if let Some(drag) = self.pane_drag.take() {
             self.log(format!("pane drag {}: cancelled", drag.pane));
+            self.publish_pane_hover();
+            // No timer fires after a cancel; the windows a hold switched go back on the next turn.
+            self.pane_out.want = None;
+            self.pane_out.hold = None;
+            self.pane_out.hold_gen += 1;
+            self.pane_out.world = None;
+            self.pane_out.restore = true;
             self.sync_sidebar_overlay();
         }
     }
@@ -509,14 +790,16 @@ impl Client {
         if let Some(drop) = &drag.drop {
             return Some(crate::grid_drop::hint(drop, &drag.pane));
         }
-        Some(sidebar::pane_hint(drag.away.as_ref()?, &drag.label, |id| self.space_name(id)))
+        let window_title = |id: &str| crate::windows::with(|r| r.get(id).map(|w| crate::windows::title(w, &self.spaces))).unwrap_or_else(|| "Wheel".into());
+        Some(sidebar::pane_hint(drag.away.as_ref()?, &drag.label, |id| self.space_name(id), window_title))
     }
-    /// Whether the dragged pane is over `space`'s row, which draws outlined.
-    fn pane_is_over(&self, space: &str) -> bool {
-        matches!(self.pane_drag.as_ref().and_then(|d| d.away.as_ref()), Some(PaneAway::End(s)) if s == space)
+    /// Whether a pane dragged in any window is over `space`'s row or tab, which draws outlined.
+    pub(super) fn pane_is_over(&self, space: &str) -> bool {
+        matches!(pane_hover(), Some(PaneAway::End(s)) if s == space)
     }
-    fn pane_is_over_new_space(&self) -> bool {
-        matches!(self.pane_drag.as_ref().and_then(|d| d.away.as_ref()), Some(PaneAway::NewSpace))
+    /// Whether a pane dragged in any window is over this window's sidebar room or tab strip.
+    pub(super) fn pane_is_over_new_space(&self) -> bool {
+        matches!(pane_hover(), Some(PaneAway::NewSpace(w)) if w == self.window_id)
     }
     /// A pane's name for the chip that follows the pointer (AppModel.paneLabel).
     pub fn pane_label(&self, leaf: &Leaf) -> String {
@@ -850,11 +1133,14 @@ impl Client {
         json!({
             "open": self.sidebar_open, "frame": [r.x, r.y, r.w, r.h], "rows": rows,
             "drag": self.space_drag.as_ref().map(|d| json!({"space": d.space, "target": d.target.as_ref().map(describe_target), "insertion": self.space_drag_insertion(), "tab_bar": self.space_drag_tab_bar(), "hint": self.space_drag_hint(),
-                "screen": d.screen.map(|(x, y)| [x, y]), "measured": self.space_drag_world.as_ref().map(|w| json!({"origin": [w.origin.0, w.origin.1], "windows": w.windows.iter().map(|d| d.id.clone()).collect::<Vec<_>>(), "popover": w.popover.as_ref().map(|p| p.cards.len())}))})),
+                "screen": d.screen.map(|(x, y)| [x, y]), "measured": self.space_drag_world.as_ref().map(|w| json!({"origin": [w.origin.0, w.origin.1], "windows": w.windows.iter().filter(|d| !d.little).map(|d| d.id.clone()).collect::<Vec<_>>(), "popover": w.popover.as_ref().map(|p| p.cards.len())}))})),
             // A drag from any window, as this window draws it.
             "hovered": space_hover().map(|h| json!({"space": h.space, "source": h.source, "target": h.target.as_ref().map(describe_target), "insertion": self.space_drag_insertion(), "tab_bar": self.space_drag_tab_bar(), "outlined": self.space_drag_outlined(), "floating": h.floating,
                 "chip": h.chip.filter(|(w, _)| *w == self.window_id).map(|(_, (x, y))| [x, y])})),
-            "pane_drag": self.pane_drag.as_ref().map(|d| json!({"pane": d.pane, "label": d.label, "away": d.away.as_ref().map(describe_away), "drop": d.drop.as_ref().map(|g| json!({"target": g.target, "zone": g.zone.label()})), "hint": self.pane_drag_hint(), "new_space": self.pane_is_over_new_space()})),
+            "pane_drag": self.pane_drag.as_ref().map(|d| json!({"pane": d.pane, "label": d.label, "away": d.away.as_ref().map(describe_away), "drop": d.drop.as_ref().map(|g| json!({"target": g.target, "zone": g.zone.label()})), "hint": self.pane_drag_hint(), "new_space": self.pane_is_over_new_space(),
+                "screen": d.screen.map(|(x, y)| [x, y]), "measured": self.pane_out.world.as_ref().map(|w| w.windows.iter().filter(|d| !d.little).map(|d| d.id.clone()).collect::<Vec<_>>()),
+                "hold": self.pane_out.hold.as_ref().map(|(w, s)| json!([w, s])), "switched": self.pane_out.switched.iter().map(|(w, s)| json!([w, s])).collect::<Vec<_>>()})),
+            "pane_hover": pane_hover().as_ref().map(describe_away), "pane_new_space": self.pane_is_over_new_space(),
             "renaming": self.rename.as_ref().map(|r| json!({"space": r.space, "draft": r.draft, "error": r.error})),
             "menu": self.space_menu.as_ref().map(|(space, _, _)| json!({"space": space, "items": self.space_menu_items(space).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled, "section": i.section, "destructive": i.destructive})).collect::<Vec<_>>()})),
             "preview": self.preview.as_ref().map(|space| json!({"space": space, "frame": self.preview_rect().map(|r| [r.x, r.y, r.w, r.h]),
@@ -966,7 +1252,11 @@ impl Client {
             }
             (self.space_name(&h.space).unwrap_or_else(|| h.space.clone()), at)
         } else if let Some(d) = &self.pane_drag {
-            (if d.away == Some(PaneAway::NewSpace) { format!("{} → new space", d.label) } else { d.label.clone() }, d.at)
+            // A measured pointer drag's chip is a window of its own.
+            if d.by_pointer && d.screen.is_some() {
+                return None;
+            }
+            (if matches!(d.away, Some(PaneAway::NewSpace(_))) { format!("{} → new space", d.label) } else { d.label.clone() }, d.at)
         } else {
             return None;
         };
@@ -1053,8 +1343,10 @@ fn describe_target(target: &SpaceDropTarget) -> String {
 }
 fn describe_away(away: &PaneAway) -> String {
     match away {
+        PaneAway::Beside { pane, dir, space } => format!("{pane} {} in space {space}", crate::grid_drop::Zone::Edge(*dir).label()),
         PaneAway::End(space) => format!("the end of space {space}"),
-        PaneAway::NewSpace => "a new space".into(),
+        PaneAway::NewSpace(window) => format!("a new space in window {window}"),
+        PaneAway::Desktop => "the desktop".into(),
     }
 }
 

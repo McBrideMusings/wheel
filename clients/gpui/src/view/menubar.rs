@@ -438,12 +438,13 @@ impl MenuBar {
         }
         let at = self.native.call(json!({"op": "view_frame", "view": view}))["frame"].as_array()?.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect::<Vec<_>>();
         let [x, y, w, h] = at[..] else { return None };
-        let rows: HashMap<String, usize> = self.cards().into_iter().map(|c| (c.session, c.rows.len())).collect();
+        let rows: HashMap<String, Vec<String>> = self.cards().into_iter().map(|c| (c.session, c.rows.into_iter().map(|r| r.space).collect())).collect();
         let cards = popover.cards.borrow().iter().map(|(session, [cx_, cy, cw, ch])| {
             let frame = Rect { x: x + cx_, y: y + cy, w: *cw, h: *ch };
             let top = frame.y + 1. + CARD_PAD + CARD_HEAD;
-            let rows = (0..rows.get(session).copied().unwrap_or(0)).map(|i| Rect { x: frame.x + CARD_PAD, y: top + i as f32 * ROW, w: frame.w - 2. * CARD_PAD, h: ROW }).collect();
-            crate::sidebar::DropCard { session: session.clone(), frame, rows }
+            let spaces = rows.get(session).cloned().unwrap_or_default();
+            let rows = (0..spaces.len()).map(|i| Rect { x: frame.x + CARD_PAD, y: top + i as f32 * ROW, w: frame.w - 2. * CARD_PAD, h: ROW }).collect();
+            crate::sidebar::DropCard { session: session.clone(), frame, rows, spaces }
         }).collect();
         Some(crate::sidebar::DropPopover { frame: Rect { x, y, w, h }, cards })
     }

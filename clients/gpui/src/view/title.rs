@@ -328,7 +328,10 @@ impl Client {
         let (w, _) = self.viewport;
         let mut bar = div().absolute().left_0().top_0().w(px(w)).h(px(header::HEIGHT)).bg(rgb(0x0e1311));
         if let Some(track) = row.track {
-            bar = bar.child(div().absolute().left(px(track.x)).top(px(track.y)).w(px(track.w)).h(px(track.h)).rounded(px(9.)).bg(rgb(0x1a2420)));
+            bar = bar.child(div().absolute().left(px(track.x)).top(px(track.y)).w(px(track.w)).h(px(track.h)).rounded(px(9.)).bg(rgb(0x1a2420))
+                // A pane dragged over the strip's room makes a new space here: the strip is outlined,
+                // in a layer of its own so nothing in it moves.
+                .when(self.pane_is_over_new_space(), |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(9.)).border_2().border_color(rgb(super::sidebar::ACCENT)))));
         }
         let dragged = self.space_drag.as_ref().map(|d| d.space.clone());
         let tab_bar = self.space_drag_tab_bar().and_then(|i| {
@@ -348,7 +351,9 @@ impl Client {
                     let away = self.little_showing(id).is_some();
                     // The tab a space drag holds draws dimmed, as its sidebar row does.
                     let held = dragged.as_deref() == Some(id.as_str());
-                    el = el.when(held, |d| d.opacity(0.4)).when(away && !held, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
+                    // A pane held over the tab outlines it in a layer of its own, so nothing in the tab moves.
+                    let pane_over = self.pane_is_over(id);
+                    el = el.relative().when(pane_over, |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(7.)).border_2().border_color(rgb(super::sidebar::ACCENT)))).when(held, |d| d.opacity(0.4)).when(away && !held, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
                         .text_color(rgb(if chip.active { TEXT } else { DIM }))
                         .child(div().overflow_hidden().whitespace_nowrap().child(chip.label.clone())).children(dots);
                 }

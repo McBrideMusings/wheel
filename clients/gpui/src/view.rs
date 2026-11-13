@@ -262,6 +262,7 @@ pub struct Client {
     space_press: Option<(String, f32, f32)>,
     /// A pane held by its header, and the press that may become one: (pane, label, x, y, grab).
     pub pane_drag: Option<crate::sidebar::PaneDrag>,
+    pub pane_out: sidebar::PaneOut,
     pane_press: Option<(String, String, f32, f32, (f32, f32))>,
     /// A space's name being edited in its row.
     pub rename: Option<crate::sidebar::Rename>,
@@ -398,7 +399,7 @@ impl Client {
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -803,8 +804,9 @@ impl Client {
     /// The window is closing: drop its native views. Its connection ends with it, and wheeld
     /// drops the window's reported view with the connection.
     pub fn shutdown(&mut self) {
-        // A space drag this window held ends with it, so no other window keeps drawing it.
+        // A space or pane drag this window held ends with it, so no other window keeps drawing it.
         self.cancel_space_drag(false);
+        self.cancel_pane_drag();
         self.native.detach();
         crate::forget_window(&self.window_id);
     }
@@ -1733,6 +1735,11 @@ impl Client {
             self.measure_space_drag(cx);
             self.move_space_drag(x, y);
         }
+        if self.pane_drag.as_ref().is_some_and(|d| d.by_pointer) && self.pane_out.world.is_none() {
+            self.measure_pane_drag(cx);
+            self.move_pane_drag(x, y);
+        }
+        self.arm_pane_hold(cx);
         self.refresh_for_space_hover(cx);
         if had || self.hover.is_some() {
             cx.notify();

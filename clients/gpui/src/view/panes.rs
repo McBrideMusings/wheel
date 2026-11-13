@@ -91,14 +91,22 @@ impl Client {
         let words = drag.drop.as_ref().map(|d| format!("{} {}", d.target, d.zone.label())).unwrap_or_else(|| "nothing".into());
         let pane = drag.pane.clone();
         self.log(format!("pane drag {pane}: over {words}"));
+        self.publish_pane_hover();
         self.sync_sidebar_overlay();
     }
     /// The part of the grid lit while a dragged pane is over a drop zone.
+    /// A pane dragged from any window to a side of a pane this window shows lights that half.
     pub fn grid_drop_highlight(&self) -> Option<Rect> {
-        let drop = self.pane_drag.as_ref()?.drop.as_ref()?;
+        let (target, zone) = match self.pane_drag.as_ref().and_then(|d| d.drop.clone()) {
+            Some(drop) => (drop.target, drop.zone),
+            None => match super::sidebar::pane_hover()? {
+                crate::sidebar::PaneAway::Beside { pane, dir, space } if self.space_id.as_deref() == Some(space.as_str()) => (pane, Zone::Edge(dir)),
+                _ => return None,
+            },
+        };
         let (leaves, _) = self.scene();
-        let target = leaves.iter().find(|p| p.leaf.id == drop.target)?;
-        Some(grid_drop::highlight(drop.zone, target.rect))
+        let target = leaves.iter().find(|p| p.leaf.id == target)?;
+        Some(grid_drop::highlight(zone, target.rect))
     }
     /// Release over a drop zone: swap the two panes, or dock the dragged one beside the target.
     pub(super) fn send_grid_drop(&mut self, pane: String, drop: GridDrop) {
