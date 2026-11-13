@@ -2,13 +2,14 @@
 //! filters, sort, trees) and its drawing as A2UI. The same logic serves the command line
 //! (`cli`) and a host's pane over MCP (`serve`).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
 use crate::core::buttons::Script;
+use crate::core::list::{self, Filter, Item, List, Spec};
 use crate::core::page::{cell, Page};
 use crate::core::table;
 
@@ -314,11 +315,8 @@ const COLS: [Col; 7] = [
 
 struct Ui {
     view: String,
-    q: String,
-    f: BTreeMap<String, String>,
-    /// The filters (by key) whose values are excluded rather than matched.
-    not: HashSet<String>,
-    hide: bool,
+    /// The search, filters, sort and selection, as every list page holds them.
+    list: List,
     collapsed: HashSet<String>,
     detail: Option<String>,
     hist: Vec<String>,
@@ -336,23 +334,15 @@ struct Ui {
     cw: f64,
     /// Graph should centre on the selected bead when it is drawn.
     centre: bool,
-    /// The column the flat list is sorted by, and whether ascending; a header click sets it.
-    sort: (String, bool),
     /// What the last list button did, shown once at the top of the page.
     said: Option<String>,
-    /// The rows the person selected in the list (a click, a shift-click range, a ⌘-click); the list
-    /// actions take them when any of them is listed, else the whole narrowed list.
-    selected: BTreeSet<String>,
 }
 
 impl Default for Ui {
     fn default() -> Self {
         Ui {
             view: "list".into(),
-            q: String::new(),
-            f: BTreeMap::new(),
-            not: HashSet::new(),
-            hide: true,
+            list: List::new("status", true),
             collapsed: HashSet::new(),
             detail: None,
             hist: vec![],
@@ -363,21 +353,12 @@ impl Default for Ui {
             more: None,
             cw: 900.0,
             centre: false,
-            sort: ("status".into(), true),
             said: None,
-            selected: BTreeSet::new(),
         }
     }
 }
 
 impl Ui {
-    /// The values a filter holds: one, or several joined by commas.
-    fn values(&self, key: &str) -> Vec<&str> {
-        self.filter(key).split(',').filter(|s| !s.is_empty()).collect()
-    }
-    fn filter(&self, key: &str) -> &str {
-        self.f.get(key).map(String::as_str).unwrap_or("")
-    }
     fn custom(&self) -> bool {
         self.view == "focus" || self.view == "graph"
     }
@@ -399,30 +380,38 @@ fn compare(ix: &Ix, key: &str, a: &Bead, b: &Bead) -> std::cmp::Ordering {
     }
 }
 
-fn haystack(b: &Bead) -> String {
-    let mut parts = vec![b.id.clone(), b.title.clone(), b.kind.clone()];
-    parts.extend(b.labels.iter().cloned());
-    parts.push(b.description.clone());
-    parts.push(b.owner.clone().unwrap_or_default());
-    parts.join(" ").to_lowercase()
+/// What the Beads list narrows by: status (done hidden until asked for), type, label and priority.
+pub(crate) const SPEC: Spec = Spec {
+    filters: &[
+        Filter { key: "status", name: "status", hidden: Some("done") },
+        Filter { key: "type", name: "type", hidden: None },
+        Filter { key: "label", name: "label", hidden: None },
+        Filter { key: "pri", name: "priority", hidden: None },
+    ],
+    sorts: &["id", "title", "type", "unlocks", "status", "pri", "updated"],
+};
+
+impl Item for Bead {
+    fn haystack(&self) -> String {
+        let mut parts = vec![self.id.clone(), self.title.clone(), self.kind.clone()];
+        parts.extend(self.labels.iter().cloned());
+        parts.push(self.description.clone());
+        parts.push(self.owner.clone().unwrap_or_default());
+        parts.join(" ")
+    }
+    fn has(&self, key: &str, value: &str) -> bool {
+        match key {
+            "status" => kind_of(self) == value,
+            "type" => self.kind == value,
+            "label" => self.labels.iter().any(|l| l == value),
+            "pri" => self.priority.map(|p| p.to_string()).as_deref() == Some(value),
+            _ => false,
+        }
+    }
 }
 
 fn matches(ui: &Ui, b: &Bead) -> bool {
-    let kind = kind_of(b);
-    if ui.hide && ui.filter("status").is_empty() && kind == "done" {
-        return false;
-    }
-    // A filter holds some values: the bead matches when it has one of them, or, for an excluded filter, none of them.
-    let test = |key: &str, f: &dyn Fn(&str) -> bool| {
-        let v = ui.values(key);
-        v.is_empty() || v.iter().any(|x| f(x)) != ui.not.contains(key)
-    };
-    let pri = b.priority.map(|p| p.to_string());
-    if !test("status", &|s| kind == s) || !test("type", &|t| b.kind == t) || !test("label", &|l| b.labels.iter().any(|x| x == l)) || !test("pri", &|d| pri.as_deref() == Some(d)) {
-        return false;
-    }
-    let hay = haystack(b);
-    ui.q.to_lowercase().split_whitespace().all(|w| hay.contains(w))
+    ui.list.keeps(&SPEC, b)
 }
 
 struct RowOut<'a> {
@@ -487,7 +476,7 @@ fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
     // page, the copied ids and a list button all see the rows the screen shows.
     let by = |a: &Bead, b: &Bead| compare(ix, "status", a, b);
     if ui.view == "list" || ui.custom() {
-        let (key, asc) = (&ui.sort.0, ui.sort.1);
+        let (key, asc) = (&ui.list.sort.0, ui.list.sort.1);
         let by = |a: &Bead, b: &Bead| {
             let o = compare(ix, key, a, b).then_with(|| compare(ix, "status", a, b));
             if asc { o } else { o.reverse() }
@@ -504,7 +493,7 @@ fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
     }
     let pool: Vec<&Bead> = match ui.view.as_str() {
         "epics" => ix.snap.beads.iter().collect(),
-        _ => ix.snap.beads.iter().filter(|b| ui.filter("status") == "done" || is_open(b)).collect(),
+        _ => ix.snap.beads.iter().filter(|b| ui.list.values("status").iter().any(|v| v == "done") || is_open(b)).collect(),
     };
     let keep: HashSet<&str> = pool.iter().map(|b| b.id.as_str()).collect();
     let children = |b: &Bead| -> Vec<&'a Bead> {
@@ -554,7 +543,7 @@ fn listed(ix: &Ix, ui: &Ui) -> Vec<String> {
 /// The ids the list actions (Copy IDs, the project's list buttons) take: the selected rows that are
 /// listed now, in the order shown, or every listed row when none of the selection is listed.
 fn ids(ix: &Ix, ui: &Ui) -> Vec<String> {
-    table::taken(listed(ix, ui), &ui.selected)
+    list::taken(listed(ix, ui), &ui.list)
 }
 
 // ───────────────────────────── A2UI ─────────────────────────────
@@ -627,10 +616,10 @@ fn table(ix: &Ix, ui: &Ui) -> Value {
         "toggle_path",
         // A tree has no sortable column, so it carries no sort action and no header arrow.
         if ui.view == "list" || ui.custom() { "set_sort" } else { "" },
-        (&ui.sort.0, ui.sort.1),
+        (&ui.list.sort.0, ui.list.sort.1),
         if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." },
     );
-    table::selectable(v, "select_rows", &ui.selected.iter().cloned().collect::<Vec<_>>())
+    table::selectable(v, "select_rows", &ui.list.selected.iter().cloned().collect::<Vec<_>>())
 }
 
 
@@ -792,34 +781,12 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
 
     let n = |f: &dyn Fn(&Bead) -> bool| all.iter().filter(|b| f(b)).count();
     // The four boxes are the status filter: a tap picks one, a tap on the chosen one clears it.
-    let kpis = [
-        ("Ready", "ready", n(&|b| b.ready && b.status == "open"), true),
-        ("Active", "in progress", n(&|b| b.status == "in_progress"), false),
-        ("Blocked", "blocked", n(&|b| b.status == "open" && !b.ready && !b.blocked_by.is_empty()), false),
-        ("Closed", "done", n(&|b| b.status == "closed"), false),
-    ];
-    let cards: Vec<String> = kpis
-        .iter()
-        .enumerate()
-        .map(|(i, (label, kind, count, hot))| {
-            let on = ui.values("status") == [*kind];
-            let tone = if *hot && *count > 0 { "ok" } else if *count == 0 { "muted" } else { "fg" };
-            let v = p.label(&format!("kpi{i}.v"), &count.to_string(), json!({ "size": 20, "weight": "semibold", "tabular": true, "tone": tone }));
-            let l = p.label(&format!("kpi{i}.l"), label, json!({ "tone": "muted", "size": 11 }));
-            crate::core::layout::modify(&mut p.out, &l, json!({ "lineLimit": 1 }));
-            let inner = p.boxed(&format!("kpi{i}.c"), "v", vec![v, l], json!({ "spacing": 2, "align": "start" }));
-            let mut mods = vec![json!({ "frame": { "maxWidth": "infinity" } }), json!({ "padding": [7, 8] }),
-                json!({ "overlay": { "stroke": if on { "tint" } else { "separator" }, "cornerRadius": 8 } })];
-            if on {
-                mods.push(json!({ "background": "controlBackground" }));
-            }
-            let value = if on { "" } else { kind };
-            p.put(json!({ "id": format!("kpi{i}"), "component": "Button", "child": inner, "variant": "borderless",
-                "action": { "event": { "name": "set_filter", "context": { "key": "status", "value": value } } }, "modifiers": mods }));
-            format!("kpi{i}")
-        })
-        .collect();
-    page.push(p.boxed("kpis", "h", cards, json!({ "spacing": 8, "widths": ["flex", "flex", "flex", "flex"] })));
+    page.push(list::boxes(&mut p, &ui.list, &[
+        ("Ready", "status", "ready", n(&|b| b.ready && b.status == "open"), true),
+        ("Active", "status", "in progress", n(&|b| b.status == "in_progress"), false),
+        ("Blocked", "status", "blocked", n(&|b| b.status == "open" && !b.ready && !b.blocked_by.is_empty()), false),
+        ("Closed", "status", "done", n(&|b| b.status == "closed"), false),
+    ]));
 
     for (i, pr) in snap.problems.iter().chain(snap.error.iter()).enumerate() {
         let l = p.label(&format!("problem{i}.t"), pr, json!({ "tone": "bad" }));
@@ -833,74 +800,22 @@ fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
     if !snap.has_repo {
         page.push(p.label("none", "This space has no .beads directory, so there is nothing to list.", json!({ "tone": "muted" })));
     } else {
-        // Search with the views choice beside it, one Filters button opening a sheet, and the active filters as chips.
-        p.search("search", "set_query", &ui.q, "Search");
+        // Search with the views choice beside it, then the filters, Clear and the list actions.
         p.choose("views", "/set_view", &ui.view, vec![
                 json!({ "value": "list", "text": "List" }), json!({ "value": "epics", "text": "Epics" }),
                 json!({ "value": "deps", "text": "Depends on" }), json!({ "value": "unlocks", "text": "Unlocks" }),
                 json!({ "value": "focus", "text": "Focus" }), json!({ "value": "graph", "text": "Graph" })], true, false);
-        crate::core::layout::modify(&mut p.out, "search", json!({ "frame": { "minWidth": 120, "maxWidth": "infinity" } }));
-        // The views choice is offered its width before the search field, so the field shrinks to make room for the segmented control.
-        crate::core::layout::modify(&mut p.out, "views", json!({ "layoutPriority": 1 }));
-        p.boxed("find", "h", vec!["search".into(), "views".into()], json!({ "spacing": 8, "align": "center", "widths": ["flex", Value::Null], "padding": [8, 0, 0, 0] }));
-        // The row takes the page's full width, so the search field grows to the views choice.
-        crate::core::layout::modify(&mut p.out, "find", json!({ "frame": { "maxWidth": "infinity" } }));
-        page.push("find".to_string());
-
-        // The filters are one row of menus, each starting at "Any": status, type, label and priority, then the count.
-        // Each filter is a popover of ticks; its title says what it holds. "Is not" excludes the ticked values.
-        let menu = |p: &mut Page, key: &str, name: &str, opts: Vec<(String, String)>| -> String {
-            let held = ui.values(key);
-            let neg = ui.not.contains(key);
-            let shown = |v: &str| if key == "pri" { format!("P{v}") } else { v.to_string() };
-            let title = if held.is_empty() { format!("Any {name}") } else {
-                format!("{}{}: {}", name[..1].to_uppercase() + &name[1..], if neg { " not" } else { "" }, held.iter().map(|v| shown(v)).collect::<Vec<_>>().join(", "))
-            };
-            let mut kids = vec![];
-            p.bind(&format!("/set_not/{key}"), json!(neg));
-            p.put(json!({ "id": format!("filters.{key}.not"), "component": "CheckBox", "label": "Is not", "value": { "path": format!("/set_not/{key}") } }));
-            p.put(json!({ "id": format!("filters.{key}.div"), "component": "Divider" }));
-            kids.push(format!("filters.{key}.not"));
-            kids.push(format!("filters.{key}.div"));
-            for (v, text) in opts {
-                let path = format!("/toggle_filter/{key}:{v}");
-                let id = format!("filters.{key}.{v}");
-                p.bind(&path, json!(held.contains(&v.as_str())));
-                p.put(json!({ "id": id, "component": "CheckBox", "label": text, "value": { "path": path } }));
-                kids.push(id);
-            }
-            // A Mac menu closes after each tick, so the ticks sit in a popover, which stays open until it is dismissed.
-            let id = format!("filters.{key}");
-            let trigger = p.label(&format!("filters.{key}.title"), &format!("{title} ⌄"), json!({ "size": 12 }));
-            let content = p.boxed(&format!("filters.{key}.ticks"), "v", kids, json!({ "spacing": 6, "align": "start" }));
-            p.put(json!({ "id": id, "component": "Popover", "children": [trigger, content] }));
-            id
-        };
-        let counted = |f: &dyn Fn(&Bead) -> Vec<String>| -> Vec<(String, String)> {
-            let mut c: BTreeMap<String, usize> = BTreeMap::new();
-            for v in all.iter().flat_map(|b| f(b)) {
-                *c.entry(v).or_default() += 1;
-            }
-            let mut v: Vec<(String, usize)> = c.into_iter().collect();
-            v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            v.into_iter().map(|(k, n)| (k.clone(), format!("{k}  {n}"))).collect()
-        };
-        let status = menu(&mut p, "status", "status", KINDS.iter().map(|k| (k.to_string(), k.to_string())).collect());
-        let kind = menu(&mut p, "type", "type", counted(&|b| vec![b.kind.clone()]));
-        let label = menu(&mut p, "label", "label", counted(&|b| b.labels.clone()));
-        let pri_opts = (0..=4).map(|n| (n.to_string(), format!("P{n}  {}", all.iter().filter(|b| b.priority == Some(n)).count()))).collect();
-        let pri = menu(&mut p, "pri", "priority", pri_opts);
+        page.push(list::find(&mut p, &ui.list, vec!["views".into()]));
+        let pri = (0..=4).map(|n| (n.to_string(), format!("P{n}  {}", all.iter().filter(|b| b.priority == Some(n)).count()))).collect();
+        let options = vec![
+            KINDS.iter().map(|k| (k.to_string(), k.to_string())).collect(),
+            list::counted(all.iter().copied(), |b| vec![b.kind.clone()]),
+            list::counted(all.iter().copied(), |b| b.labels.clone()),
+            pri,
+        ];
         let tbl = table(&ix, ui);
-        // Two groups, by proximity: what narrows the list (status, type, label, priority) and the count. Inside a group the gap
-        // is 6; the gap between groups is whatever width is left, never under 16. Sorting is the column headers' job.
-        let narrow = p.boxed("bar.narrow", "h", vec![status, kind, label, pri], json!({ "spacing": 6, "align": "center" }));
-        // Clear keeps its place whether or not a filter is on: it is hidden, not removed, so the count never moves.
-        let active = !ui.q.is_empty() || !ui.values("status").is_empty() || !ui.values("type").is_empty() || !ui.values("label").is_empty() || !ui.values("pri").is_empty();
-        let clear = p.button("filters.clear", "Clear", "clear", json!({}), json!({ "style": "link", "disabled": !active, "hideOff": true }));
         let actions = crate::core::buttons::actions(&mut p, &snap.scripts, &ids(&ix, ui), listed(&ix, ui).len(), "ids", "beads");
-        let shape = p.boxed("bar.shape", "h", vec![clear, actions], json!({ "spacing": 10, "align": "center" }));
-        page.push(p.boxed("bar", "h", vec![narrow, shape], json!({ "spacing": 16, "align": "center", "widths": ["flex", Value::Null], "padding": [4, 0, 0, 0] })));
-        crate::core::layout::modify(&mut p.out, "bar", json!({ "frame": { "maxWidth": "infinity" } }));
+        page.push(list::bar(&mut p, &SPEC, &ui.list, options, actions));
 
         if ui.custom() {
             let parts = graph::Model::new(snap, ui).components(&mut p, ui);
@@ -970,11 +885,10 @@ mod tests {
         let ix = Ix::new(&s);
         let mut ui = Ui::default();
         assert_eq!(build(&ix, &ui).len(), 1);
-        ui.hide = false;
-        assert_eq!(build(&ix, &ui).len(), 2);
-        ui.hide = true;
-        ui.f.insert("status".into(), "done".into());
+        ui.list.f.insert("status".into(), vec!["done".into()]);
         assert_eq!(build(&ix, &ui).len(), 1);
+        ui.list.f.insert("status".into(), KINDS.iter().map(|k| k.to_string()).collect());
+        assert_eq!(build(&ix, &ui).len(), 2);
     }
 
     #[test]
@@ -1010,22 +924,22 @@ mod tests {
         let b1 = bead("a", |b| { b.kind = "bug".into(); b.labels = vec!["client".into()]; b.priority = Some(1); });
         let b2 = bead("b", |b| { b.kind = "task".into(); b.labels = vec!["mac".into()]; b.priority = Some(3); });
         let mut ui = Ui::default();
-        ui.f.insert("type".into(), "bug,feature".into());
+        ui.list.f.insert("type".into(), vec!["bug".into(), "feature".into()]);
         assert!(matches(&ui, &b1) && !matches(&ui, &b2));
-        ui.f.insert("type".into(), "".into());
-        ui.f.insert("label".into(), "client,mac".into());
+        ui.list.f.insert("type".into(), vec![]);
+        ui.list.f.insert("label".into(), vec!["client".into(), "mac".into()]);
         assert!(matches(&ui, &b1) && matches(&ui, &b2));
-        ui.f.insert("label".into(), "".into());
-        ui.f.insert("pri".into(), "0,1,2".into());
+        ui.list.f.insert("label".into(), vec![]);
+        ui.list.f.insert("pri".into(), vec!["0".into(), "1".into(), "2".into()]);
         assert!(matches(&ui, &b1) && !matches(&ui, &b2));
-        ui.f.insert("pri".into(), "3".into());
+        ui.list.f.insert("pri".into(), vec!["3".into()]);
         assert!(!matches(&ui, &b1) && matches(&ui, &b2));
-        ui.not.insert("pri".into());
+        ui.list.not.insert("pri".into());
         assert!(matches(&ui, &b1) && !matches(&ui, &b2), "an excluded filter keeps what has none of its values");
-        ui.f.insert("pri".into(), "".into());
-        ui.not.clear();
-        ui.f.insert("label".into(), "client".into());
-        ui.not.insert("label".into());
+        ui.list.f.insert("pri".into(), vec![]);
+        ui.list.not.clear();
+        ui.list.f.insert("label".into(), vec!["client".into()]);
+        ui.list.not.insert("label".into());
         assert!(!matches(&ui, &b1) && matches(&ui, &b2));
     }
 
@@ -1056,20 +970,20 @@ mod tests {
         let table = c.iter().find(|x| x["id"] == "table").unwrap();
         assert_eq!((table["sortAction"].as_str(), &table["sort"]), (Some("set_sort"), &json!({ "key": "status", "asc": true })), "a header click reaches the page");
         assert_eq!((table["selectAction"].as_str(), &table["selected"]), (Some("select_rows"), &json!([])), "a click reaches the page as the selection");
-        ui.selected = ["t-2".to_string(), "t-9".to_string()].into_iter().collect();
+        ui.list.selected = ["t-2".to_string(), "t-9".to_string()].into_iter().collect();
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "t-2", "a selection narrows the ids to the selected rows that are listed");
         assert_eq!(title(&c), "1 selected of 2 · Actions ⌄");
         assert_eq!(c.iter().find(|x| x["id"] == "list.iterate-list.t").unwrap()["text"], "Iterate  1");
         assert_eq!(c.iter().find(|x| x["id"] == "table").unwrap()["selected"].as_array().unwrap().len(), 2, "the table is told the selection");
-        ui.selected = ["t-9".to_string()].into_iter().collect();
+        ui.list.selected = ["t-9".to_string()].into_iter().collect();
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "t-1 t-2", "a selection with no listed row means the whole list");
-        ui.selected.clear();
-        ui.sort = ("title".into(), false);
+        ui.list.selected.clear();
+        ui.list.sort = ("title".into(), false);
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "t-1 t-2");
-        ui.sort = ("title".into(), true);
+        ui.list.sort = ("title".into(), true);
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "t-2 t-1", "the sort a header chose orders the ids");
         ui.view = "epics".into();
@@ -1079,7 +993,7 @@ mod tests {
         let c = page_components(&s, &ui);
         let rows = c.iter().find(|x| x["id"] == "table").unwrap()["sections"][0]["rows"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
         assert_eq!(rows, ["t-2", "t-1"], "and the table's rows come in the same order");
-        ui.q = "nothing-here".into();
+        ui.list.q = "nothing-here".into();
         let c = page_components(&s, &ui);
         assert_eq!(copied(&c), "");
         assert!(disabled(&c, "list.copy") && disabled(&c, "list.iterate-list"), "an empty list keeps the buttons in place, disabled");
@@ -1106,8 +1020,8 @@ mod tests {
     fn a_filter_is_a_popover_of_ticks_titled_with_what_it_holds() {
         let s = snap(vec![bead("a", |_| {})]);
         let mut ui = Ui::default();
-        ui.f.insert("pri".into(), "0,1".into());
-        ui.not.insert("pri".into());
+        ui.list.f.insert("pri".into(), vec!["0".into(), "1".into()]);
+        ui.list.not.insert("pri".into());
         let c = page_components(&s, &ui);
         let menu = c.iter().find(|x| x["id"] == "filters.pri").expect("the priority menu");
         assert_eq!(menu["component"], "Popover");
@@ -1146,7 +1060,7 @@ mod tests {
         assert_eq!(values, ["ready", "in progress", "blocked", "done"]);
         assert!(values.iter().all(|v| KINDS.contains(v)), "a box filters by a status the rows are grouped under");
         let mut ui = Ui::default();
-        ui.f.insert("status".into(), "ready".into());
+        ui.list.f.insert("status".into(), vec!["ready".into()]);
         let filtered = page_components(&s, &ui);
         let on = filtered.iter().find(|x| x["id"] == "kpi0").unwrap();
         assert_eq!(on["action"]["event"]["context"]["value"], "", "a tap on the chosen box clears it");
