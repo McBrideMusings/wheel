@@ -24,6 +24,10 @@ pub enum Control {
 }
 
 impl Control {
+    /// The order the header draws the bar in (SpacesView.swift's row): Copy pane image sits before
+    /// Pop out here, though Settings lists it after Zoom (`ALL`).
+    pub const BAR: [Control; 11] = [Control::Browser, Control::SwitchView, Control::Conversations, Control::Info, Control::SplitRight, Control::SplitDown, Control::Screenshot, Control::Pop, Control::Background, Control::Zoom, Control::Close];
+
     pub const ALL: [Control; 11] = [Control::Browser, Control::SwitchView, Control::Conversations, Control::Info, Control::SplitRight, Control::SplitDown, Control::Pop, Control::Background, Control::Zoom, Control::Screenshot, Control::Close];
 
     /// The name the Swift client stores it under.
@@ -190,7 +194,7 @@ impl Layout {
     }
     /// The controls a header of `level` draws, in their order (the ⋯ menu button sits before Close).
     pub fn bar(&self, kind: &str, level: u8) -> Vec<Control> {
-        Control::ALL.into_iter().filter(|c| self.in_bar(*c, kind, level)).collect()
+        Control::BAR.into_iter().filter(|c| self.in_bar(*c, kind, level)).collect()
     }
     /// The first level whose buttons leave the title `title_min` points in a header with
     /// `room` points for the title and the buttons (ViewThatFits picks the first row that
@@ -198,7 +202,7 @@ impl Layout {
     /// `drawn` says whether the pane has a button for a control that applies to its kind (the
     /// switch is drawn only for a pane with another view).
     pub fn level(&self, kind: &str, room: f32, title_min: f32, buttons: impl Fn(usize) -> f32, drawn: impl Fn(Control) -> bool) -> u8 {
-        let count = |level: u8| Control::ALL.into_iter().filter(|c| drawn(*c) && self.in_bar(*c, kind, level)).count();
+        let count = |level: u8| Control::BAR.into_iter().filter(|c| drawn(*c) && self.in_bar(*c, kind, level)).count();
         LEVELS.into_iter().find(|level| title_min + buttons(count(*level) + 1) <= room).unwrap_or(*LEVELS.end())
     }
     /// The choices as the Swift client writes them: `{"choices": {kind: {control: placement}}}`.
@@ -275,7 +279,7 @@ mod tests {
     fn a_narrowing_header_drops_each_group_in_turn_and_keeps_close() {
         let layout = Layout::default();
         let names = |level| layout.bar("agent", level).iter().map(|c| c.id()).collect::<Vec<_>>();
-        assert_eq!(names(0), ["switch-view", "conversations", "info", "split-right", "split-down", "pop", "background", "zoom", "screenshot", "close"]);
+        assert_eq!(names(0), ["switch-view", "conversations", "info", "split-right", "split-down", "screenshot", "pop", "background", "zoom", "close"]);
         assert_eq!(names(1), ["switch-view", "split-right", "split-down", "zoom", "close"]);
         assert_eq!(names(2), ["split-right", "split-down", "zoom", "close"]);
         assert_eq!(names(3), ["zoom", "close"]);

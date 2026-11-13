@@ -5188,7 +5188,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     let wide = state!();
     let header_kind = wide["panes"][grid_a.as_str()]["kind"].as_str().unwrap_or_default().to_owned();
     let wide_order = strings(&wide["panes"][grid_a.as_str()]["header_order"]);
-    ensure!(wide["panes"][grid_a.as_str()]["header_level"] == 0 && wide_order == ["info", "split-right", "split-down", "pop", "background", "zoom", "screenshot", "menu", "close"], "a wide {header_kind} header: level {} order {wide_order:?}", wide["panes"][grid_a.as_str()]["header_level"]);
+    ensure!(wide["panes"][grid_a.as_str()]["header_level"] == 0 && wide_order == ["info", "split-right", "split-down", "screenshot", "pop", "background", "zoom", "menu", "close"], "a wide {header_kind} header: level {} order {wide_order:?}", wide["panes"][grid_a.as_str()]["header_level"]);
     let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=zoom&placement=menu"));
     ensure!(code == 200, "paneheader zoom menu got {code}");
     let (code, _) = call!("POST", format!("/paneheader?kind={header_kind}&control=pop&placement=off"));
