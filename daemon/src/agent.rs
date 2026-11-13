@@ -1007,8 +1007,13 @@ impl Agent {
         self.outputs.lock().unwrap().sync(&tasks, move || {
             let _ = ping.send(());
         });
-        let agent = self.clone();
-        tokio::task::spawn_blocking(move || agent.publish_tasks());
+        if joined_or_ended {
+            let agent = self.clone();
+            tokio::task::spawn_blocking(move || agent.publish_tasks());
+        } else {
+            // Progress alone goes out with the output, at most once a second.
+            let _ = self.output_ping.send(());
+        }
         joined_or_ended
     }
 

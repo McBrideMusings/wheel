@@ -120,7 +120,12 @@ impl TaskOutputs {
             return Ok((clean(&held.text), held.truncated));
         }
         let path = task.output_path.as_deref().ok_or("the agent named no output file for this task")?;
-        let (raw, truncated) = read_end(Path::new(path), KEEP_BYTES as u64).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let (raw, truncated) = match read_end(Path::new(path), KEEP_BYTES as u64) {
+            Ok(read) => read,
+            // Not written yet: the agent makes the file when the task first prints.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+            Err(e) => return Err(format!("cannot read {path}: {e}")),
+        };
         Ok((clean(&raw), truncated))
     }
 }
@@ -287,6 +292,8 @@ mod tests {
         let mut tasks = vec![BackgroundTask { id: "t".into(), output_path: Some(dir.display().to_string()), ..Default::default() }];
         outputs.fill(&mut tasks);
         assert!(tasks[0].output_error.as_deref().unwrap().starts_with("cannot read"), "{:?}", tasks[0].output_error);
+        let missing = BackgroundTask { id: "m".into(), output_path: Some(dir.join("not-yet").display().to_string()), ..Default::default() };
+        assert_eq!(outputs.read(&missing).unwrap(), (String::new(), false));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
