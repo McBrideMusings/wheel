@@ -63,21 +63,6 @@ struct Value1 {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct Filter {
-    /// status, type, label or pri.
-    key: String,
-    /// The value; empty for any.
-    value: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct Query {
-    /// The search text.
-    #[serde(alias = "value")]
-    q: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Key {
     /// A column key.
     key: String,
@@ -96,25 +81,9 @@ struct BeadId {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct Sort {
-    /// A column key.
-    key: String,
-    /// Ascending when true.
-    #[serde(deserialize_with = "crate::core::table::asc")]
-    asc: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ListScript {
     /// The button's name in `[beads.list.<name>]`.
     script: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct Rows {
-    /// The ids of the rows selected now, every one of them; empty clears the selection.
-    #[serde(deserialize_with = "crate::core::table::ids")]
-    ids: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -162,59 +131,15 @@ impl Server {
             if ["list", "epics", "deps", "unlocks", "focus", "graph"].contains(&value.as_str()) {
                 ui.view = value;
                 ui.collapsed.clear();
-                ui.selected.clear();
+                ui.list.selected.clear();
             }
         })
     }
 
-    #[tool(description = "Search the beads", meta = ui_meta())]
-    fn set_query(&self, meta: RequestMetaObject, Parameters(Query { q }): Parameters<Query>) -> CallToolResult {
-        self.with(&meta, |_, ui| { ui.q = q; ui.selected.clear(); })
-    }
 
-    #[tool(description = "Set one filter", meta = ui_meta())]
-    fn set_filter(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
-        self.with(&meta, |_, ui| {
-            ui.selected.clear();
-            if ["status", "type", "label", "pri"].contains(&key.as_str()) {
-                ui.f.insert(key, value);
-            }
-        })
-    }
 
-    #[tool(description = "Tick or untick one value of a filter; the key is `<filter>:<value>`", meta = ui_meta())]
-    fn toggle_filter(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
-        self.with(&meta, |_, ui| {
-            ui.selected.clear();
-            let Some((field, v)) = key.split_once(':') else { return };
-            if !["status", "type", "label", "pri"].contains(&field) {
-                return;
-            }
-            let mut vals: Vec<String> = ui.values(field).iter().map(|x| x.to_string()).collect();
-            vals.retain(|x| x != v);
-            if value == "true" {
-                vals.push(v.to_string());
-            }
-            ui.f.insert(field.to_string(), vals.join(","));
-        })
-    }
 
-    #[tool(description = "Make a filter exclude its values instead of matching them", meta = ui_meta())]
-    fn set_not(&self, meta: RequestMetaObject, Parameters(Filter { key, value }): Parameters<Filter>) -> CallToolResult {
-        self.with(&meta, |_, ui| {
-            ui.selected.clear();
-            if value == "true" { ui.not.insert(key); } else { ui.not.remove(&key); }
-        })
-    }
 
-    #[tool(description = "Sort the list by a column, ascending or not", meta = ui_meta())]
-    fn set_sort(&self, meta: RequestMetaObject, Parameters(Sort { key, asc }): Parameters<Sort>) -> CallToolResult {
-        self.with(&meta, |_, ui| {
-            if COLS.iter().any(|c| c.key == key) {
-                ui.sort = (key, asc);
-            }
-        })
-    }
 
     #[tool(description = "Run one of the project's list buttons over the beads the page lists now", meta = ui_meta())]
     fn run_list_script(&self, meta: RequestMetaObject, Parameters(ListScript { script }): Parameters<ListScript>) -> CallToolResult {
@@ -237,15 +162,6 @@ impl Server {
         }
     }
 
-    #[tool(description = "Clear the search and the filters", meta = ui_meta())]
-    fn clear(&self, meta: RequestMetaObject) -> CallToolResult {
-        self.with(&meta, |_, ui| {
-            ui.q.clear();
-            ui.f.clear();
-            ui.not.clear();
-            ui.selected.clear();
-        })
-    }
 
     #[tool(description = "Fold or unfold a tree row", meta = ui_meta())]
     fn toggle_path(&self, meta: RequestMetaObject, Parameters(TreePath { path }): Parameters<TreePath>) -> CallToolResult {
@@ -256,10 +172,6 @@ impl Server {
         })
     }
 
-    #[tool(description = "Select rows of the list: the list actions take them instead of the whole list", meta = ui_meta())]
-    fn select_rows(&self, meta: RequestMetaObject, Parameters(Rows { ids }): Parameters<Rows>) -> CallToolResult {
-        self.with(&meta, |_, ui| ui.selected = ids.into_iter().collect())
-    }
 
     #[tool(description = "Open a bead from the list", meta = ui_meta())]
     fn select_bead(&self, meta: RequestMetaObject, Parameters(BeadId { id }): Parameters<BeadId>) -> CallToolResult {
@@ -446,7 +358,9 @@ impl View for BeadsView {
     }
 
     fn tools(&self) -> Vec<Tool> {
-        self.server.tool_router.list_all()
+        let mut t = self.server.tool_router.list_all();
+        t.extend(crate::core::list::tools(&ui_meta()));
+        t
     }
 
     async fn call(
@@ -454,6 +368,9 @@ impl View for BeadsView {
         params: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if let Some(op) = crate::core::list::op(&params) {
+            return Ok(self.server.with(&context.meta, |_, ui| ui.list.apply(&SPEC, op)).into());
+        }
         self.server.tool_router.call(ToolCallContext::new(&self.server, params, context)).await
     }
 

@@ -271,9 +271,15 @@ struct RecentConversations: View {
                     .font(look.meta)
                     .foregroundStyle(.tertiary)
                 Spacer()
+                #if os(macOS)
                 Button("Show all…", action: actions.showAll)
                     .buttonStyle(.link)
                     .font(look.meta)
+                #else
+                Button("Show all…", action: actions.showAll)
+                    .buttonStyle(.borderless)
+                    .font(look.meta)
+                #endif
             }
             .padding(.horizontal, 8)
             ForEach(0 ..< 3, id: \.self) { index in
