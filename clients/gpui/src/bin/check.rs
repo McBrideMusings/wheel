@@ -2549,9 +2549,16 @@ async fn sidebar(run: Run, click: [f64; 2], cx: &mut AsyncApp) -> Result<(Run, S
     // Move to <the other session> takes a row out of this window's list.
     let second_session_id = std::env::var("WHEEL_CLIENT_SECOND_SESSION")?;
     window.update(cx, |c, _, cx| c.run_space_menu(&format!("session:{second_session_id}"), &sb4, cx))?;
-    pump(&mut connection, 800, &mut layouts, window, cx).await?;
-    let second_holds = window.update(cx, |c, _, _| c.state_json()["sessions"].as_array().unwrap().iter().find(|s| s["id"] == second_session_id).map(|s| s["spaces"].clone()).unwrap_or_default())?;
-    ensure!(!session_order(cx)?.iter().any(|(id, _)| id == &sb4) && second_holds.as_array().is_some_and(|l| l.last() == Some(&json!(sb4))), "sb4 did not move to the end of the other session: it holds {second_holds}");
+    // The row moves when wheeld's layout with sb4 in the other session arrives.
+    let mut second_holds = Value::Null;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        second_holds = window.update(cx, |c, _, _| c.state_json()["sessions"].as_array().unwrap().iter().find(|s| s["id"] == second_session_id).map(|s| s["spaces"].clone()).unwrap_or_default())?;
+        if !session_order(cx)?.iter().any(|(id, _)| id == &sb4) && second_holds.as_array().is_some_and(|l| l.last() == Some(&json!(sb4))) {
+            break;
+        }
+    }
+    ensure!(!session_order(cx)?.iter().any(|(id, _)| id == &sb4) && second_holds.as_array().is_some_and(|l| l.last() == Some(&json!(sb4))), "sb4 did not move to the end of the other session in 10 s: it holds {second_holds}");
     // The toggle hides the sidebar: the spaces row of chips comes back and the grid takes the width.
     window.update(cx, |c, _, _| c.toggle_sidebar())?;
     draw(window, None, cx)?;
