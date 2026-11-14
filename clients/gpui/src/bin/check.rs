@@ -4009,8 +4009,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         ensure!(ok, "pane kind plugin wheelhouse/{name}: {err}");
         // What each pane shows once its feed has arrived: Beads and Issues a `N listed` count, Repo anything but its loading line.
         let want = |t: &str| match name.as_str() {
-            "beads" => t.contains(" listed"),
-            "issues" => t.contains(" listed"),
+            "beads" | "issues" => t.contains(" listed"),
             _ => !t.starts_with("Reading"),
         };
         let mut seen = Value::Null;
@@ -4023,14 +4022,15 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         }
         ensure!(seen["ok"] == true && seen["error"].is_null() && texts(&seen).iter().any(|t| want(t)), "the {name} plugin pane never drew its content: error {} texts {:?}", seen["error"], texts(&seen));
         ensure!(!components(&seen).iter().any(|c| c["type"] == "Unsupported"), "the {name} plugin pane asked for components the client lacks: {:?}", components(&seen).iter().filter(|c| c["type"] == "Unsupported").collect::<Vec<_>>());
-        draw(window, Some(output.join(format!("client-plugin-{name}.png"))), cx)?;
         let png = output.join(format!("client-plugin-{name}.png"));
+        draw(window, Some(png.clone()), cx)?;
         let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
         ensure!(bytes > 5000, "the {name} plugin pane's picture is missing: {} ({bytes} bytes)", png.display());
         let mut entry = json!({"components": components(&seen).len(), "texts": texts(&seen).into_iter().take(6).collect::<Vec<_>>(), "png_bytes": bytes});
         if name == "beads" {
             let picker = components(&seen).iter().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Beads pane has no view picker"))?;
-            native.call(json!({"op":"plugin","pane":pane,"action":"set","path":format!("/{picker}"),"value":["graph"]}));
+            let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","path":format!("/{picker}"),"value":["graph"]}));
+            ensure!(set["ok"] == true, "the Beads view picker refused `graph`: {set}");
             let mut graph = Value::Null;
             for _ in 0..200 {
                 pump(&mut connection, 100, &mut layouts, window, cx).await?;
