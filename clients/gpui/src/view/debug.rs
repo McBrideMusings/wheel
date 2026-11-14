@@ -640,6 +640,7 @@ impl Client {
                     entry["draft"] = json!(self.drafts.get(agent).cloned().unwrap_or_default());
                     entry["rows"] = json!(self.transcripts.get(agent).map(|t| t.rows.len()).unwrap_or(0));
                     entry["perm_card"] = self.perm_card_json(&leaf.id);
+                    entry["footer"] = self.running_json(agent);
                     entry["composer"] = self.composer_json(agent, leaf.harness.as_deref().unwrap_or(""));
                     entry["conversation_error"] = json!(self.conversations.errors.get(agent));
                 }
@@ -707,6 +708,7 @@ impl Client {
         out["tray"] = self.tray_json();
         out["pane_info"] = self.pane_info_json();
         out["pane_menu"] = json!(self.pane_menu.as_ref().map(|(pane, x, y, level)| json!({"pane": pane, "at": [x, y], "level": level, "items": self.header_menu(pane, *level).iter().map(|i| i.id.clone()).collect::<Vec<_>>()})));
+        out["frames"] = json!(self.frames);
         out["header_layout"] = self.header_layout.borrow().layout.choices_json();
         out["header_settings_kind"] = json!(self.header_settings_kind);
         out["grid_motion"] = self.motion_json();

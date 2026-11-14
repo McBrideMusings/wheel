@@ -24,6 +24,7 @@ pub mod saved;
 pub mod palette;
 pub mod pane_header;
 pub mod procs;
+pub mod running;
 pub mod server;
 pub mod settings;
 pub mod sidebar;
@@ -250,10 +251,59 @@ pub fn answer_debug(window: WindowHandle<view::Client>, request: &debug::Request
     }
 }
 
+/// `POST /measure/sweep?seconds=2.5&by=300`: the window width swings `by` points either side of
+/// where it starts, twice, for `seconds`, as the Swift app's `POST /windows?action=sweep`
+/// does, one step due every 1/60 s. Each step resizes the window and draws one frame (`Window::draw`, the call the hidden
+/// check uses, since a window never shown has no display link); the reply is the draw times.
+async fn measure_sweep(window: WindowHandle<view::Client>, request: &debug::Request, cx: &mut gpui::AsyncApp) -> serde_json::Value {
+    let num = |name: &str, default: f64| request.query.get(name).and_then(|v| v.parse::<f64>().ok()).unwrap_or(default);
+    let (seconds, by) = (num("seconds", 2.5), num("by", 300.));
+    let any: gpui::AnyWindowHandle = window.into();
+    let Ok(start) = window.update(cx, |_, w, _| w.viewport_size()) else { return debug::error("no window") };
+    let began = std::time::Instant::now();
+    let (mut draws, mut gaps) = (vec![], vec![]);
+    let mut last = began;
+    loop {
+        let t = began.elapsed().as_secs_f64();
+        let width = if t < seconds { f64::from(f32::from(start.width)) + by * (t / seconds * 4. * std::f64::consts::PI).sin() } else { f64::from(f32::from(start.width)) };
+        let ms = any.update(cx, |_, w, cx| {
+            w.resize(gpui::size(gpui::px(width as f32), start.height));
+            let drawn = std::time::Instant::now();
+            w.draw(cx).clear();
+            drawn.elapsed().as_secs_f64() * 1000.
+        });
+        let Ok(ms) = ms else { break };
+        let now = std::time::Instant::now();
+        gaps.push(now.duration_since(last).as_secs_f64() * 1000.);
+        last = now;
+        draws.push(ms);
+        if t >= seconds {
+            break;
+        }
+        // The next frame is due on a 60 Hz schedule from the start, so a slow frame is not
+        // followed by a full interval of its own.
+        let due = began + std::time::Duration::from_secs_f64((draws.len() as f64) / 60.);
+        cx.background_executor().timer(due.saturating_duration_since(std::time::Instant::now())).await;
+    }
+    let stats = |v: &[f64]| {
+        let mut s = v.to_vec();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let at = |p: f64| s.get(((s.len() as f64 - 1.) * p).round() as usize).copied().unwrap_or(0.);
+        serde_json::json!({"median": at(0.5), "p95": at(0.95), "max": at(1.), "over_34": s.iter().filter(|m| **m > 34.).count()})
+    };
+    serde_json::json!({"frames": draws.len(), "wall_s": began.elapsed().as_secs_f64(), "draw_ms": stats(&draws), "frame_gap_ms": stats(&gaps)})
+}
+
 /// Answer the debug server's requests against `window` until the window closes or the server stops.
 pub fn serve_debug(cx: &mut App, window: WindowHandle<view::Client>, mut server: debug::Server) {
     cx.spawn(async move |cx| {
         while let Some(request) = server.requests.next().await {
+            // Measure mode (wheel-ynjo.19): a resize sweep that times every frame's draw.
+            if request.method == "POST" && request.path == "/measure/sweep" {
+                let report = measure_sweep(window, &request, cx).await;
+                request.respond(("200 OK".to_owned(), report));
+                continue;
+            }
             match answer_debug(window, &request, cx) {
                 Ok(answer) => request.respond(answer),
                 Err(_) if request.expired() => {}
