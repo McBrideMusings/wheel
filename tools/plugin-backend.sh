@@ -233,7 +233,7 @@ grep -q 'may not invoke clock.hidden; its actions: clock.echo, clock.fail' "$T/h
   || fail "an action the manifest does not list is refused: $(cat "$T/hidden.err")"
 cat "$T/hidden.err"
 w plugin action "$PANE" wheel.anything > /dev/null 2> "$T/wheelact.err"
-grep -q 'wheeld has no actions' "$T/wheelact.err" && pass "a wheel.* action is refused" \
+grep -q 'wheeld has no action wheel.anything; it has wheel.agent.send, wheel.agent.answer' "$T/wheelact.err" && pass "a wheel.* action wheeld lacks is refused" \
   || fail "a wheel.* action is refused: $(cat "$T/wheelact.err")"
 
 # 10 the backend's own error reaches the caller.

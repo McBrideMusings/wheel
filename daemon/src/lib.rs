@@ -2,6 +2,7 @@
 //! and web panes' folders at `/artifacts/<pane>/`.
 
 mod driver;
+mod agent_feeds;
 mod agents;
 mod app;
 mod artifacts;

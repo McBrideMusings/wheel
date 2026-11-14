@@ -45,7 +45,7 @@ struct PermAsk {
 }
 
 /// Events kept for clients that attach later; the oldest go first.
-const TRANSCRIPT_CAP: usize = 2000;
+pub(crate) const TRANSCRIPT_CAP: usize = 2000;
 
 /// Bytes of text the stored transcript may hold, counted by `event_bytes`; the oldest events go
 /// first. Tool calls carry whole-file diffs, so the event count alone does not bound the memory
@@ -82,6 +82,47 @@ impl Default for Restart {
             backoff_max: Duration::from_secs(30),
             steady: Duration::from_secs(60),
         }
+    }
+}
+
+/// What one event does to a stored transcript whose last event is the one [`fold_event`] got.
+pub(crate) enum Fold {
+    /// It was merged into the last event, whose text changed by this many bytes.
+    Merged(isize),
+    /// It changes nothing kept.
+    Dropped,
+    /// It is a new event at the end.
+    Append,
+}
+
+/// How the stored transcript takes `event` after `last`: a chunk of a reply or a thought merges
+/// into the chunk before it, and a revision rewrites the end of the reply or thought it follows
+/// and is not kept. The agent's own transcript and the `wheel.agent.transcript` feed both fold
+/// with this.
+pub(crate) fn fold_event(last: Option<&mut AgentEvent>, event: &AgentEvent) -> Fold {
+    match (last, event) {
+        (Some(AgentEvent::Text { text: last }), AgentEvent::Text { text })
+        | (Some(AgentEvent::Thought { text: last }), AgentEvent::Thought { text }) => {
+            last.push_str(text);
+            Fold::Merged(text.len() as isize)
+        }
+        (
+            Some(AgentEvent::Text { text: last }),
+            AgentEvent::TextRevised { streamed, text },
+        )
+        | (
+            Some(AgentEvent::Thought { text: last }),
+            AgentEvent::ThoughtRevised { streamed, text },
+        ) => {
+            if !last.ends_with(streamed.as_str()) {
+                return Fold::Dropped;
+            }
+            last.truncate(last.len() - streamed.len());
+            last.push_str(text);
+            Fold::Merged(text.len() as isize - streamed.len() as isize)
+        }
+        (_, AgentEvent::TextRevised { .. } | AgentEvent::ThoughtRevised { .. }) => Fold::Dropped,
+        _ => Fold::Append,
     }
 }
 
@@ -1310,29 +1351,10 @@ impl Agent {
     /// Add an event to the stored transcript only. A merged chunk keeps the first chunk's stamp,
     /// so a reply or a thought is dated from when it began.
     fn record(inner: &mut Inner, event: StampedEvent) {
-        match (inner.events.back_mut().map(|e| &mut e.event), &event.event) {
-            (Some(AgentEvent::Text { text: last }), AgentEvent::Text { text })
-            | (Some(AgentEvent::Thought { text: last }), AgentEvent::Thought { text }) => {
-                last.push_str(text);
-                inner.event_bytes += text.len();
-            }
-            // A revision rewrites the end of the reply or thought it follows; it is not kept.
-            (
-                Some(AgentEvent::Text { text: last }),
-                AgentEvent::TextRevised { streamed, text },
-            )
-            | (
-                Some(AgentEvent::Thought { text: last }),
-                AgentEvent::ThoughtRevised { streamed, text },
-            ) => {
-                if last.ends_with(streamed.as_str()) {
-                    last.truncate(last.len() - streamed.len());
-                    last.push_str(text);
-                    inner.event_bytes = inner.event_bytes - streamed.len() + text.len();
-                }
-            }
-            (_, AgentEvent::TextRevised { .. } | AgentEvent::ThoughtRevised { .. }) => {}
-            _ => {
+        match fold_event(inner.events.back_mut().map(|e| &mut e.event), &event.event) {
+            Fold::Merged(delta) => inner.event_bytes = inner.event_bytes.saturating_add_signed(delta),
+            Fold::Dropped => {}
+            Fold::Append => {
                 inner.event_bytes += event_bytes(&event.event);
                 inner.events.push_back(event);
             }

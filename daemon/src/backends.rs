@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use async_lsp::lsp_types::notification::Notification;
@@ -186,6 +186,9 @@ struct CellState {
     stale: bool,
     tx: broadcast::Sender<Update>,
     subscribers: usize,
+    /// The task that keeps a pumped feed current (an agent's transcript, status or requests),
+    /// aborted with the cell when the last reader leaves.
+    pump: Option<AbortOnDrop<()>>,
 }
 
 /// One feed's current value and its broadcast, under one mutex so a subscriber reads the value
@@ -214,6 +217,43 @@ impl Hub {
         params: &Value,
         initial: Option<Value>,
     ) -> (Subscription, Value, bool, broadcast::Receiver<Update>) {
+        self.subscribe_with(source, feed, params, |state, _| {
+            if let Some(initial) = initial {
+                state.value = initial;
+            }
+        })
+    }
+
+    /// Subscribe to one of wheeld's pumped feeds: the first reader calls `start` with a
+    /// [`Publisher`] for the cell, which returns the value now and the task that keeps it
+    /// current. Later readers join the running task.
+    pub(crate) fn subscribe_pumped(
+        self: &Arc<Self>,
+        feed: &str,
+        params: &Value,
+        start: impl FnOnce(Publisher) -> (Value, tokio::task::JoinHandle<()>),
+    ) -> (Subscription, Value, bool, broadcast::Receiver<Update>) {
+        let key = FeedKey {
+            source: "wheel".into(),
+            feed: feed.to_string(),
+            params: canonical(params),
+        };
+        let hub = Arc::downgrade(self);
+        self.subscribe_with("wheel", feed, params, |state, cell| {
+            let (value, task) = start(Publisher { hub, key, cell });
+            state.value = value;
+            state.pump = Some(AbortOnDrop(task));
+        })
+    }
+
+    /// The subscribe both kinds share: `first` sets up the cell for its first reader.
+    fn subscribe_with(
+        self: &Arc<Self>,
+        source: &str,
+        feed: &str,
+        params: &Value,
+        first: impl FnOnce(&mut CellState, Weak<Cell>),
+    ) -> (Subscription, Value, bool, broadcast::Receiver<Update>) {
         let key = FeedKey {
             source: source.to_string(),
             feed: feed.to_string(),
@@ -229,6 +269,7 @@ impl Hub {
                         stale: false,
                         tx: broadcast::channel(256).0,
                         subscribers: 0,
+                        pump: None,
                     }),
                 })
             })
@@ -236,9 +277,7 @@ impl Hub {
         let mut state = cell.state.lock().unwrap();
         state.subscribers += 1;
         if state.subscribers == 1 {
-            if let Some(initial) = initial {
-                state.value = initial;
-            }
+            first(&mut state, Arc::downgrade(&cell));
             self.send_feed::<FeedSubscribe>(source, feed, params);
         }
         let value = state.value.clone();
@@ -346,7 +385,11 @@ impl Hub {
 
     /// Whether any pane reads one of wheeld's own feeds.
     pub(crate) fn has_builtin_readers(&self) -> bool {
-        self.cells.lock().unwrap().keys().any(|k| k.source == "wheel")
+        self.cells
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|k| k.source == "wheel" && BUILTIN_FEEDS.contains(&k.feed.as_str()))
     }
 
     /// Publish wheeld's feed `feed` (every params): each reader is sent `value` when it differs
@@ -363,6 +406,58 @@ impl Hub {
                 let _ = state.tx.send(Update::Value(value.clone()));
             }
         }
+    }
+}
+
+/// What a pumped feed's task writes through: its cell, for as long as a reader holds it.
+pub(crate) struct Publisher {
+    hub: Weak<Hub>,
+    key: FeedKey,
+    cell: Weak<Cell>,
+}
+
+impl Publisher {
+    /// Make `value` the feed's value; readers are sent it when it differs from the last one.
+    /// False once no reader is left.
+    pub(crate) fn set(&self, value: Value) -> bool {
+        let Some(cell) = self.cell.upgrade() else {
+            return false;
+        };
+        let mut state = cell.state.lock().unwrap();
+        if state.value != value {
+            state.value = value.clone();
+            let _ = state.tx.send(Update::Value(value));
+        }
+        true
+    }
+
+    /// Change the value in place with `change`, which returns the JSON Patch that makes the same
+    /// change to a reader's copy (sent to readers), or none when nothing changed. False once no
+    /// reader is left.
+    pub(crate) fn apply(&self, change: impl FnOnce(&mut Value) -> Option<Value>) -> bool {
+        let Some(cell) = self.cell.upgrade() else {
+            return false;
+        };
+        let mut state = cell.state.lock().unwrap();
+        if let Some(patch) = change(&mut state.value) {
+            let _ = state.tx.send(Update::Patch(patch));
+        }
+        true
+    }
+
+    /// What the feed follows is gone (the agent ended): readers keep the last value, marked
+    /// stale, and the feed leaves the hub, so a later read starts again and is told why it can't.
+    pub(crate) fn close(&self) {
+        let (Some(hub), Some(cell)) = (self.hub.upgrade(), self.cell.upgrade()) else {
+            return;
+        };
+        let mut cells = hub.cells.lock().unwrap();
+        if cells.get(&self.key).is_some_and(|c| Arc::ptr_eq(c, &cell)) {
+            cells.remove(&self.key);
+        }
+        let mut state = cell.state.lock().unwrap();
+        state.stale = true;
+        let _ = state.tx.send(Update::Stale(state.value.clone()));
     }
 }
 
@@ -1697,10 +1792,18 @@ impl AppState {
             .ok_or_else(|| format!("feed {feed:?} is not <plugin>.<name>"))?;
         let hub = &self.backends.hub;
         if plugin == "wheel" {
+            if crate::agent_feeds::AGENT_FEEDS.contains(&name) {
+                return self.agent_feed_subscribe(name, params);
+            }
             if !BUILTIN_FEEDS.contains(&name) {
                 return Err(format!(
                     "wheeld has no feed {feed}; it has {}",
-                    BUILTIN_FEEDS.map(|f| format!("wheel.{f}")).join(", ")
+                    BUILTIN_FEEDS
+                        .iter()
+                        .chain(&crate::agent_feeds::AGENT_FEEDS)
+                        .map(|f| format!("wheel.{f}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ));
             }
             // The spaces lock keeps a publish from slipping between the value read and the join.
@@ -1745,7 +1848,14 @@ impl AppState {
             .filter(|(p, n)| !p.is_empty() && !n.is_empty())
             .ok_or_else(|| format!("action {action:?} is not <plugin>.<name>"))?;
         if plugin == "wheel" {
-            return Err(format!("wheeld has no actions; {action} does not exist"));
+            if !crate::agent_feeds::AGENT_ACTIONS.contains(&name) {
+                return Err(format!(
+                    "wheeld has no action {action}; it has {}",
+                    crate::agent_feeds::AGENT_ACTIONS.map(|a| format!("wheel.{a}")).join(", ")
+                ));
+            }
+            self.action_grant(&ctx, pane, action).await?;
+            return self.agent_action(pane, name, &args);
         }
         self.action_grant(&ctx, pane, action).await?;
         let package = self.resolve_plugin(&ctx.cwd, plugin).await?;
@@ -1908,6 +2018,56 @@ mod tests {
         assert!(hub.apply("src", "f", &json!({}), Update::Patch(json!("nope"))).is_err());
         assert!(rx.try_recv().is_err());
         assert_eq!(sub.current(), json!({"a": 1}));
+    }
+
+    #[tokio::test]
+    async fn a_pumped_feed_appends_in_place_and_its_task_ends_with_the_last_reader() {
+        let hub = Arc::new(Hub::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Publisher>();
+        let start = |out: Publisher| {
+            tx.send(out).ok();
+            (json!({"events": [1]}), tokio::spawn(std::future::pending()))
+        };
+        let (sub, value, _, mut changes) = hub.subscribe_pumped("agent.transcript", &json!({"agent": "a"}), start);
+        assert_eq!(value, json!({"events": [1]}));
+        let out = rx.recv().await.unwrap();
+        let add = json!([{"op": "add", "path": "/events/-", "value": 2}]);
+        assert!(out.apply(|v| {
+            v["events"].as_array_mut().unwrap().push(json!(2));
+            Some(add.clone())
+        }));
+        assert_eq!(sub.current(), json!({"events": [1, 2]}));
+        match changes.recv().await.unwrap() {
+            Update::Patch(p) => assert_eq!(p, json!([{"op": "add", "path": "/events/-", "value": 2}])),
+            _ => panic!("expected a patch"),
+        }
+        // A second reader joins the running pump: its start is never called.
+        let (second, value, _, _) =
+            hub.subscribe_pumped("agent.transcript", &json!({"agent": "a"}), |_| unreachable!());
+        assert_eq!(value, json!({"events": [1, 2]}));
+        assert!(!hub.has_builtin_readers(), "agent feeds do not wake the built-in publisher");
+        drop(sub);
+        assert!(out.set(json!({"events": []})));
+        drop(second);
+        assert!(!out.set(json!({"events": [3]})), "no reader is left");
+    }
+
+    #[tokio::test]
+    async fn a_closed_pumped_feed_goes_stale_and_the_next_read_starts_a_new_pump() {
+        let hub = Arc::new(Hub::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Publisher>();
+        let start = |n: i64| {
+            let tx = tx.clone();
+            move |out: Publisher| {
+                tx.send(out).ok();
+                (json!(n), tokio::spawn(std::future::pending()))
+            }
+        };
+        let (_first, _, _, mut changes) = hub.subscribe_pumped("agent.status", &json!({"agent": "a"}), start(1));
+        rx.recv().await.unwrap().close();
+        assert!(matches!(changes.recv().await.unwrap(), Update::Stale(v) if v == json!(1)));
+        let (_second, value, stale, _) = hub.subscribe_pumped("agent.status", &json!({"agent": "a"}), start(2));
+        assert_eq!((value, stale), (json!(2), false));
     }
 
     #[test]

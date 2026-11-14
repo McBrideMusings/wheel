@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 39;
+pub const PROTOCOL_VERSION: u32 = 40;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1581,7 +1581,8 @@ pub enum ClientMsg {
         pane: String,
     },
     /// Plugin pane `pane` reads feed `feed` (`<plugin>.<name>`, or `wheel.spaces`, `wheel.panes`,
-    /// `wheel.agents` for wheeld's own) with `params`. The plugin is resolved in the pane's space
+    /// `wheel.agents` for wheeld's own, and `wheel.agent.transcript`, `wheel.agent.status` and
+    /// `wheel.agent.requests` with `params` `{agent}`, `PROTOCOL_VERSION` 40) with `params`. The plugin is resolved in the pane's space
     /// and its backend started if it is not running. Replies `feed_update` with the feed's current
     /// `value` (null until the backend sends one), then sends a `feed_update` on this connection
     /// for each change until `feed_unsubscribe` or the connection closes. Subscribing again to the
@@ -1605,7 +1606,9 @@ pub enum ClientMsg {
         #[serde(default)]
         params: serde_json::Value,
     },
-    /// Plugin pane `pane` invokes action `action` (`<plugin>.<name>`) with `args`. wheeld refuses
+    /// Plugin pane `pane` invokes action `action` (`<plugin>.<name>`, or wheeld's own
+    /// `wheel.agent.send {agent, text}` and `wheel.agent.answer {request, choice}`,
+    /// `PROTOCOL_VERSION` 40) with `args`. wheeld refuses
     /// an action the pane's manifest `actions` does not list (`*` matches any run of characters)
     /// or the plugin's backend did not name in `initialize`; otherwise it starts the backend if
     /// needed, sends it `action/invoke {action: <name>, args, caller}` and replies
