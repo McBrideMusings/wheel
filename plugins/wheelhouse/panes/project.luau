@@ -1,5 +1,5 @@
 -- The Project pane: the project's status against its vision (six counts and the epics) and editing the vision.
--- A port of the page in src/status/serve.rs. The data is the `wheelhouse.project` feed; `wheelhouse.vision_save`
+-- The data is the `wheelhouse.project` feed; `wheelhouse.vision_save`
 -- writes docs/CONTEXT.md. The pane's own state (editing, the draft text, the last result) lives in `state`; `update`
 -- cannot read feeds, so `view` stores the directory and the vision there.
 local kit = require("lib/ui")

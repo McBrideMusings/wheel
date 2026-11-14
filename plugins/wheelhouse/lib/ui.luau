@@ -1,5 +1,4 @@
--- Styled text, stacks, buttons and table pieces for the wheelhouse panes: a port of core/layout.rs, core/page.rs
--- and core/table.rs. A page speaks tones, sizes, spacings and widths; this turns them into the components and
+-- Styled text, stacks, buttons and table pieces for the wheelhouse panes. A page speaks tones, sizes, spacings and widths; this turns them into the components and
 -- SwiftUI modifiers the client draws (ADR-0031, ADR-0038).
 local M = {}
 

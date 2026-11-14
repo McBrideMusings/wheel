@@ -39,7 +39,7 @@ enum Cmd {
 pub async fn run(args: Args, agents: Agents) -> anyhow::Result<()> {
     let dir = match args.dir {
         Some(d) => d,
-        None => Origin::from_map(&Default::default()).dir,
+        None => crate::core::project::here(),
     };
     match args.command {
         Cmd::Ls => {
@@ -58,22 +58,12 @@ pub async fn run(args: Args, agents: Agents) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Spawn { brief, pane, agent, model } => {
-            let mut a = serde_json::Map::new();
-            a.insert("brief".into(), brief.into());
-            if let Some(v) = agent {
-                a.insert("agent".into(), v.into());
-            }
-            if let Some(v) = model {
-                a.insert("model".into(), v.into());
-            }
             let pane = pane.or_else(|| std::env::var("WHEEL_PANE").ok()).ok_or_else(|| anyhow::anyhow!("give --pane or run in a Wheel pane"))?;
-            let origin = Origin { dir, pane, artifact: None, data: None };
-            let result = agents.spawn(&origin, &a);
-            let text = serde_json::to_value(&result.content[0])?["text"].as_str().unwrap_or("").to_string();
-            if result.is_error == Some(true) {
-                anyhow::bail!("{text}");
-            }
-            println!("{text}");
+            let origin = Origin { dir, pane };
+            anyhow::ensure!(!brief.trim().is_empty(), "spawn needs a brief");
+            let given = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+            let (agent, model) = (given(&agent), given(&model));
+            println!("{}", agents.start(&origin, &brief, agent.as_deref(), model.as_deref()).map_err(anyhow::Error::msg)?);
             Ok(())
         }
     }

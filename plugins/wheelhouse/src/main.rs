@@ -1,6 +1,5 @@
-//! `wheelhouse`: a command line for a project's work, and, as `wheelhouse serve`, the same tools
-//! as an MCP server whose pages a host (Wheel) draws as native controls. It runs with no host:
-//! every page is also a command.
+//! `wheelhouse`: a command line for a project's work, and, as `wheelhouse backend`, the Wheel
+//! plugin backend that publishes the same data as feeds and actions for the package's Luau panes.
 
 mod agents_cli;
 mod backend;
@@ -11,8 +10,6 @@ mod diff;
 mod issues;
 mod status;
 mod repo;
-mod serve;
-mod view;
 mod work;
 
 use clap::{Parser, Subcommand};
@@ -26,10 +23,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve every view over MCP on standard input and output, for a host. One process serves
-    /// every artifact and every project the host has open; the host names the artifact, and so
-    /// the view, in each request.
-    Serve,
     /// Serve the plugin feeds and actions to `wheeld` as a plugin backend: JSON-RPC 2.0 with
     /// Content-Length framing on standard input and output. One process serves every project;
     /// each feed names its project directory in its params.
@@ -50,15 +43,9 @@ enum Command {
     Project(status::cli::Args),
 }
 
-/// Every view `serve` offers.
-fn registry() -> view::Registry {
-    view::Registry::default()
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
-        Command::Serve => serve::run(registry()).await,
         Command::Backend => backend::run().await,
         Command::Agents(args) => agents_cli::run(args, core::agents::Agents::new("wheel")).await,
         Command::Beads(args) => beads::cli::run(args),

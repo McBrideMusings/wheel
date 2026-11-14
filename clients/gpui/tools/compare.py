@@ -17,7 +17,7 @@ the script reads, per run:
             CPU), GPUI reports `/measure/sweep` (the time of each `Window::draw`, one per 16 ms step)
 
 Each reading carries `uptime`'s load averages. Needs the repo's debug wheeld, `wheel`, wheel-fake-agent,
-wheelhouse and wheel-runner (`cargo build -p wheeld -p wheel-cli -p wheelhouse -p wheel-runner`), the
+and wheel-runner (`cargo build -p wheeld -p wheel-cli -p wheel-runner`), the
 GPUI app (`python3 clients/gpui/tools/build.py`) and the optimized Debug Mac app (`make compare-swift`).
 Writes results.json and results.md under --out. Never touches the installed Wheel.app or its wheeld.
 """

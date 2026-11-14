@@ -61,8 +61,7 @@ pub fn update(components: Vec<Value>) -> Value {
     Value::Array(messages)
 }
 
-#[path = "../../wheelhouse/src/core/layout.rs"]
-mod layout;
+use crate::layout;
 
 struct Page {
     out: Vec<Value>,

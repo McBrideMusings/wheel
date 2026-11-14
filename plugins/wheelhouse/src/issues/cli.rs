@@ -1,4 +1,4 @@
-//! `wheelhouse issues`: the page's GitHub issues as a command, with its writes.
+//! `wheelhouse issues`: the pane's GitHub issues as a command, with its writes.
 
 use clap::{Args as ClapArgs, Subcommand};
 

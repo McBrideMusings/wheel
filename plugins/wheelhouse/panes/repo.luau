@@ -1,5 +1,5 @@
 -- The Repo pane: a project's branches and worktrees as a sortable table with filters and status boxes, a History tab of
--- stashes and commits, and deleting a dead branch. A port of the page in src/repo/serve.rs.
+-- stashes and commits, and deleting a dead branch.
 --
 -- `wheelhouse.repo` (the backend's feed, see wheel-plugin.toml) holds the branches, stashes and commits. The pane's own
 -- state (tab, search and filters, sort, selection, the last result) lives in `state`.

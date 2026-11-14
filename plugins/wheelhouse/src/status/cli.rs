@@ -1,4 +1,4 @@
-//! `wheelhouse project`: the page's status as a command, with its one write.
+//! `wheelhouse project`: the pane's status as a command, with its one write.
 
 use clap::{Args as ClapArgs, Subcommand};
 

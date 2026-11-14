@@ -1,6 +1,5 @@
 -- The PRs pane: a project's open pull requests in four inbox boxes, a sortable table with filters, and a detail
--- Modal for the selected PR with merge, close, draft, checkout and worktree buttons. A port of the page in
--- src/prs/serve.rs and src/prs/detail.rs.
+-- Modal for the selected PR with merge, close, draft, checkout and worktree buttons.
 --
 -- `wheelhouse.prs` holds the list (and the project's buttons and list scripts); `wheelhouse.pr_detail` holds the open
 -- PR in full. The pane's own state (search and filters, sort, selection, the open PR, the merge choices, the last

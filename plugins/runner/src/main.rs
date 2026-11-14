@@ -5,6 +5,7 @@
 mod check;
 mod config;
 mod guards;
+mod layout;
 mod page;
 mod runs;
 mod serve;

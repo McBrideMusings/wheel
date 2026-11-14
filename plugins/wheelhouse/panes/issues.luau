@@ -1,6 +1,5 @@
 -- The Issues pane: a project's GitHub issues in a sortable table with Open and Closed boxes, filters and the project's
--- list buttons, a field to open an issue, and a detail Modal with a Close issue button. A port of the page in
--- src/issues/serve.rs.
+-- list buttons, a field to open an issue, and a detail Modal with a Close issue button.
 --
 -- `wheelhouse.issues` holds the list and the project's list scripts; `wheelhouse.issue_create` and
 -- `wheelhouse.issue_close` write to GitHub and `wheelhouse.run_list` runs a list script. The pane's own state (search and

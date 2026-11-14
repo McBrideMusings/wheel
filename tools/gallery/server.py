@@ -270,7 +270,7 @@ mrows = [col([row([mcell(secondary(t, "caption", modifiers=[{"fontWeight": "semi
          mrow("frame", "{width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight, alignment}; a max may be infinity; an ideal is the size a ViewThatFits measures", mod("width 120", {"frame": {"width": 120, "alignment": "leading"}}, {"overlay": {"stroke": "separator"}})),
          mrow("layoutPriority", "a number; the view with the higher priority is offered space first", row([mod("priority 1", {"layoutPriority": 1}, {"overlay": {"stroke": "separator"}}), mod("priority 0", {"layoutPriority": 0}, {"overlay": {"stroke": "separator"}})], justify="start")),
          mrow("fixedSize", "true, or {horizontal, vertical}", row([mod("keeps its whole width", {"fixedSize": True}, {"overlay": {"stroke": "separator"}}), mod("squeezed", {"lineLimit": 1}, {"frame": {"width": 50}}, {"overlay": {"stroke": "separator"}})], justify="start")),
-         mrow("truncationMode", "head, middle, tail (with lineLimit)", mod("plugins/wheelhouse/src/diff/serve.rs", {"lineLimit": 1}, {"truncationMode": "head"}, {"frame": {"width": 160, "alignment": "leading"}})),
+         mrow("truncationMode", "head, middle, tail (with lineLimit)", mod("plugins/wheelhouse/panes/diff.luau", {"lineLimit": 1}, {"truncationMode": "head"}, {"frame": {"width": 160, "alignment": "leading"}})),
          mrow("overlay", "{stroke: colour, cornerRadius}", mod("outlined, radius 8", {"padding": 10}, {"overlay": {"stroke": "separator", "cornerRadius": 8}})),
          mrow("clipShape", "{cornerRadius}", mod("clipped, radius 12", {"padding": 10}, {"background": "controlBackground"}, {"clipShape": {"cornerRadius": 12}})),
          mrow("opacity", "0 to 1", mod("faded", {"opacity": 0.4})),

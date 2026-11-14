@@ -15,13 +15,9 @@ fn clock(ts: i64) -> String {
     run::text("/bin/date", "/", &["-r", &ts.to_string(), "+%H:%M"]).map(|t| t.trim().to_string()).unwrap_or_default()
 }
 
-fn now() -> i64 {
-    crate::core::page::now()
-}
-
 /// The `prs` feed's value for the project in `dir`.
 pub fn value(dir: &str) -> Value {
-    snapshot_value(&collect(dir), now(), clock)
+    snapshot_value(&collect(dir), crate::core::now(), clock)
 }
 
 /// `s` as the feed's value read at `at`; `clock` writes a Unix time as `HH:MM`.
@@ -47,10 +43,10 @@ pub fn detail_value(dir: &str, number: i64) -> Value {
     match repo_of(dir).and_then(|repo| shared_detail(dir, &repo, number, false)) {
         Ok(n) => {
             detail::prefetch_images(dir, &n);
-            digest(&n, number, now(), detail::agent_names(dir))
+            digest(&n, number, crate::core::now(), detail::agent_names(dir))
         }
         Err(e) => {
-            let mut v = digest(&Value::Null, number, now(), vec![]);
+            let mut v = digest(&Value::Null, number, crate::core::now(), vec![]);
             v["error"] = json!(e.chars().take(300).collect::<String>());
             v
         }
@@ -138,7 +134,7 @@ pub fn act(action: &str, dir: &str, pane: &str, args: &Value) -> Result<String, 
         return Err(e.clone());
     }
     let pr = snap.prs.iter().find(|p| p.number == number).cloned().ok_or_else(|| format!("no open PR #{number}"))?;
-    let origin = Origin { dir: dir.to_string(), pane: if pane.is_empty() { "default".into() } else { pane.into() }, artifact: None, data: None };
+    let origin = Origin { dir: dir.to_string(), pane: if pane.is_empty() { "default".into() } else { pane.into() } };
     let cross = || {
         let repo = snap.repo.as_deref().unwrap_or("");
         shared_detail(dir, repo, number, false).map(|d| d["isCrossRepository"] == true).unwrap_or(false)

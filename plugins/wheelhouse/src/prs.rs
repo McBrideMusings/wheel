@@ -379,7 +379,7 @@ fn shared_pulls(dir: &str, repo: &str, force: bool) -> Result<(i64, Vec<Value>),
         c.epoch
     };
     let nodes = pulls(dir, repo)?;
-    let when = crate::core::page::now();
+    let when = crate::core::now();
     let mut c = CACHE.lock().unwrap();
     if c.epoch == epoch {
         c.nodes.insert(repo.to_string(), (Instant::now(), when, nodes.clone()));

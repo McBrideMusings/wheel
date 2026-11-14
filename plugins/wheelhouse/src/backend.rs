@@ -649,7 +649,7 @@ impl Core {
                 let brief = arg("brief").filter(|b| !b.is_empty()).ok_or_else(|| bad("agent_start needs args.brief".into()))?;
                 let agents = self.agents.clone();
                 tokio::task::spawn_blocking(move || {
-                    let origin = Origin { dir, pane: if pane.is_empty() { "default".into() } else { pane }, artifact: None, data: None };
+                    let origin = Origin { dir, pane: if pane.is_empty() { "default".into() } else { pane } };
                     agents.start(&origin, &brief, None, None).map(|pane| format!("Started the agent in pane {pane}"))
                 })
                 .await

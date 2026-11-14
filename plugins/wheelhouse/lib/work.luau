@@ -1,5 +1,5 @@
 -- The Implement and Swarm panes: the agent panes of the project the space opened, as passes by item and stage
--- (Implement) or as workers by state (Swarm), and starting an agent. A port of the pages in src/work/serve.rs. The data is
+-- (Implement) or as workers by state (Swarm), and starting an agent. The data is
 -- the `wheelhouse.work` feed; `wheelhouse.agent_start` starts an agent from the brief typed so far. `update` cannot
 -- read feeds, so `view` stores the directory in `state`.
 local kit = require("lib/ui")

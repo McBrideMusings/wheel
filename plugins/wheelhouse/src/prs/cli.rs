@@ -1,4 +1,4 @@
-//! `wheelhouse prs`: the page's list as a command.
+//! `wheelhouse prs`: the pane's list as a command.
 
 use clap::Args as ClapArgs;
 

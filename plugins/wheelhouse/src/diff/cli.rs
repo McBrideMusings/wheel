@@ -1,4 +1,4 @@
-//! `wheelhouse diff`: the page's files as a command.
+//! `wheelhouse diff`: the pane's files as a command.
 
 use clap::Args as ClapArgs;
 

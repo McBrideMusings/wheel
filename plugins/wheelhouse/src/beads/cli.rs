@@ -1,4 +1,4 @@
-//! `wheelhouse beads`: the page's list as a command.
+//! `wheelhouse beads`: the pane's list as a command.
 
 use super::*;
 use clap::{Args as ClapArgs, Subcommand};
@@ -17,7 +17,7 @@ pub struct Args {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// The rows of a view, as the page lists them.
+    /// The rows of a view.
     List {
         /// list, epics, deps or unlocks.
         #[arg(long, default_value = "list")]
@@ -63,7 +63,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             let status = status.or_else(|| all.then(|| KINDS.join(",")));
             for (k, v) in [("status", status), ("type", kind), ("label", label), ("pri", pri)] {
                 if let Some(v) = v {
-                    ui.list.apply(&SPEC, crate::core::list::Op::Filter(k.into(), v));
+                    ui.list.filter(&SPEC, k, &v);
                 }
             }
             let rows = build(&ix, &ui);

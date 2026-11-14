@@ -1,6 +1,5 @@
-//! The Beads plugin: a project's beads read through `bd`, the page's logic (views, search,
-//! filters, sort, trees) and its drawing as A2UI. The same logic serves the command line
-//! (`cli`) and a host's pane over MCP (`serve`).
+//! A project's beads read through `bd`, and the list logic (views, search, filters, sort, trees)
+//! the `wheelhouse beads` command prints with; the plugin's feeds are in `feed` and `graph_feed`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -124,7 +123,7 @@ fn collect(path: &str) -> Snapshot {
     snap
 }
 
-// ───────────────────────────── the page's logic (a port of the installed index.html and table.js) ─────────────────────────────
+// ───────────────────────────── the list logic ─────────────────────────────
 
 fn natural(a: &str, b: &str) -> std::cmp::Ordering {
     let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
@@ -305,12 +304,11 @@ fn compare(ix: &Ix, key: &str, a: &Bead, b: &Bead) -> std::cmp::Ordering {
 /// What the Beads list narrows by: status (done hidden until asked for), type, label and priority.
 pub(crate) const SPEC: Spec = Spec {
     filters: &[
-        Filter { key: "status", name: "status", hidden: Some("done") },
-        Filter { key: "type", name: "type", hidden: None },
-        Filter { key: "label", name: "label", hidden: None },
-        Filter { key: "pri", name: "priority", hidden: None },
+        Filter { key: "status", hidden: Some("done") },
+        Filter { key: "type", hidden: None },
+        Filter { key: "label", hidden: None },
+        Filter { key: "pri", hidden: None },
     ],
-    sorts: &["id", "title", "type", "unlocks", "status", "pri", "updated"],
 };
 
 impl Item for Bead {
@@ -386,11 +384,10 @@ fn flat<'a>(n: &Node<'a>, out: &mut Vec<RowOut<'a>>) {
     }
 }
 
-/// The rows a view shows, as the page's table builds them: a flat sorted list, or a tree
+/// The rows a view shows: a flat sorted list, or a tree
 /// flattened with a depth.
 fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
-    // Trees keep the page's own order; the flat list follows the sort a header click chose, so the
-    // page, the copied ids and a list button all see the rows the screen shows.
+    // Trees keep their own order; the flat list follows the sort.
     let by = |a: &Bead, b: &Bead| compare(ix, "status", a, b);
     if ui.view == "list" {
         let (key, asc) = (&ui.list.sort.0, ui.list.sort.1);

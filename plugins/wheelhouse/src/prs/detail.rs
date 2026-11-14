@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use serde_json::{json, Map, Value};
+use serde_json::Value;
 
 use super::*;
 use crate::core::agents::Agents;
@@ -229,7 +229,7 @@ pub fn worktree(dir: &str, number: i64, branch: &str, cross: bool) -> Result<Str
 /// A new terminal pane beside the asking pane.
 pub fn terminal(dir: &str, pane: &str) -> Result<String, String> {
     if pane == "default" {
-        return fail("opening a pane needs the asking pane (_meta wheel/pane)");
+        return fail("opening a pane needs the asking pane");
     }
     let out = run::text("wheel", dir, &["pane", "split", pane, "right"])?;
     let new = out.split_whitespace().next().ok_or("wheel pane split printed no pane id")?.to_string();
@@ -283,18 +283,7 @@ pub fn place_agent(origin: &Origin, pr: &Pr, wt: &str, agent: &str, open: &str) 
 
 /// An agent in a new pane, told to work in worktree `wt`. `agent` is `default` for the setting's choice.
 pub fn start_agent(origin: &Origin, pr: &Pr, wt: &str, agent: &str) -> Result<String, String> {
-    let mut args = Map::new();
-    args.insert("brief".into(), json!(brief(pr, wt)));
-    if agent != "default" {
-        args.insert("agent".into(), json!(agent));
-    }
-    let r = Agents::new("wheel").spawn(origin, &args);
-    let text = r.content.first().and_then(|c| serde_json::to_value(c).ok()).and_then(|c| c["text"].as_str().map(String::from)).unwrap_or_default();
-    if r.is_error == Some(true) {
-        fail(text)
-    } else {
-        Ok(text)
-    }
+    Agents::new("wheel").start(origin, &brief(pr, wt), Some(agent).filter(|a| *a != "default"), None).or_else(fail)
 }
 
 /// Run project button `b` for `pr`, in a worktree first when the button asks for one.
@@ -305,9 +294,6 @@ pub fn run_button(origin: &Origin, repo: &str, pr: &Pr, cross: bool, b: &Button)
         ("PR_REPO", repo), ("PR_PATH", origin.dir.as_str())];
     if let Some(w) = &wt {
         env.push(("PR_WORKTREE", w.as_str()));
-    }
-    if let Some(d) = &origin.data {
-        env.push(("WHEEL_DATA_DIR", d.as_str()));
     }
     let log = std::env::temp_dir().join(format!("wheel-prs-{}-{}.log", pr.number, crate::beads::sane(&b.name)));
     run::button(label(b), &b.run, &origin.dir, &origin.pane, &env, &log)
@@ -332,8 +318,6 @@ mod tests {
         let (b, problem) = buttons(dir.to_str().unwrap());
         assert!(problem.is_none());
         assert_eq!(b.len(), 2);
-        let pr = Pr { number: 1, title: "t".into(), author: "a".into(), branch: "b".into(), draft: false, mergeable: "MERGEABLE".into(), checks: "passing", review: "in-review",
-            bucket: "mine", my: None, standing: "waiting-reviewer", updated: 0, url: "u".into(), fix: false, additions: 0, deletions: 0, files: 0, commits: 0, labels: vec![], reviewers: vec![], summary: String::new() };
         let fix = b.iter().find(|x| x.name == "fix").unwrap();
         assert!(fix.worktree && label(fix) == "Make mergeable");
         std::fs::remove_dir_all(&dir).unwrap();

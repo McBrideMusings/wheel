@@ -1,6 +1,5 @@
 -- The narrowed, sorted list every list pane shows (Beads, Issues, PRs, Repo): the search, the filters (each a popover of
--- ticks, with "Is not"), the status boxes that set one filter, Clear, the header sort and the row selection. A port of
--- core/list.rs and core/buttons.rs `actions`.
+-- ticks, with "Is not"), the status boxes that set one filter, Clear, the header sort and the row selection.
 --
 -- A pane keeps one list in its state (`list.new`), names its filters and sortable columns in a spec, and says how one
 -- of its rows answers a filter and a search:

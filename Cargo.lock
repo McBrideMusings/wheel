@@ -3401,12 +3401,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-lsp",
- "async-trait",
  "clap",
  "json-patch",
  "notify",
  "pulldown-cmark",
- "rmcp",
  "serde",
  "serde_json",
  "tokio",

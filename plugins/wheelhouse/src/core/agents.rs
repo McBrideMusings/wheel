@@ -10,9 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Deserialize;
-use serde_json::{Map, Value};
 use tokio::sync::watch;
 
 use super::project::Origin;
@@ -159,21 +157,8 @@ impl Agents {
         self.shared.changed.subscribe()
     }
 
-    /// Run the `spawn_agent` tool: split the asking pane, start an agent in the new pane and give
-    /// it the brief. The new pane takes no focus. The answer is its pane id.
-    pub fn spawn(&self, origin: &Origin, args: &Map<String, Value>) -> CallToolResult {
-        let text = |k: &str| args.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
-        let result = match text("brief") {
-            None => Err("spawn_agent needs a brief".to_string()),
-            Some(brief) => self.start(origin, brief, text("agent"), text("model")),
-        };
-        match result {
-            Ok(pane) => CallToolResult::success(vec![ContentBlock::text(pane)]),
-            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
-        }
-    }
-
     /// Split the asking pane, start an agent in the new pane and give it `brief`; the new pane's id.
+    /// The new pane takes no focus.
     pub fn start(&self, origin: &Origin, brief: &str, agent: Option<&str>, model: Option<&str>) -> Result<String, String> {
         let (program, dir) = (self.shared.program.as_str(), origin.dir.as_str());
         if origin.pane == "default" {
@@ -277,7 +262,7 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     fn row(space: &str, cwd: &str, pane: &str, status: &str) -> Value {
         json!({ "space": space, "cwd": cwd, "pane": pane, "agent": "w1", "harness": "claude", "model": "sonnet", "status": status })

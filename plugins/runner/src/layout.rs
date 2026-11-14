@@ -1,6 +1,6 @@
 //! Styled text and stacks, built from the A2UI library's `Text`, `Row`, `Column`, `Icon` and `Divider` and a `modifiers`
 //! list (ADR-0031): the vocabulary a page's helpers speak (`tone`, `size`, `spacing`, `widths`, `border`) turned into what
-//! the client draws. The runner crate includes this file as it is.
+//! the client draws.
 
 use serde_json::{json, Value};
 

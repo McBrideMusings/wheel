@@ -1,4 +1,4 @@
-//! `wheelhouse repo`: the page's branches as a command.
+//! `wheelhouse repo`: the pane's branches as a command.
 
 use clap::{Args as ClapArgs, Subcommand};
 

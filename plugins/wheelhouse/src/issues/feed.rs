@@ -11,7 +11,7 @@ const BODY_CUT: usize = 3000;
 
 /// The `issues` feed's value for the project in `dir`.
 pub fn value(dir: &str) -> Value {
-    snapshot_value(&collect(dir), crate::core::page::now())
+    snapshot_value(&collect(dir), crate::core::now())
 }
 
 /// `s` as the feed's value read at `at`.

@@ -1,4 +1,4 @@
--- The Diff pane: the project's diff by scope, one file's hunks at a time. A port of the page in src/diff/serve.rs.
+-- The Diff pane: the project's diff by scope, one file's hunks at a time.
 --
 -- `wheelhouse.diff` (the backend's feed, see wheel-plugin.toml) holds the scopes and each scope's files with their hunks.
 -- The pane is read-only; its own state (`scope`, `sel`) lives in `state`.

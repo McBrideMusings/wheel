@@ -11,11 +11,11 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 # The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
 TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
 # `-p wheeld` builds every binary of that package, `wheel-fake-agent` included.
-BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse -p wheel-runner'
-# The plugin pages the check opens in the GPUI client, served as the machine artifacts they are on a
-# real machine: wheelhouse for Beads, Issues and Repo, wheel-runner for Runner, and the component
-# gallery whole. They read the space they are opened in, which is this repository.
-PAGES = ['beads', 'issues', 'repo', 'runner', 'gallery']
+BUILD = 'cargo build -p wheeld -p wheel-cli -p wheel-runner'
+# The MCP pages the check opens in the GPUI client, served as the machine artifacts they are on a
+# real machine: wheel-runner for Runner, and the component gallery whole. They read the space they
+# are opened in, which is this repository.
+PAGES = ['runner', 'gallery']
 
 
 def build():
@@ -35,8 +35,7 @@ def built(name):
 
 def machine_artifacts(gallery):
     """The machine file's artifact entries for `PAGES`, each a shared MCP server pane."""
-    wheelhouse = f'{shlex.quote(str(built("wheelhouse")))} serve'
-    serve = dict(beads=wheelhouse, issues=wheelhouse, repo=wheelhouse, runner=f'{shlex.quote(str(built("wheel-runner")))} serve',
+    serve = dict(runner=f'{shlex.quote(str(built("wheel-runner")))} serve',
                  gallery=f'python3 {shlex.quote(str(gallery))} v17')
     # Remote access on an ephemeral loopback port: the Devices page and the pairing window get a code to show.
     return '[remote]\nlisten = "127.0.0.1:0"\n\n' + TITLE_MACHINE + ''.join(f'[artifacts.{name}]\nmcp = {json.dumps(serve[name])}\nshared = true\npane = true\ntitle = {json.dumps(name.title())}\n\n' for name in PAGES)

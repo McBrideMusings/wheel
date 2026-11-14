@@ -8,8 +8,8 @@
 //! pointer and copied with Command-C, and surviving
 //! a browser pane sent to a file page by `wheel pane page`, serving `wheel pane console`, `eval`,
 //! `dom`, `shot` and `record`, its address field typed into and its back button pressed with
-//! wheeld's layout following, a failed load shown and cleared, every plugin page (Beads with its
-//! Canvas graph, Issues, Repo, Runner and the whole component gallery) drawn by WheelUI's A2UI
+//! wheeld's layout following, a failed load shown and cleared, every MCP page (Runner and the
+//! whole component gallery) drawn by WheelUI's A2UI
 //! renderer in one pane of a session on this repository, and surviving
 //! an older wheeld (the fixture daemon behind a proxy that lowers the protocol number in its
 //! `status`): a second window shows only "The server was updated." with Restart Server, whose
@@ -342,7 +342,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, little_report) = little_windows(run, id1.clone(), cx).await?;
     let (run, page_names, web_report) = web_panes(run, webs.clone(), cli_path.clone(), before.clone(), cx).await?;
     let (run, browser_report) = browser_pane(run, native_panes.clone(), cx).await?;
-    let (run, pages_report) = plugin_pages(run, page_names.clone(), first_session.clone(), first_space.clone(), native_panes.clone(), cx).await?;
+    let (run, pages_report) = mcp_pages(run, page_names.clone(), first_session.clone(), first_space.clone(), native_panes.clone(), cx).await?;
     let (run, commands_report) = command_palette(run, cli_path.clone(), terms.clone(), cx).await?;
     let (run, settings_report) = settings_window(run, cli_path.clone(), cx).await?;
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
@@ -3937,22 +3937,20 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, browser_report))
 }
 
-/// Every plugin page drawn by the A2UI renderer in one pane of a session on this repository.
-async fn plugin_pages(run: Run, page_names: Vec<String>, first_session: Option<String>, first_space: Option<String>, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+/// Every MCP page drawn by the A2UI renderer in one pane of a session on this repository.
+async fn mcp_pages(run: Run, page_names: Vec<String>, first_session: Option<String>, first_space: Option<String>, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
-    // Plugin pages: a session on this repository holds one web pane, moved by `wheel pane kind`
+    // MCP pages: a session on this repository holds one web pane, moved by `wheel pane kind`
     // through every machine artifact the fixture serves. Each is drawn by WheelUI's A2UI renderer
     // (the Swift app's own view), reaches `ready` with every component in the catalog, and is
-    // pictured from the view's pixels. The Beads page's Graph view, chosen by writing its picker's
-    // value into the page's data model, draws the dependency graph with Wheel's Canvas component.
+    // pictured from the view's pixels.
     let (pages_session, pages_pane) = (std::env::var("WHEEL_CLIENT_PAGES_SESSION")?, std::env::var("WHEEL_CLIENT_PAGES_PANE")?);
     switch_session(window, &pages_session, cx).await?;
     ensure!(shown(window, cx)?.0.as_deref() == Some(pages_session.as_str()), "clicking the Pages session shows {:?}", shown(window, cx)?);
     let pages_dir = output.join("pages");
     let mut pages_report = serde_json::Map::new();
     let page_of = |s: &Value| s["panes"][pages_pane.as_str()]["page"].clone();
-    let has_canvas = |page: &Value| page["types"].as_array().is_some_and(|t| t.iter().any(|t| t == "Canvas"));
     for (n, name) in page_names.iter().enumerate() {
         if n > 0 {
             let (ok, _, err) = run_pumped(&["pane", "kind", &pages_pane, "web", "--artifact", name, "--scope", "machine"], &mut connection, &mut layouts, window, cx).await?;
@@ -3976,25 +3974,9 @@ async fn plugin_pages(run: Run, page_names: Vec<String>, first_session: Option<S
         let png = pages_dir.join(name).join(format!("{pages_pane}-page.png"));
         let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
         ensure!(bytes > 5000, "the {name} page's picture is missing or blank: {} ({bytes} bytes)", png.display());
-        let mut graph = Value::Null;
-        if name == "beads" {
-            // The views picker binds `/set_view` to an array holding the chosen value (wheelhouse's `Page::choose`).
-            let set = native.call(json!({"op":"page_set","pane":pages_pane,"path":"/set_view","value":["graph"]}));
-            ensure!(set["ok"] != false, "the bridge refused to write /set_view into the Beads page: {set}");
-            for _ in 0..300 {
-                pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                graph = page_of(&native.status());
-                if has_canvas(&graph) {
-                    break;
-                }
-            }
-            ensure!(has_canvas(&graph), "the Beads Graph view drew no Canvas: {graph}");
-            settle(&page_of, &native, &mut connection, &mut layouts, window, cx).await?;
-            shot(&native, &pages_dir.join("beads-graph"), cx).await?;
-        }
         let page = page_of(&native.status());
         pages_report.insert(name.clone(), json!({"state": page["state"], "components": page["components"], "types": page["types"], "notice": page["notice"],
-            "png_bytes": bytes, "graph_types": graph["types"]}));
+            "png_bytes": bytes}));
     }
     let pages_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == pages_pane).map(|p| [p.rect.x, p.rect.y, p.rect.w, p.rect.h]))?;
     let pages_report = json!({"pane": pages_pane, "rect": pages_rect, "pages": pages_report});

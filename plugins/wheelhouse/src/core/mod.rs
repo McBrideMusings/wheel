@@ -1,18 +1,19 @@
-//! What every view shares and none owns: which project and pane a request is for, running the
-//! project's tools (`bd`, `gh`, `git`), what the running agents are doing, noticing that a
-//! project's files changed, and the Table component. Nothing here knows what a bead or a diff is.
+//! What every feed and command shares and none owns: which project and pane an action is for,
+//! running the project's tools (`bd`, `gh`, `git`), what the running agents are doing, the
+//! project's list buttons and the narrowed list. Nothing here knows what a bead or a diff is.
 
 pub mod agents;
 pub mod buttons;
 pub mod git;
-pub mod layout;
 pub mod list;
-pub mod page;
 pub mod project;
 pub mod run;
-pub mod table;
 pub mod tracker;
-pub mod watch;
+
+/// The Unix time now, in seconds: the `now` a feed carries, since a pane's sandbox has no clock.
+pub fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
 
 /// A whole number from JSON: an integer, or a whole number a JSON writer printed as a float (`3.0`).
 pub fn number_of(v: &serde_json::Value) -> Option<i64> {
