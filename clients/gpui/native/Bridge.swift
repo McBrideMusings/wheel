@@ -690,26 +690,52 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             } catch {
                 errors.append("plugin socket: " + error.localizedDescription)
                 guard pluginSocket === socket else { return }
-                pluginSocket = nil
-                // Nothing answers the requests that were waiting; each pane says so until its script loads again.
-                pluginReqs = [:]
-                feedReqs = [:]
-                let lost = actionReqs
-                actionReqs = [:]
-                for sent in lost.values { panes[sent.pane]?.plugin?.actionFailed(action: sent.action, message: "lost the connection to wheeld") }
-                panes.values.forEach { $0.plugin?.fail(message: "lost the connection to wheeld (\(error.localizedDescription)), retrying") }
+                pluginLost(error.localizedDescription)
                 let wait = pluginBackoff
                 pluginBackoff = min(pluginBackoff * 2, 30)
                 try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
+                // A reconnect of the app's own socket (`plugin_endpoint`) may have opened the next one already.
                 guard pluginSocket == nil, panes.values.contains(where: { $0.plugin != nil }), let url = pluginURL else { return }
-                pluginConnect(url)
-                panes.values.filter { $0.plugin != nil }.forEach(requestSource)
-                // wheeld forgot every subscription with the old connection.
-                for (id, host) in panes {
-                    for (feed, params) in host.plugin?.feeds ?? [] { sendFeed("feed_subscribe", pane: id, feed: feed, params: params) }
-                }
+                pluginResume(url)
             }
         }
+    }
+    /// The plugin socket is gone: nothing answers the requests that were waiting, and each pane says so until its script loads again.
+    func pluginLost(_ reason: String) {
+        pluginSocket = nil
+        pluginReqs = [:]
+        feedReqs = [:]
+        let lost = actionReqs
+        actionReqs = [:]
+        for sent in lost.values { panes[sent.pane]?.plugin?.actionFailed(action: sent.action, message: "lost the connection to wheeld") }
+        panes.values.forEach { $0.plugin?.fail(message: "lost the connection to wheeld (\(reason)), retrying") }
+    }
+    /// A new plugin socket asks for every pane's script again and subscribes every feed again: wheeld forgot them with the old one.
+    func pluginResume(_ url: String) {
+        pluginConnect(url)
+        panes.values.filter { $0.plugin != nil }.forEach(requestSource)
+        for (id, host) in panes {
+            for (feed, params) in host.plugin?.feeds ?? [] { sendFeed("feed_subscribe", pane: id, feed: feed, params: params) }
+        }
+    }
+    /// The app's own socket reached wheeld again at `url` (wheeld may have restarted, with a new token): the plugin panes it kept
+    /// open reconnect there now rather than when the backoff ends, and keep their scripts' state, since a script that loads into
+    /// a pane that holds one reloads in place. Their embedded terminals and chats belonged to the sockets `disconnect` dropped;
+    /// they attach again when the new pane targets arrive.
+    func pluginEndpoint(_ url: String) {
+        let moved = url != pluginURL
+        pluginURL = url
+        guard panes.values.contains(where: { $0.plugin != nil }) else { return }
+        for embed in embeds.values { embed.drop() }
+        for embed in agentEmbeds.values { embed.drop() }
+        if moved, let old = pluginSocket {
+            pluginLost("wheeld moved")
+            old.cancel(with: .goingAway, reason: nil)
+        }
+        // wheeld answered: a socket still open here that has not yet heard it died retries after a second, not the backoff.
+        pluginBackoff = 1
+        guard pluginSocket == nil else { return }
+        pluginResume(url)
     }
     /// `plugin_source`, asked for or pushed because the script or one of its package's modules changed, loads into the pane it names; an error answering
     /// a request for one is that pane's failure.
@@ -1447,6 +1473,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                   let data = try? JSONSerialization.data(withJSONObject: value["value"] ?? NSNull(), options: .fragmentsAllowed),
                   let written = try? JSONDecoder().decode(WheelUI.AnyCodable.self, from: data) else { return ["ok": false] }
             surface.set(path, written)
+        case "plugin_endpoint":
+            if let ws = value["ws"] as? String { pluginEndpoint(ws) }
         case "disconnect":
             // Sends queued behind a socket that is gone never finish; the next socket starts a new chain.
             socket?.cancel(with: .goingAway, reason: nil)

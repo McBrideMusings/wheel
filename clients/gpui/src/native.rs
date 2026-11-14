@@ -182,6 +182,10 @@ impl Native {
     pub fn hold_resizes(&self, held: bool) {
         self.call(json!({"op":"hold_resizes","held":held}));
     }
+    /// The daemon socket the plugin panes kept across a reconnect ask for their scripts on.
+    pub fn plugin_endpoint(&self, ws: &str) {
+        self.call(json!({"op":"plugin_endpoint","ws":ws}));
+    }
     /// Drop the bridge's daemon socket, so the next terminal opened connects anew.
     pub fn disconnect(&self) {
         self.call(json!({"op":"disconnect"}));

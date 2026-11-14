@@ -102,6 +102,9 @@ pub struct Client {
     pane_targets: serde_json::Value,
     /// The last `pane_targets` map sent to the bridge.
     pane_targets_sent: serde_json::Value,
+    /// Set by a reconnect until the new daemon's layout arrives: the cleared spaces then name no pane, and the
+    /// plugin views kept across the reconnect are not closed for it.
+    awaiting_layout: bool,
     /// Every pane that has a native view, with its kind, and where it was last placed.
     opened: HashMap<String, String>,
     placed: HashMap<String, Placement>,
@@ -422,7 +425,7 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
@@ -612,15 +615,19 @@ impl Client {
             },
             Event::Up(endpoint) => {
                 // The daemon may have restarted: its terminals and its token are new, so every
-                // native view is closed, the bridge's socket dropped, and the views open again
-                // against the new endpoint and layout.
+                // native view but a plugin pane's is closed, the bridge's socket dropped, and the
+                // views open again against the new endpoint and layout. A plugin pane keeps its
+                // view and its script's state: the bridge reloads its script from the new endpoint.
                 if self.link != Link::Connecting {
                     // The socket goes first: a detach sent down a dead socket never finishes.
                     self.native.disconnect();
-                    for id in self.opened.keys().cloned().collect::<Vec<_>>() {
+                    for id in self.opened.iter().filter(|(_, kind)| !kind.starts_with("plugin:")).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
                         self.native.close(&id);
                     }
-                    self.opened.clear();
+                    self.opened.retain(|_, kind| kind.starts_with("plugin:"));
+                    self.awaiting_layout = true;
+                    // The bridge's embedded terminals and chats attach again once it hears the new targets.
+                    self.pane_targets_sent = serde_json::Value::Null;
                     self.placed.clear();
                     self.attached.clear();
                     self.transcripts.clear();
@@ -649,6 +656,8 @@ impl Client {
                     self.native.browser(&pane, "refused", serde_json::json!({"text": text, "message": "The connection to wheeld dropped before it read this address."}));
                 }
                 self.endpoint = endpoint;
+                // The kept plugin panes ask the new endpoint for their scripts.
+                self.native.plugin_endpoint(&self.endpoint.ws);
                 self.link = Link::Up;
                 server::link(true);
                 // The notice follows the next `status`; closing it stays closed for the same key
@@ -704,6 +713,7 @@ impl Client {
         }
         let old_root = self.space().map(|s| s.root.clone());
         self.spaces = layout.spaces;
+        self.awaiting_layout = false;
         self.pane_targets = pane_targets(&self.spaces);
         self.sessions = layout.sessions;
         let dragged = std::mem::take(&mut self.overrides);
@@ -1833,7 +1843,7 @@ impl Client {
         }
         let alive: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| l.id.as_str()).collect();
         for id in self.opened.keys().cloned().collect::<Vec<_>>() {
-            if !alive.contains(id.as_str()) {
+            if !self.awaiting_layout && !alive.contains(id.as_str()) {
                 self.native.close(&id);
                 self.opened.remove(&id);
                 self.placed.remove(&id);
