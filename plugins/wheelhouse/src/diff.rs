@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::core::git;
 
 pub mod cli;
-pub mod serve;
+pub mod feed;
 
 /// A file over this many lines keeps its counts and drops its hunks.
 const MAX_LINES_PER_FILE: usize = 1500;
@@ -52,15 +52,6 @@ pub struct Scope {
     pub fork: Option<String>,
     pub commits: Option<i64>,
     pub files: Vec<File>,
-}
-
-impl Scope {
-    pub fn add(&self) -> usize {
-        self.files.iter().map(|f| f.add).sum()
-    }
-    pub fn del(&self) -> usize {
-        self.files.iter().map(|f| f.del).sum()
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

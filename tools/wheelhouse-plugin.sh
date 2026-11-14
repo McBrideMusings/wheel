@@ -4,7 +4,11 @@
 # the `wheelhouse.beads` feed of temp projects (made with `bd init`) and invokes
 # `wheelhouse.press` and `wheelhouse.run_list`, as the Luau pane does; a pane of kind
 # wheelhouse/repo reads `wheelhouse.repo` of a temp git repo with an origin and invokes
-# `wheelhouse.branch_delete` and `wheelhouse.run_list` with view repo. Prints PASS or FAIL per
+# `wheelhouse.branch_delete` and `wheelhouse.run_list` with view repo; a pane of kind wheelhouse/diff
+# reads `wheelhouse.diff` of two temp git repos (an edit and a new file arrive, a write under a
+# git-ignored directory does not once a tracked file's change has shown the watch is live, the
+# other repo is untouched, and a nested tracked file's edit arrives although a beads feed opened the
+# same checkout first). Prints PASS or FAIL per
 # case. Uses no GUI, focus, mouse or keyboard. Everything it starts is killed by pid at the end.
 #
 #   tools/wheelhouse-plugin.sh         # uses target/debug/{wheeld,wheel,wheelhouse}
@@ -483,6 +487,152 @@ sleep 1
 poll 10 grep -q 'After the repo feed closed' "$FA"
 grep -q 'After the repo feed closed' "$FA" && pass "closing a repo feed on a directory leaves the beads feed on it updating" \
   || fail "closing a repo feed on a directory leaves the beads feed on it updating"
+
+# 11e the diff feed (wheel-pmf2.4.11): three clean fixture repos, each with a .gitignore holding
+# `target/` and a tracked src/nested.txt; the value has the documented keys, an edit and a new untracked
+# file arrive as patches within 5 s, a write under the ignored target/ sends nothing while a write to a
+# tracked file right after it does, the second repo's feed is untouched, and in the third repo (a beads
+# feed opened on it first) an edit of src/nested.txt arrives within 5 s.
+D1="$T/proj-d1"
+D2="$T/proj-d2"
+D3="$T/proj-d3"
+for d in "$D1" "$D2" "$D3"; do
+  git init -q -b main "$d"
+  echo "target/" > "$d/.gitignore"
+  echo "line one" > "$d/f.txt"
+  mkdir -p "$d/src"
+  echo "nested one" > "$d/src/nested.txt"
+  git -C "$d" add .gitignore f.txt src/nested.txt
+  git -C "$d" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m "first commit"
+done
+DSPACE=$(w space new "$D1")
+DPANE=$(w pane ls | awk -v s="$DSPACE" '$1 == s {print $2; exit}')
+w pane kind "$DPANE" plugin --plugin wheelhouse --plugin-pane diff > /dev/null
+FD1="$T/feed-d1.jsonl"
+FD2="$T/feed-d2.jsonl"
+w plugin feed "$DPANE" wheelhouse.diff --params "{\"dir\":\"$D1\"}" --count 200 > "$FD1" 2> "$FD1.err" &
+PIDS+=($!)
+w plugin feed "$DPANE" wheelhouse.diff --params "{\"dir\":\"$D2\"}" --count 200 > "$FD2" 2> "$FD2.err" &
+PIDS+=($!)
+poll 30 grep -q '"scopes"' "$FD1"
+poll 30 grep -q '"scopes"' "$FD2"
+# diff_state.py <feed file>: the value after applying every patch row in order (add, remove, replace).
+cat > "$T/diff_state.py" <<'PY'
+import json, sys
+
+def unescape(s):
+    return s.replace("~1", "/").replace("~0", "~")
+
+def walk(doc, parts):
+    for p in parts:
+        doc = doc[int(p)] if isinstance(doc, list) else doc[p]
+    return doc
+
+def apply(doc, op):
+    parts = [unescape(p) for p in op["path"].split("/")[1:]]
+    if not parts:
+        return op["value"]
+    parent, last = walk(doc, parts[:-1]), parts[-1]
+    if isinstance(parent, list):
+        i = len(parent) if last == "-" else int(last)
+        if op["op"] == "add":
+            parent.insert(i, op["value"])
+        elif op["op"] == "remove":
+            parent.pop(i)
+        else:
+            parent[i] = op["value"]
+    elif op["op"] == "remove":
+        del parent[last]
+    else:
+        parent[last] = op["value"]
+    return doc
+
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+state, patches = None, 0
+for r in rows:
+    if r.get("stale"):
+        continue
+    if "value" in r and r["value"] is not None:
+        state = r["value"]
+    elif "patch" in r and state is not None:
+        patches += 1
+        for op in r["patch"]:
+            state = apply(state, op)
+files = [] if state is None else [[f["path"], f["status"], len(f["hunks"])] for f in state["scopes"][0]["files"]]
+json.dump({"patches": patches, "files": files}, sys.stdout)
+PY
+diff_files() { python3 "$T/diff_state.py" "$1" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["files"]))'; }
+diff_patches() { python3 "$T/diff_state.py" "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["patches"])'; }
+python3 - "$FD1" > "$T/diff-shape.verdict" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+vals = [r for r in rows if r.get("value") and "scopes" in r["value"]]
+if not vals:
+    print("no value with scopes: %r" % rows[:2]); sys.exit()
+v = vals[0]["value"]
+want = {"name", "top", "branch", "head", "default", "error", "scopes"}
+problems = []
+if set(v) != want:
+    problems.append("keys %r" % sorted(v))
+if v["error"] is not None or v["name"] != "proj-d1" or v["branch"] != "main":
+    problems.append("header %r" % {k: v[k] for k in ("name", "branch", "error")})
+if not v["scopes"] or v["scopes"][0]["key"] != "uncommitted" or v["scopes"][0]["files"] != []:
+    problems.append("scopes %r" % v["scopes"][:1])
+print("ok" if not problems else "; ".join(problems))
+PY
+check "the diff feed has the documented keys and an empty uncommitted scope first" "$(head -1 "$T/diff-shape.verdict")"
+
+# b an edit of a tracked file arrives as a patch.
+echo "line two" >> "$D1/f.txt"
+diff_has_edit() { [ "$(diff_files "$FD1")" = '[["f.txt", "M", 1]]' ]; }
+poll 5 diff_has_edit
+diff_has_edit && pass "an edit of a tracked file reaches the diff feed within 5 s with a hunk" \
+  || fail "an edit of a tracked file reaches the diff feed: $(diff_files "$FD1")"
+
+# c a new untracked file arrives as a patch.
+echo "fresh" > "$D1/new.txt"
+diff_has_new() { diff_files "$FD1" | grep -q '\["new.txt", "?"'; }
+poll 5 diff_has_new
+diff_has_new && pass "a new untracked file reaches the diff feed within 5 s with status ?" \
+  || fail "a new untracked file reaches the diff feed: $(diff_files "$FD1")"
+
+# d a write under the ignored target/ sends nothing; the watch is live, since a write to a tracked
+# file right after it arrives, and only that file's change does.
+BEFORE=$(diff_patches "$FD1")
+mkdir -p "$D1/target"
+echo built > "$D1/target/out.bin"
+sleep 1
+echo more >> "$D1/target/out.bin"
+sleep 2
+AFTER=$(diff_patches "$FD1")
+[ "$BEFORE" = "$AFTER" ] && pass "writing a file under the git-ignored target/ sends no update within 3 s" \
+  || fail "a write under target/ sent updates ($BEFORE patches before, $AFTER after)"
+echo "line three" >> "$D1/f.txt"
+diff_after_target() { [ "$(diff_patches "$FD1")" -gt "$AFTER" ]; }
+poll 5 diff_after_target
+diff_after_target && ! diff_files "$FD1" | grep -q 'target/' \
+  && pass "a tracked file's write right after the target/ writes arrives, and nothing from target/ does" \
+  || fail "the watch is not live after the target/ writes: $(diff_files "$FD1")"
+
+# e the second repo's feed got no update through all of it.
+[ "$(diff_patches "$FD2")" = 0 ] && [ "$(diff_files "$FD2")" = '[]' ] && pass "the second project's diff feed is unchanged" \
+  || fail "the second project's diff feed changed: $(diff_patches "$FD2") patches, files $(diff_files "$FD2")"
+
+# f a beads feed on the checkout opened first leaves the diff feed's recursive watch in place: an edit of
+# a nested tracked file arrives.
+FB3="$T/feed-b3.jsonl"
+FD3="$T/feed-d3.jsonl"
+w plugin feed "$PANE" wheelhouse.beads --params "{\"dir\":\"$D3\"}" --count 200 > "$FB3" 2> "$FB3.err" &
+PIDS+=($!)
+poll 30 test -s "$FB3"
+w plugin feed "$DPANE" wheelhouse.diff --params "{\"dir\":\"$D3\"}" --count 200 > "$FD3" 2> "$FD3.err" &
+PIDS+=($!)
+poll 30 grep -q '"scopes"' "$FD3"
+echo "nested two" >> "$D3/src/nested.txt"
+diff_nested() { [ "$(diff_files "$FD3")" = '[["src/nested.txt", "M", 1]]' ]; }
+poll 5 diff_nested
+diff_nested && pass "an edit of a nested tracked file reaches the diff feed within 5 s when a beads feed opened the checkout first" \
+  || fail "a nested edit does not reach the diff feed after a beads feed: $(diff_files "$FD3")"
 
 # 12 kill -9 of the backend: stale, then a fresh value.
 OLD=$(backend_pid "$SPACE")
