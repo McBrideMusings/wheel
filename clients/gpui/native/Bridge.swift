@@ -657,7 +657,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     /// with no connection the script gets the failure on the next main-queue turn, never from inside its own `update` or `view`.
     func sendAction(pane: String, action: String, args: JSONValue) {
         guard let socket = pluginSocket else {
-            Task { @MainActor in self.panes[pane]?.plugin?.actionFailed(action: action, message: "no connection to wheeld") }
+            panes[pane]?.plugin?.actionFailedLater(action: action, message: "no connection to wheeld")
             return
         }
         let req = nextPluginReq
@@ -666,7 +666,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let message: [String: Any] = ["op": "plugin_action", "req": req, "pane": pane, "action": action, "args": args.foundation]
         guard let data = try? JSONSerialization.data(withJSONObject: message), let text = String(data: data, encoding: .utf8) else {
             actionReqs[req] = nil
-            Task { @MainActor in self.panes[pane]?.plugin?.actionFailed(action: action, message: "the action arguments could not be encoded") }
+            panes[pane]?.plugin?.actionFailedLater(action: action, message: "the action arguments could not be encoded")
             return
         }
         Task { @MainActor in
