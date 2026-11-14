@@ -167,6 +167,22 @@ async fn run_pumped(args: &[&str], connection: &mut Connection, layouts: &mut us
     Ok((done.is_some_and(|s| s.success()), String::from_utf8_lossy(&out.stdout).trim().to_owned(), String::from_utf8_lossy(&out.stderr).trim().to_owned()))
 }
 
+/// Waits until `wheel pane view <pane>` names a conversation (its second field is not `-`), as
+/// switch-by-status.sh does before a terminal-to-chat switch: wheeld samples the terminal for a
+/// running agent and refuses the switch until it finds one.
+async fn until_conversation(pane: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
+    let mut last = String::new();
+    for _ in 0..60 {
+        let (ok, out, err) = run_pumped(&["pane", "view", pane], connection, layouts, window, cx).await?;
+        if ok && out.split_whitespace().nth(1).is_some_and(|c| c != "-") {
+            return Ok(());
+        }
+        last = if ok { out } else { err };
+        pump(connection, 500, layouts, window, cx).await?;
+    }
+    anyhow::bail!("wheel pane view {pane} never named a conversation: {last}")
+}
+
 /// One request to the client's debug server from a thread, answered while this check keeps
 /// pumping the connection and handing the server's requests to the window, as `serve_debug` does
 /// in the real binary. Returns the status code and the JSON body.
@@ -5381,6 +5397,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     let in_menu = state!();
     ensure!(!strings(&in_menu["panes"][grid_b.as_str()]["header_order"]).contains(&"switch-view".to_owned()) && strings(&in_menu["panes"][grid_b.as_str()]["more_menu"]).contains(&"switch-view".to_owned()),
         "the switch set to the ⋯ menu: bar {:?}, menu {:?}", in_menu["panes"][grid_b.as_str()]["header_order"], in_menu["panes"][grid_b.as_str()]["more_menu"]);
+    until_conversation(&grid_b, &mut connection, &mut layouts, window, cx).await?;
     let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_b}&x=420&y=120&level=header"));
     ensure!(code == 200, "panemenu open got {code}");
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=switch-view"));
@@ -5390,6 +5407,9 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     ensure!(code == 200, "paneheader terminal reset got {code}");
     // shift+cmd+t on the focused pane: to the terminal and back.
     for (what, kind) in [("the terminal", "terminal"), ("the chat", "agent")] {
+        if kind == "agent" {
+            until_conversation(&grid_b, &mut connection, &mut layouts, window, cx).await?;
+        }
         window.update(cx, |c, _, _| c.show_requested(&grid, Some(&grid_b)))?;
         let (code, pressed) = call!("POST", "/key?keys=shift+cmd+t");
         ensure!(code == 200 && pressed["taken"] == true, "shift+cmd+t was not taken: {pressed}");
