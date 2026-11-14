@@ -147,4 +147,20 @@ import WheelKit
         #expect(throws: JSONPatch.Failure.self) { try apply(#"[{"op":"add","path":"/l/01","value":1}]"#, #"{"l":[1,2]}"#) }
         #expect(throws: JSONPatch.Failure.self) { try apply(#"[{"op":"bogus","path":"/a"}]"#, "{}") }
     }
+    @Test func failedPatchLeavesDocumentUnchanged() throws {
+        var doc = j(#"{"l":[1,2],"a":{"b":1}}"#)
+        let patch = j(#"[{"op":"add","path":"/l/-","value":3},{"op":"remove","path":"/a/b"},{"op":"move","from":"/l","path":"/m"},{"op":"remove","path":"/zz"}]"#)
+        #expect(throws: JSONPatch.Failure.self) { try JSONPatch.apply(patch, to: &doc) }
+        #expect(doc == j(#"{"l":[1,2],"a":{"b":1}}"#))
+    }
+    @Test func appendToLongArrayIsConstantTime() throws {
+        var doc: JSONValue = .object(["lines": .array(Array(repeating: .array([]), count: 200_000))])
+        let append = j(#"[{"op":"add","path":"/lines/-","value":[]}]"#)
+        let start = Date()
+        for _ in 0..<1000 { try JSONPatch.apply(append, to: &doc) }
+        let seconds = Date().timeIntervalSince(start)
+        guard case let .object(o) = doc, case let .array(a)? = o["lines"] else { Issue.record("shape"); return }
+        #expect(a.count == 201_000)
+        #expect(seconds < 0.25, "1000 appends to 200000 lines took \(seconds)s")
+    }
 }
