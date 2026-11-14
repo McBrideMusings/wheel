@@ -184,3 +184,65 @@ private func close(_ a: (Double, Double, Double, Double)?, _ b: (Double, Double,
         #expect(pane.stateJSON == #"{"log":["pointer down 3 4"]}"#)
     }
 }
+
+@Suite struct CanvasPointerCoalescingTests {
+    private struct Sender {
+        let c: CanvasPointerCoalescer, into: CanvasPointerCoalescer.Deliver
+        init(_ c: CanvasPointerCoalescer, _ into: @escaping CanvasPointerCoalescer.Deliver) { self.c = c; self.into = into }
+        func send(_ k: String, _ p: CGPoint, dx: Double, dy: Double) { c.send(k, p, dx: dx, dy: dy, deliver: into) }
+    }
+    private struct Event: Equatable { var kind: String; var x: Double; var y: Double; var dx: Double; var dy: Double }
+
+    private func make() -> (Sender, () -> [Event], () -> Void, () -> Int) {
+        let c = CanvasPointerCoalescer()
+        var got: [Event] = []
+        let into: CanvasPointerCoalescer.Deliver = { k, p, dx, dy in got.append(Event(kind: k, x: p.x, y: p.y, dx: dx, dy: dy)) }
+        var frames: [() -> Void] = []
+        c.schedule = { frames.append($0) }
+        return (Sender(c, into), { got }, { let f = frames; frames = []; f.forEach { $0() } }, { frames.count })
+    }
+
+    @Test func manyMovesInAFrameSendOneWithTheLatestPosition() {
+        let (c, got, frame, scheduled) = make()
+        for i in 1...100 { c.send("move", CGPoint(x: Double(i), y: 2), dx: 0, dy: 0) }
+        #expect(got().isEmpty)
+        #expect(scheduled() == 1)
+        frame()
+        #expect(got() == [Event(kind: "move", x: 100, y: 2, dx: 0, dy: 0)])
+    }
+
+    @Test func dragStepsSumTheirDeltas() {
+        let (c, got, frame, _) = make()
+        c.send("drag", CGPoint(x: 1, y: 1), dx: 1, dy: 2)
+        c.send("drag", CGPoint(x: 4, y: 0), dx: 3, dy: -1)
+        frame()
+        #expect(got() == [Event(kind: "drag", x: 4, y: 0, dx: 4, dy: 1)])
+    }
+
+    @Test func upSendsTheWaitingDragFirstAndNextFrameStartsFresh() {
+        let (c, got, frame, _) = make()
+        c.send("down", CGPoint(x: 0, y: 0), dx: 0, dy: 0)
+        c.send("drag", CGPoint(x: 5, y: 5), dx: 5, dy: 5)
+        c.send("up", CGPoint(x: 5, y: 5), dx: 0, dy: 0)
+        #expect(got().map(\.kind) == ["down", "drag", "up"])
+        frame()
+        #expect(got().count == 3)
+        c.send("move", CGPoint(x: 9, y: 9), dx: 0, dy: 0)
+        frame()
+        #expect(got().last == Event(kind: "move", x: 9, y: 9, dx: 0, dy: 0))
+    }
+}
+
+@Suite struct CanvasPlayerCacheTests {
+    @Test func anEqualListIsParsedOnce() throws {
+        let list = try JSONDecoder().decode([AnyCodable].self, from: Data(#"[["beginPath"],["rect",1,2,3,4],["fill"]]"#.utf8))
+        let cache = CanvasPlayerCache()
+        let a = cache.player(for: list, fg: .red)
+        _ = cache.player(for: list, fg: .red)
+        #expect(cache.builds == 1)
+        #expect(a.paints.count == 1)
+        let other = try JSONDecoder().decode([AnyCodable].self, from: Data(#"[["fill"]]"#.utf8))
+        _ = cache.player(for: other, fg: .red)
+        #expect(cache.builds == 2)
+    }
+}

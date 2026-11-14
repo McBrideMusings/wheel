@@ -2083,14 +2083,20 @@ impl Client {
                         cx.notify();
                     }
                 }))
-                .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
-                    ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
-                    ("plugin", _) => format!("{} · {}", p.leaf.label, p.leaf.id),
-                    _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
-                }))
+                .child({
+                    // With an error beside it the title keeps its own width and the error gives way first.
+                    let failed = p.leaf.kind == "plugin" && self.plugin_errors.get(&p.leaf.id).is_some_and(|e| e.is_some());
+                    let title = div().relative().min_w(px(0.)).overflow_hidden().whitespace_nowrap();
+                    let title = if failed { title.flex_none().max_w(px(r.w * 0.6)) } else { title.flex_1() };
+                    title.child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
+                        ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
+                        ("plugin", _) => format!("{} · {}", p.leaf.label, p.leaf.id),
+                        _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
+                    }).child(recorded(&p.leaf.id, "pane-title", &self.controls))
+                })
                 .children(self.plugin_errors.get(&p.leaf.id).cloned().flatten().filter(|_| p.leaf.kind == "plugin").map(|error| {
-                    div().id(gpui::ElementId::Name(format!("plugin-error-{}", p.leaf.id).into())).ml_2().max_w(px(r.w * 0.6)).flex_shrink_0().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
-                        .text_color(rgb(0xe0715f)).tooltip(crate::tooltip::tip(&error)).child(error)
+                    div().id(gpui::ElementId::Name(format!("plugin-error-{}", p.leaf.id).into())).relative().ml_2().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
+                        .text_color(rgb(0xe0715f)).tooltip(crate::tooltip::tip(&error)).child(error).child(recorded(&p.leaf.id, "plugin-error", &self.controls))
                 }))
                 .child(self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx))
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))

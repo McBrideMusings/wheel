@@ -181,6 +181,11 @@ def fixture():
             '    return ui.Column(rows)\n'
             'end\n'
             'return { init = init, update = update, view = view }\n')
+        # Two plugins whose script fails to load: one with a long error, one with a short one.
+        for name, source in [('errlong1', 'error("' + 'a very long script failure, '*12 + '")\n'), ('errshort', 'error("x")\n')]:
+            (root / f'plugins/{name}/panes').mkdir(parents=True)
+            (root / f'plugins/{name}/wheel-plugin.toml').write_text(f'[plugin]\nid = "{name}"\nversion = "0.1.0"\n\n[[pane]]\nid = "{name}"\ntitle = "Sample"\nscript = "panes/{name}.luau"\n')
+            (root / f'plugins/{name}/panes/{name}.luau').write_text(source)
         wheelhouse = wheelhouse_project(root)
         (root / 'usage.json').write_text(usage_readings())
         # `claude` on the daemon's PATH is the stand-in, so a pane shown as a terminal resumes its

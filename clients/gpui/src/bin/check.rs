@@ -4156,6 +4156,30 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         let now = tall["scroll"]["offset"].as_f64().unwrap_or(-1.0);
         ensure!((now - want).abs() < 1.5, "after {body} the tall pane's offset should be {want}: {now}");
     }
+    // A failing script's error shows beside the title: the title keeps one width whatever the error's length, and the error is cut to what is left.
+    let mut headers = Vec::new();
+    for name in ["errshort", "errlong1"] {
+        let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", name, "--plugin-pane", name], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "pane kind plugin {name}/{name}: {err}");
+        let mut seen = None;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            let found = window.update(cx, |c, _, _| (c.control_bounds(&pane, "pane-title"), c.control_bounds(&pane, "plugin-error")))?;
+            if found.0.is_some() && found.1.is_some() {
+                seen = Some(found);
+                break;
+            }
+        }
+        let (title, shown) = seen.ok_or_else(|| anyhow::anyhow!("the {name} pane never showed an error beside its title"))?;
+        let (title, shown) = (title.unwrap(), shown.unwrap());
+        ensure!(title.0 + title.2 <= shown.0 + 1.0 && shown.2 > 20.0, "{name}: the error should sit right of the title: title {title:?} error {shown:?}");
+        eprintln!("wheel-gpui: {name}: title {title:?}, error box {shown:?}");
+        draw(window, Some(output.join(format!("client-plugin-{name}-header.png"))), cx)?;
+        headers.push((name, title, shown));
+    }
+    // "errlong1/errlong1 · p25" is about 128 points wide whole, so a title under 100 is squeezed.
+    ensure!(headers.iter().all(|h| h.1 .2 >= 100.0), "a title was squeezed by its error: {headers:?}");
+    ensure!((headers[0].1 .2 - headers[1].1 .2).abs() < 6.0, "the title's width changed with the error: {:?} vs {:?}", headers[0].1, headers[1].1);
     report.insert("tall".into(), json!({"last_row": last, "content": content, "visible": visible, "offset": offset, "png_bytes": bytes}));
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
