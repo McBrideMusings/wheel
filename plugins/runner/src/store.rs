@@ -48,13 +48,18 @@ impl Record {
     }
 }
 
+/// The folder every project's runs folder is in: `$WHEEL_RUNNER_DIR`, else `~/.wheel/runs`.
+pub fn root() -> PathBuf {
+    match std::env::var_os("WHEEL_RUNNER_DIR") {
+        Some(p) => PathBuf::from(p),
+        None => crate::config::home().join(".wheel").join("runs"),
+    }
+}
+
 /// Where the runs of project `dir` are kept: `$WHEEL_RUNNER_DIR`, else `~/.wheel/runs`, then one
 /// folder named for the project's path.
 pub fn folder(dir: &str) -> PathBuf {
-    let root = match std::env::var_os("WHEEL_RUNNER_DIR") {
-        Some(p) => PathBuf::from(p),
-        None => crate::config::home().join(".wheel").join("runs"),
-    };
+    let root = root();
     let slug: String = dir.trim_matches('/').chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     // Two paths that differ only in punctuation share a slug; the hash tells them apart.
     let hash = dir.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));

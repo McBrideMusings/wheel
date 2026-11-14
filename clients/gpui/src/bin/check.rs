@@ -8,7 +8,7 @@
 //! pointer and copied with Command-C, and surviving
 //! a browser pane sent to a file page by `wheel pane page`, serving `wheel pane console`, `eval`,
 //! `dom`, `shot` and `record`, its address field typed into and its back button pressed with
-//! wheeld's layout following, a failed load shown and cleared, every MCP page (Runner and the
+//! wheeld's layout following, a failed load shown and cleared, every MCP page (the
 //! whole component gallery) drawn by WheelUI's A2UI
 //! renderer in one pane of a session on this repository, and surviving
 //! an older wheeld (the fixture daemon behind a proxy that lowers the protocol number in its

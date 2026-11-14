@@ -45,7 +45,7 @@ codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$SERVER"
 mkdir -p "$CONTENTS/Helpers"
 cp -p "$REPO/target/$PROFILE/wheel" "$CONTENTS/Helpers/wheel"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/Helpers/wheel"
-# The runner process: a machine entry runs it by path (mcp = "exec <app>/Contents/Helpers/wheel-runner serve").
+# The runner process: wheeld links it into the bin directory beside `wheel`, where the runner plugin's backend command (`wheel-runner backend`) finds it.
 cp -p "$REPO/target/$PROFILE/wheel-runner" "$CONTENTS/Helpers/wheel-runner"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$CONTENTS/Helpers/wheel-runner"
 

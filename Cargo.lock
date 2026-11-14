@@ -3337,16 +3337,18 @@ name = "wheel-runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-lsp",
  "clap",
+ "json-patch",
  "libc",
- "rmcp",
+ "notify",
  "serde",
  "serde_json",
  "sysinfo",
  "tokio",
+ "tokio-util",
  "toml_edit",
  "ureq",
- "url",
 ]
 
 [[package]]

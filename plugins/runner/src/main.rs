@@ -1,14 +1,12 @@
 //! `wheel-runner`: runs the commands a project's `wheel.toml` `[runner]` table names and keeps
-//! each run's log, status and exit code. As `wheel-runner serve` it is an MCP server for a host
-//! (Wheel); with no host every tool is also a command.
+//! each run's log, status and exit code. As `wheel-runner backend` it is the backend of Wheel's
+//! `runner` plugin; the other commands work with no host.
 
+mod backend;
 mod check;
 mod config;
 mod guards;
-mod layout;
-mod page;
 mod runs;
-mod serve;
 mod status;
 mod store;
 mod sweep;
@@ -32,8 +30,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve the runner over MCP on standard input and output, for a host.
-    Serve,
+    /// Serve the runner's feeds and actions to `wheeld` as a plugin backend: JSON-RPC 2.0 on
+    /// standard input and output.
+    Backend,
     /// The commands the project's [runner] table names, and this machine's.
     Ls,
     /// Run a [runner] command here, showing its output; exits with the command's exit code.
@@ -108,7 +107,7 @@ fn main() -> anyhow::Result<()> {
     let project = Runs::new(&dir);
     match cli.command {
         Command::Watch { id, folder } => runs::watch(&id, std::path::Path::new(&folder)),
-        Command::Serve => tokio::runtime::Runtime::new()?.block_on(serve::run())?,
+        Command::Backend => tokio::runtime::Runtime::new()?.block_on(backend::run())?,
         Command::Ls => {
             for r in config::list(&config::machine_file(), &dir) {
                 let ask = r.confirm.as_deref().map(|q| format!("  (asks: {q})")).unwrap_or_default();

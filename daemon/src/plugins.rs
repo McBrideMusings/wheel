@@ -55,7 +55,24 @@ const BUILTINS: &[Builtin] = &[
             ("lib/style.luau", include_str!("../plugins/agent/lib/style.luau")),
         ],
     ),
+    (
+        RUNNER_PLUGIN,
+        &[
+            (
+                MANIFEST,
+                include_str!("../../plugins/runner/wheel-plugin.toml"),
+            ),
+            (
+                "panes/runner.luau",
+                include_str!("../../plugins/runner/panes/runner.luau"),
+            ),
+        ],
+    ),
 ];
+
+/// The runner plugin: the project's `[runner]` commands and runs as a pane. Its package is
+/// `plugins/runner/`; its backend is `wheel-runner backend`, found on the PATH wheeld gives a backend.
+pub(crate) const RUNNER_PLUGIN: &str = "runner";
 
 /// The plugin an agent pane shows when its person asks for the Luau view, and that plugin's pane.
 pub(crate) const AGENT_VIEW_PLUGIN: &str = "agent";
@@ -996,6 +1013,7 @@ actions = ["go"]
                 ("sample", PluginScope::Machine),
                 ("sample", PluginScope::Builtin),
                 ("agent", PluginScope::Builtin),
+                ("runner", PluginScope::Builtin),
             ]
         );
         assert_eq!(resolve(&all, "sample").unwrap().info.scope, PluginScope::Project);
@@ -1045,6 +1063,20 @@ actions = ["go"]
             names,
             ["lib/composer.luau", "lib/diff.luau", "lib/status_header.luau", "lib/style.luau", "lib/tool_card.luau", "lib/transcript.luau"]
         );
+    }
+
+    #[test]
+    fn the_runner_builtin_has_its_backend_pane_and_embedded_script() {
+        let all = discover(None, Path::new("/nonexistent"));
+        let runner = resolve(&all, RUNNER_PLUGIN).unwrap();
+        let backend = runner.info.backend.as_ref().unwrap();
+        assert_eq!(backend.command, "wheel-runner backend");
+        let pane = find_pane(runner, "runner").unwrap();
+        assert_eq!(pane.reads, ["runner.commands", "runner.log"]);
+        assert_eq!(pane.actions, ["runner.run", "runner.stop"]);
+        let script = read_script(runner, pane).unwrap();
+        assert_eq!(script.chunk, "runner/panes/runner.luau");
+        assert!(script.source.contains("runner.commands") && script.modules.is_empty());
     }
 
     #[test]
