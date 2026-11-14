@@ -153,7 +153,7 @@ struct SpaceCarousel: View {
                 // Behind the page, so what scrolls sideways on its own fill (a code block) stays untinted.
                 .background(SwipeArea.tint)
         } else if let link = model.pluginPanes[pane.id] {
-            PluginPage(model: model, plugin: link.plugin)
+            PluginPage(model: model, pane: link.pane, plugin: link.plugin)
         } else if let a2ui = model.a2uiPanes[pane.id], a2ui.isNative {
             A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
@@ -315,10 +315,14 @@ struct SpaceCarousel: View {
             Log.info("start page \(n)")
             withAnimation { page = panes[n - 1].id }
         }
-        // `WHEEL_TYPE=<text>` pastes the text, then Return, into the shown terminal.
+        // `WHEEL_TYPE=<text>` pastes the text, then Return, into the shown terminal, or a shown plugin page's terminal embed
+        // once it is attached.
         if let text = env["WHEEL_TYPE"] {
             try? await Task.sleep(for: .seconds(1))
-            model.typeIntoShown(text)
+            for _ in 0 ..< 30 {
+                if model.typeIntoShown(text) { break }
+                try? await Task.sleep(for: .seconds(1))
+            }
         }
         // `WHEEL_SWIPE=<n>` raises the keyboard in the shown terminal, then swipes to the n-th page.
         if let n = env["WHEEL_SWIPE"].flatMap(Int.init), case let panes = Pages(model.activeSpace).panes, (1...max(panes.count, 1)).contains(n) {
@@ -441,12 +445,13 @@ private struct AgentsButton: View {
 /// the last good view stays under it.
 private struct PluginPage: View {
     let model: PhoneModel
+    /// The plugin pane's id.
+    let pane: String
     let plugin: PluginPane
 
     var body: some View {
         PluginPaneView(pane: plugin)
-            // A terminal inside a page is not drawn here yet (wheel-pmf2.15): nil gives WheelUI's own note.
-            .environment(\.a2uiPaneEmbed, { embed in embed.kind == .agentChat ? AnyView(PluginEmbed(model: model, embed: embed)) : nil })
+            .environment(\.a2uiPaneEmbed, { embed in AnyView(PluginEmbed(model: model, host: pane, embed: embed)) })
             .overlay(alignment: .top) {
                 if let error = plugin.error {
                     Text(error)
@@ -464,19 +469,25 @@ private struct PluginPage: View {
     }
 }
 
-/// An agent pane a plugin pane's view shows inside itself (`AgentChat{pane}`, ADR-0042), drawn as its own page draws it,
-/// at the height the script gave. A pane that is gone or holds no agent says so.
+/// A pane a plugin pane's view shows inside itself (`Terminal{pane}` or `AgentChat{pane}`, ADR-0042), drawn as its own
+/// page draws it, at the height the script gave. A pane that is gone or holds the other kind says so.
 private struct PluginEmbed: View {
     let model: PhoneModel
+    /// The plugin pane whose page this is.
+    let host: String
     let embed: A2UIPaneEmbed
 
     var body: some View {
         let kind = model.kind(ofPane: embed.pane)
         Group {
-            if case let .agent(agent, harness, _)? = kind, let chat = model.chats[agent] {
-                AgentPane(model: model, pane: embed.pane, agent: agent, harness: harness, chat: chat)
-            } else {
-                note(kind == nil ? "Pane \(embed.pane) is gone" : "Pane \(embed.pane) holds no agent")
+            switch (embed.kind, kind) {
+            case let (.agentChat, .agent(agent, harness, _)?) where model.chats[agent] != nil:
+                AgentPane(model: model, pane: embed.pane, agent: agent, harness: harness, chat: model.chats[agent]!)
+            case let (.terminal, .terminal(term, _)?):
+                // A new identity per term: a pane that starts another shell gets a new surface.
+                PluginTerminalEmbed(model: model, host: host, term: term).id(term)
+            default:
+                note(kind == nil ? "Pane \(embed.pane) is gone" : "Pane \(embed.pane) holds no \(embed.kind == .terminal ? "terminal" : "agent")")
             }
         }
         .onChange(of: "\(embed.pane) \(kind?.name ?? "gone")", initial: true) { _, shown in Log.info("plugin embed \(embed.kind.rawValue) \(shown)") }
@@ -490,6 +501,24 @@ private struct PluginEmbed: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+}
+
+/// A terminal pane inside a plugin pane's page: a Ghostty surface of its own, never the terminal page's (one surface draws
+/// in one view), streamed while the page is on screen and sizing the shell while the page is the one shown.
+private struct PluginTerminalEmbed: View {
+    let model: PhoneModel
+    @StateObject private var terminal: PhoneTerminal
+
+    init(model: PhoneModel, host: String, term: String) {
+        self.model = model
+        _terminal = StateObject(wrappedValue: model.embedTerminal(host: host, term: term))
+    }
+
+    var body: some View {
+        TerminalPage(model: model, terminal: terminal, termState: terminal.view)
+            .onAppear { model.embedShown(terminal) }
+            .onDisappear { model.embedHidden(terminal) }
+    }
 }
 
 /// What a page shows until the agent and web panes land.

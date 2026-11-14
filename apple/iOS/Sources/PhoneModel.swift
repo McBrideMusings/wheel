@@ -121,9 +121,19 @@ final class PhoneModel {
     private(set) var pairProblem: String?
     /// One Ghostty surface per terminal pane the phone has shown, keyed by the term id the tree names.
     private(set) var terminals: [String: PhoneTerminal] = [:]
-    /// The terminal the visible page shows: the only one attached, so the phone's grid size is the
-    /// size the shell has while the page is up.
+    /// The terminal the visible page shows. With the terms `embeds` the shown plugin page draws, the only ones attached,
+    /// so the phone's grid size is the size the shell has while the page is up.
     private var shownTerm: String?
+    /// The surfaces plugin pages draw for `Terminal{pane}` (ADR-0042), one per embed view while it is on screen, in the
+    /// order they came up; each is its own Ghostty surface, never the terminal page's, since one surface draws in one view.
+    /// The carousel's paged TabView holds extra copies of a page for a moment while the space's tree changes, so one
+    /// embed can be here more than once; the newest of a term sizes the shell.
+    private var embeds: [PhoneTerminal] = []
+    /// For each term being attached, the replay bytes still to come and the surfaces they go to: only the surfaces
+    /// that were not yet drawing, so a surface already showing the screen is not reset when another embed comes up.
+    private var replays: [String: (bytes: Int, to: [PhoneTerminal])] = [:]
+    /// The terms this connection streams: `shownTerm` and the shown plugin page's embedded terms.
+    private var attachedTerms: Set<String> = []
     /// The pane the visible page shows. Every layout looks its terminal up again: a pane can turn
     /// into a terminal while it is on screen (a runner splits an empty pane, then starts its shell).
     private var shownPane: String?
@@ -234,6 +244,9 @@ final class PhoneModel {
         pendingPane = nil
         reportedView = nil
         terminals = [:]
+        embeds = []
+        replays = [:]
+        attachedTerms = []
         terminalControllers = [:]
         terminalLooks = [:]
         shownTerm = nil
@@ -359,8 +372,9 @@ final class PhoneModel {
             layoutArrived(spaces, sessions: sessions)
             // A new connection holds no feeds: each plugin pane kept from the last one asks for its script and feeds again.
             for link in heldPlugins where pluginPanes[link.pane] === link { link.start() }
-            // A fresh connection starts with its first status: attach the page that is showing again.
-            if let shownTerm { attach(shownTerm) }
+            // A fresh connection starts with its first status: attach the page that is showing, and its embeds, again.
+            attachedTerms = []
+            syncAttachments()
             // The attaches below replace each held transcript with the daemon's current one.
             for chat in known where chats[chat.name] === chat { attach(chat) }
         case let .paired(device, credential):
@@ -439,18 +453,37 @@ final class PhoneModel {
                 return space
             }
         case let .termAttached(_, id, replayBytes):
-            guard id == shownTerm, let terminal = terminals[id] else { return }
-            // Every attach (and every resync) replays from scratch: reset the screen first.
-            terminal.session.receive(Data("\u{1b}c".utf8))
-            terminal.attached = true
-            Log.info("attached to \(id), replay \(replayBytes) bytes")
+            guard attachedTerms.contains(id) else { return }
+            // Every attach replays the screen from scratch. It goes to the surfaces not yet drawing, reset first; when
+            // every surface is drawing (the daemon's resync after the phone fell behind) it goes to all of them.
+            let all = surfaces(of: id)
+            let fresh = all.filter { !$0.attached }
+            let to = fresh.isEmpty ? all : fresh
+            replays[id] = (replayBytes, to)
+            for terminal in to {
+                terminal.session.receive(Data("\u{1b}c".utf8))
+                terminal.attached = true
+                settle(terminal)
+            }
+            Log.info("attached to \(id), replay \(replayBytes) bytes to \(to.count) of \(all.count) surfaces")
         case let .termOutput(id, data):
-            terminals[id]?.session.receive(data)
+            var live = data
+            if let replay = replays[id] {
+                // The first `bytes` of output after an attach are its replay.
+                let n = min(replay.bytes, data.count)
+                for terminal in replay.to { terminal.session.receive(data.prefix(n)) }
+                live = data.dropFirst(n)
+                replays[id] = replay.bytes - n > 0 ? (replay.bytes - n, replay.to) : nil
+            }
+            if !live.isEmpty { for terminal in surfaces(of: id) { terminal.session.receive(live) } }
         case let .termExited(id, code):
-            guard let terminal = terminals[id] else { return }
-            terminal.attached = false
+            let shown = surfaces(of: id)
+            guard !shown.isEmpty else { return }
             Log.info("terminal \(id) exited with \(code.map(String.init) ?? "?")")
-            terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
+            for terminal in shown {
+                terminal.attached = false
+                terminal.session.receive(Data("\r\n[shell exited — close this pane and split for a new one]\r\n".utf8))
+            }
         case .usage, .usageChanged:
             // A new reading changes the weekly figure of every login a header has asked about.
             if let client { for pane in logins.keys { client.send(.paneInfo(req: client.req(), pane: pane)) } }
@@ -964,17 +997,70 @@ final class PhoneModel {
     }
 
     private func showTerm() {
-        let term = activeSpace?.allPanes.first { $0.id == shownPane }.flatMap { entry -> String? in
+        shownTerm = activeSpace?.allPanes.first { $0.id == shownPane }.flatMap { entry -> String? in
             if case let .terminal(term, _) = entry.kind { term } else { nil }
         }
-        guard term != shownTerm else { return }
-        if let old = shownTerm {
+        syncAttachments()
+    }
+
+    /// Every surface that draws `term`: its page's and each embed's.
+    private func surfaces(of term: String) -> [PhoneTerminal] {
+        guard !embeds.isEmpty else { return terminals[term].map { [$0] } ?? [] }
+        return (terminals[term].map { [$0] } ?? []) + embeds.filter { $0.term == term }
+    }
+
+    /// The embed of `term` on the shown plugin page that sizes the shell: the newest one up.
+    private func drivingEmbed(of term: String) -> PhoneTerminal? {
+        embeds.last { $0.term == term && $0.host == shownPane }
+    }
+
+    /// Attach the terms the shown page needs (its own, or the embeds of a plugin page) and detach the rest.
+    private func syncAttachments() {
+        var wanted = Set<String>()
+        if let shownTerm { wanted.insert(shownTerm) }
+        for embed in embeds where embed.host == shownPane { wanted.insert(embed.term) }
+        for old in attachedTerms.subtracting(wanted) {
             client?.send(.termDetach(id: old))
-            terminals[old]?.attached = false
+            for terminal in surfaces(of: old) { terminal.attached = false }
             Log.info("detached from \(old)")
         }
-        shownTerm = term
-        if let term { attach(term) }
+        let added = wanted.subtracting(attachedTerms)
+        attachedTerms = wanted
+        for term in added { attach(term) }
+    }
+
+    /// A plugin page's `Terminal{pane}` came on screen: a surface of its own for `term`, streamed while `host` is shown.
+    func embedTerminal(host: String, term: String) -> PhoneTerminal {
+        PhoneTerminal(term: term, host: host, controller: terminalController(for: spaceId(ofTerm: term)), model: self)
+    }
+
+    func embedShown(_ terminal: PhoneTerminal) {
+        guard !embeds.contains(where: { $0 === terminal }) else { return }
+        embeds.append(terminal)
+        terminal.attached = false
+        terminal.size = nil
+        Log.info("plugin embed terminal \(terminal.host ?? "?") shows \(terminal.term): \(embeds.count) embed surfaces")
+        if attachedTerms.contains(terminal.term) {
+            // Already streamed (another embed of it): attach again for the replay, which goes to this surface alone.
+            Log.info("attaching to \(terminal.term) for a new surface")
+            client?.send(.termAttach(req: client?.req(), id: terminal.term))
+        } else {
+            syncAttachments()
+        }
+    }
+
+    func embedHidden(_ terminal: PhoneTerminal) {
+        guard let i = embeds.firstIndex(where: { $0 === terminal }) else { return }
+        embeds.remove(at: i)
+        terminal.attached = false
+        if let replay = replays[terminal.term] { replays[terminal.term] = (replay.bytes, replay.to.filter { $0 !== terminal }) }
+        Log.info("plugin embed terminal \(terminal.host ?? "?") hid \(terminal.term): \(embeds.count) embed surfaces")
+        syncAttachments()
+        // The next newest embed of the term, if one is left, sizes the shell now.
+        if let next = drivingEmbed(of: terminal.term) {
+            next.size = nil
+            settle(next)
+        }
     }
 
     /// What pane `pane` shows, in any space; nil when it is gone.
@@ -986,28 +1072,40 @@ final class PhoneModel {
     }
 
     #if DEBUG
+    /// The surface checks type into: the shown terminal page's, else the shown plugin page's first terminal embed.
+    private var shownSurface: PhoneTerminal? {
+        if let shownTerm { return terminals[shownTerm] }
+        return embeds.last { $0.host == shownPane }
+    }
+
     /// Checks type through the surface as the keyboard would: `text` as a paste, then Return.
-    func typeIntoShown(_ text: String) {
-        guard let shownTerm, let terminal = terminals[shownTerm] else { return }
+    /// False while no attached surface is shown.
+    @discardableResult
+    func typeIntoShown(_ text: String) -> Bool {
+        guard let terminal = shownSurface, terminal.attached else { return false }
         let pasted = terminal.view.paste(text: text), entered = terminal.view.sendKey(.enter)
-        Log.info("typed into \(shownTerm): paste \(pasted), return \(entered)")
+        Log.info("typed into \(terminal.term)\(terminal.host.map { " in plugin pane \($0)" } ?? ""): paste \(pasted), return \(entered)")
+        return true
     }
 
     /// Checks raise the keyboard in the shown terminal as a tap on it does.
     func focusShown() {
-        guard let shownTerm, let terminal = terminals[shownTerm] else { return }
+        guard let terminal = shownSurface else { return }
         terminal.view.requestFocus()
-        Log.info("keyboard requested in \(shownTerm)")
+        Log.info("keyboard requested in \(terminal.term)")
     }
     #endif
 
     private func attach(_ term: String) {
-        let terminal = self.terminal(term)
-        terminal.attached = false
-        terminal.size = nil
+        if term == shownTerm { _ = terminal(term) }
+        replays[term] = nil
+        for terminal in surfaces(of: term) {
+            terminal.attached = false
+            terminal.size = nil
+        }
         Log.info("attaching to \(term)")
         client?.send(.termAttach(req: client?.req(), id: term))
-        settle(terminal)
+        for terminal in surfaces(of: term) { settle(terminal) }
     }
 
     private func dropGoneTerminals() {
@@ -1019,15 +1117,16 @@ final class PhoneModel {
             if shownTerm == term { shownTerm = nil }
             Log.info("terminal \(term) left the layout")
         }
+        attachedTerms.formIntersection(held)
     }
 
-    func typed(_ term: String, _ data: Data) {
-        guard terminals[term]?.attached == true else { return }
-        client?.send(.termInput(req: nil, id: term, data: data))
+    func typed(_ terminal: PhoneTerminal, _ data: Data) {
+        guard terminal.attached else { return }
+        client?.send(.termInput(req: nil, id: terminal.term, data: data))
     }
 
-    func resized(_ term: String, _ vp: InMemoryTerminalViewport) {
-        guard vp.columns > 0, vp.rows > 0, let terminal = terminals[term] else { return }
+    func resized(_ terminal: PhoneTerminal, _ vp: InMemoryTerminalViewport) {
+        guard vp.columns > 0, vp.rows > 0 else { return }
         terminal.reported = vp
         settle(terminal)
     }
@@ -1038,7 +1137,9 @@ final class PhoneModel {
     /// Called when the surface reports, when the page's layout changes and when it is attached,
     /// whichever comes last.
     func settle(_ terminal: PhoneTerminal) {
-        guard terminal.term == shownTerm, terminal.attached || terminal.size == nil, let vp = terminal.reported else { return }
+        // The shown page sizes the shell: the terminal's own page, or the newest embed of it on a plugin page.
+        let drives = terminal.host == nil ? terminal.term == shownTerm : drivingEmbed(of: terminal.term) === terminal
+        guard drives, terminal.attached || terminal.size == nil, let vp = terminal.reported else { return }
         let cols = Int(vp.columns), rows = Int(vp.rows)
         guard let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 else {
             Log.info("surface \(terminal.term) \(cols)x\(rows): held until the page is laid out")
