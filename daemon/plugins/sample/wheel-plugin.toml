@@ -1,0 +1,8 @@
+[plugin]
+id = "sample"
+version = "0.1.0"
+
+[[pane]]
+id = "counter"
+title = "Sample counter"
+script = "main.luau"

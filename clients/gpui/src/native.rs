@@ -119,6 +119,11 @@ impl Native {
     pub fn open_artifact(&self, pane: &str, name: &str, scope: &str, space: Option<&str>, cwd: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws}));
     }
+    /// Show plugin pane `pane` (ADR-0041): the bridge draws its Luau script as A2UI components, asking wheeld at `ws`
+    /// for the script and again whenever it changes on disk.
+    pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, ws: &str) {
+        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"ws":ws}));
+    }
     /// Show a browser pane on `url` (ADR-0005): WheelUI's `BrowserPane`, the model the Swift Mac
     /// app shows under its chrome. `remote` says wheeld runs on another machine, so a file page
     /// names a path this Mac does not have. Opening it again sends the pane to `url` as the daemon
@@ -221,6 +226,8 @@ pub enum BrowserEvent {
     Typed { pane: String, text: String },
     /// The page wrote to its console (`pane_console`); `reset` says it just loaded.
     Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
+    /// A plugin pane drew its view or failed: `error` is the one-line message in the pane's header, or None.
+    Plugin { pane: String, error: Option<String> },
     /// The person picked a folder in Open Folder's system picker (`choose_folder`).
     FolderChosen { path: String },
     /// The reply the app's synthesizer reads now (`read_aloud`), or None once it stops; sent to
@@ -255,6 +262,10 @@ mod tests {
         assert!(matches!(typed, Frame::Event(BrowserEvent::Typed { ref text, .. }) if text == "example.com"));
         let console: Frame = serde_json::from_str(r#"{"event":"console","pane":"p3","reset":true,"entries":[{"time":5,"level":"log","text":"hi"}]}"#).unwrap();
         assert!(matches!(console, Frame::Event(BrowserEvent::Console { reset: true, ref entries, .. }) if entries.len() == 1 && entries[0].text == "hi"));
+        let plugin: Frame = serde_json::from_str(r#"{"event":"plugin","pane":"p5","error":"sample/main.luau:3: boom"}"#).unwrap();
+        assert!(matches!(plugin, Frame::Event(BrowserEvent::Plugin { ref pane, error: Some(ref e) }) if pane == "p5" && e.contains("boom")));
+        let healthy: Frame = serde_json::from_str(r#"{"event":"plugin","pane":"p5","error":null}"#).unwrap();
+        assert!(matches!(healthy, Frame::Event(BrowserEvent::Plugin { error: None, .. })));
         let pressed: Frame = serde_json::from_str(r#"{"event":"pressed","pane":"p4","point":[12.5,40]}"#).unwrap();
         assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
         let reduced: Frame = serde_json::from_str(r#"{"event":"reduce_motion","on":true}"#).unwrap();

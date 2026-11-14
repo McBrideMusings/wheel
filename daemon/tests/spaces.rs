@@ -149,6 +149,7 @@ fn terminal(pane: &str) -> ClientMsg {
         artifact: None,
         scope: None,
         url: None,
+        plugin: None,
     }
 }
 
@@ -169,6 +170,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
                 PaneKind::Empty { .. }
                 | PaneKind::Web { .. }
                 | PaneKind::Browser { .. }
+                | PaneKind::Plugin { .. }
                 | PaneKind::Agent { .. }
                 | PaneKind::Unknown(_) => None,
             }),
@@ -569,6 +571,7 @@ async fn bad_requests_are_refused() {
             artifact: None,
             scope: None,
             url: None,
+            plugin: None,
         },
     ] {
         assert!(
@@ -1021,6 +1024,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
         artifact: artifact.map(str::to_string),
         scope: None,
         url: None,
+        plugin: None,
     };
     assert!(
         matches!(call(&mut ws, web(None)).await, ServerMsg::Error { .. }),
@@ -1059,6 +1063,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
             artifact: Some("site".into()),
             scope: Some(wheel_proto::ArtifactScope::Machine),
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -1077,6 +1082,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
             artifact: Some("site".into()),
             scope: Some(wheel_proto::ArtifactScope::Project),
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -1219,6 +1225,7 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
                 artifact: Some("viewer".into()),
                 scope: Some(ArtifactScope::Machine),
                 url: None,
+                plugin: None,
             },
         )
         .await;
@@ -1293,6 +1300,7 @@ async fn an_entry_serves_a_page_from_anywhere_and_nothing_outside_its_folder() {
         artifact: Some(name.into()),
         scope: None,
         url: None,
+        plugin: None,
     };
     let cookie = format!("Cookie: wheel_token={TOKEN}\r\n");
     let get = |path: &str| format!("/artifacts/{pane}/{path}");
@@ -2453,6 +2461,7 @@ async fn a_refresh_runs_for_a_pane_without_asking() {
         artifact: Some("dash".into()),
         scope: None,
         url: None,
+        plugin: None,
     };
 
     // Opening the pane runs the command.
@@ -2577,6 +2586,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         artifact: None,
         scope: None,
         url: url.map(str::to_string),
+        plugin: None,
     };
     // What a client sends as the person navigates.
     let goto = |url: &str| ClientMsg::PaneBrowserUrl {
@@ -2690,6 +2700,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         artifact: None,
         scope: None,
         url: Some("https://example.com".into()),
+        plugin: None,
     };
     assert!(
         matches!(call(&mut ws, msg).await, ServerMsg::Error { message, .. } if message.contains("url is only for a browser pane")),
@@ -2717,6 +2728,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
             artifact: Some("dash".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -2813,6 +2825,7 @@ async fn browsing_tells_clients_one_field_and_writes_the_file_once_per_burst() {
             artifact: None,
             scope: None,
             url: Some("https://example.com/0".into()),
+            plugin: None,
         },
     )
     .await;
@@ -2921,6 +2934,7 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
             artifact: None,
             scope: None,
             url: Some("https://example.com/0".into()),
+            plugin: None,
         },
     )
     .await;
@@ -3692,6 +3706,7 @@ async fn a_refresh_failing_alike_backs_the_timer_off() {
             artifact: Some("flaky".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -3766,6 +3781,7 @@ async fn every_runs_the_refresh_on_a_timer() {
         artifact: Some("clock".into()),
         scope: None,
         url: None,
+        plugin: None,
     };
     ok(&mut ws, web.clone()).await;
 
@@ -4762,6 +4778,7 @@ async fn a_page_stores_state_and_receives_pushed_data() {
             artifact: Some("site".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -5417,6 +5434,7 @@ async fn a_post_is_drawn_by_its_renderers_page_from_its_own_files() {
             artifact: Some("ask".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -5535,6 +5553,7 @@ async fn a_pages_send_is_stored_and_delivered_where_the_entry_says() {
             artifact: Some("form".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -5617,6 +5636,7 @@ async fn a_pages_review_flag_is_journaled() {
             artifact: Some("review".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -6159,6 +6179,7 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
             artifact: None,
             scope: None,
             url: Some("https://example.com/0".into()),
+            plugin: None,
         },
     )
     .await;
@@ -6483,6 +6504,7 @@ async fn a_url_artifact_opens_a_browser_pane() {
             artifact: Some("sim".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -7042,6 +7064,7 @@ async fn an_app_lives_with_its_pane(machine: bool) {
             artifact: Some("dash".into()),
             scope,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -7179,6 +7202,7 @@ async fn two_apps_announce_different_ports() {
                 artifact: Some("dash".into()),
                 scope: None,
                 url: None,
+                plugin: None,
             },
         )
         .await;
@@ -7225,6 +7249,7 @@ restart = "never"
                 artifact: Some(name.into()),
                 scope: None,
                 url: None,
+                plugin: None,
             },
         )
         .await;
@@ -7575,6 +7600,7 @@ async fn a_web_pane_hosts_an_mcp_servers_view() {
         artifact: Some(artifact.into()),
         scope: Some(wheel_proto::ArtifactScope::Project),
         url: None,
+        plugin: None,
     };
 
     ok(&mut ws, show("apps")).await;
@@ -7738,6 +7764,7 @@ s.serve_forever()
             artifact: Some("dash".into()),
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -8137,4 +8164,213 @@ async fn pane_open_and_pane_run_create_a_pane_popped_out_or_backgrounded() {
     assert!(matches!(refused, ServerMsg::Error { .. }), "{refused:?}");
     let (spaces, _) = layout(&mut ws).await;
     assert_eq!(spaces[0].popped.len(), 1, "a refused open leaves no pane");
+}
+
+fn plugin_manifest(id: &str) -> String {
+    format!(
+        "[plugin]\nid = \"{id}\"\nversion = \"1.0.0\"\n\n[[pane]]\nid = \"main\"\ntitle = \"Main\"\nscript = \"main.luau\"\n"
+    )
+}
+
+fn set_plugin(pane: &str, plugin: Option<(&str, &str)>) -> ClientMsg {
+    ClientMsg::PaneSetKind {
+        req: Some(40),
+        pane: pane.into(),
+        kind: NewPaneKind::Plugin,
+        artifact: None,
+        scope: None,
+        url: None,
+        plugin: plugin.map(|(plugin, pane)| wheel_proto::PluginPaneRef {
+            plugin: plugin.into(),
+            pane: pane.into(),
+        }),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_pane_resolves_serves_its_script_and_pushes_a_save() {
+    let dir = std::env::temp_dir().join(format!("wheel-plugin-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (space_a, space_b) = (dir.join("a"), dir.join("b"));
+    let package = space_a.join(".wheel/plugins/demo");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::create_dir_all(&space_b).unwrap();
+    std::fs::write(package.join("wheel-plugin.toml"), plugin_manifest("demo")).unwrap();
+    std::fs::write(package.join("main.luau"), "-- one").unwrap();
+    let inst = dir.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let (url, _daemon) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let id_of = |spaces: &[SpaceInfo], cwd: &std::path::Path| {
+        spaces.iter().find(|s| s.cwd == cwd.to_str().unwrap()).unwrap().clone()
+    };
+    created(&mut ws, new_space(space_a.to_str().unwrap())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let a = id_of(&spaces, &space_a);
+    created(&mut ws, new_space(space_b.to_str().unwrap())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let b = id_of(&spaces, &space_b);
+
+    // Listing: the project plugin only in its own space; the built-in everywhere.
+    let ids = |reply: ServerMsg| match reply {
+        ServerMsg::Plugins { plugins, .. } => plugins.into_iter().map(|p| p.id).collect::<Vec<_>>(),
+        other => panic!("expected plugins, got {other:?}"),
+    };
+    let in_a = ids(call(&mut ws, ClientMsg::PluginLs { req: Some(41), space: Some(a.id.clone()) }).await);
+    let in_b = ids(call(&mut ws, ClientMsg::PluginLs { req: Some(42), space: Some(b.id.clone()) }).await);
+    assert_eq!(in_a, ["demo", "sample"]);
+    assert_eq!(in_b, ["sample"]);
+
+    // Setting the kind is checked against the pane's own space.
+    let pane_a = first_pane(&a.root);
+    let pane_b = first_pane(&b.root);
+    for bad in [
+        set_plugin(&pane_a, None),
+        set_plugin(&pane_a, Some(("ghost", "main"))),
+        set_plugin(&pane_a, Some(("demo", "ghost"))),
+        set_plugin(&pane_b, Some(("demo", "main"))),
+    ] {
+        assert!(matches!(call(&mut ws, bad).await, ServerMsg::Error { .. }));
+    }
+    let mut other_kind = terminal(&pane_a);
+    if let ClientMsg::PaneSetKind { plugin, .. } = &mut other_kind {
+        *plugin = Some(wheel_proto::PluginPaneRef { plugin: "demo".into(), pane: "main".into() });
+    }
+    assert!(matches!(call(&mut ws, other_kind).await, ServerMsg::Error { .. }));
+    ok(&mut ws, set_plugin(&pane_a, Some(("demo", "main")))).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(matches!(
+        find_kind(&id_of(&spaces, &space_a).root, &pane_a),
+        Some(PaneKind::Plugin { plugin, pane, .. }) if plugin == "demo" && pane == "main"
+    ));
+
+    // The script is read now; a pane that is not a plugin pane is refused.
+    match call(&mut ws, ClientMsg::PluginSource { req: Some(43), pane: pane_a.clone() }).await {
+        ServerMsg::PluginSource { chunk, source, .. } => {
+            assert_eq!((chunk.as_str(), source.as_str()), ("demo/main.luau", "-- one"));
+        }
+        other => panic!("expected plugin_source, got {other:?}"),
+    }
+    assert!(matches!(
+        call(&mut ws, ClientMsg::PluginSource { req: Some(44), pane: pane_b.clone() }).await,
+        ServerMsg::Error { .. }
+    ));
+
+    // A save, by rename as editors do, reaches the connection unasked.
+    let staged = package.join(".main.luau.tmp");
+    std::fs::write(&staged, "-- two").unwrap();
+    let saved = std::time::Instant::now();
+    std::fs::rename(&staged, package.join("main.luau")).unwrap();
+    let pushed = loop {
+        match recv(&mut ws).await {
+            ServerMsg::PluginSource { req: None, pane, source, .. } => break (pane, source),
+            _ => continue,
+        }
+    };
+    assert_eq!(pushed, (pane_a.clone(), "-- two".to_string()));
+    assert!(saved.elapsed() < Duration::from_secs(1), "pushed in {:?}", saved.elapsed());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Send `msg` and read frames until the reply to `req` and an unasked `plugin_source` for `pane`
+/// have both come, in either order; returns (the reply's source, the pushed source).
+async fn reply_and_push(ws: &mut Ws, msg: ClientMsg, req: u64, pane: &str) -> (String, String) {
+    ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+        .await
+        .unwrap();
+    let (mut reply, mut pushed) = (None, None);
+    let both = async {
+        while reply.is_none() || pushed.is_none() {
+            if let ServerMsg::PluginSource { req: r, pane: p, source, .. } = recv(ws).await {
+                match r {
+                    Some(r) if r == req => reply = Some(source),
+                    None if p == pane => pushed = Some(source),
+                    _ => {}
+                }
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), both)
+        .await
+        .expect("both the reply and the push arrived");
+    (reply.unwrap(), pushed.unwrap())
+}
+
+/// The next unasked `plugin_source` for `pane`: its source.
+async fn next_push(ws: &mut Ws, pane: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ServerMsg::PluginSource { req: None, pane: p, source, .. } = recv(ws).await {
+                if p == pane {
+                    return source;
+                }
+            }
+        }
+    })
+    .await
+    .expect("a push arrived")
+}
+
+/// Set up a daemon with one space at `<dir>/a` whose pane shows `plugin`/`plugin_pane`.
+async fn plugin_space(dir: &std::path::Path, plugin: (&str, &str)) -> (Ws, common::Daemon, String) {
+    let space = dir.join("a");
+    std::fs::create_dir_all(&space).unwrap();
+    let inst = dir.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let (url, daemon) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(space.to_str().unwrap())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    ok(&mut ws, set_plugin(&pane, Some(plugin))).await;
+    (ws, daemon, pane)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_request_inside_the_debounce_does_not_stop_the_push() {
+    let dir = std::env::temp_dir().join(format!("wheel-plugin-debounce-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let package = dir.join("a/.wheel/plugins/demo");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("wheel-plugin.toml"), plugin_manifest("demo")).unwrap();
+    std::fs::write(package.join("main.luau"), "-- one").unwrap();
+    let (mut ws, _daemon, pane) = plugin_space(&dir, ("demo", "main")).await;
+
+    // A client asks for the source right after the save, before the watch has read it.
+    std::fs::write(package.join("main.luau"), "-- two").unwrap();
+    let (reply, pushed) = reply_and_push(
+        &mut ws,
+        ClientMsg::PluginSource { req: Some(60), pane: pane.clone() },
+        60,
+        &pane,
+    )
+    .await;
+    assert_eq!(pushed, "-- two", "every client gets the save, whoever asked in between");
+    assert!(reply == "-- one" || reply == "-- two");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_folder_made_after_the_pane_opened_is_watched() {
+    let dir = std::env::temp_dir().join(format!("wheel-plugin-late-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // The built-in sample is all there is: the project has no `.wheel` folder yet.
+    let (mut ws, _daemon, pane) = plugin_space(&dir, ("sample", "counter")).await;
+    let plugins = dir.join("a/.wheel/plugins");
+    let manifest = "[plugin]\nid = \"sample\"\nversion = \"2.0.0\"\n\n[[pane]]\nid = \"counter\"\ntitle = \"Counter\"\nscript = \"main.luau\"\n";
+    let make = |text: &str| {
+        std::fs::create_dir_all(plugins.join("sample")).unwrap();
+        std::fs::write(plugins.join("sample/wheel-plugin.toml"), manifest).unwrap();
+        std::fs::write(plugins.join("sample/main.luau"), text).unwrap();
+    };
+    make("-- project one");
+    assert_eq!(next_push(&mut ws, &pane).await, "-- project one");
+    // The folder goes (the built-in shows again) and comes back: the new folder is watched too.
+    std::fs::remove_dir_all(dir.join("a/.wheel")).unwrap();
+    assert!(next_push(&mut ws, &pane).await.contains("update"), "the built-in script is back");
+    make("-- project two");
+    assert_eq!(next_push(&mut ws, &pane).await, "-- project two");
+    std::fs::write(plugins.join("sample/main.luau"), "-- project three").unwrap();
+    assert_eq!(next_push(&mut ws, &pane).await, "-- project three");
+    let _ = std::fs::remove_dir_all(&dir);
 }

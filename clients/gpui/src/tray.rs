@@ -96,7 +96,7 @@ pub fn title(leaf: &Leaf) -> String {
     match leaf.kind.as_str() {
         "empty" => "Empty pane".into(),
         "terminal" => leaf.harness.as_deref().map_or_else(|| "Terminal".into(), crate::settings::agent_title),
-        "web" => leaf.label.clone(),
+        "web" | "plugin" => leaf.label.clone(),
         "browser" => {
             let url = leaf.url.as_deref().unwrap_or(&leaf.label);
             url.split_once("://").map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or_default())
@@ -114,7 +114,7 @@ pub fn icon(kind: &str) -> &'static str {
     match kind {
         "empty" => "rectangle.dashed",
         "terminal" => "terminal",
-        "web" => "doc.text",
+        "web" | "plugin" => "doc.text",
         "browser" => "safari",
         "agent" => "bubble.left.and.text.bubble.right",
         _ => "questionmark.square.dashed",

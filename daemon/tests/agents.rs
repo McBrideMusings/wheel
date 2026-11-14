@@ -3082,6 +3082,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
             artifact: None,
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;
@@ -3312,6 +3313,7 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
             artifact: None,
             scope: None,
             url: None,
+            plugin: None,
         },
     )
     .await;

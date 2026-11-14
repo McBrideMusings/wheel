@@ -66,7 +66,12 @@ def sign(path):
         sys.exit(f'codesign of {path} failed: {signed.stderr.strip()}')
 fresh(contents / 'MacOS/libWheelGpuiBridge.dylib')
 subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-library', '-module-name', 'WheelGpuiBridge',
-    '-I', str(products), '-I', str(headers), str(client / 'native/Bridge.swift'),
+    '-I', str(products), '-I', str(headers),
+    # WheelUI's PluginPane uses WheelLuau, whose C modules (the Luau headers) the compiler still loads from WheelUI's module;
+    # Xcode wrote their module maps beside the objects.
+    *[arg for name in ['CLuau', 'LuauCore'] for arg in ['-Xcc', f'-fmodule-map-file={products.parents[1] / "Intermediates.noindex/GeneratedModuleMaps" / (name + ".modulemap")}']],
+    '-Xcc', '-I' + str(repo / 'apple/WheelLuau/luau/VM/include'),
+    str(client / 'native/Bridge.swift'),
     # The Swift app's own source for how `terminal.*` settings become a Ghostty configuration.
     str(repo / 'apple/Shared/TerminalStyle.swift'),
     # The Swift app's menu bar image: the mark with the badge of spaces no window shows.

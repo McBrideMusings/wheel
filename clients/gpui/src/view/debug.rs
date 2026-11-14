@@ -175,7 +175,8 @@ impl Client {
                     "terminal" => NewPaneKind::Terminal,
                     "web" => NewPaneKind::Web,
                     "browser" => NewPaneKind::Browser,
-                    _ => return refuse(BAD, "kind must be empty, terminal, web or browser"),
+                    "plugin" => NewPaneKind::Plugin,
+                    _ => return refuse(BAD, "kind must be empty, terminal, web, browser or plugin"),
                 };
                 let artifact = q("artifact");
                 let scope = match q("scope").as_deref() {
@@ -184,13 +185,18 @@ impl Client {
                     Some("machine") => Some(wheel_proto::ArtifactScope::Machine),
                     Some(_) => return refuse(BAD, "scope must be project or machine"),
                 };
-                self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact, scope, url: None });
+                self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact, scope, url: None, plugin: q("plugin").zip(q("plugin_pane")).map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }) });
                 None
+            }
+            // A plugin pane's drawn view and script state: `action=state`, `press&component=<id>`, `set&path=/<id>&value=<text>`.
+            "/plugin" => {
+                let (Some(pane), Some(action)) = (q("pane"), q("action")) else { return refuse(BAD, "pane= and action=state|press|set are required") };
+                Some(self.native.call(json!({"op":"plugin","pane":pane,"action":action,"component":q("component"),"path":q("path"),"value":q("value")})))
             }
             "/start" => {
                 let (Some(pane), Some(kind)) = (q("pane"), q("kind")) else { return refuse(BAD, "pane= and kind=terminal|agent are required") };
                 match kind.as_str() {
-                    "terminal" => self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None }),
+                    "terminal" => self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None, plugin: None }),
                     "agent" => {
                         let Some(agent) = q("agent") else { return refuse(BAD, "agent=<name> is required") };
                         self.send(&ClientMsg::PaneStart { req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None });
@@ -703,6 +709,9 @@ impl Client {
             "quarantine": {"spaces": self.quarantine.spaces, "panes": self.quarantine.panes},
             "bridge": {"visible": native["visible"], "key_window": native["key_window"], "app_active": native["app_active"], "root_focused": native["root_focused"], "errors": native["errors"]},
         });
+        // The plugin panes each space's empty panes offer, as `<plugin>/<pane>` (the buttons' own list), and each plugin pane's header error.
+        out["plugins"] = self.plugins.iter().map(|(space, list)| (space.clone(), serde_json::json!(list.iter().flat_map(|p| p.panes.iter().map(move |pane| format!("{}/{}", p.id, pane.id))).collect::<Vec<_>>()))).collect::<serde_json::Map<_, _>>().into();
+        out["plugin_errors"] = serde_json::json!(self.plugin_errors);
         // The popped cards, bottom first, in window coordinates.
         out["cards"] = layers.iter().filter_map(|l| l.card.as_ref()).map(|c| json!({"panes": c.panes, "frame": [c.frame.x, c.frame.y, c.frame.w, c.frame.h], "grip": [c.grip.x, c.grip.y, c.grip.w, c.grip.h]})).collect();
         out["tray"] = self.tray_json();

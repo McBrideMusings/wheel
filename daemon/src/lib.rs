@@ -39,6 +39,7 @@ mod resume;
 mod runner_feed;
 mod server;
 mod settings;
+mod plugins;
 mod settings_watch;
 mod task_output;
 mod skills;

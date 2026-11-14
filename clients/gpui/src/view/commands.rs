@@ -98,7 +98,7 @@ impl Client {
     /// pane itself is resolved when the key arrives.
     fn enabled(&self, id: &str, routing: bool) -> bool {
         let up = self.link == Link::Up;
-        let drawn = |kind: &str| matches!(kind, "empty" | "terminal" | "web" | "browser" | "agent");
+        let drawn = |kind: &str| matches!(kind, "empty" | "terminal" | "web" | "browser" | "agent" | "plugin");
         let has_pane = || if routing { self.space().is_some_and(|s| leaves_of(&s.root).iter().any(|l| drawn(&l.kind))) } else { self.focused_leaf().is_some_and(|l| drawn(&l.kind)) };
         let spaces = || self.session_spaces().len();
         match id {
@@ -442,6 +442,7 @@ impl Client {
             NewPaneKind::Browser => ("shows a browser", "Show Browser"),
             NewPaneKind::Empty => ("is empty", "Empty Pane"),
             NewPaneKind::Web => ("shows an artifact", "Show Artifact"),
+            NewPaneKind::Plugin => ("shows a plugin pane", "Show Plugin Pane"),
         };
         self.confirm(title, format!("{message} The pane then {shows}."), button.into(), Pending::SetKind(pane.to_owned(), new));
     }
@@ -594,7 +595,7 @@ impl Client {
             }
             ServerMsg::Created { req, id, .. } if self.palette_reqs.artifact_after_split.contains_key(req) => {
                 let info = self.palette_reqs.artifact_after_split.remove(req).unwrap();
-                self.send(&ClientMsg::PaneSetKind { req: None, pane: id.clone(), kind: NewPaneKind::Web, artifact: Some(info.name), scope: Some(info.scope), url: None });
+                self.send(&ClientMsg::PaneSetKind { req: None, pane: id.clone(), kind: NewPaneKind::Web, artifact: Some(info.name), scope: Some(info.scope), url: None, plugin: None });
             }
             _ => return false,
         }

@@ -180,6 +180,9 @@ pub struct AppState {
     /// The watch on the `wheel.toml` files, and what clients were last told each scope resolves to.
     pub(crate) settings_watch: Mutex<Option<crate::settings_watch::Watch>>,
     pub(crate) settings_seen: Mutex<crate::settings_watch::Seen>,
+    /// The folders watched for plugin script saves, and the script each plugin pane last sent.
+    pub(crate) plugin_watch: Mutex<Option<crate::plugins::Watch>>,
+    pub(crate) plugin_seen: Mutex<crate::plugins::Seen>,
     /// One built-in install, update or removal at a time: each reads `installed.json`, changes
     /// files and writes it back.
     pub(crate) builtins_write: Mutex<()>,
@@ -346,6 +349,8 @@ impl AppState {
             settings_write: Mutex::new(()),
             settings_watch: Mutex::new(None),
             settings_seen: Mutex::new(Default::default()),
+            plugin_watch: Mutex::new(None),
+            plugin_seen: Mutex::new(Default::default()),
             builtins_write: Mutex::new(()),
             save_pending: AtomicBool::new(false),
             switching_views: Mutex::new(Default::default()),
@@ -960,6 +965,7 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
     crate::status::follow(state.clone());
     crate::push::follow(state.clone());
     state.sync_settings_watch();
+    state.sync_plugin_watch();
     state.builtins_catch_up();
     let shipper = state.clone();
     tokio::spawn(async move {
@@ -1864,13 +1870,14 @@ async fn handle(
             artifact,
             scope,
             url,
-        } => done(
-            req,
-            state
-                .pane_set_kind(&pane, kind, artifact, scope, url)
+            plugin,
+        } => {
+            let set = state
+                .pane_set_kind(&pane, kind, artifact, scope, url, plugin)
                 .await
-                .map(|_| ()),
-        ),
+                .map(|_| ());
+            done(req, set)
+        }
         // On a task of its own, never inline: an agent takes up to a minute to come up, and this
         // connection has to keep reading frames meanwhile — terminal input, agent attaches and
         // permission answers are on the same socket.
@@ -2673,6 +2680,44 @@ async fn handle(
         } => {
             let removed = state.setting_unset(&key, space.as_deref(), machine);
             settings_changed(state, req, removed, &key, &format!("setting unset {key}"))
+        }
+        ClientMsg::PluginLs { req, space } => {
+            let state = state.clone();
+            let listed = tokio::task::spawn_blocking(move || state.plugin_ls(space.as_deref()))
+                .await
+                .unwrap_or_else(|e| Err(format!("plugin ls failed: {e}")));
+            match listed {
+                Ok(plugins) => req.map(|req| ServerMsg::Plugins { req, plugins }),
+                Err(message) => {
+                    tracing::warn!(%peer, %message, "plugin ls failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
+        ClientMsg::PluginSource { req, pane } => {
+            let state = state.clone();
+            let read = {
+                let pane = pane.clone();
+                tokio::task::spawn_blocking(move || state.plugin_source(&pane)).await
+            };
+            match read {
+                Ok(Ok((plugin, plugin_pane, chunk, source))) => req.map(|_| ServerMsg::PluginSource {
+                    req,
+                    pane,
+                    plugin,
+                    plugin_pane,
+                    chunk,
+                    source,
+                }),
+                Ok(Err(message)) => {
+                    tracing::warn!(%peer, %pane, %message, "plugin source refused");
+                    Some(failed(req, message))
+                }
+                Err(e) => {
+                    tracing::error!(%peer, %pane, error = %e, "plugin source panicked");
+                    Some(failed(req, "plugin source failed".into()))
+                }
+            }
         }
         ClientMsg::ArtifactLs { req, space, pane } => {
             match state.artifact_ls(space.as_deref(), pane) {

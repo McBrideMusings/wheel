@@ -80,6 +80,10 @@ final class Slot: NSView {
     var cwd: String?
     var pageView: NSHostingView<A2UIPaneView>?
     var pageShown: Bool { page?.isNative == true }
+    /// A plugin pane (ADR-0041): its Luau script drawn as A2UI components, and the plugin and pane it runs, as wheeld names them.
+    var plugin: PluginPane?
+    var pluginView: NSHostingView<PluginPaneView>?
+    var pluginLabel: String?
     /// A browser pane: WheelUI's model, the one the Swift Mac app shows under its chrome. Here the
     /// GPUI view draws the chrome from the state the bridge emits on every change.
     var browser: BrowserPane?
@@ -94,7 +98,7 @@ final class Slot: NSView {
     var lagged = 0
     var writes: [String] = []
     init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
-    var content: NSView { (pageShown ? pageView : nil) ?? web ?? terminal! }
+    var content: NSView { pluginView ?? (pageShown ? pageView : nil) ?? web ?? terminal! }
 }
 
 /// A terminal that takes dropped files: each file's path, shell-escaped, pasted at the prompt as
@@ -174,6 +178,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var pageClient: DaemonClient?
     /// Where the daemon is and the token it wants, for every artifact page's scheme handler.
     let pageDaemon = PageDaemon()
+    /// The plugin panes' own connection to wheeld: it asks for each pane's script and hears every change to one. Unlike the
+    /// terminal socket it is opened again when it drops, and asks for every script again, as long as a plugin pane exists;
+    /// the last plugin pane closing closes it.
+    var pluginSocket: URLSessionWebSocketTask?
+    var pluginURL: String?
+    var pluginReqs: [Int: String] = [:]
+    var nextPluginReq = 1
+    /// Seconds to wait before the next reconnect: 1, doubling to 30, back to 1 once wheeld answers.
+    var pluginBackoff: UInt64 = 1
     var sendTask: Task<Void, Never>?
     var errors: [String] = []
     /// What the browser models logged, the last 200 lines, for the check's report.
@@ -303,6 +316,78 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         socket?.resume()
         receive()
     }
+    func pluginConnect(_ url: String) {
+        pluginURL = url
+        guard pluginSocket == nil, let target = URL(string: url) else { return }
+        let socket = URLSession.shared.webSocketTask(with: target)
+        pluginSocket = socket
+        socket.resume()
+        pluginReceive(socket)
+    }
+    /// Asks wheeld for a pane's script. With no connection, or a send that fails, the pane shows the failure and the request is
+    /// not kept: nothing would ever answer it.
+    func requestSource(_ host: PaneHost) {
+        if pluginSocket == nil, let url = pluginURL { pluginConnect(url) }
+        guard let socket = pluginSocket else {
+            host.plugin?.fail(message: "no connection to wheeld")
+            return
+        }
+        let req = nextPluginReq
+        nextPluginReq += 1
+        pluginReqs[req] = host.id
+        guard let data = try? JSONSerialization.data(withJSONObject: ["op": "plugin_source", "req": req, "pane": host.id] as [String: Any]),
+              let text = String(data: data, encoding: .utf8) else {
+            pluginReqs[req] = nil
+            host.plugin?.fail(message: "plugin_source could not be encoded")
+            return
+        }
+        Task { @MainActor in
+            do { try await socket.send(.string(text)) } catch {
+                errors.append("send plugin_source: " + error.localizedDescription)
+                guard pluginReqs.removeValue(forKey: req) != nil else { return }
+                host.plugin?.fail(message: "could not ask wheeld for the script: " + error.localizedDescription)
+            }
+        }
+    }
+    func pluginReceive(_ socket: URLSessionWebSocketTask) {
+        Task { @MainActor in
+            do {
+                let message = try await socket.receive()
+                let data: Data
+                switch message { case .string(let s): data = Data(s.utf8); case .data(let d): data = d; @unknown default: return }
+                pluginBackoff = 1
+                if let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] { pluginMessage(value) }
+                pluginReceive(socket)
+            } catch {
+                errors.append("plugin socket: " + error.localizedDescription)
+                guard pluginSocket === socket else { return }
+                pluginSocket = nil
+                // Nothing answers the requests that were waiting; each pane says so until its script loads again.
+                pluginReqs = [:]
+                panes.values.forEach { $0.plugin?.fail(message: "lost the connection to wheeld, retrying") }
+                let wait = pluginBackoff
+                pluginBackoff = min(pluginBackoff * 2, 30)
+                try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
+                guard pluginSocket == nil, panes.values.contains(where: { $0.plugin != nil }), let url = pluginURL else { return }
+                pluginConnect(url)
+                panes.values.filter { $0.plugin != nil }.forEach(requestSource)
+            }
+        }
+    }
+    /// `plugin_source`, asked for or pushed because the script changed, loads into the pane it names; an error answering
+    /// a request for one is that pane's failure.
+    func pluginMessage(_ value: [String: Any]) {
+        switch value["ev"] as? String {
+        case "plugin_source":
+            guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin, let source = value["source"] as? String else { return }
+            if let req = value["req"] as? Int { pluginReqs[req] = nil }
+            plugin.load(source: source, chunk: value["chunk"] as? String ?? "pane")
+        case "error":
+            guard let req = value["req"] as? Int, let pane = pluginReqs.removeValue(forKey: req) else { return }
+            panes[pane]?.plugin?.fail(message: value["message"] as? String ?? "plugin_source failed")
+        default: break
+        }
+    }
     func send(_ value: [String: Any]) {
         guard let socket, let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return }
         // URLSession sends from independently spawned tasks may overtake each other:
@@ -341,7 +426,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let id = value["pane"] as! String
         let kind = value["kind"] as! String
         let artifact = (value["artifact"] as? String).map { "\(value["scope"] as? String ?? "")/\($0)" }
-        if let existing = panes[id], existing.kind == kind, existing.artifact == artifact, existing.cwd == value["cwd"] as? String {
+        if let existing = panes[id], existing.kind == kind, existing.artifact == artifact, existing.cwd == value["cwd"] as? String, existing.pluginLabel == value["label"] as? String {
             if kind == "web", let url = value["url"] as? String, url != existing.url { existing.url = url; existing.web?.load(URLRequest(url: URL(string: url)!)) }
             if kind == "browser", let url = value["url"] as? String { existing.browser?.daemonSays(url) }
             return
@@ -350,7 +435,24 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let host = PaneHost(id: id, kind: kind)
         host.artifact = artifact
         host.cwd = value["cwd"] as? String
+        host.pluginLabel = value["label"] as? String
         root.addSubview(host.slot)
+        if kind == "plugin" {
+            let plugin = PluginPane()
+            plugin.onUpdate = { [weak self, weak plugin] in
+                guard let plugin else { return }
+                self?.emit(["event": "plugin", "pane": id, "error": plugin.error ?? NSNull()])
+            }
+            let view = NSHostingView(rootView: PluginPaneView(pane: plugin))
+            host.plugin = plugin
+            host.pluginView = view
+            host.slot.addSubview(view)
+            panes[id] = host
+            emit(["event": "plugin", "pane": id, "error": NSNull()])
+            if let ws = value["ws"] as? String { pluginConnect(ws) }
+            requestSource(host)
+            return
+        }
         if kind == "browser" {
             // The model reports the pages it lands on, asks what typed text means and relays the
             // page's console through the Rust side, which owns the connection to wheeld.
@@ -474,7 +576,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let id = value["id"] as! UInt64
         let pane = value["pane"] as! String
         guard let host = panes[pane] else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
-        if host.pageShown, let view = host.pageView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+        if let view = host.pluginView ?? (host.pageShown ? host.pageView : nil), let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
             guard let png = rep.representation(using: .png, properties: [:]) else { emit(["answer": "refused", "id": id, "message": "the page could not be encoded as a PNG"]); return }
             emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
@@ -528,6 +630,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         guard let host = panes.removeValue(forKey: id) else { return }
         if let term = host.termID, !panes.values.contains(where: { $0.termID == term }) { send(["op": "term_detach", "id": term]) }
         host.slot.removeFromSuperview()
+        if host.plugin != nil {
+            pluginReqs = pluginReqs.filter { $0.value != id }
+            if !panes.values.contains(where: { $0.plugin != nil }) {
+                let socket = pluginSocket
+                pluginSocket = nil
+                pluginReqs = [:]
+                socket?.cancel(with: .goingAway, reason: nil)
+            }
+        }
     }
     /// The page connection, opened on first use from the socket address the pane was given.
     func pages(_ ws: String) -> DaemonClient? {
@@ -697,6 +808,17 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "browser": browser(value)
         case "render": render(value)
         case "inspect": inspect(value)
+        case "plugin":
+            // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a field's path.
+            guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin else { return ["ok": false, "message": "no plugin pane"] }
+            var ok = true
+            switch value["action"] as? String {
+            case "press": ok = (value["component"] as? String).map { plugin.press(component: $0) } ?? false
+            case "set":
+                if let path = value["path"] as? String, let text = value["value"] as? String { plugin.set(path: path, value: text) } else { ok = false }
+            default: break
+            }
+            return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts]
         case "page_set":
             // A value written into a native page's data model at `path`, as one of its controls
             // would write it (a picker's choice, a field's text), for a check that has no pointer.
@@ -999,6 +1121,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                                      "artifact": host.artifact ?? "", "types": Set(page.surface?.components.values.map(\.type) ?? []).sorted(),
                                      "components": page.surface?.components.count ?? 0, "diagnostics": page.diagnostics]
                 }
+            } else if let p = host.plugin {
+                entry["plugin"] = ["state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "chunk": p.chunk, "components": p.componentTexts]
             }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["sent_grids"] = host.sent; entry["lagged_reports"] = host.lagged; entry["writes"] = host.writes
                    entry["pixels"] = host.terminal?.layer?.contents != nil

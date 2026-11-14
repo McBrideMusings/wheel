@@ -884,7 +884,7 @@ impl Client {
         match leaf.kind.as_str() {
             "terminal" => "Terminal".into(),
             "agent" => capitalized(leaf.harness.as_deref().unwrap_or("agent")),
-            "web" => leaf.label.clone(),
+            "web" | "plugin" => leaf.label.clone(),
             "browser" => "Browser".into(),
             "empty" => "Empty pane".into(),
             _ => leaf.id.clone(),
@@ -1160,7 +1160,7 @@ impl Client {
             }
             "terminal" => self.native.status()["panes"][leaf.id.as_str()]["viewport"].as_str().and_then(last),
             "browser" => leaf.url.clone(),
-            "web" => Some(leaf.label.clone()),
+            "web" | "plugin" => Some(leaf.label.clone()),
             _ => None,
         }
     }

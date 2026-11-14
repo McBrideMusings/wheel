@@ -9,6 +9,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../WheelKit"),
+        .package(path: "../WheelLuau"),
         .package(url: "https://github.com/gonzalezreal/textual.git", exact: "0.5.0"),
     ],
     targets: [
@@ -16,6 +17,7 @@ let package = Package(
             name: "WheelUI",
             dependencies: [
                 "WheelKit",
+                "WheelLuau",
                 .product(name: "Textual", package: "textual"),
             ]
         ),

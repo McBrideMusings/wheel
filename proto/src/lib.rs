@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -129,6 +129,51 @@ pub struct McpToolResult {
     /// The result's `_meta` as the server sent it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<serde_json::Value>,
+}
+
+/// Where a plugin package lives (ADR-0041): `project` (`<project>/.wheel/plugins/<id>/`),
+/// `machine` (`~/.wheel/plugins/<id>/`) or `builtin` (compiled into wheeld).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginScope {
+    Project,
+    Machine,
+    Builtin,
+}
+
+/// Which pane of which plugin a plugin pane shows: on the wire `{"plugin":"sample","pane":"counter"}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginPaneRef {
+    pub plugin: String,
+    pub pane: String,
+}
+
+/// A plugin package as `plugin_ls` lists it: its manifest (`wheel-plugin.toml`) read off disk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginInfo {
+    pub id: String,
+    pub version: String,
+    pub scope: PluginScope,
+    /// The package's folder; None for a built-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    pub panes: Vec<PluginPaneInfo>,
+    /// Why the manifest could not be read; the package then lists no panes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One `[[pane]]` of a plugin's manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginPaneInfo {
+    pub id: String,
+    pub title: String,
+    /// The script, relative to the package's folder.
+    pub script: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -984,6 +1029,9 @@ pub enum ClientMsg {
         /// resolves for the pane's space.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+        /// For `plugin` only, and required there: the plugin's id and the id of its `[[pane]]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plugin: Option<PluginPaneRef>,
     },
     /// Show the Claude Code, Codex or pi conversation a pane holds the other way: `agent` turns a
     /// terminal running the agent into an agent pane on that conversation, `terminal` turns an
@@ -1455,6 +1503,21 @@ pub enum ClientMsg {
         space: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         machine: bool,
+    },
+    /// Every plugin package a space can use (ADR-0041): its project's, this machine's and the
+    /// built-ins, each read off disk. Replies `plugins`. `PROTOCOL_VERSION` 35.
+    PluginLs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// The script of the plugin pane `pane` shows, read off disk now. Replies `plugin_source`.
+    /// `PROTOCOL_VERSION` 35.
+    PluginSource {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
     },
     /// Every artifact of every scope, each read off disk. With `pane`, only the ones whose
     /// entry says `pane = true` — what a pane picker asks for. Replies `artifacts`.
@@ -2298,6 +2361,21 @@ pub enum ServerMsg {
         values: std::collections::BTreeMap<String, serde_json::Value>,
         timed_out: bool,
     },
+    /// Every plugin package, in reply to `plugin_ls`, ordered project, machine, built-in: the
+    /// order an id resolves in, so the first record carrying an id is the one a pane runs.
+    Plugins { req: u64, plugins: Vec<PluginInfo> },
+    /// A plugin pane's script: the reply to `plugin_source` (with its `req`), and sent unasked to
+    /// every connection whenever the script file of a plugin pane some space shows changes on
+    /// disk (`req` absent). `chunk` names the script for error messages (`<plugin>/<script>`).
+    PluginSource {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        plugin: String,
+        plugin_pane: String,
+        chunk: String,
+        source: String,
+    },
     /// Every artifact, in reply to `artifact_ls`, ordered project, machine — the order a bare
     /// name resolves in, so the first record carrying a name is the one that name means.
     /// `resolves` says that outright: the scope a bare name lands in, per name.
@@ -2591,6 +2669,7 @@ impl ServerMsg {
             | ServerMsg::TermAttached { req, .. }
             | ServerMsg::AgentAttached { req, .. }
             | ServerMsg::Settings { req, .. }
+            | ServerMsg::PluginSource { req, .. }
             | ServerMsg::Error { req, .. } => *req,
             ServerMsg::Streams { req, .. }
             | ServerMsg::StreamStarted { req, .. }
@@ -2607,6 +2686,7 @@ impl ServerMsg {
             | ServerMsg::Conversation { req, .. }
             | ServerMsg::Artifact { req, .. }
             | ServerMsg::Artifacts { req, .. }
+            | ServerMsg::Plugins { req, .. }
             | ServerMsg::Tools { req, .. }
             | ServerMsg::ToolResult { req, .. }
             | ServerMsg::Resource { req, .. }
@@ -4061,6 +4141,11 @@ pub enum PaneKind {
     /// artifact applies — no folder, no data directory, no token — because this is the open
     /// internet rather than something a project ships.
     Browser { url: String, extra: Extra },
+    /// A pane of a plugin package (ADR-0041): the `[[pane]]` `pane` of the plugin `plugin`,
+    /// whose Luau script each client runs and draws itself. wheeld sends the script's source
+    /// (`plugin_source`), never what it draws. The plugin is found by id every time, in the
+    /// space's project, then this machine, then the built-ins.
+    Plugin { plugin: String, pane: String, extra: Extra },
     /// An agent, named `agent`, that the pane owns: it ends when the pane closes
     /// or changes kind. `agent` names the agent it runs (a key of the `agent.<name>.command`
     /// settings); `conversation` is that agent's own id for the conversation, saved so a
@@ -4192,6 +4277,10 @@ enum KnownPaneKind {
     Browser {
         url: String,
     },
+    Plugin {
+        plugin: String,
+        pane: String,
+    },
     Agent {
         agent: String,
         /// A pane saved before panes named their agent ran Claude Code.
@@ -4245,6 +4334,17 @@ impl Serialize for PaneKind {
             PaneKind::Browser { url, extra } => {
                 (KnownPaneKind::Browser { url: url.clone() }, extra)
             }
+            PaneKind::Plugin {
+                plugin,
+                pane,
+                extra,
+            } => (
+                KnownPaneKind::Plugin {
+                    plugin: plugin.clone(),
+                    pane: pane.clone(),
+                },
+                extra,
+            ),
             PaneKind::Agent {
                 agent,
                 harness,
@@ -4296,7 +4396,7 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal" | "web" | "browser" | "agent") => {}
+            Some("empty" | "terminal" | "web" | "browser" | "plugin" | "agent") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
@@ -4308,7 +4408,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 // wrote — a hand edit, or a torn file. Keep the pane whole, like any unknown kind,
                 // rather than failing the whole layout: one pane nobody here can draw must never
                 // cost every space in the file.
-                Err(_) if raw["kind"] == "web" || raw["kind"] == "browser" => {
+                Err(_) if raw["kind"] == "web" || raw["kind"] == "browser" || raw["kind"] == "plugin" => {
                     return Ok(PaneKind::Unknown(UnknownPane(raw)))
                 }
                 Err(e) => return Err(serde::de::Error::custom(e)),
@@ -4339,6 +4439,11 @@ impl<'de> Deserialize<'de> for PaneKind {
             KnownPaneKind::Browser { url } => match page_allowed(&url) {
                 true => PaneKind::Browser { url, extra },
                 false => PaneKind::Unknown(UnknownPane(raw)),
+            },
+            KnownPaneKind::Plugin { plugin, pane } => PaneKind::Plugin {
+                plugin,
+                pane,
+                extra,
             },
             KnownPaneKind::Agent {
                 agent,
@@ -4379,6 +4484,8 @@ pub enum NewPaneKind {
     /// An ordinary browser; takes an optional `url`, and opens the `browser.homepage` setting
     /// without one.
     Browser,
+    /// A plugin's pane; needs `plugin`, a plugin id and a pane id.
+    Plugin,
 }
 
 /// The two ways a pane shows a Claude Code conversation: wheel's agent chat, or the Claude Code
@@ -4434,6 +4541,17 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_plugin_pane_round_trips_and_a_torn_one_is_kept_whole() {
+        use super::*;
+        let wire = r#"{"kind":"plugin","plugin":"sample","pane":"counter"}"#;
+        let kind: PaneKind = serde_json::from_str(wire).unwrap();
+        assert!(matches!(&kind, PaneKind::Plugin { plugin, pane, .. } if plugin == "sample" && pane == "counter"));
+        assert_eq!(serde_json::to_value(&kind).unwrap(), serde_json::from_str::<serde_json::Value>(wire).unwrap());
+        let torn: PaneKind = serde_json::from_str(r#"{"kind":"plugin","plugin":"sample"}"#).unwrap();
+        assert!(matches!(torn, PaneKind::Unknown(_)));
+    }
+
     #[test]
     fn a_notify_and_its_toast_carry_the_level_text_and_pane_by_name() {
         use super::*;

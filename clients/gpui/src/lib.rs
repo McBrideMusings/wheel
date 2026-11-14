@@ -412,11 +412,23 @@ pub fn deliver(cx: &mut App, window: WindowHandle<view::Client>, event: daemon::
         }
         return Ok(false);
     }
-    window.update(cx, |client, _, cx| {
+    let (layout, plugins_due) = window.update(cx, |client, _, cx| {
         let layout = client.on_event(event);
         cx.notify();
-        layout
-    })
+        (layout, client.take_plugins_due())
+    })?;
+    // A `plugin_ls` the throttle held back goes out when its window ends.
+    if let Some(wait) = plugins_due {
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = window.update(cx, |client, _, cx| {
+                client.plugins_timer_fired();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    Ok(layout)
 }
 
 /// Answer a window command wheeld forwarded to `via` (AppModel.answerWindowCommand): run it on

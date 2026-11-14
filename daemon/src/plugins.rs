@@ -1,0 +1,752 @@
+//! Plugin packages (ADR-0041): a folder holding `wheel-plugin.toml` and the Luau scripts of its
+//! panes. wheeld finds the packages a space can use, sends a plugin pane's script source to
+//! clients (`plugin_source`), and watches the script files so a save reaches every open pane
+//! within a moment. It never runs a script: each client does.
+//!
+//! A package comes from the space's project (`<project>/.wheel/plugins/<id>/`), this machine
+//! (`plugins/<id>/` beside the machine `wheel.toml`) or is compiled into wheeld. An id resolves to
+//! the first package carrying it, in that order.
+
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Component, Path, PathBuf};
+
+use notify::{EventKind, RecursiveMode, Watcher};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use wheel_proto::{PluginInfo, PluginPaneInfo, PluginScope, ServerMsg};
+
+use crate::server::AppState;
+use crate::spaces::{space_find, space_panes, Spaces};
+use wheel_proto::PaneKind;
+
+/// The manifest's file name.
+pub(crate) const MANIFEST: &str = "wheel-plugin.toml";
+
+/// A built-in package: its id and its files, as (path in the package, text).
+type Builtin = (&'static str, &'static [(&'static str, &'static str)]);
+
+/// The packages compiled into wheeld. Adding one is one line here.
+const BUILTINS: &[Builtin] = &[(
+    "sample",
+    &[
+        (
+            MANIFEST,
+            include_str!("../plugins/sample/wheel-plugin.toml"),
+        ),
+        ("main.luau", include_str!("../plugins/sample/main.luau")),
+    ],
+)];
+
+/// Where a package's files are.
+#[derive(Debug, Clone)]
+enum Files {
+    Dir(PathBuf),
+    Builtin(&'static [(&'static str, &'static str)]),
+}
+
+/// A package found on disk (or compiled in), its manifest read.
+#[derive(Debug, Clone)]
+pub(crate) struct Package {
+    pub info: PluginInfo,
+    files: Files,
+}
+
+#[derive(serde::Deserialize)]
+struct RawManifest {
+    plugin: RawPlugin,
+    #[serde(default)]
+    pane: Vec<RawPane>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawPlugin {
+    id: String,
+    version: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RawPane {
+    id: String,
+    title: String,
+    script: String,
+    #[serde(default)]
+    reads: Vec<String>,
+    #[serde(default)]
+    actions: Vec<String>,
+}
+
+/// Whether `name` is one plain name: no separator, no dot-dot, not empty.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && !name.chars().any(char::is_control)
+}
+
+/// Whether `script` stays inside the package folder: relative, with no `..`.
+fn inside_package(script: &str) -> bool {
+    let path = Path::new(script);
+    !script.is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
+/// Read a manifest's text: its id, version and panes. `[backend]` and unknown tables are
+/// tolerated and ignored.
+pub(crate) fn parse_manifest(text: &str) -> Result<(String, String, Vec<PluginPaneInfo>), String> {
+    let raw: RawManifest = toml::from_str(text).map_err(|e| format!("{MANIFEST}: {e}"))?;
+    if !plain_name(&raw.plugin.id) {
+        return Err(format!(
+            "{MANIFEST}: plugin id {:?} is not one plain name",
+            raw.plugin.id
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut panes = Vec::new();
+    for pane in raw.pane {
+        if !plain_name(&pane.id) {
+            return Err(format!(
+                "{MANIFEST}: pane id {:?} is not one plain name",
+                pane.id
+            ));
+        }
+        if !seen.insert(pane.id.clone()) {
+            return Err(format!("{MANIFEST}: pane id {:?} appears twice", pane.id));
+        }
+        if !inside_package(&pane.script) {
+            return Err(format!(
+                "{MANIFEST}: the script of pane {:?}, {:?}, must be a path inside the package folder",
+                pane.id, pane.script
+            ));
+        }
+        panes.push(PluginPaneInfo {
+            id: pane.id,
+            title: pane.title,
+            script: pane.script,
+            reads: pane.reads,
+            actions: pane.actions,
+        });
+    }
+    Ok((raw.plugin.id, raw.plugin.version, panes))
+}
+
+/// A package from its manifest text; a manifest that does not parse lists the package under
+/// `fallback_id` with the reason and no panes.
+fn package(text: Result<String, String>, fallback_id: &str, scope: PluginScope, files: Files) -> Package {
+    let dir = match &files {
+        Files::Dir(dir) => Some(dir.display().to_string()),
+        Files::Builtin(_) => None,
+    };
+    let info = match text.and_then(|t| parse_manifest(&t)) {
+        Ok((id, version, panes)) => PluginInfo {
+            id,
+            version,
+            scope,
+            dir,
+            panes,
+            error: None,
+        },
+        Err(error) => PluginInfo {
+            id: fallback_id.to_string(),
+            version: String::new(),
+            scope,
+            dir,
+            panes: Vec::new(),
+            error: Some(error),
+        },
+    };
+    Package { info, files }
+}
+
+/// Every package folder under `root`, by folder name. A folder with no manifest is not a package.
+fn scan(root: &Path, scope: PluginScope) -> Vec<Package> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.into_iter()
+        .filter_map(|dir| {
+            let name = dir.file_name()?.to_str()?.to_string();
+            let manifest = dir.join(MANIFEST);
+            if !manifest.is_file() {
+                return None;
+            }
+            let text = std::fs::read_to_string(&manifest)
+                .map_err(|e| format!("{} cannot be read: {e}", manifest.display()));
+            Some(package(text, &name, scope, Files::Dir(dir)))
+        })
+        .collect()
+}
+
+fn builtin_packages() -> Vec<Package> {
+    BUILTINS
+        .iter()
+        .map(|(id, files)| {
+            let text = files
+                .iter()
+                .find(|(name, _)| *name == MANIFEST)
+                .map(|(_, text)| text.to_string())
+                .ok_or_else(|| format!("built-in {id} has no {MANIFEST}"));
+            package(text, id, PluginScope::Builtin, Files::Builtin(files))
+        })
+        .collect()
+}
+
+/// The folder of a project's plugin packages.
+pub(crate) fn project_plugins(space_dir: &str) -> PathBuf {
+    Path::new(space_dir).join(".wheel").join("plugins")
+}
+
+/// Every package for a space whose directory is `space_dir` (None: no project), project then
+/// machine then built-in.
+pub(crate) fn discover(space_dir: Option<&str>, machine_dir: &Path) -> Vec<Package> {
+    let mut all = Vec::new();
+    if let Some(dir) = space_dir {
+        all.extend(scan(&project_plugins(dir), PluginScope::Project));
+    }
+    all.extend(scan(machine_dir, PluginScope::Machine));
+    all.extend(builtin_packages());
+    all
+}
+
+/// The package an id resolves to: the first carrying it.
+pub(crate) fn resolve<'a>(packages: &'a [Package], id: &str) -> Result<&'a Package, String> {
+    let found = packages
+        .iter()
+        .find(|p| p.info.id == id)
+        .ok_or_else(|| format!("no plugin {id} for this space"))?;
+    match &found.info.error {
+        Some(error) => Err(format!("plugin {id} cannot be used: {error}")),
+        None => Ok(found),
+    }
+}
+
+/// The pane `pane_id` of `package`.
+fn find_pane<'a>(package: &'a Package, pane_id: &str) -> Result<&'a PluginPaneInfo, String> {
+    package
+        .info
+        .panes
+        .iter()
+        .find(|p| p.id == pane_id)
+        .ok_or_else(|| format!("plugin {} has no pane {pane_id}", package.info.id))
+}
+
+/// The script of `pane`: `(chunk, source)`, read now.
+fn read_script(package: &Package, pane: &PluginPaneInfo) -> Result<(String, String), String> {
+    let chunk = format!("{}/{}", package.info.id, pane.script);
+    let source = match &package.files {
+        Files::Builtin(files) => {
+            let want = Path::new(&pane.script);
+            files
+                .iter()
+                .find(|(name, _)| Path::new(name) == want)
+                .map(|(_, text)| text.to_string())
+                .ok_or_else(|| format!("cannot read {chunk}: no such file"))?
+        }
+        Files::Dir(dir) => {
+            let path = dir.join(&pane.script);
+            // A symlink must not carry the script out of the package folder.
+            let real = path
+                .canonicalize()
+                .map_err(|e| format!("cannot read {chunk}: {e}"))?;
+            let root = dir
+                .canonicalize()
+                .map_err(|e| format!("cannot read {chunk}: {e}"))?;
+            if !real.starts_with(&root) {
+                return Err(format!("cannot read {chunk}: it is outside the package folder"));
+            }
+            use std::io::Read;
+            let mut text = String::new();
+            std::fs::File::open(&real)
+                .and_then(|f| f.take(MAX_SCRIPT + 1).read_to_string(&mut text))
+                .map_err(|e| format!("cannot read {chunk}: {e}"))?;
+            text
+        }
+    };
+    if source.len() as u64 > MAX_SCRIPT {
+        return Err(format!("cannot read {chunk}: the script is larger than 1 MB"));
+    }
+    Ok((chunk, source))
+}
+
+/// One plugin pane of the layout: where it is and what it shows.
+struct PluginPane {
+    pane: String,
+    cwd: String,
+    plugin: String,
+    plugin_pane: String,
+}
+
+fn plugin_panes_of(spaces: &Spaces) -> Vec<PluginPane> {
+    spaces
+        .spaces
+        .iter()
+        .flat_map(|space| {
+            space_panes(space).into_iter().filter_map(|(pane, kind)| match kind {
+                PaneKind::Plugin {
+                    plugin,
+                    pane: plugin_pane,
+                    ..
+                } => Some(PluginPane {
+                    pane: pane.to_string(),
+                    cwd: space.cwd.clone(),
+                    plugin: plugin.clone(),
+                    plugin_pane: plugin_pane.clone(),
+                }),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// One folder the watch covers: the folder, whether the watch is recursive, and the folder's inode
+/// when the watch started, so a folder deleted and made again (a watch on the old one is dead) is a
+/// different target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    path: PathBuf,
+    recursive: bool,
+    inode: u64,
+}
+
+/// The running watch: the folders it covers, and the task that owns its watchers.
+pub(crate) struct Watch {
+    targets: Vec<Target>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// How long a burst of file events is gathered before the scripts are read.
+const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The largest script wheeld sends: 1 MB.
+const MAX_SCRIPT: u64 = 1024 * 1024;
+
+fn inode(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).map_or(0, |m| m.ino())
+}
+
+/// `path` with symlinks resolved as far as it exists; the part that does not exist stays as it is.
+fn real_path(path: &Path) -> PathBuf {
+    let Some(ancestor) = path.ancestors().find(|a| a.exists()) else {
+        return path.to_path_buf();
+    };
+    let rest = path.strip_prefix(ancestor).unwrap_or(Path::new(""));
+    ancestor.canonicalize().unwrap_or_else(|_| ancestor.to_path_buf()).join(rest)
+}
+
+/// What to watch for the wanted folders: each one that exists, recursively; one that does not,
+/// through its nearest existing ancestor, non-recursively, which sees the next folder on the way
+/// appear. The watched folder's parent is watched too, non-recursively: a watch on a folder
+/// that is deleted reports nothing, but its parent reports the deletion.
+fn watch_targets(wanted: &[PathBuf]) -> Vec<Target> {
+    let mut targets = Vec::new();
+    for dir in wanted {
+        let Some(base) = dir.ancestors().find(|a| a.is_dir()) else {
+            continue;
+        };
+        let mut push = |path: &Path, recursive: bool| {
+            targets.push(Target { path: path.to_path_buf(), recursive, inode: inode(path) });
+        };
+        push(base, base == dir.as_path());
+        if let Some(parent) = base.parent().filter(|p| p.is_dir()) {
+            push(parent, false);
+        }
+    }
+    targets.sort_by(|a, b| a.path.cmp(&b.path).then(b.recursive.cmp(&a.recursive)));
+    targets.dedup_by(|b, a| a.path == b.path);
+    targets
+}
+
+impl AppState {
+    /// The folder of this machine's plugin packages, beside the machine `wheel.toml`.
+    pub(crate) fn machine_plugins(&self) -> PathBuf {
+        self.machine_file
+            .parent()
+            .map_or_else(|| PathBuf::from("plugins"), |p| p.join("plugins"))
+    }
+
+    /// Every package a space can use.
+    pub fn plugin_ls(&self, space: Option<&str>) -> Result<Vec<PluginInfo>, String> {
+        let cwd = self.settings_space(space)?.map(|(_, cwd)| cwd);
+        Ok(discover(cwd.as_deref(), &self.machine_plugins())
+            .into_iter()
+            .map(|p| p.info)
+            .collect())
+    }
+
+    /// The package and pane that `plugin`/`plugin_pane` mean in a space whose directory is `cwd`.
+    pub(crate) fn plugin_check(&self, cwd: &str, plugin: &str, plugin_pane: &str) -> Result<(), String> {
+        let packages = discover(Some(cwd), &self.machine_plugins());
+        let package = resolve(&packages, plugin)?;
+        find_pane(package, plugin_pane).map(|_| ())
+    }
+
+    /// The script a plugin pane shows, read now: `(plugin, plugin_pane, chunk, source)`. It
+    /// records nothing: only the watch decides what clients last had.
+    pub fn plugin_source(&self, pane: &str) -> Result<(String, String, String, String), String> {
+        let (cwd, plugin, plugin_pane) = {
+            let spaces = self.spaces.lock().unwrap();
+            let (space, kind) = spaces
+                .spaces
+                .iter()
+                .find_map(|s| space_find(s, pane).map(|k| (s, k)))
+                .ok_or_else(|| format!("no pane {pane}"))?;
+            match kind {
+                PaneKind::Plugin {
+                    plugin,
+                    pane: plugin_pane,
+                    ..
+                } => (space.cwd.clone(), plugin.clone(), plugin_pane.clone()),
+                _ => return Err(format!("{pane} is not a plugin pane")),
+            }
+        };
+        let (chunk, source) = self.plugin_script(&cwd, &plugin, &plugin_pane)?;
+        Ok((plugin, plugin_pane, chunk, source))
+    }
+
+    fn plugin_script(&self, cwd: &str, plugin: &str, plugin_pane: &str) -> Result<(String, String), String> {
+        let packages = discover(Some(cwd), &self.machine_plugins());
+        let package = resolve(&packages, plugin)?;
+        read_script(package, find_pane(package, plugin_pane)?)
+    }
+
+    /// Bring the plugin watch up to date with the panes that exist now, on a blocking thread
+    /// (it reads folders and scripts), so the caller may hold the spaces lock. Does nothing
+    /// outside the tokio runtime.
+    pub fn sync_plugin_watch(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if let Some(state) = self.me.upgrade() {
+            drop(runtime.spawn_blocking(move || state.plugin_sync()));
+        }
+    }
+
+    /// [`AppState::sync_plugin_watch`], returning when the watch is up to date.
+    pub async fn sync_plugin_watch_now(&self) {
+        if let Some(state) = self.me.upgrade() {
+            let _ = tokio::task::spawn_blocking(move || state.plugin_sync()).await;
+        }
+    }
+
+    /// Forget closed panes, remember the script each new plugin pane shows, and restart the watch
+    /// when the folders to watch are not the ones being watched. Blocking.
+    fn plugin_sync(&self) {
+        // One sync at a time; the guard also serializes the swap of the watch.
+        let mut watch = self.plugin_watch.lock().unwrap();
+        let panes = plugin_panes_of(&self.spaces.lock().unwrap());
+        {
+            let mut seen = self.plugin_seen.lock().unwrap();
+            seen.retain(|pane, _| panes.iter().any(|p| &p.pane == pane));
+        }
+        for p in &panes {
+            let known = self.plugin_seen.lock().unwrap().contains_key(&p.pane);
+            if !known {
+                if let Ok((_, source)) = self.plugin_script(&p.cwd, &p.plugin, &p.plugin_pane) {
+                    self.plugin_seen
+                        .lock()
+                        .unwrap()
+                        .entry(p.pane.clone())
+                        .or_insert(source);
+                }
+            }
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let mut wanted: Vec<PathBuf> = Vec::new();
+        if !panes.is_empty() {
+            wanted.extend(panes.iter().map(|p| project_plugins(&p.cwd)));
+            wanted.push(self.machine_plugins());
+        }
+        wanted.sort();
+        wanted.dedup();
+        let targets = watch_targets(&wanted);
+        if watch.as_ref().map_or(targets.is_empty(), |w| w.targets == targets) {
+            return;
+        }
+        if targets.is_empty() {
+            *watch = None;
+            return;
+        }
+        let (mut watchers, mut rx) = match watch_targets_start(&targets, wanted) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not watch the plugin folders; a saved script shows only after the pane reopens");
+                return;
+            }
+        };
+        tracing::info!(folders = targets.len(), "plugin watch started");
+        let me = self.me.clone();
+        let task = runtime.spawn(async move {
+            let _watchers = &mut watchers;
+            while rx.recv().await.is_some() {
+                // A save is often several events; one read covers them.
+                tokio::time::sleep(DEBOUNCE).await;
+                while rx.try_recv().is_ok() {}
+                let Some(state) = me.upgrade() else { return };
+                let _ = tokio::task::spawn_blocking(move || state.plugin_files_changed()).await;
+            }
+        });
+        *watch = Some(Watch { targets, task });
+        // A save between the last read and the new watch raised no event: read once more.
+        self.plugin_broadcast_changes();
+    }
+
+    /// Something under a watched folder changed: re-point the watch (a folder may have appeared,
+    /// or been removed and made again), then send what changed.
+    fn plugin_files_changed(&self) {
+        self.plugin_sync();
+        self.plugin_broadcast_changes();
+    }
+
+    /// Read each plugin pane's script and send every client the ones that now differ from what
+    /// the last broadcast carried.
+    fn plugin_broadcast_changes(&self) {
+        let panes = plugin_panes_of(&self.spaces.lock().unwrap());
+        for p in panes {
+            let (chunk, source) = match self.plugin_script(&p.cwd, &p.plugin, &p.plugin_pane) {
+                Ok(read) => read,
+                Err(e) => {
+                    tracing::warn!(pane = %p.pane, error = %e, "a plugin script cannot be read; clients keep the last source");
+                    continue;
+                }
+            };
+            {
+                let mut seen = self.plugin_seen.lock().unwrap();
+                if seen.get(&p.pane) == Some(&source) {
+                    continue;
+                }
+                seen.insert(p.pane.clone(), source.clone());
+            }
+            tracing::info!(pane = %p.pane, %chunk, bytes = source.len(), "plugin script changed; sent to clients");
+            let _ = self.global.send(ServerMsg::PluginSource {
+                req: None,
+                pane: p.pane,
+                plugin: p.plugin,
+                plugin_pane: p.plugin_pane,
+                chunk,
+                source,
+            });
+        }
+    }
+}
+
+/// Start a watcher per target, sending `()` for each event that touches one of the `wanted`
+/// folders or a folder on the way to one.
+fn watch_targets_start(
+    targets: &[Target],
+    wanted: Vec<PathBuf>,
+) -> Result<(Vec<notify::RecommendedWatcher>, mpsc::UnboundedReceiver<()>), String> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mut watchers = Vec::new();
+    // Events name real paths (/private/var, not /var), so compare against those.
+    let wanted: Vec<PathBuf> = wanted.iter().map(|w| real_path(w)).collect();
+    for target in targets {
+        let tx = tx.clone();
+        let wanted = wanted.clone();
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let Ok(event) = event else { return };
+            if matches!(event.kind, EventKind::Access(_)) {
+                return;
+            }
+            let relevant = event
+                .paths
+                .iter()
+                .any(|p| wanted.iter().any(|w| p.starts_with(w) || w.starts_with(p)));
+            if relevant {
+                let _ = tx.send(());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+        let mode = if target.recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
+        watcher
+            .watch(&target.path, mode)
+            .map_err(|e| format!("{}: {e}", target.path.display()))?;
+        watchers.push(watcher);
+    }
+    Ok((watchers, rx))
+}
+
+/// The map type `AppState` keeps: pane id to the script clients last had.
+pub(crate) type Seen = HashMap<String, String>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GOOD: &str = r#"
+[plugin]
+id = "demo"
+version = "1.2.3"
+
+[backend]
+command = "demo-server"
+
+[[pane]]
+id = "main"
+title = "Demo"
+script = "main.luau"
+reads = ["a.b"]
+actions = ["go"]
+"#;
+
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wheel-plugins-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_plugin(root: &Path, folder: &str, manifest: &str) {
+        let dir = root.join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MANIFEST), manifest).unwrap();
+        std::fs::write(dir.join("main.luau"), "-- script").unwrap();
+    }
+
+    #[test]
+    fn a_good_manifest_parses_and_a_backend_is_tolerated() {
+        let (id, version, panes) = parse_manifest(GOOD).unwrap();
+        assert_eq!((id.as_str(), version.as_str()), ("demo", "1.2.3"));
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].reads, ["a.b"]);
+        assert_eq!(panes[0].actions, ["go"]);
+        let (_, _, panes) = parse_manifest(
+            "[plugin]\nid=\"x\"\nversion=\"1\"\n[[pane]]\nid=\"p\"\ntitle=\"P\"\nscript=\"s.luau\"\n",
+        )
+        .unwrap();
+        assert!(panes[0].reads.is_empty() && panes[0].actions.is_empty());
+    }
+
+    #[test]
+    fn a_bad_manifest_is_refused() {
+        assert!(parse_manifest("not toml [").is_err());
+        assert!(parse_manifest("[plugin]\nid=\"x\"\n").is_err(), "no version");
+        assert!(parse_manifest("[plugin]\nid=\"a/b\"\nversion=\"1\"\n").is_err());
+    }
+
+    #[test]
+    fn a_script_path_that_escapes_the_package_is_refused() {
+        for script in ["/etc/passwd", "../x.luau", "a/../../x.luau", ""] {
+            let text = format!(
+                "[plugin]\nid=\"x\"\nversion=\"1\"\n[[pane]]\nid=\"p\"\ntitle=\"P\"\nscript=\"{script}\"\n"
+            );
+            assert!(parse_manifest(&text).is_err(), "{script:?}");
+        }
+        let ok = "[plugin]\nid=\"x\"\nversion=\"1\"\n[[pane]]\nid=\"p\"\ntitle=\"P\"\nscript=\"ui/main.luau\"\n";
+        assert!(parse_manifest(ok).is_ok());
+    }
+
+    #[test]
+    fn a_bad_package_lists_with_an_error_and_no_panes() {
+        let machine = tmp("bad");
+        write_plugin(&machine, "broken", "[plugin\n");
+        let all = discover(None, &machine);
+        let broken = all.iter().find(|p| p.info.id == "broken").unwrap();
+        assert!(broken.info.error.is_some() && broken.info.panes.is_empty());
+        assert!(resolve(&all, "broken").is_err());
+        std::fs::remove_dir_all(&machine).unwrap();
+    }
+
+    #[test]
+    fn an_id_resolves_project_then_machine_then_builtin() {
+        let root = tmp("order");
+        let (space, machine) = (root.join("space"), root.join("machine"));
+        write_plugin(&project_plugins(space.to_str().unwrap()), "sample", &GOOD.replace("demo", "sample"));
+        write_plugin(&machine, "sample", &GOOD.replace("demo", "sample").replace("1.2.3", "9.9.9"));
+        write_plugin(&machine, "demo", GOOD);
+        let all = discover(space.to_str(), &machine);
+        let scopes: Vec<_> = all.iter().map(|p| (p.info.id.as_str(), p.info.scope)).collect();
+        assert_eq!(
+            scopes,
+            [
+                ("sample", PluginScope::Project),
+                ("demo", PluginScope::Machine),
+                ("sample", PluginScope::Machine),
+                ("sample", PluginScope::Builtin),
+            ]
+        );
+        assert_eq!(resolve(&all, "sample").unwrap().info.scope, PluginScope::Project);
+        let pane = find_pane(resolve(&all, "demo").unwrap(), "main").unwrap();
+        assert_eq!(read_script(resolve(&all, "demo").unwrap(), pane).unwrap().1, "-- script");
+        assert!(find_pane(resolve(&all, "demo").unwrap(), "nope").is_err());
+        assert!(resolve(&all, "ghost").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_project_plugin_lists_only_for_its_own_space() {
+        let root = tmp("scope");
+        let (a, b, machine) = (root.join("a"), root.join("b"), root.join("machine"));
+        write_plugin(&project_plugins(a.to_str().unwrap()), "demo", GOOD);
+        std::fs::create_dir_all(&b).unwrap();
+        let in_a = discover(a.to_str(), &machine);
+        let in_b = discover(b.to_str(), &machine);
+        assert!(in_a.iter().any(|p| p.info.id == "demo"));
+        assert!(!in_b.iter().any(|p| p.info.id == "demo"));
+        assert!(in_b.iter().any(|p| p.info.id == "sample"), "built-ins are everywhere");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_sample_builtin_reads_its_embedded_script() {
+        let all = discover(None, Path::new("/nonexistent"));
+        let sample = resolve(&all, "sample").unwrap();
+        let pane = find_pane(sample, "counter").unwrap();
+        let (chunk, source) = read_script(sample, pane).unwrap();
+        assert_eq!(chunk, "sample/main.luau");
+        assert!(!source.is_empty());
+    }
+
+    #[test]
+    fn a_symlinked_script_out_of_the_package_is_not_read() {
+        let root = tmp("link");
+        let machine = root.join("machine");
+        write_plugin(&machine, "demo", GOOD);
+        std::fs::write(root.join("secret"), "secret").unwrap();
+        let script = machine.join("demo/main.luau");
+        std::fs::remove_file(&script).unwrap();
+        std::os::unix::fs::symlink(root.join("secret"), &script).unwrap();
+        let all = discover(None, &machine);
+        let demo = resolve(&all, "demo").unwrap();
+        assert!(read_script(demo, find_pane(demo, "main").unwrap()).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_script_over_one_megabyte_is_refused() {
+        let root = tmp("big");
+        let machine = root.join("machine");
+        write_plugin(&machine, "demo", GOOD);
+        let script = machine.join("demo/main.luau");
+        std::fs::write(&script, vec![b'-'; MAX_SCRIPT as usize]).unwrap();
+        let all = discover(None, &machine);
+        let demo = resolve(&all, "demo").unwrap();
+        let pane = find_pane(demo, "main").unwrap();
+        assert_eq!(read_script(demo, pane).unwrap().1.len() as u64, MAX_SCRIPT);
+        std::fs::write(&script, vec![b'-'; MAX_SCRIPT as usize + 1]).unwrap();
+        let err = read_script(demo, pane).unwrap_err();
+        assert!(err.contains("larger than 1 MB"), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

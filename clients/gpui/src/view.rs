@@ -38,7 +38,7 @@ pub use debug::Answer as DebugAnswer;
 pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, popped::{Card, CardDrag, GRIP, Layer}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FollowMode, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, list, prelude::*, px, rgb, rgba};
-use wheel_proto::{TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
+use wheel_proto::{PluginInfo, TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
 
 pub const TITLE: f32 = 22.0;
@@ -183,6 +183,16 @@ pub struct Client {
     next_req: u64,
     /// Each browser pane's chrome state, as the bridge last emitted it.
     browsers: HashMap<String, BrowserState>,
+    /// Each plugin pane's last failure as the bridge reported it (None once its script loads), shown in the pane's header.
+    plugin_errors: HashMap<String, Option<String>>,
+    /// The plugin packages each space can use, as `plugin_ls` last listed them, for the empty pane's buttons.
+    plugins: HashMap<String, Vec<PluginInfo>>,
+    /// `plugin_ls` requests waiting for an answer (request id to the space asked about), and when each space was last asked.
+    plugin_reqs: HashMap<u64, String>,
+    plugins_asked: HashMap<String, std::time::Instant>,
+    /// An ask the throttle held back: how long until the window ends (taken by the host, which sets a timer), and whether that timer is pending.
+    plugins_due: Option<std::time::Duration>,
+    plugins_timer: bool,
     /// The address field being edited: the pane and the draft.
     address_edit: Option<(String, String)>,
     /// `pane_browser_open` requests waiting for wheeld to read typed text: (pane, the text).
@@ -409,7 +419,7 @@ impl Client {
             native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
-            browsers: HashMap::new(), address_edit: None, open_reqs: HashMap::new(),
+            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
@@ -442,6 +452,7 @@ impl Client {
                     let fresh = matches!(message.as_ref(), ServerMsg::Status { .. });
                     self.apply(layout, !fresh);
                     self.ask_title_buttons(fresh);
+                    self.ask_plugins(true);
                     self.show_made_session();
                     if fresh {
                         // The strip needs a reading: ask for one unless the last is recent (askUsage(dueOnly: true)).
@@ -465,6 +476,12 @@ impl Client {
                             }
                             return false;
                         }
+                        ServerMsg::Plugins { req, plugins } => {
+                            if let Some(space) = self.plugin_reqs.remove(req) {
+                                self.plugins.insert(space, plugins.clone());
+                            }
+                            return false;
+                        }
                         ServerMsg::Artifacts { req, artifacts, .. } => {
                             if let Some(palette) = self.palettes.values_mut().find(|p| p.req == Some(*req)) {
                                 palette.req = None;
@@ -475,6 +492,10 @@ impl Client {
                         ServerMsg::Error { req: Some(req), message, .. } => {
                             self.on_agent_answer(*req, Some(message));
                             self.running_refused(*req, message);
+                            // A failed `plugin_ls` leaves the space unasked, so the next layout change asks again.
+                            if let Some(space) = self.plugin_reqs.remove(req) {
+                                self.plugins_asked.remove(&space);
+                            }
                             if let Some(palette) = self.palettes.values_mut().find(|p| p.req == Some(*req)) {
                                 palette.req = None;
                                 palette.failed(message);
@@ -1179,6 +1200,12 @@ impl Client {
             Frame::Event(BrowserEvent::Browser(state)) => {
                 self.browsers.insert(state.pane.clone(), state);
             }
+            Frame::Event(BrowserEvent::Plugin { pane, error }) => {
+                if self.plugin_errors.get(&pane) != Some(&error) {
+                    self.log(format!("plugin pane {pane}: {}", error.as_deref().unwrap_or("ok")));
+                }
+                self.plugin_errors.insert(pane, error);
+            }
             Frame::Event(BrowserEvent::Navigated { pane, url }) => self.send(&ClientMsg::PaneBrowserUrl { req: None, pane, url }),
             Frame::Event(BrowserEvent::Typed { pane, text }) => {
                 if self.link != Link::Up {
@@ -1233,7 +1260,7 @@ impl Client {
             // wheeld resolves it for the pane's space.
             Press::Home => {
                 self.native.browser(pane, "clear_failure", serde_json::json!({}));
-                self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Browser, artifact: None, scope: None, url: None });
+                self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Browser, artifact: None, scope: None, url: None, plugin: None });
             }
             // The field takes the keyboard from the web view: the GPUI view holds it while editing.
             Press::Edit => {
@@ -1601,10 +1628,48 @@ impl Client {
             }
         }
     }
+    /// Ask wheeld for the plugins the shown space can use while it has an empty pane (the pane's buttons list their panes), at most
+    /// every 2 s on a layout change, so a plugin added to the project shows up, and once when the space is first shown.
+    fn ask_plugins(&mut self, refresh: bool) {
+        let Some(space) = self.space().filter(|s| leaves_of(&s.root).iter().any(|l| l.kind == "empty")).map(|s| s.id.clone()) else { return };
+        const WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+        if self.link != Link::Up {
+            return;
+        }
+        if let Some(at) = self.plugins_asked.get(&space) {
+            // Asked already: only a layout change asks again, and one inside the window waits for its end.
+            if refresh && at.elapsed() < WINDOW && !self.plugins_timer {
+                self.plugins_due = Some(WINDOW - at.elapsed());
+            }
+            if !refresh || at.elapsed() < WINDOW {
+                return;
+            }
+        }
+        self.plugins_asked.insert(space.clone(), std::time::Instant::now());
+        let req = self.req();
+        self.plugin_reqs.insert(req, space.clone());
+        self.send(&ClientMsg::PluginLs { req: Some(req), space: Some(space) });
+    }
+    /// The wait for the ask the throttle held back, once: the host sets a timer for it and calls `plugins_timer_fired`.
+    pub fn take_plugins_due(&mut self) -> Option<std::time::Duration> {
+        let due = self.plugins_due.take();
+        self.plugins_timer |= due.is_some();
+        due
+    }
+    /// The throttle window ended: ask for the plugins the held-back layout change wanted.
+    pub fn plugins_timer_fired(&mut self) {
+        self.plugins_timer = false;
+        self.ask_plugins(true);
+    }
+    /// A plugin's pane picked in an empty pane: wheeld turns the pane into it.
+    fn show_plugin(&mut self, pane: &str, plugin: &str, plugin_pane: &str) {
+        let (pane, plugin, plugin_pane) = (pane.to_owned(), plugin.to_owned(), plugin_pane.to_owned());
+        self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind: NewPaneKind::Plugin, artifact: None, scope: None, url: None, plugin: Some(wheel_proto::PluginPaneRef { plugin, pane: plugin_pane }) });
+    }
     /// Turn an empty pane into `kind` (`terminal` or `browser`).
     fn set_kind(&mut self, pane: &str, kind: NewPaneKind) {
         let pane = pane.to_owned();
-        self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact: None, scope: None, url: None });
+        self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact: None, scope: None, url: None, plugin: None });
     }
     /// The artifact palette open inside `pane`, if any.
     pub fn palette(&self, pane: &str) -> Option<&Palette> {
@@ -1683,7 +1748,7 @@ impl Client {
             return;
         }
         self.close_palette(pane);
-        self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Web, artifact: Some(info.name.clone()), scope: Some(info.scope), url: None });
+        self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Web, artifact: Some(info.name.clone()), scope: Some(info.scope), url: None, plugin: None });
     }
     /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views
@@ -1691,6 +1756,8 @@ impl Client {
     /// A view in a layer has every card above it cut out of it, and its own card's resize corner.
     fn sync_native(&mut self, layers: &[Layer]) {
         self.native_panes.clear();
+        // The first time a space with an empty pane is shown, its plugins are listed (a layout change lists them again).
+        self.ask_plugins(false);
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
         let at = |r: Rect| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)];
         // The tray chip and its list draw over every layer.
@@ -1712,11 +1779,13 @@ impl Client {
                     ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
                     ("browser", _) => "browser".to_owned(),
                     ("terminal", Some(_)) => "terminal".to_owned(),
+                    ("plugin", _) => format!("plugin:{}", p.leaf.label),
                     _ => continue,
                 };
                 if self.opened.get(&p.leaf.id) != Some(&kind) {
                     match (&p.leaf.term, p.leaf.kind.as_str()) {
                         (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, self.space_id.as_deref(), &self.endpoint.ws),
+                        (None, "plugin") => self.native.open_plugin(&p.leaf.id, &p.leaf.label, self.space_id.as_deref(), &self.endpoint.ws),
                         (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
                         (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                     }
@@ -1754,6 +1823,7 @@ impl Client {
                 self.opened.remove(&id);
                 self.placed.remove(&id);
                 self.browsers.remove(&id);
+                self.plugin_errors.remove(&id);
             }
         }
         if self.address_edit.as_ref().is_some_and(|(pane, _)| !alive.contains(pane.as_str())) {
@@ -1899,7 +1969,14 @@ impl Client {
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.ask_start_agent(&id, &name)))
                         .child(commands::capitalized(&a.name))
                 }).collect::<Vec<_>>();
-                div().flex().flex_wrap().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).children(agents).child(artifact).child(button("Browser", NewPaneKind::Browser, cx))
+                // One button per pane of the plugins this space can use (ADR-0041).
+                let plugin_panes = self.space().and_then(|s| self.plugins.get(&s.id)).into_iter().flatten().flat_map(|plugin| plugin.panes.iter().map(move |pane| (plugin.id.clone(), pane.clone()))).map(|(plugin, pane)| {
+                    let id = id.clone();
+                    div().id(gpui::ElementId::Name(format!("plugin-pane-{plugin}-{}", pane.id).into())).px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.show_plugin(&id, &plugin, &pane.id)))
+                        .child(pane.title)
+                }).collect::<Vec<_>>();
+                div().flex().flex_wrap().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).children(agents).child(artifact).child(button("Browser", NewPaneKind::Browser, cx)).children(plugin_panes)
             }
             other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
         } };
@@ -1972,7 +2049,12 @@ impl Client {
                 }))
                 .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
                     ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
+                    ("plugin", _) => format!("{} · {}", p.leaf.label, p.leaf.id),
                     _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
+                }))
+                .children(self.plugin_errors.get(&p.leaf.id).cloned().flatten().filter(|_| p.leaf.kind == "plugin").map(|error| {
+                    div().id(gpui::ElementId::Name(format!("plugin-error-{}", p.leaf.id).into())).ml_2().max_w(px(r.w * 0.6)).flex_shrink_0().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
+                        .text_color(rgb(0xe0715f)).tooltip(crate::tooltip::tip(&error)).child(error)
                 }))
                 .child(self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx))
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))

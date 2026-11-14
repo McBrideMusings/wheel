@@ -159,6 +159,10 @@ impl From<&Node> for Tree {
                         leaf.harness = Some(harness.clone());
                         leaf.home = place.as_ref().and_then(|p| p.home.clone());
                     }
+                    PaneKind::Plugin { plugin, pane, .. } => {
+                        leaf.kind = "plugin".into();
+                        leaf.label = format!("{plugin}/{pane}");
+                    }
                     PaneKind::Unknown(pane) => leaf.kind = pane.kind().to_owned(),
                 }
                 Tree::Pane(leaf)

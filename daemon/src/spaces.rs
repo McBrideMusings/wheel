@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wheel_proto::{
     AgentPermissions, ArtifactRef, ArtifactScope, Axis, ContextUse, Dir, Extra, MoveTarget,
-    NewPaneKind, Node, PaneKind, PaneSite, ServerMsg, AgentState, SessionInfo, SpaceInfo, StartKind,
+    NewPaneKind, Node, PaneKind, PaneSite, PluginPaneRef, ServerMsg, AgentState, SessionInfo, SpaceInfo, StartKind,
 };
 
 use crate::pty::Term;
@@ -808,6 +808,7 @@ impl AppState {
         self.save_state(spaces);
         self.broadcast_layout(spaces);
         self.sync_settings_watch_with(spaces);
+        self.sync_plugin_watch();
     }
 
     /// Send the layout to every client without writing it: for a change a restart need not keep,
@@ -850,7 +851,8 @@ impl AppState {
             // A browser pane holds only its console messages (dropped above): no folder, no
             // data directory, no watch, no refresh, no terminal. The client's web view goes
             // with the pane.
-            PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
+            // A plugin pane owns no process; each client runs its script.
+            PaneKind::Plugin { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
     }
 
@@ -1432,7 +1434,10 @@ impl AppState {
             _ => return Err("pane_open needs a url or an artifact, and only one".into()),
         };
         let new = self.pane_split(pane, dir, site)?.0;
-        if let Err(e) = self.pane_set_kind(&new, kind, artifact, scope, url).await {
+        if let Err(e) = self
+            .pane_set_kind(&new, kind, artifact, scope, url, None)
+            .await
+        {
             let _ = self.pane_close(&new);
             return Err(e);
         }
@@ -1442,8 +1447,8 @@ impl AppState {
     /// Change what a pane shows. A terminal or an agent starts in the space's directory; a web
     /// pane shows the artifact `artifact` names in `scope` (or, with no scope, in the first scope
     /// that has an entry by that name), which only it takes; a browser pane opens `url`, or the
-    /// `browser.homepage` setting as it resolves for the pane's space when no URL is given.
-    /// Whatever the pane showed before goes. Returns what the pane shows now.
+    /// `browser.homepage` setting as it resolves for the pane's space when no URL is given; a
+    /// plugin pane shows a pane of a plugin that resolves for the space. Whatever the pane showed before goes. Returns what the pane shows now.
     pub async fn pane_set_kind(
         &self,
         pane: &str,
@@ -1451,15 +1456,18 @@ impl AppState {
         artifact: Option<String>,
         scope: Option<ArtifactScope>,
         url: Option<String>,
+        plugin: Option<PluginPaneRef>,
     ) -> Result<PaneKind, String> {
-        if kind != NewPaneKind::Web && (artifact.is_some() || scope.is_some()) {
-            return Err(
-                format!("artifact and scope are only for a web pane, not {kind:?}").to_lowercase(),
-            );
-        }
-        if kind != NewPaneKind::Browser && url.is_some() {
-            return Err(format!("url is only for a browser pane, not {kind:?}").to_lowercase());
-        }
+        let only_for = |ok: bool, given: bool, what: &str, only: &str| {
+            if given && !ok {
+                Err(format!("{what} only for a {only} pane, not {kind:?}").to_lowercase())
+            } else {
+                Ok(())
+            }
+        };
+        only_for(kind == NewPaneKind::Plugin, plugin.is_some(), "plugin is", "plugin")?;
+        only_for(kind == NewPaneKind::Web, artifact.is_some() || scope.is_some(), "artifact and scope are", "web")?;
+        only_for(kind == NewPaneKind::Browser, url.is_some(), "url is", "browser")?;
         // A web pane's artifact and its space's directory, kept for the watch the swap below sets.
         let mut watching = None;
         let new = match (kind, artifact) {
@@ -1493,6 +1501,25 @@ impl AppState {
             }
             (NewPaneKind::Web, None) => {
                 return Err("a web pane needs artifact, the name of an artifact".into())
+            }
+            (NewPaneKind::Plugin, _) => {
+                let Some(PluginPaneRef { plugin, pane: plugin_pane }) = plugin else {
+                    return Err("a plugin pane needs plugin, a plugin's id and the id of its pane".into());
+                };
+                let cwd = {
+                    let spaces = self.spaces.lock().unwrap();
+                    spaces.spaces[spaces.holding(pane)?].cwd.clone()
+                };
+                let state = self.me.upgrade().ok_or("wheeld is shutting down")?;
+                let (check_plugin, check_pane) = (plugin.clone(), plugin_pane.clone());
+                tokio::task::spawn_blocking(move || state.plugin_check(&cwd, &check_plugin, &check_pane))
+                    .await
+                    .map_err(|e| format!("plugin check failed: {e}"))??;
+                PaneKind::Plugin {
+                    plugin,
+                    pane: plugin_pane,
+                    extra: Extra::default(),
+                }
             }
             (NewPaneKind::Browser, _) => {
                 let space = {
@@ -1536,7 +1563,12 @@ impl AppState {
                 }
             }
         };
-        self.install(pane, new, watching)
+        let shown = self.install(pane, new, watching);
+        if shown.is_ok() && kind == NewPaneKind::Plugin {
+            // The watch is up before the reply, so a save right after it is seen.
+            self.sync_plugin_watch_now().await;
+        }
+        shown
     }
 
     /// Put `new` in `pane`, ending what it showed, and return what it shows now. `watching` is a
@@ -1644,7 +1676,7 @@ impl AppState {
         };
         let started = match kind {
             StartKind::Terminal => self
-                .pane_set_kind(&pane, NewPaneKind::Terminal, None, None, None)
+                .pane_set_kind(&pane, NewPaneKind::Terminal, None, None, None, None)
                 .await
                 .map(|_| None)
                 .map_err(|e| (e, false)),
@@ -1809,7 +1841,7 @@ impl AppState {
             .pane_split(pane, (!apart).then_some(Dir::Right), site)?
             .0;
         let term = match self
-            .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None)
+            .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None, None)
             .await
         {
             Ok(PaneKind::Terminal { term, .. }) => term,
@@ -2700,6 +2732,7 @@ fn pane_kind_name(kind: &PaneKind) -> &str {
         PaneKind::Terminal { .. } => "terminal",
         PaneKind::Web { .. } => "web",
         PaneKind::Browser { .. } => "browser",
+        PaneKind::Plugin { .. } => "plugin",
         PaneKind::Agent { .. } => "agent",
         PaneKind::Unknown(unknown) => unknown.kind(),
     }

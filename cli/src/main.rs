@@ -133,6 +133,9 @@ enum Command {
     /// Artifacts: a page a web pane can show, named by an entry in a wheel.toml.
     #[command(subcommand)]
     Artifact(ArtifactCommand),
+    /// Plugins: packages of Luau pane scripts, each a folder holding a wheel-plugin.toml.
+    #[command(subcommand)]
+    Plugin(PluginCommand),
     /// Wheel's own settings, from wheel.toml: a project's over this machine's.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -378,6 +381,20 @@ enum ConfigCommand {
         #[arg(long)]
         machine: bool,
         /// Print the settings as JSON once removed.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Print every plugin package a space can use, project then machine then built-in, with its
+    /// panes. The first package carrying an id is the one that id means.
+    Ls {
+        /// The space whose project plugins are listed; the space of the calling pane, else none.
+        #[arg(long)]
+        space: Option<String>,
+        /// Print the records as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -986,8 +1003,9 @@ enum PaneCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Change what a pane shows: empty, terminal, web (an artifact, given by --artifact) or
-    /// browser (a page, given by --page).
+    /// Change what a pane shows: empty, terminal, web (an artifact, given by --artifact),
+    /// browser (a page, given by --page) or plugin (a plugin's pane, given by --plugin and
+    /// --plugin-pane).
     Kind {
         pane: String,
         #[arg(value_parser = wheel_proto::from_wire::<NewPaneKind>)]
@@ -1004,6 +1022,12 @@ enum PaneCommand {
         /// rather than `url` because `--url` is this CLI's own flag for the daemon's address.
         #[arg(long)]
         page: Option<String>,
+        /// The plugin a plugin pane shows, by id; see `wheel plugin ls`.
+        #[arg(long, requires = "plugin_pane")]
+        plugin: Option<String>,
+        /// The id of the plugin's `[[pane]]` to show.
+        #[arg(long, requires = "plugin")]
+        plugin_pane: Option<String>,
     },
     /// Move a browser pane to a page, as typing it into the pane's address field does; print the
     /// page the text named.
@@ -4166,6 +4190,41 @@ fn print_changed(key: &str, all: &[SettingInfo], json: bool) -> Result<(), Fail>
     Ok(())
 }
 
+/// Print the plugin packages a space can use, each with its panes.
+async fn plugin_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::Plugins { plugins, .. } = conn
+        .call(ClientMsg::PluginLs { req: Some(req), space }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to plugin_ls".into()));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&plugins).map_err(other)?);
+        return Ok(());
+    }
+    for plugin in &plugins {
+        println!(
+            "{}\t{}\t{}\t{}",
+            plugin.id,
+            plugin.version,
+            match plugin.scope {
+                wheel_proto::PluginScope::Project => "project",
+                wheel_proto::PluginScope::Machine => "machine",
+                wheel_proto::PluginScope::Builtin => "builtin",
+            },
+            plugin.dir.as_deref().unwrap_or("built-in")
+        );
+        if let Some(error) = &plugin.error {
+            println!("  error: {error}");
+        }
+        for pane in &plugin.panes {
+            println!("  {}\t{}\t{}", pane.id, pane.title, pane.script);
+        }
+    }
+    Ok(())
+}
+
 async fn artifact_ls(
     conn: &mut Conn,
     space: Option<String>,
@@ -5522,6 +5581,8 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             artifact,
             scope,
             page,
+            plugin,
+            plugin_pane,
         } => {
             simple(conn, |req| ClientMsg::PaneSetKind {
                 req: Some(req),
@@ -5530,6 +5591,9 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 artifact,
                 scope,
                 url: page,
+                plugin: plugin
+                    .zip(plugin_pane)
+                    .map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }),
             })
             .await
         }
@@ -6076,6 +6140,10 @@ async fn main() -> ExitCode {
             Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
                 let space = default_space(&mut conn, space).await?;
                 artifact_ls(&mut conn, space, pane, json).await
+            }
+            Command::Plugin(PluginCommand::Ls { space, json }) => {
+                let space = default_space(&mut conn, space).await?;
+                plugin_ls(&mut conn, space, json).await
             }
             Command::Stream(command) => stream(&mut conn, command).await,
             Command::Title(TitleCommand::Ls { space, json }) => {
