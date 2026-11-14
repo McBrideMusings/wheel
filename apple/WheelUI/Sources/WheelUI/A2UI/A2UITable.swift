@@ -130,15 +130,15 @@ struct A2UITableView: View {
                     TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                         // A column that is not sortable compares every pair as equal, so its header changes nothing.
                         TableColumn(c["label"]?.stringValue ?? "", sortUsing: CellSort(key: c["sortable"]?.boolValue == true ? c["key"]?.stringValue ?? "" : "")) { line in cell(line, c, foldAction, first: first) }
-                            // A column with a width starts at it and can be dragged wider or narrower; one without fills what is left.
-                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: nil)
+                            // A column with a width is capped at it (it can be dragged narrower), so the leftover goes to the columns without one.
+                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: c["width"]?.numberValue.map { CGFloat($0) })
                     }
                 }
             } else {
                 Table(lines, selection: selected) {
                     TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                         TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: first) }
-                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: nil)
+                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: c["width"]?.numberValue.map { CGFloat($0) })
                     }
                 }
             }
