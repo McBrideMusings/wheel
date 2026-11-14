@@ -13,8 +13,8 @@ use crate::core::run;
 
 pub mod cli;
 pub mod detail;
+pub mod feed;
 pub mod markdown;
-pub mod serve;
 
 const QUERY: &str = "query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:25,after:$after,orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{
 number title bodyText headRefName isDraft mergeable updatedAt reviewDecision url additions deletions changedFiles
@@ -44,7 +44,7 @@ pub struct Pr {
     pub bucket: &'static str,
     /// The viewer's standing on a PR they did not write.
     pub my: Option<&'static str>,
-    /// Where the review stands from the viewer's side, one of [`STANDINGS`]: whether it is their turn to review, it is
+    /// Where the review stands from the viewer's side (see [`standing`]): whether it is their turn to review, it is
     /// approved, or someone else is up.
     pub standing: &'static str,
     pub updated: i64,
@@ -60,22 +60,8 @@ pub struct Pr {
     pub summary: String,
 }
 
-/// Every review standing: its key, the words the Review column shows, its tone, and whether it is the viewer's turn.
-/// The order is the column's sort: the viewer's turn first, approved last.
-pub const STANDINGS: [(&str, &str, &str, bool); 10] = [
-    ("review", "Review requested", "warn", true),
-    ("re-review", "New commits to review", "warn", true),
-    ("reply", "Replied to you", "warn", true),
-    ("changes-requested", "Changes requested", "bad", true),
-    ("comments", "Comments to answer", "bad", true),
-    ("no-reviewer", "No reviewer", "warn", false),
-    ("waiting-reviewer", "Waiting on reviewer", "muted", false),
-    ("waiting-author", "Waiting on author", "muted", false),
-    ("not-asked", "Not asked", "muted", false),
-    ("approved", "Approved", "ok", false),
-];
-
-/// Where a PR's review stands for the viewer, as a key of [`STANDINGS`].
+/// Where a PR's review stands for the viewer: `review`, `re-review`, `reply`, `changes-requested`, `comments`,
+/// `no-reviewer`, `waiting-reviewer`, `waiting-author`, `not-asked` or `approved`.
 fn standing(n: &Value, bucket: &str, my: Option<&str>, review: &str) -> &'static str {
     let approved = n["reviewDecision"] == "APPROVED";
     match (bucket, my) {
@@ -328,6 +314,8 @@ struct Cache {
     /// `owner/name` -> when it was read, the Unix second, the PR nodes.
     nodes: HashMap<String, (Instant, i64, Vec<Value>)>,
     details: HashMap<(String, i64), (Instant, Value)>,
+    /// Bumped by [`forget`]: a read that began under an older value is stale and is not kept.
+    epoch: u64,
 }
 
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Mutex::default);
@@ -381,20 +369,32 @@ fn shared_pulls(dir: &str, repo: &str, force: bool) -> Result<(i64, Vec<Value>),
     let arrived = Instant::now();
     let g = gate(repo);
     let _turn = g.lock().unwrap();
-    if let Some((at, when, nodes)) = CACHE.lock().unwrap().nodes.get(repo) {
-        if serves(*at, arrived, force) {
-            return Ok((*when, nodes.clone()));
+    let epoch = {
+        let c = CACHE.lock().unwrap();
+        if let Some((at, when, nodes)) = c.nodes.get(repo) {
+            if serves(*at, arrived, force) {
+                return Ok((*when, nodes.clone()));
+            }
         }
-    }
+        c.epoch
+    };
     let nodes = pulls(dir, repo)?;
     let when = crate::core::page::now();
-    CACHE.lock().unwrap().nodes.insert(repo.to_string(), (Instant::now(), when, nodes.clone()));
+    let mut c = CACHE.lock().unwrap();
+    if c.epoch == epoch {
+        c.nodes.insert(repo.to_string(), (Instant::now(), when, nodes.clone()));
+    }
     Ok((when, nodes))
 }
 
-/// One PR in full when a read of it is younger than [`SHARE`]; never asks GitHub.
-pub fn cached_detail(repo: &str, number: i64) -> Option<Value> {
-    CACHE.lock().unwrap().details.get(&(repo.to_string(), number)).filter(|(at, _)| at.elapsed() < SHARE).map(|(_, v)| v.clone())
+/// Drop what was read of `dir`'s repo, so the next read asks GitHub: its PR list and every PR's details (an action on
+/// one PR changes the others' merge state too), and make a read already under way unfit to be kept.
+pub fn forget(dir: &str) {
+    let mut c = CACHE.lock().unwrap();
+    c.epoch += 1;
+    let Some(repo) = c.repos.get(dir).cloned() else { return };
+    c.nodes.remove(&repo);
+    c.details.retain(|(r, _), _| *r != repo);
 }
 
 /// One PR in full, shared the same way.
@@ -403,13 +403,20 @@ pub fn shared_detail(dir: &str, repo: &str, number: i64, force: bool) -> Result<
     let g = gate(repo);
     let _turn = g.lock().unwrap();
     let key = (repo.to_string(), number);
-    if let Some((at, v)) = CACHE.lock().unwrap().details.get(&key) {
-        if serves(*at, arrived, force) {
-            return Ok(v.clone());
+    let epoch = {
+        let c = CACHE.lock().unwrap();
+        if let Some((at, v)) = c.details.get(&key) {
+            if serves(*at, arrived, force) {
+                return Ok(v.clone());
+            }
         }
-    }
+        c.epoch
+    };
     let v = detail::fetch(dir, repo, number)?;
-    CACHE.lock().unwrap().details.insert(key, (Instant::now(), v.clone()));
+    let mut c = CACHE.lock().unwrap();
+    if c.epoch == epoch {
+        c.details.insert(key, (Instant::now(), v.clone()));
+    }
     Ok(v)
 }
 
@@ -513,7 +520,6 @@ mod tests {
         assert_eq!(at("you", &|n| n["reviewDecision"] = json!("APPROVED")), "approved");
         let p = convert(&node("me", |n| n["bodyText"] = json!("A  long\n description")), "me");
         assert_eq!(p.summary, "A long description");
-        assert!(STANDINGS.iter().any(|s| s.0 == p.standing));
     }
 
     #[test]

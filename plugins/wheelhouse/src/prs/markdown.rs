@@ -1,6 +1,6 @@
-//! A PR's description or comment as the page draws it: GitHub-flavoured Markdown (headings, lists,
-//! quotes, code, rules, tables, inline emphasis, links) turned into A2UI blocks, and its images
-//! shown as images.
+//! A PR's description or comment as data for a pane: GitHub-flavoured Markdown (headings, lists,
+//! quotes, code, rules, tables, inline emphasis, links) turned into blocks (see [`blocks`]), and its
+//! images as image blocks.
 //!
 //! Images that live in the repo (`github.com/<owner>/<repo>/blob/<ref>/<path>?raw=true` and
 //! `raw.githubusercontent.com`) need GitHub's authentication in a private repo, which the client
@@ -13,9 +13,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use serde_json::json;
-
-use crate::core::page::Page;
+use serde_json::{json, Value};
 
 fn cache_dir() -> PathBuf {
     std::env::temp_dir().join("wheel-prs-img")
@@ -96,11 +94,8 @@ fn attr(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-struct Draw<'a> {
-    p: &'a mut Page,
-    id: &'a str,
-    n: usize,
-    out: Vec<String>,
+struct Draw {
+    out: Vec<Value>,
     inl: String,
     images: Vec<(String, String)>,
     /// The open lists: the next number of an ordered one, `None` for a bulleted one.
@@ -116,12 +111,7 @@ struct Draw<'a> {
     row: Vec<String>,
 }
 
-impl Draw<'_> {
-    fn next(&mut self) -> String {
-        self.n += 1;
-        format!("{}.{}", self.id, self.n)
-    }
-
+impl Draw {
     fn indent(&self) -> u32 {
         (self.lists.len() as u32).saturating_sub(1) * 16 + self.quote * 12
     }
@@ -132,26 +122,18 @@ impl Draw<'_> {
         let bullet = self.bullet.take();
         let text = text.trim().to_string();
         if !text.is_empty() || bullet.is_some() && !self.images.is_empty() {
-            let id = self.next();
-            let (size, weight) = match self.heading {
-                Some(HeadingLevel::H1) => (20, "bold"),
-                Some(HeadingLevel::H2) => (17, "bold"),
-                Some(HeadingLevel::H3) => (15, "semibold"),
-                Some(_) => (14, "semibold"),
-                None => (13, "regular"),
+            let heading = match self.heading {
+                Some(HeadingLevel::H1) => 1,
+                Some(HeadingLevel::H2) => 2,
+                Some(HeadingLevel::H3) => 3,
+                Some(_) => 4,
+                None => 0,
             };
             let shown = format!("{}{text}", bullet.unwrap_or_default());
-            self.p.label(&id, &shown, json!({ "size": size, "weight": weight, "markdown": true, "tone": if self.quote > 0 { "muted" } else { "fg" } }));
-            let pad = self.indent();
-            let b = self.p.boxed(&format!("{id}.b"), "v", vec![id.clone()], json!({ "padding": [if self.heading.is_some() { 6 } else { 0 }, 0, 0, pad], "align": "start" }));
-            self.out.push(b);
+            self.out.push(json!({ "kind": "text", "text": shown, "heading": heading, "quote": self.quote > 0, "indent": self.indent() }));
         }
         for (url, alt) in std::mem::take(&mut self.images) {
-            let id = self.next();
-            self.p.put(json!({ "id": id, "component": "Image", "url": source(&url), "fit": "contain", "variant": "largeFeature", "modifiers": [{ "help": alt }] }));
-            let pad = self.indent();
-            let b = self.p.boxed(&format!("{id}.b"), "v", vec![id.clone()], json!({ "padding": [4, 0, 4, pad], "align": "start" }));
-            self.out.push(b);
+            self.out.push(json!({ "kind": "image", "url": source(&url), "alt": alt, "indent": self.indent() }));
         }
     }
 
@@ -218,9 +200,11 @@ impl Draw<'_> {
     }
 }
 
-/// `md` drawn as blocks named `<id>.<n>.b`; the ids of the top-level blocks, in order.
-pub fn render(p: &mut Page, id: &str, md: &str) -> Vec<String> {
-    let mut d = Draw { p, id, n: 0, out: vec![], inl: String::new(), images: vec![], lists: vec![], bullet: None, quote: 0, heading: None, code: None,
+/// `md` as blocks, in order: `{kind: "text", text, heading, quote, indent}` (`text` is inline Markdown with its
+/// list bullet; `heading` is 0 for none, 1 to 3 for H1 to H3, 4 for deeper), `{kind: "image", url, alt, indent}`,
+/// `{kind: "code", text, indent}` and `{kind: "rule"}`. `indent` is in points.
+pub fn blocks(md: &str) -> Vec<Value> {
+    let mut d = Draw { out: vec![], inl: String::new(), images: vec![], lists: vec![], bullet: None, quote: 0, heading: None, code: None,
         alt: None, links: vec![], comment: false, table: None, row: vec![] };
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     for ev in Parser::new_ext(md, opts) {
@@ -269,17 +253,12 @@ pub fn render(p: &mut Page, id: &str, md: &str) -> Vec<String> {
             }
             Event::End(TagEnd::CodeBlock) => {
                 let code = d.code.take().unwrap_or_default();
-                let cid = d.next();
-                d.p.label(&cid, code.trim_end(), json!({ "mono": true, "size": 12 }));
-                let pad = d.indent();
-                let b = d.p.boxed(&format!("{cid}.b"), "v", vec![cid.clone()], json!({ "padding": [8, 10], "fill": "soft", "radius": 6, "align": "start", "margin": [2, 0, 2, pad] }));
-                d.out.push(b);
+                let indent = d.indent();
+                d.out.push(json!({ "kind": "code", "text": code.trim_end(), "indent": indent }));
             }
             Event::Rule => {
                 d.flush();
-                let rid = d.next();
-                d.p.put(json!({ "id": rid, "component": "Divider" }));
-                d.out.push(rid);
+                d.out.push(json!({ "kind": "rule" }));
             }
             Event::Start(Tag::Emphasis) => d.inl.push('*'),
             Event::End(TagEnd::Emphasis) => d.inl.push('*'),
@@ -346,34 +325,42 @@ pub fn render(p: &mut Page, id: &str, md: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
-
-    fn drawn(md: &str) -> (Vec<String>, Vec<Value>) {
-        let mut p = Page { out: vec![] };
-        let ids = render(&mut p, "t", md);
-        (ids, p.out)
-    }
 
     fn texts(out: &[Value]) -> Vec<String> {
-        out.iter().filter(|c| c["component"] == "Text").map(|c| c["text"].as_str().unwrap().to_string()).collect()
+        out.iter().filter(|c| c["kind"] == "text" || c["kind"] == "code").map(|c| c["text"].as_str().unwrap().to_string()).collect()
     }
 
     #[test]
     fn headings_lists_code_and_comments_become_blocks_and_html_comments_vanish() {
-        let (ids, out) = drawn("## Problem\nA **bold** claim with `code`.\n\n- one\n- two\n\n1. first\n\n```\nlet x = 1;\n```\n\n<!-- hidden\nmore -->\nAfter");
-        let t = texts(&out);
-        assert_eq!(t, vec!["Problem", "A **bold** claim with `code`.", "• one", "• two", "1. first", "let x = 1;", "After"]);
-        assert_eq!(ids.len(), 7);
-        let h = out.iter().find(|c| c["text"] == "Problem").unwrap();
-        assert!(h["modifiers"].to_string().contains("bold"));
+        let out = blocks("## Problem\nA **bold** claim with `code`.\n\n- one\n- two\n\n1. first\n\n```\nlet x = 1;\n```\n\n<!-- hidden\nmore -->\nAfter");
+        assert_eq!(texts(&out), vec!["Problem", "A **bold** claim with `code`.", "• one", "• two", "1. first", "let x = 1;", "After"]);
+        assert_eq!(out.len(), 7);
+        assert_eq!(out[0], json!({ "kind": "text", "text": "Problem", "heading": 2, "quote": false, "indent": 0 }));
+        assert_eq!(out[1]["heading"], 0);
+        assert_eq!(out[5], json!({ "kind": "code", "text": "let x = 1;", "indent": 0 }));
     }
 
     #[test]
-    fn images_in_markdown_and_html_are_drawn_after_their_block_and_other_tags_drop() {
-        let (_, out) = drawn("Before:\n![shot](https://x/a.png)\n\n<a href=\"u\"><picture><img src=\"https://x/b.png\" alt=\"after\"></picture></a>\n<sup>Open in <b>tool</b></sup>");
-        let imgs: Vec<&str> = out.iter().filter(|c| c["component"] == "Image").map(|c| c["url"].as_str().unwrap()).collect();
+    fn images_in_markdown_and_html_are_blocks_after_their_text_and_other_tags_drop() {
+        let out = blocks("Before:\n![shot](https://x/a.png)\n\n<a href=\"u\"><picture><img src=\"https://x/b.png\" alt=\"after\"></picture></a>\n<sup>Open in <b>tool</b></sup>");
+        let imgs: Vec<&str> = out.iter().filter(|c| c["kind"] == "image").map(|c| c["url"].as_str().unwrap()).collect();
         assert_eq!(imgs, vec!["https://x/a.png", "https://x/b.png"]);
+        assert_eq!(out.iter().find(|c| c["kind"] == "image").unwrap()["alt"], "shot");
         assert!(texts(&out).iter().any(|t| t == "Open in tool"));
+    }
+
+    #[test]
+    fn quotes_nested_lists_tasks_rules_tables_and_breaks() {
+        let out = blocks("> quoted\n\n- a\n  - b\n\n- [x] done\n- [ ] todo\n\n---\n\n| h1 | h2 |\n|----|----|\n| c1 | c2 |\n\nline<br>two");
+        assert_eq!(out[0]["quote"], true);
+        assert_eq!(out[0]["indent"], 12);
+        let b = out.iter().find(|c| c["text"] == "• b").unwrap();
+        assert_eq!(b["indent"], 16);
+        let t = texts(&out);
+        assert!(t.contains(&"☑ done".to_string()) && t.contains(&"☐ todo".to_string()));
+        assert!(out.iter().any(|c| c["kind"] == "rule"));
+        assert!(t.contains(&"**h1  |  h2**".to_string()) && t.contains(&"c1  |  c2".to_string()));
+        assert!(t.contains(&"line\ntwo".to_string()));
     }
 
     #[test]

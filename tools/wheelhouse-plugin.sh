@@ -8,7 +8,8 @@
 # reads `wheelhouse.diff` of two temp git repos (an edit and a new file arrive, a write under a
 # git-ignored directory does not once a tracked file's change has shown the watch is live, the
 # other repo is untouched, and a nested tracked file's edit arrives although a beads feed opened the
-# same checkout first). Prints PASS or FAIL per
+# same checkout first); a pane of kind wheelhouse/prs reads `wheelhouse.prs` and `wheelhouse.pr_detail`
+# through a fake `gh` and invokes `wheelhouse.pr_merge`, `pr_draft`, `pr_close` and `run_list`. Prints PASS or FAIL per
 # case. Uses no GUI, focus, mouse or keyboard. Everything it starts is killed by pid at the end.
 #
 #   tools/wheelhouse-plugin.sh         # uses target/debug/{wheeld,wheel,wheelhouse}
@@ -45,6 +46,69 @@ done
 : > "$T/machine.toml"
 ln -s "$ROOT/plugins/wheelhouse" "$T/plugins/wheelhouse"
 RECORDS="$T/home/.wheel/bead-panes.json"
+
+# A fake `gh` for the PRs cases, first on the PATH wheeld and so the backend get: it logs each call to
+# $T/gh.log and answers `repo view`, `api user` and the two GraphQL queries with canned PRs; `pr merge|close|ready|checkout`
+# succeed. wheeld asks the login shell for PATH, whose startup files are the real ones, so the last one
+# it reads (.zlogin) puts the fake first.
+mkdir -p "$T/bin"
+cat > "$T/bin/gh" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gh.log")
+query = next((a[len("query="):] for a in args if a.startswith("query=")), "")
+number = next((a[len("number="):] for a in args if a.startswith("number=")), "")
+if query:
+    shown = ["api", "graphql", "detail " + number if "pullRequest(number" in query else "list"]
+else:
+    shown = args
+with open(log, "a") as f:
+    f.write(" ".join(shown) + "\n")
+# Every answer differs from the one before (updatedAt counts the calls so far), so a feed read again always has news; a
+# merged or closed PR is gone from the list.
+stamp = sum(1 for _ in open(log)) % 60
+gone = os.path.join(os.path.dirname(log), "gh-gone")
+if args[:1] == ["pr"] and args[1:2] in (["merge"], ["close"]):
+    open(gone + "-" + args[2], "w").close()
+def node(n, title, author, draft, checks, asks_me):
+    return {"number": n, "title": title, "bodyText": "Body of %d" % n, "headRefName": "branch-%d" % n, "isDraft": draft,
+            "mergeable": "MERGEABLE", "updatedAt": "2026-11-01T00:%02d:00Z" % stamp, "reviewDecision": None, "url": "https://github.com/o/fixture/pull/%d" % n,
+            "additions": 5, "deletions": 2, "changedFiles": 1, "author": {"login": author, "__typename": "User"},
+            "assignees": {"nodes": []},
+            "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "me"}}] if asks_me else []},
+            "labels": {"nodes": [{"name": "bug"}]}, "reviews": {"nodes": []}, "comments": {"nodes": []}, "reviewThreads": {"nodes": []},
+            "commits": {"totalCount": 1, "nodes": [{"commit": {"committedDate": "2026-11-01T00:00:00Z", "statusCheckRollup": {"state": checks}}}]}}
+if args[:2] == ["repo", "view"]:
+    print("o/fixture")
+elif args[:2] == ["api", "user"]:
+    print("me")
+elif args[:2] == ["api", "graphql"] and "pullRequest(number" in query:
+    d = node(int(number), "PR %s" % number, "me", False, "SUCCESS", False)
+    d.update({"body": "## Plan\n\n- first item\n- second item\n\n![shot](https://example.com/shot.png)\n\nDone.",
+              "state": "OPEN", "merged": False, "mergeStateStatus": "CLEAN", "baseRefName": "main", "isCrossRepository": False,
+              "createdAt": "2026-10-30T00:00:00Z",
+              "latestReviews": {"nodes": []},
+              "reviews": {"nodes": []},
+              "comments": {"nodes": [{"author": {"login": "zed"}, "createdAt": "2026-10-31T00:00:00Z", "body": "Looks fine"}]},
+              "history": {"totalCount": 1, "nodes": [{"commit": {"abbreviatedOid": "abc1234", "messageHeadline": "Do it", "committedDate": "2026-10-31T00:00:00Z"}}]},
+              "files": {"totalCount": 1, "nodes": [{"path": "src/a.rs", "additions": 5, "deletions": 2}]},
+              "checks": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": [{"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"}]}}}}]}})
+    print(json.dumps({"data": {"repository": {"pullRequest": d}}}))
+elif args[:2] == ["api", "graphql"] and "pullRequests(" in query:
+    nodes = [node(11, "Mine failing", "me", False, "FAILURE", False), node(12, "Asks me", "zed", False, "SUCCESS", True),
+             node(13, "Draft work", "amy", True, "PENDING", False)]
+    nodes = [n for n in nodes if not os.path.exists(gone + "-%d" % n["number"])]
+    print(json.dumps({"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}}))
+elif args[:1] == ["pr"] and args[1:2] in (["merge"], ["close"], ["ready"], ["checkout"]):
+    pass
+else:
+    sys.stderr.write("fake gh: no answer for %s\n" % " ".join(shown))
+    sys.exit(1)
+PY
+chmod +x "$T/bin/gh"
+rm -f "$T/home/.zlogin"
+{ [ -e "$HOME/.zlogin" ] && echo ". \"$HOME/.zlogin\""; echo "export PATH=\"$T/bin:\$PATH\""; } > "$T/home/.zlogin"
 
 # A project with beads: an epic with two children, a leaf blocked by one child, a closed one, and
 # a leaf to press. Sets ID_<name> for each.
@@ -92,7 +156,7 @@ label = "Mark list"
 run = 'echo "\$BEAD_IDS" > "$T/marker-list"'
 TOML
 
-HOME="$T/home" "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$T/support" --machine-file "$T/machine.toml" \
+PATH="$T/bin:$PATH" HOME="$T/home" "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$T/support" --machine-file "$T/machine.toml" \
   --log-dir "$T/logs" --cli "$WHEEL" > "$T/wheeld.out" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 100); do
@@ -633,6 +697,181 @@ diff_nested() { [ "$(diff_files "$FD3")" = '[["src/nested.txt", "M", 1]]' ]; }
 poll 5 diff_nested
 diff_nested && pass "an edit of a nested tracked file reaches the diff feed within 5 s when a beads feed opened the checkout first" \
   || fail "a nested edit does not reach the diff feed after a beads feed: $(diff_files "$FD3")"
+
+# 11f the PRs pane (wheel-pmf2.4.12): a pane of kind wheelhouse/prs reads `wheelhouse.prs` and
+# `wheelhouse.pr_detail` of a temp project through the fake gh (three canned PRs), and invokes the PR actions.
+# Every gh call is logged to $T/gh.log.
+PP="$T/proj-p"
+git init -q -b main "$PP"
+cat > "$PP/wheel.toml" <<TOML
+[prs.list.mark]
+label = "Mark PRs"
+run = 'echo "\$PR_NUMBERS" > "$T/marker-prs-list"'
+TOML
+PSPACE=$(w space new "$PP")
+PPANE=$(w pane ls | awk -v s="$PSPACE" '$1 == s {print $2; exit}')
+w pane kind "$PPANE" plugin --plugin wheelhouse --plugin-pane prs > /dev/null
+
+# 6 the pane's script is part of the package: the pane is listed and its manifest entry names the script.
+w plugin ls --space "$PSPACE" > "$T/pls.txt" 2>&1
+if grep -q 'prs' "$T/pls.txt" && [ -s "$ROOT/plugins/wheelhouse/panes/prs.luau" ] && ! grep -qi 'error' "$T/pls.txt"; then
+  pass "a pane of kind wheelhouse/prs is listed with its script and no error"
+else
+  fail "wheelhouse/prs pane listing: $(cat "$T/pls.txt")"
+fi
+
+# 1 the prs feed.
+w plugin feed "$PPANE" wheelhouse.prs --params "{\"dir\":\"$PP\"}" --count 200 > "$T/prs-feed.json" 2> "$T/prs-feed.err" &
+PIDS+=($!)
+poll 30 grep -q '"prs":\[{' "$T/prs-feed.json"
+python3 - "$T/prs-feed.json" > "$T/prs-shape.verdict" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+vals = [r["value"] for r in rows if r.get("value")]
+if not vals:
+    print("no value: %r" % rows[:2]); sys.exit()
+v = vals[0]
+problems = []
+want = {"now", "name", "repo", "me", "error", "fetched", "fetched_clock", "next_clock", "prs", "buttons", "scripts"}
+if not want <= set(v):
+    problems.append("missing keys %r" % sorted(want - set(v)))
+by = {p["number"]: p for p in v.get("prs", [])}
+if set(by) != {11, 12, 13}:
+    problems.append("numbers %r" % sorted(by))
+else:
+    got = {n: (p["bucket"], p["standing"]) for n, p in by.items()}
+    exp = {11: ("mine", "no-reviewer"), 12: ("needs-me", "review"), 13: ("other", "not-asked")}
+    if got != exp:
+        problems.append("buckets and standings %r" % got)
+    if not (by[11]["checks"] == "failing" and by[11]["fix"] is True and by[13]["draft"] is True and by[12]["checks"] == "passing"):
+        problems.append("checks, fix or draft %r" % {n: (p["checks"], p["fix"], p["draft"]) for n, p in by.items()})
+    pkeys = {"number", "title", "author", "branch", "draft", "mergeable", "checks", "review", "bucket", "my", "standing", "updated", "url",
+             "fix", "additions", "deletions", "files", "commits", "labels", "reviewers", "summary"}
+    if not pkeys <= set(by[11]):
+        problems.append("pr keys missing %r" % sorted(pkeys - set(by[11])))
+if v.get("repo") != "o/fixture" or v.get("me") != "me" or v.get("error") is not None or not v.get("fetched"):
+    problems.append("header %r" % {k: v.get(k) for k in ("repo", "me", "error", "fetched")})
+if v.get("scripts") != [{"name": "mark", "label": "Mark PRs"}]:
+    problems.append("scripts %r" % v.get("scripts"))
+print("ok" if not problems else "; ".join(problems))
+PY
+check "the prs feed lists the 3 PRs with their buckets (mine, needs-me, other), standings and the list scripts" "$(head -1 "$T/prs-shape.verdict")"
+
+# 2 the pr_detail feed.
+w plugin feed "$PPANE" wheelhouse.pr_detail --params "{\"dir\":\"$PP\",\"number\":11}" --count 200 > "$T/prd-feed.json" 2> "$T/prd-feed.err" &
+PIDS+=($!)
+poll 30 grep -q '"body":\[{' "$T/prd-feed.json"
+python3 - "$T/prd-feed.json" > "$T/prd-shape.verdict" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+vals = [r["value"] for r in rows if r.get("value")]
+if not vals:
+    print("no value: %r" % rows[:2]); sys.exit()
+v = vals[0]
+problems = []
+for k in ("now", "number", "error", "state", "draft", "mergeable", "merge_state", "base", "created", "updated", "url", "assignees", "reviewers",
+          "labels", "body", "checks", "talk", "commits_total", "commits", "files_total", "files", "agents"):
+    if k not in v:
+        problems.append("missing " + k)
+if not problems:
+    kinds = {b["kind"] for b in v["body"]}
+    if not {"text", "image"} <= kinds:
+        problems.append("body kinds %r" % sorted(kinds))
+    if not any(b["kind"] == "image" and b["url"] == "https://example.com/shot.png" and b["alt"] == "shot" for b in v["body"]):
+        problems.append("no image block for the shot %r" % v["body"])
+    if not any(b["kind"] == "text" and b.get("heading") == 2 and "Plan" in b["text"] for b in v["body"]):
+        problems.append("no H2 text block %r" % v["body"])
+    if v["number"] != 11 or v["state"] != "OPEN" or v["base"] != "main" or v["error"] is not None:
+        problems.append("header %r" % {k: v[k] for k in ("number", "state", "base", "error")})
+    if [c["name"] for c in v["checks"]] != ["build"] or v["checks"][0]["state"] != "SUCCESS":
+        problems.append("checks %r" % v["checks"])
+    if len(v["talk"]) != 1 or v["talk"][0]["who"] != "zed" or not v["talk"][0]["blocks"]:
+        problems.append("talk %r" % v["talk"])
+    if v["commits"][0]["sha"] != "abc1234" or v["files"][0]["path"] != "src/a.rs":
+        problems.append("commits or files %r %r" % (v["commits"], v["files"]))
+print("ok" if not problems else "; ".join(problems))
+PY
+check "the pr_detail feed carries the body as text and image blocks, the check, the conversation, commits and files" "$(head -1 "$T/prd-shape.verdict")"
+
+# 3a two pr_detail subscriptions of one directory (numbers 11 and 12) each carry their own PR and each get an update after an
+# action; pr_refresh answers and asks gh for the list again.
+w plugin feed "$PPANE" wheelhouse.pr_detail --params "{\"dir\":\"$PP\",\"number\":12}" --count 200 > "$T/prd12-feed.json" 2> "$T/prd12-feed.err" &
+PIDS+=($!)
+w plugin feed "$PPANE" wheelhouse.pr_detail --params "{\"dir\":\"$PP\",\"number\":11}" --count 200 > "$T/prd11-feed.json" 2> "$T/prd11-feed.err" &
+PIDS+=($!)
+poll 30 grep -q '"number":12' "$T/prd12-feed.json"
+poll 30 grep -q '"number":11' "$T/prd11-feed.json"
+first_number() { python3 -c '
+import json, sys
+for l in open(sys.argv[1]):
+    if l.strip().startswith("{") and json.loads(l).get("value"):
+        print(json.loads(l)["value"]["number"]); break' "$1"; }
+if [ "$(first_number "$T/prd11-feed.json")" = 11 ] && [ "$(first_number "$T/prd12-feed.json")" = 12 ]; then
+  pass "two pr_detail subscriptions of one directory each receive their own PR (11 and 12)"
+else
+  fail "pr_detail numbers: 11 -> $(first_number "$T/prd11-feed.json"), 12 -> $(first_number "$T/prd12-feed.json")"
+fi
+more_rows() { [ "$(rows "$1")" -gt "$2" ]; }
+R11=$(rows "$T/prd11-feed.json"); R12=$(rows "$T/prd12-feed.json")
+w plugin action "$PPANE" wheelhouse.pr_draft --args "{\"dir\":\"$PP\",\"number\":12,\"draft\":true}" > /dev/null 2>&1
+if poll 10 more_rows "$T/prd11-feed.json" "$R11" && poll 10 more_rows "$T/prd12-feed.json" "$R12"; then
+  pass "after an action both pr_detail subscriptions (11 and 12) receive an update"
+else
+  fail "pr_detail updates after pr_draft: 11 rows $R11 -> $(rows "$T/prd11-feed.json"), 12 rows $R12 -> $(rows "$T/prd12-feed.json")"
+fi
+lists() { grep -c '^api graphql list$' "$T/gh.log"; }
+more_lists() { [ "$(lists)" -gt "$1" ]; }
+L0=$(lists)
+if w plugin action "$PPANE" wheelhouse.pr_refresh --args "{\"dir\":\"$PP\"}" > "$T/prref.json" 2> "$T/prref.err" && poll 10 more_lists "$L0"; then
+  pass "pr_refresh answers and asks gh for the list again ($L0 to $(lists) list queries)"
+else
+  fail "pr_refresh: $(cat "$T/prref.json") $(cat "$T/prref.err") list queries $L0 -> $(lists)"
+fi
+if ! w plugin action "$PPANE" wheelhouse.pr_close --args "{\"dir\":\"$PP\",\"number\":99}" > "$T/pr99.json" 2> "$T/pr99.err" \
+   && grep -q 'no open PR' "$T/pr99.json" "$T/pr99.err" && ! grep -qx 'pr close 99' "$T/gh.log"; then
+  pass "an action with a number not in the list fails with 'no open PR' and runs no gh pr command"
+else
+  fail "pr_close 99: $(cat "$T/pr99.json") $(cat "$T/pr99.err")"
+fi
+
+# 3 pr_merge.
+PRS_ROWS=$(rows "$T/prs-feed.json"); L1=$(lists)
+w plugin action "$PPANE" wheelhouse.pr_merge --args "{\"dir\":\"$PP\",\"number\":11,\"method\":\"squash\"}" > "$T/prm.json" 2> "$T/prm.err"
+if grep -q 'Merged #11 (squash).' "$T/prm.json" && grep -qx 'pr merge 11 --squash' "$T/gh.log"; then
+  pass "pr_merge answers said 'Merged #11 (squash).' and runs gh pr merge 11 --squash"
+else
+  fail "pr_merge: $(cat "$T/prm.json") $(cat "$T/prm.err") gh: $(grep 'pr ' "$T/gh.log")"
+fi
+
+if poll 10 more_rows "$T/prs-feed.json" "$PRS_ROWS" && poll 10 more_lists "$L1"; then
+  pass "after pr_merge the prs feed sends a later update and gh is asked for the list again"
+else
+  fail "after pr_merge: prs rows $PRS_ROWS -> $(rows "$T/prs-feed.json"), list queries $L1 -> $(lists)"
+fi
+
+# 4 pr_draft and pr_close.
+w plugin action "$PPANE" wheelhouse.pr_draft --args "{\"dir\":\"$PP\",\"number\":12,\"draft\":true}" > "$T/prdr.json" 2> "$T/prdr.err"
+w plugin action "$PPANE" wheelhouse.pr_draft --args "{\"dir\":\"$PP\",\"number\":13,\"draft\":false}" > "$T/prdr2.json" 2> "$T/prdr2.err"
+if grep -q '"said"' "$T/prdr.json" && grep -q '"said"' "$T/prdr2.json" && grep -qx 'pr ready 12 --undo' "$T/gh.log" && grep -qx 'pr ready 13' "$T/gh.log"; then
+  pass "pr_draft runs gh pr ready 12 --undo to convert to draft and gh pr ready 13 to mark ready"
+else
+  fail "pr_draft: $(cat "$T/prdr.json") $(cat "$T/prdr.err") $(cat "$T/prdr2.json") gh: $(grep 'pr ' "$T/gh.log")"
+fi
+w plugin action "$PPANE" wheelhouse.pr_close --args "{\"dir\":\"$PP\",\"number\":12}" > "$T/prc.json" 2> "$T/prc.err"
+if grep -q '"said"' "$T/prc.json" && grep -qx 'pr close 12' "$T/gh.log"; then
+  pass "pr_close answers said and runs gh pr close 12"
+else
+  fail "pr_close: $(cat "$T/prc.json") $(cat "$T/prc.err") gh: $(grep 'pr ' "$T/gh.log")"
+fi
+
+# 5 run_list with view prs runs [prs.list] with PR_NUMBERS.
+w plugin action "$PPANE" wheelhouse.run_list --args "{\"dir\":\"$PP\",\"view\":\"prs\",\"script\":\"mark\",\"ids\":[\"11\",\"12\"]}" > "$T/prl.json" 2> "$T/prl.err"
+poll 5 has_file "$T/marker-prs-list"
+if [ "$(cat "$T/marker-prs-list" 2>/dev/null)" = "11 12" ] && grep -q 'Mark PRs started over 2 PRs' "$T/prl.json"; then
+  pass "run_list with view prs runs [prs.list] with PR_NUMBERS"
+else
+  fail "run_list view prs: $(cat "$T/prl.json") $(cat "$T/prl.err") marker=$(cat "$T/marker-prs-list" 2>/dev/null)"
+fi
 
 # 12 kill -9 of the backend: stale, then a fresh value.
 OLD=$(backend_pid "$SPACE")

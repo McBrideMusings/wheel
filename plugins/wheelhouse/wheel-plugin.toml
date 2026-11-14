@@ -24,3 +24,10 @@ id = "diff"
 title = "Diff"
 script = "panes/diff.luau"
 reads = ["wheelhouse.diff"]
+
+[[pane]]
+id = "prs"
+title = "PRs"
+script = "panes/prs.luau"
+reads = ["wheelhouse.prs", "wheelhouse.pr_detail"]
+actions = ["wheelhouse.pr_merge", "wheelhouse.pr_close", "wheelhouse.pr_draft", "wheelhouse.pr_checkout", "wheelhouse.pr_worktree", "wheelhouse.pr_button", "wheelhouse.pr_refresh", "wheelhouse.run_list"]

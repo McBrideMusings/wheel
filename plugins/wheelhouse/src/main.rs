@@ -53,7 +53,6 @@ enum Command {
 /// Every view `serve` offers.
 fn registry(agents: &core::agents::Agents) -> view::Registry {
     view::Registry::default().with(beads::serve::BeadsView::new())
-        .with(prs::serve::PrsView::new())
         .with(issues::serve::IssuesView::new())
         .with(status::serve::ProjectView::new())
         .with(work::serve::WorkView::new(work::serve::Mode::Implement, agents.clone()))
