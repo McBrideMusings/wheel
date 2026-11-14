@@ -313,6 +313,69 @@ struct CanvasPlayer {
     }
 }
 
+/// The player for a command list, kept while the list stays the same: a re-run that hands the stage an equal list neither parses
+/// nor replays it again.
+final class CanvasPlayerCache {
+    private var commands: [AnyCodable]?
+    private var fg: Color?
+    private var cached: CanvasPlayer?
+    private(set) var builds = 0
+
+    func player(for list: [AnyCodable], fg: Color) -> CanvasPlayer {
+        if let cached, commands == list, self.fg == fg { return cached }
+        let made = CanvasPlayer(canvasCommands(list), fg: fg)
+        commands = list
+        self.fg = fg
+        cached = made
+        builds += 1
+        return made
+    }
+}
+
+/// Holds pointer moves and drag steps until the next display frame and sends one: the latest position, `dx` and `dy` summed. Any
+/// other kind (down, up, wheel) sends the waiting event first, so the script sees them in order.
+final class CanvasPointerCoalescer {
+    typealias Deliver = (String, CGPoint, Double, Double) -> Void
+    /// Runs `flush` once, a frame from now.
+    var schedule: (@escaping () -> Void) -> Void = { flush in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60.0, execute: flush)
+    }
+    private var pending: (kind: String, p: CGPoint, dx: Double, dy: Double, deliver: Deliver)?
+    private var armed = false
+
+    init() {}
+
+    /// `deliver` travels with the event, so it reaches the action that was current when the pointer moved.
+    func send(_ kind: String, _ p: CGPoint, dx: Double, dy: Double, deliver: @escaping Deliver) {
+        guard kind == "move" || kind == "drag" else {
+            flush()
+            deliver(kind, p, dx, dy)
+            return
+        }
+        if let w = pending, w.kind == kind {
+            pending = (kind, p, w.dx + dx, w.dy + dy, deliver)
+        } else {
+            flush()
+            pending = (kind, p, dx, dy, deliver)
+        }
+        guard !armed else { return }
+        armed = true
+        schedule { [self] in
+            armed = false
+            flush()
+        }
+    }
+
+    func flush() {
+        guard let w = pending else { return }
+        pending = nil
+        w.deliver(w.kind, w.p, w.dx, w.dy)
+    }
+
+    /// Drops what waits: the stage is gone, and nothing is left to receive it.
+    func cancel() { pending = nil }
+}
+
 /// The action name a command Canvas reports its size under, followed by its `canvasKey`.
 let canvasSizePrefix = "canvas-size:"
 
@@ -326,7 +389,7 @@ extension EnvironmentValues {
 /// controls, background or border. It reports its size as `canvas-size:<key>` and, with a `pointerAction`, raises it for pointer
 /// events with `{kind, x, y, button, dx, dy}`.
 struct CanvasCommandStage: View {
-    let player: CanvasPlayer
+    let commands: [AnyCodable]
     let height: Double
     let key: String
     let pointerAction: String?
@@ -335,19 +398,26 @@ struct CanvasCommandStage: View {
     @State private var last: CGPoint?
     @State private var pressed = false
     @State private var stageFrame = CGRect.zero
+    @State private var players = CanvasPlayerCache()
+    @State private var coalescer = CanvasPointerCoalescer()
     @Environment(\.a2uiCanvasSizes) private var reportsSize
 
     init(commands: [AnyCodable], height: Double, key: String, pointerAction: String?, fire: @escaping (String, [String: AnyCodable]) -> Void) {
-        self.player = CanvasPlayer(canvasCommands(commands), fg: WebTheme.shared.label)
+        self.commands = commands
         self.height = height
         self.key = key
         self.pointerAction = (pointerAction?.isEmpty ?? true) ? nil : pointerAction
         self.fire = fire
     }
 
+    /// Moves and drag steps wait for the next frame and merge (`CanvasPointerCoalescer`); every other kind sends what waits, then itself.
     private func pointer(_ kind: String, _ p: CGPoint, dx: Double = 0, dy: Double = 0) {
         guard let pointerAction else { return }
-        fire(pointerAction, ["kind": .string(kind), "x": .number(p.x), "y": .number(p.y), "button": .number(0), "dx": .number(dx), "dy": .number(dy)])
+        let action = pointerAction
+        let fire = fire
+        coalescer.send(kind, p, dx: dx, dy: dy) { kind, p, dx, dy in
+            fire(action, ["kind": .string(kind), "x": .number(p.x), "y": .number(p.y), "button": .number(0), "dx": .number(dx), "dy": .number(dy)])
+        }
     }
 
     private func report(_ size: CGSize) {
@@ -357,7 +427,8 @@ struct CanvasCommandStage: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
+        let player = players.player(for: commands, fg: WebTheme.shared.label)
+        return GeometryReader { geo in
             Canvas { ctx, _ in player.draw(&ctx) }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .contentShape(Rectangle())
@@ -390,6 +461,7 @@ struct CanvasCommandStage: View {
                 #endif
                 .clipped()
                 .onAppear { report(geo.size) }
+                .onDisappear { coalescer.cancel() }
                 .onChange(of: geo.size) { _, new in report(new) }
                 .background(GeometryReader { g in Color.clear.onAppear { stageFrame = g.frame(in: .global) }.onChange(of: g.frame(in: .global)) { _, f in stageFrame = f } })
                 #if os(macOS)
