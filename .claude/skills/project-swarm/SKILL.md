@@ -5,11 +5,11 @@ description: "wheel: how swarm workers build and test it side by side \u2014 hea
 
 # Swarm — wheel
 
-`H="$HOME/.claude/skills/swarm/swarm"`. Run each command below from the worktree root.
+Run each command below from the worktree root.
 
 ## Heavy commands
 
-Every one of these goes through `"$H" heavy -- <command>`:
+Turnstile queues these across the machine. Call `cargo`, `swift`, `xcodebuild` and `xcodegen` by name (the shims queue them); run a check script as `turnstile run -- bash <script>`:
 
 - `cargo build`, `cargo test` (any filter), `cargo clippy --all-targets -- -D warnings`
 - `swift build` / `swift test --package-path apple/WheelKit`
@@ -22,9 +22,19 @@ Run the full `cargo test` once per round of edits, not after every file.
 ## The cheap check
 
 - Rust: `cargo check -p wheeld` (or `-p wheel`, `-p wheel_proto` for the crate you touched),
-  then one test binary: `cargo test -p wheeld --test spaces <name>`. Both still go through
-  `heavy`: each one uses every core.
-- Swift: `swift build --package-path apple/WheelKit` through `heavy`.
+  then one test binary: `cargo test -p wheeld --test spaces <name>`. Both still queue in
+  Turnstile: each one uses every core.
+- Swift: `swift build --package-path apple/WheelKit`, called by name.
+
+## The GPUI app a check runs
+
+`clients/gpui/tools/build.py` links the Swift bridge against the Release products in
+`DerivedData-deploy-release.noindex`, which defaults to the checkout's own copy. The main
+checkout's copy is not kept current, and a bridge built against a stale one fails to compile.
+Build your own: `xcodegen generate` in `apple/`, then `xcodebuild -project apple/Wheel.xcodeproj
+-scheme Wheel -configuration Release -derivedDataPath <worktree>/DerivedData-deploy-release.noindex build`,
+then `python3 clients/gpui/tools/build.py dev` (or set `WHEEL_NATIVE_PRODUCTS=<dd>/Build/Products/Release`).
+The installed Wheel Dev.app predates plugin panes; a check that draws one uses the app built here.
 
 ## Shared caches
 
@@ -68,7 +78,7 @@ otherwise asks the real wheeld for the space holding `WHEEL_PANE` and acts on th
 - **wheel CLI:** `--url ws://127.0.0.1:$WHEEL_PORT/ws --token-file $INST/token` on every call.
 - **Check scripts** in `.claude/skills/project-verify/tools/` start their own wheeld on a free
   port (from `$SWARM_WORKER`) in a `mktemp` directory and remove both on exit, so run them as
-  they are, through `heavy`: `"$H" heavy -- bash .claude/skills/project-verify/tools/all.sh`.
+  they are, through Turnstile: `turnstile run -- bash .claude/skills/project-verify/tools/all.sh`.
 - **Mac app:** build with `-derivedDataPath $DD`. Launch with
   `open -g -n --env WHEEL_URL=ws://127.0.0.1:$WHEEL_PORT/ws --env WHEEL_TOKEN_FILE=$INST/token --env WHEEL_DEBUG_PORT=$WHEEL_DEBUG_PORT $DD/Build/Products/Debug/Wheel.app`.
   Never install into `/Applications`. Quit it by PID or by its path under `$DD`, never with
@@ -91,4 +101,4 @@ a commit: the person reads it first.
 
 ## Per-worker resources, added for the Mac app's checks
 
-The windows, menu bar, drag, server and pairing checks (`.claude/skills/project-verify/tools/windows.sh`, `menubar.sh`, `window-commands.sh`, `drag.sh`, `server.sh`, `pairing-window.sh`) launch the built app with `open -g -n`, each on its own debug port and its own preferences domain (`WHEEL_PREFS_SUITE`), and start their own wheeld. Run them as they are through `"$H" heavy -- bash .claude/skills/project-verify/tools/<name>.sh` with `WHEEL_DERIVED_DATA=$DD`. They never call `screencapture` and never touch the person's windows or daemon.
+The windows, menu bar, drag, server and pairing checks (`.claude/skills/project-verify/tools/windows.sh`, `menubar.sh`, `window-commands.sh`, `drag.sh`, `server.sh`, `pairing-window.sh`) launch the built app with `open -g -n`, each on its own debug port and its own preferences domain (`WHEEL_PREFS_SUITE`), and start their own wheeld. Run them as they are through `turnstile run -- bash .claude/skills/project-verify/tools/<name>.sh` with `WHEEL_DERIVED_DATA=$DD`. They never call `screencapture` and never touch the person's windows or daemon.
