@@ -3323,6 +3323,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wheel-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "async-lsp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "wheel-proto"
 version = "0.1.0"
 dependencies = [
@@ -3394,6 +3405,7 @@ dependencies = [
  "ureq",
  "url",
  "webpki-roots",
+ "wheel-plugin-sdk",
  "wheel-proto",
 ]
 
@@ -3413,6 +3425,7 @@ dependencies = [
  "tokio-util",
  "toml_edit",
  "url",
+ "wheel-plugin-sdk",
 ]
 
 [[package]]

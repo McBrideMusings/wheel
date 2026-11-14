@@ -1,0 +1,12 @@
+[package]
+name = "wheel-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+description = "Wheel's Rust SDK for plugin backends: the wire types of the backend protocol, and a Backend that declares feeds and actions, publishes values and patches, and calls wheel/call"
+
+[dependencies]
+async-lsp = { version = "0.2.4", default-features = false, features = ["tokio"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["compat"] }

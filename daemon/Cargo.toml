@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-lsp = { version = "0.2.4", default-features = false, features = ["tokio"] }
+wheel-plugin-sdk = { path = "../sdk/rust" }
 json-patch = "5.0.0"
 base64.workspace = true
 axum = { version = "0.8", features = ["ws"] }

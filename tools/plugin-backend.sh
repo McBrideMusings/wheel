@@ -8,10 +8,12 @@
 #   WHEELD=... WHEEL=... tools/plugin-backend.sh
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tools/fixtures/plugins/clock-copy.sh"
 WHEELD=${WHEELD:-$ROOT/target/debug/wheeld}
 WHEEL=${WHEEL:-$ROOT/target/debug/wheel}
 T=/private/tmp/claude/wheel/pb
 PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+CLOCK_RUN="python3 backend.py"; [ "${CLOCK_BACKEND:-python}" = rust ] && CLOCK_RUN=./backend
 FAILS=0
 PIDS=()
 
@@ -24,26 +26,27 @@ cleanup() {
   sleep 0.5
   for pid in "${PIDS[@]}"; do kill -9 "$pid" 2>/dev/null; done
   pkill -f "$T/.*backend.py" 2>/dev/null
+  pkill -f "$T/.*/backend\$" 2>/dev/null
 }
 trap cleanup EXIT
 
 rm -rf "$T"
 mkdir -p "$T/support" "$T/logs" "$T/proj/.wheel/plugins" "$T/proj2/.wheel/plugins" "$T/proj4/.wheel/plugins" "$T/proj5/.wheel/plugins/probe" "$T/proj6/.wheel/plugins" "$T/proj7/.wheel/plugins" "$T/proj8/.wheel/plugins" "$T/proj9/.wheel/plugins" "$T/proj10/.wheel/plugins/quiet" "$T/proj11/.wheel/plugins/crash" "$T/proj12/.wheel/plugins" "$T/proj13/.wheel/plugins"
 : > "$T/machine.toml"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj/.wheel/plugins/clock"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj2/.wheel/plugins/clock"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj4/.wheel/plugins/clock"
+clock_copy "$T/proj/.wheel/plugins/clock"
+clock_copy "$T/proj2/.wheel/plugins/clock"
+clock_copy "$T/proj4/.wheel/plugins/clock"
 cp -R "$ROOT/tools/fixtures/plugins/reader" "$T/proj4/.wheel/plugins/reader"
 # probe: a pane that may read any feed, to reach what the clock pane's reads exclude.
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj5/.wheel/plugins/clock"
+clock_copy "$T/proj5/.wheel/plugins/clock"
 printf '[plugin]\nid = "probe"\nversion = "0.1.0"\n\n[[pane]]\nid = "main"\ntitle = "Probe"\nscript = "main.luau"\nreads = ["*"]\n' \
   > "$T/proj5/.wheel/plugins/probe/wheel-plugin.toml"
 echo 'return {}' > "$T/proj5/.wheel/plugins/probe/main.luau"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj6/.wheel/plugins/clock"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj7/.wheel/plugins/clock"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj8/.wheel/plugins/clock"
+clock_copy "$T/proj6/.wheel/plugins/clock"
+clock_copy "$T/proj7/.wheel/plugins/clock"
+clock_copy "$T/proj8/.wheel/plugins/clock"
 # proj9: the clock that is never started again; proj10: a backend that exits with status 0.
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj9/.wheel/plugins/clock"
+clock_copy "$T/proj9/.wheel/plugins/clock"
 sed -i '' 's/^transport = "stdio"/transport = "stdio"\nrestart = "never"/' "$T/proj9/.wheel/plugins/clock/wheel-plugin.toml"
 printf '[plugin]\nid = "quiet"\nversion = "0.1.0"\n\n[backend]\ncommand = "exit 0"\n\n[[pane]]\nid = "main"\ntitle = "Quiet"\nscript = "main.luau"\nreads = ["*"]\n' \
   > "$T/proj10/.wheel/plugins/quiet/wheel-plugin.toml"
@@ -55,10 +58,10 @@ printf '[plugin]\nid = "crash"\nversion = "0.1.0"\n\n[backend]\ncommand = "exit 
 echo 'return {}' > "$T/proj11/.wheel/plugins/crash/main.luau"
 # proj12: the clock that is never started again. proj13: the clock whose command prints a marker
 # to its log and whose watch names every file, so an edit to the manifest is a watched change.
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj12/.wheel/plugins/clock"
+clock_copy "$T/proj12/.wheel/plugins/clock"
 sed -i '' 's/^transport = "stdio"/transport = "stdio"\nrestart = "never"/' "$T/proj12/.wheel/plugins/clock/wheel-plugin.toml"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj13/.wheel/plugins/clock"
-sed -i '' -e 's/^command = .*/command = "echo marker-one >\&2; exec python3 backend.py"/' -e 's/^watch = .*/watch = ["*"]/' \
+clock_copy "$T/proj13/.wheel/plugins/clock"
+sed -i '' -e "s|^command = .*|command = \"echo marker-one >\&2; exec $CLOCK_RUN\"|" -e 's|^watch = .*|watch = ["*"]|' \
   "$T/proj13/.wheel/plugins/clock/wheel-plugin.toml"
 
 "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$T/support" --machine-file "$T/machine.toml" \

@@ -27,14 +27,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_lsp::lsp_types::notification::Notification;
-use async_lsp::lsp_types::request::Request;
 use async_lsp::router::Router;
 use async_lsp::{ClientSocket, ErrorCode, MainLoop, ResponseError};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use wheel_plugin_sdk::wire::*;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::beads::feed as beads_feed;
@@ -63,79 +62,6 @@ const REPO_EVERY: Duration = Duration::from_secs(120);
 const QUIET: Duration = Duration::from_millis(150);
 /// The longest a refresh waits after the first relevant file event, however long events keep coming.
 const MAX_WAIT: Duration = Duration::from_secs(1);
-
-struct Initialize;
-
-#[derive(Serialize, Deserialize, Default)]
-struct InitializeResult {
-    feeds: Vec<String>,
-    actions: Vec<String>,
-}
-
-impl Request for Initialize {
-    type Params = Value;
-    type Result = InitializeResult;
-    const METHOD: &'static str = "initialize";
-}
-
-#[derive(Serialize, Deserialize)]
-struct FeedRef {
-    feed: String,
-    #[serde(default)]
-    params: Value,
-}
-
-struct FeedSubscribe;
-
-impl Notification for FeedSubscribe {
-    type Params = FeedRef;
-    const METHOD: &'static str = "feed/subscribe";
-}
-
-struct FeedUnsubscribe;
-
-impl Notification for FeedUnsubscribe {
-    type Params = FeedRef;
-    const METHOD: &'static str = "feed/unsubscribe";
-}
-
-struct Shutdown;
-
-impl Notification for Shutdown {
-    type Params = Value;
-    const METHOD: &'static str = "shutdown";
-}
-
-struct ActionInvoke;
-
-#[derive(Serialize, Deserialize)]
-struct ActionInvokeParams {
-    action: String,
-    #[serde(default)]
-    args: Value,
-    #[serde(default)]
-    caller: Value,
-}
-
-impl Request for ActionInvoke {
-    type Params = ActionInvokeParams;
-    type Result = Value;
-    const METHOD: &'static str = "action/invoke";
-}
-
-struct FeedUpdate;
-
-impl Notification for FeedUpdate {
-    type Params = Value;
-    const METHOD: &'static str = "feed/update";
-}
-
-struct LogN;
-
-impl Notification for LogN {
-    type Params = Value;
-    const METHOD: &'static str = "log";
-}
 
 enum Msg {
     /// Files changed.
@@ -331,7 +257,7 @@ fn records_dir() -> Option<PathBuf> {
 impl Core {
     fn log(&self, level: &str, message: &str) {
         eprintln!("wheelhouse backend: {message}");
-        let _ = self.client.notify::<LogN>(json!({ "level": level, "message": message }));
+        let _ = self.client.notify::<LogMessage>(json!({ "level": level, "message": message }));
     }
 
     /// Install `mode` on `path`, replacing the watch it has; false when the watcher refused.

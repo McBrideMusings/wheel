@@ -17,10 +17,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use async_lsp::lsp_types::notification::Notification;
-use async_lsp::lsp_types::request::Request;
+use wheel_plugin_sdk::wire::*;
 use async_lsp::router::Router;
 use async_lsp::{ErrorCode, MainLoop, ResponseError, ServerSocket};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -54,107 +53,8 @@ const WATCH_QUIET: Duration = Duration::from_millis(300);
 /// The feeds wheeld itself publishes, named `wheel.<name>`.
 pub(crate) const BUILTIN_FEEDS: [&str; 3] = ["spaces", "panes", "agents"];
 
-/// `initialize` (request, wheeld to backend): the backend answers with its feeds and actions.
-struct Initialize;
-
-#[derive(Serialize, Deserialize)]
-struct InitializeParams {
-    wheel_version: String,
-    plugin_id: String,
-    config: Value,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct InitializeResult {
-    #[serde(default)]
-    feeds: Vec<String>,
-    #[serde(default)]
-    actions: Vec<String>,
-}
-
-impl Request for Initialize {
-    type Params = InitializeParams;
-    type Result = InitializeResult;
-    const METHOD: &'static str = "initialize";
-}
-
-/// `wheel/call` (request, backend to wheeld): `{method, args}` runs a Wheel operation for the
-/// backend's plugin if the plugin's `[backend] needs` names it (see [`wheel_call`]).
-struct WheelCall;
-
-impl Request for WheelCall {
-    type Params = Value;
-    type Result = Value;
-    const METHOD: &'static str = "wheel/call";
-}
-
-/// A feed and its params, the body of `feed/subscribe` and `feed/unsubscribe`.
-#[derive(Serialize, Deserialize)]
-struct FeedRef {
-    feed: String,
-    params: Value,
-}
-
-/// `feed/subscribe` (notification, wheeld to backend): start sending `feed/update` for the feed.
-struct FeedSubscribe;
-
-impl Notification for FeedSubscribe {
-    type Params = FeedRef;
-    const METHOD: &'static str = "feed/subscribe";
-}
-
-/// `feed/unsubscribe` (notification, wheeld to backend): stop sending the feed.
-struct FeedUnsubscribe;
-
-impl Notification for FeedUnsubscribe {
-    type Params = FeedRef;
-    const METHOD: &'static str = "feed/unsubscribe";
-}
-
-/// `action/invoke` (request, wheeld to backend): run an action for a pane. The result is what the
-/// backend answers, any JSON value.
-struct ActionInvoke;
-
-#[derive(Serialize, Deserialize)]
-struct ActionInvokeParams {
-    action: String,
-    args: Value,
-    caller: Value,
-}
-
-impl Request for ActionInvoke {
-    type Params = ActionInvokeParams;
-    type Result = Value;
-    const METHOD: &'static str = "action/invoke";
-}
-
 /// How long a backend has to answer `action/invoke`.
 const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// `shutdown` (notification, wheeld to backend): exit now.
-struct Shutdown;
-
-impl Notification for Shutdown {
-    type Params = ();
-    const METHOD: &'static str = "shutdown";
-}
-
-/// `feed/update` (notification, backend to wheeld): `{feed, params, value}` or `{feed, params,
-/// patch}`. Read as a raw value so a malformed one is logged, never a stopped connection.
-struct FeedUpdateN;
-
-impl Notification for FeedUpdateN {
-    type Params = Value;
-    const METHOD: &'static str = "feed/update";
-}
-
-/// `log` (notification, backend to wheeld): `{level, message}`, written to the backend's log.
-struct LogN;
-
-impl Notification for LogN {
-    type Params = Value;
-    const METHOD: &'static str = "log";
-}
 
 /// One change to a feed, as the hub broadcasts it.
 #[derive(Debug, Clone)]
@@ -1562,14 +1462,14 @@ where
     let (main_loop, server) = MainLoop::new_client(|_| {
         let mut router = Router::new(handler);
         router
-            .notification::<FeedUpdateN>(|h, params| {
+            .notification::<FeedUpdate>(|h, params| {
                 match feed_update(h, &params) {
                     Ok(()) => {}
                     Err(e) => h.log.message("warn", &e),
                 }
                 ControlFlow::Continue(())
             })
-            .notification::<LogN>(|h, params| {
+            .notification::<LogMessage>(|h, params| {
                 let level = params.get("level").and_then(Value::as_str).unwrap_or("info");
                 let message = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 h.log.message(level, message);

@@ -7,6 +7,7 @@
 #   tools/plugin-call.sh            # uses target/debug/wheeld and target/debug/wheel
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tools/fixtures/plugins/clock-copy.sh"
 WHEELD=${WHEELD:-$ROOT/target/debug/wheeld}
 WHEEL=${WHEEL:-$ROOT/target/debug/wheel}
 T=/private/tmp/claude/wheel/pc
@@ -20,13 +21,14 @@ cleanup() {
   sleep 0.5
   for pid in "${PIDS[@]}"; do kill -9 "$pid" 2>/dev/null; done
   pkill -f "$T/.*backend.py" 2>/dev/null
+  pkill -f "$T/.*/backend\$" 2>/dev/null
 }
 trap cleanup EXIT
 
 rm -rf "$T"
 mkdir -p "$T/support" "$T/logs" "$T/proj/.wheel/plugins"
 : > "$T/machine.toml"
-cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj/.wheel/plugins/clock"
+clock_copy "$T/proj/.wheel/plugins/clock"
 M="$T/proj/.wheel/plugins/clock/wheel-plugin.toml"
 sed -i '' -e 's/^actions = \[/actions = ["clock.call", /' -e 's/^watch = .*/&\nneeds = ["pane.open", "notify", "run:echo hi"]/' "$M"
 

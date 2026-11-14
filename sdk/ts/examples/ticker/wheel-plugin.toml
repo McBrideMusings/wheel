@@ -1,0 +1,14 @@
+[plugin]
+id = "ticker"
+version = "0.1.0"
+
+[backend]
+command = "node ../../dist/examples/ticker/backend.js"
+transport = "stdio"
+
+[[pane]]
+id = "main"
+title = "Ticker"
+script = "main.luau"
+reads = ["ticker.tick", "ticker.log"]
+actions = ["ticker.echo", "ticker.fail"]

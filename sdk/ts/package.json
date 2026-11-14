@@ -1,0 +1,21 @@
+{
+  "name": "@wheel/plugin-sdk",
+  "version": "0.1.0",
+  "description": "Wheel's TypeScript SDK for plugin backends: declare feeds and actions, publish values and patches, call wheel/call",
+  "license": "MIT",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build"
+  },
+  "dependencies": {
+    "vscode-jsonrpc": "10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.14",
+    "typescript": "5.8.3"
+  }
+}
