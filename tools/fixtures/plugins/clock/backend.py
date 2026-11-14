@@ -9,6 +9,7 @@ is listed here but not by the manifest, so wheeld refuses it before it gets here
 """
 import json
 import os
+import shutil
 import socket
 import sys
 import threading
@@ -89,6 +90,8 @@ def run_lines(feed, params, token):
 
 
 log("clock backend up")
+log("env WHEEL_URL=%s WHEEL_TOKEN_FILE=%s wheel=%s" % (
+    os.environ.get("WHEEL_URL"), os.environ.get("WHEEL_TOKEN_FILE"), shutil.which("wheel")))
 while True:
     message = read()
     if message is None:

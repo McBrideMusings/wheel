@@ -1048,6 +1048,24 @@ actions = ["go"]
     }
 
     #[test]
+    fn a_package_folder_that_is_a_symlink_is_found_and_its_modules_come_with_it() {
+        let root = tmp("symlinked-root");
+        let machine = root.join("machine");
+        write_plugin(&root, "repo-package", GOOD);
+        std::fs::create_dir_all(root.join("repo-package/lib")).unwrap();
+        std::fs::write(root.join("repo-package/lib/ui.luau"), "return 1").unwrap();
+        std::fs::create_dir_all(&machine).unwrap();
+        std::os::unix::fs::symlink(root.join("repo-package"), machine.join("demo")).unwrap();
+        let all = discover(None, &machine);
+        let demo = resolve(&all, "demo").unwrap();
+        let script = read_script(demo, find_pane(demo, "main").unwrap()).unwrap();
+        assert_eq!(script.source, "-- script");
+        let keys: Vec<&str> = script.modules.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["lib/ui.luau"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn modules_count_against_the_one_megabyte_budget() {
         let root = tmp("bigmodules");
         let machine = root.join("machine");

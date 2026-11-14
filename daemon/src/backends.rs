@@ -628,7 +628,8 @@ struct Spec {
     transport: BackendTransport,
     dir: PathBuf,
     space_dir: String,
-    path: String,
+    /// The environment `wheel` reads (`WHEEL_URL`, `WHEEL_TOKEN_FILE`) and a `PATH` that finds it.
+    env: Vec<(String, String)>,
     socket: PathBuf,
     log: Log,
     /// The manifest's `[backend]`, which the instance reports until it says more.
@@ -1076,7 +1077,7 @@ async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
         .arg("-c")
         .arg(&spec.command)
         .current_dir(&spec.dir)
-        .env("PATH", &spec.path)
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .env("WHEEL_PLUGIN_ID", &spec.plugin)
         .env("WHEEL_SPACE_DIR", &spec.space_dir)
         .stdout(Stdio::piped())
@@ -1352,7 +1353,7 @@ impl Backends {
                 .dir()
                 .map_or_else(|| state.instance_dir.clone(), Path::to_path_buf),
             space_dir: space_dir.to_string(),
-            path: state.path(),
+            env: crate::shell::command_env(state.control.lock().unwrap().as_ref(), &state.instance_dir, &state.path()),
             socket: socket_path(&state.instance_dir, &key),
             log: slot.log.clone(),
             watch_dir: package.dir().map(Path::to_path_buf),
@@ -2025,7 +2026,7 @@ mod tests {
             transport: BackendTransport::Stdio,
             dir: dir.to_path_buf(),
             space_dir: "/space".into(),
-            path: String::new(),
+            env: vec![],
             socket: dir.join("s.sock"),
             log: Log::open(&dir.join("p.log")).unwrap(),
             declared,

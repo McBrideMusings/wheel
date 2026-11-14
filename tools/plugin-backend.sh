@@ -62,7 +62,7 @@ sed -i '' -e 's/^command = .*/command = "echo marker-one >\&2; exec python3 back
   "$T/proj13/.wheel/plugins/clock/wheel-plugin.toml"
 
 "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$T/support" --machine-file "$T/machine.toml" \
-  --log-dir "$T/logs" > "$T/wheeld.out" 2>&1 &
+  --log-dir "$T/logs" --cli "$WHEEL" > "$T/wheeld.out" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 100); do
   [ -f "$T/support/token" ] && nc -z 127.0.0.1 "$PORT" > /dev/null 2>&1 && break
@@ -170,6 +170,12 @@ w plugin logs clock --space "$SPACE1" > "$T/logs.txt" 2>&1
 grep -q 'clock backend up' "$T/logs.txt" && grep -qE '^[0-9]{2}:[0-9]{2}:[0-9]{2} UTC info initialized for clock' "$T/logs.txt" \
   && pass "plugin logs prints the backend's stderr and its log messages" \
   || fail "plugin logs prints the backend's output: $(cat "$T/logs.txt")"
+
+# 3b the backend's environment reaches the wheel CLI: where wheeld listens, its token file, and
+# `wheel` on PATH (the same environment an MCP server gets).
+grep -q "env WHEEL_URL=ws://127.0.0.1:$PORT/ws WHEEL_TOKEN_FILE=.*/support/token wheel=.*/bin/wheel" "$T/logs/plugins/clock.log" \
+  && pass "a backend gets WHEEL_URL, WHEEL_TOKEN_FILE and wheel on its PATH" \
+  || fail "a backend gets WHEEL_URL, WHEEL_TOKEN_FILE and wheel on its PATH: $(grep 'env WHEEL' "$T/logs/plugins/clock.log" | head -1)"
 
 # 4 wheel.spaces lists the spaces.
 w plugin feed "$PANE" wheel.spaces --count 1 > "$T/spaces.jsonl" 2>&1
