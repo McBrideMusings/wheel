@@ -584,6 +584,17 @@ if start_feed spec "$P13" clock.now; then
     || fail "a manifest that does not parse is not launched, and the plugin log says why: $(tail -3 "$CLOCKLOG")"
   kill -0 "$PID13" 2>/dev/null \
     && pass "the process that runs is left running" || fail "the process that runs is left running"
+  # plugin ls lists the broken package with its running process and the refusal.
+  w plugin ls --json --space "$S13" 2>/dev/null | python3 -c '
+import json, sys
+pid = sys.argv[1]
+p = [p for p in json.load(sys.stdin) if p["id"] == "clock"][0]
+b = p.get("backend") or {}
+ok = (p.get("error") and b.get("state") == "running" and str(b.get("pid")) == pid
+      and "not restarted: wheel-plugin.toml" in (b.get("error") or ""))
+print("ok" if ok else "package error=%r backend=%r" % (p.get("error"), b))
+' "$PID13" > "$T/broken-ls.verdict"
+  check "plugin ls shows the running process and the refusal of a package whose manifest does not parse" "$(cat "$T/broken-ls.verdict")"
 else
   fail "a restart runs the manifest as it is now: no first tick"
 fi
