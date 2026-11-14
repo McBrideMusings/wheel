@@ -184,6 +184,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var pluginSocket: URLSessionWebSocketTask?
     var pluginURL: String?
     var pluginReqs: [Int: String] = [:]
+    /// Each `feed_subscribe` waiting for its reply, with the pane, feed and params that sent it.
+    var feedReqs: [Int: (pane: String, feed: String, params: JSONValue)] = [:]
     var nextPluginReq = 1
     /// Seconds to wait before the next reconnect: 1, doubling to 30, back to 1 once wheeld answers.
     var pluginBackoff: UInt64 = 1
@@ -349,6 +351,25 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
         }
     }
+    /// `feed_subscribe` or `feed_unsubscribe` for a plugin pane's feed. A subscribe's `error` reply goes to the pane; with no
+    /// connection nothing is sent, and the reconnect subscribes every feed the pane holds.
+    func sendFeed(_ op: String, pane: String, feed: String, params: JSONValue) {
+        guard let socket = pluginSocket else { return }
+        let req = nextPluginReq
+        nextPluginReq += 1
+        if op == "feed_subscribe" { feedReqs[req] = (pane, feed, params) }
+        let message: [String: Any] = ["op": op, "req": req, "pane": pane, "feed": feed, "params": params.foundation]
+        guard let data = try? JSONSerialization.data(withJSONObject: message), let text = String(data: data, encoding: .utf8) else {
+            feedReqs[req] = nil
+            return
+        }
+        Task { @MainActor in
+            do { try await socket.send(.string(text)) } catch {
+                errors.append("send \(op): " + error.localizedDescription)
+                feedReqs[req] = nil
+            }
+        }
+    }
     func pluginReceive(_ socket: URLSessionWebSocketTask) {
         Task { @MainActor in
             do {
@@ -364,6 +385,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 pluginSocket = nil
                 // Nothing answers the requests that were waiting; each pane says so until its script loads again.
                 pluginReqs = [:]
+                feedReqs = [:]
                 panes.values.forEach { $0.plugin?.fail(message: "lost the connection to wheeld, retrying") }
                 let wait = pluginBackoff
                 pluginBackoff = min(pluginBackoff * 2, 30)
@@ -371,6 +393,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 guard pluginSocket == nil, panes.values.contains(where: { $0.plugin != nil }), let url = pluginURL else { return }
                 pluginConnect(url)
                 panes.values.filter { $0.plugin != nil }.forEach(requestSource)
+                // wheeld forgot every subscription with the old connection.
+                for (id, host) in panes {
+                    for (feed, params) in host.plugin?.feeds ?? [] { sendFeed("feed_subscribe", pane: id, feed: feed, params: params) }
+                }
             }
         }
     }
@@ -382,9 +408,17 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin, let source = value["source"] as? String else { return }
             if let req = value["req"] as? Int { pluginReqs[req] = nil }
             plugin.load(source: source, chunk: value["chunk"] as? String ?? "pane")
+        case "feed_update":
+            guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin, let feed = value["feed"] as? String else { return }
+            if let req = value["req"] as? Int { feedReqs[req] = nil }
+            plugin.feedUpdate(feed: feed, params: value["params"], value: value["value"], patch: value["patch"])
         case "error":
-            guard let req = value["req"] as? Int, let pane = pluginReqs.removeValue(forKey: req) else { return }
-            panes[pane]?.plugin?.fail(message: value["message"] as? String ?? "plugin_source failed")
+            guard let req = value["req"] as? Int else { return }
+            if let pane = pluginReqs.removeValue(forKey: req) {
+                panes[pane]?.plugin?.fail(message: value["message"] as? String ?? "plugin_source failed")
+            } else if let sent = feedReqs.removeValue(forKey: req) {
+                panes[sent.pane]?.plugin?.feedFailed(feed: sent.feed, params: sent.params.foundation, message: value["message"] as? String ?? "feed_subscribe failed")
+            }
         default: break
         }
     }
@@ -442,6 +476,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             plugin.onUpdate = { [weak self, weak plugin] in
                 guard let plugin else { return }
                 self?.emit(["event": "plugin", "pane": id, "error": plugin.error ?? NSNull()])
+            }
+            plugin.onFeeds = { [weak self] subscribe, unsubscribe in
+                for (feed, params) in unsubscribe { self?.sendFeed("feed_unsubscribe", pane: id, feed: feed, params: params) }
+                for (feed, params) in subscribe { self?.sendFeed("feed_subscribe", pane: id, feed: feed, params: params) }
             }
             let view = NSHostingView(rootView: PluginPaneView(pane: plugin))
             host.plugin = plugin
@@ -630,12 +668,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         guard let host = panes.removeValue(forKey: id) else { return }
         if let term = host.termID, !panes.values.contains(where: { $0.termID == term }) { send(["op": "term_detach", "id": term]) }
         host.slot.removeFromSuperview()
-        if host.plugin != nil {
+        if let plugin = host.plugin {
+            plugin.close()
             pluginReqs = pluginReqs.filter { $0.value != id }
+            feedReqs = feedReqs.filter { $0.value.pane != id }
             if !panes.values.contains(where: { $0.plugin != nil }) {
                 let socket = pluginSocket
                 pluginSocket = nil
                 pluginReqs = [:]
+                feedReqs = [:]
                 socket?.cancel(with: .goingAway, reason: nil)
             }
         }
@@ -818,7 +859,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 if let path = value["path"] as? String, let text = value["value"] as? String { plugin.set(path: path, value: text) } else { ok = false }
             default: break
             }
-            return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts]
+            return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts, "feeds": plugin.feedJSON]
         case "page_set":
             // A value written into a native page's data model at `path`, as one of its controls
             // would write it (a picker's choice, a field's text), for a check that has no pointer.
@@ -1122,7 +1163,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                                      "components": page.surface?.components.count ?? 0, "diagnostics": page.diagnostics]
                 }
             } else if let p = host.plugin {
-                entry["plugin"] = ["state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "chunk": p.chunk, "components": p.componentTexts]
+                entry["plugin"] = ["state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
             }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["sent_grids"] = host.sent; entry["lagged_reports"] = host.lagged; entry["writes"] = host.writes
                    entry["pixels"] = host.terminal?.layer?.contents != nil

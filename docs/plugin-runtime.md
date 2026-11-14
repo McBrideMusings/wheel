@@ -112,3 +112,39 @@ A plugin package is a folder holding `wheel-plugin.toml`: `[plugin]` (`id`, `ver
 A plugin pane is the pane kind `{"kind":"plugin","plugin":"<id>","pane":"<pane id>"}`, set with `pane_set_kind` kind `plugin` and `"plugin":{"plugin":..,"pane":..}` (`wheel pane kind <pane> plugin --plugin <id> --plugin-pane <pane id>`). `plugin_ls` lists the packages a space can use (`wheel plugin ls`); `plugin_source` returns a pane's script, and `wheeld` sends `plugin_source` unasked to every connection when a shown pane's script changes on disk (one message per save, after a 100 ms debounce). `PROTOCOL_VERSION` 35.
 
 On the Mac, the GPUI client opens each plugin pane in the bridge (`clients/gpui/native/Bridge.swift`), which fetches the script over its own `wheeld` socket and runs it in WheelUI's `PluginPane` (`apple/WheelUI/Sources/WheelUI/Plugin/PluginPane.swift`). Each render flattens `view`'s tree into an A2UI surface: every table `action` on a `Button` becomes the message `send` gets, and a `TextField`'s `value` is bound to the data model, its `on_change` table sent with `value` set to the typed text. A failure keeps the last good view and puts the error in the pane header; a good load clears it.
+
+## Plugin backends
+
+A package's `[backend]` is a process `wheeld` runs and talks to in JSON-RPC 2.0 with Content-Length framing, through `async-lsp` (`daemon/src/backends.rs`). Keys: `command` (required, run with `/bin/sh -c` in the package folder), `transport` (`"stdio"`, the default, or `"unix"`), `restart` (`"always"`, `"on-failure"`, the default, or `"never"`), `watch` and `needs` (string arrays). `wheel plugin ls` and `plugin_ls` report the backend per package with its `state`: `stopped` (never started), `starting`, `running` or `exited`, plus `pid`, `feeds`, `actions`, `log` and `error` (a spawn failure, a failed `initialize`, or how the process ended: `exited with status 1`, `ended by signal 9`). A backend that exited is not restarted by `wheeld`; the next `feed_subscribe` to one of its feeds starts a fresh process. That process is sent `feed/subscribe` for every feed of the package a pane still reads, once it answers `initialize`; feeds reach their backend through the package, never a stored process, so an exited process is never sent `feed/unsubscribe`.
+
+**Start.** One instance runs per package (the package folder, or `builtin:<id>`), whichever spaces read it. It starts on the first `feed_subscribe` to one of its feeds and the request waits for `initialize`. The process gets `PATH` (wheeld's login PATH), `WHEEL_PLUGIN_ID`, `WHEEL_SPACE_DIR` (the directory of the space that started it) and, for `unix`, `WHEEL_PLUGIN_SOCKET`: a socket `wheeld` binds at `<support dir>/b/<hash>.sock` (under the temp directory when that path would pass 104 bytes), accepts one connection on within 10 s, and unlinks once connected. Over `unix`, the process's stdin is closed and its stdout goes to the log. Each process is its own process group, which `wheeld` kills when the process ends, when `shutdown` is not answered within 1 s and when `wheeld` stops.
+
+**Log.** `<log dir>/plugins/<plugin id>.log` (the folder of `wheeld.log`), appended to: the process's stderr (and stdout over `unix`) line by line, and each `log` notification as `HH:MM:SS UTC <level> <message>`. `plugin_logs` / `wheel plugin logs <id> [--space s] [--tail n]` reads it.
+
+| Method | Direction | Kind | Params and result |
+| --- | --- | --- | --- |
+| `initialize` | wheeld to backend | request | `{wheel_version, plugin_id, config: {}}` gives `{feeds, actions}`, each by its own name; 10 s to answer |
+| `feed/subscribe` | wheeld to backend | notification | `{feed, params}`: start sending `feed/update` for it; sent when the first pane reads the feed |
+| `feed/unsubscribe` | wheeld to backend | notification | `{feed, params}`: stop; sent when the last pane reading it leaves |
+| `shutdown` | wheeld to backend | notification | no params: exit now |
+| `feed/update` | backend to wheeld | notification | `{feed, params, value}` (the whole value) or `{feed, params, patch}` (RFC 6902); `params` is echoed as subscribed |
+| `log` | backend to wheeld | notification | `{level, message}` |
+| `wheel/call` | backend to wheeld | request | answered with the JSON-RPC error -32601 until `needs` is enforced |
+
+A malformed `feed/update`, or a patch that does not apply, is written to the log and dropped; it never ends the connection.
+
+**Feed names.** A pane names a feed `<plugin>.<name>` (`clock.now`); the plugin is resolved in the pane's space as a pane's plugin is, and the backend sees `now`. A feed not in the backend's `initialize` reply is refused. `wheel.spaces`, `wheel.panes` and `wheel.agents` are `wheeld`'s:
+
+| Feed | Value |
+| --- | --- |
+| `wheel.spaces` | `[{id, name, cwd, session}]`, every space |
+| `wheel.panes` | `[{id, space, kind}]`, every pane, `kind` its wire name (`terminal`, `plugin`, ...) |
+| `wheel.agents` | `[{pane, space, kind, agent, status}]`, every pane running an agent: an agent pane (`agent` is its harness) or a terminal running one; `status` is `working`, `idle`, `needs_you`, ... or null |
+
+`wheeld` publishes the three whenever the layout or a status changes, and only when a pane reads them and the value differs from the last one.
+
+**Hub.** Each feed is keyed by (backend or `wheel`, feed, params; no params and `{}` are one feed). It holds the current value, kept current by applying each patch, and a broadcast of changes, under one mutex, so a reader gets the value and joins the broadcast with no change missed or repeated. When the last reader drops, the feed is forgotten and the backend gets `feed/unsubscribe`; a feed read again starts at null until the backend sends a value. A backend gets one deadline of 10 s to connect its socket and answer `initialize`, which `feed_subscribe` waits on too; when a process ends or fails to start, its whole process group is killed. A backend's log is `<id>.log`, rotated to `<id>.log.1` past 4 MB, and `plugin_logs` reads its tail by seeking from the end (200 lines when `tail` is not given). A `feed_subscribe` runs in its own task, so a backend that is slow to start does not hold the connection's other messages.
+
+**Ops.** `feed_subscribe {pane, feed, params}` (the pane must be a plugin pane) replies `feed_update` with `value` (null until the backend sends one), then sends `feed_update` with `value` or `patch` on the connection per change, until `feed_unsubscribe` (replies `ok`) or the connection closes; a connection that falls behind is sent the whole current value and continues from that value. A second `feed_subscribe` for the same pane, feed and params replaces the first. `plugin_logs {plugin, space, tail}` replies `plugin_logs {plugin, path, text}`. `PROTOCOL_VERSION` 36.
+
+**Checks.** `wheel plugin feed <pane> <feed> [--params json] [--count n]` subscribes and prints each `feed_update` as one JSON line. `tools/plugin-backend.sh` starts a throwaway `wheeld` and runs the fixture `tools/fixtures/plugins/clock/` (a Python backend, `clock.now` and `clock.lines`, and a pane script reading both with `wheel.spaces`) over stdio and over a unix socket.

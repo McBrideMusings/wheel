@@ -1,0 +1,13 @@
+[plugin]
+id = "clock"
+version = "0.1.0"
+
+[backend]
+command = "python3 backend.py"
+transport = "stdio"
+
+[[pane]]
+id = "main"
+title = "Clock"
+script = "main.luau"
+reads = ["clock.now", "clock.lines", "wheel.spaces"]

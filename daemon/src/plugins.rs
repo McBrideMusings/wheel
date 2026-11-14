@@ -13,7 +13,9 @@ use std::path::{Component, Path, PathBuf};
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use wheel_proto::{PluginInfo, PluginPaneInfo, PluginScope, ServerMsg};
+use wheel_proto::{
+    BackendInfo, BackendState, BackendTransport, PluginInfo, PluginPaneInfo, PluginScope, ServerMsg,
+};
 
 use crate::server::AppState;
 use crate::spaces::{space_find, space_panes, Spaces};
@@ -51,11 +53,51 @@ pub(crate) struct Package {
     files: Files,
 }
 
+impl Package {
+    /// What one backend instance is keyed by: the package folder, or `builtin:<id>` for a package
+    /// compiled in.
+    pub(crate) fn key(&self) -> String {
+        match &self.files {
+            Files::Dir(dir) => dir.display().to_string(),
+            Files::Builtin(_) => format!("builtin:{}", self.info.id),
+        }
+    }
+
+    /// The folder a backend runs in, None for a package compiled in.
+    pub(crate) fn dir(&self) -> Option<&Path> {
+        match &self.files {
+            Files::Dir(dir) => Some(dir),
+            Files::Builtin(_) => None,
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct RawManifest {
     plugin: RawPlugin,
     #[serde(default)]
     pane: Vec<RawPane>,
+    backend: Option<RawBackend>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawBackend {
+    command: String,
+    transport: Option<String>,
+    restart: Option<String>,
+    #[serde(default)]
+    watch: Vec<String>,
+    #[serde(default)]
+    needs: Vec<String>,
+}
+
+/// What a manifest says: the package's id, version, panes and `[backend]`.
+#[derive(Debug)]
+pub(crate) struct Manifest {
+    pub id: String,
+    pub version: String,
+    pub panes: Vec<PluginPaneInfo>,
+    pub backend: Option<BackendInfo>,
 }
 
 #[derive(serde::Deserialize)]
@@ -94,9 +136,43 @@ fn inside_package(script: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
-/// Read a manifest's text: its id, version and panes. `[backend]` and unknown tables are
-/// tolerated and ignored.
-pub(crate) fn parse_manifest(text: &str) -> Result<(String, String, Vec<PluginPaneInfo>), String> {
+/// A manifest's `[backend]`, its process not started.
+fn parse_backend(raw: RawBackend) -> Result<BackendInfo, String> {
+    if raw.command.trim().is_empty() {
+        return Err(format!("{MANIFEST}: [backend] command is empty"));
+    }
+    let transport = match raw.transport.as_deref() {
+        None | Some("stdio") => BackendTransport::Stdio,
+        Some("unix") => BackendTransport::Unix,
+        Some(other) => {
+            return Err(format!(
+                "{MANIFEST}: [backend] transport {other:?} is not \"stdio\" or \"unix\""
+            ))
+        }
+    };
+    let restart = match raw.restart.as_deref() {
+        None => "on-failure".to_string(),
+        Some(r @ ("always" | "on-failure" | "never")) => r.to_string(),
+        Some(other) => {
+            return Err(format!(
+                "{MANIFEST}: [backend] restart {other:?} is not \"always\", \"on-failure\" or \"never\""
+            ))
+        }
+    };
+    Ok(BackendInfo {
+        command: raw.command,
+        transport,
+        restart,
+        watch: raw.watch,
+        needs: raw.needs,
+        state: BackendState::Stopped,
+        ..BackendInfo::default()
+    })
+}
+
+/// Read a manifest's text: its id, version, panes and backend. Unknown tables are tolerated and
+/// ignored.
+pub(crate) fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let raw: RawManifest = toml::from_str(text).map_err(|e| format!("{MANIFEST}: {e}"))?;
     if !plain_name(&raw.plugin.id) {
         return Err(format!(
@@ -130,7 +206,13 @@ pub(crate) fn parse_manifest(text: &str) -> Result<(String, String, Vec<PluginPa
             actions: pane.actions,
         });
     }
-    Ok((raw.plugin.id, raw.plugin.version, panes))
+    let backend = raw.backend.map(parse_backend).transpose()?;
+    Ok(Manifest {
+        id: raw.plugin.id,
+        version: raw.plugin.version,
+        panes,
+        backend,
+    })
 }
 
 /// A package from its manifest text; a manifest that does not parse lists the package under
@@ -141,12 +223,13 @@ fn package(text: Result<String, String>, fallback_id: &str, scope: PluginScope, 
         Files::Builtin(_) => None,
     };
     let info = match text.and_then(|t| parse_manifest(&t)) {
-        Ok((id, version, panes)) => PluginInfo {
-            id,
-            version,
+        Ok(manifest) => PluginInfo {
+            id: manifest.id,
+            version: manifest.version,
             scope,
             dir,
-            panes,
+            panes: manifest.panes,
+            backend: manifest.backend,
             error: None,
         },
         Err(error) => PluginInfo {
@@ -155,6 +238,7 @@ fn package(text: Result<String, String>, fallback_id: &str, scope: PluginScope, 
             scope,
             dir,
             panes: Vec::new(),
+            backend: None,
             error: Some(error),
         },
     };
@@ -385,7 +469,13 @@ impl AppState {
         let cwd = self.settings_space(space)?.map(|(_, cwd)| cwd);
         Ok(discover(cwd.as_deref(), &self.machine_plugins())
             .into_iter()
-            .map(|p| p.info)
+            .map(|p| {
+                let mut info = p.info.clone();
+                if let Some(backend) = &mut info.backend {
+                    self.backends.overlay(&p.key(), backend);
+                }
+                info
+            })
             .collect())
     }
 
@@ -626,16 +716,46 @@ actions = ["go"]
 
     #[test]
     fn a_good_manifest_parses_and_a_backend_is_tolerated() {
-        let (id, version, panes) = parse_manifest(GOOD).unwrap();
-        assert_eq!((id.as_str(), version.as_str()), ("demo", "1.2.3"));
-        assert_eq!(panes.len(), 1);
-        assert_eq!(panes[0].reads, ["a.b"]);
-        assert_eq!(panes[0].actions, ["go"]);
-        let (_, _, panes) = parse_manifest(
+        let m = parse_manifest(GOOD).unwrap();
+        assert_eq!((m.id.as_str(), m.version.as_str()), ("demo", "1.2.3"));
+        assert_eq!(m.panes.len(), 1);
+        assert_eq!(m.panes[0].reads, ["a.b"]);
+        assert_eq!(m.panes[0].actions, ["go"]);
+        let m = parse_manifest(
             "[plugin]\nid=\"x\"\nversion=\"1\"\n[[pane]]\nid=\"p\"\ntitle=\"P\"\nscript=\"s.luau\"\n",
         )
         .unwrap();
-        assert!(panes[0].reads.is_empty() && panes[0].actions.is_empty());
+        assert!(m.panes[0].reads.is_empty() && m.panes[0].actions.is_empty());
+        assert!(m.backend.is_none());
+    }
+
+    #[test]
+    fn a_backend_table_parses_with_its_defaults() {
+        let backend = parse_manifest(GOOD).unwrap().backend.unwrap();
+        assert_eq!(backend.command, "demo-server");
+        assert_eq!(backend.transport, BackendTransport::Stdio);
+        assert_eq!(backend.restart, "on-failure");
+        assert_eq!(backend.state, BackendState::Stopped);
+        assert!(backend.watch.is_empty() && backend.needs.is_empty() && backend.pid.is_none());
+        let full = "[plugin]\nid=\"x\"\nversion=\"1\"\n[backend]\ncommand=\"run it\"\ntransport=\"unix\"\nrestart=\"never\"\nwatch=[\"src\"]\nneeds=[\"net\"]\n";
+        let backend = parse_manifest(full).unwrap().backend.unwrap();
+        assert_eq!(backend.transport, BackendTransport::Unix);
+        assert_eq!(backend.restart, "never");
+        assert_eq!(backend.watch, ["src"]);
+        assert_eq!(backend.needs, ["net"]);
+    }
+
+    #[test]
+    fn a_bad_backend_table_is_refused() {
+        let head = "[plugin]\nid=\"x\"\nversion=\"1\"\n[backend]\n";
+        for bad in [
+            "command=\"\"\n",
+            "transport=\"stdio\"\n",
+            "command=\"a\"\ntransport=\"tcp\"\n",
+            "command=\"a\"\nrestart=\"sometimes\"\n",
+        ] {
+            assert!(parse_manifest(&format!("{head}{bad}")).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

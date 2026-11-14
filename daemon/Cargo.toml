@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-lsp = { version = "0.2.4", default-features = false, features = ["tokio"] }
+json-patch = "5.0.0"
 base64.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
@@ -37,7 +39,7 @@ url = "2"
 sha2 = "0.10"
 tokio.workspace = true
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["io", "rt"] }
+tokio-util = { version = "0.7", features = ["io", "rt", "compat"] }
 toml = "1"
 toml_edit = "0.25"
 tracing.workspace = true

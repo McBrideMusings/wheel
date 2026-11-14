@@ -134,7 +134,7 @@ pub struct AppState {
     pub(crate) views: crate::clients::Views,
     /// The remote listener, once it is bound: set by [`crate::remote::start`].
     pub(crate) remote: Mutex<Option<crate::remote::Remote>>,
-    log_path: String,
+    pub(crate) log_path: String,
     token: String,
     pub(crate) next_id: AtomicU64,
     pub(crate) terms: Mutex<HashMap<String, Held>>,
@@ -183,6 +183,8 @@ pub struct AppState {
     /// The folders watched for plugin script saves, and the script each plugin pane last sent.
     pub(crate) plugin_watch: Mutex<Option<crate::plugins::Watch>>,
     pub(crate) plugin_seen: Mutex<crate::plugins::Seen>,
+    /// The plugin backends running and the feeds panes read (ADR-0041).
+    pub(crate) backends: crate::backends::Backends,
     /// One built-in install, update or removal at a time: each reads `installed.json`, changes
     /// files and writes it back.
     pub(crate) builtins_write: Mutex<()>,
@@ -351,6 +353,7 @@ impl AppState {
             settings_seen: Mutex::new(Default::default()),
             plugin_watch: Mutex::new(None),
             plugin_seen: Mutex::new(Default::default()),
+            backends: Default::default(),
             builtins_write: Mutex::new(()),
             save_pending: AtomicBool::new(false),
             switching_views: Mutex::new(Default::default()),
@@ -2694,6 +2697,68 @@ async fn handle(
                 }
             }
         }
+        ClientMsg::FeedSubscribe {
+            req,
+            pane,
+            feed,
+            params,
+        } => {
+            // A backend can take seconds to start: the subscribe runs in its own task, which sends
+            // the reply and then forwards, so the connection's other messages are not held. The
+            // handle is filed under its key before this returns, so a following unsubscribe
+            // finds it.
+            let key = format!("feed:{pane}:{feed}:{}", crate::backends::canonical(&params));
+            let state = state.clone();
+            let out = out.clone();
+            let task = tokio::spawn(async move {
+                match state.feed_subscribe(&pane, &feed, &params).await {
+                    Ok((subscription, value, rx)) => {
+                        forward_feed(subscription, value, rx, FeedAddress { req, pane, feed, params }, out).await;
+                    }
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %feed, %message, "feed subscribe refused");
+                        let _ = out.send(failed(req, message)).await;
+                    }
+                }
+            });
+            if let Some(old) = forwards.insert(key, task) {
+                old.abort();
+            }
+            None
+        }
+        ClientMsg::FeedUnsubscribe {
+            req,
+            pane,
+            feed,
+            params,
+        } => {
+            let key = format!("feed:{pane}:{feed}:{}", crate::backends::canonical(&params));
+            if let Some(task) = forwards.remove(&key) {
+                task.abort();
+            }
+            req.map(|req| ServerMsg::Ok { req })
+        }
+        ClientMsg::PluginLogs {
+            req,
+            plugin,
+            space,
+            tail,
+        } => {
+            let state = state.clone();
+            let name = plugin.clone();
+            let read = tokio::task::spawn_blocking(move || state.plugin_logs(&name, space.as_deref(), tail))
+                .await
+                .unwrap_or_else(|e| Err(format!("plugin logs failed: {e}")));
+            match read {
+                Ok((path, text)) => req.map(|req| ServerMsg::PluginLogs {
+                    req,
+                    plugin,
+                    path,
+                    text,
+                }),
+                Err(message) => Some(failed(req, message)),
+            }
+        }
         ClientMsg::PluginSource { req, pane } => {
             let state = state.clone();
             let read = {
@@ -3005,6 +3070,54 @@ async fn record_request(
         .ok_or("record needs a whole number of seconds")?;
     let recording = state.pane_record(pane, seconds, &path, side).await?;
     Ok((path, recording))
+}
+
+/// The pane, feed and params a feed subscription was made with, and its request id.
+struct FeedAddress {
+    req: Option<u64>,
+    pane: String,
+    feed: String,
+    params: serde_json::Value,
+}
+
+/// Send a feed subscriber its value, then each change until the connection or the feed ends. The
+/// subscription lives as long as this task: aborting it unsubscribes.
+async fn forward_feed(
+    subscription: crate::backends::Subscription,
+    value: serde_json::Value,
+    mut rx: broadcast::Receiver<crate::backends::Update>,
+    at: FeedAddress,
+    out: mpsc::Sender<ServerMsg>,
+) {
+    use crate::backends::Update;
+    let msg = |req, value, patch| ServerMsg::FeedUpdate {
+        req,
+        pane: at.pane.clone(),
+        feed: at.feed.clone(),
+        params: at.params.clone(),
+        value,
+        patch,
+    };
+    if out.send(msg(at.req, Some(value), None)).await.is_err() {
+        return;
+    }
+    loop {
+        let next = match rx.recv().await {
+            Ok(Update::Value(value)) => msg(None, Some(value), None),
+            Ok(Update::Patch(patch)) => msg(None, None, Some(patch)),
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                // A fresh value and a fresh receiver taken together: the old receiver would
+                // replay patches the value already holds.
+                let (value, fresh) = subscription.resync();
+                rx = fresh;
+                msg(None, Some(value), None)
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        if out.send(next).await.is_err() {
+            return;
+        }
+    }
 }
 
 /// The error reply to a request that is not a terminal op.

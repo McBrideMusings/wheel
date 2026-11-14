@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 35;
+pub const PROTOCOL_VERSION: u32 = 36;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -158,7 +158,64 @@ pub struct PluginInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     pub panes: Vec<PluginPaneInfo>,
+    /// The manifest's `[backend]` and the state of its process; None for a package without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendInfo>,
     /// Why the manifest could not be read; the package then lists no panes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// How a backend talks to wheeld: over its stdin and stdout (`stdio`, the default) or a unix
+/// socket wheeld makes and names in the process's `WHEEL_PLUGIN_SOCKET` (`unix`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendTransport {
+    #[default]
+    Stdio,
+    Unix,
+}
+
+/// What a backend's process is doing now. `stopped`: never started, since nothing has read one of
+/// its feeds; `starting`: spawned, `initialize` not answered yet; `running`; `exited`: it ended or
+/// failed (`error` says how).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendState {
+    #[default]
+    Stopped,
+    Starting,
+    Running,
+    Exited,
+}
+
+/// A plugin's `[backend]` (ADR-0041) and its process as wheeld runs it for one space.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct BackendInfo {
+    /// Run with `/bin/sh -c` in the package folder.
+    pub command: String,
+    #[serde(default)]
+    pub transport: BackendTransport,
+    /// `always`, `on-failure` (the default) or `never`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub restart: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watch: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
+    #[serde(default)]
+    pub state: BackendState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// The feeds and actions its `initialize` reply named, by their own names (`now`, not `clock.now`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feeds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+    /// The file its output and `log` messages go to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+    /// Why it is not running: a spawn failure, a failed `initialize`, how it exited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -1519,6 +1576,43 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
     },
+    /// Plugin pane `pane` reads feed `feed` (`<plugin>.<name>`, or `wheel.spaces`, `wheel.panes`,
+    /// `wheel.agents` for wheeld's own) with `params`. The plugin is resolved in the pane's space
+    /// and its backend started if it is not running. Replies `feed_update` with the feed's current
+    /// `value` (null until the backend sends one), then sends a `feed_update` on this connection
+    /// for each change until `feed_unsubscribe` or the connection closes. Subscribing again to the
+    /// same pane, feed and params replaces the subscription. `PROTOCOL_VERSION` 36.
+    FeedSubscribe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        feed: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
+    /// Stop sending `feed_update` for `pane`, `feed` and `params` on this connection. When no
+    /// subscription to a backend feed is left, wheeld sends the backend `feed/unsubscribe`.
+    /// Replies `ok`. `PROTOCOL_VERSION` 36.
+    FeedUnsubscribe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        feed: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
+    /// The log of plugin `plugin`'s backend (as resolved in `space`), the last `tail` lines when
+    /// given: its stderr (and stdout, over a unix socket) and its `log` messages. Replies
+    /// `plugin_logs`. `PROTOCOL_VERSION` 36.
+    PluginLogs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        plugin: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail: Option<usize>,
+    },
     /// Every artifact of every scope, each read off disk. With `pane`, only the ones whose
     /// entry says `pane = true` — what a pane picker asks for. Replies `artifacts`.
     ArtifactLs {
@@ -2376,6 +2470,28 @@ pub enum ServerMsg {
         chunk: String,
         source: String,
     },
+    /// A change to a feed a pane reads (`feed_subscribe`): the whole new `value`, or `patch`, an
+    /// RFC 6902 JSON Patch to apply to the value the pane holds. The reply to `feed_subscribe`
+    /// (with its `req`) always carries `value`. `PROTOCOL_VERSION` 36.
+    FeedUpdate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        feed: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        patch: Option<serde_json::Value>,
+    },
+    /// A plugin backend's log, in reply to `plugin_logs`: `path` is the file, `text` its last lines.
+    PluginLogs {
+        req: u64,
+        plugin: String,
+        path: String,
+        text: String,
+    },
     /// Every artifact, in reply to `artifact_ls`, ordered project, machine — the order a bare
     /// name resolves in, so the first record carrying a name is the one that name means.
     /// `resolves` says that outright: the scope a bare name lands in, per name.
@@ -2670,6 +2786,7 @@ impl ServerMsg {
             | ServerMsg::AgentAttached { req, .. }
             | ServerMsg::Settings { req, .. }
             | ServerMsg::PluginSource { req, .. }
+            | ServerMsg::FeedUpdate { req, .. }
             | ServerMsg::Error { req, .. } => *req,
             ServerMsg::Streams { req, .. }
             | ServerMsg::StreamStarted { req, .. }
@@ -2687,6 +2804,7 @@ impl ServerMsg {
             | ServerMsg::Artifact { req, .. }
             | ServerMsg::Artifacts { req, .. }
             | ServerMsg::Plugins { req, .. }
+            | ServerMsg::PluginLogs { req, .. }
             | ServerMsg::Tools { req, .. }
             | ServerMsg::ToolResult { req, .. }
             | ServerMsg::Resource { req, .. }

@@ -398,6 +398,32 @@ enum PluginCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print a plugin backend's log: its stderr (and stdout over a unix socket) and its `log`
+    /// messages.
+    Logs {
+        /// The plugin's id.
+        plugin: String,
+        /// The space the plugin is resolved in; the space of the calling pane, else none.
+        #[arg(long)]
+        space: Option<String>,
+        /// Print only the last N lines.
+        #[arg(long)]
+        tail: Option<usize>,
+    },
+    /// Read a feed as plugin pane PANE does and print each `feed_update` as one JSON line: the
+    /// whole value first, then each change. Starts the plugin's backend if it is not running.
+    Feed {
+        /// A plugin pane, which names the space the feed's plugin is resolved in.
+        pane: String,
+        /// The feed: `<plugin>.<name>`, or `wheel.spaces`, `wheel.panes`, `wheel.agents`.
+        feed: String,
+        /// The feed's params, as JSON.
+        #[arg(long, default_value = "{}")]
+        params: String,
+        /// Stop after N messages; without it, run until interrupted.
+        #[arg(long)]
+        count: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4218,10 +4244,114 @@ async fn plugin_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result
         if let Some(error) = &plugin.error {
             println!("  error: {error}");
         }
+        if let Some(backend) = &plugin.backend {
+            let state = match backend.state {
+                wheel_proto::BackendState::Stopped => "stopped",
+                wheel_proto::BackendState::Starting => "starting",
+                wheel_proto::BackendState::Running => "running",
+                wheel_proto::BackendState::Exited => "exited",
+            };
+            let transport = match backend.transport {
+                wheel_proto::BackendTransport::Stdio => "stdio",
+                wheel_proto::BackendTransport::Unix => "unix",
+            };
+            let pid = backend.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
+            println!("  backend: {state}{pid} ({transport}) {}", backend.command);
+            if !backend.feeds.is_empty() {
+                println!("    feeds: {}", backend.feeds.join(", "));
+            }
+            if !backend.actions.is_empty() {
+                println!("    actions: {}", backend.actions.join(", "));
+            }
+            if let Some(log) = &backend.log {
+                println!("    log: {log}");
+            }
+            if let Some(error) = &backend.error {
+                println!("    error: {error}");
+            }
+        }
         for pane in &plugin.panes {
             println!("  {}\t{}\t{}", pane.id, pane.title, pane.script);
         }
     }
+    Ok(())
+}
+
+/// Print a plugin backend's log.
+async fn plugin_logs(
+    conn: &mut Conn,
+    plugin: String,
+    space: Option<String>,
+    tail: Option<usize>,
+) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::PluginLogs { text, .. } = conn
+        .call(
+            ClientMsg::PluginLogs {
+                req: Some(req),
+                plugin,
+                space,
+                tail,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to plugin_logs".into()));
+    };
+    print!("{text}");
+    Ok(())
+}
+
+/// Subscribe to a feed as plugin pane `pane` and print each `feed_update` as one JSON line.
+async fn plugin_feed(
+    conn: &mut Conn,
+    pane: String,
+    feed: String,
+    params: String,
+    count: Option<usize>,
+) -> Result<(), Fail> {
+    let params: serde_json::Value =
+        serde_json::from_str(&params).map_err(|e| Fail::Other(format!("--params is not JSON: {e}")))?;
+    let req = conn.req();
+    conn.send(&ClientMsg::FeedSubscribe {
+        req: Some(req),
+        pane: pane.clone(),
+        feed: feed.clone(),
+        params: params.clone(),
+    })
+    .await?;
+    let mut seen = 0;
+    while count.is_none_or(|n| seen < n) {
+        let Some(msg) = conn.recv(Duration::from_secs(3600)).await? else {
+            continue;
+        };
+        match &msg {
+            ServerMsg::FeedUpdate {
+                pane: p, feed: f, ..
+            } if *p == pane && *f == feed => {
+                // `value: null` decodes to no value; the line says it again.
+                let mut line = serde_json::to_value(&msg).map_err(other)?;
+                if line.get("value").is_none() && line.get("patch").is_none() {
+                    line["value"] = serde_json::Value::Null;
+                }
+                println!("{line}");
+                seen += 1;
+            }
+            ServerMsg::Error { req: Some(r), message, .. } if *r == req => {
+                return Err(Fail::Daemon(message.clone()));
+            }
+            _ => {}
+        }
+    }
+    let req = conn.req();
+    conn.send(&ClientMsg::FeedUnsubscribe {
+        req: Some(req),
+        pane,
+        feed,
+        params,
+    })
+    .await?;
     Ok(())
 }
 
@@ -6145,6 +6275,16 @@ async fn main() -> ExitCode {
                 let space = default_space(&mut conn, space).await?;
                 plugin_ls(&mut conn, space, json).await
             }
+            Command::Plugin(PluginCommand::Logs { plugin, space, tail }) => {
+                let space = default_space(&mut conn, space).await?;
+                plugin_logs(&mut conn, plugin, space, tail).await
+            }
+            Command::Plugin(PluginCommand::Feed {
+                pane,
+                feed,
+                params,
+                count,
+            }) => plugin_feed(&mut conn, pane, feed, params, count).await,
             Command::Stream(command) => stream(&mut conn, command).await,
             Command::Title(TitleCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space)

@@ -5,6 +5,7 @@ mod driver;
 mod agents;
 mod app;
 mod artifacts;
+mod backends;
 mod brief;
 mod builtins;
 mod claude;

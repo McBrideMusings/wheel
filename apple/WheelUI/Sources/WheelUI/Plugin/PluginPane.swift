@@ -26,6 +26,21 @@ public final class PluginPane {
     @ObservationIgnored private var changeMsgs: [String: JSONValue] = [:]
     /// Called after every load, send and failure, for a host that reports `error`.
     @ObservationIgnored public var onUpdate: (() -> Void)?
+    /// Called after a render changed which feeds the script reads, with the (feed, params) pairs to subscribe and to
+    /// unsubscribe; the host sends them to wheeld.
+    @ObservationIgnored public var onFeeds: ((_ subscribe: [(String, JSONValue)], _ unsubscribe: [(String, JSONValue)]) -> Void)?
+
+    /// A feed read by name and params; params are compared as canonical JSON text (keys sorted).
+    private struct FeedKey: Hashable {
+        let name: String
+        let params: String
+    }
+    /// The feeds subscribed with wheeld, each with its params as the script gave them.
+    @ObservationIgnored private var subscribed: [FeedKey: JSONValue] = [:]
+    /// The value held for each subscribed feed.
+    @ObservationIgnored private var feedValues: [FeedKey: JSONValue] = [:]
+    /// The feeds the render in progress has read.
+    @ObservationIgnored private var asked: [FeedKey: JSONValue] = [:]
 
     public init() {
         surface.onAction = { [weak self] action in
@@ -49,7 +64,9 @@ public final class PluginPane {
                 try runtime.reload(source: source)
                 reloads += 1
             } else {
-                runtime = try PaneRuntime(source: source, chunkName: chunk)
+                runtime = try PaneRuntime(source: source, chunkName: chunk, host: PaneRuntime.Host(feed: { [weak self] name, params in
+                    self?.read(feed: name, params: params) ?? .null
+                }))
             }
             try render()
             error = nil
@@ -65,6 +82,82 @@ public final class PluginPane {
     public func fail(message: String) {
         error = Self.oneLine(message)
         onUpdate?()
+    }
+
+    /// Takes a change to a feed the pane reads: the whole `value`, or an RFC 6902 `patch` applied to the value held.
+    /// The arguments are what JSONSerialization returns. A patch that does not apply sets `error` and keeps the last value.
+    public func feedUpdate(feed: String, params: Any?, value: Any?, patch: Any?) {
+        let params = Self.jsonValue(params ?? NSNull())
+        let key = FeedKey(name: feed, params: Self.canonical(params))
+        guard subscribed[key] != nil else { return }
+        do {
+            if let patch {
+                feedValues[key] = try JSONPatch.apply(Self.jsonValue(patch), to: feedValues[key] ?? .null)
+            } else if let value {
+                feedValues[key] = Self.jsonValue(value)
+            } else {
+                feedValues[key] = .null
+            }
+            guard runtime != nil else { return }
+            try render()
+            if !loadFailed { error = nil }
+        } catch {
+            // The held value no longer matches wheeld's: drop it and read the feed again, so wheeld sends it whole.
+            feedValues[key] = nil
+            if let held = subscribed[key] { onFeeds?([(feed, held)], [(feed, held)]) }
+            fail(message: "feed \(feed): \(error)")
+            return
+        }
+        onUpdate?()
+    }
+
+    /// wheeld refused a `feed_subscribe`: the feed is not held, so the next render subscribes it again, and `message` is shown.
+    public func feedFailed(feed: String, params: Any?, message: String) {
+        let key = FeedKey(name: feed, params: Self.canonical(Self.jsonValue(params ?? NSNull())))
+        subscribed[key] = nil
+        feedValues[key] = nil
+        fail(message: message)
+    }
+
+    /// The pane is going away: unsubscribes every feed it holds.
+    public func close() {
+        let unsubscribe = subscribed.map { ($0.key.name, $0.value) }
+        subscribed = [:]
+        feedValues = [:]
+        if !unsubscribe.isEmpty { onFeeds?([], unsubscribe) }
+    }
+
+    /// The feeds the pane reads now, as (feed, params), for a host that must subscribe them again.
+    public var feeds: [(String, JSONValue)] {
+        subscribed.map { ($0.key.name, $0.value) }.sorted { $0.0 < $1.0 }
+    }
+
+    /// The held value of each subscribed feed as JSON text, keyed `feed params`, for a check.
+    public var feedJSON: [String: String] {
+        var out: [String: String] = [:]
+        for key in subscribed.keys {
+            out[key.name + " " + key.params] = Self.canonical(feedValues[key] ?? .null)
+        }
+        return out
+    }
+
+    private func read(feed name: String, params given: JSONValue) -> JSONValue {
+        // Params are an object; a Luau `{}` reaches here as an empty array.
+        let params: JSONValue = given == .array([]) ? .object([:]) : given
+        let key = FeedKey(name: name, params: Self.canonical(params))
+        asked[key] = params
+        return feedValues[key] ?? .null
+    }
+
+    /// After a good render: subscribes the feeds it read that are new and unsubscribes those it no longer reads.
+    private func syncFeeds() {
+        let subscribe = asked.filter { subscribed[$0.key] == nil }
+        let unsubscribe = subscribed.filter { asked[$0.key] == nil }
+        guard !subscribe.isEmpty || !unsubscribe.isEmpty else { return }
+        for key in unsubscribe.keys { feedValues[key] = nil }
+        subscribed = asked
+        onFeeds?(subscribe.map { ($0.key.name, $0.value) }.sorted { $0.0 < $1.0 },
+                 unsubscribe.map { ($0.key.name, $0.value) }.sorted { $0.0 < $1.0 })
     }
 
     private func deliver(_ msg: JSONValue) {
@@ -90,6 +183,7 @@ public final class PluginPane {
 
     private func render() throws {
         guard let runtime else { return }
+        asked = [:]
         let tree = try runtime.view()
         var changes: [String: JSONValue] = [:]
         var data: [String: AnyCodable] = [:]
@@ -107,6 +201,7 @@ public final class PluginPane {
             }
             components.append(Self.any(.object(fields)))
         }
+        syncFeeds()
         // Nothing above throws after this point, so a failed view leaves the surface and its handlers as they were.
         changeMsgs = changes
         surface.process([["updateComponents": .dictionary(["components": .array(components)])]])
@@ -155,6 +250,25 @@ public final class PluginPane {
     }
 
     // MARK: JSON conversion
+
+    /// A JSONSerialization object as a JSONValue.
+    static func jsonValue(_ any: Any) -> JSONValue {
+        switch any {
+        case is NSNull: return .null
+        case let n as NSNumber:
+            return CFGetTypeID(n) == CFBooleanGetTypeID() ? .bool(n.boolValue) : .number(n.doubleValue)
+        case let s as String: return .string(s)
+        case let a as [Any]: return .array(a.map(jsonValue))
+        case let o as [String: Any]: return .object(o.mapValues(jsonValue))
+        default: return .null
+        }
+    }
+
+    /// JSON text with sorted keys, so equal values give equal text.
+    static func canonical(_ v: JSONValue) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: v.foundation, options: [.sortedKeys, .fragmentsAllowed]) else { return "null" }
+        return String(decoding: data, as: UTF8.self)
+    }
 
     static func any(_ v: JSONValue) -> AnyCodable {
         switch v {

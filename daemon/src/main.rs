@@ -214,6 +214,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         _ = sigint.recv() => Stopped::Signal("SIGINT"),
     };
     stopping.stop_streams();
+    stopping.stop_backends().await;
     stopping.save_layout_now();
     // After the flush, so a slow client never delays saving; before the exit, so a client sees
     // `stopping` and not just a dropped socket.

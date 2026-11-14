@@ -818,6 +818,7 @@ impl AppState {
             spaces: spaces.spaces.clone(),
             sessions: spaces.sessions.clone(),
         });
+        self.publish_builtin_feeds(spaces);
     }
 
     /// End what a closed or replaced pane showed: kill its terminal or agent, or stop watching its

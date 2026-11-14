@@ -28,6 +28,11 @@ pub(crate) struct StatusBook {
 }
 
 impl StatusBook {
+    /// The status last sent for `pane`.
+    pub(crate) fn pane(&self, pane: &str) -> Option<&PaneStatus> {
+        self.panes.get(pane)
+    }
+
     /// A turn ended after the pane was last shown. Held back while a client shows it now.
     fn is_done(&self, pane: &str, showing: bool) -> bool {
         !showing && self.finished.get(pane).is_some_and(|f| *f > self.shown.get(pane).copied().unwrap_or(0))
@@ -225,8 +230,12 @@ impl AppState {
             .filter_map(|s| s.status.map(|status| (s.id, status)))
             .collect();
         drop(book);
+        let changed = !sent.is_empty();
         for msg in sent {
             let _ = self.global.send(msg);
+        }
+        if changed {
+            self.publish_builtin_feeds(&self.spaces.lock().unwrap());
         }
     }
 }
