@@ -590,9 +590,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
 
     // MARK: daemon socket (terminal bytes only; layout and ops go over Rust's own socket)
+    /// URLSession's default of 1 MiB drops the socket on a larger message (the Beads feed of this repo is 1.3 MB); the Swift app's
+    /// `DaemonClient` takes 64 MiB.
+    static let maximumMessageSize = 64 << 20
     func connect(_ url: String) {
         guard socket == nil, let target = URL(string: url) else { return }
         socket = URLSession.shared.webSocketTask(with: target)
+        socket?.maximumMessageSize = Self.maximumMessageSize
         socket?.resume()
         receive()
     }
@@ -600,6 +604,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         pluginURL = url
         guard pluginSocket == nil, let target = URL(string: url) else { return }
         let socket = URLSession.shared.webSocketTask(with: target)
+        socket.maximumMessageSize = Self.maximumMessageSize
         pluginSocket = socket
         socket.resume()
         pluginReceive(socket)
@@ -692,7 +697,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 let lost = actionReqs
                 actionReqs = [:]
                 for sent in lost.values { panes[sent.pane]?.plugin?.actionFailed(action: sent.action, message: "lost the connection to wheeld") }
-                panes.values.forEach { $0.plugin?.fail(message: "lost the connection to wheeld, retrying") }
+                panes.values.forEach { $0.plugin?.fail(message: "lost the connection to wheeld (\(error.localizedDescription)), retrying") }
                 let wait = pluginBackoff
                 pluginBackoff = min(pluginBackoff * 2, 30)
                 try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
