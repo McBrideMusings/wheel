@@ -1892,7 +1892,14 @@ impl Client {
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.open_palette(&id)))
                         .child("Artifact…")
                 };
-                div().flex().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).child(artifact).child(button("Browser", NewPaneKind::Browser, cx))
+                // One button per agent wheeld found on this machine, as the pane menu's Change Type lists them.
+                let agents = self.agents.iter().filter(|a| a.found).map(|a| {
+                    let (id, name) = (id.clone(), a.name.clone());
+                    div().px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.ask_start_agent(&id, &name)))
+                        .child(commands::capitalized(&a.name))
+                }).collect::<Vec<_>>();
+                div().flex().flex_wrap().gap_2().child(button("Terminal", NewPaneKind::Terminal, cx)).children(agents).child(artifact).child(button("Browser", NewPaneKind::Browser, cx))
             }
             other => div().child(format!("unimplemented: {other} pane\n{}", p.leaf.label)),
         } };
