@@ -68,4 +68,19 @@ import WheelKit
         #expect(shown(pane) == "err clock.fail boom")
         #expect(pane.error == nil)
     }
+
+    /// The host's own failures (no socket, unencodable arguments) go through `actionFailedLater`:
+    /// a host that fails from inside `onAction` reaches `update` only after the calling `update` returned.
+    @Test func aHostFailureReachesUpdateAfterTheCallingUpdateReturns() async {
+        let pane = PluginPane()
+        pane.onAction = { [weak pane] name, _ in
+            pane?.actionFailedLater(action: name, message: "no connection to wheeld")
+        }
+        pane.load(source: Self.script, chunk: "t.luau")
+        go(pane)
+        #expect(shown(pane) == "none", "nothing is delivered while the calling update runs")
+        for _ in 0..<5 where shown(pane) == "none" { await Task.yield() }
+        #expect(shown(pane) == "err clock.echo no connection to wheeld")
+        #expect(pane.error == nil)
+    }
 }

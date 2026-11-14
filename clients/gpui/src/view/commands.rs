@@ -390,7 +390,7 @@ impl Client {
             self.run_pending(pending.run);
         }
     }
-    fn leaf(&self, pane: &str) -> Option<Leaf> {
+    pub(super) fn leaf(&self, pane: &str) -> Option<Leaf> {
         self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).cloned()
     }
     /// The question a pane that runs a shell or an agent asks before it stops running it.

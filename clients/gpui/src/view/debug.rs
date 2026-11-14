@@ -197,6 +197,20 @@ impl Client {
                 let value = json_value.or_else(|| q("value").map(Value::String));
                 Some(self.native.call(json!({"op":"plugin","pane":pane,"action":action,"component":q("component"),"path":q("path"),"value":value,"key":q("key"),"context":context})))
             }
+            // Presses the plugin button of an empty pane (`pane=<id>&plugin=<id>&plugin_pane=<id>`) through the button's own press,
+            // so it exists only while the pane is empty and the shown space's `plugin_ls` lists that plugin pane.
+            "/empty/plugin" => {
+                let (Some(pane), Some(plugin), Some(plugin_pane)) = (q("pane"), q("plugin"), q("plugin_pane")) else { return refuse(BAD, "pane=, plugin= and plugin_pane= are required") };
+                if !self.leaf(&pane).is_some_and(|l| l.kind == "empty") {
+                    return refuse(MISSING, "no empty pane with that id in the shown spaces");
+                }
+                let offered = self.space().and_then(|s| self.plugins.get(&s.id)).is_some_and(|list| list.iter().any(|p| p.id == plugin && p.panes.iter().any(|x| x.id == plugin_pane)));
+                if !offered {
+                    return refuse(MISSING, "the shown space offers no such plugin pane button");
+                }
+                self.show_plugin(&pane, &plugin, &plugin_pane);
+                None
+            }
             // Scrolls a plugin pane's view with no pointer: `dy=<points>` (positive is down) or `to=top|bottom`; answers the pane's `fills` and `scroll` offsets.
             "/pane/scroll" => {
                 let Some(pane) = q("pane") else { return refuse(BAD, "pane= and dy=<points> or to=top|bottom are required") };

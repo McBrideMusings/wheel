@@ -3536,3 +3536,70 @@ fn forward_agent(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wheel_proto::{NewPaneKind, Node, PluginPaneRef};
+
+    /// A feed forward ends with the refusal when the pane that held the grant changes kind. The
+    /// state, the plugin folder and the spaces are real; only the connection is a channel.
+    #[tokio::test]
+    async fn a_feed_forward_ends_with_an_error_when_its_pane_changes_kind() {
+        let base = std::env::temp_dir().join(format!("wheel-forward-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let space_dir = base.join("space");
+        let package = space_dir.join(".wheel/plugins/reader");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("main.luau"), "return {}").unwrap();
+        std::fs::write(
+            package.join("wheel-plugin.toml"),
+            "[plugin]\nid = \"reader\"\nversion = \"0.1.0\"\n\n[[pane]]\nid = \"main\"\ntitle = \"Reader\"\nscript = \"main.luau\"\nreads = [\"wheel.spaces\"]\n",
+        )
+        .unwrap();
+        let state = AppState::new("/dev/null".into(), "t".into(), base.join("inst"), "/bin/false".into());
+        let space = state
+            .space_create(space_dir.to_str().unwrap().into(), None, true, None, None)
+            .unwrap();
+        let Node::Pane { id: pane, .. } = space.root else { panic!("a new space is one pane") };
+        let plugin = PluginPaneRef { plugin: "reader".into(), pane: "main".into() };
+        state
+            .pane_set_kind(&pane, NewPaneKind::Plugin, None, None, None, Some(plugin))
+            .await
+            .unwrap();
+
+        let grants = state.grants_changed.subscribe();
+        let params = serde_json::json!({});
+        let (subscription, value, stale, rx) = state.feed_subscribe(&pane, "wheel.spaces", &params).await.unwrap();
+        let (out, mut sent) = mpsc::channel(8);
+        let at = FeedAddress { req: Some(7), pane: pane.clone(), feed: "wheel.spaces".into(), params };
+        let forward = {
+            let state = state.clone();
+            tokio::spawn(async move { forward_feed(&state, subscription, (value, stale), rx, grants, at, out).await })
+        };
+        match sent.recv().await.unwrap() {
+            ServerMsg::FeedUpdate { req, feed, .. } => assert_eq!((req, feed.as_str()), (Some(7), "wheel.spaces")),
+            other => panic!("expected the first value, got {other:?}"),
+        }
+
+        // A grant that still holds ends nothing.
+        let _ = state.grants_changed.send(());
+        tokio::task::yield_now().await;
+        assert!(!forward.is_finished(), "the grant still holds");
+
+        state
+            .pane_set_kind(&pane, NewPaneKind::Browser, None, None, Some("https://example.com".into()), None)
+            .await
+            .unwrap();
+        let _ = state.grants_changed.send(());
+        match tokio::time::timeout(Duration::from_secs(5), sent.recv()).await.unwrap().unwrap() {
+            ServerMsg::Error { req, message, .. } => {
+                assert_eq!(req, Some(7), "the refusal answers the subscribe");
+                assert!(message.contains("is not a plugin or agent pane"), "{message}");
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
+        tokio::time::timeout(Duration::from_secs(5), forward).await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

@@ -210,6 +210,13 @@ public final class PluginPane {
         deliver(.object(["action": .string(action), "error": .string(message)]))
     }
 
+    /// An action the host could not send at all (no connection, arguments that do not encode). The
+    /// script calls `wheel.action` from inside `update`, so the failure is delivered on the next
+    /// main-queue turn, never before that `update` has returned.
+    public func actionFailedLater(action: String, message: String) {
+        Task { @MainActor [weak self] in self?.actionFailed(action: action, message: message) }
+    }
+
     /// The pane is going away: unsubscribes every feed it holds.
     public func close() {
         let unsubscribe = subscribed.map { ($0.key.name, $0.value) }
