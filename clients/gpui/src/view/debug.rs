@@ -188,10 +188,14 @@ impl Client {
                 self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact, scope, url: None, plugin: q("plugin").zip(q("plugin_pane")).map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }) });
                 None
             }
-            // A plugin pane's drawn view and script state: `action=state`, `press&component=<id>`, `set&path=/<id>&value=<text>`.
+            // A plugin pane's drawn view and script state: `action=state`, `press&component=<id>`, `set&path=/<id>&value=<text>`
+            // (or `json=<JSON value>` for a CheckBox, ChoicePicker, ...), `raise&component=<id>&key=<rowAction|hits.0.action>&context=<JSON object>`.
             "/plugin" => {
-                let (Some(pane), Some(action)) = (q("pane"), q("action")) else { return refuse(BAD, "pane= and action=state|press|set are required") };
-                Some(self.native.call(json!({"op":"plugin","pane":pane,"action":action,"component":q("component"),"path":q("path"),"value":q("value")})))
+                let (Some(pane), Some(action)) = (q("pane"), q("action")) else { return refuse(BAD, "pane= and action=state|press|set|raise are required") };
+                let parse = |name: &str| q(name).map(|t| serde_json::from_str::<Value>(&t)).transpose();
+                let (Ok(json_value), Ok(context)) = (parse("json"), parse("context")) else { return refuse(BAD, "json= and context= must be JSON") };
+                let value = json_value.or_else(|| q("value").map(Value::String));
+                Some(self.native.call(json!({"op":"plugin","pane":pane,"action":action,"component":q("component"),"path":q("path"),"value":value,"key":q("key"),"context":context})))
             }
             "/start" => {
                 let (Some(pane), Some(kind)) = (q("pane"), q("kind")) else { return refuse(BAD, "pane= and kind=terminal|agent are required") };

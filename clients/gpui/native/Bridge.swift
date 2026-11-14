@@ -509,6 +509,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         root.addSubview(host.slot)
         if kind == "plugin" {
             let plugin = PluginPane()
+            host.space = value["space"] as? String
+            let ids = (host.pluginLabel ?? "").split(separator: "/", maxSplits: 1).map(String.init)
+            plugin.context = [
+                "pane": .string(id),
+                "space": host.space.map { .string($0) } ?? .null,
+                "cwd": host.cwd.flatMap { $0.isEmpty ? nil : .string($0) } ?? .null,
+                "plugin": ids.first.map { .string($0) } ?? .null,
+                "plugin_pane": ids.count > 1 ? .string(ids[1]) : .null,
+            ]
             plugin.onUpdate = { [weak self, weak plugin] in
                 guard let plugin else { return }
                 self?.emit(["event": "plugin", "pane": id, "error": plugin.error ?? NSNull()])
@@ -889,13 +898,16 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "render": render(value)
         case "inspect": inspect(value)
         case "plugin":
-            // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a field's path.
+            // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's path
+            // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`.
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin else { return ["ok": false, "message": "no plugin pane"] }
             var ok = true
             switch value["action"] as? String {
             case "press": ok = (value["component"] as? String).map { plugin.press(component: $0) } ?? false
             case "set":
-                if let path = value["path"] as? String, let text = value["value"] as? String { plugin.set(path: path, value: text) } else { ok = false }
+                if let path = value["path"] as? String, let given = value["value"] { plugin.set(path: path, value: given) } else { ok = false }
+            case "raise":
+                ok = (value["component"] as? String).flatMap { c in (value["key"] as? String).map { plugin.raise(component: c, key: $0, context: value["context"]) } } ?? false
             default: break
             }
             return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts, "feeds": plugin.feedJSON]

@@ -111,7 +111,20 @@ A plugin package is a folder holding `wheel-plugin.toml`: `[plugin]` (`id`, `ver
 
 A plugin pane is the pane kind `{"kind":"plugin","plugin":"<id>","pane":"<pane id>"}`, set with `pane_set_kind` kind `plugin` and `"plugin":{"plugin":..,"pane":..}` (`wheel pane kind <pane> plugin --plugin <id> --plugin-pane <pane id>`). `plugin_ls` lists the packages a space can use (`wheel plugin ls`); `plugin_source` returns a pane's script, and `wheeld` sends `plugin_source` unasked to every connection when a shown pane's script changes on disk (one message per save, after a 100 ms debounce). `PROTOCOL_VERSION` 35.
 
-On the Mac, the GPUI client opens each plugin pane in the bridge (`clients/gpui/native/Bridge.swift`), which fetches the script over its own `wheeld` socket and runs it in WheelUI's `PluginPane` (`apple/WheelUI/Sources/WheelUI/Plugin/PluginPane.swift`). Each render flattens `view`'s tree into an A2UI surface: every table `action` on a `Button` becomes the message `send` gets, and a `TextField`'s `value` is bound to the data model, its `on_change` table sent with `value` set to the typed text. A failure keeps the last good view and puts the error in the pane header; a good load clears it.
+On the Mac, the GPUI client opens each plugin pane in the bridge (`clients/gpui/native/Bridge.swift`), which fetches the script over its own `wheeld` socket and runs it in WheelUI's `PluginPane` (`apple/WheelUI/Sources/WheelUI/Plugin/PluginPane.swift`). `view(state, data)` gets the pane's place in `data`: `pane` (its id), `space`, `cwd` (the space's directory), `plugin` and `plugin_pane` (the manifest's ids), so a script can pass its project directory as a feed param.
+
+Each render flattens `view`'s tree into an A2UI surface. Every table the script puts where a component raises an action becomes the message `update` gets when it does: a component property named `action` or ending in `Action` (a `Button`'s `action`, a `Table`'s `rowAction`, `sortAction`, `foldAction` and `selectAction`, a `Modal`'s `dismissAction`), a `Canvas` hit's `action` and `doubleAction`, a `ConfirmationDialog` button's `action` and a `Table` row's `menu[].action`. A table anywhere else (a hit's `context`, a row's cells) is data and reaches the component as written. A `Button` `action = { copy = { text = ... } }` copies the text, as in A2UI, and sends nothing. The component's own fields for the event are added where the table has no key of that name:
+
+| Raised by | Fields added |
+| --- | --- |
+| `Table` `rowAction` | `id` (the row's) |
+| `Table` `sortAction` | `key`, `asc` |
+| `Table` `foldAction` | `path` |
+| `Table` `selectAction` | `ids` (every selected row) |
+| `Canvas` hit `action`, `doubleAction` | `id` (the hit's), plus the hit's `context` / `doubleContext` |
+| `Button`, row `menu`, `Modal` `dismissAction` | none |
+
+A control with an `on_change` table (`TextField`, `CheckBox`, `ChoicePicker`, `Slider`, `Stepper`, `DateTimeInput`, ...) has its `value` bound to the data model and sends the table with `value` set to what the control wrote (text, a boolean, the array of picked values, a number). A `TextField` is bound with or without `on_change`. The control shows what the person last wrote until the script's `value` changes: a render writes the script's `value` only when it differs from the one the script gave the render before, so a script that does not echo an edit back never undoes it, and one that sets a new value (a reset) shows it. A failure keeps the last good view and puts the error in the pane header; a good load clears it.
 
 ## Plugin backends
 

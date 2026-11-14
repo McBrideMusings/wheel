@@ -1779,13 +1779,13 @@ impl Client {
                     ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
                     ("browser", _) => "browser".to_owned(),
                     ("terminal", Some(_)) => "terminal".to_owned(),
-                    ("plugin", _) => format!("plugin:{}", p.leaf.label),
+                    ("plugin", _) => format!("plugin:{}:{cwd}", p.leaf.label),
                     _ => continue,
                 };
                 if self.opened.get(&p.leaf.id) != Some(&kind) {
                     match (&p.leaf.term, p.leaf.kind.as_str()) {
                         (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, self.space_id.as_deref(), &self.endpoint.ws),
-                        (None, "plugin") => self.native.open_plugin(&p.leaf.id, &p.leaf.label, self.space_id.as_deref(), &self.endpoint.ws),
+                        (None, "plugin") => self.native.open_plugin(&p.leaf.id, &p.leaf.label, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                         (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
                         (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                     }

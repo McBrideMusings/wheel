@@ -5,8 +5,13 @@ import WheelKit
 internal import WheelLuau
 
 /// A plugin pane's body (ADR-0041): the Luau script's `view` drawn as A2UI components. The pane owns the
-/// script's `PaneRuntime` and a `SurfaceModel`. A Button whose `action` is a plain table sends that table to
-/// the script's `update` (every table action: a pane script never speaks A2UI's action shape); a TextField's `on_change` table gets the typed text as `value` and goes the same way.
+/// script's `PaneRuntime` and a `SurfaceModel`. Every table the script puts under a key named `action` or ending in
+/// `Action`, at any depth of a component's properties (a Button's `action`, a Table's `rowAction`, a row's `menu[].action`, a
+/// Canvas hit's `action` and `doubleAction`, a Modal's `dismissAction`), is sent to the script's `update` when the
+/// component raises it, with the component's own fields for the event (a row's `id`, a sort's `key` and `asc`, a hit's
+/// `id`) added where the table has no such key: a pane script never speaks A2UI's action shape. A control with an
+/// `on_change` table (TextField, CheckBox, ChoicePicker, Slider, Stepper, DateTimeInput, ...) sends it with `value` set to
+/// what the control wrote. `view` gets `context` (the pane's ids and directory) as its `data`.
 /// After every send or reload the script's `view` is drawn again. A failure keeps the last good view and sets
 /// `error`; a good load clears it.
 @MainActor @Observable
@@ -22,8 +27,14 @@ public final class PluginPane {
     @ObservationIgnored private var runtime: PaneRuntime?
     /// Whether `error` came from loading the script: the file is still broken, so a message the script handles does not clear it.
     @ObservationIgnored private var loadFailed = false
-    /// For each text field's data path, the table its `on_change` names.
+    /// For each control's data path, the table its `on_change` names.
     @ObservationIgnored private var changeMsgs: [String: JSONValue] = [:]
+    /// For each action name the last render gave a component, the table the script wrote there.
+    @ObservationIgnored private var actionMsgs: [String: JSONValue] = [:]
+    /// For each bound control's data path, the `value` the script gave at the last render.
+    @ObservationIgnored private var lastGiven: [String: AnyCodable] = [:]
+    /// The fields `view` gets in `data` besides `feed`: the host sets `pane`, `space`, `cwd`, `plugin` and `plugin_pane`.
+    @ObservationIgnored public var context: [String: JSONValue] = [:]
     /// Called after every load, send and failure, for a host that reports `error`.
     @ObservationIgnored public var onUpdate: (() -> Void)?
     /// Called after a render changed which feeds the script reads, with the (feed, params) pairs to subscribe and to
@@ -50,8 +61,11 @@ public final class PluginPane {
 
     public init() {
         surface.onAction = { [weak self] action in
-            guard let self, action.name == "plugin.send", let msg = action.context["msg"] else { return }
-            self.deliver(Self.json(msg))
+            guard let self, let template = self.actionMsgs[action.name] else { return }
+            var msg: [String: JSONValue] = [:]
+            if case let .object(fields) = template { msg = fields }
+            for (key, value) in action.context where msg[key] == nil { msg[key] = Self.json(value) }
+            self.deliver(.object(msg))
         }
         surface.onChange = { [weak self] change in
             guard let self, let template = self.changeMsgs[change.path] else { return }
@@ -210,30 +224,80 @@ public final class PluginPane {
     private func render() throws {
         guard let runtime else { return }
         asked = [:]
-        let tree = try runtime.view()
+        let tree = try runtime.view(.object(context))
         var changes: [String: JSONValue] = [:]
+        var actions: [String: JSONValue] = [:]
         var data: [String: AnyCodable] = [:]
+        var values: [String: AnyCodable] = [:]
         var components: [AnyCodable] = []
         for case var .object(fields) in tree.a2uiComponents(rootID: "root") {
             guard case let .string(id)? = fields["id"], case let .string(type)? = fields["component"] else { continue }
-            if type == "Button", let action = fields["action"], case .object = action {
-                fields["action"] = .object(["event": .object(["name": .string("plugin.send"), "context": .object(["msg": action])])])
-            }
-            if type == "TextField" {
+            let template = fields.removeValue(forKey: "on_change")
+            Self.name(&fields, id: id, type: type, into: &actions)
+            if type == "TextField" || template != nil {
+                // The data model holds what the control shows: the script's `value` is written only when it differs from the
+                // one the script gave last render, so a script that does not echo an edit back never undoes it.
                 let path = "/" + id
-                data[path] = Self.any(fields["value"] ?? .string(""))
+                let given = fields["value"].map(Self.any)
+                if let given, given != lastGiven[path] { data[path] = given }
+                else if given == nil, lastGiven[path] == nil, type == "TextField" { data[path] = .string("") }
+                given.map { values[path] = $0 }
                 fields["value"] = .object(["path": .string(path)])
-                if let template = fields.removeValue(forKey: "on_change") { changes[path] = template }
+                if let template { changes[path] = template }
             }
             components.append(Self.any(.object(fields)))
         }
         syncFeeds()
         // Nothing above throws after this point, so a failed view leaves the surface and its handlers as they were.
         changeMsgs = changes
+        actionMsgs = actions
+        lastGiven = values
         surface.process([["updateComponents": .dictionary(["components": .array(components)])]])
         for (path, value) in data.sorted(by: { $0.key < $1.key }) {
-            if let current = surface.get(path)?.stringValue, current == value.stringValue { continue }
+            if surface.get(path) == value { continue }
             surface.process([["updateDataModel": .dictionary(["path": .string(path), "value": value])]])
+        }
+    }
+
+    /// Replaces each table the script put where a component raises an action with a name unique to its place
+    /// (`plugin:<id>/<key path>`), recorded in `names` with the table: a property named `action` or ending in `Action`,
+    /// a Canvas hit's `action` and `doubleAction` (`hits`), a dialog button's `action` (`buttons`) and a Table row's
+    /// `menu[].action` (`sections[].rows[].menu`). A Button raises its name as A2UI's event; a Button `action`
+    /// `{copy = {text = ...}}` stays the clipboard copy it is in A2UI.
+    private static func name(_ fields: inout [String: JSONValue], id: String, type: String, into names: inout [String: JSONValue]) {
+        func take(_ value: JSONValue, _ path: String) -> JSONValue {
+            guard case .object = value else { return value }
+            names[path] = value
+            return .string(path)
+        }
+        func each(_ value: JSONValue?, _ body: (JSONValue, Int) -> JSONValue) -> JSONValue? {
+            guard case let .array(items)? = value else { return value }
+            return .array(items.enumerated().map { body($0.element, $0.offset) })
+        }
+        func setting(_ value: JSONValue, _ keys: [String], _ path: String) -> JSONValue {
+            guard case var .object(o) = value else { return value }
+            for k in keys { if let v = o[k] { o[k] = take(v, "\(path).\(k)") } }
+            return .object(o)
+        }
+        let base = "plugin:\(id)/"
+        for key in fields.keys where key == "action" || key.hasSuffix("Action") {
+            guard let value = fields[key] else { continue }
+            if type == "Button", key == "action", case let .object(o) = value, o["copy"] != nil { continue }
+            fields[key] = take(value, base + key)
+            if type == "Button", key == "action", case let .string(n)? = fields[key], names[n] != nil {
+                fields[key] = .object(["event": .object(["name": .string(n)])])
+            }
+        }
+        fields["hits"] = each(fields["hits"]) { setting($0, ["action", "doubleAction"], base + "hits.\($1)") }
+        fields["buttons"] = each(fields["buttons"]) { setting($0, ["action"], base + "buttons.\($1)") }
+        fields["sections"] = each(fields["sections"]) { sec, si in
+            guard case var .object(so) = sec else { return sec }
+            so["rows"] = each(so["rows"]) { row, ri in
+                guard case var .object(ro) = row else { return row }
+                ro["menu"] = each(ro["menu"]) { setting($0, ["action"], base + "sections.\(si).rows.\(ri).menu.\($1)") }
+                return .object(ro)
+            }
+            return .object(so)
         }
     }
 
@@ -270,9 +334,21 @@ public final class PluginPane {
         return true
     }
 
-    /// Writes a text field's value as typing would.
-    public func set(path: String, value: String) {
-        surface.set(path, .string(value))
+    /// Writes a control's value as the control would; `value` is what JSONSerialization returns.
+    public func set(path: String, value: Any) {
+        surface.set(path, Self.any(Self.jsonValue(value)))
+    }
+
+    /// Raises the action the script put at `key` of component `id` (`rowAction`, `hits.0.doubleAction`), with the
+    /// event's own fields in `context`, as the component does; false when the last render put no action there.
+    @discardableResult
+    public func raise(component id: String, key: String, context: Any?) -> Bool {
+        let name = "plugin:\(id)/\(key)"
+        guard surface.components[id] != nil, actionMsgs[name] != nil else { return false }
+        var fields: [String: JSONValue] = [:]
+        if case let .object(given) = Self.jsonValue(context ?? NSNull()) { fields = given }
+        surface.dispatchAction(name: name, sourceComponentId: id, context: fields.mapValues(Self.any))
+        return true
     }
 
     // MARK: JSON conversion

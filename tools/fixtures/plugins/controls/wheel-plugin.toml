@@ -1,0 +1,10 @@
+[plugin]
+id = "controls"
+version = "0.1.0"
+
+[[pane]]
+id = "main"
+title = "Controls"
+script = "main.luau"
+reads = []
+actions = []

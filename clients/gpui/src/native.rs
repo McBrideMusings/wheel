@@ -120,9 +120,10 @@ impl Native {
         self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws}));
     }
     /// Show plugin pane `pane` (ADR-0041): the bridge draws its Luau script as A2UI components, asking wheeld at `ws`
-    /// for the script and again whenever it changes on disk.
-    pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"ws":ws}));
+    /// for the script and again whenever it changes on disk. `label` is `<plugin>/<pane id>`; the script's `data` gets
+    /// the pane, `space`, the space directory `cwd` and those two ids.
+    pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, cwd: &str, ws: &str) {
+        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"cwd":cwd,"ws":ws}));
     }
     /// Show a browser pane on `url` (ADR-0005): WheelUI's `BrowserPane`, the model the Swift Mac
     /// app shows under its chrome. `remote` says wheeld runs on another machine, so a file page
