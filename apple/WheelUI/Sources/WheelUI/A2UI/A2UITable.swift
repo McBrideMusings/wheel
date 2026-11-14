@@ -118,6 +118,12 @@ struct A2UITableView: View {
         .accessibilityIdentifier("a2ui.table")
     }
 
+    /// A column with a width: that width fixed, shrinkable to 40 pt. nil for a column that fills what is left.
+    private static func columnWidth(_ c: [String: AnyCodable]) -> (min: CGFloat, fixed: CGFloat)? {
+        guard let w = c["width"]?.numberValue.map({ CGFloat($0) }) else { return nil }
+        return (min(40, w), w)
+    }
+
     /// The Mac draws SwiftUI's Table. On a phone a Table shows only its first column, so a List of one-line rows draws the same cells.
     @ViewBuilder
     private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<Set<String>>, order: Binding<[CellSort]>, rowAction: String, foldAction: String, open: @escaping (Set<String>) -> Void) -> some View {
@@ -131,14 +137,14 @@ struct A2UITableView: View {
                         // A column that is not sortable compares every pair as equal, so its header changes nothing.
                         TableColumn(c["label"]?.stringValue ?? "", sortUsing: CellSort(key: c["sortable"]?.boolValue == true ? c["key"]?.stringValue ?? "" : "")) { line in cell(line, c, foldAction, first: first) }
                             // A column with a width is capped at it (it can be dragged narrower), so the leftover goes to the columns without one.
-                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: c["width"]?.numberValue.map { CGFloat($0) })
+                            .width(min: Self.columnWidth(c)?.min, ideal: Self.columnWidth(c)?.fixed, max: Self.columnWidth(c)?.fixed)
                     }
                 }
             } else {
                 Table(lines, selection: selected) {
                     TableColumnForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                         TableColumn(c["label"]?.stringValue ?? "") { line in cell(line, c, foldAction, first: first) }
-                            .width(min: c["width"]?.numberValue.map { _ in 40 }, ideal: c["width"]?.numberValue.map { CGFloat($0) }, max: c["width"]?.numberValue.map { CGFloat($0) })
+                            .width(min: Self.columnWidth(c)?.min, ideal: Self.columnWidth(c)?.fixed, max: Self.columnWidth(c)?.fixed)
                     }
                 }
             }
