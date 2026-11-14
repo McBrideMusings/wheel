@@ -196,6 +196,139 @@ struct EmbeddedTerminal: NSViewRepresentable {
     }
 }
 
+/// A pane's agent conversation inside a plugin pane's page (`ui.AgentChat{pane}`, ADR-0042): the agent the pane holds,
+/// as `pane_targets` last said, its `AgentChat` shared with every other embed of that agent. A pane that is gone or holds
+/// no agent leaves `chat` nil and says so in `note`; the agent comes back when `pane_targets` names one again.
+@MainActor final class EmbedAgent: ObservableObject {
+    unowned let native: Native
+    let hostPane: String
+    var pane: String
+    @Published private(set) var chat: AgentChat?
+    @Published private(set) var note = ""
+    init(native: Native, hostPane: String, pane: String) {
+        self.native = native; self.hostPane = hostPane; self.pane = pane
+    }
+    /// The agent the pane holds now, attached; the old one detached when no other embed shows it.
+    func resolve() {
+        let agent = native.paneTargets[pane]?["agent"]
+        let note = agent != nil || !native.targetsKnown ? "" : native.paneTargets[pane] == nil ? "Pane \(pane) is gone" : "Pane \(pane) holds no agent"
+        if self.note != note { self.note = note }
+        guard agent != chat?.name else { return }
+        drop()
+        guard let agent else { return }
+        chat = native.agentChat(agent)
+    }
+    /// Stop showing the agent (idempotent).
+    func drop() {
+        guard let old = chat else { return }
+        chat = nil
+        native.releaseChat(old.name)
+    }
+}
+
+/// The waiting permission requests the page connection last heard, for every agent embed.
+@MainActor final class EmbedPermissions: ObservableObject {
+    @Published var list: [PermInfo] = []
+}
+
+/// `EmbedAgent` for SwiftUI: the conversation, its request and a composer while the pane holds an agent, the note otherwise.
+/// Its registration on `Native` lasts while the view is shown.
+struct EmbeddedAgentChat: View {
+    let native: Native
+    let pane: String
+    @StateObject private var embed: EmbedAgent
+    @ObservedObject private var perms: EmbedPermissions
+    init(native: Native, hostPane: String, pane: String) {
+        self.native = native
+        self.pane = pane
+        _embed = StateObject(wrappedValue: EmbedAgent(native: native, hostPane: hostPane, pane: pane))
+        perms = native.embedPerms
+    }
+    var body: some View {
+        Group {
+            if let chat = embed.chat {
+                EmbeddedAgentBody(native: native, chat: chat, perms: perms.list)
+            } else {
+                Text(embed.note)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            native.agentEmbeds[ObjectIdentifier(embed)] = embed
+            embed.resolve()
+        }
+        .onDisappear {
+            native.agentEmbeds[ObjectIdentifier(embed)] = nil
+            embed.drop()
+        }
+        .onChange(of: pane) {
+            embed.pane = pane
+            embed.resolve()
+        }
+    }
+}
+
+/// One agent's conversation as the Mac's agent pane lays it out: the transcript, its running tasks, the notice the
+/// daemon holds, the first request it waits on, and the composer.
+struct EmbeddedAgentBody: View {
+    let native: Native
+    @ObservedObject var chat: AgentChat
+    let perms: [PermInfo]
+    var body: some View {
+        let mine = perms.filter { $0.agent == chat.name }
+        VStack(spacing: 0) {
+            TranscriptView(
+                chat: chat,
+                empty: "Give this agent a task.",
+                permissions: PermissionQueue(
+                    waiting: Set(mine.compactMap(\.toolCall)),
+                    places: Dictionary(perms.enumerated().compactMap { index, perm in perm.toolCall.map { ($0, index + 1) } },
+                                       uniquingKeysWith: { first, _ in first }),
+                    count: perms.count))
+                .overlay { TaskFullView(chat: chat) { native.readTaskOutput(chat, task: $0) } }
+            RunningStrip(chat: chat)
+                .padding([.horizontal, .top], 8)
+            if let notice = chat.notice {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    Text(notice).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Dismiss", systemImage: "xmark") { native.pageClient?.send(.agentNoticeDismiss(req: nil, agent: chat.name)) }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless)
+                }
+                .padding([.horizontal, .top], 8)
+            }
+            if let perm = mine.first {
+                VStack(alignment: .leading, spacing: 6) {
+                    PermissionWhy(perm: perm)
+                    Text(perm.title)
+                        .font(perm.isQuestion ? .callout : .callout.monospaced())
+                        .lineLimit(4)
+                    if perm.isQuestion {
+                        QuestionChoices(perm: perm, answer: native.answer)
+                    } else {
+                        PermissionChoices(perm: perm, answer: native.answer, keys: false)
+                    }
+                }
+                .padding(8)
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.orange.opacity(0.6)))
+                .padding([.horizontal, .top], 8)
+            }
+            Composer(
+                placeholder: "Message \(AgentInfo.title(of: chat.name))",
+                draft: $chat.draft,
+                error: chat.error,
+                enabled: true,
+                send: { native.sendAgent(chat) },
+                busy: chat.isBusy,
+                stop: { native.pageClient?.send(.agentCancel(req: nil, agent: chat.name)) },
+                takeBack: { chat.takeBack() })
+                .padding(8)
+        }
+    }
+}
+
 /// A terminal that takes dropped files: each file's path, shell-escaped, pasted at the prompt as
 /// Ghostty's own Mac app does (its surface view's drop handler), several separated by a space.
 final class DropTerminalView: AppTerminalView {
@@ -272,6 +405,19 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var paneTargets: [String: [String: String]] = [:]
     /// The terminals plugin pages embed, by object identity.
     var embeds: [ObjectIdentifier: EmbedTerminal] = [:]
+    /// The agent chats plugin pages embed, by object identity, and the one `AgentChat` each agent they show streams into.
+    var agentEmbeds: [ObjectIdentifier: EmbedAgent] = [:]
+    var chats: [String: AgentChat] = [:]
+    /// How many embeds hold each agent's chat: the last to let go detaches it.
+    var chatHolds: [String: Int] = [:]
+    /// The agents whose attach wheeld refused (the agent was not there yet): attached again when wheeld next names them.
+    var refusedAttach: Set<String> = []
+    var attachReqs: Set<UInt64> = []
+    /// Whether a `pane_targets` has come yet: until it has, an embed says nothing rather than "gone".
+    var targetsKnown = false
+    /// Each agent request waiting for its reply, by req, with the agent it was for: an error reply goes on that chat.
+    var agentReqs: [UInt64: String] = [:]
+    let embedPerms = EmbedPermissions()
     var socket: URLSessionWebSocketTask?
     /// The connection the A2UI pages talk over, started with the first page and dropped with `disconnect`.
     var pageClient: DaemonClient?
@@ -847,11 +993,128 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         pageDaemon.url = parts.url
         pageDaemon.token = token
     }
-    /// What a plugin page's embedded pane draws as: a terminal here; nil for an agent chat (wheel-pmf2.4.15).
+    /// What a plugin page's embedded pane draws as: the pane's terminal, or its agent's conversation.
     func embedView(_ embed: A2UIPaneEmbed, hostPane: String) -> AnyView? {
         switch embed.kind {
         case .terminal: return AnyView(EmbeddedTerminal(native: self, hostPane: hostPane, pane: embed.pane))
-        case .agentChat: return nil
+        case .agentChat: return AnyView(EmbeddedAgentChat(native: self, hostPane: hostPane, pane: embed.pane))
+        }
+    }
+    /// `agent`'s chat, attached over the page connection the first time an embed asks for it.
+    func agentChat(_ agent: String) -> AgentChat {
+        chatHolds[agent, default: 0] += 1
+        if let held = chats[agent] { return held }
+        let chat = AgentChat(name: agent)
+        chat.sendUnsend = { [weak self] turn in self?.agentRequest(agent) { .agentUnsend(req: $0, agent: agent, turn: turn) } }
+        chat.sendNow = { [weak self] turn in self?.agentRequest(agent) { .agentSendNow(req: $0, agent: agent, turn: turn) } }
+        chat.sendClearQueue = { [weak self] in self?.agentRequest(agent) { .agentClearQueue(req: $0, agent: agent) } }
+        chats[agent] = chat
+        if pageClient?.connection == .connected { attachAgent(agent) } else if let ws = pluginURL { _ = pages(ws) }
+        return chat
+    }
+    /// Stream `agent`'s conversation; `agent_attached` replaces the transcript. A connection that is not up yet attaches
+    /// every chat when it comes up (`pages`).
+    func attachAgent(_ agent: String) {
+        guard let ws = pluginURL else { return }
+        _ = pages(ws)
+        if let req = agentRequest(agent, { .agentAttach(req: $0, agent: agent) }) { attachReqs.insert(req) }
+    }
+    /// wheeld has just said something about `agent`: when its attach was refused, the agent is there now.
+    func attachAgainIfRefused(_ agent: String) {
+        guard refusedAttach.remove(agent) != nil, chats[agent] != nil else { return }
+        attachAgent(agent)
+    }
+    /// Send `make`'s message with a new req, remembered so an error reply reaches `agent`'s chat. A connection that is
+    /// down sends nothing: the chat says so, and the connection attaches again when it comes back.
+    @discardableResult func agentRequest(_ agent: String, _ make: (UInt64) -> ClientMsg) -> UInt64? {
+        guard let client = pageClient, client.connection == .connected else {
+            chats[agent]?.error = "Not connected to wheeld."
+            return nil
+        }
+        let req = client.req()
+        agentReqs[req] = agent
+        client.send(make(req))
+        return req
+    }
+    /// One embed let go of `agent`: the last one detaches it.
+    func releaseChat(_ agent: String) {
+        let left = (chatHolds[agent] ?? 1) - 1
+        guard left <= 0 else { chatHolds[agent] = left; return }
+        chatHolds[agent] = nil
+        chats[agent] = nil
+        refusedAttach.remove(agent)
+        pageClient?.send(.agentDetach(agent: agent))
+    }
+    /// Send the chat's draft; it stays in the box when the connection is down.
+    func sendAgent(_ chat: AgentChat) {
+        let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard pageClient?.connection == .connected else {
+            chat.error = "Not connected to wheeld; your message is still in the box."
+            return
+        }
+        chat.error = nil
+        chat.pinned = true
+        agentRequest(chat.name) { .agentSend(req: $0, agent: chat.name, text: text) }
+        chat.draft = ""
+    }
+    /// Allow or deny a waiting request; the card goes when wheeld broadcasts the answer.
+    func answer(_ perm: PermInfo, _ choice: String) {
+        agentRequest(perm.agent) { .permAnswer(req: $0, id: perm.id, choice: choice) }
+    }
+    var taskOutputAsks: [UInt64: (agent: String, task: String)] = [:]
+    func readTaskOutput(_ chat: AgentChat, task: String) {
+        guard let client = pageClient, client.connection == .connected else { return }
+        let req = client.req()
+        taskOutputAsks[req] = (chat.name, task)
+        client.send(.taskOutput(req: req, agent: chat.name, task: task))
+    }
+    /// What the page connection hears about the embedded agents and the requests they wait on.
+    func agentMessage(_ msg: ServerMsg) {
+        switch msg {
+        case let .status(_, _, _, _, _, perms, _, _, _, _, _, _, _, _):
+            embedPerms.list = perms
+        case let .agentAttached(req, agent, state, events, config, context, now):
+            if let req { agentReqs[req] = nil; attachReqs.remove(req) }
+            refusedAttach.remove(agent)
+            guard let chat = chats[agent] else { return }
+            chat.state = state
+            chat.reset(events, daemonNow: now)
+            chat.setConfig(config)
+            chat.context = context
+            chat.error = nil
+            chat.notice = nil
+            chat.title = nil
+        case let .agent(agent, event): chats[agent]?.apply(event)
+        case let .agentStateChanged(agent, state):
+            chats[agent]?.state = state
+            attachAgainIfRefused(agent)
+        case let .agentConfig(agent, options):
+            attachAgainIfRefused(agent)
+            chats[agent]?.setConfig(options)
+        case let .agentContext(agent, context): chats[agent]?.context = context
+        case let .agentFooter(agent, footer): chats[agent]?.footer = footer
+        case let .agentCommands(agent, commands): chats[agent]?.commands = Set(commands)
+        case let .agentTitle(agent, title): chats[agent]?.title = title
+        case let .agentNotice(agent, notice): chats[agent]?.notice = notice
+        case let .agentQueued(req, _, _): agentReqs[req] = nil
+        case let .taskOutput(req, text, truncated):
+            // A reply for a task that ended meanwhile is not kept.
+            if let ask = taskOutputAsks.removeValue(forKey: req), let chat = chats[ask.agent], chat.footer?.tasks.contains(where: { $0.id == ask.task }) == true {
+                chat.taskOutputs[ask.task] = (text, truncated)
+            }
+        case let .permRequested(perm):
+            if !embedPerms.list.contains(where: { $0.id == perm.id }) { embedPerms.list.append(perm) }
+        case let .permResolved(id, _):
+            embedPerms.list.removeAll { $0.id == id }
+        case let .error(req, _, message):
+            guard let req else { break }
+            taskOutputAsks[req] = nil
+            if let agent = agentReqs.removeValue(forKey: req) {
+                chats[agent]?.error = message
+                if attachReqs.remove(req) != nil { refusedAttach.insert(agent) }
+            }
+        default: break
         }
     }
     /// `term` is no longer shown by `except`: detach it when no pane and no other embed shows it.
@@ -872,6 +1135,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func close(_ id: String) {
         guard let host = panes.removeValue(forKey: id) else { return }
         for (key, embed) in embeds where embed.hostPane == id { embeds[key] = nil; embed.drop() }
+        let gone = agentEmbeds.filter { $0.value.hostPane == id }
+        for key in gone.keys { agentEmbeds[key] = nil }
+        for embed in gone.values { embed.drop() }
         if let term = host.termID { release(term) }
         host.slot.removeFromSuperview()
         if let plugin = host.plugin {
@@ -894,9 +1160,17 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         parts.queryItems = nil
         guard let url = parts.url else { return nil }
         let client = DaemonClient(endpoint: DaemonEndpoint(url: url, token: { token }))
-        client.onConnect = { [weak self] _ in self?.panes.values.forEach { $0.page?.start() } }
+        client.onConnect = { [weak self] status in
+            guard let self else { return }
+            panes.values.forEach { $0.page?.start() }
+            // A fresh connection holds no attach: every embedded agent attaches again, and the status names the waiting requests.
+            agentReqs = [:]; attachReqs = []; refusedAttach = []; taskOutputAsks = [:]
+            agentMessage(status)
+            for (agent, chat) in chats { chat.error = nil; attachAgent(agent) }
+        }
         client.onMessage = { [weak self] message in
             guard let self else { return }
+            agentMessage(message)
             for host in panes.values { host.page?.handle(message) }
             showPages()
         }
@@ -1059,10 +1333,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             var targets: [String: [String: String]] = [:]
             for (pane, held) in value["panes"] as? [String: [String: String]] ?? [:] { targets[pane] = held }
             paneTargets = targets
+            targetsKnown = true
             for embed in embeds.values { embed.resolve() }
+            for embed in agentEmbeds.values { embed.resolve() }
         case "plugin":
             // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's path
-            // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`.
+            // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`,
+            // `agent_send` the text `value` through the composer of the agent chat embedding pane `component`.
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin else { return ["ok": false, "message": "no plugin pane"] }
             var ok = true
             switch value["action"] as? String {
@@ -1071,10 +1348,17 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 if let path = value["path"] as? String, let given = value["value"] { plugin.set(path: path, value: given) } else { ok = false }
             case "raise":
                 ok = (value["component"] as? String).flatMap { c in (value["key"] as? String).map { plugin.raise(component: c, key: $0, context: value["context"]) } } ?? false
+            case "agent_send":
+                // The embedded agent chat of pane `component` sends `value` as its composer's Send would.
+                let embed = agentEmbeds.values.first { $0.hostPane == pane && $0.pane == value["component"] as? String }
+                if let chat = embed?.chat, let text = value["value"] as? String { chat.draft = text; sendAgent(chat) } else { ok = false }
             default: break
             }
             return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts, "feeds": plugin.feedJSON,
-                "embeds": embeds.values.filter { $0.hostPane == pane }.map { ["pane": $0.pane, "term": $0.termID ?? NSNull(), "bytes": $0.bytes] as [String: Any] }]
+                "embeds": embeds.values.filter { $0.hostPane == pane }.map { ["pane": $0.pane, "term": $0.termID ?? NSNull(), "bytes": $0.bytes] as [String: Any] }
+                    + agentEmbeds.values.filter { $0.hostPane == pane }.map { embed in
+                        ["pane": embed.pane, "agent": embed.chat?.name ?? NSNull(), "note": embed.note, "state": embed.chat?.state.map { "\($0)" } ?? NSNull(),
+                         "items": embed.chat?.displayItems.count ?? 0, "draft": embed.chat?.draft ?? "", "error": embed.chat?.error ?? NSNull()] as [String: Any] }]
         case "page_set":
             // A value written into a native page's data model at `path`, as one of its controls
             // would write it (a picker's choice, a field's text), for a check that has no pointer.
@@ -1089,6 +1373,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             sendTask = nil
             pageClient?.stop()
             pageClient = nil
+            embedPerms.list = []
+            agentReqs = [:]; attachReqs = []; taskOutputAsks = [:]
         case "place": place(value)
         case "hold_resizes": holdResizes(value)
         case "live_resize":

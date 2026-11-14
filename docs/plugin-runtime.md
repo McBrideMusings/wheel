@@ -146,16 +146,18 @@ What each client hosts today:
 
 | Client | Terminal | WebView | AgentChat |
 | --- | --- | --- | --- |
-| GPUI Mac (`clients/gpui/native/Bridge.swift`) | yes | yes | no (wheel-pmf2.4.15) |
+| GPUI Mac (`clients/gpui/native/Bridge.swift`) | yes | yes | yes |
 | iOS | no (wheel-pmf2.2.3) | yes | no (wheel-pmf2.2.3) |
 
 The GPUI Mac host resolves a pane id to its terminal through `pane_targets`, a bridge command the Rust client builds from the layout when it changes and sends when the map differs from the one last sent: `{"op":"pane_targets","panes":{"p2":{"term":"t1"},"p5":{"term":"t2","agent":"codex-1"},"p9":{"agent":"claude-3"}}}`, one entry for every pane of every space the client knows. An embed attaches to the term (`term_attach`), writes as `term_input` and reports its size as `term_resize`. `wheeld` sizes a term to the newest `term_resize`, so the same pane's grid view reflows to the embed's size while the embed is open. The bridge sends `term_detach` only when no pane host and no other embed still uses the term. When an embed lets go of a term a grid pane still holds, that pane sends its own size again, so the term returns to the grid's size. An embed whose `pane` prop changes attaches to the new pane's term and releases the old one.
+
+An `AgentChat` embed resolves its pane to the `agent` of the same map and shows WheelUI's `AgentChat` model in `TranscriptView`, `RunningStrip`, the first permission request the agent waits on (answered with `perm_answer`) and a `Composer` (`agent_send`, `agent_cancel`), over the bridge's page connection to `wheeld` (the WheelKit `DaemonClient` its A2UI pages use). Every embed of one agent shares one `AgentChat` and one `agent_attach`; the last embed of it to go sends `agent_detach`. The connection attaches every embedded agent again each time it connects, and takes the waiting requests from the `status` it connects with. A pane that is gone shows "Pane <id> is gone", a pane without an agent "Pane <id> holds no agent", and the embed attaches when `pane_targets` names an agent for the pane again.
 
 Every `term_attach` makes `wheeld` answer `term_attached` and replay the whole screen as `term_output` to every session of the term on the connection. The bridge therefore resets every view of that term (`ESC c`) when `term_attached` arrives, and the replay that follows repaints all of them from the same state.
 
 A `WebView` follows a link in place and only to http, https or about; any other scheme is refused.
 
-The bridge's debug `plugin` state lists a plugin pane's live embeds as `"embeds": [{"pane": "p12", "term": "t1" | null, "bytes": <bytes received>}]`, so a check sees an embed attached and receiving.
+The bridge's debug `plugin` state lists a plugin pane's live embeds as `"embeds": [{"pane": "p12", "term": "t1" | null, "bytes": <bytes received>}]` for a terminal and `{"pane", "agent": <name> | null, "note", "state", "items": <transcript rows>, "draft", "error"}` for an agent chat, so a check sees an embed attached and receiving. Its action `agent_send` with `component=<embedded pane>` and `value=<text>` sends the text through that agent chat's composer.
 
 The fixture `tools/fixtures/plugins/embed` shows a list of this space's terminal panes (from the `wheel.panes` feed), the picked pane's `Terminal`, a `WebView` of `https://example.com` and an `AgentChat` of the space's first agent pane (from `wheel.agents`).
 
