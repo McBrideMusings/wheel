@@ -35,10 +35,20 @@ case "$out" in *"escape:document:blocked,wheel:blocked,fetch:blocked"*) ok "the 
   *) fail "the frame's reach out of its sandbox" "$out" ;; esac
 shot view
 
+# wheel-1yi5: the frame fills the pane, so ui/initialize carries its size as containerDimensions
+# and a resize sends host-context-changed with the new one.
+ev() { curl -s -X POST -H "Authorization: Bearer $(TOKEN)" -d "$(jq -n --arg p "$P" --arg js "$1" '{pane:$p,js:$js}')" "http://127.0.0.1:$DEBUG_PORT/web/eval"; }
+frame="$(ev 'var f=document.querySelector("iframe"); f.clientHeight+"x"+f.clientWidth' | grep -Eo '[0-9]+x[0-9]+' | head -1)"
+case "$out" in *"size:$frame|"*) ok "ui/initialize carried the frame's size $frame as containerDimensions" ;;
+  *) fail "containerDimensions in ui/initialize" "frame $frame, reported $out" ;; esac
+ev 'document.getElementById("root").style.height="300px"; 1' >/dev/null
+check "shrinking the frame to 300px sent host-context-changed 300x<width>" \
+  poll 10 sh -c "$WHEEL --url ws://127.0.0.1:$PORT/ws --token-file $INST/token artifact call apps reported --space $SP 2>/dev/null | grep -q 'resized:300x'"
+ev 'document.getElementById("root").style.height=""; 1' >/dev/null
+
 expect_exit 0 "a pane shows an MCP server with no ui:// resource" w pane kind "$P" web --artifact plain
 check "the pane lists the server's tools" poll 20 sh -c "[ \"\$(curl -s -X POST -H 'Authorization: Bearer $(TOKEN)' -d '{\"pane\":\"$P\",\"js\":\"document.getElementById(\\\"tools\\\") ? document.getElementById(\\\"tools\\\").innerText : \\\"\\\"\"}' http://127.0.0.1:$DEBUG_PORT/web/eval | grep -c 'echo')\" = 1 ]"
 shot tools
-ev() { curl -s -X POST -H "Authorization: Bearer $(TOKEN)" -d "$(jq -n --arg p "$P" --arg js "$1" '{pane:$p,js:$js}')" "http://127.0.0.1:$DEBUG_PORT/web/eval"; }
 has_text() { ev "var n=document.querySelector(\"$1\"); n ? n.innerText : \"\"" | grep -q "$2"; }
 ev 'Array.from(document.querySelectorAll("#list button")).find(b=>b.textContent==="echo").click(); 1' >/dev/null
 check "choosing echo shows a form with its text field" poll 10 has_text "#detail form" "text"

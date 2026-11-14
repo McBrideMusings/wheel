@@ -1,8 +1,9 @@
 //! An MCP Apps server for the daemon's tests. `show` links the `ui://test/view` page; `bump` is
 //! visible to the page only; `secret` is visible to the model only; `report` stores a line the
 //! page sends and `reported` returns the lines so far, which is how a test reads what the page
-//! saw. `stdio` serves one session on stdin and stdout; `http <port>` serves streamable HTTP at
-//! `/mcp` on 127.0.0.1.
+//! saw: `size:HxW` for the frame's containerDimensions in `ui/initialize` (`size:none` without them), `resized:HxW` for each
+//! host-context-changed. `stdio` serves one session on stdin and stdout; `http <port>` serves
+//! streamable HTTP at `/mcp` on 127.0.0.1.
 
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +48,10 @@ addEventListener("message", (event) => {
     document.getElementById("title").textContent = text;
     report("result:" + text);
   }
+  if (m.method === "ui/notifications/host-context-changed" && m.params.containerDimensions) {
+    const d = m.params.containerDimensions;
+    report("resized:" + d.height + "x" + d.width);
+  }
 });
 document.getElementById("bump").onclick = async () => {
   const r = await request("tools/call", { name: "bump", arguments: {} });
@@ -57,12 +62,14 @@ document.getElementById("bump").onclick = async () => {
   await report("secret:" + (refused.error ? "refused" : "ALLOWED"));
 };
 (async () => {
-  await request("ui/initialize", {
+  const init = await request("ui/initialize", {
     protocolVersion: "2026-01-26",
     appInfo: { name: "test view", version: "1" },
     appCapabilities: {},
   });
   parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized" }, "*");
+  const d = init.result.hostContext.containerDimensions;
+  await report("size:" + (d ? d.height + "x" + d.width : "none"));
   const found = [];
   try { found.push("document:" + typeof parent.document.body); } catch (e) { found.push("document:blocked"); }
   try { found.push("wheel:" + typeof parent.wheel); } catch (e) { found.push("wheel:blocked"); }
