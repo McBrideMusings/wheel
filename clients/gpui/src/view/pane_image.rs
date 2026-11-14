@@ -40,8 +40,9 @@ impl Client {
     /// Draw `pane` and put its PNG on the clipboard once the bridge answers.
     pub fn copy_pane_image(&mut self, pane: &str) {
         self.log(format!("pane {pane}: copy image asked"));
-        if !self.opened.contains_key(pane) {
-            // The window draws this pane itself: the bridge has no picture of it to give.
+        if !self.native_panes.iter().any(|p| p == pane) {
+            // The window draws this pane itself (a chat, or a pane whose view went away when it
+            // switched kind, which stays opened but hidden): the bridge has no picture of it to give.
             self.pane_images.window_shots.push(pane.to_owned());
             return;
         }
