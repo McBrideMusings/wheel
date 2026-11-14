@@ -157,6 +157,15 @@ public enum ClientMsg: Sendable, Equatable {
     case artifactCall(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, tool: String, arguments: String?)
     /// `resources/read` of `uri` on that server; replies `resource`.
     case artifactRead(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, uri: String)
+    /// The script plugin pane `pane` shows, read off disk now; replies `pluginSource`.
+    case pluginSource(req: UInt64?, pane: String)
+    /// Plugin pane `pane` reads `feed` with `params`; replies `feedUpdate` with the current value, then
+    /// sends a `feedUpdate` on this connection for each change until `feedUnsubscribe`.
+    case feedSubscribe(req: UInt64?, pane: String, feed: String, params: JSONValue)
+    /// Stop the `feedUpdate`s of that subscription; replies `ok`.
+    case feedUnsubscribe(req: UInt64?, pane: String, feed: String, params: JSONValue)
+    /// Plugin pane `pane`'s script invokes `action` with `args`; replies `pluginAction` or `error`.
+    case pluginAction(req: UInt64?, pane: String, action: String, args: JSONValue)
     /// Every built-in artifact wheeld carries; replies `builtins`.
     case builtinLs(req: UInt64?)
     /// Install a built-in at machine scope; replies `builtins`.
@@ -384,6 +393,14 @@ public enum ClientMsg: Sendable, Equatable {
             if let scope { o["scope"] = scope.rawValue }
             if let space { o["space"] = space }
             if let pane { o["pane"] = pane }
+        case let .pluginSource(req, pane):
+            o = ["op": "plugin_source", "pane": pane]; put(req)
+        case let .feedSubscribe(req, pane, feed, params):
+            o = ["op": "feed_subscribe", "pane": pane, "feed": feed, "params": params.foundation]; put(req)
+        case let .feedUnsubscribe(req, pane, feed, params):
+            o = ["op": "feed_unsubscribe", "pane": pane, "feed": feed, "params": params.foundation]; put(req)
+        case let .pluginAction(req, pane, action, args):
+            o = ["op": "plugin_action", "pane": pane, "action": action, "args": args.foundation]; put(req)
         case let .builtinLs(req):
             o = ["op": "builtin_ls"]; put(req)
         case let .builtinInstall(req, name):
@@ -1322,6 +1339,17 @@ public enum ServerMsg: Sendable {
     case toolResult(req: UInt64, result: JSONValue)
     /// The `contents` of a `resources/read`, in reply to `artifactRead`.
     case resource(req: UInt64, contents: [JSONValue])
+    /// A plugin pane's script and its package's other `.luau` files by path: the reply to `pluginSource`
+    /// (with its `req`), and sent unasked to every connection when the script or a module changes on disk.
+    /// `chunk` names the script in error messages (`<plugin>/<script>`).
+    /// `plugin` and `pluginPane` are the package and pane the script belongs to, so a script sent for what the pane ran
+    /// before is not taken for what it runs now.
+    case pluginSource(req: UInt64?, pane: String, plugin: String, pluginPane: String, chunk: String, source: String, modules: [String: String])
+    /// A change to a feed a plugin pane reads: the whole `value`, or `patch`, an RFC 6902 JSON Patch to the
+    /// value the pane holds. `stale` says the backend publishing it is down and `value` is its last one.
+    case feedUpdate(req: UInt64?, pane: String, feed: String, params: JSONValue, value: JSONValue?, patch: JSONValue?, stale: Bool)
+    /// The backend's answer to `pluginAction`.
+    case pluginAction(req: UInt64, pane: String, action: String, result: JSONValue)
     /// Every built-in as it now stands, in reply to any built-in request.
     case builtins(req: UInt64, builtins: [BuiltinInfo])
     /// `builtinUpdate` with `ask` found files a person edited and changed nothing.
@@ -1379,7 +1407,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated
+        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1497,6 +1525,21 @@ extension ServerMsg: Decodable {
         case "tools": self = .tools(req: try c.decode(UInt64.self, forKey: .req), tools: try c.decode([JSONValue].self, forKey: .tools))
         case "tool_result": self = .toolResult(req: try c.decode(UInt64.self, forKey: .req), result: try c.decode(JSONValue.self, forKey: .result))
         case "resource": self = .resource(req: try c.decode(UInt64.self, forKey: .req), contents: try c.decode([JSONValue].self, forKey: .contents))
+        case "plugin_source":
+            self = .pluginSource(req: req, pane: try c.decode(String.self, forKey: .pane), plugin: try c.decode(String.self, forKey: .plugin),
+                                 pluginPane: try c.decode(String.self, forKey: .plugin_pane), chunk: try c.decodeIfPresent(String.self, forKey: .chunk) ?? "pane",
+                                 source: try c.decode(String.self, forKey: .source),
+                                 modules: try c.decodeIfPresent([String: String].self, forKey: .modules) ?? [:])
+        case "feed_update":
+            // A `value` of null is a value (the backend has sent none yet), so it decodes as `.null`, not as absent.
+            self = .feedUpdate(req: req, pane: try c.decode(String.self, forKey: .pane), feed: try c.decode(String.self, forKey: .feed),
+                               params: try c.decodeIfPresent(JSONValue.self, forKey: .params) ?? .null,
+                               value: c.contains(.value) ? try c.decode(JSONValue.self, forKey: .value) : nil,
+                               patch: try c.decodeIfPresent(JSONValue.self, forKey: .patch),
+                               stale: try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false)
+        case "plugin_action":
+            self = .pluginAction(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
+                                 action: try c.decode(String.self, forKey: .action), result: try c.decodeIfPresent(JSONValue.self, forKey: .result) ?? .null)
         case "builtins": self = .builtins(req: try c.decode(UInt64.self, forKey: .req), builtins: try c.decode([BuiltinInfo].self, forKey: .builtins))
         case "builtin_edited":
             self = .builtinEdited(req: try c.decode(UInt64.self, forKey: .req), name: try c.decode(String.self, forKey: .name),

@@ -147,13 +147,15 @@ What each client hosts today:
 | Client | Terminal | WebView | AgentChat |
 | --- | --- | --- | --- |
 | GPUI Mac (`clients/gpui/native/Bridge.swift`) | yes | yes | yes |
-| iOS | no (wheel-pmf2.2.3) | yes | no (wheel-pmf2.2.3) |
+| iOS (`apple/iOS/Sources/SpaceCarousel.swift` `PluginEmbed`) | no (wheel-pmf2.15) | yes | yes |
 
 The GPUI Mac host resolves a pane id to its terminal through `pane_targets`, a bridge command the Rust client builds from the layout when it changes and sends when the map differs from the one last sent: `{"op":"pane_targets","panes":{"p2":{"term":"t1"},"p5":{"term":"t2","agent":"codex-1"},"p9":{"agent":"claude-3"}}}`, one entry for every pane of every space the client knows. An embed attaches to the term (`term_attach`), writes as `term_input` and reports its size as `term_resize`. `wheeld` sizes a term to the newest `term_resize`, so the same pane's grid view reflows to the embed's size while the embed is open. The bridge sends `term_detach` only when no pane host and no other embed still uses the term. When an embed lets go of a term a grid pane still holds, that pane sends its own size again, so the term returns to the grid's size. An embed whose `pane` prop changes attaches to the new pane's term and releases the old one.
 
 An `AgentChat` embed resolves its pane to the `agent` of the same map and shows WheelUI's `AgentChat` model in `TranscriptView`, `RunningStrip`, the first permission request the agent waits on (answered with `perm_answer`) and a `Composer` (`agent_send`, `agent_cancel`), over the bridge's page connection to `wheeld` (the WheelKit `DaemonClient` its A2UI pages use). Every embed of one agent shares one `AgentChat` and one `agent_attach`; the last embed of it to go sends `agent_detach`. The connection attaches every embedded agent again each time it connects, and takes the waiting requests from the `status` it connects with. A pane that is gone shows "Pane <id> is gone", a pane without an agent "Pane <id> holds no agent", and the embed attaches when `pane_targets` names an agent for the pane again.
 
 Every `term_attach` makes `wheeld` answer `term_attached` and replay the whole screen as `term_output` to every session of the term on the connection. The bridge therefore resets every view of that term (`ESC c`) when `term_attached` arrives, and the replay that follows repaints all of them from the same state.
+
+The iOS host resolves an `AgentChat` embed's pane through the layout it holds and draws the phone's agent pane for its agent (header, transcript, permission card, composer), sharing the `AgentChat` the phone keeps attached for every agent pane in the layout. A pane that is gone shows "Pane <id> is gone", one without an agent "Pane <id> holds no agent". It answers nil for a `Terminal`, so WheelUI draws its note.
 
 A `WebView` follows a link in place and only to http, https or about; any other scheme is refused.
 
@@ -181,6 +183,8 @@ Each render flattens `view`'s tree into an A2UI surface. When the surface shows 
 | `Button`, row `menu`, `Modal` `dismissAction` | none |
 
 A control with an `on_change` table (`TextField`, `CheckBox`, `ChoicePicker`, `Slider`, `Stepper`, `DateTimeInput`, ...) has its `value` bound to the data model and sends the table with `value` set to what the control wrote (text, a boolean, the array of picked values, a number). A `TextField` is bound with or without `on_change`. The control shows what the person last wrote until the script's `value` changes: a render writes the script's `value` only when it differs from the one the script gave the render before, so a script that does not echo an edit back never undoes it, and one that sets a new value (a reset) shows it. A failure keeps the last good view and puts the error in the pane header; a good load clears it.
+
+On the iPhone, `PhoneModel` keeps one `PluginPaneLink` (`apple/WheelUI/Sources/WheelUI/Plugin/PluginPaneLink.swift`) for each plugin pane in the layout, over the phone's one connection to `wheeld`: it sends `plugin_source`, `feed_subscribe`, `feed_unsubscribe` and `plugin_action` as WheelKit `ClientMsg`s, takes their replies and every pushed `plugin_source` and `feed_update` in `handle`, and gives `data` the same fields as the Mac. A save on the Mac reloads the pane on the phone with its state kept. The script's error is a line over the top of the pane's view, so nothing under it moves. When the connection drops, the pane keeps its view with "lost the connection to wheeld, retrying", each `wheel.action` waiting gets its error, and the next connection asks for the script and every feed again. `phone.log` writes `plugin pane <pane>: <chunk>, reloads <n>, error <message or none>, state <state as JSON>` each time one of those changes, and the debug launch variable `WHEEL_PLUGIN_PRESS=<component id>[,...]` presses components of the first plugin pane once it has drawn. `.claude/skills/project-verify/tools/ios-plugin-pane.sh` checks it in the simulator.
 
 ## Plugin backends
 

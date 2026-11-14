@@ -56,6 +56,10 @@ final class PhoneModel {
     private(set) var webPanes: [String: WebPane] = [:]
     /// The A2UI model of each web pane, drawn natively when its MCP server links an A2UI layout.
     private(set) var a2uiPanes: [String: A2UIPane] = [:]
+    /// The script, state and feeds of each plugin pane in the layout (ADR-0041), kept across swipes and layout changes.
+    private(set) var pluginPanes: [String: PluginPaneLink] = [:]
+    /// What `phone.log` last said about each plugin pane, so a line is written only when it changes.
+    private var pluginLogged: [String: String] = [:]
     private let pageDaemon = PageDaemon()
     /// One conversation per agent pane in the layout, keyed by agent name.
     private(set) var chats: [String: AgentChat] = [:]
@@ -238,6 +242,7 @@ final class PhoneModel {
         pageDaemon.token = nil
         pageDaemon.pairing = nil
         syncWebPanes()
+        syncPluginPanes()
         chats = [:]
         perms = []
         agents = []
@@ -280,8 +285,10 @@ final class PhoneModel {
         client.appLog = Log.file
         client.onConnection = { [weak self] state in
             guard let self else { return }
+            let wasConnected = connection == .connected
             connection = state
             if state != .connected { for terminal in terminals.values { terminal.attached = false } }
+            if wasConnected, state != .connected { for link in pluginPanes.values { link.dropped() } }
             if state != .connected { links.forget() }
             if case .connected = state {
                 settingListReq = nil
@@ -336,6 +343,7 @@ final class PhoneModel {
     private func handle(_ msg: ServerMsg) {
         if links.received(msg) { return }
         if a2uiPanes.values.contains(where: { $0.handle(msg) }) { return }
+        if pluginPanes.values.contains(where: { $0.handle(msg) }) { return }
         switch msg {
         case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, protocolVersion, sessions):
             if serverProtocol != protocolVersion {
@@ -346,8 +354,11 @@ final class PhoneModel {
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
             let known = Array(chats.values)
+            let heldPlugins = Array(pluginPanes.values)
             reportedView = nil
             layoutArrived(spaces, sessions: sessions)
+            // A new connection holds no feeds: each plugin pane kept from the last one asks for its script and feeds again.
+            for link in heldPlugins where pluginPanes[link.pane] === link { link.start() }
             // A fresh connection starts with its first status: attach the page that is showing again.
             if let shownTerm { attach(shownTerm) }
             // The attaches below replace each held transcript with the daemon's current one.
@@ -539,6 +550,53 @@ final class PhoneModel {
         }
     }
 
+    /// Keeps one `PluginPaneLink` per plugin pane in the layout. A pane that leaves, or comes to run another plugin pane,
+    /// closes its link; a new one asks wheeld for its script once a connection is up.
+    private func syncPluginPanes() {
+        var wanted: [String: (plugin: String, pane: String, space: SpaceInfo)] = [:]
+        for space in spaces {
+            for pane in space.allPanes {
+                if let ids = pane.kind.plugin { wanted[pane.id] = (ids.plugin, ids.pane, space) }
+            }
+        }
+        for (pane, link) in pluginPanes {
+            guard let want = wanted[pane], link.plugin.context["plugin"] == .string(want.plugin),
+                  link.plugin.context["plugin_pane"] == .string(want.pane) else {
+                link.close()
+                pluginPanes[pane] = nil
+                pluginLogged[pane] = nil
+                Log.info("plugin pane \(pane) left the layout")
+                continue
+            }
+        }
+        guard let client else { return }
+        for (pane, want) in wanted where pluginPanes[pane] == nil {
+            let context: [String: JSONValue] = [
+                "pane": .string(pane), "space": .string(want.space.id),
+                "cwd": want.space.cwd.isEmpty ? .null : .string(want.space.cwd),
+                "plugin": .string(want.plugin), "plugin_pane": .string(want.pane),
+            ]
+            let link = PluginPaneLink(pane: pane, context: context, send: { client.send($0) }, nextReq: { client.req() })
+            link.plugin.onUpdate = { [weak self, weak link] in
+                guard let self, let link else { return }
+                self.logPlugin(link)
+            }
+            pluginPanes[pane] = link
+            Log.info("plugin pane \(pane): \(want.plugin)/\(want.pane) in \(want.space.id)")
+            if connection == .connected { link.start() }
+        }
+    }
+
+    /// One `phone.log` line per change of what a plugin pane shows: which script, how many reloads, the error, the state.
+    private func logPlugin(_ link: PluginPaneLink) {
+        let plugin = link.plugin
+        let state = plugin.stateJSON
+        let line = "plugin pane \(link.pane): \(plugin.chunk), reloads \(plugin.reloads), error \(plugin.error ?? "none"), state \(state.count > 300 ? String(state.prefix(300)) + "…" : state)"
+        guard pluginLogged[link.pane] != line else { return }
+        pluginLogged[link.pane] = line
+        Log.info(line)
+    }
+
     private func layoutArrived(_ spaces: [SpaceInfo], sessions: [SessionInfo]) {
         // The layout broadcast leaves statuses out; `status_changed` carries them. The daemon keeps no
         // focused pane, so each space keeps the one this phone had, while that pane is there.
@@ -576,6 +634,7 @@ final class PhoneModel {
         appearances.keep(only: self.spaces)
         askAppearances()
         syncWebPanes()
+        syncPluginPanes()
         dropGoneTerminals()
         showTerm()
         // One tray per agent pane and agent: a pane that stops showing an agent, or shows a
@@ -916,6 +975,14 @@ final class PhoneModel {
         }
         shownTerm = term
         if let term { attach(term) }
+    }
+
+    /// What pane `pane` shows, in any space; nil when it is gone.
+    func kind(ofPane pane: String) -> PaneKind? {
+        for space in spaces {
+            if let entry = space.allPanes.first(where: { $0.id == pane }) { return entry.kind }
+        }
+        return nil
     }
 
     #if DEBUG

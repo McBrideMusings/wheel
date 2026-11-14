@@ -13,7 +13,7 @@ export WHEEL_IOS_APP="$DD/Build/Products/Debug-iphonesimulator/Wheel.app"
 [ -d "$WHEEL_IOS_APP" ] || { echo "no app at $WHEEL_IOS_APP" >&2; exit 1; }
 
 scripts=("$@")
-[ "${#scripts[@]}" -gt 0 ] || scripts=(ios-web ios-turns-terminal ios-pairing ios-status ios-new-space)
+[ "${#scripts[@]}" -gt 0 ] || scripts=(ios-web ios-turns-terminal ios-pairing ios-status ios-new-space ios-plugin-pane)
 failed=0
 for s in "${scripts[@]}"; do
   printf '%-20s ' "$s"

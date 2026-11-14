@@ -152,6 +152,8 @@ struct SpaceCarousel: View {
             AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat)
                 // Behind the page, so what scrolls sideways on its own fill (a code block) stays untinted.
                 .background(SwipeArea.tint)
+        } else if let link = model.pluginPanes[pane.id] {
+            PluginPage(model: model, plugin: link.plugin)
         } else if let a2ui = model.a2uiPanes[pane.id], a2ui.isNative {
             A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
@@ -387,6 +389,19 @@ struct SpaceCarousel: View {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+        // `WHEEL_PLUGIN_PRESS=<component id>[,<component id>…]` presses each component of the first plugin pane, as a tap on
+        // it would, once its script has loaded.
+        if let ids = env["WHEEL_PLUGIN_PRESS"] {
+            for _ in 0 ..< 30 {
+                if let link = model.pluginPanes.values.sorted(by: { $0.pane < $1.pane }).first, !link.plugin.surface.components.isEmpty {
+                    for id in ids.split(separator: ",").map(String.init) {
+                        Log.info("plugin pane \(link.pane): press \(id) -> \(link.plugin.press(component: id))")
+                    }
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
         if let choice = env["WHEEL_ANSWER"] {
             for _ in 0 ..< 120 {
                 if let perm = model.perms.first {
@@ -419,6 +434,62 @@ private struct AgentsButton: View {
         .accessibilityValue(needsYou ? "needs you" : "")
         .accessibilityIdentifier("agents")
     }
+}
+
+/// A plugin pane's page: the script's view, and over its top edge the script's last failure while it lasts, as the
+/// Mac shows it in the pane's header. The line lies over the view, so nothing in the view moves when it comes or goes;
+/// the last good view stays under it.
+private struct PluginPage: View {
+    let model: PhoneModel
+    let plugin: PluginPane
+
+    var body: some View {
+        PluginPaneView(pane: plugin)
+            // A terminal inside a page is not drawn here yet (wheel-pmf2.15): nil gives WheelUI's own note.
+            .environment(\.a2uiPaneEmbed, { embed in embed.kind == .agentChat ? AnyView(PluginEmbed(model: model, embed: embed)) : nil })
+            .overlay(alignment: .top) {
+                if let error = plugin.error {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(Color(red: 0xe0 / 255, green: 0x71 / 255, blue: 0x5f / 255))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.regularMaterial)
+                        .accessibilityIdentifier("plugin.error")
+                }
+            }
+    }
+}
+
+/// An agent pane a plugin pane's view shows inside itself (`AgentChat{pane}`, ADR-0042), drawn as its own page draws it,
+/// at the height the script gave. A pane that is gone or holds no agent says so.
+private struct PluginEmbed: View {
+    let model: PhoneModel
+    let embed: A2UIPaneEmbed
+
+    var body: some View {
+        let kind = model.kind(ofPane: embed.pane)
+        Group {
+            if case let .agent(agent, harness, _)? = kind, let chat = model.chats[agent] {
+                AgentPane(model: model, pane: embed.pane, agent: agent, harness: harness, chat: chat)
+            } else {
+                note(kind == nil ? "Pane \(embed.pane) is gone" : "Pane \(embed.pane) holds no agent")
+            }
+        }
+        .onChange(of: "\(embed.pane) \(kind?.name ?? "gone")", initial: true) { _, shown in Log.info("plugin embed \(embed.kind.rawValue) \(shown)") }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
 }
 
 /// What a page shows until the agent and web panes land.

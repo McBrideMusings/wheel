@@ -264,6 +264,13 @@ public enum PaneKind: Sendable, Equatable {
         case let .unknown(kind, _): kind
         }
     }
+
+    /// The plugin and the pane of it a plugin pane runs (`kind = "plugin"`, ADR-0041), which this
+    /// build carries as `unknown` with its fields; nil for any other pane.
+    public var plugin: (plugin: String, pane: String)? {
+        guard case let .unknown("plugin", raw) = self, case let .string(plugin)? = raw["plugin"], case let .string(pane)? = raw["pane"] else { return nil }
+        return (plugin, pane)
+    }
 }
 
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
