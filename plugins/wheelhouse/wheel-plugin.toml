@@ -33,6 +33,13 @@ reads = ["wheelhouse.prs", "wheelhouse.pr_detail"]
 actions = ["wheelhouse.pr_merge", "wheelhouse.pr_close", "wheelhouse.pr_draft", "wheelhouse.pr_checkout", "wheelhouse.pr_worktree", "wheelhouse.pr_button", "wheelhouse.pr_refresh", "wheelhouse.run_list"]
 
 [[pane]]
+id = "issues"
+title = "Issues"
+script = "panes/issues.luau"
+reads = ["wheelhouse.issues"]
+actions = ["wheelhouse.issue_create", "wheelhouse.issue_close", "wheelhouse.run_list"]
+
+[[pane]]
 id = "project"
 title = "Project"
 script = "panes/project.luau"

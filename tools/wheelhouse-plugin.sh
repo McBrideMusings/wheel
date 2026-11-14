@@ -9,7 +9,8 @@
 # git-ignored directory does not once a tracked file's change has shown the watch is live, the
 # other repo is untouched, and a nested tracked file's edit arrives although a beads feed opened the
 # same checkout first); a pane of kind wheelhouse/prs reads `wheelhouse.prs` and `wheelhouse.pr_detail`
-# through a fake `gh` and invokes `wheelhouse.pr_merge`, `pr_draft`, `pr_close` and `run_list`; a pane of kind
+# through a fake `gh` and invokes `wheelhouse.pr_merge`, `pr_draft`, `pr_close` and `run_list`; a pane of kind wheelhouse/issues reads `wheelhouse.issues`
+# through the same fake `gh` and invokes `wheelhouse.issue_create`, `issue_close` (each followed by the feed listing the change) and `run_list` with view issues, and a second project whose `gh issue list` fails; a pane of kind
 # wheelhouse/project reads `wheelhouse.project` of the bd fixture (a write to docs/CONTEXT.md arrives as a patch) and
 # invokes `wheelhouse.vision_save`; a pane of kind wheelhouse/implement reads `wheelhouse.work`, which lists the fake
 # agent started in its own space with its declared item and stage and no agent of another space, and invokes
@@ -53,8 +54,9 @@ ln -s "$ROOT/plugins/wheelhouse" "$T/plugins/wheelhouse"
 RECORDS="$T/home/.wheel/bead-panes.json"
 
 # A fake `gh` for the PRs cases, first on the PATH wheeld and so the backend get: it logs each call to
-# $T/gh.log and answers `repo view`, `api user` and the two GraphQL queries with canned PRs; `pr merge|close|ready|checkout`
-# succeed. wheeld asks the login shell for PATH, whose startup files are the real ones, so the last one
+# $T/gh.log and answers `repo view`, `api user` and the two GraphQL queries with canned PRs and `issue list` with canned
+# issues; `pr merge|close|ready|checkout`, `issue create` (a URL ending /issues/24) and `issue close` succeed, and the next
+# `issue list` shows the new issue 24 and the closed ones; `issue list` fails in a directory that holds `.gh-issues-fail`. wheeld asks the login shell for PATH, whose startup files are the real ones, so the last one
 # it reads (.zlogin) puts the fake first.
 mkdir -p "$T/bin"
 cat > "$T/bin/gh" <<'PY'
@@ -107,6 +109,27 @@ elif args[:2] == ["api", "graphql"] and "pullRequests(" in query:
     print(json.dumps({"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}}))
 elif args[:1] == ["pr"] and args[1:2] in (["merge"], ["close"], ["ready"], ["checkout"]):
     pass
+elif args[:2] == ["issue", "list"]:
+    if os.path.exists(os.path.join(os.getcwd(), ".gh-issues-fail")):
+        sys.stderr.write("HTTP 502: GitHub is down for %s\n" % os.getcwd())
+        sys.exit(1)
+    made = os.path.join(os.path.dirname(log), "gh-issue-made")
+    shut = [n for n in (21, 22, 23) if os.path.exists(os.path.join(os.path.dirname(log), "gh-issue-shut-%d" % n))]
+    def issue(n, title, state, labels, assignees, author, body):
+        return {"number": n, "title": title, "state": state.upper(), "labels": [{"name": l} for l in labels],
+                "assignees": [{"login": a} for a in assignees], "author": {"login": author}, "body": body,
+                "url": "https://github.com/o/fixture/issues/%d" % n, "updatedAt": "2026-11-01T00:%02d:00Z" % stamp}
+    rows = [issue(21, "Crash on open", "closed" if 21 in shut else "open", ["bug", "p1"], ["ann"], "bob", "It crashes."),
+            issue(22, "Add dark mode", "closed" if 22 in shut else "open", ["feature"], [], "ann", ""),
+            issue(23, "Old thing", "closed", [], [], "cy", "Done.")]
+    if os.path.exists(made):
+        rows.append(issue(24, open(made).read(), "open", [], [], "me", ""))
+    print(json.dumps(rows))
+elif args[:2] == ["issue", "create"]:
+    open(os.path.join(os.path.dirname(log), "gh-issue-made"), "w").write(args[args.index("--title") + 1])
+    print("https://github.com/o/fixture/issues/24")
+elif args[:2] == ["issue", "close"]:
+    open(os.path.join(os.path.dirname(log), "gh-issue-shut-" + args[2]), "w").close()
 else:
     sys.stderr.write("fake gh: no answer for %s\n" % " ".join(shown))
     sys.exit(1)
@@ -876,6 +899,158 @@ if [ "$(cat "$T/marker-prs-list" 2>/dev/null)" = "11 12" ] && grep -q 'Mark PRs 
   pass "run_list with view prs runs [prs.list] with PR_NUMBERS"
 else
   fail "run_list view prs: $(cat "$T/prl.json") $(cat "$T/prl.err") marker=$(cat "$T/marker-prs-list" 2>/dev/null)"
+fi
+
+# 11f2 the Issues pane (wheel-pmf2.4.9): a pane of kind wheelhouse/issues reads `wheelhouse.issues` of a temp project through
+# the fake gh (two open issues and a closed one) and invokes `wheelhouse.issue_create`, `issue_close` and `run_list` with view issues.
+IP="$T/proj-i"
+git init -q -b main "$IP"
+cat > "$IP/wheel.toml" <<TOML
+[issues.list.mark]
+label = "Mark issues"
+run = 'echo "\$ISSUE_NUMBERS" > "$T/marker-issues-list"'
+TOML
+ISPACE=$(w space new "$IP")
+IPANE=$(w pane ls | awk -v s="$ISPACE" '$1 == s {print $2; exit}')
+w pane kind "$IPANE" plugin --plugin wheelhouse --plugin-pane issues > /dev/null
+
+w plugin ls --space "$ISPACE" > "$T/ils.txt" 2>&1
+if grep -q 'issues' "$T/ils.txt" && [ -s "$ROOT/plugins/wheelhouse/panes/issues.luau" ] && ! grep -qi 'error' "$T/ils.txt"; then
+  pass "a pane of kind wheelhouse/issues is listed with its script and no error"
+else
+  fail "wheelhouse/issues pane listing: $(cat "$T/ils.txt")"
+fi
+
+w plugin feed "$IPANE" wheelhouse.issues --params "{\"dir\":\"$IP\"}" --count 200 > "$T/issues-feed.json" 2> "$T/issues-feed.err" &
+PIDS+=($!)
+poll 30 grep -q '"issues":\[{' "$T/issues-feed.json"
+python3 - "$T/issues-feed.json" > "$T/issues-shape.verdict" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+vals = [r["value"] for r in rows if r.get("value")]
+if not vals:
+    print("no value: %r" % rows[:2]); sys.exit()
+v = vals[0]
+problems = []
+want = {"now", "name", "error", "problems", "issues", "scripts"}
+if not want <= set(v):
+    problems.append("missing keys %r" % sorted(want - set(v)))
+by = {i["number"]: i for i in v.get("issues", [])}
+if set(by) != {21, 22, 23}:
+    problems.append("numbers %r" % sorted(by))
+else:
+    ikeys = {"number", "title", "state", "labels", "assignees", "author", "body", "url", "updated"}
+    if not ikeys <= set(by[21]):
+        problems.append("issue keys missing %r" % sorted(ikeys - set(by[21])))
+    got = {n: (i["state"], i["labels"], i["assignees"], i["author"]) for n, i in by.items()}
+    exp = {21: ("open", ["bug", "p1"], ["ann"], "bob"), 22: ("open", ["feature"], [], "ann"), 23: ("closed", [], [], "cy")}
+    if got != exp:
+        problems.append("states, labels, assignees or authors %r" % got)
+    if by[21]["body"] != "It crashes." or not by[21]["url"].endswith("/issues/21") or not isinstance(by[21]["updated"], int):
+        problems.append("body, url or updated %r" % {k: by[21].get(k) for k in ("body", "url", "updated")})
+if v.get("error") is not None or v.get("problems") != []:
+    problems.append("error or problems %r" % {k: v.get(k) for k in ("error", "problems")})
+if v.get("scripts") != [{"name": "mark", "label": "Mark issues"}]:
+    problems.append("scripts %r" % v.get("scripts"))
+print("ok" if not problems else "; ".join(problems))
+PY
+check "the issues feed lists the 3 issues (two open, one closed) with labels, assignees, authors and the list scripts" "$(head -1 "$T/issues-shape.verdict")"
+
+# issue_create.
+w plugin action "$IPANE" wheelhouse.issue_create --args "{\"dir\":\"$IP\",\"title\":\"A new issue\"}" > "$T/ic.json" 2> "$T/ic.err"
+if grep -q 'Opened #24' "$T/ic.json" && grep -qx 'issue create --title A new issue --body ' "$T/gh.log"; then
+  pass "issue_create answers 'Opened #24' and runs gh issue create with the title"
+else
+  fail "issue_create: $(cat "$T/ic.json") $(cat "$T/ic.err") gh: $(grep 'issue ' "$T/gh.log")"
+fi
+w plugin action "$IPANE" wheelhouse.issue_create --args "{\"dir\":\"$IP\",\"title\":\"  \"}" > "$T/ic0.json" 2> "$T/ic0.err"
+if grep -q 'an issue needs a title' "$T/ic0.json" "$T/ic0.err" && ! grep -q 'issue_create failed: issue_create failed' "$T/ic0.json" "$T/ic0.err" && [ "$(grep -c '^issue create' "$T/gh.log")" = 1 ]; then
+  pass "issue_create with a blank title fails with 'an issue needs a title' (no action-name prefix, as the pr_* actions) and runs no gh"
+else
+  fail "issue_create blank: $(cat "$T/ic0.json") $(cat "$T/ic0.err") gh: $(grep 'issue ' "$T/gh.log")"
+fi
+
+# The feed read again after the action lists the new issue.
+issue_row() { # number -> prints the issue's state in the last full value of the feed, or nothing
+  python3 - "$T/issues-feed.json" "$1" <<'PYI'
+import json, sys
+vals = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+cur = None
+for r in vals:
+    if r.get("value") is not None:
+        cur = r["value"]
+    elif r.get("patch") is not None and cur is not None:
+        import copy
+        for op in r["patch"]:
+            parts = [x.replace("~1", "/").replace("~0", "~") for x in op["path"].split("/")[1:]]
+            node = cur
+            for k in parts[:-1]:
+                node = node[int(k)] if isinstance(node, list) else node[k]
+            last = parts[-1] if parts else None
+            if op["op"] == "remove":
+                if isinstance(node, list): node.pop(int(last))
+                else: node.pop(last, None)
+            elif op["op"] in ("add", "replace"):
+                if isinstance(node, list):
+                    if op["op"] == "add": node.insert(len(node) if last == "-" else int(last), op["value"])
+                    else: node[int(last)] = op["value"]
+                elif last is None: cur = op["value"]
+                else: node[last] = op["value"]
+for i in (cur or {}).get("issues", []):
+    if i["number"] == int(sys.argv[2]):
+        print(i["state"], i["title"])
+PYI
+}
+has_issue_24() { [ "$(issue_row 24 | head -1)" = "open A new issue" ]; }
+poll 10 has_issue_24
+check "after issue_create the issues feed lists the new issue #24 as open with its title" "$( [ "$(issue_row 24 | head -1)" = "open A new issue" ] && echo ok || echo "got: $(issue_row 24)" )"
+
+# issue_close.
+w plugin action "$IPANE" wheelhouse.issue_close --args "{\"dir\":\"$IP\",\"number\":21}" > "$T/icl.json" 2> "$T/icl.err"
+if grep -q 'Closed #21' "$T/icl.json" && grep -qx 'issue close 21' "$T/gh.log"; then
+  pass "issue_close answers 'Closed #21' and runs gh issue close 21"
+else
+  fail "issue_close: $(cat "$T/icl.json") $(cat "$T/icl.err") gh: $(grep 'issue ' "$T/gh.log")"
+fi
+
+is_closed_21() { [ "$(issue_row 21 | cut -d' ' -f1)" = "closed" ]; }
+poll 10 is_closed_21
+check "after issue_close the issues feed lists #21 as closed" "$( is_closed_21 && echo ok || echo "got: $(issue_row 21)" )"
+
+# A second project whose `gh issue list` fails: its feed's error names its own directory, the first project's feed has none.
+IP2="$T/proj-i2"
+git init -q -b main "$IP2"
+: > "$IP2/.gh-issues-fail"
+w plugin feed "$IPANE" wheelhouse.issues --params "{\"dir\":\"$IP2\"}" --count 200 > "$T/issues2-feed.json" 2> "$T/issues2-feed.err" &
+PIDS+=($!)
+poll 30 grep -q 'gh issue list failed' "$T/issues2-feed.json"
+python3 - "$T/issues2-feed.json" "$T/issues-feed.json" "$IP2" "$IP" > "$T/issues-fail.verdict" <<'PY'
+import json, sys
+def first(path):
+    for l in open(path):
+        if l.strip().startswith("{"):
+            r = json.loads(l)
+            if r.get("value"): return r["value"]
+bad, good = first(sys.argv[1]), first(sys.argv[2])
+dir2, dir1 = sys.argv[3], sys.argv[4]
+problems = []
+if not bad: problems.append("no value for the failing project")
+else:
+    e = bad.get("error") or ""
+    if not e.startswith(dir2 + ":") or "gh issue list failed" not in e or e.startswith(dir1 + ":"): problems.append("error %r" % e)
+    if bad.get("issues") != []: problems.append("issues %r" % bad.get("issues"))
+if not good or good.get("error") is not None: problems.append("the first project's feed has error %r" % (good or {}).get("error"))
+print("ok" if not problems else "; ".join(problems))
+PY
+check "a project whose gh issue list fails has an error naming its own directory and no issues, and the other project's feed has no error" "$(head -1 "$T/issues-fail.verdict")"
+
+# run_list with view issues runs [issues.list] with ISSUE_NUMBERS.
+w plugin action "$IPANE" wheelhouse.run_list --args "{\"dir\":\"$IP\",\"view\":\"issues\",\"script\":\"mark\",\"ids\":[\"21\",\"22\"]}" > "$T/il.json" 2> "$T/il.err"
+poll 5 has_file "$T/marker-issues-list"
+if [ "$(cat "$T/marker-issues-list" 2>/dev/null)" = "21 22" ]; then
+  pass "run_list with view issues runs [issues.list] with ISSUE_NUMBERS"
+else
+  fail "run_list view issues: $(cat "$T/il.json") $(cat "$T/il.err") marker=$(cat "$T/marker-issues-list" 2>/dev/null)"
 fi
 
 # 11g the Project, Implement and Swarm panes (wheel-pmf2.4.13): a pane of kind wheelhouse/project reads `wheelhouse.project`

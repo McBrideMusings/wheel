@@ -53,7 +53,6 @@ enum Command {
 /// Every view `serve` offers.
 fn registry() -> view::Registry {
     view::Registry::default()
-        .with(issues::serve::IssuesView::new())
 }
 
 #[tokio::main]

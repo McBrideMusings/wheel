@@ -191,13 +191,18 @@ function M.cell(body, extra)
 end
 
 -- The Table node `t` given the height its rows need. The client wraps a plugin pane in a scroll view, which gives a Table no
--- height of its own, so the page names it: the header row, then every row and section title row (`lines`). The frame clips
--- what the client's own minimum height would draw below the last row.
-local HEADER_HEIGHT, LINE_HEIGHT = 34, 24
+-- height of its own, so the page names it: the header row, then every row and the title row of each section that has a
+-- title (`lines`); a section with no title draws none. A table with no rows gets EMPTY_HEIGHT under its header, room for
+-- its `empty` text. The frame clips what the client's own minimum height would draw below the last row.
+local HEADER_HEIGHT, LINE_HEIGHT, EMPTY_HEIGHT = 34, 24, 96
 function M.sized_table(t)
-    local lines = 0
-    for _, s in t.sections do lines += 1 + #s.rows end
-    t.modifiers = { { frame = { height = HEADER_HEIGHT + LINE_HEIGHT * math.max(lines, 1), alignment = "top" } }, { clipShape = { cornerRadius = 0 } } }
+    local lines, rows = 0, 0
+    for _, s in t.sections do
+        lines += #s.rows + (if s.title and s.title ~= "" then 1 else 0)
+        rows += #s.rows
+    end
+    local body = if rows == 0 then EMPTY_HEIGHT else LINE_HEIGHT * lines
+    t.modifiers = { { frame = { height = HEADER_HEIGHT + body, alignment = "top" } }, { clipShape = { cornerRadius = 0 } } }
     return t
 end
 

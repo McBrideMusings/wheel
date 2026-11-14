@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::core::run;
 
 pub mod cli;
-pub mod serve;
+pub mod feed;
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 pub struct Issue {

@@ -3,21 +3,22 @@
 //! `docs/plugin-runtime.md`, "Plugin backends") as the server side.
 //!
 //! One process serves every project: a feed's params name the project (`{dir}`). The `beads`, `beads_graph` (the Focus or Graph scene of the beads, params `{dir, view, sel, depth, width, more, list}`, read again exactly when `beads` is), `project`,
-//! `work`, `repo`, `diff`, `prs` and `pr_detail` feeds send the whole value on every subscribe and a JSON Patch on each
+//! `work`, `repo`, `diff`, `prs`, `pr_detail` and `issues` feeds send the whole value on every subscribe and a JSON Patch on each
 //! later change, found by watching the files that can change it: `beads` the project's `.beads`, `project`
 //! the project directory, its `.beads` and its `docs` directory (a `docs` directory created later is an
-//! event in the project directory, and the next read watches it), `work` no file at all but the agents
+//! event in the project directory, and the next read watches it), `work` no file but the agents
 //! `wheel agent watch` lists (followed while a `work` subscription exists, and every change of the list
-//! reads each subscribed project again), `repo`,
+//! reads each subscribed project again), `issues` no file at all (it is read on subscribe, on the clock and after each
+//! issue action or list script), `repo`,
 //! `prs` and `pr_detail` the git refs, and `diff` the checkout itself (every file under its top except `.git` and what git
 //! ignores) plus HEAD, the index, the refs and `info/exclude`. One path is watched once, recursively
 //! when any subscription needs it so (a `beads` subscription's non-recursive watch of a project
 //! directory is upgraded by a `diff` subscription's recursive watch of the same checkout, and
 //! downgraded again when that one leaves). `repo`, `prs` and `pr_detail` are also read again every
-//! 120 s, for the open PRs and checks only `gh` knows; `diff` has no clock. A read is keyed on the feed
+//! 120 s, as is `issues`, for what only `gh` knows; `diff` has no clock. A read is keyed on the feed
 //! and its whole params, so `pr_detail {dir, number: 3}` and `{dir, number: 5}` are two values, while an
 //! action or clock names a feed and a project and reads every subscription of that feed on it. Actions
-//! are `press`, `run_list`, `branch_delete`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
+//! are `press`, `run_list`, `issue_create`, `issue_close`, `branch_delete`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
 //! `pr_worktree`, `pr_button`, `pr_refresh`, `vision_save` and `agent_start`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -41,6 +42,7 @@ use crate::beads::graph_feed as beads_graph_feed;
 use crate::core::agents::Agents;
 use crate::core::project::Origin;
 use crate::diff::feed as diff_feed;
+use crate::issues::feed as issues_feed;
 use crate::prs::feed as prs_feed;
 use crate::repo::feed as repo_feed;
 use crate::status::feed as status_feed;
@@ -51,10 +53,10 @@ type ReadLock = Arc<tokio::sync::Mutex<()>>;
 
 /// The feeds that hold what `bd` and the bead panes' records say: a press and a change of `bead-panes.json` refresh each.
 const BEAD_FEEDS: [&str; 2] = ["beads", "beads_graph"];
-const FEEDS: [&str; 8] = ["beads", "beads_graph", "project", "work", "repo", "diff", "prs", "pr_detail"];
-const ACTIONS: [&str; 12] = ["press", "run_list", "branch_delete", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
+const FEEDS: [&str; 9] = ["beads", "beads_graph", "project", "work", "repo", "diff", "prs", "pr_detail", "issues"];
+const ACTIONS: [&str; 14] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
-/// How often a `repo`, `prs` or `pr_detail` subscription is read again whatever the files do: GitHub has no event.
+/// How often a `repo`, `prs`, `pr_detail` or `issues` subscription is read again whatever the files do: GitHub has no event.
 const REPO_EVERY: Duration = Duration::from_secs(120);
 
 /// How long file events must stop before the changed projects are read again.
@@ -229,7 +231,7 @@ fn reads_git(feed: &str) -> bool {
 
 /// The feeds read again on the `REPO_EVERY` clock.
 fn on_clock(feed: &str) -> bool {
-    matches!(feed, "repo" | "prs" | "pr_detail")
+    matches!(feed, "repo" | "prs" | "pr_detail" | "issues")
 }
 
 /// The params keys of the subscriptions of `feed` on project `dir`.
@@ -259,7 +261,7 @@ fn real_of(p: &std::path::Path) -> PathBuf {
 /// What a subscription to `feed` for `dir` needs watched.
 fn watches(feed: &str, dir: &str, real: &std::path::Path) -> Watches {
     match feed {
-        "work" => return Watches::default(),
+        "work" | "issues" => return Watches::default(),
         "project" => return Watches { watch: vec![(real.to_path_buf(), false), (real.join(".beads"), false), (real.join("docs"), false)], ..Default::default() },
         _ if !reads_git(feed) => return Watches { watch: vec![(real.to_path_buf(), false), (real.join(".beads"), false)], ..Default::default() },
         _ => {}
@@ -484,6 +486,7 @@ impl Core {
             "repo" => repo_feed::value(&d),
             "diff" => diff_feed::value(&d),
             "prs" => prs_feed::value(&d),
+            "issues" => issues_feed::value(&d),
             "pr_detail" => prs_feed::detail_value(&d, crate::core::number_of(&params["number"]).unwrap_or(0)),
             "beads_graph" => beads_graph_feed::value(&d, &params),
             _ => beads_feed::value(&d),
@@ -517,7 +520,7 @@ impl Core {
         for p in paths {
             let (Some(name), Some(parent)) = (p.file_name().and_then(|n| n.to_str()), p.parent()) else { continue };
             for s in subs.values() {
-                let hit = if s.feed == "work" {
+                let hit = if s.feed == "work" || s.feed == "issues" {
                     false
                 } else if reads_git(&s.feed) {
                     git_hit(&s.files, &s.trees, s.top.as_ref(), &s.ignored, p)
@@ -560,23 +563,53 @@ impl Core {
             "run_list" => {
                 let script = arg("script").ok_or_else(|| bad("run_list needs args.script".into()))?;
                 let view = arg("view").unwrap_or_else(|| "beads".into());
-                if !["beads", "repo", "prs"].contains(&view.as_str()) {
-                    return Err(bad(format!("run_list: no view {view}; its views: beads, repo, prs")));
+                if !["beads", "repo", "prs", "issues"].contains(&view.as_str()) {
+                    return Err(bad(format!("run_list: no view {view}; its views: beads, repo, prs, issues")));
                 }
                 let ids: Vec<String> = match p.args.get("ids") {
                     Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
                     _ => return Err(bad("run_list needs args.ids, a list of ids".into())),
                 };
-                tokio::task::spawn_blocking(move || {
+                let changed_dir = dir.clone();
+                let issues = view == "issues";
+                let done = tokio::task::spawn_blocking(move || {
                     if view == "repo" {
                         repo_feed::run_list(&dir, &script, &ids, &pane)
                     } else if view == "prs" {
                         prs_feed::run_list(&dir, &script, &ids, &pane)
+                    } else if view == "issues" {
+                        issues_feed::run_list(&dir, &script, &ids, &pane)
                     } else {
                         beads_feed::run_list(&dir, &script, &ids, &pane)
                     }
                 })
-                .await
+                .await;
+                // A list script may change GitHub, which has no event: read the issues again whether or not it went through.
+                if issues {
+                    let _ = self.tx.send(Msg::RefreshFeed("issues".into(), changed_dir));
+                }
+                done
+            }
+            "issue_create" => {
+                let title = arg("title").unwrap_or_default();
+                let changed_dir = dir.clone();
+                let done = tokio::task::spawn_blocking(move || {
+                    crate::issues::create(&dir, &title).map(|n| format!("Opened #{n}"))
+                })
+                .await;
+                // Read the issues again whether or not it went through.
+                let _ = self.tx.send(Msg::RefreshFeed("issues".into(), changed_dir));
+                done
+            }
+            "issue_close" => {
+                let number = p.args.get("number").and_then(crate::core::number_of).ok_or_else(|| bad("issue_close needs args.number, an issue number".into()))?;
+                let changed_dir = dir.clone();
+                let done = tokio::task::spawn_blocking(move || {
+                    crate::issues::close(&dir, number).map(|_| format!("Closed #{number}"))
+                })
+                .await;
+                let _ = self.tx.send(Msg::RefreshFeed("issues".into(), changed_dir));
+                done
             }
             "branch_delete" => {
                 let branch = arg("branch").ok_or_else(|| bad("branch_delete needs args.branch".into()))?;
@@ -709,7 +742,7 @@ async fn work_changes(core: Arc<Core>) {
     }
 }
 
-/// Ask for every `repo`, `prs` and `pr_detail` subscription to be read again each `REPO_EVERY`.
+/// Ask for every `repo`, `prs`, `pr_detail` and `issues` subscription to be read again each `REPO_EVERY`.
 async fn repo_clock(core: Arc<Core>) {
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + REPO_EVERY, REPO_EVERY);
     loop {
@@ -885,6 +918,10 @@ mod tests {
         let w = watches("work", "/r", &top);
         assert!(w.watch.is_empty() && w.files.is_empty() && w.trees.is_empty() && w.top.is_none());
         assert!(!reads_git("work") && !reads_git("project") && !on_clock("work") && !on_clock("project"));
+        let w = watches("issues", "/r", &top);
+        assert!(w.watch.is_empty() && w.files.is_empty() && w.trees.is_empty() && w.top.is_none());
+        assert!(FEEDS.contains(&"issues") && on_clock("issues") && !reads_git("issues"));
+        assert!(ACTIONS.contains(&"issue_create") && ACTIONS.contains(&"issue_close"));
         assert!(FEEDS.contains(&"project") && FEEDS.contains(&"work") && ACTIONS.contains(&"vision_save") && ACTIONS.contains(&"agent_start"));
     }
 }

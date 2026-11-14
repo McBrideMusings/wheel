@@ -218,7 +218,8 @@ function M.boxes(l, cards)
         local label, key, value, count, hot = c[1], c[2], c[3], c[4], c[5]
         local v = M.values(l, key)
         local on = #v == 1 and v[1] == value
-        local tone = if hot and count > 0 then "ok" elseif count == 0 then "muted" else "fg"
+        -- A count that is a string ("—": the list could not be read) is drawn muted as it is.
+        local tone = if type(count) == "string" then "muted" elseif hot and count > 0 then "ok" elseif count == 0 then "muted" else "fg"
         local num = kit.label(tostring(count), { size = 20, weight = "semibold", tabular = true, tone = tone })
         local cap = kit.label(label, { tone = "muted", size = 11 })
         kit.modify(cap, { lineLimit = 1 })
@@ -314,8 +315,8 @@ end
 -- The list actions as one chip drawn like the filters: its title counts the rows the actions take, `took` (their ids) of
 -- the `listed` rows ("12 listed" or "3 selected of 12"), and its popover holds Copy IDs (the ids space separated, `copied`
 -- naming them in its help) then the project's list buttons `scripts` ({ name, label }), each with that count, over `rows`.
--- Each keeps its slot: with no rows the buttons are disabled, not removed.
-function M.actions(scripts, took, listed, copied, rows)
+-- Each keeps its slot: with no rows, or `off`, the buttons are disabled, not removed.
+function M.actions(scripts, took, listed, copied, rows, off)
     local n = #took
     local title, what
     if n < listed then
@@ -331,7 +332,7 @@ function M.actions(scripts, took, listed, copied, rows)
     for _, s in scripts do
         local label = s.label or s.name
         table.insert(menu, kit.button(label .. "  " .. n, { type = "list.run", script = s.name }, {
-            style = "link", disabled = n == 0, help = label .. " over the " .. n .. " " .. what .. " " .. rows,
+            style = "link", disabled = off or n == 0, help = label .. " over the " .. n .. " " .. what .. " " .. rows,
         }))
     end
     return ui.Popover{
