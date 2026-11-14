@@ -5405,7 +5405,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
             until_stand_in_ready(&grid_b, &mut connection, &mut layouts, window, cx).await?;
         }
         window.update(cx, |c, _, _| c.show_requested(&grid, Some(&grid_b)))?;
-        let (code, pressed) = call!("POST", "/key?keys=shift+cmd+t");
+        let (code, pressed) = call!("POST", "/key?keys=shift%2Bcmd%2Bt");
         ensure!(code == 200 && pressed["taken"] == true, "shift+cmd+t was not taken: {pressed}");
         until!(format!("shift+cmd+t showing {what}"), |s: &Value| s["panes"][grid_b.as_str()]["kind"] == kind);
     }
