@@ -61,7 +61,12 @@ public final class PluginPane {
 
     public init() {
         surface.onAction = { [weak self] action in
-            guard let self, let template = self.actionMsgs[action.name] else { return }
+            guard let self else { return }
+            if action.name.hasPrefix(canvasSizePrefix) {
+                self.canvasSize(key: String(action.name.dropFirst(canvasSizePrefix.count)), context: action.context)
+                return
+            }
+            guard let template = self.actionMsgs[action.name] else { return }
             var msg: [String: JSONValue] = [:]
             if case let .object(fields) = template { msg = fields }
             for (key, value) in action.context where msg[key] == nil { msg[key] = Self.json(value) }
@@ -74,6 +79,20 @@ public final class PluginPane {
             msg["value"] = Self.json(change.value)
             self.deliver(.object(msg))
         }
+    }
+
+    /// A command Canvas measured itself: the runtime keeps the size for `draw`, and the view is drawn again only when it changed.
+    /// The report never reaches `update`.
+    private func canvasSize(key: String, context: [String: AnyCodable]) {
+        guard let runtime, let w = context["w"]?.numberValue, let h = context["h"]?.numberValue,
+              runtime.setCanvasSize(key: key, width: w, height: h) else { return }
+        do {
+            try render()
+            if !loadFailed { error = nil }
+        } catch {
+            fail(error)
+        }
+        onUpdate?()
     }
 
     /// Takes the script's source and the package's other `.luau` files (path in the package to source) for its
@@ -412,6 +431,7 @@ public struct PluginPaneView: View {
                     .frame(maxWidth: .infinity, alignment: .top)
             }
             .environment(\.a2uiPane, geo.size)
+            .environment(\.a2uiCanvasSizes, true)
             .overlay { A2UIPresentedModals(surface: pane.surface) }
         }
         .background(palette.bg)

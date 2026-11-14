@@ -5,6 +5,9 @@ import AppKit
 
 // MARK: Canvas — a display list the server draws with, a camera the client moves, and hit regions the server names (ADR-0029)
 //
+// A `commands` array instead of `ops` is the other mode: a Canvas 2D command list a pane script recorded, replayed with no camera
+// or controls by CanvasCommandStage (A2UICanvasCommands.swift), which also names `height`, `canvasKey` and `pointerAction`.
+//
 // props:
 //   ops     [{op, minZoom?, maxZoom?, fill?, stroke?, width?, dash?, opacity?, px?, ...shapes}] drawn in order, in scene units:
 //             rect    r: [[x, y, w, h]...]        radius?
@@ -244,9 +247,16 @@ struct A2UICanvasView: View {
     @Environment(\.a2uiViewport) private var viewport
     var body: some View {
         let p = node.instance.properties
-        let height = p["height"]?.numberValue ?? max(p["minHeight"]?.numberValue ?? 480, viewport - (p["reserve"]?.numberValue ?? 0))
-        CanvasStage(scene: CanvasScene(p), height: height) { name, context in
-            surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+        if let commands = p["commands"]?.arrayValue {
+            CanvasCommandStage(commands: commands, height: p["height"]?.numberValue ?? 240, key: p["canvasKey"]?.stringValue ?? "canvas",
+                               pointerAction: p["pointerAction"]?.stringValue) { name, context in
+                surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+            }
+        } else {
+            let height = p["height"]?.numberValue ?? max(p["minHeight"]?.numberValue ?? 480, viewport - (p["reserve"]?.numberValue ?? 0))
+            CanvasStage(scene: CanvasScene(p), height: height) { name, context in
+                surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+            }
         }
     }
 }
@@ -561,7 +571,7 @@ private struct CanvasStage: View {
 
 #if os(macOS)
 /// Catches the wheel and trackpad scroll over the canvas's stage: `(dx, dy, point in the stage)`.
-private struct CanvasScrollCatcher: NSViewRepresentable {
+struct CanvasScrollCatcher: NSViewRepresentable {
     let frame: CGRect
     let scroll: (Double, Double, CGPoint) -> Void
 

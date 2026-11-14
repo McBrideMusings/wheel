@@ -330,15 +330,51 @@ own_table = klass("Table", "SwiftUI's Table of rows under section titles; rows c
                                                        sort={"key": "id", "asc": True}, empty="None", modifiers=[{"frame": {"height": 160}}]))]),
 ])
 
+import base64
+
+
+def canvas_gradient(w=16, h=16):
+    px = bytearray()
+    for y in range(h):
+        for x in range(w):
+            px += bytes((x * 255 // (w - 1), y * 255 // (h - 1), 128, 255))
+    return base64.b64encode(bytes(px)).decode()
+
+
+CANVAS_COMMANDS = [
+    ["set", "fillStyle", "#33669933"], ["rect", 0, 0, 640, 240], ["fill"],
+    ["set", "strokeStyle", "accent"], ["set", "lineWidth", 2],
+    ["beginPath"], ["moveTo", 10, 30], ["lineTo", 60, 10], ["lineTo", 110, 30], ["stroke"],
+    ["beginPath"], ["moveTo", 130, 30], ["bezierCurveTo", 150, -10, 190, 70, 210, 30], ["stroke"],
+    ["beginPath"], ["moveTo", 230, 30], ["quadraticCurveTo", 260, -10, 290, 30], ["stroke"],
+    ["set", "fillStyle", "ok"], ["beginPath"], ["arc", 330, 30, 20, 0, 4.2, False], ["closePath"], ["fill"],
+    ["set", "fillStyle", "rgba(220, 60, 60, 0.8)"], ["beginPath"], ["arc", 390, 30, 20, 0, 4.2, True], ["fill"],
+    ["set", "fillStyle", "warn"], ["beginPath"], ["rect", 430, 10, 40, 40], ["fill"],
+    ["set", "fillStyle", "purple"], ["beginPath"], ["roundRect", 490, 10, 60, 40, 12], ["fill"],
+    ["set", "strokeStyle", "bad"], ["set", "lineWidth", 1], ["beginPath"], ["roundRect", 565, 10, 60, 40, 8], ["stroke"],
+    ["save"], ["set", "globalAlpha", 0.35], ["set", "fillStyle", "#f80"], ["beginPath"], ["rect", 20, 80, 60, 40], ["fill"],
+    ["translate", 50, 0], ["beginPath"], ["rect", 20, 80, 60, 40], ["fill"], ["restore"],
+    ["save"], ["translate", 200, 100], ["rotate", 0.4], ["set", "fillStyle", "accent"], ["beginPath"], ["rect", -30, -15, 60, 30], ["fill"], ["restore"],
+    ["save"], ["translate", 300, 80], ["scale", 2, 1], ["set", "strokeStyle", "fg"], ["set", "lineWidth", 2], ["beginPath"], ["arc", 20, 20, 15, 0, 6.2832, False], ["stroke"], ["restore"],
+    ["set", "fillStyle", "line"], ["beginPath"], ["rect", 20, 150, 150, 26], ["fill"],
+    ["set", "fillStyle", "fg"], ["set", "font", "bold 13px sans-serif"], ["fillText", "fillText, bold", 28, 168],
+    ["set", "font", "italic 12px serif"], ["set", "fillStyle", "muted"], ["fillText", "italic serif", 190, 168],
+    ["set", "font", "11px monospace"], ["fillText", "monospace", 300, 168],
+    ["drawImage", canvas_gradient(), 16, 16, 20, 190, 16, 16],
+    ["drawImage", canvas_gradient(), 16, 16, 50, 190, 48, 48],
+    ["set", "font", "10px sans-serif"], ["set", "fillStyle", "faint"], ["fillText", "drawImage: 16x16 RGBA, 1x and 3x", 110, 214],
+]
+
 own = klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", [
-    ("Canvas", "Canvas", [("a display list with a camera and hit regions; needs a scene, not shown", secondary("Used by pages that draw graphs, such as the Beads dependency graph. A hit's tip grows to the height of its lines, and the hover outline follows the pointer when a scroll pans or zooms the canvas under it."))]),
+    ("Canvas", "Canvas", [("a display list with a camera and hit regions; needs a scene, not shown", secondary("Used by pages that draw graphs, such as the Beads dependency graph. A hit's tip grows to the height of its lines, and the hover outline follows the pointer when a scroll pans or zooms the canvas under it.")),
+                          ("commands: a Canvas 2D command list a pane script records (paths, curves, arc, rect, roundRect, styles, globalAlpha, save/restore, translate, scale, rotate, fillText, drawImage); no camera, controls, background or border, `height` points tall, as wide as it is offered; reports its size as canvas-size:<canvasKey>; pointerAction raises {kind, x, y, button, dx, dy}", put("Canvas", commands=CANVAS_COMMANDS, height=240, canvasKey="gallery"))]),
 ])
 ONLY = sys.argv[2] if len(sys.argv) > 2 else None  # a class name shows that class alone
 page = col([
     txt("A2UI component gallery", "h1"),
     secondary("A table per class of control: the basic catalog's components with every option, the SwiftUI controls, modifiers, then Wheel's own component."),
     secondary("Updated with every change to a component or modifier. Body text is 13 pt on the Mac and the phone."),
-    *({"system": [system], "filters": [filters], "filters-form": [filters_form], "var-a": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("a")])], "var-b": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("b")])], "var-c": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("c")])]}.get(ONLY) or [content, controls, inputs, layout, nav, system, own_table, modifiers, own]),
+    *({"system": [system], "own": [own], "filters": [filters], "filters-form": [filters_form], "var-a": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("a")])], "var-b": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("b")])], "var-c": [boxed("Filter variation", "Interactive; nothing is wired to a page.", [variation("c")])]}.get(ONLY) or [content, controls, inputs, layout, nav, system, own_table, modifiers, own]),
 ], align="start", modifiers=[{"padding": 28}])
 out.append({"id": "root", "component": "Column", "align": "stretch", "children": [page]})
 
