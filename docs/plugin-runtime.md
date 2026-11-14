@@ -1,6 +1,6 @@
 # Plugin system: the backend protocol crate and how Luau is built
 
-The plugin system (epic `wheel-pmf2`) needs two pieces of third-party code: a JSON-RPC 2.0 peer for the protocol between `wheeld` and a plugin's backend, and the Luau VM inside both Apple clients. This page names each choice, the candidates checked, and the throwaway build that showed it works.
+The plugin system (epic `wheel-pmf2`) needs two pieces of third-party code: a JSON-RPC 2.0 peer for the protocol between `wheeld` and a plugin's backend, and the Luau VM inside both Apple clients. This page names each choice, the candidates checked and the checks that showed it works, and says how the pane runtime built on Luau behaves.
 
 ## Backend protocol: `async-lsp` over Content-Length framing
 
@@ -48,10 +48,11 @@ feed updates received: 2
 
 **Version:** Luau [0.747](https://github.com/luau-lang/luau/releases/tag/0.747), MIT licence. Source tarball `https://github.com/luau-lang/luau/archive/refs/tags/0.747.tar.gz`, SHA-256 `2c72471f91c42af7f2c07cc4cc602b27c215346d491d7ab3d80da63050ad43f2`.
 
-**Packaging:** Luau's `Common`, `Ast`, `Bytecode`, `Compiler` and `VM` directories (127 files, 2.6 MB) and its `LICENSE.txt` are copied into a local Swift package beside WheelUI in `apple/`, under a `luau/` directory at the package root, so the package holds `luau/Common`, `luau/Ast`, `luau/Bytecode`, `luau/Compiler`, `luau/VM` and `Sources/CLuau`. `CodeGen` (the JIT, which iOS forbids), `Analysis`, `Config`, `Require`, `Inliner` and `CLI` are left out. The package has two targets:
+**Packaging:** the package is `apple/WheelLuau`, beside WheelUI. Luau's `Common`, `Ast`, `Bytecode`, `Compiler` and `VM` directories (127 files, 2.6 MB) and its `LICENSE.txt` are copied, unchanged from the tarball above, into its `luau/` directory. `CodeGen` (the JIT, which iOS forbids), `Analysis`, `Config`, `Require`, `Inliner` and `CLI` are left out. The package has three targets:
 
 - `LuauCore`: every `.cpp` of those five directories, compiled as C++17. Its only public header directory is `VM/include` (`lua.h`, `luaconf.h`, `lualib.h`, all plain C); the C++ include directories are `headerSearchPath`s, so Swift's importer never meets a C++ header. It defines `LUA_API` and `LUACODE_API` as `extern "C"` for the C++ build only.
-- `CLuau`: one header, `Sources/CLuau/include/CLuau.h`, including `lua.h`, `lualib.h` and `../../../luau/Compiler/include/luacode.h` (a path relative to the header, since `luacode.h` belongs to no public header directory). Swift code imports `CLuau` and calls `luau_compile`, `luau_load`, `lua_pcall`, `luaL_sandbox` and the rest of the C API directly.
+- `CLuau`: the header Swift imports, `Sources/CLuau/include/CLuau.h`, which includes `lua.h`, `lualib.h` and `../../../luau/Compiler/include/luacode.h` (a path relative to the header, since `luacode.h` belongs to no public header directory), and `Sources/CLuau/CLuau.cpp`, the C++ that may raise a Luau error: the memory-limited allocator, the step-budget interrupt callback and the trampoline that calls a host function. A Luau error is a C++ exception, and these keep it from ever unwinding a Swift frame.
+- `WheelLuau`: `PaneRuntime`, one pane script in its own VM, and `PaneNode`, the tree its `view` returns (see below).
 
 Candidates checked:
 
@@ -61,9 +62,45 @@ Candidates checked:
 | Luau as a git submodule | The repo has no submodules; the five directories would still need a `Package.swift` of ours, and a clone would carry the 14 directories the apps never build |
 | Luau's CMake build into an XCFramework | A second build system beside SwiftPM and Xcode, and a binary checked in or downloaded at build time |
 
-Throwaway check (Swift 6.4.2, Xcode with the macOS 27.2 SDK): the package above, with an executable that compiles and runs Luau source in a state after `luaL_openlibs`, `luaL_sandbox` and `luaL_sandboxthread`:
+## The pane runtime
 
-- macOS, `swift build`: built in 11.9 s and printed `sum: 3`, `io: nil`, `os.execute: nil`, `version: Luau`.
-- iOS Simulator, `xcodebuild -destination 'generic/platform=iOS Simulator'`: `** BUILD SUCCEEDED **` for the library and for the executable, a universal `arm64` and `x86_64` Mach-O whose build version reads `platform IOSSIMULATOR`, `minos 18.0`, with `luau_compile`, `luau_load`, `lua_pcall` and `luaL_sandbox` defined in it.
+`PaneRuntime(source:chunkName:limits:host:)` (`apple/WheelLuau/Sources/WheelLuau/PaneRuntime.swift`) runs one pane script. The script returns a module table:
 
-The check created the state with `luaL_newstate` and set no interrupt callback, and built no iOS device slice: the custom allocator (`lua_newstate`), the instruction budget (`lua_callbacks(L)->interrupt`) and the `arm64-iphoneos` build are the runtime's to prove (`wheel-pmf2.2.1`).
+```lua
+local function init(previous) return previous or { count = 0 } end
+local function update(state, msg)
+    if msg.type == "inc" then state.count += 1 end
+    return state
+end
+local function view(state, data)
+    return ui.VStack{
+        ui.Text("Count " .. state.count),
+        ui.Button{ label = "Add", action = { type = "inc" } },
+    }
+end
+return { init = init, update = update, view = view }
+```
+
+- `init(previous)` makes the state: `previous` is nil for a new pane and the old state after `reload(source:)`. A module without `init` starts from an empty table.
+- `send(msg)` calls `update(state, msg)`. A non-nil result becomes the state; nil keeps the state `update` changed in place. A module without `update` ignores messages.
+- `view(data)` calls `view(state, data)` and returns a `PaneNode`. `data` holds the caller's fields (when it is a JSON object) and `data.feed(name, params)`; `wheel.action(name, args)` is a global. Both call the `Host` closures the caller supplies.
+- `ui.<Name>{ ... }` builds a node for any component name, so a script names WheelUI's components and modifiers as WheelUI does (ADR-0031, ADR-0038): string keys become properties (`modifiers` among them), the array part becomes `children`, a string in it becomes a `Text`, and `ui.Text("hi")` sets `text`. `PaneNode.a2uiComponents()` flattens a tree into the component list of an A2UI `updateComponents` message, the form WheelUI's surface draws.
+
+The VM is sandboxed:
+
+| Limit | How |
+| --- | --- |
+| Frozen globals | `luaL_openlibs`, then `os` removed and `ui` and `wheel` set, then `luaL_sandbox`; each module loads in its own thread after `luaL_sandboxthread`. Luau ships no `io` or `require` in these libraries. |
+| Steps | `lua_callbacks(L)->interrupt` counts safepoints (loop back edges and calls) and raises an error past `Limits.steps` (default 10,000,000 per entry). The count stays past the budget, so a script that catches the error with `pcall` is stopped again at its next safepoint. |
+| Memory | `lua_newstate` with an allocator that counts bytes and refuses growth past `Limits.memory` (default 32 MB) while script code runs; Swift's own pushes run with the limit lifted, so they never raise. An entry that starts above half the limit runs a full collection first, since the allocator cannot collect and garbage from earlier entries would otherwise count against it. |
+| Interpreter only | `CodeGen` is not in the package. |
+| No script outside the limits | The module's `init`, `update` and `view` are read raw (`lua_rawgetfield`), so a metatable on the module runs nothing. Converting a Lua value to JSON (`view`'s tree, host-call arguments, `state`) visits at most 100,000 values and 200 levels, so a shared or cyclic table is an error, never a hang. |
+
+Every failure is a thrown `PaneRuntime.Failure` (`syntax`, `runtime`, `stepBudget`, `memory`, `module`, `view`) and leaves the last good module in place: a reload whose source fails to compile, or whose `init` raises, keeps the previous module running. The state is one Lua table, not a copy, so it keeps whatever `update` or `init` changed in it before raising.
+
+A Lua table becomes a JSON array when its keys are exactly 1 to n, or it is empty; any other table becomes an object, its number keys written as strings (`{1, 2, nil, 4}` gives `{"1":1,"2":2,"4":4}`). Flattening gives each node an id from its place (`root.0.2`, and `root.1@child` for a node held in a property), and those ids win over a script's own `id` property.
+
+Checks (Swift 6.4.2, Xcode with the macOS 27.2 SDK):
+
+- macOS, `swift test --package-path apple/WheelLuau`: 19 tests pass (counter, reload keeping state, step budget, memory limit, absent `io`/`os`/`require`, frozen libraries, syntax error and failing `init` on reload, bad module, bad view, host feed and action, a host call from a coroutine, flattening and its ids, a module with a hostile metatable, shared and cyclic tables, garbage from an earlier entry, table conversion).
+- iOS, `xcodebuild -scheme WheelLuau -destination 'generic/platform=iOS'` and `'generic/platform=iOS Simulator'` from `apple/WheelLuau`: `** BUILD SUCCEEDED **` for both; the device objects are `arm64`, `platform IOS`, `minos 18.0`, with `luau_compile`, `luau_load`, `lua_pcall`, `luaL_sandbox` and `wheel_luau_pcall` defined.
