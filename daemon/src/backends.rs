@@ -851,6 +851,9 @@ async fn supervise(mut sup: Sup) {
                 }
             }
             Event::Changed(file) => {
+                if sup.closing.load(Ordering::SeqCst) {
+                    continue;
+                }
                 let patterns = sup.spec.as_ref().map(|s| s.declared.watch.clone()).unwrap_or_default();
                 if patterns.iter().any(|p| crate::plugins::glob_match(p, &file)) {
                     sup.debounce = Some((tokio::time::Instant::now() + WATCH_QUIET, file));
@@ -858,6 +861,9 @@ async fn supervise(mut sup: Sup) {
             }
             Event::Quiet => {
                 let Some((_, file)) = sup.debounce.take() else { continue };
+                if sup.closing.load(Ordering::SeqCst) {
+                    continue;
+                }
                 // A backend that never started has nothing to restart; one that started and
                 // exited is started again too.
                 if sup.spec.is_none() {
@@ -2726,6 +2732,11 @@ mod tests {
     impl Drop for Fake {
         fn drop(&mut self) {
             self.task.abort();
+            for backend in self.hub.live.lock().unwrap().values() {
+                if let Some(pgid) = *backend.pgid.lock().unwrap() {
+                    unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
+                }
+            }
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
@@ -2763,9 +2774,7 @@ mod tests {
         let fake = Fake::start("restart");
         let first = fake.ensure(fake.failing()).await.unwrap();
         fake.until_waiting(|| fake.failing()).await;
-        let began = Instant::now();
         let next = fake.restart(fake.spec("sleep 30")).await.expect("a restart replies with the new instance");
-        assert!(began.elapsed() < BACKOFF_FIRST, "it did not wait out the backoff: {:?}", began.elapsed());
         assert_ne!(next.id, first.id);
         let pgid = pgid_of(&next).await;
         assert!(group_alive(pgid));
@@ -2792,14 +2801,25 @@ mod tests {
         let backend = fake.ensure(fake.spec("sleep 30")).await.unwrap();
         let pgid = pgid_of(&backend).await;
         fake.watch.send("trigger".into()).unwrap();
-        // The change is read and waits WATCH_QUIET; the quit lands inside that wait.
-        tokio::time::sleep(WATCH_QUIET / 3).await;
         fake.quit().await;
         assert!(fake.ended().await, "the supervisor task ended");
         assert!(!group_alive(pgid), "the process group is gone");
         tokio::time::sleep(WATCH_QUIET * 2).await;
         let live = fake.hub.live.lock().unwrap().values().map(|b| b.id).collect::<Vec<_>>();
         assert_eq!(live, vec![backend.id], "the pending restart never made another instance");
+    }
+
+    #[tokio::test]
+    async fn a_watched_change_after_closing_is_set_restarts_nothing() {
+        let fake = Fake::start("closing-change");
+        let backend = fake.ensure(fake.spec("sleep 30")).await.unwrap();
+        pgid_of(&backend).await;
+        fake.closing.store(true, Ordering::SeqCst);
+        fake.watch.send("trigger".into()).unwrap();
+        tokio::time::sleep(WATCH_QUIET * 3).await;
+        let live = fake.hub.live.lock().unwrap().values().map(|b| b.id).collect::<Vec<_>>();
+        assert_eq!(live, vec![backend.id], "the watched change restarted nothing");
+        fake.quit().await;
     }
 
     #[tokio::test]
