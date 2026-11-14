@@ -3,6 +3,7 @@
 //! every page is also a command.
 
 mod agents_cli;
+mod backend;
 mod beads;
 mod core;
 mod prs;
@@ -29,6 +30,10 @@ enum Command {
     /// every artifact and every project the host has open; the host names the artifact, and so
     /// the view, in each request.
     Serve,
+    /// Serve the plugin feeds and actions to `wheeld` as a plugin backend: JSON-RPC 2.0 with
+    /// Content-Length framing on standard input and output. One process serves every project;
+    /// each feed names its project directory in its params.
+    Backend,
     /// The agents Wheel runs in a project, and starting one.
     Agents(agents_cli::Args),
     /// A project's beads.
@@ -64,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
             let agents = core::agents::Agents::new("wheel");
             serve::run(registry(&agents), agents).await
         }
+        Command::Backend => backend::run().await,
         Command::Agents(args) => agents_cli::run(args, core::agents::Agents::new("wheel")).await,
         Command::Beads(args) => beads::cli::run(args),
         Command::Repo(args) => repo::cli::run(args),

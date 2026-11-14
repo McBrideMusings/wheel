@@ -15,6 +15,7 @@ use crate::core::table;
 
 pub mod buttons;
 pub mod cli;
+pub mod feed;
 pub mod graph;
 pub mod serve;
 

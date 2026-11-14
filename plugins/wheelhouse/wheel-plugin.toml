@@ -1,0 +1,13 @@
+[plugin]
+id = "wheelhouse"
+version = "0.1.0"
+
+[backend]
+command = "../../target/debug/wheelhouse backend"
+
+[[pane]]
+id = "beads"
+title = "Beads"
+script = "panes/beads.luau"
+reads = ["wheelhouse.beads", "wheel.panes"]
+actions = ["wheelhouse.press", "wheelhouse.run_list"]

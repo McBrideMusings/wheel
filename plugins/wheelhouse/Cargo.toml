@@ -19,6 +19,10 @@ tokio.workspace = true
 pulldown-cmark = { version = "0.13", default-features = false }
 toml_edit = "0.25"
 url = "2"
+async-lsp = { version = "0.2.4", default-features = false, features = ["tokio"] }
+json-patch = "5.0.0"
+notify = "7.0.0"
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
 rmcp = { version = "3.8", default-features = false, features = ["client", "server", "macros", "transport-io"] }
