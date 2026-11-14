@@ -234,6 +234,24 @@
     const refuse = (id, code, message) => send({ id, error: { code, message } });
     const tool = view.tool;
     const scheme = matchMedia("(prefers-color-scheme: dark)");
+    // The frame fills the pane, so the host owns its size: fixed dimensions in the spec's terms.
+    // The app learns them in ui/initialize and again, as a host-context-changed update, whenever
+    // the frame's size differs from the last one it was told, once it has said it is initialized.
+    // A hidden pane's 0x0 frame is no size to fill, so it is never sent.
+    let initialized = false;
+    let told = null;
+    const dimensions = () => {
+      const height = Math.round(frame.clientHeight);
+      const width = Math.round(frame.clientWidth);
+      return height > 0 && width > 0 ? { height, width } : null;
+    };
+    const tellSize = () => {
+      const now = dimensions();
+      if (!initialized || !now || (told && told.height === now.height && told.width === now.width)) return;
+      told = now;
+      send({ method: "ui/notifications/host-context-changed", params: { containerDimensions: now } });
+    };
+    new ResizeObserver(tellSize).observe(frame);
 
     const result = (r) => ({
       content: r.content,
@@ -260,6 +278,7 @@
         switch (method) {
           case "ui/initialize":
           case "initialize":
+            told = dimensions();
             return reply(id, {
               protocolVersion: PROTOCOL,
               hostInfo: { name: "wheel", version: "1" },
@@ -269,6 +288,7 @@
                 theme: scheme.matches ? "dark" : "light",
                 displayMode: "inline",
                 availableDisplayModes: ["inline"],
+                ...(told ? { containerDimensions: told } : {}),
                 platform: "desktop",
                 locale: navigator.language,
                 timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -276,6 +296,8 @@
               },
             });
           case "ui/notifications/initialized":
+            initialized = true;
+            tellSize();
             return start();
           case "ping":
             return reply(id, {});
