@@ -843,6 +843,26 @@ async fn running_strip(run: Run, agent_pane: String, _agent_name: String, cx: &m
     Ok((run, report))
 }
 
+/// Press the pane's zoom button with real mouse events and pump until the grid's motion ends in
+/// the wanted state. A pane in the grid is short; the full view needs the room a zoom gives it.
+async fn zoom_pane(run: &mut Run, pane: &str, on: bool, cx: &mut AsyncApp) -> Result<()> {
+    let button = pane_state(run.window, pane, cx)?["header_buttons"]["zoom"]["frame"].clone();
+    let f: Vec<f64> = button.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    ensure!(f.len() == 4, "the zoom button's frame is {button}");
+    let p = [f[0] + f[2] / 2., f[1] + f[3] / 2.];
+    run.native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+    run.native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    for _ in 0..60 {
+        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
+        draw(run.window, None, cx)?;
+        let motion = run.window.update(cx, |c, _, _| c.state_json()["grid_motion"].clone())?;
+        if motion["moving"] != true && motion["zoomed"].is_null() != on {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("the pane {pane} never {} zoomed", if on { "became" } else { "stopped being" })
+}
+
 /// The strip's row opened to its last lines, the full view over the transcript with the text
 /// `task_output` returned, its tabs, Escape, Show in Transcript, and the tasks ending.
 async fn running_full_view(run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
@@ -852,6 +872,7 @@ async fn running_full_view(run: Run, agent_pane: String, agent_name: String, cx:
     let open = wait_pane(&mut run, &agent_pane, "the shell's row open", |f| f["tasks"][0]["expanded"] == true, cx).await?;
     ensure!(open["tasks"][0]["detail"] == json!(["line 1", "line 2", "line 3"]), "the open row's lines: {}", open["tasks"][0]["detail"]);
     draw(window, Some(output.join("client-running-row-open.png")), cx)?;
+    zoom_pane(&mut run, &agent_pane, true, cx).await?;
     press_named(&native, window, &agent_name, "task-full:bash-1", cx).await?;
     let full = wait_pane(&mut run, &agent_pane, "the full view with the shell's output",
         |f| f["full_task"] == "bash-1" && f["full_view_drawn"] == true && f["tasks"][0]["output_read"] == "line 1\nline 2\nline 3\n", cx).await?;
@@ -874,6 +895,7 @@ async fn running_full_view(run: Run, agent_pane: String, agent_name: String, cx:
         |f| f["tasks"].as_array().is_some_and(Vec::is_empty) && f["background_text"].is_null() && f["marks"].as_array().is_some_and(Vec::is_empty), cx).await?;
     ensure!(window.update(cx, |c, _, _| c.control_bounds(&agent_name, "task-row:bash-1"))?.is_none(), "a strip row is still drawn after the tasks ended");
     draw(window, Some(output.join("client-running-ended.png")), cx)?;
+    zoom_pane(&mut run, &agent_pane, false, cx).await?;
     Ok((run, json!({"open": open, "full": full, "escaped": escaped["full_task"], "revealed": revealed, "ended": ended})))
 }
 
