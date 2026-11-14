@@ -349,8 +349,8 @@ kill -9 "$OLD" 2>/dev/null
 poll 20 backend_pid_not "$SPACE" "$OLD"
 NEW=$(backend_pid "$SPACE")
 [ -n "$NEW" ] && [ "$NEW" != "$OLD" ] && pass "wheeld restarts the backend after kill -9 ($OLD to $NEW)" || fail "backend restart ($OLD, now '$NEW')"
-sleep 1.5
-python3 - "$FA" <<'PY' > "$T/stale.verdict"
+stale_verdict() {
+  python3 - "$FA" <<'PY' > "$T/stale.verdict"
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
 i = next((i for i, r in enumerate(rows) if r.get("stale")), None)
@@ -360,6 +360,10 @@ else:
     later = [r for r in rows[i + 1:] if r.get("value") and r["value"].get("beads") and not r.get("stale")]
     print("ok" if later else "no fresh value after the stale one")
 PY
+  grep -qx ok "$T/stale.verdict"
+}
+# The new process runs bd before it answers the replayed subscribe; wait for its value.
+poll 15 stale_verdict
 check "the reader gets a stale value, then a fresh one from the new process" "$(cat "$T/stale.verdict")"
 ( cd "$A" && bd update "$C2" --title "After the restart" > /dev/null 2>&1 )
 poll 10 grep -q 'After the restart' "$FA"
