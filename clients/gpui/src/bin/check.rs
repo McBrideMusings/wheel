@@ -340,6 +340,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "second_session_hides_first_space_views": hidden_native["panes"].as_object().map(|p| p.len()), "views_distinct_between_windows": distinct});
     let (run, windows_report) = window_commands(run, first_session.clone(), id1.clone(), cx).await?;
     let (run, little_report) = little_windows(run, id1.clone(), cx).await?;
+    let (run, plugin_panes_report) = plugin_panes(run, first_session.clone(), first_space.clone(), native_panes.clone(), cx).await?;
     let (run, page_names, web_report) = web_panes(run, webs.clone(), cli_path.clone(), before.clone(), cx).await?;
     let (run, browser_report) = browser_pane(run, native_panes.clone(), cx).await?;
     let (run, pages_report) = mcp_pages(run, page_names.clone(), first_session.clone(), first_space.clone(), native_panes.clone(), cx).await?;
@@ -403,6 +404,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     });
+    report["plugin_panes"] = plugin_panes_report;
     // Past the one `json!` the recursion limit allows.
     report["terminal"] = terminal_report;
     report["perms"] = perms_report;
@@ -3984,6 +3986,69 @@ async fn mcp_pages(run: Run, page_names: Vec<String>, first_session: Option<Stri
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the pages did not come back");
     wait(&native, "the first space's views shown after the pages", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, pages_report))
+}
+
+/// The Wheelhouse plugin panes (Luau scripts fed by the wheelhouse backend), opened one after another
+/// in one pane of a session on the fixture's Wheelhouse project: each reaches a drawn state with no
+/// error and no unsupported component, shows its own content, and the Beads pane's Graph view draws a
+/// Canvas. A hidden snapshot draws a native plugin view blank, so the assertions read the pane's
+/// components through the `plugin` op (`/plugin?action=state`), and the picture is the window's own draw.
+async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Option<String>, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let (session, pane) = (std::env::var("WHEEL_CLIENT_PLUGINS_SESSION")?, std::env::var("WHEEL_CLIENT_PLUGINS_PANE")?);
+    let names: Vec<String> = serde_json::from_str(&std::env::var("WHEEL_CLIENT_PLUGIN_PANES")?)?;
+    switch_session(window, &session, cx).await?;
+    ensure!(shown(window, cx)?.0.as_deref() == Some(session.as_str()), "clicking the Plugins session shows {:?}", shown(window, cx)?);
+    let state = |native: &Native| native.call(json!({"op":"plugin","pane":pane,"action":"state"}));
+    let components = |s: &Value| s["components"].as_array().cloned().unwrap_or_default();
+    let texts = |s: &Value| components(s).iter().filter_map(|c| c["text"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+    let mut report = serde_json::Map::new();
+    for name in &names {
+        let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "wheelhouse", "--plugin-pane", name], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "pane kind plugin wheelhouse/{name}: {err}");
+        // What each pane shows once its feed has arrived: Beads and Issues a `N listed` count, Repo anything but its loading line.
+        let want = |t: &str| match name.as_str() {
+            "beads" => t.contains(" listed"),
+            "issues" => t.contains(" listed"),
+            _ => !t.starts_with("Reading"),
+        };
+        let mut seen = Value::Null;
+        for _ in 0..200 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            seen = state(&native);
+            if seen["ok"] == true && seen["error"].is_null() && texts(&seen).iter().any(|t| want(t)) && !texts(&seen).iter().any(|t| t.starts_with("Reading")) {
+                break;
+            }
+        }
+        ensure!(seen["ok"] == true && seen["error"].is_null() && texts(&seen).iter().any(|t| want(t)), "the {name} plugin pane never drew its content: error {} texts {:?}", seen["error"], texts(&seen));
+        ensure!(!components(&seen).iter().any(|c| c["type"] == "Unsupported"), "the {name} plugin pane asked for components the client lacks: {:?}", components(&seen).iter().filter(|c| c["type"] == "Unsupported").collect::<Vec<_>>());
+        draw(window, Some(output.join(format!("client-plugin-{name}.png"))), cx)?;
+        let png = output.join(format!("client-plugin-{name}.png"));
+        let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+        ensure!(bytes > 5000, "the {name} plugin pane's picture is missing: {} ({bytes} bytes)", png.display());
+        let mut entry = json!({"components": components(&seen).len(), "texts": texts(&seen).into_iter().take(6).collect::<Vec<_>>(), "png_bytes": bytes});
+        if name == "beads" {
+            let picker = components(&seen).iter().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Beads pane has no view picker"))?;
+            native.call(json!({"op":"plugin","pane":pane,"action":"set","path":format!("/{picker}"),"value":["graph"]}));
+            let mut graph = Value::Null;
+            for _ in 0..200 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                graph = state(&native);
+                if components(&graph).iter().any(|c| c["type"] == "Canvas") && graph["error"].is_null() {
+                    break;
+                }
+            }
+            ensure!(components(&graph).iter().any(|c| c["type"] == "Canvas") && graph["error"].is_null(), "the Beads Graph view drew no Canvas: error {} types {:?}", graph["error"], components(&graph).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
+            draw(window, Some(output.join("client-plugin-beads-graph.png")), cx)?;
+            entry["graph_canvases"] = json!(components(&graph).iter().filter(|c| c["type"] == "Canvas").count());
+        }
+        report.insert(name.clone(), entry);
+    }
+    switch_session(window, first_session.as_deref().unwrap(), cx).await?;
+    ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
+    wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, json!({"pane": pane, "panes": report})))
 }
 
 /// The command palette, key bindings, Run…, the shortcut sheet and ⌘W.
