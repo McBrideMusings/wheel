@@ -18,7 +18,6 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 
-use crate::core::agents::{self, Agents};
 use crate::core::project::{parse_uri, Origin};
 use crate::core::watch::Watcher;
 use crate::view::{Registry, MIME};
@@ -27,12 +26,11 @@ use crate::view::{Registry, MIME};
 pub struct Hub {
     registry: Registry,
     watcher: Arc<Mutex<Watcher>>,
-    agents: Agents,
 }
 
 impl Hub {
-    pub fn new(registry: Registry, agents: Agents) -> Self {
-        Hub { registry, watcher: Arc::default(), agents }
+    pub fn new(registry: Registry) -> Self {
+        Hub { registry, watcher: Arc::default() }
     }
 
     fn view_of(&self, artifact: Option<&str>) -> Result<Arc<dyn crate::view::View>, ErrorData> {
@@ -61,21 +59,6 @@ impl Hub {
                 if view.refresh(&d.dir) {
                     // The files the page depends on may have changed with it.
                     self.watcher.lock().unwrap().rewatch(&d.view, &d.dir, view.watches(&d.dir));
-                    changed.push(d.uri);
-                }
-            }
-        }
-        changed
-    }
-
-    /// The agents changed: the URIs of the subscribed pages that follow them and now differ.
-    fn agents_changed(&self) -> Vec<String> {
-        let all = self.agents.all();
-        let subs = self.watcher.lock().unwrap().subscriptions();
-        let mut changed = vec![];
-        for d in subs {
-            if let Some(view) = self.registry.get(&d.view) {
-                if view.follows_agents() && view.agents_changed(&d.dir, &agents::in_project(&all, &d.dir)) {
                     changed.push(d.uri);
                 }
             }
@@ -134,17 +117,9 @@ impl ServerHandler for Hub {
             // The mtimes are taken before the load, so a change during it is announced.
             {
                 let mut w = self.watcher.lock().unwrap();
-                let first = !w.watching(view.name(), &dir);
                 w.watch(view.name(), &dir, &request.uri, view.watches(&dir), view.every());
-                if first && view.follows_agents() {
-                    self.agents.acquire();
-                }
             }
             view.open(&dir);
-            // A list that arrived before this page subscribed is not announced again.
-            if view.follows_agents() {
-                view.agents_changed(&dir, &agents::in_project(&self.agents.all(), &dir));
-            }
         }
         Ok(())
     }
@@ -156,14 +131,7 @@ impl ServerHandler for Hub {
     ) -> Result<(), ErrorData> {
         // A URI no view owns has nothing to end.
         if let Ok((view, Some(dir))) = self.view_named_by(&request.uri) {
-            {
-                let mut w = self.watcher.lock().unwrap();
-                let was = w.watching(view.name(), &dir);
-                w.unwatch(view.name(), &dir);
-                if was && view.follows_agents() {
-                    self.agents.release();
-                }
-            }
+            self.watcher.lock().unwrap().unwatch(view.name(), &dir);
             view.close(&dir);
         }
         Ok(())
@@ -185,28 +153,10 @@ impl ServerHandler for Hub {
     }
 }
 
-/// Announce, as each change of the agent list arrives, the pages that follow agents and differ.
-fn announce_agent_changes(hub: Hub, peer: rmcp::Peer<RoleServer>) {
-    tokio::spawn(async move {
-        let mut changes = hub.agents.changes();
-        while changes.changed().await.is_ok() {
-            let h = hub.clone();
-            let uris = tokio::task::spawn_blocking(move || h.agents_changed()).await.unwrap_or_default();
-            for uri in uris {
-                if peer.notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(uri)).await.is_err() {
-                    return;
-                }
-            }
-        }
-    });
-}
-
-pub async fn run(registry: Registry, agents: Agents) -> anyhow::Result<()> {
-    let hub = Hub::new(registry, agents);
+pub async fn run(registry: Registry) -> anyhow::Result<()> {
+    let hub = Hub::new(registry);
     let running = hub.clone().serve(rmcp::transport::stdio()).await?;
     let peer = running.peer().clone();
-    let agents = hub.agents.clone();
-    announce_agent_changes(hub.clone(), peer.clone());
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -220,7 +170,6 @@ pub async fn run(registry: Registry, agents: Agents) -> anyhow::Result<()> {
         }
     });
     running.waiting().await?;
-    agents.shutdown();
     Ok(())
 }
 
@@ -274,7 +223,7 @@ mod tests {
 
     async fn client() -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
         let (server_io, client_io) = tokio::io::duplex(65536);
-        let hub = Hub::new(Registry::default().with(Stub("alpha")).with(Stub("beta")), Agents::new("wheel"));
+        let hub = Hub::new(Registry::default().with(Stub("alpha")).with(Stub("beta")));
         tokio::spawn(async move {
             hub.serve(server_io).await.unwrap().waiting().await.unwrap();
         });
@@ -315,144 +264,5 @@ mod tests {
         let page = c.peer().read_resource(ReadResourceRequestParams::new("a2ui://beta?dir=%2Fp")).await.unwrap();
         assert!(serde_json::to_string(&page).unwrap().contains("beta"));
         assert!(c.peer().read_resource(ReadResourceRequestParams::new("a2ui://gamma")).await.is_err());
-    }
-
-    /// A view that follows agents and offers `spawn_agent`, as the Implement and Swarm views will.
-    struct Follower {
-        agents: Agents,
-        seen: Mutex<Vec<agents::Agent>>,
-    }
-
-    #[async_trait]
-    impl View for Follower {
-        fn name(&self) -> &str {
-            "follower"
-        }
-        fn tools(&self) -> Vec<Tool> {
-            vec![agents::spawn_tool()]
-        }
-        async fn call(
-            &self,
-            params: CallToolRequestParams,
-            context: RequestContext<RoleServer>,
-        ) -> Result<CallToolResponse, ErrorData> {
-            let (agents, origin) = (self.agents.clone(), Origin::of(&context.meta));
-            let args = params.arguments.unwrap_or_default();
-            Ok(tokio::task::spawn_blocking(move || agents.spawn(&origin, &args)).await.unwrap().into())
-        }
-        fn skeleton(&self) -> Value {
-            json!({})
-        }
-        fn watches(&self, _dir: &str) -> Vec<PathBuf> {
-            vec![]
-        }
-        fn follows_agents(&self) -> bool {
-            true
-        }
-        fn agents_changed(&self, _dir: &str, agents: &[agents::Agent]) -> bool {
-            let mut seen = self.seen.lock().unwrap();
-            let changed = *seen != agents;
-            *seen = agents.to_vec();
-            changed
-        }
-        fn open(&self, _dir: &str) {}
-        fn close(&self, _dir: &str) {}
-        fn refresh(&self, _dir: &str) -> bool {
-            false
-        }
-    }
-
-    /// Collects the URIs the server announces as updated.
-    struct Announced(tokio::sync::mpsc::UnboundedSender<String>);
-
-    impl rmcp::ClientHandler for Announced {
-        async fn on_resource_updated(
-            &self,
-            params: rmcp::model::ResourceUpdatedNotificationParam,
-            _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
-        ) {
-            let _ = self.0.send(params.uri);
-        }
-    }
-
-    /// A `wheel` that prints the agent rows in `state` whenever the file changes, and logs every
-    /// other call to `log`, answering `pane split` with a pane id.
-    fn fake_wheel(dir: &std::path::Path) -> (String, PathBuf, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
-        let (state, log) = (dir.join("state"), dir.join("log"));
-        let script = dir.join("wheel");
-        std::fs::write(&state, "[]").unwrap();
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\ncase \"$1 $2\" in\n\"agent watch\") last=x; while true; do cur=$(cat {s}); if [ \"$cur\" != \"$last\" ]; then echo \"$cur\"; last=\"$cur\"; fi; sleep 0.05; done;;\n\"pane split\") echo \"$@\" >> {l}; echo \"p9 placed by test\";;\n*) echo \"$@\" >> {l};;\nesac\n",
-                s = state.display(),
-                l = log.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        (script.to_string_lossy().into_owned(), state, log)
-    }
-
-    async fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> Option<String> {
-        tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.ok().flatten()
-    }
-
-    #[tokio::test]
-    async fn a_subscribed_view_is_told_when_an_agents_state_changes_and_can_start_an_agent() {
-        let dir = std::env::temp_dir().join(format!("wheelhouse-agents-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let (wheel, state, log) = fake_wheel(&dir);
-        let row = |status: &str| {
-            json!([{ "space": "s", "cwd": "/p/one", "pane": "p1", "agent": "w1", "harness": "claude", "model": "sonnet", "status": status },
-                   { "space": "t", "cwd": "/p/two", "pane": "p2", "agent": "w2", "harness": "claude", "model": "sonnet", "status": "idle" }])
-                .to_string()
-        };
-
-        let agents = Agents::new(&wheel);
-        let follower = Follower { agents: agents.clone(), seen: Mutex::default() };
-        let hub = Hub::new(Registry::default().with(follower), agents);
-        let (server_io, client_io) = tokio::io::duplex(65536);
-        let (tx, mut announced) = tokio::sync::mpsc::unbounded_channel();
-        let h = hub.clone();
-        tokio::spawn(async move {
-            let running = h.clone().serve(server_io).await.unwrap();
-            announce_agent_changes(h, running.peer().clone());
-            running.waiting().await.unwrap();
-        });
-        let c = Announced(tx).serve(client_io).await.unwrap();
-        let uri = "a2ui://follower?dir=%2Fp%2Fone";
-        std::fs::write(&state, row("idle")).unwrap();
-        #[allow(deprecated)]
-        c.peer().subscribe(rmcp::model::SubscribeRequestParams::new(uri)).await.unwrap();
-        assert_eq!(next(&mut announced).await.as_deref(), Some(uri), "the first list is announced");
-        std::fs::write(&state, row("working")).unwrap();
-        assert_eq!(next(&mut announced).await.as_deref(), Some(uri), "a state change is announced");
-        let mine = hub.agents.all();
-        assert_eq!(mine.len(), 2);
-        assert_eq!(agents::in_project(&mine, "/p/one")[0].status.as_deref(), Some("working"));
-
-        let mut p = CallToolRequestParams::new("spawn_agent".to_string());
-        p.meta = Some(meta("follower", &dir.to_string_lossy()));
-        p.arguments = json!({ "brief": "do it", "model": "haiku" }).as_object().cloned();
-        let r = c.peer().call_tool(p).await.unwrap();
-        assert_eq!(serde_json::to_value(&r.content[0]).unwrap()["text"], "p9");
-        let calls = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(
-            calls.lines().collect::<Vec<_>>(),
-            vec!["pane split p1", "pane start p9 agent --model haiku", "agent send p9 do it --timeout 1"]
-        );
-
-        let mut p = CallToolRequestParams::new("spawn_agent".to_string());
-        p.meta = Some(meta("follower", &dir.to_string_lossy()));
-        p.arguments = json!({}).as_object().cloned();
-        let r = c.peer().call_tool(p).await.unwrap();
-        assert_eq!(r.is_error, Some(true), "no brief is refused");
-
-        #[allow(deprecated)]
-        c.peer().unsubscribe(rmcp::model::UnsubscribeRequestParams::new(uri)).await.unwrap();
-        let _ = c.cancel().await;
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

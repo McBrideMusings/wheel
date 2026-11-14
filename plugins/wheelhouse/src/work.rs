@@ -1,4 +1,4 @@
-//! The Implement and Swarm views' data: one row per item an agent pane says it works on, read
+//! The Implement and Swarm panes' data: one row per item an agent pane says it works on, read
 //! from the agents the core follows (`wheel agent watch`). A pane that declared nothing is one
 //! row with no item.
 
@@ -6,10 +6,7 @@ use serde::Serialize;
 
 use crate::core::agents::Agent;
 
-pub mod serve;
-
-/// The steps of a pass, in order.
-pub const STAGES: [&str; 6] = ["plan", "edit", "build", "verify", "review", "gate"];
+pub mod feed;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Row {

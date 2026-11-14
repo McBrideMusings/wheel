@@ -2,9 +2,13 @@
 //! Wheel's JSON-RPC 2.0 over standard input and output (Content-Length framing, `async-lsp`;
 //! `docs/plugin-runtime.md`, "Plugin backends") as the server side.
 //!
-//! One process serves every project: a feed's params name the project (`{dir}`). The `beads`, `repo`,
-//! `diff`, `prs` and `pr_detail` feeds send the whole value on every subscribe and a JSON Patch on each
-//! later change, found by watching the files that can change it: `beads` the project's `.beads`, `repo`,
+//! One process serves every project: a feed's params name the project (`{dir}`). The `beads`, `project`,
+//! `work`, `repo`, `diff`, `prs` and `pr_detail` feeds send the whole value on every subscribe and a JSON Patch on each
+//! later change, found by watching the files that can change it: `beads` the project's `.beads`, `project`
+//! the project directory, its `.beads` and its `docs` directory (a `docs` directory created later is an
+//! event in the project directory, and the next read watches it), `work` no file at all but the agents
+//! `wheel agent watch` lists (followed while a `work` subscription exists, and every change of the list
+//! reads each subscribed project again), `repo`,
 //! `prs` and `pr_detail` the git refs, and `diff` the checkout itself (every file under its top except `.git` and what git
 //! ignores) plus HEAD, the index, the refs and `info/exclude`. One path is watched once, recursively
 //! when any subscription needs it so (a `beads` subscription's non-recursive watch of a project
@@ -14,7 +18,7 @@
 //! and its whole params, so `pr_detail {dir, number: 3}` and `{dir, number: 5}` are two values, while an
 //! action or clock names a feed and a project and reads every subscription of that feed on it. Actions
 //! are `press`, `run_list`, `branch_delete`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
-//! `pr_worktree`, `pr_button` and `pr_refresh`.
+//! `pr_worktree`, `pr_button`, `pr_refresh`, `vision_save` and `agent_start`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
@@ -33,15 +37,19 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::beads::feed as beads_feed;
+use crate::core::agents::Agents;
+use crate::core::project::Origin;
 use crate::diff::feed as diff_feed;
 use crate::prs::feed as prs_feed;
 use crate::repo::feed as repo_feed;
+use crate::status::feed as status_feed;
+use crate::work::feed as work_feed;
 
 /// The lock that orders the reads of one (feed, params).
 type ReadLock = Arc<tokio::sync::Mutex<()>>;
 
-const FEEDS: [&str; 5] = ["beads", "repo", "diff", "prs", "pr_detail"];
-const ACTIONS: [&str; 10] = ["press", "run_list", "branch_delete", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh"];
+const FEEDS: [&str; 7] = ["beads", "project", "work", "repo", "diff", "prs", "pr_detail"];
+const ACTIONS: [&str; 12] = ["press", "run_list", "branch_delete", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
 /// How often a `repo`, `prs` or `pr_detail` subscription is read again whatever the files do: GitHub has no event.
 const REPO_EVERY: Duration = Duration::from_secs(120);
@@ -247,8 +255,11 @@ fn real_of(p: &std::path::Path) -> PathBuf {
 
 /// What a subscription to `feed` for `dir` needs watched.
 fn watches(feed: &str, dir: &str, real: &std::path::Path) -> Watches {
-    if !reads_git(feed) {
-        return Watches { watch: vec![(real.to_path_buf(), false), (real.join(".beads"), false)], ..Default::default() };
+    match feed {
+        "work" => return Watches::default(),
+        "project" => return Watches { watch: vec![(real.to_path_buf(), false), (real.join(".beads"), false), (real.join("docs"), false)], ..Default::default() },
+        _ if !reads_git(feed) => return Watches { watch: vec![(real.to_path_buf(), false), (real.join(".beads"), false)], ..Default::default() },
+        _ => {}
     }
     let Some((own, common)) = crate::core::git::dirs(dir) else { return Default::default() };
     let (own, common) = (PathBuf::from(own), PathBuf::from(common));
@@ -304,6 +315,8 @@ struct Core {
     /// The (feed, params key) pairs a refresh is queued for and has not started reading: another event for
     /// one of them needs no second refresh.
     waiting: Mutex<HashSet<(String, String)>>,
+    /// The agents `wheel agent watch` lists, followed while a `work` subscription exists.
+    agents: Agents,
 }
 
 fn records_dir() -> Option<PathBuf> {
@@ -395,6 +408,10 @@ impl Core {
             let k = key(&r);
             let sub = Sub { feed: feed.clone(), pkey: pkey.clone(), params: r.params, dir: dir.clone(), real, watch: w.watch, files: w.files, trees: w.trees, top: w.top, ignored: w.ignored, last: None };
             let old = subs.insert(k, sub);
+            // One acquire per `work` subscription: a re-subscribe of the same key replaces the old one.
+            if feed == "work" && old.is_none() {
+                self.agents.acquire();
+            }
             if let Some(old) = old {
                 self.unwatch_unused(&subs, &old.watch);
             }
@@ -406,6 +423,9 @@ impl Core {
     fn unsubscribe(&self, r: FeedRef) {
         let mut subs = self.subs.lock().unwrap();
         if let Some(sub) = subs.remove(&key(&r)) {
+            if sub.feed == "work" {
+                self.agents.release();
+            }
             self.unwatch_unused(&subs, &sub.watch);
         }
     }
@@ -454,8 +474,10 @@ impl Core {
                 self.unwatch_unused(&subs, &gone);
             }
         }
-        let (f, d) = (feed.to_string(), dir.to_string());
+        let (f, d, agents) = (feed.to_string(), dir.to_string(), self.agents.clone());
         let read = tokio::task::spawn_blocking(move || match f.as_str() {
+            "project" => status_feed::value(&d),
+            "work" => work_feed::value(&d, &agents.all(), agents.loaded(), agents.error()),
             "repo" => repo_feed::value(&d),
             "diff" => diff_feed::value(&d),
             "prs" => prs_feed::value(&d),
@@ -491,14 +513,18 @@ impl Core {
         for p in paths {
             let (Some(name), Some(parent)) = (p.file_name().and_then(|n| n.to_str()), p.parent()) else { continue };
             for s in subs.values() {
-                let hit = if reads_git(&s.feed) {
+                let hit = if s.feed == "work" {
+                    false
+                } else if reads_git(&s.feed) {
                     git_hit(&s.files, &s.trees, s.top.as_ref(), &s.ignored, p)
-                } else if name == "bead-panes.json" && records.as_deref() == Some(parent) {
+                } else if s.feed == "beads" && name == "bead-panes.json" && records.as_deref() == Some(parent) {
                     true
                 } else {
                     match name {
                         "wheel.toml" | ".beads" => parent == s.real,
                         "last-touched" => parent == s.real.join(".beads"),
+                        "docs" => s.feed == "project" && parent == s.real,
+                        "CONTEXT.md" => s.feed == "project" && parent == s.real.join("docs"),
                         _ => false,
                     }
                 };
@@ -571,6 +597,23 @@ impl Core {
                     let _ = self.tx.send(Msg::RefreshFeed(feed.into(), changed_dir.clone()));
                 }
                 done
+            }
+            "vision_save" => {
+                let text = arg("text").ok_or_else(|| bad("vision_save needs args.text".into()))?;
+                let changed_dir = dir.clone();
+                let done = tokio::task::spawn_blocking(move || status_feed::save_vision(&dir, &text)).await;
+                // Read the project again whether or not the write went through.
+                let _ = self.tx.send(Msg::RefreshFeed("project".into(), changed_dir));
+                done
+            }
+            "agent_start" => {
+                let brief = arg("brief").filter(|b| !b.is_empty()).ok_or_else(|| bad("agent_start needs args.brief".into()))?;
+                let agents = self.agents.clone();
+                tokio::task::spawn_blocking(move || {
+                    let origin = Origin { dir, pane: if pane.is_empty() { "default".into() } else { pane }, artifact: None, data: None };
+                    agents.start(&origin, &brief, None, None).map(|pane| format!("Started the agent in pane {pane}"))
+                })
+                .await
             }
             other => {
                 return Err(ResponseError::new(
@@ -649,6 +692,17 @@ async fn events(core: Arc<Core>, mut rx: UnboundedReceiver<Msg>) {
     }
 }
 
+/// Ask for every `work` subscription's project to be read again whenever the agent list changes.
+async fn work_changes(core: Arc<Core>) {
+    let mut changes = core.agents.changes();
+    while changes.changed().await.is_ok() {
+        let dirs: BTreeSet<String> = core.subs.lock().unwrap().values().filter(|s| s.feed == "work").map(|s| s.dir.clone()).collect();
+        for dir in dirs {
+            let _ = core.tx.send(Msg::RefreshFeed("work".into(), dir));
+        }
+    }
+}
+
 /// Ask for every `repo`, `prs` and `pr_detail` subscription to be read again each `REPO_EVERY`.
 async fn repo_clock(core: Arc<Core>) {
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + REPO_EVERY, REPO_EVERY);
@@ -671,6 +725,8 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
     })?;
+    let agents = Agents::new("wheel");
+    let core_agents = agents.clone();
     let (main_loop, _) = MainLoop::new_server(|client| {
         let core = Arc::new(Core {
             client,
@@ -680,12 +736,14 @@ pub async fn run() -> anyhow::Result<()> {
             tx,
             work: Mutex::default(),
             waiting: Mutex::default(),
+            agents: core_agents,
         });
         if let Some(dir) = records_dir() {
             core.watch(dir, false);
         }
         tokio::spawn(events(core.clone(), rx));
         tokio::spawn(repo_clock(core.clone()));
+        tokio::spawn(work_changes(core.clone()));
         let mut router = Router::new(core);
         router
             .request::<Initialize, _>(|_, _| async {
@@ -712,6 +770,7 @@ pub async fn run() -> anyhow::Result<()> {
     });
     let result = main_loop.run_buffered(tokio::io::stdin().compat(), tokio::io::stdout().compat_write()).await;
     // A press may still be waiting on its command; the process leaves now, as `shutdown` asks.
+    agents.shutdown();
     if let Err(e) = &result {
         eprintln!("wheelhouse backend: {e}");
     }
@@ -796,5 +855,16 @@ mod tests {
         assert_eq!(pkeys_of(subs.values(), "prs", "/r").len(), 1);
         assert!(pkeys_of(subs.values(), "pr_detail", "/nowhere").is_empty());
         assert!(pkeys_of(subs.values(), "repo", "/r").is_empty());
+    }
+
+    #[test]
+    fn project_watches_its_directory_beads_and_docs_and_work_watches_no_file() {
+        let top = p("/r");
+        let w = watches("project", "/r", &top);
+        assert_eq!(w.watch, vec![(p("/r"), false), (p("/r/.beads"), false), (p("/r/docs"), false)]);
+        let w = watches("work", "/r", &top);
+        assert!(w.watch.is_empty() && w.files.is_empty() && w.trees.is_empty() && w.top.is_none());
+        assert!(!reads_git("work") && !reads_git("project") && !on_clock("work") && !on_clock("project"));
+        assert!(FEEDS.contains(&"project") && FEEDS.contains(&"work") && ACTIONS.contains(&"vision_save") && ACTIONS.contains(&"agent_start"));
     }
 }

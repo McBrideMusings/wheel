@@ -1,18 +1,18 @@
 //! The agents Wheel runs: what each is doing, and starting a new one.
 //!
 //! State comes from `wheel agent watch`, which prints every agent pane as one JSON line and
-//! prints the list again when the daemon announces a change, so nothing here polls. A view that
-//! follows agents has [`Agents`] acquired for as long as a host is subscribed to it, and is told
-//! each change through the hub (`View::agents_changed`).
+//! prints the list again when the daemon announces a change, so nothing here polls. A feed that
+//! follows agents has [`Agents`] acquired for as long as it has a subscriber, and is told each
+//! change through [`Agents::changes`].
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rmcp::model::{CallToolResult, ContentBlock, Tool};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use tokio::sync::watch;
 
 use super::project::Origin;
@@ -28,7 +28,7 @@ pub struct Agent {
     pub agent: String,
     pub harness: String,
     pub model: Option<String>,
-    /// `idle`, `working`, `needs_you` (waiting on a permission) or `stopped`.
+    /// `idle`, `working`, `needs_you` (waiting on a permission), `stopped` or `done` (a turn ended since a client last showed the pane).
     pub status: Option<String>,
     /// What the agent declared it is working on (`work_set`).
     #[serde(default)]
@@ -73,26 +73,14 @@ pub fn parse_line(line: &str) -> Result<Vec<Agent>, String> {
     serde_json::from_str(line).map_err(|e| format!("wheel agent watch: {e}"))
 }
 
-/// The tool a view lists to let its page start an agent.
-pub fn spawn_tool() -> Tool {
-    let schema = json!({
-        "type": "object",
-        "properties": {
-            "brief": { "type": "string", "description": "The agent's first message" },
-            "agent": { "type": "string", "description": "Which agent to run, by name; the agent.default setting when absent" },
-            "model": { "type": "string", "description": "The model to run it on" },
-        },
-        "required": ["brief"],
-    });
-    Tool::new("spawn_agent", "Start an agent in a new pane beside the asking pane and give it a brief", schema.as_object().unwrap().clone())
-}
-
 #[derive(Default)]
 struct State {
     agents: Vec<Agent>,
     /// Whether a list has arrived in this run: the first one counts as a change even when empty.
     loaded: bool,
     users: usize,
+    /// Why `wheel agent watch` could not run, until a list arrives.
+    error: Option<String>,
     /// Changes with every start and stop, so a following thread can tell it is out of date.
     run: u64,
     child: Option<Child>,
@@ -141,6 +129,7 @@ impl Agents {
             }
             s.agents.clear();
             s.loaded = false;
+            s.error = None;
         }
     }
 
@@ -153,6 +142,16 @@ impl Agents {
     /// Every agent pane, as of the last change.
     pub fn all(&self) -> Vec<Agent> {
         self.shared.state.lock().unwrap().agents.clone()
+    }
+
+    /// Whether a list has arrived since the last acquire from nobody.
+    pub fn loaded(&self) -> bool {
+        self.shared.state.lock().unwrap().loaded
+    }
+
+    /// Why the list cannot be followed (`wheel agent watch` did not start), or nothing.
+    pub fn error(&self) -> Option<String> {
+        self.shared.state.lock().unwrap().error.clone()
     }
 
     /// Wakes on every change of the list.
@@ -174,10 +173,11 @@ impl Agents {
         }
     }
 
-    fn start(&self, origin: &Origin, brief: &str, agent: Option<&str>, model: Option<&str>) -> Result<String, String> {
+    /// Split the asking pane, start an agent in the new pane and give it `brief`; the new pane's id.
+    pub fn start(&self, origin: &Origin, brief: &str, agent: Option<&str>, model: Option<&str>) -> Result<String, String> {
         let (program, dir) = (self.shared.program.as_str(), origin.dir.as_str());
         if origin.pane == "default" {
-            return Err("spawn_agent needs the asking pane (_meta wheel/pane)".into());
+            return Err("starting an agent needs the asking pane".into());
         }
         let out = run::text(program, dir, &["pane", "split", &origin.pane])?;
         let pane = out.split_whitespace().next().ok_or("wheel pane split printed no pane id")?.to_string();
@@ -206,9 +206,22 @@ impl Shared {
     /// Store `agents` for run `run`, unless that run is over; announce it when it differs.
     fn set(&self, run: u64, agents: Vec<Agent>) {
         let mut s = self.state.lock().unwrap();
-        if s.run == run && (!s.loaded || s.agents != agents) {
+        if s.run == run && (!s.loaded || s.agents != agents || s.error.is_some()) {
             s.agents = agents;
             s.loaded = true;
+            s.error = None;
+            drop(s);
+            self.changed.send_modify(|n| *n += 1);
+        }
+    }
+
+    /// Record why the list cannot be followed for run `run`, with an empty list, and announce it.
+    fn fail(&self, run: u64, error: String) {
+        let mut s = self.state.lock().unwrap();
+        if s.run == run && s.error.as_ref() != Some(&error) {
+            s.agents.clear();
+            s.loaded = true;
+            s.error = Some(error);
             drop(s);
             self.changed.send_modify(|n| *n += 1);
         }
@@ -227,6 +240,9 @@ impl Shared {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn();
+            if let Err(e) = &spawned {
+                self.fail(run, format!("could not run `{} agent watch`: {e}", self.program));
+            }
             if let Ok(mut child) = spawned {
                 let out = child.stdout.take();
                 {
@@ -261,6 +277,7 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn row(space: &str, cwd: &str, pane: &str, status: &str) -> Value {
         json!({ "space": space, "cwd": cwd, "pane": pane, "agent": "w1", "harness": "claude", "model": "sonnet", "status": status })
@@ -275,5 +292,22 @@ mod tests {
         assert_eq!(mine.len(), 1);
         assert_eq!((mine[0].pane.as_str(), mine[0].status.as_deref()), ("p1", Some("working")));
         assert!(parse_line("not json").is_err());
+    }
+
+    #[test]
+    fn a_watch_that_cannot_start_is_loaded_with_an_error() {
+        let agents = Agents::new("/nonexistent/wheel-program");
+        let changes = agents.changes();
+        agents.acquire();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !agents.loaded() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(agents.loaded());
+        assert!(agents.all().is_empty());
+        assert!(agents.error().unwrap().contains("agent watch"), "{:?}", agents.error());
+        assert!(changes.has_changed().unwrap());
+        agents.release();
+        assert!(!agents.loaded() && agents.error().is_none());
     }
 }

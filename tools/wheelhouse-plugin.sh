@@ -9,8 +9,11 @@
 # git-ignored directory does not once a tracked file's change has shown the watch is live, the
 # other repo is untouched, and a nested tracked file's edit arrives although a beads feed opened the
 # same checkout first); a pane of kind wheelhouse/prs reads `wheelhouse.prs` and `wheelhouse.pr_detail`
-# through a fake `gh` and invokes `wheelhouse.pr_merge`, `pr_draft`, `pr_close` and `run_list`. Prints PASS or FAIL per
-# case. Uses no GUI, focus, mouse or keyboard. Everything it starts is killed by pid at the end.
+# through a fake `gh` and invokes `wheelhouse.pr_merge`, `pr_draft`, `pr_close` and `run_list`; a pane of kind
+# wheelhouse/project reads `wheelhouse.project` of the bd fixture (a write to docs/CONTEXT.md arrives as a patch) and
+# invokes `wheelhouse.vision_save`; a pane of kind wheelhouse/implement reads `wheelhouse.work`, which lists the fake
+# agent started in its own space with its declared item and stage and no agent of another space, and invokes
+# `wheelhouse.agent_start`. Prints PASS or FAIL per case. Uses no GUI, focus, mouse or keyboard. Everything it starts is killed by pid at the end.
 #
 #   tools/wheelhouse-plugin.sh         # uses target/debug/{wheeld,wheel,wheelhouse}
 set -u
@@ -43,7 +46,7 @@ mkdir -p "$T/support" "$T/logs" "$T/home/.wheel" "$T/plugins"
 for f in .zshenv .zprofile .zshrc .zlogin .bash_profile .bashrc .profile; do
   [ -e "$HOME/$f" ] && ln -s "$HOME/$f" "$T/home/$f"
 done
-: > "$T/machine.toml"
+printf '[agent.claude]\ncommand = "%s"\n' "${FAKE_AGENT:-$ROOT/target/debug/wheel-fake-agent}" > "$T/machine.toml"
 ln -s "$ROOT/plugins/wheelhouse" "$T/plugins/wheelhouse"
 RECORDS="$T/home/.wheel/bead-panes.json"
 
@@ -872,6 +875,152 @@ if [ "$(cat "$T/marker-prs-list" 2>/dev/null)" = "11 12" ] && grep -q 'Mark PRs 
 else
   fail "run_list view prs: $(cat "$T/prl.json") $(cat "$T/prl.err") marker=$(cat "$T/marker-prs-list" 2>/dev/null)"
 fi
+
+# 11g the Project, Implement and Swarm panes (wheel-pmf2.4.13): a pane of kind wheelhouse/project reads `wheelhouse.project`
+# of a temp project (the bd fixture) and saves the vision; a pane of kind wheelhouse/implement reads `wheelhouse.work`, which
+# lists the agents of its own space (a fake agent) with their declared item and stage, and starts an agent from a brief.
+PROJ_SPACE=$(w space new "$A")
+PROJ_PANE=$(w pane ls | awk -v s="$PROJ_SPACE" '$1 == s {print $2; exit}')
+w pane kind "$PROJ_PANE" plugin --plugin wheelhouse --plugin-pane project > /dev/null
+w plugin ls --space "$PROJ_SPACE" > "$T/pjls.txt" 2>&1
+if grep -q 'project' "$T/pjls.txt" && grep -q 'implement' "$T/pjls.txt" && grep -q 'swarm' "$T/pjls.txt" && ! grep -qi 'error' "$T/pjls.txt"; then
+  pass "the project, implement and swarm panes are listed with no error"
+else
+  fail "project pane listing: $(cat "$T/pjls.txt")"
+fi
+
+mkdir -p "$A/docs"
+w plugin feed "$PROJ_PANE" wheelhouse.project --params "{\"dir\":\"$A\"}" --count 200 > "$T/pj-feed.json" 2> "$T/pj-feed.err" &
+PIDS+=($!)
+poll 20 grep -q '"has_tracker"' "$T/pj-feed.json"
+python3 - "$T/pj-feed.json" "$EPIC" > "$T/pj-shape.verdict" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+vals = [r["value"] for r in rows if r.get("value")]
+if not vals:
+    print("no value: %r" % rows[:2]); sys.exit()
+v = vals[0]
+problems = []
+for k in ("name", "has_tracker", "vision", "counts", "epics", "error"):
+    if k not in v:
+        problems.append("missing " + k)
+if not problems:
+    for k in ("done", "progress", "ready", "blocked", "open", "deferred"):
+        if not isinstance(v["counts"].get(k), int):
+            problems.append("counts.%s %r" % (k, v["counts"].get(k)))
+    if v["name"] != "proj-a" or v["has_tracker"] is not True or v["error"] is not None:
+        problems.append("header %r" % {k: v[k] for k in ("name", "has_tracker", "error")})
+    if v["counts"]["done"] != 1:
+        problems.append("done %r" % v["counts"])
+    e = [x for x in v["epics"] if x["id"] == sys.argv[2]]
+    if len(e) != 1 or e[0]["title"] != "The epic" or e[0]["all"] != 2 or e[0]["done"] != 0 or e[0]["closed"]:
+        problems.append("epics %r" % v["epics"])
+    for x in v["epics"]:
+        for k in ("id", "title", "done", "all", "ready", "closed"):
+            if k not in x:
+                problems.append("epic missing " + k)
+print("ok" if not problems else "; ".join(problems))
+PY
+check "the project feed has the documented keys and the counts and epics of the bd fixture" "$(head -1 "$T/pj-shape.verdict")"
+
+printf 'Writing the vision down.\n\nMore.\n' > "$A/docs/CONTEXT.md"
+poll 15 grep -q 'Writing the vision down' "$T/pj-feed.json"
+if grep -q '"patch"' "$T/pj-feed.json" && grep -q 'Writing the vision down' "$T/pj-feed.json"; then
+  pass "writing docs/CONTEXT.md arrives on the project feed with the new vision"
+else
+  fail "docs/CONTEXT.md watch: $(tail -c 300 "$T/pj-feed.json") $(cat "$T/pj-feed.err")"
+fi
+
+w plugin action "$PROJ_PANE" wheelhouse.vision_save --args "{\"dir\":\"$A\",\"text\":\"Saved from the pane.\"}" > "$T/pjsave.json" 2> "$T/pjsave.err"
+poll 15 grep -q 'Saved from the pane' "$T/pj-feed.json"
+if grep -q 'Vision saved' "$T/pjsave.json" && grep -q 'Saved from the pane' "$A/docs/CONTEXT.md" && grep -q 'Saved from the pane' "$T/pj-feed.json"; then
+  pass "vision_save answers said 'Vision saved', docs/CONTEXT.md holds the text and the feed patches"
+else
+  fail "vision_save: $(cat "$T/pjsave.json") $(cat "$T/pjsave.err") file: $(head -c 200 "$A/docs/CONTEXT.md")"
+fi
+
+# The Implement pane: agents of this space only.
+WORK_PANE=$(w pane split "$PROJ_PANE" right | awk '{print $1}')
+w pane kind "$WORK_PANE" plugin --plugin wheelhouse --plugin-pane implement > /dev/null
+OTHER_SPACE=$(w space new "$B")
+OTHER_PANE=$(w pane ls | awk -v s="$OTHER_SPACE" '$1 == s {print $2; exit}')
+w pane kind "$OTHER_PANE" plugin --plugin wheelhouse --plugin-pane implement > /dev/null
+w plugin feed "$WORK_PANE" wheelhouse.work --params "{\"dir\":\"$A\"}" --count 200 > "$T/work-feed.json" 2> "$T/work-feed.err" &
+PIDS+=($!)
+poll 20 grep -q '"loaded"' "$T/work-feed.json"
+
+w plugin action "$WORK_PANE" wheelhouse.agent_start --args "{\"dir\":\"$A\",\"brief\":\"hello\"}" > "$T/astart.json" 2> "$T/astart.err"
+AGENT=$(grep -o 'pane p[0-9]*' "$T/astart.json" | head -1 | awk '{print $2}')
+if grep -q 'Started the agent in pane p' "$T/astart.json" && [ -n "$AGENT" ] \
+   && w pane ls | awk -v p="$AGENT" '$2 == p {print $3}' | grep -q agent; then
+  pass "agent_start with a brief answers said naming pane $AGENT, which wheel pane ls shows as an agent pane"
+else
+  fail "agent_start: $(cat "$T/astart.json") $(cat "$T/astart.err") panes: $(w pane ls | tr '\n' ';')"
+fi
+if ! w plugin action "$WORK_PANE" wheelhouse.agent_start --args "{\"dir\":\"$A\",\"brief\":\"\"}" > "$T/astart0.json" 2> "$T/astart0.err"; then
+  pass "agent_start with no brief fails"
+else
+  fail "agent_start with an empty brief answered: $(cat "$T/astart0.json")"
+fi
+
+# An agent in the other space, started the same way from its own pane, must not show in this space's feed.
+w plugin action "$OTHER_PANE" wheelhouse.agent_start --args "{\"dir\":\"$B\",\"brief\":\"hello\"}" > "$T/astartb.json" 2> "$T/astartb.err"
+AGENT_B=$(grep -o 'pane p[0-9]*' "$T/astartb.json" | head -1 | awk '{print $2}')
+[ -n "$AGENT" ] && WHEEL_PANE="$AGENT" w work set --item bead:x --stage verify --note "running the checks" > /dev/null 2>&1
+[ -n "$AGENT_B" ] && WHEEL_PANE="$AGENT_B" w work set --item bead:other-y --stage edit > /dev/null 2>&1
+poll 15 grep -q 'running the checks' "$T/work-feed.json"
+python3 - "$T/work-feed.json" "$AGENT" "$AGENT_B" > "$T/work-shape.verdict" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip().startswith("{")]
+vals = [r["value"] for r in rows if r.get("value")]
+if not vals:
+    print("no value"); sys.exit()
+# The feed value after every patch: the last row with a whole value plus later patches is hard to replay here, so look at
+# the last value when the final row is a value, else apply the patches.
+import copy
+cur = None
+for r in rows:
+    if r.get("value") is not None:
+        cur = copy.deepcopy(r["value"])
+    elif r.get("patch") and cur is not None:
+        for op in r["patch"]:
+            parts = [p.replace("~1", "/").replace("~0", "~") for p in op["path"].split("/")[1:]]
+            t = cur
+            for p in parts[:-1]:
+                t = t[int(p)] if isinstance(t, list) else t[p]
+            last = parts[-1] if parts else None
+            if op["op"] in ("add", "replace"):
+                if isinstance(t, list):
+                    if last == "-": t.append(op["value"])
+                    elif op["op"] == "add": t.insert(int(last), op["value"])
+                    else: t[int(last)] = op["value"]
+                elif last is None: cur = op["value"]
+                else: t[last] = op["value"]
+            elif op["op"] == "remove":
+                if isinstance(t, list): del t[int(last)]
+                else: del t[last]
+problems = []
+if cur is None:
+    print("no value"); sys.exit()
+for k in ("name", "loaded", "error", "agents"):
+    if k not in cur:
+        problems.append("missing " + k)
+if not problems:
+    mine = [a for a in cur["agents"] if a["pane"] == sys.argv[2]]
+    if len(mine) != 1:
+        problems.append("agent %s rows %r" % (sys.argv[2], cur["agents"]))
+    else:
+        a = mine[0]
+        if a.get("item") != "bead x" or a.get("stage") != "verify" or a.get("note") != "running the checks":
+            problems.append("declared work %r" % a)
+        for k in ("pane", "space", "agent", "model", "status", "item", "stage", "note"):
+            if k not in a:
+                problems.append("agent missing " + k)
+    if sys.argv[3] and any(a["pane"] == sys.argv[3] for a in cur["agents"]):
+        problems.append("the other space's agent %s is listed" % sys.argv[3])
+print("ok" if not problems else "; ".join(problems))
+PY
+check "the work feed lists the agent started in this space with its declared item and stage, and not the other space's agent" "$(head -1 "$T/work-shape.verdict")"
 
 # 12 kill -9 of the backend: stale, then a fresh value.
 OLD=$(backend_pid "$SPACE")

@@ -51,14 +51,6 @@ impl Page {
     pub fn boxed(&mut self, id: &str, axis: &str, children: Vec<String>, extra: Value) -> String {
         layout::boxed(&mut self.out, id, axis, children, &extra)
     }
-    /// A number over a caption in an outlined box: `value` in `tone` (muted when zero), `label` under it.
-    pub fn stat(&mut self, id: &str, value: &str, label: &str, tone: &str) -> String {
-        let v = self.label(&format!("{id}.v"), value, json!({ "size": 22, "weight": "semibold", "tabular": true, "tone": tone }));
-        let l = self.label(&format!("{id}.l"), label, json!({ "tone": "muted", "size": 11 }));
-        layout::modify(&mut self.out, &l, json!({ "lineLimit": 1 }));
-        self.boxed(id, "v", vec![v, l], json!({ "border": "line", "spacing": 2, "align": "start", "padding": [8, 10] }))
-    }
-
     /// Puts `value` in the data model at `path`, the path a control's `value` is bound to. A change the person makes there
     /// calls the tool the path's first segment names (`view::changed`).
     pub fn bind(&mut self, path: &str, value: Value) {

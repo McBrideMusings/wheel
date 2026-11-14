@@ -62,10 +62,6 @@ impl Watcher {
             .collect()
     }
 
-    pub fn watching(&self, view: &str, dir: &str) -> bool {
-        self.subs.contains_key(&(view.to_string(), dir.to_string()))
-    }
-
     /// One second passed: the subscriptions to refresh now.
     pub fn tick(&mut self) -> Vec<Due> {
         let mut due = vec![];
@@ -96,7 +92,7 @@ mod tests {
         let d = dir.to_string_lossy().into_owned();
         assert!(w.tick().is_empty(), "nothing is watched yet");
         w.watch("v", &d, "a2ui://v", vec![file.clone()], 3);
-        assert!(w.watching("v", &d));
+        assert_eq!(w.subscriptions().len(), 1);
         assert!(w.tick().is_empty());
         std::fs::File::options().write(true).open(&file).unwrap().set_modified(SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(w.tick(), vec![Due { view: "v".into(), dir: d.clone(), uri: "a2ui://v".into() }]);
@@ -104,7 +100,7 @@ mod tests {
         assert!(w.tick().is_empty());
         assert_eq!(w.tick().len(), 1, "the third second without a check is due");
         w.unwatch("v", &d);
-        assert!(!w.watching("v", &d));
+        assert!(w.subscriptions().is_empty());
         assert!(w.tick().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }

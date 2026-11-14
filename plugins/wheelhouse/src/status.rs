@@ -1,4 +1,4 @@
-//! The Project view's data: the project's status against its vision. Counts of the tracker's
+//! The Project pane's data: the project's status against its vision. Counts of the tracker's
 //! items by state, and each epic's progress.
 
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::core::tracker::{self, Item};
 
 pub mod cli;
-pub mod serve;
+pub mod feed;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Counts {

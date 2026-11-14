@@ -51,21 +51,15 @@ enum Command {
 }
 
 /// Every view `serve` offers.
-fn registry(agents: &core::agents::Agents) -> view::Registry {
+fn registry() -> view::Registry {
     view::Registry::default().with(beads::serve::BeadsView::new())
         .with(issues::serve::IssuesView::new())
-        .with(status::serve::ProjectView::new())
-        .with(work::serve::WorkView::new(work::serve::Mode::Implement, agents.clone()))
-        .with(work::serve::WorkView::new(work::serve::Mode::Swarm, agents.clone()))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
-        Command::Serve => {
-            let agents = core::agents::Agents::new("wheel");
-            serve::run(registry(&agents), agents).await
-        }
+        Command::Serve => serve::run(registry()).await,
         Command::Backend => backend::run().await,
         Command::Agents(args) => agents_cli::run(args, core::agents::Agents::new("wheel")).await,
         Command::Beads(args) => beads::cli::run(args),

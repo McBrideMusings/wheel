@@ -190,6 +190,17 @@ function M.cell(body, extra)
     return c
 end
 
+-- The Table node `t` given the height its rows need. The client wraps a plugin pane in a scroll view, which gives a Table no
+-- height of its own, so the page names it: the header row, then every row and section title row (`lines`). The frame clips
+-- what the client's own minimum height would draw below the last row.
+local HEADER_HEIGHT, LINE_HEIGHT = 34, 24
+function M.sized_table(t)
+    local lines = 0
+    for _, s in t.sections do lines += 1 + #s.rows end
+    t.modifiers = { { frame = { height = HEADER_HEIGHT + LINE_HEIGHT * math.max(lines, 1), alignment = "top" } }, { clipShape = { cornerRadius = 0 } } }
+    return t
+end
+
 -- A table column; `tree` holds the fold control, `wide` shows only when the pane is wide, `sortable` sorts on a header click.
 function M.column(key, label, width, tree, wide, sortable)
     return { key = key, label = label, width = width, tree = tree or nil, wide = wide or nil, sortable = sortable or nil }
