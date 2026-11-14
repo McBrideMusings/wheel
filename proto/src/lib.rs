@@ -207,6 +207,10 @@ pub struct BackendInfo {
     pub watch: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub needs: Vec<String>,
+    /// Where wheeld connects to a backend it never starts: an `[[external_backend]]`'s `connect`
+    /// (`unix:///…` or `ws://…`, never its token). None for a backend wheeld runs from `command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect: Option<String>,
     #[serde(default)]
     pub state: BackendState,
     #[serde(default, skip_serializing_if = "Option::is_none")]

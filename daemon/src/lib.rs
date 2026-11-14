@@ -7,6 +7,7 @@ mod agents;
 mod app;
 mod artifacts;
 mod backends;
+mod external_backends;
 mod brief;
 mod builtins;
 mod claude;

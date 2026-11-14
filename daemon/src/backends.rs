@@ -27,6 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wheel_proto::{BackendInfo, BackendState, BackendTransport, PaneKind, PluginPaneInfo};
 
+use crate::external_backends::External;
 use crate::plugins::Package;
 use crate::server::AppState;
 use crate::spaces::{space_find, space_panes, Spaces};
@@ -582,6 +583,9 @@ pub(crate) struct Backend {
     pgid: Mutex<Option<u32>>,
     /// When the start (socket connect and `initialize`) must be done by.
     deadline: Instant,
+    /// An `[[external_backend]]`: wheeld connected to it and never started it, so it is never
+    /// told `shutdown` and never signalled.
+    external: bool,
 }
 
 static NEXT_BACKEND: AtomicU64 = AtomicU64::new(1);
@@ -589,6 +593,7 @@ static NEXT_BACKEND: AtomicU64 = AtomicU64::new(1);
 impl Backend {
     fn new(plugin: String, info: BackendInfo) -> Backend {
         Backend {
+            external: info.connect.is_some(),
             id: NEXT_BACKEND.fetch_add(1, Ordering::SeqCst),
             plugin,
             state: watch::channel(info.state).0,
@@ -619,6 +624,12 @@ impl Backend {
     /// within the grace. A backend with no connection yet (still starting) was never told it
     /// can shut down, so its group is killed at once. Returns how the process ended.
     async fn stop(&self, handle: &mut tokio::task::JoinHandle<Ended>) -> Ended {
+        if self.external {
+            // Ending the task drops the connection; the backend keeps running.
+            handle.abort();
+            let _ = (&mut *handle).await;
+            return Ended::failed("wheeld closed the connection");
+        }
         let socket = self.socket.lock().unwrap().clone();
         match socket {
             Some(socket) => {
@@ -730,8 +741,21 @@ struct Spec {
     log: Log,
     /// The manifest's `[backend]`, which the instance reports until it says more.
     declared: BackendInfo,
-    /// The package folder watched for `declared.watch`; none for a built-in package.
+    /// The package folder watched for `declared.watch`; none for a built-in package or an
+    /// external backend.
     watch_dir: Option<PathBuf>,
+    /// An `[[external_backend]]`'s address: wheeld connects there and starts nothing.
+    connect: Option<crate::external_backends::Connect>,
+    /// This machine's `wheel.toml`, read again with the space's before each reconnect.
+    machine_file: PathBuf,
+}
+
+impl Spec {
+    /// What a wait before the next start is called: an external backend is connected again,
+    /// never restarted.
+    fn again(&self) -> &'static str {
+        if self.connect.is_some() { "reconnecting" } else { "restarting" }
+    }
 }
 
 /// What a request to a supervisor answers: the instance, or why there is none.
@@ -873,8 +897,9 @@ async fn supervise(mut sup: Sup) {
                 let answer = match (&sup.running, sup.wait) {
                     (Some(r), _) => Ok(r.backend.clone()),
                     (None, Some(at)) => Err(format!(
-                        "backend of {} is restarting in {} s: {}",
+                        "backend of {} is {} in {} s: {}",
                         spec.plugin,
+                        spec.again(),
                         remaining_secs(at.saturating_duration_since(tokio::time::Instant::now())),
                         sup.wait_why
                     )),
@@ -972,6 +997,19 @@ fn watch_restart(since_launch: Option<Duration>, failures: u32) -> Option<(u32, 
     }
 }
 
+/// Whether the `[[external_backend]]` an external spec came from still names this connection:
+/// the same id, address and token in the files now. When it was removed or changed, this
+/// connection is not made again; a read then goes to the entry as it is now.
+fn external_still_named(spec: &Spec) -> Result<(), String> {
+    let space = Some(spec.space_dir.as_str()).filter(|d| !d.is_empty());
+    let now = crate::external_backends::resolve(&spec.machine_file, space);
+    match now.iter().find(|e| e.id == spec.plugin) {
+        None => Err(format!("no [[external_backend]] names {} now", spec.plugin)),
+        Some(e) if e.key() != spec.key => Err(format!("the [[external_backend]] {} changed", spec.plugin)),
+        Some(_) => Ok(()),
+    }
+}
+
 /// `old` run from the manifest text `text`: its command, transport and `[backend]` keys are the
 /// manifest's now. Fails when the manifest does not parse or has no `[backend]`.
 fn spec_from_manifest(old: &Spec, text: &str) -> Result<Spec, String> {
@@ -1000,7 +1038,10 @@ impl Sup {
                 ..spec.declared.clone()
             },
         ));
-        spec.log.message("info", &format!("starting `{}`", spec.command));
+        match &spec.connect {
+            Some(c) => spec.log.message("info", &format!("connecting to {}", c.address())),
+            None => spec.log.message("info", &format!("starting `{}`", spec.command)),
+        }
         self.hub.live.lock().unwrap().insert(spec.key.clone(), backend.clone());
         let handle = {
             let (backend, hub, spec) = (backend.clone(), self.hub.clone(), spec.clone());
@@ -1034,6 +1075,9 @@ impl Sup {
     /// `[backend]`; the spec is then left as it was.
     fn refresh(&mut self) -> Result<(), String> {
         let Some(spec) = &self.spec else { return Ok(()) };
+        if spec.connect.is_some() {
+            return external_still_named(spec);
+        }
         let Some(dir) = &spec.watch_dir else { return Ok(()) };
         let path = dir.join(crate::plugins::MANIFEST);
         let text = std::fs::read_to_string(&path)
@@ -1123,9 +1167,10 @@ impl Sup {
         self.failures += 1;
         let delay = backoff(self.failures);
         let secs = remaining_secs(delay);
-        self.finish(&backend, &ended, format!("{}; restarting in {secs} s", ended.why));
+        let again = self.spec.as_ref().map_or("restarting", Spec::again);
+        self.finish(&backend, &ended, format!("{}; {again} in {secs} s", ended.why));
         self.log
-            .message("info", &format!("restarting in {secs} s after: {}", ended.why));
+            .message("info", &format!("{again} in {secs} s after: {}", ended.why));
         self.wait = Some(tokio::time::Instant::now() + delay);
         self.wait_why = ended.why;
     }
@@ -1168,6 +1213,9 @@ impl Sup {
 /// Start the process, connect, `initialize`, then keep the connection until either side ends.
 /// Returns why it ended.
 async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
+    if let Some(connect) = &spec.connect {
+        return serve_external(backend, hub, spec, connect).await;
+    }
     let mut command = tokio::process::Command::new("/bin/sh");
     command
         .arg("-c")
@@ -1267,32 +1315,16 @@ async fn drive(
     // The connection's loop ends with this function, whichever way it returns.
     let mut main = AbortOnDrop(main);
 
-    let params = InitializeParams {
-        wheel_version: env!("CARGO_PKG_VERSION").into(),
-        plugin_id: spec.plugin.clone(),
-        config: json!({}),
-    };
-    let init = tokio::time::timeout_at(
-        tokio::time::Instant::from_std(backend.deadline),
-        server.request::<Initialize>(params),
-    );
-    let initialized = tokio::select! {
+    let init = initialize(backend, spec, &server);
+    let answered = tokio::select! {
         init = init => init,
         status = child.wait() => {
             let ended = Ended::status(status);
             return Ended { why: format!("{} before it answered initialize", ended.why), code: ended.code };
         }
     };
-    match initialized {
-        Ok(Ok(result)) => {
-            hub.attach(&spec.key, backend, server);
-            backend.set(|i| {
-                i.state = BackendState::Running;
-                i.feeds = result.feeds;
-                i.actions = result.actions;
-                i.error = None;
-            });
-        }
+    match answered {
+        Ok(Ok(result)) => initialized(backend, hub, spec, server, result),
         Ok(Err(e)) => {
             // A closed connection is often a process that has exited: its status decides whether
             // the restart policy starts it again.
@@ -1329,6 +1361,167 @@ async fn drive(
             }
         }
     }
+}
+
+/// `initialize` the backend behind `server`, by the start's deadline.
+async fn initialize(
+    backend: &Backend,
+    spec: &Spec,
+    server: &ServerSocket,
+) -> Result<async_lsp::Result<InitializeResult>, tokio::time::error::Elapsed> {
+    let params = InitializeParams {
+        wheel_version: env!("CARGO_PKG_VERSION").into(),
+        plugin_id: spec.plugin.clone(),
+        config: json!({}),
+    };
+    tokio::time::timeout_at(
+        tokio::time::Instant::from_std(backend.deadline),
+        server.request::<Initialize>(params),
+    )
+    .await
+}
+
+/// The backend answered `initialize`: it is the source's backend now, running with the feeds and
+/// actions it named.
+fn initialized(backend: &Backend, hub: &Hub, spec: &Spec, server: ServerSocket, result: InitializeResult) {
+    hub.attach(&spec.key, backend, server);
+    backend.set(|i| {
+        i.state = BackendState::Running;
+        i.feeds = result.feeds;
+        i.actions = result.actions;
+        i.error = None;
+    });
+}
+
+/// Connect to an external backend, `initialize` it, then keep the connection until either side
+/// closes it. Returns why it ended; nothing is started or killed.
+async fn serve_external(
+    backend: &Arc<Backend>,
+    hub: &Arc<Hub>,
+    spec: &Spec,
+    connect: &crate::external_backends::Connect,
+) -> Ended {
+    use crate::external_backends::Connect;
+    let handler = Handler {
+        hub: hub.clone(),
+        source: spec.key.clone(),
+        instance: backend.id,
+        log: spec.log.clone(),
+    };
+    let deadline = tokio::time::Instant::from_std(backend.deadline);
+    let address = connect.address();
+    let late = || Ended::failed(format!("{address} did not accept within {} s", START_TIMEOUT.as_secs()));
+    let (main, server, _bridge) = match connect {
+        Connect::Unix(path) => match tokio::time::timeout_at(deadline, tokio::net::UnixStream::connect(path)).await {
+            Ok(Ok(stream)) => {
+                let (read, write) = stream.into_split();
+                let (main, server) = self::connect(read, write, handler);
+                (main, server, None)
+            }
+            Ok(Err(e)) => return Ended::failed(format!("could not connect to {address}: {e}")),
+            Err(_) => return late(),
+        },
+        Connect::Ws { url, token } => {
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let mut request = match url.as_str().into_client_request() {
+                Ok(r) => r,
+                Err(e) => return Ended::failed(format!("{address} is not a WebSocket URL: {e}")),
+            };
+            match format!("Bearer {token}").parse() {
+                Ok(value) => {
+                    request.headers_mut().insert(http::header::AUTHORIZATION, value);
+                }
+                Err(_) => return Ended::failed("its token cannot be sent in a header".to_string()),
+            }
+            match tokio::time::timeout_at(deadline, tokio_tungstenite::connect_async(request)).await {
+                Ok(Ok((ws, _))) => {
+                    let (ours, theirs) = tokio::io::duplex(1 << 16);
+                    let bridge = AbortOnDrop(tokio::spawn(ws_bridge(ws, ours)));
+                    let (read, write) = tokio::io::split(theirs);
+                    let (main, server) = self::connect(read, write, handler);
+                    (main, server, Some(bridge))
+                }
+                Ok(Err(e)) => return Ended::failed(format!("could not connect to {address}: {e}")),
+                Err(_) => return late(),
+            }
+        }
+    };
+    let mut main = AbortOnDrop(main);
+    match initialize(backend, spec, &server).await {
+        Ok(Ok(result)) => initialized(backend, hub, spec, server, result),
+        Ok(Err(e)) => return Ended::failed(format!("initialize failed: {e}")),
+        Err(_) => return Ended::failed(format!("did not answer initialize within {} s", START_TIMEOUT.as_secs())),
+    }
+    Ended::failed(match (&mut main.0).await {
+        Ok(Ok(())) => "closed its connection".to_string(),
+        Ok(Err(e)) => format!("its connection failed: {e}"),
+        Err(e) => format!("its connection task failed: {e}"),
+    })
+}
+
+/// Carry JSON-RPC between a WebSocket, one text message per JSON-RPC message, and `ours`, which
+/// speaks the Content-Length framing the connection loop reads, until either side ends.
+async fn ws_bridge<S>(ws: tokio_tungstenite::WebSocketStream<S>, ours: tokio::io::DuplexStream)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::AsyncWriteExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let (mut sink, mut stream) = ws.split();
+    let (read, mut write) = tokio::io::split(ours);
+    let mut read = BufReader::new(read);
+    let inbound = async {
+        while let Some(Ok(message)) = stream.next().await {
+            let body: Vec<u8> = match message {
+                Message::Text(text) => text.as_bytes().to_vec(),
+                Message::Binary(bytes) => bytes.to_vec(),
+                Message::Close(_) => break,
+                _ => continue,
+            };
+            let head = format!("Content-Length: {}\r\n\r\n", body.len());
+            if write.write_all(head.as_bytes()).await.is_err() || write.write_all(&body).await.is_err() {
+                break;
+            }
+        }
+    };
+    let outbound = async {
+        while let Some(body) = read_frame(&mut read).await {
+            if sink.send(Message::text(String::from_utf8_lossy(&body).into_owned())).await.is_err() {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    };
+    tokio::select! {
+        () = inbound => {}
+        () = outbound => {}
+    }
+}
+
+/// The body of the next Content-Length framed message on `read`, or None when it ends or a frame
+/// has no length.
+async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(read: &mut R) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut length = None;
+    loop {
+        let mut line = String::new();
+        if read.read_line(&mut line).await.ok()? == 0 {
+            return None;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse::<usize>().ok();
+            }
+        }
+    }
+    let mut body = vec![0u8; length?];
+    read.read_exact(&mut body).await.ok()?;
+    Some(body)
 }
 
 /// Aborts its task when dropped.
@@ -1398,11 +1591,35 @@ fn feed_update(handler: &Handler, params: &Value) -> Result<(), String> {
         .apply_from(Some(handler.instance), &handler.source, feed, &feed_params, update)
 }
 
+/// What serves a plugin's feeds and actions in a space: a package's `[backend]`, which wheeld
+/// runs, or an `[[external_backend]]` with the plugin's id, which it connects to instead.
+pub(crate) enum Source {
+    Package(Package),
+    External(External),
+}
+
+impl Source {
+    /// What its feeds are filed under in the hub, and its supervisor by.
+    fn key(&self) -> String {
+        match self {
+            Source::Package(p) => p.key(),
+            Source::External(e) => e.key(),
+        }
+    }
+
+    fn id(&self) -> &str {
+        match self {
+            Source::Package(p) => &p.info.id,
+            Source::External(e) => &e.id,
+        }
+    }
+}
+
 impl Backends {
-    /// The supervisor of `package`, started if the package has none: its log is opened once, so
-    /// every process of the package appends through one handle.
-    fn slot(&self, state: &AppState, package: &Package) -> Result<Arc<Slot>, String> {
-        let key = package.key();
+    /// The supervisor of `source`, started if it has none: its log is opened once, so every
+    /// process or connection of it appends through one handle.
+    fn slot(&self, state: &AppState, source: &Source) -> Result<Arc<Slot>, String> {
+        let key = source.key();
         let mut slots = self.slots.lock().unwrap();
         if self.closing.load(Ordering::SeqCst) {
             return Err(STOPPING.into());
@@ -1410,7 +1627,7 @@ impl Backends {
         if let Some(slot) = slots.get(&key) {
             return Ok(slot.clone());
         }
-        let log_path = state.plugin_log_path(&package.info.id);
+        let log_path = state.plugin_log_path(source.id());
         let log = Log::open(&log_path).map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
         let (cmd, rx) = mpsc::unbounded_channel();
         let (watch_tx, watch_rx) = mpsc::unbounded_channel();
@@ -1435,8 +1652,31 @@ impl Backends {
         Ok(slot)
     }
 
-    /// What `package` is started from, run for the space directory `space_dir`.
-    fn spec(&self, state: &AppState, package: &Package, slot: &Slot, space_dir: &str) -> Result<Spec, String> {
+    /// What `source` is started from, run for the space directory `space_dir`.
+    fn spec(&self, state: &AppState, source: &Source, slot: &Slot, space_dir: &str) -> Result<Spec, String> {
+        let package = match source {
+            Source::Package(package) => package,
+            Source::External(ext) => {
+                let connect = ext.connect.clone().map_err(|why| {
+                    format!("the [[external_backend]] {} in {} is refused: {why}", ext.id, ext.file.display())
+                })?;
+                return Ok(Spec {
+                    key: ext.key(),
+                    plugin: ext.id.clone(),
+                    command: String::new(),
+                    transport: BackendTransport::default(),
+                    dir: state.instance_dir.clone(),
+                    space_dir: space_dir.to_string(),
+                    env: Arc::new(Vec::new),
+                    socket: PathBuf::new(),
+                    log: slot.log.clone(),
+                    declared: external_declared(ext),
+                    watch_dir: None,
+                    connect: Some(connect),
+                    machine_file: state.machine_file.clone(),
+                });
+            }
+        };
         let Some(declared) = package.info.backend.clone() else {
             return Err(format!("plugin {} has no [backend]", package.info.id));
         };
@@ -1462,6 +1702,8 @@ impl Backends {
             watch_dir: package.dir().map(Path::to_path_buf),
             declared,
             key,
+            connect: None,
+            machine_file: state.machine_file.clone(),
         })
     }
 
@@ -1472,11 +1714,11 @@ impl Backends {
     pub(crate) async fn ensure(
         &self,
         state: &AppState,
-        package: &Package,
+        source: &Source,
         space_dir: &str,
     ) -> Result<Arc<Backend>, String> {
-        let slot = self.slot(state, package)?;
-        let spec = self.spec(state, package, &slot, space_dir)?;
+        let slot = self.slot(state, source)?;
+        let spec = self.spec(state, source, &slot, space_dir)?;
         let (reply, answer) = oneshot::channel();
         slot.cmd
             .send(Cmd::Ensure { spec: Box::new(spec), reply })
@@ -1485,17 +1727,18 @@ impl Backends {
         settle(backend).await
     }
 
-    /// Stop the instance of `package` if one runs and start a new one, or start one when none
-    /// does, once it has answered `initialize`. `space_dir` is used only when the package never
-    /// started before; a restart runs in the space the package last started with.
+    /// Stop the instance of `source` if one runs and start a new one, or start one when none
+    /// does, once it has answered `initialize`; an external backend is disconnected and connected
+    /// again. `space_dir` is used only when the source never started before; a restart runs in
+    /// the space it last started with.
     pub(crate) async fn restart(
         &self,
         state: &AppState,
-        package: &Package,
+        source: &Source,
         space_dir: &str,
     ) -> Result<(), String> {
-        let slot = self.slot(state, package)?;
-        let spec = self.spec(state, package, &slot, space_dir)?;
+        let slot = self.slot(state, source)?;
+        let spec = self.spec(state, source, &slot, space_dir)?;
         let (reply, answer) = oneshot::channel();
         slot.cmd
             .send(Cmd::Restart {
@@ -1506,6 +1749,18 @@ impl Backends {
             .map_err(|_| STOPPING.to_string())?;
         let backend = answer.await.map_err(|_| STOPPING.to_string())??;
         settle(backend).await.map(|_| ())
+    }
+
+    /// What `plugin ls` reports of an `[[external_backend]]`: its address and how its connection
+    /// is doing, or why the entry is refused.
+    pub(crate) fn external_info(&self, ext: &External) -> BackendInfo {
+        let mut info = external_declared(ext);
+        if let Err(why) = &ext.connect {
+            info.error = Some(format!("refused: {why}"));
+            return info;
+        }
+        self.overlay(&ext.key(), &mut info);
+        info
     }
 
     /// `info` with what the running instance of the package keyed `key` says of itself.
@@ -1535,6 +1790,16 @@ impl Backends {
             slot.cmd.send(Cmd::Quit(ack)).ok().map(|()| done)
         });
         futures_util::future::join_all(acks.collect::<Vec<_>>()).await;
+    }
+}
+
+/// What an `[[external_backend]]` declares: its address, and that a lost connection is always
+/// made again.
+fn external_declared(ext: &External) -> BackendInfo {
+    BackendInfo {
+        connect: Some(ext.connect.as_ref().map_or_else(|_| String::new(), |c| c.address())),
+        restart: "always".into(),
+        ..BackendInfo::default()
     }
 }
 
@@ -1745,6 +2010,24 @@ impl AppState {
         .map_err(|e| format!("plugin lookup failed: {e}"))?
     }
 
+    /// What serves plugin `plugin`'s feeds and actions in the space directory `cwd`: the
+    /// `[[external_backend]]` with its id when this machine's or the space's `wheel.toml` names
+    /// one, else its package.
+    pub(crate) async fn backend_source(&self, cwd: Option<&str>, plugin: &str) -> Result<Source, String> {
+        let state = self.me.upgrade().ok_or("wheeld is stopping")?;
+        let (cwd, plugin) = (cwd.map(str::to_string), plugin.to_string());
+        tokio::task::spawn_blocking(move || {
+            let externals = crate::external_backends::resolve(&state.machine_file, cwd.as_deref());
+            if let Some(ext) = externals.into_iter().find(|e| e.id == plugin) {
+                return Ok(Source::External(ext));
+            }
+            let packages = crate::plugins::discover(cwd.as_deref(), &state.machine_plugins());
+            crate::plugins::resolve(&packages, &plugin).cloned().map(Source::Package)
+        })
+        .await
+        .map_err(|e| format!("plugin lookup failed: {e}"))?
+    }
+
     /// The `[[pane]]` entry of the calling pane's own package.
     async fn pane_entry(&self, ctx: &PaneCtx) -> Result<PluginPaneInfo, String> {
         let package = self.resolve_plugin(&ctx.cwd, &ctx.plugin).await?;
@@ -1810,8 +2093,8 @@ impl AppState {
             let value = builtin_value(self, &spaces, name);
             return Ok(hub.subscribe("wheel", name, params, Some(value)));
         }
-        let package = self.resolve_plugin(&cwd, plugin).await?;
-        let backend = self.backends.ensure(self, &package, &cwd).await?;
+        let source = self.backend_source(Some(&cwd), plugin).await?;
+        let backend = self.backends.ensure(self, &source, &cwd).await?;
         let feeds = backend.info.lock().unwrap().feeds.clone();
         if !feeds.iter().any(|f| f == name) {
             return Err(format!(
@@ -1819,8 +2102,7 @@ impl AppState {
                 list_or_none(&feeds)
             ));
         }
-        let source = package.key();
-        Ok(hub.subscribe(&source, name, params, None))
+        Ok(hub.subscribe(&source.key(), name, params, None))
     }
 
     /// Whether the package of plugin pane `pane` lists `action` under its `actions` now.
@@ -1857,8 +2139,8 @@ impl AppState {
             return self.agent_action(pane, name, &args);
         }
         self.action_grant(&ctx, pane, action).await?;
-        let package = self.resolve_plugin(&ctx.cwd, plugin).await?;
-        let backend = self.backends.ensure(self, &package, &ctx.cwd).await?;
+        let source = self.backend_source(Some(&ctx.cwd), plugin).await?;
+        let backend = self.backends.ensure(self, &source, &ctx.cwd).await?;
         // The backend may have taken seconds to start: the grant is checked again right before
         // the call.
         let ctx = self.plugin_pane_ctx(pane)?;
@@ -1903,12 +2185,17 @@ impl AppState {
         tail: Option<usize>,
     ) -> Result<(String, String), String> {
         let cwd = self.settings_space(space)?.map(|(_, cwd)| cwd);
-        let packages = crate::plugins::discover(cwd.as_deref(), &self.machine_plugins());
-        let package = crate::plugins::resolve(&packages, plugin)?;
-        if package.info.backend.is_none() {
-            return Err(format!("plugin {plugin} has no [backend]"));
+        let external = crate::external_backends::resolve(&self.machine_file, cwd.as_deref())
+            .into_iter()
+            .any(|e| e.id == plugin);
+        if !external {
+            let packages = crate::plugins::discover(cwd.as_deref(), &self.machine_plugins());
+            let package = crate::plugins::resolve(&packages, plugin)?;
+            if package.info.backend.is_none() {
+                return Err(format!("plugin {plugin} has no [backend]"));
+            }
         }
-        let path = self.plugin_log_path(&package.info.id);
+        let path = self.plugin_log_path(plugin);
         let text = tail_lines(&path, tail.unwrap_or(DEFAULT_TAIL)).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 format!("plugin {plugin} has no log yet: its backend has not started ({})", path.display())
@@ -1924,21 +2211,14 @@ impl AppState {
     /// `initialize`.
     pub(crate) async fn plugin_restart(&self, plugin: &str, space: Option<&str>) -> Result<(), String> {
         let cwd = self.settings_space(space)?.map(|(_, cwd)| cwd);
-        let package = {
-            let state = self.me.upgrade().ok_or("wheeld is stopping")?;
-            let (cwd, plugin) = (cwd.clone(), plugin.to_string());
-            tokio::task::spawn_blocking(move || {
-                let packages = crate::plugins::discover(cwd.as_deref(), &state.machine_plugins());
-                crate::plugins::resolve(&packages, &plugin).cloned()
-            })
-            .await
-            .map_err(|e| format!("plugin lookup failed: {e}"))??
-        };
-        if package.info.backend.is_none() {
-            return Err(format!("plugin {plugin} has no [backend]"));
+        let source = self.backend_source(cwd.as_deref(), plugin).await?;
+        if let Source::Package(package) = &source {
+            if package.info.backend.is_none() {
+                return Err(format!("plugin {plugin} has no [backend]"));
+            }
         }
         self.backends
-            .restart(self, &package, cwd.as_deref().unwrap_or_default())
+            .restart(self, &source, cwd.as_deref().unwrap_or_default())
             .await
     }
 
@@ -2198,7 +2478,20 @@ mod tests {
             log: Log::open(&dir.join("p.log")).unwrap(),
             declared,
             watch_dir: Some(dir.to_path_buf()),
+            connect: None,
+            machine_file: dir.join("wheel.toml"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_frame_reader_splits_content_length_messages_and_stops_at_the_end() {
+        let bytes: &[u8] = b"Content-Length: 2\r\n\r\n{}content-length:  7\r\nX: y\r\n\r\n[1,2,3]Content-Length: 9\r\n\r\nshort";
+        let mut read = BufReader::new(bytes);
+        assert_eq!(read_frame(&mut read).await.as_deref(), Some(&b"{}"[..]));
+        assert_eq!(read_frame(&mut read).await.as_deref(), Some(&b"[1,2,3]"[..]));
+        assert_eq!(read_frame(&mut read).await, None, "a cut frame is the end");
+        let mut none = BufReader::new(&b"X: y\r\n\r\n{}"[..]);
+        assert_eq!(read_frame(&mut none).await, None, "a frame with no length is the end");
     }
 
     #[test]

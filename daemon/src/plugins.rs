@@ -151,7 +151,7 @@ struct RawPane {
 }
 
 /// Whether `name` is one plain name: no separator, no dot-dot, not empty.
-fn plain_name(name: &str) -> bool {
+pub(crate) fn plain_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
         && name != ".."
@@ -636,19 +636,39 @@ impl AppState {
             .map_or_else(|| PathBuf::from("plugins"), |p| p.join("plugins"))
     }
 
-    /// Every package a space can use.
+    /// Every package a space can use, and every `[[external_backend]]` it can read. A package
+    /// whose id an external backend has reports that backend in place of its own `[backend]`; an
+    /// external backend with no package of its id is listed by itself, with its `wheel.toml` as
+    /// its folder and no panes.
     pub fn plugin_ls(&self, space: Option<&str>) -> Result<Vec<PluginInfo>, String> {
         let cwd = self.settings_space(space)?.map(|(_, cwd)| cwd);
-        Ok(discover(cwd.as_deref(), &self.machine_plugins())
+        let externals = crate::external_backends::resolve(&self.machine_file, cwd.as_deref());
+        let mut out: Vec<PluginInfo> = discover(cwd.as_deref(), &self.machine_plugins())
             .into_iter()
             .map(|p| {
                 let mut info = p.info.clone();
-                if let Some(backend) = &mut info.backend {
+                if let Some(ext) = externals.iter().find(|e| e.id == info.id) {
+                    info.backend = Some(self.backends.external_info(ext));
+                } else if let Some(backend) = &mut info.backend {
                     self.backends.overlay(&p.key(), backend);
                 }
                 info
             })
-            .collect())
+            .collect();
+        for ext in &externals {
+            if !out.iter().any(|p| p.id == ext.id) {
+                out.push(PluginInfo {
+                    id: ext.id.clone(),
+                    version: String::new(),
+                    scope: ext.scope,
+                    dir: Some(ext.file.display().to_string()),
+                    panes: Vec::new(),
+                    backend: Some(self.backends.external_info(ext)),
+                    error: None,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// The package and pane that `plugin`/`plugin_pane` mean in a space whose directory is `cwd`.

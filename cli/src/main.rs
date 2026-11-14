@@ -4276,7 +4276,10 @@ async fn plugin_ls(conn: &mut Conn, space: Option<String>, json: bool) -> Result
                 wheel_proto::BackendTransport::Unix => "unix",
             };
             let pid = backend.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
-            println!("  backend: {state}{pid} ({transport}) {}", backend.command);
+            match &backend.connect {
+                Some(connect) => println!("  backend: {state} (external) {connect}"),
+                None => println!("  backend: {state}{pid} ({transport}) {}", backend.command),
+            }
             if !backend.feeds.is_empty() {
                 println!("    feeds: {}", backend.feeds.join(", "));
             }
