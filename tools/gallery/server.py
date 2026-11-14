@@ -368,6 +368,9 @@ CANVAS_COMMANDS = [
 own = klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", [
     ("Canvas", "Canvas", [("a display list with a camera and hit regions; needs a scene, not shown", secondary("Used by pages that draw graphs, such as the Beads dependency graph. A hit's tip grows to the height of its lines, and the hover outline follows the pointer when a scroll pans or zooms the canvas under it.")),
                           ("commands: a Canvas 2D command list a pane script records (paths, curves, arc, rect, roundRect, styles, globalAlpha, save/restore, translate, scale, rotate, fillText, drawImage); no camera, controls, background or border, `height` points tall, as wide as it is offered; reports its size as canvas-size:<canvasKey>; pointerAction raises {kind, x, y, button, dx, dy}", put("Canvas", commands=CANVAS_COMMANDS, height=240, canvasKey="gallery"))]),
+    ("Terminal", "Terminal", [("pane: a terminal pane's id, height: points tall (default 320), as wide as it is offered; a pane script's host draws that pane's live terminal. This gallery is not a plugin pane, so it shows the note \"cannot show a terminal inside a page\"; the fixture tools/fixtures/plugins/embed draws it live", put("Terminal", pane="p1", height=120))]),
+    ("AgentChat", "AgentChat", [("pane: an agent pane's id, height: points tall (default 320), as wide as it is offered. This gallery is not a plugin pane, so it shows the note \"cannot show an agent chat inside a page\"; the Mac client hosts it with wheel-pmf2.4.15", put("AgentChat", pane="p1", height=120))]),
+    ("WebView", "WebView", [("url: an http or https address, height: points tall (default 320), as wide as it is offered; any other scheme shows a dashed note in place", put("WebView", url="https://example.com", height=220))]),
 ])
 ONLY = sys.argv[2] if len(sys.argv) > 2 else None  # a class name shows that class alone
 page = col([

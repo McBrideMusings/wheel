@@ -159,6 +159,10 @@ impl Native {
     pub fn open_terminal(&self, pane: &str, term: &str, space: Option<&str>, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"terminal","term":term,"space":space,"ws":ws}));
     }
+    /// Every pane and the terminal or agent it holds (`layout::pane_targets`), for the terminals a page embeds.
+    pub fn pane_targets(&self, panes: &serde_json::Value) {
+        self.call(json!({"op":"pane_targets","panes":panes}));
+    }
     /// `space`'s `terminal.*` settings as wheeld resolved them: its terminals restyle in place.
     pub fn terminal_look(&self, space: &str, settings: &[wheel_proto::SettingInfo]) {
         let terminal: Vec<&wheel_proto::SettingInfo> = settings.iter().filter(|s| s.key.starts_with("terminal.")).collect();

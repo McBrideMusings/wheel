@@ -98,6 +98,10 @@ pub struct Client {
     tray_drag: Option<crate::tray::Drag>,
     /// Panes drawn by the native views in the space shown, in layout order.
     pub native_panes: Vec<String>,
+    /// The pane to target map of the layout held, built when the layout changes.
+    pane_targets: serde_json::Value,
+    /// The last `pane_targets` map sent to the bridge.
+    pane_targets_sent: serde_json::Value,
     /// Every pane that has a native view, with its kind, and where it was last placed.
     opened: HashMap<String, String>,
     placed: HashMap<String, Placement>,
@@ -416,7 +420,7 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
@@ -621,6 +625,7 @@ impl Client {
                     // The layout we hold is the old daemon's: its terminal ids mean nothing to the
                     // new one. Nothing opens until the layout that follows this event arrives.
                     self.spaces.clear();
+                    self.pane_targets = pane_targets(&self.spaces);
                     self.sessions.clear();
                     self.reported = None;
                     self.overrides.clear();
@@ -684,6 +689,7 @@ impl Client {
                 // layout is not read, so the old one's panes would be stale. The next `Up` applies
                 // a layout again.
                 self.spaces.clear();
+                self.pane_targets = pane_targets(&self.spaces);
                 self.sessions.clear();
                 false
             }
@@ -696,6 +702,7 @@ impl Client {
         }
         let old_root = self.space().map(|s| s.root.clone());
         self.spaces = layout.spaces;
+        self.pane_targets = pane_targets(&self.spaces);
         self.sessions = layout.sessions;
         let dragged = std::mem::take(&mut self.overrides);
         self.animate_layout(old_root, &dragged);
@@ -1756,6 +1763,10 @@ impl Client {
     /// A view in a layer has every card above it cut out of it, and its own card's resize corner.
     fn sync_native(&mut self, layers: &[Layer]) {
         self.native_panes.clear();
+        if self.pane_targets != self.pane_targets_sent {
+            self.native.pane_targets(&self.pane_targets);
+            self.pane_targets_sent = self.pane_targets.clone();
+        }
         // The first time a space with an empty pane is shown, its plugins are listed (a layout change lists them again).
         self.ask_plugins(false);
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();

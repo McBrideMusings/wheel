@@ -130,6 +130,35 @@ Pointer events reach `update` as `on_pointer`'s table with the event's fields ad
 
 The size report: the stage dispatches the reserved action `canvas-size:<key>` with `{ w, h }` when it appears and whenever its size changes. `PluginPane` routes it to `PaneRuntime.setCanvasSize(key:width:height:)`, which stores the size in a table the prelude reads and returns whether it changed by 0.5 pt or more; `PluginPane` renders again only then. The action never reaches `update`. Sizes survive `reload`. Until the client has measured a canvas once, `draw` gets `w = 0` and `h = height`, so the first frame draws at zero width and the report triggers the second. The fixture `tools/fixtures/plugins/canvas` draws with every call and shows the last pointer event.
 
+### Embedded panes and web views
+
+A pane script names three more components, which the `ui` prelude writes as nodes like any other:
+
+| Component | Props | Draws |
+| --- | --- | --- |
+| `Terminal` | `pane` (a terminal pane's id), `height` (points, default 320) | that pane's live terminal, as wide as it is offered |
+| `AgentChat` | `pane` (an agent pane's id), `height` (default 320) | that agent pane's conversation |
+| `WebView` | `url` (http or https), `height` (default 320) | a WebKit view; any other scheme shows a dashed note in place |
+
+WheelUI draws `Terminal` and `AgentChat` through the environment value `a2uiPaneEmbed` (`apple/WheelUI/Sources/WheelUI/A2UI/A2UIEmbed.swift`), a closure `(A2UIPaneEmbed) -> AnyView?` where `A2UIPaneEmbed` is `{ kind: terminal | agent_chat, pane }`. The host returns a view for every pane of a kind it supports (its own message for a pane that is gone or is not a terminal) and nil for a kind it cannot show, which draws "This client cannot show an agent chat inside a page" (or the terminal form). WheelUI frames the result to `height` and the full width and clips it. `WebView` needs no host.
+
+What each client hosts today:
+
+| Client | Terminal | WebView | AgentChat |
+| --- | --- | --- | --- |
+| GPUI Mac (`clients/gpui/native/Bridge.swift`) | yes | yes | no (wheel-pmf2.4.15) |
+| iOS | no (wheel-pmf2.2.3) | yes | no (wheel-pmf2.2.3) |
+
+The GPUI Mac host resolves a pane id to its terminal through `pane_targets`, a bridge command the Rust client builds from the layout when it changes and sends when the map differs from the one last sent: `{"op":"pane_targets","panes":{"p2":{"term":"t1"},"p5":{"term":"t2","agent":"codex-1"},"p9":{"agent":"claude-3"}}}`, one entry for every pane of every space the client knows. An embed attaches to the term (`term_attach`), writes as `term_input` and reports its size as `term_resize`. `wheeld` sizes a term to the newest `term_resize`, so the same pane's grid view reflows to the embed's size while the embed is open. The bridge sends `term_detach` only when no pane host and no other embed still uses the term. When an embed lets go of a term a grid pane still holds, that pane sends its own size again, so the term returns to the grid's size. An embed whose `pane` prop changes attaches to the new pane's term and releases the old one.
+
+Every `term_attach` makes `wheeld` answer `term_attached` and replay the whole screen as `term_output` to every session of the term on the connection. The bridge therefore resets every view of that term (`ESC c`) when `term_attached` arrives, and the replay that follows repaints all of them from the same state.
+
+A `WebView` follows a link in place and only to http, https or about; any other scheme is refused.
+
+The bridge's debug `plugin` state lists a plugin pane's live embeds as `"embeds": [{"pane": "p12", "term": "t1" | null, "bytes": <bytes received>}]`, so a check sees an embed attached and receiving.
+
+The fixture `tools/fixtures/plugins/embed` shows a list of this space's terminal panes (from the `wheel.panes` feed), the picked pane's `Terminal`, a `WebView` of `https://example.com` and an `AgentChat` of the space's first agent pane (from `wheel.agents`).
+
 ## Plugin panes
 
 A plugin package is a folder holding `wheel-plugin.toml`: `[plugin]` (`id`, `version`) and any number of `[[pane]]` (`id`, `title`, `script`, `reads`, `actions`). `wheeld` finds packages in `<project>/.wheel/plugins/<id>/`, then `~/.wheel/plugins/<id>/` (beside the machine `wheel.toml`), then its built-ins (`daemon/plugins/<id>/`, compiled in; `sample` has a counter and a text field). The first package with an id is the one a pane runs, and a project's packages show only in its own spaces (`daemon/src/plugins.rs`). A script path may not leave its package, and a script that with the package's other `.luau` files comes to over 1 MB is refused. Those files are the modules `require` reads: every `.luau` under the package folder but the pane's own script, at most 8 folders deep and 10,000 entries, skipping hidden folders and `node_modules`, `target`, `build`, `dist` and `vendor`, without entering a symlinked folder or reading a symlinked file that resolves outside the package. A module that cannot be read (not UTF-8, no permission) is left out and logged, never a refusal of the pane.

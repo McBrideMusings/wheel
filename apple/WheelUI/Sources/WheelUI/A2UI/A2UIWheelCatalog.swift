@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
-let wheelA2UIExtensions: Set<String> = ["Table", "Canvas", "Unsupported",
+let wheelA2UIExtensions: Set<String> = ["Table", "Canvas", "Terminal", "AgentChat", "WebView", "Unsupported",
     "ProgressView", "Gauge", "Menu", "Link", "Form", "Section", "LabeledContent", "Grid", "GridRow", "Stepper", "ColorPicker", "Popover", "Alert", "ConfirmationDialog", "NavigationSplitView", "NavigationStack", "ViewThatFits", "HSplitView", "VSplitView", "Toolbar", "Chart", "Map", "ShareLink", "PasteButton"]
 
 // The palette is the system's own semantic colours, so a page follows light and dark and the
@@ -42,6 +42,9 @@ struct WheelA2UICatalog {
         switch typeName {
         case "Table": A2UITableView(node: node, surface: surface)
         case "Canvas": A2UICanvasView(node: node, surface: surface)
+        case "Terminal": A2UIPaneEmbedView(kind: .terminal, node: node)
+        case "AgentChat": A2UIPaneEmbedView(kind: .agentChat, node: node)
+        case "WebView": A2UIWebViewView(node: node)
         case "Unsupported": A2UIUnsupportedView(node: node)
         case "ProgressView": A2UIProgressViewView(node: node)
         case "Gauge": A2UIGaugeView(node: node)

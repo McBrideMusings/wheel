@@ -82,7 +82,7 @@ final class Slot: NSView {
     var pageShown: Bool { page?.isNative == true }
     /// A plugin pane (ADR-0041): its Luau script drawn as A2UI components, and the plugin and pane it runs, as wheeld names them.
     var plugin: PluginPane?
-    var pluginView: NSHostingView<PluginPaneView>?
+    var pluginView: NSHostingView<AnyView>?
     var pluginLabel: String?
     /// A browser pane: WheelUI's model, the one the Swift Mac app shows under its chrome. Here the
     /// GPUI view draws the chrome from the state the bridge emits on every change.
@@ -99,6 +99,101 @@ final class Slot: NSView {
     var writes: [String] = []
     init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
     var content: NSView { pluginView ?? (pageShown ? pageView : nil) ?? web ?? terminal! }
+}
+
+/// A pane's terminal drawn inside a plugin pane's page (`ui.Terminal{pane}`, ADR-0042): its own session and
+/// surface on the term the pane holds, the page's size its grid. It shows a message instead when the pane is
+/// gone or holds no terminal, and attaches again when `pane_targets` says the pane has one.
+@MainActor final class EmbedTerminal: NSView {
+    var pane: String
+    let hostPane: String
+    unowned let native: Native
+    var termID: String?
+    var session: InMemoryTerminalSession?
+    var terminal: DropTerminalView?
+    var bytes = 0
+    /// The last grid this embed sent as `term_resize`.
+    var lastSent: [Int]?
+    let note = NSTextField(labelWithString: "")
+    init(native: Native, hostPane: String, pane: String) {
+        self.native = native; self.hostPane = hostPane; self.pane = pane
+        super.init(frame: .zero)
+        note.alignment = .center
+        note.textColor = .secondaryLabelColor
+        note.lineBreakMode = .byTruncatingTail
+        addSubview(note)
+        resolve()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() {
+        super.layout()
+        terminal?.frame = bounds
+        let h = note.fittingSize.height
+        note.frame = NSRect(x: 0, y: (bounds.height - h) / 2, width: bounds.width, height: h)
+    }
+    /// Stop showing the term: remove the surface and release the term (idempotent, the second call finds no term).
+    func drop() {
+        let old = termID
+        terminal?.removeFromSuperview()
+        terminal = nil; session = nil; termID = nil; lastSent = nil
+        if let old { native.release(old, except: self) }
+    }
+    /// The term the pane holds now, attached; the old one detached when nothing else uses it.
+    func resolve() {
+        let term = native.paneTargets[pane]?["term"]
+        // The message follows every resolution, the first included, whether or not the term changed.
+        note.stringValue = term != nil ? "" : native.paneTargets[pane] == nil ? "Pane \(pane) is gone" : "Pane \(pane) has no terminal"
+        note.isHidden = term != nil
+        needsLayout = true
+        guard term != termID else { return }
+        drop()
+        guard let term else { return }
+        termID = term
+        if let ws = native.pluginURL { native.connect(ws) }
+        let session = InMemoryTerminalSession(write: { [weak self] data in
+            Task { @MainActor in
+                guard let self, self.termID == term else { return }
+                self.native.send(["op": "term_input", "id": term, "data": data.base64EncodedString()])
+            }
+        }, resize: { [weak self] viewport in
+            Task { @MainActor in
+                guard let self, self.termID == term else { return }
+                let grid = [Int(viewport.columns), Int(viewport.rows)]
+                guard self.lastSent != grid else { return }
+                self.lastSent = grid
+                self.native.send(["op": "term_resize", "id": term, "cols": grid[0], "rows": grid[1]])
+            }
+        })
+        let view = DropTerminalView(frame: bounds)
+        view.controller = native.controller(for: native.panes[hostPane]?.space)
+        view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        self.session = session
+        terminal = view
+        addSubview(view)
+        native.send(["op": "term_attach", "id": term])
+        needsLayout = true
+    }
+}
+
+/// `EmbedTerminal` for SwiftUI; its registration on `Native` lasts as long as the view.
+struct EmbeddedTerminal: NSViewRepresentable {
+    let native: Native
+    let hostPane: String
+    let pane: String
+    func makeNSView(context: Context) -> EmbedTerminal {
+        let view = EmbedTerminal(native: native, hostPane: hostPane, pane: pane)
+        native.embeds[ObjectIdentifier(view)] = view
+        return view
+    }
+    func updateNSView(_ view: EmbedTerminal, context: Context) {
+        guard view.pane != pane else { return }
+        view.pane = pane
+        view.resolve()
+    }
+    static func dismantleNSView(_ view: EmbedTerminal, coordinator: ()) {
+        view.native.embeds[ObjectIdentifier(view)] = nil
+        view.drop()
+    }
 }
 
 /// A terminal that takes dropped files: each file's path, shell-escaped, pasted at the prompt as
@@ -173,6 +268,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         restyled[space] = [took.config, took.theme]
     }
     var panes: [String: PaneHost] = [:]
+    /// Every pane and what it holds, as the Rust side last said (`pane_targets`): `term`, `agent`.
+    var paneTargets: [String: [String: String]] = [:]
+    /// The terminals plugin pages embed, by object identity.
+    var embeds: [ObjectIdentifier: EmbedTerminal] = [:]
     var socket: URLSessionWebSocketTask?
     /// The connection the A2UI pages talk over, started with the first page and dropped with `disconnect`.
     var pageClient: DaemonClient?
@@ -478,10 +577,20 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 let data: Data
                 switch message { case .string(let s): data = Data(s.utf8); case .data(let d): data = d; @unknown default: return }
                 if let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   value["ev"] as? String == "term_attached", let term = value["id"] as? String {
+                    // wheeld answers every `term_attach` with this event and then replays the whole screen as `term_output`
+                    // to every session of the term on this connection, not only the new one. The socket is ordered, so a
+                    // full reset (ESC c, RIS) now leaves every host and embed blank and the replay repaints them from one state.
+                    let reset = Data([0x1b, 0x63])
+                    for host in panes.values where host.termID == term { host.session?.receive(reset) }
+                    for embed in embeds.values where embed.termID == term { embed.session?.receive(reset) }
+                }
+                if let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                    value["ev"] as? String == "term_output", let term = value["id"] as? String,
                    let encoded = value["data"] as? String, let bytes = Data(base64Encoded: encoded) {
                     termOutputs += 1
                     for host in panes.values where host.termID == term { host.session?.receive(bytes) }
+                    for embed in embeds.values where embed.termID == term { embed.bytes += bytes.count; embed.session?.receive(bytes) }
                 }
                 receive()
             } catch {
@@ -529,7 +638,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             plugin.onAction = { [weak self] action, args in
                 self?.sendAction(pane: id, action: action, args: args)
             }
-            let view = NSHostingView(rootView: PluginPaneView(pane: plugin))
+            let view = NSHostingView(rootView: AnyView(PluginPaneView(pane: plugin)
+                .environment(\.a2uiPaneEmbed, { [weak self] embed in self?.embedView(embed, hostPane: id) })))
             host.plugin = plugin
             host.pluginView = view
             host.slot.addSubview(view)
@@ -664,8 +774,29 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         guard let host = panes[pane] else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
         if let view = host.pluginView ?? (host.pageShown ? host.pageView : nil), let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
-            guard let png = rep.representation(using: .png, properties: [:]) else { emit(["answer": "refused", "id": id, "message": "the page could not be encoded as a PNG"]); return }
-            emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
+            // cacheDisplay leaves a WKWebView and a terminal surface blank: each one's own pixels are drawn over its frame.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                var parts: [(NSRect, NSImage)] = []
+                for web in Self.subviews(of: view, ofType: WKWebView.self) where !web.isHiddenOrHasHiddenAncestor && !web.bounds.isEmpty {
+                    if case let .success(image) = await BrowserInspect.shotPage(web, full: false) { parts.append((view.convert(web.bounds, from: web), image)) }
+                }
+                for terminal in Self.subviews(of: view, ofType: DropTerminalView.self) where !terminal.isHiddenOrHasHiddenAncestor && !terminal.bounds.isEmpty {
+                    if let image = self.terminalPixels(terminal) { parts.append((view.convert(terminal.bounds, from: terminal), image)) }
+                }
+                if !parts.isEmpty, let context = NSGraphicsContext(bitmapImageRep: rep) {
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = context
+                    for (rect, image) in parts {
+                        // The bitmap's origin is bottom-left; a flipped hosting view's frames count from the top.
+                        let y = view.isFlipped ? view.bounds.height - rect.maxY : rect.minY
+                        image.draw(in: NSRect(x: rect.minX, y: y, width: rect.width, height: rect.height))
+                    }
+                    NSGraphicsContext.restoreGraphicsState()
+                }
+                guard let png = rep.representation(using: .png, properties: [:]) else { self.emit(["answer": "refused", "id": id, "message": "the page could not be encoded as a PNG"]); return }
+                self.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
+            }
         } else if let web = host.web {
             Task { @MainActor [weak self] in
                 switch await BrowserInspect.shotPage(web, full: value["full"] as? Bool == true) {
@@ -681,6 +812,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         } else {
             emit(["answer": "refused", "id": id, "message": "the GPUI client draws this pane itself; its picture is not served yet"])
         }
+    }
+    /// Every view of type `T` in `view`'s subview tree.
+    static func subviews<T: NSView>(of view: NSView, ofType: T.Type) -> [T] {
+        view.subviews.flatMap { ($0 as? T).map { [$0] } ?? subviews(of: $0, ofType: T.self) }
     }
     /// `inspect_pane` relayed by the Rust side, on a browser pane's page: answered through `emit`
     /// with `inspected`, `rendered`, `recorded` or `refused`.
@@ -712,9 +847,32 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         pageDaemon.url = parts.url
         pageDaemon.token = token
     }
+    /// What a plugin page's embedded pane draws as: a terminal here; nil for an agent chat (wheel-pmf2.4.15).
+    func embedView(_ embed: A2UIPaneEmbed, hostPane: String) -> AnyView? {
+        switch embed.kind {
+        case .terminal: return AnyView(EmbeddedTerminal(native: self, hostPane: hostPane, pane: embed.pane))
+        case .agentChat: return nil
+        }
+    }
+    /// `term` is no longer shown by `except`: detach it when no pane and no other embed shows it.
+    /// A grid pane still holding it gets its own size back: the embed's size was the term's last `term_resize`.
+    func release(_ term: String, except: EmbedTerminal? = nil) {
+        let hosts = panes.values.filter { $0.termID == term }
+        guard hosts.isEmpty else {
+            for host in hosts {
+                guard let grid = host.grids.last else { continue }
+                host.sent.append(grid)
+                send(["op": "term_resize", "id": term, "cols": grid[0], "rows": grid[1]])
+            }
+            return
+        }
+        guard !embeds.values.contains(where: { $0 !== except && $0.termID == term }) else { return }
+        send(["op": "term_detach", "id": term])
+    }
     func close(_ id: String) {
         guard let host = panes.removeValue(forKey: id) else { return }
-        if let term = host.termID, !panes.values.contains(where: { $0.termID == term }) { send(["op": "term_detach", "id": term]) }
+        for (key, embed) in embeds where embed.hostPane == id { embeds[key] = nil; embed.drop() }
+        if let term = host.termID { release(term) }
         host.slot.removeFromSuperview()
         if let plugin = host.plugin {
             plugin.close()
@@ -897,6 +1055,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "browser": browser(value)
         case "render": render(value)
         case "inspect": inspect(value)
+        case "pane_targets":
+            var targets: [String: [String: String]] = [:]
+            for (pane, held) in value["panes"] as? [String: [String: String]] ?? [:] { targets[pane] = held }
+            paneTargets = targets
+            for embed in embeds.values { embed.resolve() }
         case "plugin":
             // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's path
             // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`.
@@ -910,7 +1073,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 ok = (value["component"] as? String).flatMap { c in (value["key"] as? String).map { plugin.raise(component: c, key: $0, context: value["context"]) } } ?? false
             default: break
             }
-            return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts, "feeds": plugin.feedJSON]
+            return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts, "feeds": plugin.feedJSON,
+                "embeds": embeds.values.filter { $0.hostPane == pane }.map { ["pane": $0.pane, "term": $0.termID ?? NSNull(), "bytes": $0.bytes] as [String: Any] }]
         case "page_set":
             // A value written into a native page's data model at `path`, as one of its controls
             // would write it (a picker's choice, a field's text), for a check that has no pointer.

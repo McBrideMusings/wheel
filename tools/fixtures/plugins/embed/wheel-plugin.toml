@@ -1,0 +1,10 @@
+[plugin]
+id = "embed"
+version = "0.1.0"
+
+[[pane]]
+id = "main"
+title = "Embed"
+script = "main.luau"
+reads = ["wheel.panes", "wheel.agents"]
+actions = []
