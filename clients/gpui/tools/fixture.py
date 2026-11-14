@@ -17,7 +17,7 @@ BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse'
 # repository.
 PAGES = ['gallery']
 # The Wheelhouse plugin panes the check opens in the GPUI client, one after another in one pane.
-PLUGIN_PANES = ['beads', 'issues', 'repo']
+PLUGIN_PANES = ['beads', 'issues', 'repo', 'graph']
 # The rows of the `tall` plugin's one pane.
 TALL_ROWS = 80
 
@@ -111,8 +111,9 @@ def wheelhouse_project(root):
     bd = lambda *a: subprocess.run(['bd', *a], cwd=project, check=True, capture_output=True, text=True).stdout  # noqa: E731
     bd('init', '--quiet', '--prefix', 'fx')
     epic = json.loads(bd('create', 'Fixture epic', '--type', 'epic', '--json'))['id']
-    for title in ['First slice', 'Second slice']:
-        bd('create', title, '--parent', epic)
+    slices = [json.loads(bd('create', title, '--parent', epic, '--json'))['id'] for title in ['First slice', 'Second slice']]
+    # The Graph pane draws this one edge: the second slice waits on the first.
+    bd('dep', 'add', slices[1], slices[0])
     return project
 
 

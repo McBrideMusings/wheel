@@ -4010,6 +4010,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         // What each pane shows once its feed has arrived: Beads and Issues a `N listed` count, Repo anything but its loading line.
         let want = |t: &str| match name.as_str() {
             "beads" | "issues" => t.contains(" listed"),
+            "graph" => t.contains(" open issues"),
             _ => !t.starts_with("Reading"),
         };
         let mut seen = Value::Null;
@@ -4046,6 +4047,60 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             ensure!(components(&graph).iter().any(|c| c["type"] == "Canvas") && graph["error"].is_null(), "the Beads Graph view drew no Canvas: error {} types {:?}", graph["error"], components(&graph).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
             draw(window, Some(output.join("client-plugin-beads-graph.png")), cx)?;
             entry["graph_canvases"] = json!(components(&graph).iter().filter(|c| c["type"] == "Canvas").count());
+        }
+        if name == "graph" {
+            // The Graph pane's cases, each driven through the pointer events the Canvas stage raises (`pointerAction` with
+            // `{kind, x, y, button, dx, dy}`): 1 the fixture's three open beads and its one edge, 2 hover, 3 click, 4 drag.
+            let parsed = |s: &Value| -> Value { serde_json::from_str(s["state"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
+            let st = parsed(&seen);
+            ensure!(st["nodes"] == 3 && st["edges"] == 1, "the Graph pane should draw the fixture's 3 open beads and 1 dependency: {st}");
+            let canvas = components(&seen).iter().find(|c| c["type"] == "Canvas").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Graph pane drew no Canvas"))?;
+            let layout = st["layout"].as_object().cloned().unwrap_or_default();
+            let (id, at) = layout.iter().min_by_key(|(id, _)| (*id).clone()).map(|(id, at)| (id.clone(), at.clone())).ok_or_else(|| anyhow::anyhow!("the Graph pane laid out no node: {st}"))?;
+            let (nx, ny) = (at["x"].as_f64().unwrap_or(0.0), at["y"].as_f64().unwrap_or(0.0));
+            let (hx, hy) = (nx + 20.0, ny + 15.0);
+            macro_rules! point {
+                ($kind:expr, $x:expr, $y:expr, $dx:expr, $dy:expr, $until:expr) => {{
+                    let sent = native.call(json!({"op":"plugin","pane":pane,"action":"raise","component":canvas,"key":"pointerAction",
+                        "context":{"kind":$kind,"x":$x,"y":$y,"button":0,"dx":$dx,"dy":$dy}}));
+                    ensure!(sent["ok"] == true, "the Graph canvas refused the {} event: {sent}", $kind);
+                    let mut now = Value::Null;
+                    for _ in 0..50 {
+                        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                        now = parsed(&state(&native));
+                        if $until(&now) {
+                            break;
+                        }
+                    }
+                    now
+                }};
+            }
+            let hovered = point!("move", hx, hy, 0.0, 0.0, |s: &Value| s["hover"] == json!(id));
+            ensure!(hovered["hover"] == json!(id), "moving over {id} at ({hx}, {hy}) should hover it: {hovered}");
+            let png = output.join("client-plugin-graph-hover.png");
+            let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
+            ensure!(ok, "pane shot of the hovered Graph pane: {err}");
+            let away = point!("move", 900.0, 480.0, 0.0, 0.0, |s: &Value| s["hover"].is_null());
+            ensure!(away["hover"].is_null(), "moving off every node should clear the hover: {away}");
+            ensure!(away["open"].is_null(), "hovering must not open a bead: {away}");
+            point!("down", hx, hy, 0.0, 0.0, |s: &Value| s["press"].is_object());
+            let clicked = point!("up", hx, hy, 0.0, 0.0, |s: &Value| s["open"] == json!(id));
+            ensure!(clicked["open"] == json!(id), "a click on {id} should open it: {clicked}");
+            let opened = state(&native);
+            ensure!(components(&opened).iter().any(|c| c["text"].as_str() == Some("Close")) || texts(&opened).iter().any(|t| t.contains("Blocked by")), "the opened bead's card was not drawn: {:?}", texts(&opened));
+            let (px, py) = (900.0, 480.0);
+            point!("down", px, py, 0.0, 0.0, |s: &Value| s["press"].is_object());
+            point!("drag", px + 40.0, py + 25.0, 40.0, 25.0, |s: &Value| s["ox"].as_f64() == Some(40.0));
+            let panned = point!("up", px + 40.0, py + 25.0, 0.0, 0.0, |s: &Value| s["press"].is_null());
+            ensure!(panned["ox"].as_f64() == Some(40.0) && panned["oy"].as_f64() == Some(25.0), "a drag of (40, 25) should pan by (40, 25): {panned}");
+            ensure!(panned["open"] == json!(id), "a drag on empty space must not change the open bead: {panned}");
+            // The node moved with the pan: where it was, the pointer is no longer over it.
+            let moved = point!("move", hx, hy, 0.0, 0.0, |s: &Value| s["hover"] != json!(id));
+            ensure!(moved["hover"] != json!(id), "after the pan the old interior point ({hx}, {hy}) of {id} should hold no node: {moved}");
+            let there = point!("move", hx + 40.0, hy + 25.0, 0.0, 0.0, |s: &Value| s["hover"] == json!(id));
+            ensure!(there["hover"] == json!(id), "after the pan {id} should be under ({}, {}): {there}", hx + 40.0, hy + 25.0);
+            eprintln!("wheel-gpui: graph pane: {} nodes, {} edges; hover {}, open {}, pan ({}, {})", st["nodes"], st["edges"], hovered["hover"], clicked["open"], panned["ox"], panned["oy"]);
+            entry["graph"] = json!({"node": id, "hover": hovered["hover"], "open": clicked["open"], "pan": [panned["ox"], panned["oy"]], "png": png});
         }
         report.insert(name.clone(), entry);
     }
