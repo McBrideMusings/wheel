@@ -232,5 +232,31 @@ import WheelKit
         #expect(pane.error?.contains("the path leaves the package") == true)
         #expect(texts(pane) == ["two"])
     }
-}
 
+    @Test func theComponentListHoldsModalActionsTableRowsAndDisabledButtons() throws {
+        let pane = PluginPane()
+        pane.load(source: """
+        return {
+            init = function(p) return p end,
+            update = function() end,
+            view = function()
+                return ui.Column{
+                    ui.Table{
+                        columns = { { key = "a", label = "A" }, { key = "b", label = "B" } },
+                        sections = { { title = "Open", rows = { { id = "r1", cells = { { key = "b", text = "two" }, { key = "a", text = "one" } } } } } },
+                    },
+                    ui.Button{ child = ui.Text("Prev"), action = { type = "prev" }, modifiers = { { disabled = true } } },
+                    ui.Modal{ presented = true, actions = { ui.Button{ child = ui.Text("Press"), action = { type = "go" } } }, ui.Text("body") },
+                }
+            end,
+        }
+        """, chunk: "list.luau")
+        #expect(pane.error == nil)
+        let all = pane.componentTexts
+        let row = try #require(all.first { $0["type"] == "TableRow" })
+        #expect(row["id"] == "r1" && row["cells"] == "one | two" && row["section"] == "Open")
+        #expect(all.first { $0["type"] == "Button" && $0["disabled"] == "true" } != nil)
+        let texts = all.compactMap { $0["text"] }
+        #expect(texts.contains("Press") && texts.contains("body"))
+    }
+}

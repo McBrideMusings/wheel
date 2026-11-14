@@ -367,17 +367,44 @@ public final class PluginPane {
     }
 
     /// The drawn components in order, each as its id, type and text (a Text's text, a TextField's label and value).
+    /// A Modal's `actions` (its footer buttons) follow its content, a Button carries `disabled` when a modifier disables it,
+    /// and a Table adds one `TableRow` entry per row: its id (the row's `path`, else its `id`, else `<section>.<row>`), its section's title
+    /// and its cells' texts in column order joined by ` | ` under `cells`.
     public var componentTexts: [[String: String]] {
         var out: [[String: String]] = []
-        func walk(_ n: ComponentNode) {
+        func walk(_ n: ComponentNode, _ depth: Int = 0) {
+            guard depth < 64 else { return }
             var row = ["id": n.instance.id, "type": n.instance.type]
             if let t = n.string("text") { row["text"] = t }
             if let l = n.string("label") { row["label"] = l }
             if n.instance.type == "TextField" { row["value"] = n.props["value"]?.text ?? "" }
+            if n.instance.type == "Button" {
+                let mods = (n.props["modifiers"]?.arrayValue ?? []).compactMap(\.dictionaryValue)
+                if mods.contains(where: { $0["disabled"]?.boolValue == true }) { row["disabled"] = "true" }
+            }
             out.append(row)
-            n.children.forEach(walk)
+            if n.instance.type == "Table" { out += Self.tableRows(n) }
+            n.children.forEach { walk($0, depth + 1) }
+            for id in (n.props["actions"]?.arrayValue ?? []).compactMap(\.stringValue) {
+                if let a = surface.node(id) { walk(a, depth + 1) }
+            }
         }
         if let root = surface.root { walk(root) }
+        return out
+    }
+
+    private static func tableRows(_ table: ComponentNode) -> [[String: String]] {
+        let keys = (table.props["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue?["key"]?.stringValue }
+        var out: [[String: String]] = []
+        for (si, sec) in (table.props["sections"]?.arrayValue ?? []).compactMap(\.dictionaryValue).enumerated() {
+            for (ri, r) in (sec["rows"]?.arrayValue ?? []).compactMap(\.dictionaryValue).enumerated() {
+                let cells = (r["cells"]?.arrayValue ?? []).compactMap(\.dictionaryValue)
+                let text = keys.map { k in cells.first { $0["key"]?.stringValue == k }?["text"]?.text ?? "" }
+                var row = ["id": r["path"]?.stringValue ?? r["id"]?.stringValue ?? "\(si).\(ri)", "type": "TableRow", "table": table.instance.id, "cells": text.joined(separator: " | ")]
+                if let t = sec["title"]?.stringValue, !t.isEmpty { row["section"] = t }
+                out.append(row)
+            }
+        }
         return out
     }
 
