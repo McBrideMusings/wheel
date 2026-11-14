@@ -13,6 +13,12 @@ reads = ["wheelhouse.beads", "wheelhouse.beads_graph", "wheel.panes"]
 actions = ["wheelhouse.press", "wheelhouse.run_list"]
 
 [[pane]]
+id = "graph"
+title = "Graph"
+script = "panes/graph.luau"
+reads = ["wheelhouse.beads"]
+
+[[pane]]
 id = "repo"
 title = "Repo"
 script = "panes/repo.luau"
