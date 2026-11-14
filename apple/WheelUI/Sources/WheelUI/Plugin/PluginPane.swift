@@ -163,7 +163,15 @@ public final class PluginPane {
         if stale { staleFeeds.insert(key) } else { staleFeeds.remove(key) }
         do {
             if let patch {
-                feedValues[key] = try JSONPatch.apply(Self.jsonValue(patch), to: feedValues[key] ?? .null)
+                // Take the value out of the dictionary so the patch edits its only reference in place.
+                // A failing patch leaves `doc` unchanged, so it goes back as it was.
+                let existed = feedValues[key] != nil
+                var doc = feedValues.removeValue(forKey: key) ?? .null
+                do { try JSONPatch.apply(Self.jsonValue(patch), to: &doc) } catch {
+                    if existed { feedValues[key] = doc }
+                    throw error
+                }
+                feedValues[key] = doc
             } else if let value {
                 feedValues[key] = Self.jsonValue(value)
             } else {
