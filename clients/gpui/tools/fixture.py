@@ -11,11 +11,13 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 # The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
 TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
 # `-p wheeld` builds every binary of that package, `wheel-fake-agent` included.
-BUILD = 'cargo build -p wheeld -p wheel-cli'
+BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse'
 # The MCP pages the check opens in the GPUI client, served as the machine artifacts they are on a
 # real machine: the component gallery whole. They read the space they are opened in, which is this
 # repository.
 PAGES = ['gallery']
+# The Wheelhouse plugin panes the check opens in the GPUI client, one after another in one pane.
+PLUGIN_PANES = ['beads', 'issues', 'repo']
 
 
 def build():
@@ -77,6 +79,41 @@ icon = "shippingbox"
 '''
 
 
+# A `gh` for the Issues pane: the plugin's backend asks it for the repository and its issues.
+FAKE_GH = '''#!/usr/bin/env python3
+import json, sys
+args = sys.argv[1:]
+if args[:2] == ["repo", "view"]:
+    print("o/fixture")
+elif args[:2] == ["api", "user"]:
+    print("me")
+elif args[:2] == ["issue", "list"]:
+    print(json.dumps([{"number": n, "title": t, "state": "OPEN", "labels": [{"name": l}], "assignees": [], "author": {"login": "ann"}, "body": "",
+                       "url": "https://github.com/o/fixture/issues/%d" % n, "updatedAt": "2026-11-01T00:00:00Z"}
+                      for n, t, l in [(21, "Crash on open", "bug"), (22, "Add dark mode", "feature")]]))
+else:
+    sys.stderr.write("fake gh: no answer for %s\\n" % " ".join(args))
+    sys.exit(1)
+'''
+
+
+def wheelhouse_project(root):
+    """The folder the Wheelhouse plugin panes are opened on: a git repository with an origin and a
+    beads database holding a three-bead epic, so Beads, Issues and Repo each have rows to draw."""
+    project = root / 'wheelhouse-project'
+    project.mkdir()
+    git = lambda *a: subprocess.run(['git', '-C', str(project), *a], check=True, capture_output=True)  # noqa: E731
+    git('init', '-q', '-b', 'main')
+    git('remote', 'add', 'origin', 'https://github.com/o/fixture.git')
+    git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    bd = lambda *a: subprocess.run(['bd', *a], cwd=project, check=True, capture_output=True, text=True).stdout  # noqa: E731
+    bd('init', '--quiet', '--prefix', 'fx')
+    epic = json.loads(bd('create', 'Fixture epic', '--type', 'epic', '--json'))['id']
+    for title in ['First slice', 'Second slice']:
+        bd('create', title, '--parent', epic)
+    return project
+
+
 def usage_readings():
     """What `wheeld --usage-fixture` reads: two Claude logins (one signed out) and a Codex Pro Lite login."""
     now = int(time.time())
@@ -127,11 +164,17 @@ def fixture():
         gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
         (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
         (root / 'machine.toml').write_text(machine_artifacts(gallery))
+        # The Wheelhouse package, installed the way a machine installs one: a folder beside the machine file.
+        (root / 'plugins').mkdir()
+        (root / 'plugins/wheelhouse').symlink_to(REPO / 'plugins/wheelhouse')
+        wheelhouse = wheelhouse_project(root)
         (root / 'usage.json').write_text(usage_readings())
         # `claude` on the daemon's PATH is the stand-in, so a pane shown as a terminal resumes its
         # conversation in it (`claude --resume <id>`) and wheeld finds it there for the switch back.
         (root / 'bin').mkdir()
         (root / 'bin/claude').symlink_to(built('wheel-fake-agent'))
+        (root / 'bin/gh').write_text(FAKE_GH)
+        (root / 'bin/gh').chmod(0o755)
         env['PATH'] = f"{root / 'bin'}:{env.get('PATH', '')}"
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
@@ -233,6 +276,11 @@ def fixture():
             pages_pane = tree(pages_space)['root']['id']
             cli('pane', 'kind', pages_pane, 'web', '--artifact', PAGES[0], '--scope', 'machine')
             env.update(WHEEL_CLIENT_PAGES_SESSION=pages_session, WHEEL_CLIENT_PAGES_PANE=pages_pane, WHEEL_CLIENT_PAGE_NAMES=json.dumps(PAGES))
+            # A fourth session holds one space on the Wheelhouse project with one empty pane, which the check
+            # moves through each of `PLUGIN_PANES` as a plugin pane.
+            plugins_session = cli('session', 'new', 'Plugins').splitlines()[-1]
+            plugins_space = cli('space', 'new', str(wheelhouse), '--name', 'wheelhouse', '--session', plugins_session).splitlines()[-1]
+            env.update(WHEEL_CLIENT_PLUGINS_SESSION=plugins_session, WHEEL_CLIENT_PLUGINS_PANE=tree(plugins_space)['root']['id'], WHEEL_CLIENT_PLUGIN_PANES=json.dumps(PLUGIN_PANES))
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
                        WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page), WHEEL_CLIENT_PAGES=str(pages))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),
