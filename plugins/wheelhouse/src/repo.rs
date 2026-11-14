@@ -153,10 +153,19 @@ fn merged_pr_heads(top: &str) -> Vec<String> {
     }
 }
 
+/// One line naming why `gh` failed, from its stderr: a signed-out `gh` says so in its own words, any
+/// other failure is gh's first non-empty line.
+fn gh_problem(stderr: &str) -> String {
+    if stderr.contains("To get started with GitHub CLI") || stderr.contains("not logged into") {
+        return "gh is not signed in: open PRs and checks are not shown".into();
+    }
+    stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("gh failed").to_string()
+}
+
 fn open_prs(top: &str) -> Result<Vec<(String, Pr)>, String> {
     let args = ["pr", "list", "--state", "open", "--limit", "100", "--json",
         "number,headRefName,title,isDraft,reviewDecision,mergeable,url,statusCheckRollup"];
-    let text = run::gh(top, &args).map_err(|e| e.lines().last().unwrap_or("gh failed").to_string())?;
+    let text = run::gh(top, &args).map_err(|e| gh_problem(&e))?;
     let rows: Vec<Value> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     Ok(rows.iter().map(|p| {
         let checks: Vec<Option<&str>> = p["statusCheckRollup"].as_array().into_iter().flatten()
@@ -379,6 +388,15 @@ mod tests {
         assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.op = Some("rebase".into())))).unwrap(), "a paused rebase");
         assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.status.untracked = 2))).unwrap(), "uncommitted changes in its worktree");
         assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|_| {}))), None);
+    }
+
+    #[test]
+    fn gh_problem_names_the_cause() {
+        let signed_out = "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n";
+        assert_eq!(gh_problem(signed_out), "gh is not signed in: open PRs and checks are not shown");
+        let no_remote = "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`\n";
+        assert_eq!(gh_problem(no_remote), no_remote.trim());
+        assert_eq!(gh_problem(""), "gh failed");
     }
 
     #[test]
