@@ -183,6 +183,9 @@ pub struct AppState {
     /// The folders watched for plugin script saves, and the script each plugin pane last sent.
     pub(crate) plugin_watch: Mutex<Option<crate::plugins::Watch>>,
     pub(crate) plugin_seen: Mutex<crate::plugins::Seen>,
+    /// Fired when a pane closes or changes kind, and when a plugin folder changes: each feed
+    /// forward then checks again that its pane may still read its feed.
+    pub(crate) grants_changed: broadcast::Sender<()>,
     /// The plugin backends running and the feeds panes read (ADR-0041).
     pub(crate) backends: crate::backends::Backends,
     /// One built-in install, update or removal at a time: each reads `installed.json`, changes
@@ -353,6 +356,7 @@ impl AppState {
             settings_seen: Mutex::new(Default::default()),
             plugin_watch: Mutex::new(None),
             plugin_seen: Mutex::new(Default::default()),
+            grants_changed: broadcast::channel(16).0,
             backends: Default::default(),
             builtins_write: Mutex::new(()),
             save_pending: AtomicBool::new(false),
@@ -2711,9 +2715,12 @@ async fn handle(
             let state = state.clone();
             let out = out.clone();
             let task = tokio::spawn(async move {
+                // Taken before the grant check, so a change during the check is not missed.
+                let grants = state.grants_changed.subscribe();
                 match state.feed_subscribe(&pane, &feed, &params).await {
                     Ok((subscription, value, rx)) => {
-                        forward_feed(subscription, value, rx, FeedAddress { req, pane, feed, params }, out).await;
+                        let at = FeedAddress { req, pane, feed, params };
+                        forward_feed(&state, subscription, value, rx, grants, at, out).await;
                     }
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %feed, %message, "feed subscribe refused");
@@ -2724,6 +2731,35 @@ async fn handle(
             if let Some(old) = forwards.insert(key, task) {
                 old.abort();
             }
+            None
+        }
+        ClientMsg::PluginAction {
+            req,
+            pane,
+            action,
+            args,
+        } => {
+            // A backend can take seconds to start or to answer: the action runs in its own task,
+            // so the connection's other messages are not held.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.plugin_action(&pane, &action, args).await {
+                    Ok(result) => req.map(|req| ServerMsg::PluginAction {
+                        req,
+                        pane,
+                        action,
+                        result,
+                    }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %action, %message, "plugin action failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
             None
         }
         ClientMsg::FeedUnsubscribe {
@@ -3083,9 +3119,11 @@ struct FeedAddress {
 /// Send a feed subscriber its value, then each change until the connection or the feed ends. The
 /// subscription lives as long as this task: aborting it unsubscribes.
 async fn forward_feed(
+    state: &AppState,
     subscription: crate::backends::Subscription,
     value: serde_json::Value,
     mut rx: broadcast::Receiver<crate::backends::Update>,
+    mut grants: broadcast::Receiver<()>,
     at: FeedAddress,
     out: mpsc::Sender<ServerMsg>,
 ) {
@@ -3102,7 +3140,23 @@ async fn forward_feed(
         return;
     }
     loop {
-        let next = match rx.recv().await {
+        let next = tokio::select! {
+            changed = grants.recv() => {
+                if matches!(changed, Err(broadcast::error::RecvError::Closed)) {
+                    return;
+                }
+                // The pane closed, changed kind or lost the read in its manifest: the
+                // subscription ends and the client is told why.
+                if let Err(message) = state.feed_grant(&at.pane, &at.feed).await {
+                    tracing::warn!(pane = %at.pane, feed = %at.feed, %message, "feed subscription ended");
+                    let _ = out.send(failed(at.req, message)).await;
+                    return;
+                }
+                continue;
+            }
+            update = rx.recv() => update,
+        };
+        let next = match next {
             Ok(Update::Value(value)) => msg(None, Some(value), None),
             Ok(Update::Patch(patch)) => msg(None, None, Some(patch)),
             Err(broadcast::error::RecvError::Lagged(_)) => {

@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{broadcast, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use wheel_proto::{BackendInfo, BackendState, BackendTransport, PaneKind};
+use wheel_proto::{BackendInfo, BackendState, BackendTransport, PaneKind, PluginPaneInfo};
 
 use crate::plugins::Package;
 use crate::server::AppState;
@@ -95,6 +95,26 @@ impl Notification for FeedUnsubscribe {
     type Params = FeedRef;
     const METHOD: &'static str = "feed/unsubscribe";
 }
+
+/// `action/invoke` (request, wheeld to backend): run an action for a pane. The result is what the
+/// backend answers, any JSON value.
+struct ActionInvoke;
+
+#[derive(Serialize, Deserialize)]
+struct ActionInvokeParams {
+    action: String,
+    args: Value,
+    caller: Value,
+}
+
+impl Request for ActionInvoke {
+    type Params = ActionInvokeParams;
+    type Result = Value;
+    const METHOD: &'static str = "action/invoke";
+}
+
+/// How long a backend has to answer `action/invoke`.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// `shutdown` (notification, wheeld to backend): exit now.
 struct Shutdown;
@@ -911,6 +931,19 @@ fn kind_name(kind: &PaneKind) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// Where a plugin pane is: its space and which plugin pane it shows.
+pub(crate) struct PaneCtx {
+    space: String,
+    cwd: String,
+    plugin: String,
+    plugin_pane: String,
+}
+
+/// `items` joined by commas, or `none`.
+fn list_or_none(items: &[String]) -> String {
+    if items.is_empty() { "none".into() } else { items.join(", ") }
+}
+
 impl AppState {
     /// Where wheeld writes its logs: the folder of `wheeld.log`.
     fn log_dir(&self) -> PathBuf {
@@ -937,8 +970,8 @@ impl AppState {
         }
     }
 
-    /// The directory of the space holding plugin pane `pane`.
-    fn plugin_pane_cwd(&self, pane: &str) -> Result<String, String> {
+    /// The space, directory, plugin and plugin pane id of plugin pane `pane`.
+    fn plugin_pane_ctx(&self, pane: &str) -> Result<PaneCtx, String> {
         let spaces = self.spaces.lock().unwrap();
         let (space, kind) = spaces
             .spaces
@@ -946,21 +979,68 @@ impl AppState {
             .find_map(|s| space_find(s, pane).map(|k| (s, k)))
             .ok_or_else(|| format!("no pane {pane}"))?;
         match kind {
-            PaneKind::Plugin { .. } => Ok(space.cwd.clone()),
+            PaneKind::Plugin { plugin, pane: plugin_pane, .. } => Ok(PaneCtx {
+                space: space.id.clone(),
+                cwd: space.cwd.clone(),
+                plugin: plugin.clone(),
+                plugin_pane: plugin_pane.clone(),
+            }),
             _ => Err(format!("{pane} is not a plugin pane")),
         }
     }
 
+    /// The package `plugin` resolved in the space directory `cwd`.
+    async fn resolve_plugin(&self, cwd: &str, plugin: &str) -> Result<Package, String> {
+        let state = self.me.upgrade().ok_or("wheeld is stopping")?;
+        let (cwd, plugin) = (cwd.to_string(), plugin.to_string());
+        tokio::task::spawn_blocking(move || {
+            let packages = crate::plugins::discover(Some(&cwd), &state.machine_plugins());
+            crate::plugins::resolve(&packages, &plugin).cloned()
+        })
+        .await
+        .map_err(|e| format!("plugin lookup failed: {e}"))?
+    }
+
+    /// The `[[pane]]` entry of the calling pane's own package.
+    async fn pane_entry(&self, ctx: &PaneCtx) -> Result<PluginPaneInfo, String> {
+        let package = self.resolve_plugin(&ctx.cwd, &ctx.plugin).await?;
+        package
+            .info
+            .panes
+            .iter()
+            .find(|p| p.id == ctx.plugin_pane)
+            .cloned()
+            .ok_or_else(|| format!("plugin {} has no pane {}", ctx.plugin, ctx.plugin_pane))
+    }
+
+    /// Whether `pane` is a plugin pane whose package's `reads` match `feed` now, read from the
+    /// manifest on disk. Checked at subscribe and again whenever the layout or a plugin folder
+    /// changes, so a grant ends with the pane or the manifest line that gave it.
+    pub(crate) async fn feed_grant(&self, pane: &str, feed: &str) -> Result<PaneCtx, String> {
+        let ctx = self.plugin_pane_ctx(pane)?;
+        let entry = self.pane_entry(&ctx).await?;
+        if !entry.reads.iter().any(|r| crate::plugins::glob_match(r, feed)) {
+            return Err(format!(
+                "pane {pane} ({}.{}) may not read {feed}; its reads: {}",
+                ctx.plugin,
+                ctx.plugin_pane,
+                list_or_none(&entry.reads)
+            ));
+        }
+        Ok(ctx)
+    }
+
     /// Read feed `feed` (`<plugin>.<name>`, or `wheel.<name>`) for plugin pane `pane`: starts the
-    /// plugin's backend if it is not running. Returns the subscription, the value now and the
-    /// changes after it.
+    /// plugin's backend if it is not running. Refused unless the pane's `reads` match the feed.
+    /// Returns the subscription, the value now and the changes after it.
     pub(crate) async fn feed_subscribe(
         &self,
         pane: &str,
         feed: &str,
         params: &Value,
     ) -> Result<(Subscription, Value, broadcast::Receiver<Update>), String> {
-        let cwd = self.plugin_pane_cwd(pane)?;
+        let ctx = self.feed_grant(pane, feed).await?;
+        let cwd = ctx.cwd.clone();
         let (plugin, name) = feed
             .split_once('.')
             .filter(|(p, n)| !p.is_empty() && !n.is_empty())
@@ -978,26 +1058,81 @@ impl AppState {
             let value = builtin_value(self, &spaces, name);
             return Ok(hub.subscribe("wheel", name, params, Some(value)));
         }
-        let package = {
-            let state = self.me.upgrade().ok_or("wheeld is stopping")?;
-            let (cwd, plugin) = (cwd.clone(), plugin.to_string());
-            tokio::task::spawn_blocking(move || {
-                let packages = crate::plugins::discover(Some(&cwd), &state.machine_plugins());
-                crate::plugins::resolve(&packages, &plugin).cloned()
-            })
-            .await
-            .map_err(|e| format!("plugin lookup failed: {e}"))??
-        };
+        let package = self.resolve_plugin(&cwd, plugin).await?;
         let backend = self.backends.ensure(self, &package, &cwd).await?;
         let feeds = backend.info.lock().unwrap().feeds.clone();
         if !feeds.iter().any(|f| f == name) {
             return Err(format!(
                 "plugin {plugin} has no feed {name}; its feeds: {}",
-                if feeds.is_empty() { "none".into() } else { feeds.join(", ") }
+                list_or_none(&feeds)
             ));
         }
         let source = package.key();
         Ok(hub.subscribe(&source, name, params, None))
+    }
+
+    /// Whether the package of plugin pane `pane` lists `action` under its `actions` now.
+    async fn action_grant(&self, ctx: &PaneCtx, pane: &str, action: &str) -> Result<(), String> {
+        let entry = self.pane_entry(ctx).await?;
+        if !entry.actions.iter().any(|a| crate::plugins::glob_match(a, action)) {
+            return Err(format!(
+                "pane {pane} ({}.{}) may not invoke {action}; its actions: {}",
+                ctx.plugin,
+                ctx.plugin_pane,
+                list_or_none(&entry.actions)
+            ));
+        }
+        Ok(())
+    }
+
+    /// Run action `action` (`<plugin>.<name>`) with `args` for plugin pane `pane`: refused unless
+    /// the pane's `actions` match it and the plugin's backend named `<name>` in `initialize`;
+    /// starts the backend if it is not running and returns what its `action/invoke` answered.
+    pub(crate) async fn plugin_action(&self, pane: &str, action: &str, args: Value) -> Result<Value, String> {
+        let ctx = self.plugin_pane_ctx(pane)?;
+        let (plugin, name) = action
+            .split_once('.')
+            .filter(|(p, n)| !p.is_empty() && !n.is_empty())
+            .ok_or_else(|| format!("action {action:?} is not <plugin>.<name>"))?;
+        if plugin == "wheel" {
+            return Err(format!("wheeld has no actions; {action} does not exist"));
+        }
+        self.action_grant(&ctx, pane, action).await?;
+        let package = self.resolve_plugin(&ctx.cwd, plugin).await?;
+        let backend = self.backends.ensure(self, &package, &ctx.cwd).await?;
+        // The backend may have taken seconds to start: the grant is checked again right before
+        // the call.
+        let ctx = self.plugin_pane_ctx(pane)?;
+        self.action_grant(&ctx, pane, action).await?;
+        let actions = backend.info.lock().unwrap().actions.clone();
+        if !actions.iter().any(|a| a == name) {
+            return Err(format!(
+                "plugin {plugin} has no action {name}; its actions: {}",
+                list_or_none(&actions)
+            ));
+        }
+        let socket = backend
+            .socket
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| format!("backend of {plugin} is not running"))?;
+        let params = ActionInvokeParams {
+            action: name.to_string(),
+            args,
+            caller: json!({
+                "pane": pane,
+                "space": ctx.space,
+                "plugin": ctx.plugin,
+                "plugin_pane": ctx.plugin_pane,
+            }),
+        };
+        match tokio::time::timeout(ACTION_TIMEOUT, socket.request::<ActionInvoke>(params)).await {
+            Err(_) => Err(format!("{action} did not answer in {} s", ACTION_TIMEOUT.as_secs())),
+            Ok(Err(async_lsp::Error::Response(e))) => Err(format!("{action} failed: {}", e.message)),
+            Ok(Err(e)) => Err(format!("{action} failed: {e}")),
+            Ok(Ok(result)) => Ok(result),
+        }
     }
 
     /// The log of plugin `plugin`'s backend (as resolved in `space`): `(path, text)`, the last

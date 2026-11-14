@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 36;
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1601,6 +1601,19 @@ pub enum ClientMsg {
         #[serde(default)]
         params: serde_json::Value,
     },
+    /// Plugin pane `pane` invokes action `action` (`<plugin>.<name>`) with `args`. wheeld refuses
+    /// an action the pane's manifest `actions` does not list (`*` matches any run of characters)
+    /// or the plugin's backend did not name in `initialize`; otherwise it starts the backend if
+    /// needed, sends it `action/invoke {action: <name>, args, caller}` and replies
+    /// `plugin_action` with the backend's result, or `error`. `PROTOCOL_VERSION` 37.
+    PluginAction {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        action: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
     /// The log of plugin `plugin`'s backend (as resolved in `space`), the last `tail` lines when
     /// given: its stderr (and stdout, over a unix socket) and its `log` messages. Replies
     /// `plugin_logs`. `PROTOCOL_VERSION` 36.
@@ -2485,6 +2498,14 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<serde_json::Value>,
     },
+    /// The backend's answer to `plugin_action`: `result` is what its `action/invoke` returned.
+    PluginAction {
+        req: u64,
+        pane: String,
+        action: String,
+        #[serde(default)]
+        result: serde_json::Value,
+    },
     /// A plugin backend's log, in reply to `plugin_logs`: `path` is the file, `text` its last lines.
     PluginLogs {
         req: u64,
@@ -2805,6 +2826,7 @@ impl ServerMsg {
             | ServerMsg::Artifacts { req, .. }
             | ServerMsg::Plugins { req, .. }
             | ServerMsg::PluginLogs { req, .. }
+            | ServerMsg::PluginAction { req, .. }
             | ServerMsg::Tools { req, .. }
             | ServerMsg::ToolResult { req, .. }
             | ServerMsg::Resource { req, .. }

@@ -301,6 +301,27 @@ pub(crate) fn discover(space_dir: Option<&str>, machine_dir: &Path) -> Vec<Packa
     all
 }
 
+/// Whether `name` matches `pattern`, where `*` matches any run of characters (none, or dots
+/// included) and nothing else is special: how a pane's `reads` and `actions` name feeds and actions.
+pub(crate) fn glob_match(pattern: &str, name: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or("");
+    let Some(mut rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    let mut parts: Vec<&str> = parts.collect();
+    let Some(last) = parts.pop() else {
+        return rest.is_empty();
+    };
+    for part in parts {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
+}
+
 /// The package an id resolves to: the first carrying it.
 pub(crate) fn resolve<'a>(packages: &'a [Package], id: &str) -> Result<&'a Package, String> {
     let found = packages
@@ -539,6 +560,9 @@ impl AppState {
     fn plugin_sync(&self) {
         // One sync at a time; the guard also serializes the swap of the watch.
         let mut watch = self.plugin_watch.lock().unwrap();
+        // The layout or a plugin folder changed: a pane may be gone, of another kind, or no
+        // longer allowed a feed.
+        let _ = self.grants_changed.send(());
         let panes = plugin_panes_of(&self.spaces.lock().unwrap());
         {
             let mut seen = self.plugin_seen.lock().unwrap();
@@ -868,5 +892,28 @@ actions = ["go"]
         let err = read_script(demo, pane).unwrap_err();
         assert!(err.contains("larger than 1 MB"), "{err}");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_star_matches_any_run_of_characters_and_nothing_else_is_special() {
+        assert!(glob_match("clock.now", "clock.now"));
+        assert!(!glob_match("clock.now", "clock.nowx"));
+        assert!(!glob_match("clock.now", "clock.no"));
+        assert!(glob_match("clock.*", "clock.now"));
+        assert!(glob_match("clock.*", "clock."));
+        assert!(glob_match("*", "a.b.c"));
+        assert!(glob_match("*", ""));
+        assert!(glob_match("a*c", "abbbc"));
+        assert!(glob_match("a*c", "ac"));
+        assert!(!glob_match("a*c", "ab"));
+        assert!(!glob_match("a*c", "cab"));
+        assert!(glob_match("*.now", "clock.now"));
+        assert!(!glob_match("*.now", "clock.nowhere"));
+        assert!(glob_match("a*b*c", "a1b2c"));
+        assert!(!glob_match("a*b*c", "a1c2b"));
+        assert!(glob_match("a**c", "ac"));
+        assert!(!glob_match("clock.*", "wheel.spaces"));
+        assert!(glob_match("a?.[x]", "a?.[x]") && !glob_match("a?.[x]", "ab.x"));
+        assert!(!glob_match("ab*ba", "aba"), "prefix and suffix may not overlap");
     }
 }

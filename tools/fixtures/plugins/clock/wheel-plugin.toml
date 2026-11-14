@@ -11,3 +11,4 @@ id = "main"
 title = "Clock"
 script = "main.luau"
 reads = ["clock.now", "clock.lines", "wheel.spaces"]
+actions = ["clock.echo", "clock.fail"]

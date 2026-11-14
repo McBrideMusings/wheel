@@ -1,0 +1,10 @@
+[plugin]
+id = "reader"
+version = "0.1.0"
+
+[[pane]]
+id = "main"
+title = "Reader"
+script = "main.luau"
+reads = ["clock.*"]
+actions = []

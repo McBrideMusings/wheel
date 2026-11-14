@@ -424,6 +424,17 @@ enum PluginCommand {
         #[arg(long)]
         count: Option<usize>,
     },
+    /// Invoke an action as plugin pane PANE does and print the backend's result as one JSON
+    /// line. Starts the plugin's backend if it is not running.
+    Action {
+        /// A plugin pane, which names the space the action's plugin is resolved in.
+        pane: String,
+        /// The action: `<plugin>.<name>`.
+        action: String,
+        /// The action's arguments, as JSON.
+        #[arg(long, default_value = "null")]
+        args: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4355,6 +4366,29 @@ async fn plugin_feed(
     Ok(())
 }
 
+/// Invoke `action` as plugin pane `pane` and print the backend's result as one JSON line.
+async fn plugin_action(conn: &mut Conn, pane: String, action: String, args: String) -> Result<(), Fail> {
+    let args: serde_json::Value =
+        serde_json::from_str(&args).map_err(|e| Fail::Other(format!("--args is not JSON: {e}")))?;
+    let req = conn.req();
+    let ServerMsg::PluginAction { result, .. } = conn
+        .call(
+            ClientMsg::PluginAction {
+                req: Some(req),
+                pane,
+                action,
+                args,
+            },
+            req,
+        )
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to plugin_action".into()));
+    };
+    println!("{result}");
+    Ok(())
+}
+
 async fn artifact_ls(
     conn: &mut Conn,
     space: Option<String>,
@@ -6285,6 +6319,9 @@ async fn main() -> ExitCode {
                 params,
                 count,
             }) => plugin_feed(&mut conn, pane, feed, params, count).await,
+            Command::Plugin(PluginCommand::Action { pane, action, args }) => {
+                plugin_action(&mut conn, pane, action, args).await
+            }
             Command::Stream(command) => stream(&mut conn, command).await,
             Command::Title(TitleCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space)

@@ -3,6 +3,9 @@ or on the unix socket named in WHEEL_PLUGIN_SOCKET when it is set.
 
 Feeds: `now` sends {"time", "tick"} every second; `lines` sends {"lines": []} once, then a
 JSON Patch appending "line <n>" every second.
+
+Actions: `echo` returns {"echo": args, "caller": caller}; `fail` answers a JSON-RPC error; `hidden`
+is listed here but not by the manifest, so wheeld refuses it before it gets here.
 """
 import json
 import os
@@ -94,7 +97,7 @@ while True:
     params = message.get("params") or {}
     if method == "initialize":
         send({"jsonrpc": "2.0", "id": message["id"],
-              "result": {"feeds": ["now", "lines"], "actions": []}})
+              "result": {"feeds": ["now", "lines"], "actions": ["echo", "fail", "hidden"]}})
         send({"jsonrpc": "2.0", "method": "log",
               "params": {"level": "info", "message": "initialized for " + params.get("plugin_id", "?")}})
     elif method == "feed/subscribe":
@@ -108,6 +111,15 @@ while True:
         feed, feed_params = params["feed"], params.get("params", {})
         subscribed.pop(key(feed, feed_params), None)
         log("unsubscribed " + feed)
+    elif method == "action/invoke":
+        if params.get("action") == "echo":
+            send({"jsonrpc": "2.0", "id": message["id"],
+                  "result": {"echo": params.get("args"), "caller": params.get("caller")}})
+        elif params.get("action") == "fail":
+            send({"jsonrpc": "2.0", "id": message["id"],
+                  "error": {"code": -32000, "message": "the clock refuses"}})
+        else:
+            send({"jsonrpc": "2.0", "id": message["id"], "result": "hidden ran"})
     elif method == "shutdown":
         break
     elif "id" in message:

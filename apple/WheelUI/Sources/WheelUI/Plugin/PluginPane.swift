@@ -30,6 +30,10 @@ public final class PluginPane {
     /// unsubscribe; the host sends them to wheeld.
     @ObservationIgnored public var onFeeds: ((_ subscribe: [(String, JSONValue)], _ unsubscribe: [(String, JSONValue)]) -> Void)?
 
+    /// Called when the script calls `wheel.action(name, args)`; the host sends it to wheeld and later answers with
+    /// `actionResult` or `actionFailed`. It only forwards: the script may call it from inside `update` or `view`.
+    @ObservationIgnored public var onAction: ((_ action: String, _ args: JSONValue) -> Void)?
+
     /// A feed read by name and params; params are compared as canonical JSON text (keys sorted).
     private struct FeedKey: Hashable {
         let name: String
@@ -66,6 +70,8 @@ public final class PluginPane {
             } else {
                 runtime = try PaneRuntime(source: source, chunkName: chunk, host: PaneRuntime.Host(feed: { [weak self] name, params in
                     self?.read(feed: name, params: params) ?? .null
+                }, action: { [weak self] name, args in
+                    self?.onAction?(name, args)
                 }))
             }
             try render()
@@ -117,6 +123,17 @@ public final class PluginPane {
         subscribed[key] = nil
         feedValues[key] = nil
         fail(message: message)
+    }
+
+    /// wheeld answered an action the script called: `update` gets `{action = <name>, result = <value>}`.
+    /// `result` is what JSONSerialization returns.
+    public func actionResult(action: String, result: Any?) {
+        deliver(.object(["action": .string(action), "result": Self.jsonValue(result ?? NSNull())]))
+    }
+
+    /// wheeld refused an action or its backend failed: `update` gets `{action = <name>, error = <message>}`.
+    public func actionFailed(action: String, message: String) {
+        deliver(.object(["action": .string(action), "error": .string(message)]))
     }
 
     /// The pane is going away: unsubscribes every feed it holds.

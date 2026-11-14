@@ -28,10 +28,19 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf "$T"
-mkdir -p "$T/support" "$T/logs" "$T/proj/.wheel/plugins" "$T/proj2/.wheel/plugins"
+mkdir -p "$T/support" "$T/logs" "$T/proj/.wheel/plugins" "$T/proj2/.wheel/plugins" "$T/proj4/.wheel/plugins" "$T/proj5/.wheel/plugins/probe" "$T/proj6/.wheel/plugins" "$T/proj7/.wheel/plugins"
 : > "$T/machine.toml"
 cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj/.wheel/plugins/clock"
 cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj2/.wheel/plugins/clock"
+cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj4/.wheel/plugins/clock"
+cp -R "$ROOT/tools/fixtures/plugins/reader" "$T/proj4/.wheel/plugins/reader"
+# probe: a pane that may read any feed, to reach what the clock pane's reads exclude.
+cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj5/.wheel/plugins/clock"
+printf '[plugin]\nid = "probe"\nversion = "0.1.0"\n\n[[pane]]\nid = "main"\ntitle = "Probe"\nscript = "main.luau"\nreads = ["*"]\n' \
+  > "$T/proj5/.wheel/plugins/probe/wheel-plugin.toml"
+echo 'return {}' > "$T/proj5/.wheel/plugins/probe/main.luau"
+cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj6/.wheel/plugins/clock"
+cp -R "$ROOT/tools/fixtures/plugins/clock" "$T/proj7/.wheel/plugins/clock"
 sed -i '' 's/transport = "stdio"/transport = "unix"/' "$T/proj2/.wheel/plugins/clock/wheel-plugin.toml"
 
 "$WHEELD" --listen "127.0.0.1:$PORT" --support-dir "$T/support" --machine-file "$T/machine.toml" \
@@ -47,7 +56,7 @@ w() { "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$T/support/token" "
 make_pane() {
   SPACE=$(w space new "$1")
   PANE=$(w pane ls | awk -v s="$SPACE" '$1 == s {print $2; exit}')
-  w pane kind "$PANE" plugin --plugin clock --plugin-pane main > /dev/null
+  w pane kind "$PANE" plugin --plugin "${2:-clock}" --plugin-pane main > /dev/null
 }
 
 make_pane "$T/proj"
@@ -121,16 +130,73 @@ print("ok" if [len(r["value"]) for r in rows] == [2, 3] else "rows=%r" % rows)
 EOF2
 check "a new space is published to a wheel.spaces reader" "$(cat "$T/spaces2.verdict")"
 
+make_pane "$T/proj5" probe
+PROBE=$PANE
+PANE=$PANE1
 # 4b wheel.panes and wheel.agents answer.
-w plugin feed "$PANE" wheel.panes --count 1 | grep -q '"kind":"plugin"' && pass "wheel.panes lists the plugin panes" \
+w plugin feed "$PROBE" wheel.panes --count 1 | grep -q '"kind":"plugin"' && pass "wheel.panes lists the plugin panes" \
   || fail "wheel.panes lists the plugin panes"
-w plugin feed "$PANE" wheel.agents --count 1 | grep -q '"value":\[\]' && pass "wheel.agents is empty with no agent running" \
+w plugin feed "$PROBE" wheel.agents --count 1 | grep -q '"value":\[\]' && pass "wheel.agents is empty with no agent running" \
   || fail "wheel.agents is empty with no agent running"
 
 # 4c a feed the backend does not have, and a plugin that does not exist.
-w plugin feed "$PANE" clock.nope --count 1 > /dev/null 2> "$T/nofeed.err"
+w plugin feed "$PROBE" clock.nope --count 1 > /dev/null 2> "$T/nofeed.err"
 grep -q 'no feed nope' "$T/nofeed.err" && pass "a feed the backend lacks is refused with a clear error" \
   || fail "a feed the backend lacks is refused: $(cat "$T/nofeed.err")"
+
+# 8 a listed action runs, and its result carries the args and the caller's pane and plugin.
+w plugin action "$PANE" clock.echo --args '{"n": 7}' > "$T/echo.json" 2>"$T/echo.err"
+python3 - "$T/echo.json" "$PANE1" "$SPACE1" <<'EOF4' > "$T/echo.verdict"
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())
+want = {"pane": sys.argv[2], "space": sys.argv[3], "plugin": "clock", "plugin_pane": "main"}
+print("ok" if r == {"echo": {"n": 7}, "caller": want} else "result=%r" % r)
+EOF4
+check "a listed action runs and returns its args and caller" "$(cat "$T/echo.verdict")"
+cat "$T/echo.json"
+
+# 9 an action the manifest lacks is refused by wheeld, though the backend lists it.
+w plugin action "$PANE" clock.hidden > /dev/null 2> "$T/hidden.err"
+grep -q 'may not invoke clock.hidden; its actions: clock.echo, clock.fail' "$T/hidden.err" \
+  && pass "an action the manifest does not list is refused" \
+  || fail "an action the manifest does not list is refused: $(cat "$T/hidden.err")"
+cat "$T/hidden.err"
+w plugin action "$PANE" wheel.anything > /dev/null 2> "$T/wheelact.err"
+grep -q 'wheeld has no actions' "$T/wheelact.err" && pass "a wheel.* action is refused" \
+  || fail "a wheel.* action is refused: $(cat "$T/wheelact.err")"
+
+# 10 the backend's own error reaches the caller.
+w plugin action "$PANE" clock.fail > /dev/null 2> "$T/fail.err"
+grep -q 'the clock refuses' "$T/fail.err" && pass "a backend error reaches the caller as an error" \
+  || fail "a backend error reaches the caller as an error: $(cat "$T/fail.err")"
+cat "$T/fail.err"
+
+# 11 a feed outside the pane's reads is refused.
+w plugin feed "$PANE" clock.secret --count 1 > /dev/null 2> "$T/secret.err"
+grep -q 'pane .* (clock.main) may not read clock.secret; its reads: clock.now, clock.lines, wheel.spaces' "$T/secret.err" \
+  && pass "a feed outside the pane's reads is refused" \
+  || fail "a feed outside the pane's reads is refused: $(cat "$T/secret.err")"
+cat "$T/secret.err"
+w plugin feed "$PANE" wheel.agents --count 1 > /dev/null 2> "$T/agents.err"
+grep -q 'may not read wheel.agents; its reads: clock.now, clock.lines, wheel.spaces' "$T/agents.err" \
+  && pass "a wheel.* feed outside the pane's reads is refused" \
+  || fail "a wheel.* feed outside the pane's reads is refused: $(cat "$T/agents.err")"
+
+# 12 a pane of another plugin reads clock.now through its glob clock.*.
+make_pane "$T/proj4" reader
+READER_PANE=$PANE
+PANE=$PANE1
+w plugin feed "$READER_PANE" clock.now --count 2 > "$T/reader.jsonl" 2>"$T/reader.err"
+python3 - "$T/reader.jsonl" <<'EOF5' > "$T/reader.verdict"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+print("ok" if any(r.get("value") for r in rows) else "rows=%r" % rows)
+EOF5
+check "a pane of the reader plugin reads clock.now through clock.*" "$(cat "$T/reader.verdict")"
+w plugin feed "$READER_PANE" wheel.spaces --count 1 > /dev/null 2> "$T/reader2.err"
+grep -q 'may not read wheel.spaces; its reads: clock.\*' "$T/reader2.err" \
+  && pass "the reader pane may not read what clock.* does not match" \
+  || fail "the reader pane may not read what clock.* does not match: $(cat "$T/reader2.err")"
 
 # 7 plugin ls with the backend running.
 w plugin ls --space "$SPACE1" > "$T/ls-after.txt" 2>&1
@@ -202,6 +268,59 @@ EOF3
 else
   fail "a restarted backend is sent the feeds an older reader still holds: no running backend pid"
   kill "$READER_A" 2>/dev/null
+fi
+
+# Starts `wheel plugin feed PANE FEED` in the background: sets FEED_PID, output in $T/$1.out and .err.
+start_feed() {
+  w plugin feed "$2" "$3" > "$T/$1.out" 2> "$T/$1.err" &
+  FEED_PID=$!
+  PIDS+=($FEED_PID)
+  for _ in $(seq 1 50); do
+    grep -q '"tick"' "$T/$1.out" 2>/dev/null && return 0
+    sleep 0.2
+  done
+  return 1
+}
+# Waits up to 10 s for process $1 to end: ok, or "still running".
+ended() {
+  for _ in $(seq 1 50); do
+    kill -0 "$1" 2>/dev/null || { echo ok; return; }
+    sleep 0.2
+  done
+  echo "still running"
+}
+
+# 13 a pane that changes kind loses its feed subscription.
+make_pane "$T/proj6"
+KIND_PANE=$PANE
+PANE=$PANE1
+if start_feed kind "$KIND_PANE" clock.now; then
+  w pane kind "$KIND_PANE" terminal > /dev/null
+  check "changing a plugin pane's kind ends its feed subscription" "$(ended "$FEED_PID")"
+  grep -q 'is not a plugin pane' "$T/kind.err" \
+    && pass "the refusal names the pane as no longer a plugin pane" \
+    || fail "the refusal names the pane as no longer a plugin pane: $(cat "$T/kind.err")"
+  N=$(wc -l < "$T/kind.out"); sleep 2
+  [ "$(wc -l < "$T/kind.out")" -eq "$N" ] && pass "no feed update arrives after the kind change" \
+    || fail "no feed update arrives after the kind change"
+else
+  fail "changing a plugin pane's kind ends its feed subscription: no first tick"
+fi
+
+# 14 narrowing the manifest's reads ends a subscription to a feed it no longer lists.
+make_pane "$T/proj7"
+NARROW_PANE=$PANE
+PANE=$PANE1
+if start_feed narrow "$NARROW_PANE" clock.now; then
+  sed -i '' 's/reads = \["clock.now", "clock.lines", "wheel.spaces"\]/reads = ["clock.lines", "wheel.spaces"]/' \
+    "$T/proj7/.wheel/plugins/clock/wheel-plugin.toml"
+  check "narrowing the manifest's reads ends a subscription it no longer allows" "$(ended "$FEED_PID")"
+  grep -q 'may not read clock.now; its reads: clock.lines, wheel.spaces' "$T/narrow.err" \
+    && pass "the refusal names the feed and the narrowed reads" \
+    || fail "the refusal names the feed and the narrowed reads: $(cat "$T/narrow.err")"
+  cat "$T/narrow.err"
+else
+  fail "narrowing the manifest's reads ends a subscription it no longer allows: no first tick"
 fi
 
 echo

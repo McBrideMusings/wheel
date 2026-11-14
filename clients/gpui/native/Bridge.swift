@@ -186,6 +186,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var pluginReqs: [Int: String] = [:]
     /// Each `feed_subscribe` waiting for its reply, with the pane, feed and params that sent it.
     var feedReqs: [Int: (pane: String, feed: String, params: JSONValue)] = [:]
+    /// Each `plugin_action` waiting for its reply, with the pane and action that sent it.
+    var actionReqs: [Int: (pane: String, action: String)] = [:]
     var nextPluginReq = 1
     /// Seconds to wait before the next reconnect: 1, doubling to 30, back to 1 once wheeld answers.
     var pluginBackoff: UInt64 = 1
@@ -370,6 +372,31 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
         }
     }
+    /// `plugin_action` for a script's `wheel.action`. The reply (`plugin_action` or `error`) goes back to the pane's script;
+    /// with no connection the script gets the failure on the next main-queue turn, never from inside its own `update` or `view`.
+    func sendAction(pane: String, action: String, args: JSONValue) {
+        guard let socket = pluginSocket else {
+            Task { @MainActor in self.panes[pane]?.plugin?.actionFailed(action: action, message: "no connection to wheeld") }
+            return
+        }
+        let req = nextPluginReq
+        nextPluginReq += 1
+        actionReqs[req] = (pane, action)
+        let message: [String: Any] = ["op": "plugin_action", "req": req, "pane": pane, "action": action, "args": args.foundation]
+        guard let data = try? JSONSerialization.data(withJSONObject: message), let text = String(data: data, encoding: .utf8) else {
+            actionReqs[req] = nil
+            Task { @MainActor in self.panes[pane]?.plugin?.actionFailed(action: action, message: "the action arguments could not be encoded") }
+            return
+        }
+        Task { @MainActor in
+            do { try await socket.send(.string(text)) } catch {
+                errors.append("send plugin_action: " + error.localizedDescription)
+                guard let sent = actionReqs.removeValue(forKey: req) else { return }
+                panes[sent.pane]?.plugin?.actionFailed(action: sent.action, message: "could not send the action: " + error.localizedDescription)
+            }
+        }
+    }
+
     func pluginReceive(_ socket: URLSessionWebSocketTask) {
         Task { @MainActor in
             do {
@@ -386,6 +413,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 // Nothing answers the requests that were waiting; each pane says so until its script loads again.
                 pluginReqs = [:]
                 feedReqs = [:]
+                let lost = actionReqs
+                actionReqs = [:]
+                for sent in lost.values { panes[sent.pane]?.plugin?.actionFailed(action: sent.action, message: "lost the connection to wheeld") }
                 panes.values.forEach { $0.plugin?.fail(message: "lost the connection to wheeld, retrying") }
                 let wait = pluginBackoff
                 pluginBackoff = min(pluginBackoff * 2, 30)
@@ -412,9 +442,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin, let feed = value["feed"] as? String else { return }
             if let req = value["req"] as? Int { feedReqs[req] = nil }
             plugin.feedUpdate(feed: feed, params: value["params"], value: value["value"], patch: value["patch"])
+        case "plugin_action":
+            guard let req = value["req"] as? Int, let sent = actionReqs.removeValue(forKey: req) else { return }
+            panes[sent.pane]?.plugin?.actionResult(action: sent.action, result: value["result"])
         case "error":
             guard let req = value["req"] as? Int else { return }
-            if let pane = pluginReqs.removeValue(forKey: req) {
+            if let sent = actionReqs.removeValue(forKey: req) {
+                panes[sent.pane]?.plugin?.actionFailed(action: sent.action, message: value["message"] as? String ?? "plugin_action failed")
+            } else if let pane = pluginReqs.removeValue(forKey: req) {
                 panes[pane]?.plugin?.fail(message: value["message"] as? String ?? "plugin_source failed")
             } else if let sent = feedReqs.removeValue(forKey: req) {
                 panes[sent.pane]?.plugin?.feedFailed(feed: sent.feed, params: sent.params.foundation, message: value["message"] as? String ?? "feed_subscribe failed")
@@ -480,6 +515,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             plugin.onFeeds = { [weak self] subscribe, unsubscribe in
                 for (feed, params) in unsubscribe { self?.sendFeed("feed_unsubscribe", pane: id, feed: feed, params: params) }
                 for (feed, params) in subscribe { self?.sendFeed("feed_subscribe", pane: id, feed: feed, params: params) }
+            }
+            plugin.onAction = { [weak self] action, args in
+                self?.sendAction(pane: id, action: action, args: args)
             }
             let view = NSHostingView(rootView: PluginPaneView(pane: plugin))
             host.plugin = plugin
