@@ -70,8 +70,8 @@ impl Client {
             // After this render, drawn the way the debug snapshot is: a hidden window has no display
             // link to call a next-frame callback, and render_to_image needs a current frame.
             cx.spawn_in(window, async move |this, cx| {
+                cx.update(|window, cx| window.draw(cx).clear()).ok();
                 this.update_in(cx, |this, window, cx| {
-                    window.draw(cx).clear();
                     let result = this.cut_pane(&pane, window);
                     this.pane_images.ready.push((pane, result));
                     cx.notify();
