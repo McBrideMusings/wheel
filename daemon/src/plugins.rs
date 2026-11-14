@@ -668,6 +668,9 @@ impl AppState {
                     info.backend = Some(self.backends.external_info(ext));
                 } else if let Some(backend) = &mut info.backend {
                     self.backends.overlay(&p.key(), backend);
+                } else if info.error.is_some() {
+                    // The manifest stopped parsing, but its process may still run.
+                    info.backend = self.backends.live_info(&p.key());
                 }
                 info
             })

@@ -1827,6 +1827,14 @@ impl Backends {
         info
     }
 
+    /// What the instance last started for the package keyed `key` says of itself, its declared
+    /// `[backend]` included: how a package whose manifest stopped parsing still lists its backend.
+    pub(crate) fn live_info(&self, key: &str) -> Option<BackendInfo> {
+        let backend = self.hub.live.lock().unwrap().get(key).cloned()?;
+        let info = backend.info.lock().unwrap().clone();
+        Some(info)
+    }
+
     /// `info` with what the running instance of the package keyed `key` says of itself.
     pub(crate) fn overlay(&self, key: &str, info: &mut BackendInfo) {
         if let Some(backend) = self.hub.live.lock().unwrap().get(key) {
