@@ -13,7 +13,9 @@ Feeds: `now` sends {"time", "tick"} every second; `lines` sends {"lines": []} on
 JSON Patch appending "line <n>" every second.
 
 Actions: `echo` returns {"echo": args, "caller": caller}; `fail` answers a JSON-RPC error; `hidden`
-is listed here but not by the manifest, so wheeld refuses it before it gets here.
+is listed here but not by the manifest, so wheeld refuses it before it gets here; `call` sends
+`wheel/call` with its args (`{method, args}`) to wheeld and returns {"result": ...} or
+{"error": {code, message}}, whichever wheeld answered.
 """
 import base64
 import hashlib
@@ -133,6 +135,9 @@ def serve(channel):
     write_lock = threading.Lock()
     # One sender thread per subscribed (feed, params); removing the key stops it.
     subscribed = {}
+    # `wheel/call` requests this connection sent and is waiting on: id -> [event, response].
+    calls = {}
+    call_ids = [0]
 
     def send(message):
         with write_lock:
@@ -176,7 +181,7 @@ def serve(channel):
             params = message.get("params") or {}
             if method == "initialize":
                 send({"jsonrpc": "2.0", "id": message["id"],
-                      "result": {"feeds": ["now", "lines"], "actions": ["echo", "fail", "hidden"]}})
+                      "result": {"feeds": ["now", "lines"], "actions": ["echo", "fail", "hidden", "call"]}})
                 send({"jsonrpc": "2.0", "method": "log",
                       "params": {"level": "info", "message": "initialized for " + params.get("plugin_id", "?")}})
             elif method == "feed/subscribe":
@@ -190,6 +195,21 @@ def serve(channel):
                 feed, feed_params = params["feed"], params.get("params", {})
                 subscribed.pop(key(feed, feed_params), None)
                 log("unsubscribed " + feed)
+            elif method == "action/invoke" and params.get("action") == "call":
+                def forward(request_id, args):
+                    call_ids[0] += 1
+                    mine = "call-%d" % call_ids[0]
+                    pending = calls[mine] = [threading.Event(), None]
+                    send({"jsonrpc": "2.0", "id": mine, "method": "wheel/call", "params": args})
+                    pending[0].wait(10)
+                    answer = pending[1] or {"error": {"code": 0, "message": "no answer"}}
+                    send({"jsonrpc": "2.0", "id": request_id,
+                          "result": {k: answer[k] for k in ("result", "error") if k in answer}})
+                threading.Thread(target=forward, args=(message["id"], params.get("args") or {}), daemon=True).start()
+            elif method is None and message.get("id") in calls:
+                pending = calls.pop(message["id"])
+                pending[1] = message
+                pending[0].set()
             elif method == "action/invoke":
                 if params.get("action") == "echo":
                     send({"jsonrpc": "2.0", "id": message["id"],

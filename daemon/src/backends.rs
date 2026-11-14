@@ -78,7 +78,8 @@ impl Request for Initialize {
     const METHOD: &'static str = "initialize";
 }
 
-/// `wheel/call` (request, backend to wheeld): refused until a later slice enforces `needs`.
+/// `wheel/call` (request, backend to wheeld): `{method, args}` runs a Wheel operation for the
+/// backend's plugin if the plugin's `[backend] needs` names it (see [`wheel_call`]).
 struct WheelCall;
 
 impl Request for WheelCall {
@@ -569,6 +570,11 @@ struct Handler {
     /// The [`Backend::id`] of the instance this connection belongs to.
     instance: u64,
     log: Log,
+    /// The plugin's id, and the `[backend] needs` of the manifest it started from: what
+    /// `wheel/call` may do.
+    plugin: String,
+    needs: Vec<String>,
+    state: Weak<AppState>,
 }
 
 /// One backend instance: its process and what it told `initialize`.
@@ -748,6 +754,8 @@ struct Spec {
     connect: Option<crate::external_backends::Connect>,
     /// This machine's `wheel.toml`, read again with the space's before each reconnect.
     machine_file: PathBuf,
+    /// What `wheel/call` acts on.
+    state: Weak<AppState>,
 }
 
 impl Spec {
@@ -1279,6 +1287,9 @@ async fn drive(
         source: spec.key.clone(),
         instance: backend.id,
         log: spec.log.clone(),
+        plugin: spec.plugin.clone(),
+        needs: spec.declared.needs.clone(),
+        state: spec.state.clone(),
     };
     let (main, server) = match listener {
         None => {
@@ -1407,6 +1418,9 @@ async fn serve_external(
         source: spec.key.clone(),
         instance: backend.id,
         log: spec.log.clone(),
+        plugin: spec.plugin.clone(),
+        needs: spec.declared.needs.clone(),
+        state: spec.state.clone(),
     };
     let deadline = tokio::time::Instant::from_std(backend.deadline);
     let address = connect.address();
@@ -1561,17 +1575,131 @@ where
                 h.log.message(level, message);
                 ControlFlow::Continue(())
             })
-            .request::<WheelCall, _>(|_, _| async {
-                Err::<Value, ResponseError>(ResponseError::new(
-                    ErrorCode::METHOD_NOT_FOUND,
-                    "wheel/call is not available to backends yet",
-                ))
+            .request::<WheelCall, _>(|h, params| {
+                let (plugin, needs, state) = (h.plugin.clone(), h.needs.clone(), h.state.clone());
+                let log = h.log.clone();
+                async move {
+                    let result = wheel_call(&plugin, &needs, &state, &params).await;
+                    match &result {
+                        Ok(_) => log.message("debug", &format!("wheel/call {} done", call_name(&params))),
+                        Err(e) => log.message("warn", &format!("wheel/call {} refused: {}", call_name(&params), e.message)),
+                    }
+                    result
+                }
             })
             .unhandled_notification(|_, _| ControlFlow::Continue(()));
         router
     });
     let task = tokio::spawn(main_loop.run_buffered(read.compat(), write.compat_write()));
     (task, server)
+}
+
+/// The `method` of a `wheel/call`, for the log.
+fn call_name(params: &Value) -> &str {
+    params.get("method").and_then(Value::as_str).unwrap_or("?")
+}
+
+/// The `[backend] needs` entry a `wheel/call` method requires: `pane.open` and `notify` by their
+/// names, `command.run` as `run:<command>` for exactly the command it runs.
+fn required_need(method: &str, args: &Value) -> Result<String, ResponseError> {
+    match method {
+        "pane.open" | "notify" => Ok(method.to_string()),
+        "command.run" => {
+            let command = args.get("command").and_then(Value::as_str).unwrap_or_default();
+            Ok(format!("run:{command}"))
+        }
+        other => Err(ResponseError::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            format!("wheel/call has no method {other:?} (pane.open, notify, command.run)"),
+        )),
+    }
+}
+
+fn bad_args(method: &str, why: impl std::fmt::Display) -> ResponseError {
+    ResponseError::new(ErrorCode::INVALID_PARAMS, format!("{method}: {why}"))
+}
+
+/// Run `wheel/call {method, args}` for `plugin`: the method must be one of `needs` (checked
+/// before any argument is read), then it does what the same `wheel` command does.
+async fn wheel_call(
+    plugin: &str,
+    needs: &[String],
+    state: &Weak<AppState>,
+    params: &Value,
+) -> Result<Value, ResponseError> {
+    let method = params
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad_args("wheel/call", "no method"))?;
+    let args = params.get("args").cloned().unwrap_or(Value::Null);
+    let need = required_need(method, &args)?;
+    if !needs.contains(&need) {
+        return Err(ResponseError::new(
+            ErrorCode::REQUEST_FAILED,
+            format!("plugin {plugin} may not call {method}: its [backend] needs does not name {need:?}"),
+        ));
+    }
+    let state = state
+        .upgrade()
+        .ok_or_else(|| ResponseError::new(ErrorCode::REQUEST_FAILED, STOPPING))?;
+    let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_string);
+    let parsed = |key: &str| -> Result<Option<Value>, ResponseError> { Ok(args.get(key).cloned()) };
+    match method {
+        "pane.open" => {
+            let pane = text("pane").ok_or_else(|| bad_args(method, "needs pane"))?;
+            let dir = parsed("dir")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| bad_args(method, e))?;
+            let site = parsed("site")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| bad_args(method, e))?;
+            let scope = parsed("scope")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| bad_args(method, e))?;
+            let opened = state
+                .pane_open(&pane, dir, site, text("url"), text("artifact"), scope)
+                .await
+                .map_err(|e| ResponseError::new(ErrorCode::REQUEST_FAILED, e))?;
+            tracing::info!(%plugin, pane = %opened, "plugin opened a pane");
+            Ok(json!({ "pane": opened }))
+        }
+        "notify" => {
+            let body = text("text").filter(|t| !t.trim().is_empty() && t.len() <= 4000);
+            let body = body.ok_or_else(|| bad_args(method, "needs a text of 1 to 4000 bytes"))?;
+            let level = parsed("level")?
+                .map_or(Ok(wheel_proto::NoticeLevel::Notice), serde_json::from_value)
+                .map_err(|e| bad_args(method, e))?;
+            let id = text("id").unwrap_or_else(|| format!("plugin:{plugin}"));
+            if id.is_empty() || id.len() > 200 {
+                return Err(bad_args(method, "id is 1 to 200 bytes"));
+            }
+            tracing::info!(%plugin, %id, ?level, bytes = body.len(), "plugin toast sent");
+            let _ = state.global.send(wheel_proto::ServerMsg::Toast {
+                id,
+                level,
+                text: body,
+                pane: text("pane"),
+            });
+            Ok(json!({}))
+        }
+        _ => {
+            let pane = text("pane").ok_or_else(|| bad_args(method, "needs pane"))?;
+            let command = text("command").ok_or_else(|| bad_args(method, "needs command"))?;
+            let site = parsed("site")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| bad_args(method, e))?;
+            let ran = state
+                .pane_run(&pane, &command, site)
+                .await
+                .map_err(|e| ResponseError::new(ErrorCode::REQUEST_FAILED, e))?;
+            tracing::info!(%plugin, pane = %ran, "plugin ran an approved command");
+            Ok(json!({ "pane": ran }))
+        }
+    }
 }
 
 /// Apply a backend's `feed/update` to the hub.
@@ -1674,6 +1802,7 @@ impl Backends {
                     watch_dir: None,
                     connect: Some(connect),
                     machine_file: state.machine_file.clone(),
+                    state: state.me.clone(),
                 });
             }
         };
@@ -1704,6 +1833,7 @@ impl Backends {
             key,
             connect: None,
             machine_file: state.machine_file.clone(),
+            state: state.me.clone(),
         })
     }
 
@@ -2480,7 +2610,28 @@ mod tests {
             watch_dir: Some(dir.to_path_buf()),
             connect: None,
             machine_file: dir.join("wheel.toml"),
+            state: Weak::new(),
         }
+    }
+
+    #[test]
+    fn a_wheel_call_method_names_the_need_it_requires() {
+        assert_eq!(required_need("pane.open", &Value::Null).unwrap(), "pane.open");
+        assert_eq!(required_need("notify", &Value::Null).unwrap(), "notify");
+        assert_eq!(required_need("command.run", &json!({"command": "ls -l"})).unwrap(), "run:ls -l");
+        assert_eq!(required_need("nope", &Value::Null).unwrap_err().code, ErrorCode::METHOD_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_wheel_call_outside_the_needs_is_refused_before_it_acts() {
+        let needs = vec!["notify".to_string(), "run:ls".to_string()];
+        let none = Weak::new();
+        let refused = wheel_call("p", &needs, &none, &json!({"method": "pane.open", "args": {}})).await;
+        assert_eq!(refused.unwrap_err().code, ErrorCode::REQUEST_FAILED);
+        let other = wheel_call("p", &needs, &none, &json!({"method": "command.run", "args": {"command": "rm -rf /"}})).await;
+        assert!(other.unwrap_err().message.contains("run:rm -rf /"));
+        let allowed = wheel_call("p", &needs, &none, &json!({"method": "notify", "args": {}})).await;
+        assert_eq!(allowed.unwrap_err().message, STOPPING, "an allowed call goes on to the state");
     }
 
     #[tokio::test]
