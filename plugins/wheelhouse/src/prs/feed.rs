@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use super::detail::{self, Button};
 use super::markdown;
 use super::*;
+use crate::core::number_of;
 use crate::core::project::Origin;
 
 /// A Unix time as the local `HH:MM`.
@@ -39,11 +40,6 @@ fn snapshot_value(s: &Snapshot, at: i64, clock: impl Fn(i64) -> String) -> Value
         "buttons": s.buttons.iter().map(|b: &Button| json!({ "name": b.name, "label": detail::label(b), "on": b.on, "worktree": b.worktree })).collect::<Vec<_>>(),
         "scripts": s.scripts.iter().map(|x| json!({ "name": x.name, "label": x.label() })).collect::<Vec<_>>(),
     })
-}
-
-/// A PR number: an integer, or a whole number a JSON writer printed as a float (`3.0`).
-pub fn number_of(v: &Value) -> Option<i64> {
-    v.as_i64().or_else(|| v.as_f64().filter(|f| f.fract() == 0.0 && f.abs() < 9e15).map(|f| f as i64))
 }
 
 /// The `pr_detail` feed's value for PR `number` of the project in `dir`.
@@ -263,13 +259,5 @@ mod tests {
         assert_eq!(merged["state"], "MERGED");
         let none = digest(&Value::Null, 9, 1, vec![]);
         assert_eq!((none["number"].as_i64(), none["state"].as_str(), none["body"].clone(), none["talk"].clone()), (Some(9), Some("OPEN"), json!([]), json!([])));
-    }
-
-    #[test]
-    fn a_pr_number_may_be_a_whole_float() {
-        assert_eq!(number_of(&json!(7)), Some(7));
-        assert_eq!(number_of(&json!(7.0)), Some(7));
-        assert_eq!(number_of(&json!(7.5)), None);
-        assert_eq!(number_of(&json!("7")), None);
     }
 }

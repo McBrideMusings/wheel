@@ -4,23 +4,17 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
 use crate::core::buttons::Script;
-use crate::core::list::{self, Filter, Item, List, Spec};
-use crate::core::page::{cell, Page};
-use crate::core::table;
+use crate::core::list::{Filter, Item, List, Spec};
 
 pub mod buttons;
 pub mod cli;
 pub mod feed;
 pub mod graph;
-pub mod serve;
-
-const CATALOG: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
-const SURFACE: &str = "beads";
+pub mod graph_feed;
 
 // ───────────────────────────── data ─────────────────────────────
 
@@ -244,21 +238,6 @@ pub fn epoch(iso: &str) -> i64 {
     (era * 146097 + doe - 719468) * 86400 + h * 3600 + mi * 60 + s
 }
 
-fn ago(iso: &str) -> String {
-    if iso.is_empty() {
-        return String::new();
-    }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let m = ((now - epoch(iso)).max(0) as f64) / 60.0;
-    if m < 60.0 {
-        format!("{}m", m.round())
-    } else if m < 1440.0 {
-        format!("{}h", (m / 60.0).round())
-    } else {
-        format!("{}d", (m / 1440.0).round())
-    }
-}
-
 struct Ix<'a> {
     snap: &'a Snapshot,
     by_id: HashMap<&'a str, &'a Bead>,
@@ -295,73 +274,15 @@ impl<'a> Ix<'a> {
     }
 }
 
-struct Col {
-    key: &'static str,
-    label: &'static str,
-    width: Option<f64>,
-    tree: bool,
-    /// Shown only when the pane is wide.
-    wide: bool,
-}
-
-const COLS: [Col; 7] = [
-    Col { key: "id", label: "ID", width: Some(56.0), tree: false, wide: true },
-    Col { key: "title", label: "Title", width: None, tree: true, wide: false },
-    Col { key: "type", label: "Type", width: Some(56.0), tree: false, wide: true },
-    Col { key: "unlocks", label: "Unlocks", width: Some(28.0), tree: false, wide: true },
-    Col { key: "status", label: "Status", width: Some(84.0), tree: false, wide: false },
-    Col { key: "pri", label: "Priority", width: Some(24.0), tree: false, wide: false },
-    Col { key: "updated", label: "Updated", width: Some(30.0), tree: false, wide: true },
-];
-
+/// What the list a command prints narrows and orders by: the view, the search, filters and sort.
 struct Ui {
     view: String,
-    /// The search, filters, sort and selection, as every list page holds them.
     list: List,
-    collapsed: HashSet<String>,
-    detail: Option<String>,
-    hist: Vec<String>,
-    /// What the last button run did, shown in the open bead.
-    ran: Option<String>,
-    /// The bead Focus centres on and Graph highlights.
-    sel: Option<String>,
-    /// How many hops Focus shows on each side.
-    depth: usize,
-    /// The beads Focus centred on before, most recent last.
-    fhist: Vec<String>,
-    /// The "+ N more" list that is open in Focus, by key.
-    more: Option<String>,
-    /// The width the client reported for the Focus canvas.
-    cw: f64,
-    /// Graph should centre on the selected bead when it is drawn.
-    centre: bool,
-    /// What the last list button did, shown once at the top of the page.
-    said: Option<String>,
 }
 
 impl Default for Ui {
     fn default() -> Self {
-        Ui {
-            view: "list".into(),
-            list: List::new("status", true),
-            collapsed: HashSet::new(),
-            detail: None,
-            hist: vec![],
-            ran: None,
-            sel: None,
-            depth: 2,
-            fhist: vec![],
-            more: None,
-            cw: 900.0,
-            centre: false,
-            said: None,
-        }
-    }
-}
-
-impl Ui {
-    fn custom(&self) -> bool {
-        self.view == "focus" || self.view == "graph"
+        Ui { view: "list".into(), list: List::new("status", true) }
     }
 }
 
@@ -411,15 +332,13 @@ impl Item for Bead {
     }
 }
 
-fn matches(ui: &Ui, b: &Bead) -> bool {
-    ui.list.keeps(&SPEC, b)
+fn matches(list: &List, b: &Bead) -> bool {
+    list.keeps(&SPEC, b)
 }
 
 struct RowOut<'a> {
     b: &'a Bead,
     depth: usize,
-    path: String,
-    kids: bool,
 }
 
 struct Node<'a> {
@@ -457,26 +376,23 @@ fn walk<'a>(
     Some(Node { b, depth, nodes })
 }
 
-fn flat<'a>(n: &Node<'a>, parent: &str, ui: &Ui, out: &mut Vec<RowOut<'a>>) {
+fn flat<'a>(n: &Node<'a>, out: &mut Vec<RowOut<'a>>) {
     if out.len() >= 20_000 {
         return;
     }
-    let path = format!("{parent}>{}", n.b.id);
-    out.push(RowOut { b: n.b, depth: n.depth, path: path.clone(), kids: !n.nodes.is_empty() });
-    if !ui.collapsed.contains(&path) {
-        for c in &n.nodes {
-            flat(c, &path, ui, out);
-        }
+    out.push(RowOut { b: n.b, depth: n.depth });
+    for c in &n.nodes {
+        flat(c, out);
     }
 }
 
 /// The rows a view shows, as the page's table builds them: a flat sorted list, or a tree
-/// flattened with a depth and cut at the collapsed paths.
+/// flattened with a depth.
 fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
     // Trees keep the page's own order; the flat list follows the sort a header click chose, so the
     // page, the copied ids and a list button all see the rows the screen shows.
     let by = |a: &Bead, b: &Bead| compare(ix, "status", a, b);
-    if ui.view == "list" || ui.custom() {
+    if ui.view == "list" {
         let (key, asc) = (&ui.list.sort.0, ui.list.sort.1);
         let by = |a: &Bead, b: &Bead| {
             let o = compare(ix, key, a, b).then_with(|| compare(ix, "status", a, b));
@@ -487,10 +403,10 @@ fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
             .beads
             .iter()
             .filter(|b| b.kind != "epic" && b.kind != "milestone")
-            .filter(|b| matches(ui, b))
+            .filter(|b| matches(&ui.list, b))
             .collect();
         v.sort_by(|a, b| by(a, b));
-        return v.into_iter().map(|b| RowOut { path: b.id.clone(), b, depth: 0, kids: false }).collect();
+        return v.into_iter().map(|b| RowOut { b, depth: 0 }).collect();
     }
     let pool: Vec<&Bead> = match ui.view.as_str() {
         "epics" => ix.snap.beads.iter().collect(),
@@ -524,330 +440,18 @@ fn build<'a>(ix: &Ix<'a>, ui: &Ui) -> Vec<RowOut<'a>> {
             .filter(|b| !ix.unlocked(b).is_empty() && !ix.blockers(b).iter().any(|x| keep.contains(x.id.as_str())))
             .collect(),
     };
-    let ok = |b: &Bead| matches(ui, b);
+    let ok = |b: &Bead| matches(&ui.list, b);
     let mut tops: Vec<Node> = roots.into_iter().filter_map(|r| walk(r, &[], 0, &children, &keep, &ok, &by)).collect();
     tops.sort_by(|x, y| by(x.b, y.b));
     let mut out = vec![];
     for n in &tops {
-        flat(n, "", ui, &mut out);
+        flat(n, &mut out);
     }
     out
 }
 
-/// The ids of the beads the page lists now, in the order shown: what the search, filters, view and
-/// sort leave, without epics and milestones (an id list is for working leaves, and an epic's id
-/// would stand for its children twice).
-fn listed(ix: &Ix, ui: &Ui) -> Vec<String> {
-    build(ix, ui).into_iter().filter(|r| r.b.kind != "epic" && r.b.kind != "milestone").map(|r| r.b.id.clone()).collect()
-}
-
-/// The ids the list actions (Copy IDs, the project's list buttons) take: the selected rows that are
-/// listed now, in the order shown, or every listed row when none of the selection is listed.
-fn ids(ix: &Ix, ui: &Ui) -> Vec<String> {
-    list::taken(listed(ix, ui), &ui.list)
-}
-
-// ───────────────────────────── A2UI ─────────────────────────────
-
 pub(crate) fn sane(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
-}
-
-fn menu(ix: &Ix, b: &Bead) -> Vec<Value> {
-    ix.snap
-        .acts
-        .get(&b.id)
-        .filter(|a| !a.disabled)
-        .map(|a| json!({ "label": a.label, "action": "press", "context": { "bead": b.id } }))
-        .into_iter()
-        .collect()
-}
-
-fn row_json(ix: &Ix, ui: &Ui, r: &RowOut, cols: &[&Col]) -> Value {
-    let b = r.b;
-    let k = kind_of(b);
-    let cells: Vec<Value> = cols
-        .iter()
-        .map(|c| {
-            let mut v = match c.key {
-                "id" => cell(ix.short(&b.id), json!({ "mono": true, "tone": "muted" })),
-                "title" => cell(&b.title, json!({})),
-                "type" => cell(&b.kind, json!({ "tone": "muted" })),
-                "unlocks" => {
-                    let n = ix.unlocked(b).iter().filter(|u| is_open(u)).count();
-                    cell(if n > 0 { n.to_string() } else { String::new() }, json!({ "tone": "muted", "sort": n }))
-                }
-                "status" => cell(k, json!({ "chip": true, "tone": tone_of(k), "sort": krank(k) })),
-                "pri" => cell(
-                    b.priority.map(|p| format!("P{p}")).unwrap_or_default(),
-                    match b.priority {
-                        Some(p) if p <= 1 => json!({ "mono": true, "tone": "bad", "sort": p }),
-                        Some(p) if p >= 3 => json!({ "mono": true, "tone": "muted", "sort": p }),
-                        Some(p) => json!({ "mono": true, "sort": p }),
-                        None => json!({ "mono": true, "sort": 9 }),
-                    },
-                ),
-                _ => cell(ago(&b.updated), json!({ "tone": "muted", "sort": epoch(&b.updated) })),
-            };
-            v["key"] = json!(c.key);
-            v
-        })
-        .collect();
-    json!({ "id": b.id, "path": r.path, "depth": r.depth, "kids": r.kids,
-        "collapsed": ui.collapsed.contains(&r.path), "dim": k == "done",
-        "sel": ui.detail.as_deref() == Some(b.id.as_str()),
-        "cells": cells, "menu": menu(ix, b) })
-}
-
-fn table(ix: &Ix, ui: &Ui) -> Value {
-    let rows = build(ix, ui);
-    let cols: Vec<&Col> = COLS.iter().collect();
-    let total = ix.snap.beads.iter().filter(|b| b.kind != "epic" && b.kind != "milestone").count();
-    let sections: Vec<Value> = vec![table::section("", rows.iter().map(|r| row_json(ix, ui, r, &cols)).collect())];
-    let columns: Vec<Value> = cols
-        .iter()
-        .map(|c| table::column(c.key, c.label, json!(c.width), c.tree, c.wide))
-        // Only the flat list sorts: a header click re-orders every row, which would tear a tree apart.
-        .map(|c| if ui.view == "list" || ui.custom() { table::sortable(c) } else { c })
-        .collect();
-    let v = table::component(
-        columns,
-        sections,
-        "select_bead",
-        "toggle_path",
-        // A tree has no sortable column, so it carries no sort action and no header arrow.
-        if ui.view == "list" || ui.custom() { "set_sort" } else { "" },
-        (&ui.list.sort.0, ui.list.sort.1),
-        if total == 0 { "No beads yet" } else { "Nothing matches the search and filters." },
-    );
-    table::selectable(v, "select_rows", &ui.list.selected.iter().cloned().collect::<Vec<_>>())
-}
-
-
-type Next<'a, 'b> = &'b dyn Fn(&Bead) -> Vec<&'a Bead>;
-
-#[allow(clippy::too_many_arguments)]
-fn branch<'a>(
-    p: &mut Page,
-    ix: &Ix<'a>,
-    prefix: &str,
-    b: &'a Bead,
-    next: Next<'a, '_>,
-    depth: usize,
-    seen: &[String],
-    budget: &mut i32,
-) -> String {
-    *budget -= 1;
-    let id = format!("{prefix}.{}", sane(&b.id));
-    let k = kind_of(b);
-    let link = p.button(
-        &format!("{id}.l"),
-        &format!("{}  {}", ix.short(&b.id), b.title),
-        "open_bead",
-        json!({ "id": b.id }),
-        json!({ "style": "link" }),
-    );
-    let chip = p.label(&format!("{id}.c"), k, json!({ "chip": true, "size": 11, "tone": tone_of(k) }));
-    // The title takes the line and the status chip keeps one column, so the chips of a list line up whatever the titles.
-    crate::core::layout::modify(&mut p.out, &format!("{id}.l.t"), json!({ "lineLimit": 1 }));
-    let mut kids_ids = vec![p.boxed(&format!("{id}.h"), "h", vec![link, chip], json!({ "spacing": 6, "align": "center", "widths": ["flex", 76] }))];
-    let kids: Vec<&Bead> = next(b).into_iter().filter(|x| !seen.contains(&x.id)).collect();
-    if !kids.is_empty() {
-        if depth >= 4 {
-            kids_ids.push(p.label(&format!("{id}.m"), &format!("… {} more", kids.len()), json!({ "tone": "muted", "size": 12 })));
-        } else {
-            let mut seen2 = seen.to_vec();
-            seen2.push(b.id.clone());
-            let mut inner = vec![];
-            for (i, k) in kids.iter().enumerate() {
-                if *budget <= 0 {
-                    inner.push(p.label(&format!("{id}.more"), &format!("… {} more not shown", kids.len() - i), json!({ "tone": "muted", "size": 12 })));
-                    break;
-                }
-                inner.push(branch(p, ix, &id, k, next, depth + 1, &seen2, budget));
-            }
-            kids_ids.push(p.boxed(&format!("{id}.k"), "v", inner, json!({ "padding": [0, 0, 0, 16], "spacing": 2 })));
-        }
-    }
-    p.boxed(&id, "v", kids_ids, json!({ "spacing": 2 }))
-}
-
-fn tree<'a>(p: &mut Page, ix: &Ix<'a>, prefix: &str, b: &'a Bead, next: Next<'a, '_>, budget: &mut i32) -> String {
-    let ks = next(b);
-    if ks.is_empty() {
-        return p.label(&format!("{prefix}.none"), "None.", json!({ "tone": "muted", "size": 12 }));
-    }
-    let seen = vec![b.id.clone()];
-    let mut out = vec![];
-    for (i, k) in ks.iter().enumerate() {
-        if *budget <= 0 {
-            out.push(p.label(&format!("{prefix}.more"), &format!("… {} more not shown", ks.len() - i), json!({ "tone": "muted", "size": 12 })));
-            break;
-        }
-        out.push(branch(p, ix, prefix, k, next, 1, &seen, budget));
-    }
-    p.boxed(&format!("{prefix}.t"), "v", out, json!({ "spacing": 2 }))
-}
-
-fn detail<'a>(p: &mut Page, ix: &Ix<'a>, ui: &Ui, id: &str) -> Option<String> {
-    let b: &'a Bead = ix.by_id.get(id).copied()?;
-    let k = kind_of(b);
-    let mut c: Vec<String> = vec![];
-    if !ui.hist.is_empty() {
-        c.push(p.button("d.back", "← Back", "back", json!({}), json!({ "style": "link" })));
-    }
-    c.push(p.label("d.title", &b.title, json!({ "size": 17, "weight": "semibold" })));
-    let fact = |p: &mut Page, n: &str, name: &str, value: String| -> String {
-        let l = p.label(&format!("d.f.{n}.k"), name, json!({ "tone": "muted", "size": 12 }));
-        p.boxed(&format!("d.f.{n}"), "h", vec![l, value], json!({ "spacing": 12, "widths": [84, "flex"], "align": "firstTextBaseline" }))
-    };
-    let v = p.label("d.f.id.v", &b.id, json!({ "mono": true, "size": 12 }));
-    c.push(fact(p, "id", "ID", v));
-    let v = p.label("d.f.st.v", k, json!({ "chip": true, "size": 11, "tone": tone_of(k) }));
-    c.push(fact(p, "st", "Status", v));
-    let v = p.label("d.f.pr.v", &b.priority.map(|x| format!("P{x}")).unwrap_or_else(|| "—".into()), json!({}));
-    c.push(fact(p, "pr", "Priority", v));
-    let v = p.label("d.f.ty.v", &b.kind, json!({}));
-    c.push(fact(p, "ty", "Type", v));
-    if !b.labels.is_empty() {
-        let v = p.label("d.f.lb.v", &b.labels.join("  ·  "), json!({}));
-        c.push(fact(p, "lb", "Labels", v));
-    }
-    if let Some(par) = b.parent.as_deref().and_then(|x| ix.by_id.get(x)) {
-        let v = p.button("d.f.pa.v", &format!("{}  {}", ix.short(&par.id), par.title), "open_bead", json!({ "id": par.id }), json!({ "style": "link" }));
-        c.push(fact(p, "pa", "Parent", v));
-    }
-    if let Some(o) = &b.owner {
-        let v = p.label("d.f.ow.v", o, json!({}));
-        c.push(fact(p, "ow", "Owner", v));
-    }
-    let v = p.label("d.f.up.v", &format!("{} ago", ago(&b.updated)), json!({}));
-    c.push(fact(p, "up", "Updated", v));
-    if !b.description.is_empty() {
-        // Flat: a rule above and below the text, no raised box.
-        p.put(json!({ "id": "d.desc.t", "component": "Divider" }));
-        c.push("d.desc.t".into());
-        c.push(p.label("d.desc", &b.description, json!({ "size": 13 })));
-        p.put(json!({ "id": "d.desc.u", "component": "Divider" }));
-        c.push("d.desc.u".into());
-    }
-    let section = |p: &mut Page, key: &str, title: &str, next: Next<'a, '_>| -> String {
-        let n = next(b).len();
-        let h = p.runs(
-            &format!("d.{key}.h"),
-            json!([{ "text": title, "weight": "semibold", "size": 13 }, { "text": format!("  {n}"), "tone": "muted", "size": 13 }]),
-            json!({}),
-        );
-        let mut budget = 40;
-        let t = tree(p, ix, &format!("d.{key}"), b, next, &mut budget);
-        p.boxed(&format!("d.{key}"), "v", vec![h, t], json!({ "spacing": 4, "padding": [8, 0, 0, 0] }))
-    };
-    c.push(section(p, "dep", "Depends on", &|x| ix.blockers(x)));
-    c.push(section(p, "unl", "Unlocks", &|x| ix.unlocked(x)));
-    if ix.kids.contains_key(b.id.as_str()) {
-        c.push(section(p, "kid", "Children", &|x| ix.children(x)));
-    }
-    let acts: Vec<String> = ix
-        .snap
-        .acts
-        .get(&b.id)
-        .map(|a| {
-            let mut extra = json!({ "style": "primary", "disabled": a.disabled });
-            if !a.help.is_empty() {
-                extra["help"] = json!(a.help);
-            }
-            p.button("d.act", &a.label, "press", json!({ "bead": b.id }), extra)
-        })
-        .into_iter()
-        .collect();
-    let body = p.boxed("d.body", "v", c, json!({ "spacing": 12, "align": "start" }));
-    // The buttons sit in the card's footer beside Close, with the last run's result before them.
-    let mut footer = vec![];
-    if !acts.is_empty() {
-        if let Some(r) = &ui.ran {
-            footer.push(p.label("d.ran", r, json!({ "tone": "ok", "weight": "semibold" })));
-        }
-        footer.extend(acts);
-    }
-    p.put(json!({ "id": "detail", "component": "Modal", "presented": true, "dismissAction": "close_detail", "children": [body], "actions": footer }));
-    Some("detail".into())
-}
-
-fn page_components(snap: &Snapshot, ui: &Ui) -> Vec<Value> {
-    let mut p = Page { out: vec![] };
-    let ix = Ix::new(snap);
-    let all: Vec<&Bead> = snap.beads.iter().filter(|b| b.kind != "epic" && b.kind != "milestone").collect();
-    let mut page: Vec<String> = vec![];
-
-
-    let n = |f: &dyn Fn(&Bead) -> bool| all.iter().filter(|b| f(b)).count();
-    // The four boxes are the status filter: a tap picks one, a tap on the chosen one clears it.
-    page.push(list::boxes(&mut p, &ui.list, &[
-        ("Ready", "status", "ready", n(&|b| b.ready && b.status == "open"), true),
-        ("Active", "status", "in progress", n(&|b| b.status == "in_progress"), false),
-        ("Blocked", "status", "blocked", n(&|b| b.status == "open" && !b.ready && !b.blocked_by.is_empty()), false),
-        ("Closed", "status", "done", n(&|b| b.status == "closed"), false),
-    ]));
-
-    for (i, pr) in snap.problems.iter().chain(snap.error.iter()).enumerate() {
-        let l = p.label(&format!("problem{i}.t"), pr, json!({ "tone": "bad" }));
-        page.push(p.boxed(&format!("problem{i}"), "v", vec![l], json!({ "border": "bad", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
-    }
-    if let Some(said) = &ui.said {
-        let l = p.label("said.t", said, json!({ "tone": "ok" }));
-        page.push(p.boxed("said", "v", vec![l], json!({ "border": "ok", "radius": 8, "padding": [8, 12], "margin": [10, 0, 0, 0] })));
-    }
-
-    if !snap.has_repo {
-        page.push(p.label("none", "This space has no .beads directory, so there is nothing to list.", json!({ "tone": "muted" })));
-    } else {
-        // Search with the views choice beside it, then the filters, Clear and the list actions.
-        p.choose("views", "/set_view", &ui.view, vec![
-                json!({ "value": "list", "text": "List" }), json!({ "value": "epics", "text": "Epics" }),
-                json!({ "value": "deps", "text": "Depends on" }), json!({ "value": "unlocks", "text": "Unlocks" }),
-                json!({ "value": "focus", "text": "Focus" }), json!({ "value": "graph", "text": "Graph" })], true, false);
-        page.push(list::find(&mut p, &ui.list, vec!["views".into()]));
-        let pri = (0..=4).map(|n| (n.to_string(), format!("P{n}  {}", all.iter().filter(|b| b.priority == Some(n)).count()))).collect();
-        let options = vec![
-            KINDS.iter().map(|k| (k.to_string(), k.to_string())).collect(),
-            list::counted(all.iter().copied(), |b| vec![b.kind.clone()]),
-            list::counted(all.iter().copied(), |b| b.labels.clone()),
-            pri,
-        ];
-        let tbl = table(&ix, ui);
-        let actions = crate::core::buttons::actions(&mut p, &snap.scripts, &ids(&ix, ui), listed(&ix, ui).len(), "ids", "beads");
-        page.push(list::bar(&mut p, &SPEC, &ui.list, options, actions));
-
-        if ui.custom() {
-            let parts = graph::Model::new(snap, ui).components(&mut p, ui);
-            page.push(p.boxed("graph.b", "v", parts, json!({ "padding": [0, 0, 0, 0] })));
-        } else {
-            let mut t = tbl;
-            t["id"] = json!("table");
-            p.put(t);
-            page.push(p.boxed("table.b", "v", vec!["table".into()], json!({})));
-        }
-        // A closed panel is sent as a Modal that is not presented: the client keeps every component it was sent, so only that
-        // replaces the open one.
-        match ui.detail.as_deref().and_then(|d| detail(&mut p, &ix, ui, d)) {
-            Some(id) => page.push(id),
-            None => {
-                p.put(json!({ "id": "detail", "component": "Modal", "presented": false, "dismissAction": "close_detail" }));
-            }
-        }
-    }
-    p.boxed("page", "v", page, json!({ "align": "start", "padding": [18, 16, 48, 16] }));
-    p.out
-}
-
-fn skeleton() -> Value {
-    json!([
-        { "version": "v0.9", "createSurface": { "surfaceId": SURFACE, "catalogId": CATALOG } },
-        { "version": "v0.9", "updateComponents": { "surfaceId": SURFACE, "components": [
-            { "id": "root", "component": "Column", "align": "stretch", "children": ["page"] },
-            { "id": "page", "component": "Column", "children": [] }
-        ] } }
-    ])
 }
 
 #[cfg(test)]
@@ -907,169 +511,26 @@ mod tests {
     }
 
     #[test]
-    fn the_page_builds_every_view() {
-        let s = snap(vec![
-            bead("e", |b| b.kind = "epic".into()),
-            bead("a", |b| b.parent = Some("e".into())),
-            bead("b", |b| { b.parent = Some("e".into()); b.blocked_by = vec!["a".into()] }),
-        ]);
-        for v in ["list", "epics", "deps", "unlocks", "focus", "graph"] {
-            let ui = Ui { view: v.into(), detail: Some("a".into()), ..Default::default() };
-            let c = page_components(&s, &ui);
-            assert!(c.iter().any(|x| x["id"] == "page"), "{v}");
-        }
-    }
-
-    #[test]
     fn a_filter_of_several_values_matches_any_of_them_and_priority_groups_work() {
         let b1 = bead("a", |b| { b.kind = "bug".into(); b.labels = vec!["client".into()]; b.priority = Some(1); });
         let b2 = bead("b", |b| { b.kind = "task".into(); b.labels = vec!["mac".into()]; b.priority = Some(3); });
         let mut ui = Ui::default();
         ui.list.f.insert("type".into(), vec!["bug".into(), "feature".into()]);
-        assert!(matches(&ui, &b1) && !matches(&ui, &b2));
+        assert!(matches(&ui.list, &b1) && !matches(&ui.list, &b2));
         ui.list.f.insert("type".into(), vec![]);
         ui.list.f.insert("label".into(), vec!["client".into(), "mac".into()]);
-        assert!(matches(&ui, &b1) && matches(&ui, &b2));
+        assert!(matches(&ui.list, &b1) && matches(&ui.list, &b2));
         ui.list.f.insert("label".into(), vec![]);
         ui.list.f.insert("pri".into(), vec!["0".into(), "1".into(), "2".into()]);
-        assert!(matches(&ui, &b1) && !matches(&ui, &b2));
+        assert!(matches(&ui.list, &b1) && !matches(&ui.list, &b2));
         ui.list.f.insert("pri".into(), vec!["3".into()]);
-        assert!(!matches(&ui, &b1) && matches(&ui, &b2));
+        assert!(!matches(&ui.list, &b1) && matches(&ui.list, &b2));
         ui.list.not.insert("pri".into());
-        assert!(matches(&ui, &b1) && !matches(&ui, &b2), "an excluded filter keeps what has none of its values");
+        assert!(matches(&ui.list, &b1) && !matches(&ui.list, &b2), "an excluded filter keeps what has none of its values");
         ui.list.f.insert("pri".into(), vec![]);
         ui.list.not.clear();
         ui.list.f.insert("label".into(), vec!["client".into()]);
         ui.list.not.insert("label".into());
-        assert!(!matches(&ui, &b1) && matches(&ui, &b2));
-    }
-
-    #[test]
-    fn copy_ids_holds_the_listed_ids_in_the_shown_order_and_list_buttons_follow_them() {
-        let mut s = snap(vec![
-            bead("t-1", |b| { b.priority = Some(3); b.title = "c".into(); }),
-            bead("t-2", |b| { b.priority = Some(1); b.title = "a".into(); }),
-            bead("t-3", |b| { b.priority = Some(2); b.title = "b".into(); b.kind = "epic".into(); }),
-            bead("t-4", |b| { b.priority = Some(0); b.title = "d".into(); b.status = "closed".into(); }),
-        ]);
-        s.scripts = vec![
-            Script { name: "iterate-list".into(), label: Some("Iterate".into()), run: "true".into() },
-        ];
-        let copied = |c: &[Value]| c.iter().find(|x| x["id"] == "list.copy").unwrap()["action"]["copy"]["text"].as_str().unwrap().to_string();
-        let disabled = |c: &[Value], id: &str| c.iter().find(|x| x["id"] == id).unwrap()["modifiers"].as_array().is_some_and(|m| m.iter().any(|x| x["disabled"] == true));
-        let mut ui = Ui::default();
-        let c = page_components(&s, &ui);
-        assert_eq!(copied(&c), "t-1 t-2", "the open leaves in the page's order; the epic and the closed bead are not listed");
-        let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
-        assert_eq!(shape["children"], json!(["filters.clear", "list.actions"]), "Clear and the Actions chip");
-        let title = |c: &[Value]| c.iter().find(|x| x["id"] == "list.actions.title").unwrap()["text"].as_str().unwrap().to_string();
-        assert_eq!(title(&c), "2 listed · Actions ⌄");
-        assert_eq!(c.iter().find(|x| x["id"] == "list.actions").unwrap()["component"], "Popover", "the chip is a popover like the filters");
-        assert_eq!(c.iter().find(|x| x["id"] == "list.actions.menu").unwrap()["children"], json!(["list.copy", "list.iterate-list"]), "Copy IDs, then the list button");
-        assert_eq!(c.iter().find(|x| x["id"] == "list.iterate-list.t").unwrap()["text"], "Iterate  2", "a list button carries its count");
-        assert!(!disabled(&c, "list.copy") && !disabled(&c, "list.iterate-list"));
-        let table = c.iter().find(|x| x["id"] == "table").unwrap();
-        assert_eq!((table["sortAction"].as_str(), &table["sort"]), (Some("set_sort"), &json!({ "key": "status", "asc": true })), "a header click reaches the page");
-        assert_eq!((table["selectAction"].as_str(), &table["selected"]), (Some("select_rows"), &json!([])), "a click reaches the page as the selection");
-        ui.list.selected = ["t-2".to_string(), "t-9".to_string()].into_iter().collect();
-        let c = page_components(&s, &ui);
-        assert_eq!(copied(&c), "t-2", "a selection narrows the ids to the selected rows that are listed");
-        assert_eq!(title(&c), "1 selected of 2 · Actions ⌄");
-        assert_eq!(c.iter().find(|x| x["id"] == "list.iterate-list.t").unwrap()["text"], "Iterate  1");
-        assert_eq!(c.iter().find(|x| x["id"] == "table").unwrap()["selected"].as_array().unwrap().len(), 2, "the table is told the selection");
-        ui.list.selected = ["t-9".to_string()].into_iter().collect();
-        let c = page_components(&s, &ui);
-        assert_eq!(copied(&c), "t-1 t-2", "a selection with no listed row means the whole list");
-        ui.list.selected.clear();
-        ui.list.sort = ("title".into(), false);
-        let c = page_components(&s, &ui);
-        assert_eq!(copied(&c), "t-1 t-2");
-        ui.list.sort = ("title".into(), true);
-        let c = page_components(&s, &ui);
-        assert_eq!(copied(&c), "t-2 t-1", "the sort a header chose orders the ids");
-        ui.view = "epics".into();
-        let c = page_components(&s, &ui);
-        assert_eq!(c.iter().find(|x| x["id"] == "table").unwrap()["sortAction"], "", "a tree view has no sort action");
-        ui.view = "list".into();
-        let c = page_components(&s, &ui);
-        let rows = c.iter().find(|x| x["id"] == "table").unwrap()["sections"][0]["rows"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        assert_eq!(rows, ["t-2", "t-1"], "and the table's rows come in the same order");
-        ui.list.q = "nothing-here".into();
-        let c = page_components(&s, &ui);
-        assert_eq!(copied(&c), "");
-        assert!(disabled(&c, "list.copy") && disabled(&c, "list.iterate-list"), "an empty list keeps the buttons in place, disabled");
-        let ix = Ix::new(&s);
-        assert!(menu(&ix, &s.beads[0]).iter().all(|m| m["context"]["script"] != "iterate-list"), "a list button is never a row's button");
-    }
-
-    #[test]
-    fn a_beads_buttons_sit_in_the_detail_footer_not_its_body() {
-        let mut s = snap(vec![bead("a", |b| b.status = "in_progress".into())]);
-        s.acts.insert(
-            "a".into(),
-            buttons::Act { state: buttons::State::Saved, label: "Resume".into(), disabled: false, help: String::new() },
-        );
-        let mut ui = Ui::default();
-        ui.detail = Some("a".into());
-        let c = page_components(&s, &ui);
-        let modal = c.iter().find(|x| x["id"] == "detail").unwrap();
-        assert_eq!(modal["actions"], json!(["d.act"]), "the button is a footer action beside Close");
-        assert_eq!(modal["children"], json!(["d.body"]), "the card's body holds only the facts");
-    }
-
-    #[test]
-    fn a_filter_is_a_popover_of_ticks_titled_with_what_it_holds() {
-        let s = snap(vec![bead("a", |_| {})]);
-        let mut ui = Ui::default();
-        ui.list.f.insert("pri".into(), vec!["0".into(), "1".into()]);
-        ui.list.not.insert("pri".into());
-        let c = page_components(&s, &ui);
-        let menu = c.iter().find(|x| x["id"] == "filters.pri").expect("the priority menu");
-        assert_eq!(menu["component"], "Popover");
-        let title = c.iter().find(|x| x["id"] == "filters.pri.title").expect("the trigger text");
-        assert_eq!(title["text"], "Priority not: P0, P1 ⌄");
-        let tick = c.iter().find(|x| x["id"] == "filters.pri.1").expect("a tick for P1");
-        assert_eq!(tick["value"]["path"], "/toggle_filter/pri:1");
-        assert!(c.iter().all(|x| x["id"] != "chips"), "the menus show their own state, so there are no chips");
-        let clear = c.iter().find(|x| x["id"] == "filters.clear").unwrap();
-        assert!(!clear.to_string().contains("\"opacity\":0"), "Clear is shown while a filter is on");
-    }
-
-    #[test]
-    fn the_page_has_status_boxes_a_search_row_filter_menus_and_a_table() {
-        let s = snap(vec![bead("a", |_| {})]);
-        let c = page_components(&s, &Ui::default());
-        let page = c.iter().find(|x| x["id"] == "page").unwrap()["children"].as_array().unwrap().clone();
-        assert_eq!(page[..4], ["kpis", "find", "bar", "table.b"].map(Value::from), "boxes, search with the views choice, the filter menus with Clear and the Actions chip, the table");
-        let find = c.iter().find(|x| x["id"] == "find").unwrap();
-        assert_eq!(find["children"], json!(["search", "views"]));
-        let views = c.iter().find(|x| x["id"] == "views").unwrap();
-        assert_eq!((views["component"].as_str(), &views["children"]), (Some("ViewThatFits"), &json!(["views.seg", "views.menu"])), "the views choice is the segmented control, then the menu");
-        let style = |id: &str| c.iter().find(|x| x["id"] == id).map(|x| x["displayStyle"].clone());
-        assert_eq!((style("views.seg"), style("views.menu")), (Some(json!("chips")), Some(json!("menu"))));
-        assert_eq!(c.iter().find(|x| x["id"] == "filters.pri").map(|x| x["component"].clone()), Some(json!("Popover")), "a filter is a popover of ticks");
-        let bar = c.iter().find(|x| x["id"] == "bar").unwrap();
-        assert_eq!(bar["children"], json!(["bar.narrow", "bar.shape"]));
-        let narrow = c.iter().find(|x| x["id"] == "bar.narrow").unwrap();
-        assert_eq!(narrow["children"], json!(["filters.status", "filters.type", "filters.label", "filters.pri"]), "what narrows the list sits together");
-        let shape = c.iter().find(|x| x["id"] == "bar.shape").unwrap();
-        assert_eq!(shape["children"], json!(["filters.clear", "list.actions"]), "Clear and the Actions chip sit together");
-        let boxes: Vec<&Value> = c.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("kpi") && !i.contains('.') && i != "kpis")).collect();
-        assert_eq!(boxes.len(), 4);
-        assert!(boxes.iter().all(|b| b["component"] == "Button" && b["action"]["event"]["name"] == "set_filter"), "each box is a status filter");
-        let values: Vec<&str> = boxes.iter().map(|b| b["action"]["event"]["context"]["value"].as_str().unwrap()).collect();
-        assert_eq!(values, ["ready", "in progress", "blocked", "done"]);
-        assert!(values.iter().all(|v| KINDS.contains(v)), "a box filters by a status the rows are grouped under");
-        let mut ui = Ui::default();
-        ui.list.f.insert("status".into(), vec!["ready".into()]);
-        let filtered = page_components(&s, &ui);
-        let on = filtered.iter().find(|x| x["id"] == "kpi0").unwrap();
-        assert_eq!(on["action"]["event"]["context"]["value"], "", "a tap on the chosen box clears it");
-        let table = c.iter().find(|x| x["id"] == "table").expect("the table");
-        let first = &table["sections"][0]["rows"][0];
-        let keys: Vec<&str> = first["cells"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap()).collect();
-        assert_eq!(keys, ["id", "title", "type", "unlocks", "status", "pri", "updated"]);
-        let wide: Vec<&str> = table["columns"].as_array().unwrap().iter().filter(|x| x["wide"] == true).map(|x| x["key"].as_str().unwrap()).collect();
-        assert_eq!(wide, ["id", "type", "unlocks", "updated"]);
+        assert!(!matches(&ui.list, &b1) && matches(&ui.list, &b2));
     }
 }

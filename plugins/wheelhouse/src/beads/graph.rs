@@ -1,7 +1,7 @@
 //! The Focus and Graph views: the layouts of the installed page's `graph.js`, in Rust. The layout
 //! becomes a scene for the generic `Canvas` component (ADR-0029): shapes, text, hit regions and the
-//! zoom levels at which each layer shows. The client draws the scene and keeps the camera (pan and
-//! zoom) to itself; it knows nothing of beads. The toolbar, caption and legend are ordinary components.
+//! zoom levels at which each layer shows. The pane draws the scene and keeps the camera (pan and
+//! zoom) to itself; it knows nothing of beads. `graph_feed` serves the scene as the `beads_graph` feed.
 //!
 //! Focus puts one bead in the middle: what blocks it on the left (by hops), what it unlocks on
 //! the right, its parent above, its children below. Graph puts every bead on two axes: x is the
@@ -44,6 +44,22 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// What a `beads_graph` subscription asks for.
+#[derive(Clone, Debug)]
+pub(super) struct Params {
+    pub view: String,
+    /// The bead Focus centres on and Graph highlights.
+    pub sel: Option<String>,
+    /// How many hops Focus shows on each side.
+    pub depth: usize,
+    /// The width the pane reports for the Focus canvas.
+    pub width: f64,
+    /// The "+ N more" key that is open in Focus.
+    pub more: Option<String>,
+    /// The search and filters that dim the beads they drop.
+    pub list: List,
+}
+
 pub(super) struct Model<'a> {
     b: Vec<&'a Bead>,
     idx: HashMap<&'a str, usize>,
@@ -81,8 +97,14 @@ struct FNode {
     w: f64,
 }
 
+impl Default for Params {
+    fn default() -> Self {
+        Params { view: "focus".into(), sel: None, depth: 2, width: 900.0, more: None, list: List::new("status", true) }
+    }
+}
+
 impl<'a> Model<'a> {
-    pub(super) fn new(snap: &'a Snapshot, ui: &Ui) -> Self {
+    pub(super) fn new(snap: &'a Snapshot, list: &List) -> Self {
         let mut seen = HashSet::new();
         let b: Vec<&Bead> = snap.beads.iter().filter(|b| seen.insert(b.id.as_str())).collect();
         let n = b.len();
@@ -142,8 +164,12 @@ impl<'a> Model<'a> {
             }
         }
         // Which beads the search and filters let through. An epic is a lane or a parent, never a row.
-        let ok = b.iter().map(|x| x.kind == "epic" || x.kind == "milestone" || matches(ui, x)).collect();
+        let ok = b.iter().map(|x| x.kind == "epic" || x.kind == "milestone" || matches(list, x)).collect();
         Model { b, idx, blk, unl, miss, par, kids, st, rank, ok }
+    }
+
+    pub(super) fn count(&self) -> usize {
+        self.b.len()
     }
 
     fn n(&self) -> usize {
@@ -177,20 +203,8 @@ impl<'a> Model<'a> {
         best.or(if self.n() > 0 { Some(0) } else { None })
     }
 
-    pub(super) fn focus_idx(&self, ui: &Ui) -> Option<usize> {
-        ui.sel.as_deref().and_then(|s| self.idx.get(s).copied()).or_else(|| self.default_focus())
-    }
-
-    pub(super) fn id_of(&self, i: usize) -> &str {
-        &self.b[i].id
-    }
-
-    pub(super) fn has(&self, id: &str) -> bool {
-        self.idx.contains_key(id)
-    }
-
-    pub(super) fn index(&self, id: &str) -> Option<usize> {
-        self.idx.get(id).copied()
+    pub(super) fn focus_idx(&self, p: &Params) -> Option<usize> {
+        p.sel.as_deref().and_then(|s| self.idx.get(s).copied()).or_else(|| self.default_focus())
     }
 
     fn layers(c: usize, adj: &[Vec<usize>], depth: usize, placed: &mut HashSet<usize>) -> Vec<Vec<usize>> {
@@ -243,23 +257,25 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// One bead as a row of the list behind an open "+ N more" key.
+    fn row(&self, i: usize) -> Value {
+        let b = self.b[i];
+        json!({ "id": b.id, "title": b.title, "word": WORDS[self.st[i] as usize], "tone": tone_of(kind_of(b)) })
+    }
+
     fn short_title(&self, i: usize) -> &str {
         &self.b[i].title
     }
 
-    fn item(&self, i: usize) -> Value {
-        json!({ "id": self.b[i].id, "title": self.b[i].title, "st": self.st[i] })
-    }
-
-    /// The Focus view: one bead, its neighbourhood on two axes. `cw` is the width the client
-    /// reported for its canvas.
-    fn focus(&self, ui: &Ui, cw: f64) -> Value {
-        let Some(c) = self.focus_idx(ui) else {
+    /// The Focus view: one bead, its neighbourhood on two axes, laid out for a canvas `p.width` wide.
+    fn focus(&self, p: &Params) -> Value {
+        let cw = p.width;
+        let Some(c) = self.focus_idx(p) else {
             return json!({ "empty": "Pick a bead to see what it is connected to.", "caption": "" });
         };
         let mut placed: HashSet<usize> = HashSet::from([c]);
-        let mut l = Self::layers(c, &self.blk, ui.depth, &mut placed);
-        let mut r = Self::layers(c, &self.unl, ui.depth, &mut placed);
+        let mut l = Self::layers(c, &self.blk, p.depth, &mut placed);
+        let mut r = Self::layers(c, &self.unl, p.depth, &mut placed);
         self.place(&mut l, &self.unl, c);
         self.place(&mut r, &self.blk, c);
         let gh = self.miss[c].clone();
@@ -306,15 +322,15 @@ impl<'a> Model<'a> {
         let mut y = 6.0;
         let mut anc: Vec<usize> = vec![];
         {
-            let mut p = self.par[c];
+            let mut up = self.par[c];
             let mut n = 0;
-            while let Some(pp) = p {
+            while let Some(pp) = up {
                 if n >= 30 || anc.contains(&pp) {
                     break;
                 }
                 n += 1;
                 anc.insert(0, pp);
-                p = self.par[pp];
+                up = self.par[pp];
             }
         }
         let cut = anc.len() > 3;
@@ -529,12 +545,10 @@ impl<'a> Model<'a> {
             label(&mut labels, col_x(d.k), hdr_y + 8.0, text, true);
         }
 
-        let pop = ui.more.as_deref().and_then(|key| {
+        let pop = p.more.as_deref().and_then(|key| {
             let n = nodes.iter().find(|n| n.more.as_ref().is_some_and(|(k, _)| k == key))?;
             let list = &n.more.as_ref()?.1;
-            let wide = n.x + n.w + 306.0 < total + 2.0 * PAD;
-            Some(json!({ "key": key, "x": if wide { n.x + n.w + 6.0 } else { (n.x - 306.0).max(4.0) },
-                "y": (n.y - 6.0).max(4.0), "items": list.iter().map(|&i| self.item(i)).collect::<Vec<_>>() }))
+            Some(list.iter().map(|&i| self.row(i)).collect::<Vec<_>>())
         });
 
         let up = self.blk[c].len();
@@ -556,7 +570,7 @@ impl<'a> Model<'a> {
         let cnode = &nodes[cn];
         json!({
             "mode": "focus", "width": total + 2.0 * PAD, "height": height, "lanes": lanes, "labels": labels,
-            "edges": edge_json, "nodes": node_json, "pop": pop,
+            "edges": edge_json, "nodes": node_json, "more": pop,
             "center": { "id": self.b[c].id, "x": cnode.x, "y": cnode.y, "w": cnode.w, "h": NH },
             "caption": caption, "captionBad": cyc, "cyc": cyc,
         })
@@ -570,7 +584,7 @@ impl<'a> Model<'a> {
     }
 
     /// The Graph view: every bead on two axes.
-    fn whole(&self, ui: &Ui) -> Value {
+    fn whole(&self, p: &Params) -> Value {
         let n = self.n();
         let is_e = |i: usize| self.b[i].kind == "epic";
         let epic_of = |i: usize| -> Option<usize> {
@@ -716,7 +730,7 @@ impl<'a> Model<'a> {
         let w_total = (lx[max_layer + 1] as f64 * CW).max(CW);
         let h_total = (y - LANE_GAP).max(CH);
 
-        let sel = ui.sel.as_deref().and_then(|s| self.idx.get(s).copied()).filter(|i| lane_of[*i].is_some());
+        let sel = p.sel.as_deref().and_then(|s| self.idx.get(s).copied()).filter(|i| lane_of[*i].is_some());
         let marks: Vec<usize> = match sel {
             None => vec![],
             Some(s) => {
@@ -778,107 +792,9 @@ impl<'a> Model<'a> {
         })
     }
 
-    fn layout(&self, ui: &Ui) -> Value {
-        if ui.view == "graph" { self.whole(ui) } else { self.focus(ui, ui.cw) }
-    }
-
-    /// The Focus or Graph view as ordinary components: the toolbar, the caption, the generic Canvas
-    /// holding the drawing, the legend and, in Focus, a sheet listing what a "+ N more" node hides.
-    /// Returns the ids to put on the page, top to bottom.
-    pub(super) fn components(&self, p: &mut Page, ui: &Ui) -> Vec<String> {
-        let focus = ui.view != "graph";
-        let layout = self.layout(ui);
-        let mut ids = vec![];
-        let mut bar: Vec<String> = vec![];
-        if focus {
-            bar.push(p.button("graph.back", "‹ Back", "focus_back", json!({}), json!({ "disabled": ui.fhist.is_empty() })));
-            p.choose("graph.depth", "/set_depth", &ui.depth.to_string(), vec![
-                json!({ "value": "1", "text": "1 hop" }), json!({ "value": "2", "text": "2 hops" }), json!({ "value": "3", "text": "3 hops" })], true, false);
-            bar.push("graph.depth".into());
-        }
-        if focus {
-            ids.push(p.boxed("graph.bar", "h", bar, json!({ "spacing": 8, "padding": [10, 0, 4, 0] })));
-        }
-        let caption = layout["caption"].as_str().unwrap_or("");
-        let tone = if layout["captionBad"].as_bool() == Some(true) { "bad" } else { "muted" };
-        ids.push(p.label("graph.caption", caption, json!({ "tone": tone, "size": 12, "padding": [0, 2, 8, 2] })));
-        if self.n() == 0 || layout["empty"].is_string() {
-            let text = if self.n() == 0 { "No beads yet" } else { layout["empty"].as_str().unwrap_or("") };
-            ids.push(p.label("graph.empty", text, json!({ "tone": "muted", "padding": [12, 12, 12, 12] })));
-        } else {
-            let mut canvas = if focus { focus_scene(&layout) } else { whole_scene(&layout, ui.centre) };
-            let o = canvas.as_object_mut().unwrap();
-            o.insert("id".into(), json!("graph.canvas"));
-            o.insert("component".into(), json!("Canvas"));
-            o.insert("minHeight".into(), json!(380));
-            o.insert("reserve".into(), json!(400));
-            o.insert("escapeAction".into(), json!("escape"));
-            o.insert("fitKey".into(), json!(if focus { "focus" } else { "graph" }));
-            if focus {
-                o.insert("sizeAction".into(), json!("set_width"));
-                o.insert("sizeKnown".into(), json!(ui.cw));
-            }
-            p.put(canvas);
-            ids.push("graph.canvas".into());
-        }
-        let mut runs: Vec<Value> = vec![];
-        for c in 0..7 {
-            runs.push(json!({ "text": format!("{} ", GLYPH[c]), "tone": TONE[c] }));
-            runs.push(json!({ "text": format!("{}    ", WORDS[c]), "tone": TONE[c], "weight": "semibold" }));
-        }
-        let hint = if focus {
-            format!("solid arrow: blocks · dotted line: parent and child{}", if layout["cyc"].as_bool() == Some(true) { " · red: dependency cycle" } else { "" })
-        } else {
-            "one dot per bead · drag to pan, wheel or pinch to zoom".into()
-        };
-        let l = p.runs("graph.words", json!(runs), json!({ "size": 12 }));
-        let h = p.label("graph.hint", &hint, json!({ "tone": "muted", "size": 12 }));
-        ids.push(p.boxed("graph.legend", "h", vec![l, h], json!({ "spacing": 8, "padding": [10, 2, 0, 2], "justify": "between" })));
-        if let Some(items) = layout["pop"]["items"].as_array() {
-            self.more_sheet(p, items);
-            ids.push("graph.more".into());
-        } else {
-            p.put(json!({ "id": "graph.more", "component": "Modal", "presented": false, "dismissAction": "escape" }));
-        }
-        ids
-    }
-
-    /// The sheet behind a "+ N more" node: one row per hidden bead, a pick centres Focus on it.
-    fn more_sheet(&self, p: &mut Page, items: &[Value]) {
-        let rows: Vec<Value> = items
-            .iter()
-            .filter_map(|it| it["id"].as_str())
-            .filter_map(|id| self.index(id))
-            .map(|i| {
-                let b = self.b[i];
-                json!({ "id": b.id, "path": b.id, "depth": 0, "kids": 0, "collapsed": false, "dim": false, "sel": false,
-                    "cells": [
-                        { "key": "id", "text": b.id, "mono": true, "tone": "muted" },
-                        { "key": "title", "text": b.title },
-                        { "key": "status", "text": WORDS[self.st[i] as usize], "chip": true, "tone": tone_of(kind_of(b)) },
-                    ], "menu": [] })
-            })
-            .collect();
-        let columns = json!([
-            { "key": "id", "label": "ID", "width": 150, "tree": false, "wide": false },
-            { "key": "title", "label": "Title", "width": null, "tree": false, "wide": false },
-            { "key": "status", "label": "Status", "width": 110, "tree": false, "wide": false },
-        ]);
-        let table = json!({ "id": "graph.more.t", "component": "Table", "rowAction": "focus_on", "foldAction": "", "columns": columns,
-            "sort": { "key": "", "asc": true }, "sections": [{ "title": "", "count": rows.len(), "rows": rows }], "empty": "" });
-        let title = json!({ "id": "graph.more.h", "component": "Text", "text": format!("{} more beads", rows.len()), "modifiers": [{ "fontWeight": "semibold" }] });
-        p.put(table);
-        p.put(title);
-        p.put(json!({ "id": "graph.more.b", "component": "Column", "spacing": 8, "children": ["graph.more.h", "graph.more.t"] }));
-        p.put(json!({ "id": "graph.more", "component": "Modal", "presented": true, "dismissAction": "escape", "children": ["graph.more.b"] }));
-    }
-
-    /// The pane's focus history, cut to beads that still exist.
-    pub(super) fn trim(&self, ui: &mut Ui) {
-        ui.fhist.retain(|h| self.idx.contains_key(h.as_str()));
-        if ui.sel.as_deref().is_some_and(|s| !self.idx.contains_key(s)) {
-            ui.sel = None;
-        }
+    /// The layout of the view `p` names.
+    pub(super) fn layout(&self, p: &Params) -> Value {
+        if p.view == "graph" { self.whole(p) } else { self.focus(p) }
     }
 }
 
@@ -891,6 +807,11 @@ const DOT: f64 = CH * 0.26;
 /// The zoom below which a lane is one bar, and below which a bead is a dot rather than a box.
 const LANES_BELOW: f64 = 0.05;
 const DOTS_BELOW: f64 = 0.75;
+
+/// An action a hit or the canvas names, as the pane's view tree writes one.
+fn act(name: &str) -> Value {
+    json!({ "type": name })
+}
 
 fn r1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
@@ -912,17 +833,19 @@ fn arrow_head(x: f64, y: f64, s: f64, len: f64) -> String {
     format!("M{} {} L{} {} L{} {} Z", r1(x), r1(y), r1(x - len * s), r1(y - 3.5), r1(x - len * s), r1(y + 3.5))
 }
 
+/// A bead's tip: one plain string of up to three lines, the id with its status word, the title and, in
+/// Graph, its lane and layer.
 fn tip_bead(id: &str, st: usize, title: &str, last: Option<String>) -> Value {
-    let mut tip = vec![
-        json!([{ "t": id, "mono": true, "tone": "muted" }, { "t": format!("  {}", WORDS[st]), "bold": true, "tone": TONE[st] }]),
-        json!(title),
-    ];
-    tip.extend(last.map(|l| json!([{ "t": l, "tone": "muted" }])));
-    Value::Array(tip)
+    let mut tip = format!("{id}  {}\n{title}", WORDS[st]);
+    if let Some(l) = last {
+        tip.push('\n');
+        tip.push_str(&l);
+    }
+    json!([tip])
 }
 
 /// The Focus layout as a scene for the Canvas: scene units are points, drawn at zoom 1 and moved by pan.
-fn focus_scene(l: &Value) -> Value {
+pub(super) fn focus_scene(l: &Value) -> Value {
     let (width, height) = (num(&l["width"]), num(&l["height"]));
     let mut ops: Vec<Value> = vec![];
     let mut hits: Vec<Value> = vec![];
@@ -987,7 +910,7 @@ fn focus_scene(l: &Value) -> Value {
             let count = m["count"].as_u64().unwrap_or(0);
             more_boxes.push(rect);
             more_text.push(json!([x + 10.0, cy, format!("+ {count} more")]));
-            hits.push(json!({ "id": key, "rect": [x, y, w, h], "action": "graph_more", "context": { "key": key },
+            hits.push(json!({ "id": key, "rect": [x, y, w, h], "action": act("graph_more"), "context": { "key": key },
                 "label": format!("{count} more beads"), "tip": [format!("{count} more beads")] }));
         } else {
             let (id, title) = word_ctx(n);
@@ -997,10 +920,10 @@ fn focus_scene(l: &Value) -> Value {
             glyphs.entry((op, st)).or_default().push(json!([x + 9.0, cy + 0.5, GLYPH[st]]));
             titles.entry((op, w.round() as i64)).or_default().push(json!([x + 27.0, cy + 0.5, title.clone()]));
             let word = n["word"].as_str().unwrap_or("");
-            let mut hit = json!({ "id": id, "rect": [x, y, w, h], "doubleAction": "open_bead",
+            let mut hit = json!({ "id": id, "rect": [x, y, w, h], "doubleAction": act("open_bead"),
                 "label": format!("{id}, {word}, {title}"), "tip": tip_bead(&id, st, &title, None) });
             if kind != "center" {
-                hit["action"] = json!("focus_on");
+                hit["action"] = act("focus_on");
             }
             hits.push(hit);
         }
@@ -1025,7 +948,7 @@ fn focus_scene(l: &Value) -> Value {
 }
 
 /// The Graph layout as a scene for the Canvas: three layers by zoom, a bar per lane, a dot per bead, a box per bead.
-fn whole_scene(l: &Value, centre: bool) -> Value {
+pub(super) fn whole_scene(l: &Value) -> Value {
     let lanes = l["lanes"].as_array().cloned().unwrap_or_default();
     let ids: Vec<&str> = l["ids"].as_array().into_iter().flatten().map(|v| v.as_str().unwrap_or("")).collect();
     let titles: Vec<&str> = l["titles"].as_array().into_iter().flatten().map(|v| v.as_str().unwrap_or("")).collect();
@@ -1172,7 +1095,7 @@ fn whole_scene(l: &Value, centre: bool) -> Value {
         let lane_name = lanes.get(lane[i]).and_then(|v| v["name"].as_str()).unwrap_or("");
         let tip = tip_bead(ids[i], st[i], titles[i], Some(format!("{lane_name} · layer {}", rank[i])));
         let one = |shape: Value, min: f64, max: f64| {
-            let mut v = json!({ "id": ids[i], "action": "open_bead", "tip": tip,
+            let mut v = json!({ "id": ids[i], "action": act("open_bead"), "tip": tip,
                 "label": format!("{}, {}, {}", ids[i], WORDS[st[i]], titles[i]), "minZoom": min });
             v.as_object_mut().unwrap().extend(shape.as_object().unwrap().clone());
             if max.is_finite() {
@@ -1184,13 +1107,10 @@ fn whole_scene(l: &Value, centre: bool) -> Value {
         hits.push(one(json!({ "rect": [r1(xs[i]), r1(ys[i]), BW, BH] }), DOTS_BELOW, f64::INFINITY));
     }
     let mut v = json!({ "ops": ops, "hits": hits, "bounds": [0, 0, w, h], "controls": true, "wheel": "zoom",
-        "emptyAction": "graph_select", "emptyContext": { "id": "" } });
+        "emptyAction": act("graph_select"), "emptyContext": { "id": "" } });
     if let Some(i) = sel {
-        v["enterAction"] = json!("open_bead");
+        v["enterAction"] = act("open_bead");
         v["enterContext"] = json!({ "id": ids[i] });
-        if centre {
-            v["focus"] = json!({ "rect": [r1(xs[i]), r1(ys[i]), CW, CH], "zoom": 0.9, "key": format!("g:{}", ids[i]) });
-        }
     }
     v
 }
@@ -1226,8 +1146,8 @@ mod tests {
     #[test]
     fn layers_are_the_longest_path_from_a_bead_with_no_blockers() {
         let s = chain();
-        let m = Model::new(&s, &Ui::default());
-        let r: Vec<i32> = ["a", "b", "c", "d"].iter().map(|id| m.rank[m.index(id).unwrap()]).collect();
+        let m = Model::new(&s, &List::new("status", true));
+        let r: Vec<i32> = ["a", "b", "c", "d"].iter().map(|id| m.rank[m.idx[id]]).collect();
         assert_eq!(r, [0, 1, 2, 0]);
     }
 
@@ -1237,15 +1157,15 @@ mod tests {
             bead("a", |b| b.blocked_by = vec!["b".into()]),
             bead("b", |b| b.blocked_by = vec!["a".into()]),
         ]);
-        let m = Model::new(&s, &Ui::default());
+        let m = Model::new(&s, &List::new("status", true));
         assert_eq!(m.rank.len(), 2);
     }
 
     #[test]
     fn focus_puts_blockers_left_and_unlocks_right() {
         let s = chain();
-        let ui = Ui { sel: Some("b".into()), view: "focus".into(), ..Default::default() };
-        let m = Model::new(&s, &ui);
+        let ui = Params { sel: Some("b".into()), ..Params::default() };
+        let m = Model::new(&s, &ui.list);
         let v = m.layout(&ui);
         let nodes = v["nodes"].as_array().unwrap();
         let x = |id: &str| nodes.iter().find(|n| n["id"] == id).unwrap()["x"].as_f64().unwrap();
@@ -1258,8 +1178,8 @@ mod tests {
     #[test]
     fn focus_names_a_blocker_missing_from_the_repo() {
         let s = chain();
-        let ui = Ui { sel: Some("c".into()), view: "focus".into(), ..Default::default() };
-        let v = Model::new(&s, &ui).layout(&ui);
+        let ui = Params { sel: Some("c".into()), ..Params::default() };
+        let v = Model::new(&s, &ui.list).layout(&ui);
         assert!(v["nodes"].as_array().unwrap().iter().any(|n| n["ghost"] == "gone"));
         assert!(v["caption"].as_str().unwrap().contains("1 blocker missing"));
     }
@@ -1267,8 +1187,8 @@ mod tests {
     #[test]
     fn graph_has_one_lane_per_epic_and_one_for_no_epic() {
         let s = chain();
-        let ui = Ui { view: "graph".into(), ..Default::default() };
-        let v = Model::new(&s, &ui).layout(&ui);
+        let ui = Params { view: "graph".into(), ..Params::default() };
+        let v = Model::new(&s, &ui.list).layout(&ui);
         let lanes = v["lanes"].as_array().unwrap();
         assert_eq!(lanes.len(), 2);
         assert_eq!(lanes[1]["name"], "No epic");
@@ -1279,8 +1199,8 @@ mod tests {
     #[test]
     fn selecting_a_bead_marks_what_it_blocks_and_what_blocks_it() {
         let s = chain();
-        let ui = Ui { view: "graph".into(), sel: Some("b".into()), ..Default::default() };
-        let v = Model::new(&s, &ui).layout(&ui);
+        let ui = Params { view: "graph".into(), sel: Some("b".into()), ..Params::default() };
+        let v = Model::new(&s, &ui.list).layout(&ui);
         assert_eq!(v["marks"].as_array().unwrap().len(), 3);
         assert!(v["caption"].as_str().unwrap().contains("2 beads upstream and downstream"));
     }
@@ -1288,14 +1208,14 @@ mod tests {
     #[test]
     fn the_focus_scene_draws_every_node_and_hits_the_ones_that_act() {
         let s = chain();
-        let ui = Ui { sel: Some("b".into()), view: "focus".into(), ..Default::default() };
-        let m = Model::new(&s, &ui);
+        let ui = Params { sel: Some("b".into()), ..Params::default() };
+        let m = Model::new(&s, &ui.list);
         let v = focus_scene(&m.layout(&ui));
         let hits = v["hits"].as_array().unwrap();
         let hit = |id: &str| hits.iter().find(|h| h["id"] == id).unwrap();
-        assert_eq!(hit("a")["action"], "focus_on");
+        assert_eq!(hit("a")["action"], json!({ "type": "focus_on" }));
         assert!(hit("b").get("action").is_none(), "the centre is not a focus target");
-        assert_eq!(hit("b")["doubleAction"], "open_bead");
+        assert_eq!(hit("b")["doubleAction"], json!({ "type": "open_bead" }));
         assert_eq!(hit("b")["label"], "b, blocked, title b");
         assert_eq!(v["focus"]["zoom"], 1);
         assert_eq!(v["controls"], false);
@@ -1304,35 +1224,23 @@ mod tests {
     #[test]
     fn the_graph_scene_has_three_zoom_layers_and_a_hit_per_bead_in_each() {
         let s = chain();
-        let ui = Ui { view: "graph".into(), sel: Some("b".into()), centre: true, ..Default::default() };
-        let m = Model::new(&s, &ui);
-        let v = whole_scene(&m.layout(&ui), true);
+        let ui = Params { view: "graph".into(), sel: Some("b".into()), ..Params::default() };
+        let m = Model::new(&s, &ui.list);
+        let v = whole_scene(&m.layout(&ui));
         let ops = v["ops"].as_array().unwrap();
         assert!(ops.iter().any(|o| o["maxZoom"] == LANES_BELOW && o["hpx"].is_array()), "lane bars");
         assert!(ops.iter().any(|o| o["op"] == "circle" && o["rpx"] == json!([1.4, 5.5])), "dots");
         assert!(ops.iter().any(|o| o["minZoom"] == DOTS_BELOW && o["op"] == "rect"), "boxes");
         let hits = v["hits"].as_array().unwrap();
-        assert_eq!(hits.iter().filter(|h| h["id"] == "b").count(), 2);
+        let of_b: Vec<&Value> = hits.iter().filter(|h| h["id"] == "b").collect();
+        assert_eq!(of_b.len(), 2);
+        let dot = of_b.iter().find(|h| h["circle"].is_array()).unwrap();
+        let boxed = of_b.iter().find(|h| h["rect"].is_array()).unwrap();
+        assert_eq!((dot["minZoom"].as_f64(), dot["maxZoom"].as_f64()), (Some(LANES_BELOW), Some(DOTS_BELOW)));
+        assert_eq!(boxed["minZoom"].as_f64(), Some(DOTS_BELOW));
+        assert!(boxed.get("maxZoom").is_none());
+        assert_eq!(dot["label"], "b, blocked, title b");
+        assert_eq!(boxed["label"], "b, blocked, title b");
         assert_eq!(v["enterContext"]["id"], "b");
-        assert_eq!(v["focus"]["key"], "g:b");
-    }
-
-    #[test]
-    fn a_more_node_opens_a_sheet_listing_what_it_hides() {
-        let mut beads = vec![bead("c0", |_| {})];
-        for i in 0..15 {
-            beads.push(bead(&format!("d{i}"), |b| b.blocked_by = vec!["c0".into()]));
-        }
-        let s = snap(beads);
-        let ui = Ui { sel: Some("c0".into()), view: "focus".into(), more: Some("R1".into()), ..Default::default() };
-        let m = Model::new(&s, &ui);
-        let mut p = Page { out: vec![] };
-        let ids = m.components(&mut p, &ui);
-        assert!(ids.contains(&"graph.more".to_string()));
-        let sheet = p.out.iter().find(|c| c["id"] == "graph.more").unwrap();
-        assert_eq!(sheet["dismissAction"], "escape");
-        let table = p.out.iter().find(|c| c["id"] == "graph.more.t").unwrap();
-        assert_eq!(table["sections"][0]["rows"].as_array().unwrap().len(), 2);
-        assert_eq!(table["rowAction"], "focus_on");
     }
 }

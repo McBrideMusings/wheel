@@ -43,11 +43,6 @@ impl Page {
     pub fn label(&mut self, id: &str, text: &str, extra: Value) -> String {
         layout::label(&mut self.out, id, text, &extra)
     }
-    pub fn runs(&mut self, id: &str, runs: Value, extra: Value) -> String {
-        let mut e = extra;
-        e["runs"] = runs;
-        layout::label(&mut self.out, id, "", &e)
-    }
     pub fn boxed(&mut self, id: &str, axis: &str, children: Vec<String>, extra: Value) -> String {
         layout::boxed(&mut self.out, id, axis, children, &extra)
     }
@@ -61,38 +56,6 @@ impl Page {
     pub fn search(&mut self, id: &str, tool: &str, value: &str, placeholder: &str) -> String {
         self.bind(&format!("/{tool}"), json!(value));
         self.put(json!({ "id": id, "component": "TextField", "label": placeholder, "value": { "path": format!("/{tool}") }, "variant": "shortText" }));
-        id.to_string()
-    }
-
-    /// A choice of one among `options` ({value, text}); `path` is `/<tool>` or `/<tool>/<key>`. With `chips`, or with four
-    /// options or fewer, it is a `ViewThatFits` of a segmented control and, when the width it is given is too small for that,
-    /// a menu. More options are the menu.
-    pub fn choose(&mut self, id: &str, path: &str, selected: &str, options: impl Into<Value>, chips: bool, disabled: bool) -> String {
-        self.bind(path, json!([selected]));
-        let options = options.into();
-        if !chips && options.as_array().is_some_and(|o| o.len() > 4) {
-            return self.pick(id, path, &options, Some("menu"), disabled, json!([]));
-        }
-        let seg = self.pick(&format!("{id}.seg"), path, &options, Some("chips"), disabled, json!([{ "fixedSize": { "horizontal": true } }]));
-        let menu = self.pick(&format!("{id}.menu"), path, &options, Some("menu"), disabled, json!([{ "frame": { "maxWidth": "infinity", "alignment": "leading" } }]));
-        self.put(json!({ "id": id, "component": "ViewThatFits", "in": "horizontal", "children": [seg, menu] }));
-        id.to_string()
-    }
-
-    /// One `ChoicePicker` over the value `choose` (or the caller's own `bind`) put at `path`: `style` is its `displayStyle`
-    /// (chips draws a segmented control, menu a menu), and `modifiers` are added after `disabled`.
-    pub fn pick(&mut self, id: &str, path: &str, options: &Value, style: Option<&str>, disabled: bool, modifiers: Value) -> String {
-        let options: Vec<Value> = options.as_array().cloned().unwrap_or_default().iter().map(|o| json!({ "label": o["text"], "value": o["value"] })).collect();
-        let mut v = json!({ "id": id, "component": "ChoicePicker", "variant": "mutuallyExclusive", "options": options, "value": { "path": path } });
-        if let Some(s) = style {
-            v["displayStyle"] = json!(s);
-        }
-        let mut mods = if disabled { vec![json!({ "disabled": true })] } else { vec![] };
-        mods.extend(modifiers.as_array().cloned().unwrap_or_default());
-        if !mods.is_empty() {
-            v["modifiers"] = json!(mods);
-        }
-        self.put(v);
         id.to_string()
     }
 

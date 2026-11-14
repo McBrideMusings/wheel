@@ -2,7 +2,7 @@
 //! Wheel's JSON-RPC 2.0 over standard input and output (Content-Length framing, `async-lsp`;
 //! `docs/plugin-runtime.md`, "Plugin backends") as the server side.
 //!
-//! One process serves every project: a feed's params name the project (`{dir}`). The `beads`, `project`,
+//! One process serves every project: a feed's params name the project (`{dir}`). The `beads`, `beads_graph` (the Focus or Graph scene of the beads, params `{dir, view, sel, depth, width, more, list}`, read again exactly when `beads` is), `project`,
 //! `work`, `repo`, `diff`, `prs` and `pr_detail` feeds send the whole value on every subscribe and a JSON Patch on each
 //! later change, found by watching the files that can change it: `beads` the project's `.beads`, `project`
 //! the project directory, its `.beads` and its `docs` directory (a `docs` directory created later is an
@@ -37,6 +37,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::beads::feed as beads_feed;
+use crate::beads::graph_feed as beads_graph_feed;
 use crate::core::agents::Agents;
 use crate::core::project::Origin;
 use crate::diff::feed as diff_feed;
@@ -48,7 +49,9 @@ use crate::work::feed as work_feed;
 /// The lock that orders the reads of one (feed, params).
 type ReadLock = Arc<tokio::sync::Mutex<()>>;
 
-const FEEDS: [&str; 7] = ["beads", "project", "work", "repo", "diff", "prs", "pr_detail"];
+/// The feeds that hold what `bd` and the bead panes' records say: a press and a change of `bead-panes.json` refresh each.
+const BEAD_FEEDS: [&str; 2] = ["beads", "beads_graph"];
+const FEEDS: [&str; 8] = ["beads", "beads_graph", "project", "work", "repo", "diff", "prs", "pr_detail"];
 const ACTIONS: [&str; 12] = ["press", "run_list", "branch_delete", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
 /// How often a `repo`, `prs` or `pr_detail` subscription is read again whatever the files do: GitHub has no event.
@@ -481,7 +484,8 @@ impl Core {
             "repo" => repo_feed::value(&d),
             "diff" => diff_feed::value(&d),
             "prs" => prs_feed::value(&d),
-            "pr_detail" => prs_feed::detail_value(&d, prs_feed::number_of(&params["number"]).unwrap_or(0)),
+            "pr_detail" => prs_feed::detail_value(&d, crate::core::number_of(&params["number"]).unwrap_or(0)),
+            "beads_graph" => beads_graph_feed::value(&d, &params),
             _ => beads_feed::value(&d),
         })
         .await;
@@ -517,7 +521,7 @@ impl Core {
                     false
                 } else if reads_git(&s.feed) {
                     git_hit(&s.files, &s.trees, s.top.as_ref(), &s.ignored, p)
-                } else if s.feed == "beads" && name == "bead-panes.json" && records.as_deref() == Some(parent) {
+                } else if BEAD_FEEDS.contains(&s.feed.as_str()) && name == "bead-panes.json" && records.as_deref() == Some(parent) {
                     true
                 } else {
                     match name {
@@ -547,7 +551,9 @@ impl Core {
                 let tx = self.tx.clone();
                 let changed_dir = dir.clone();
                 let changed = move || {
-                    let _ = tx.send(Msg::RefreshFeed("beads".into(), changed_dir.clone()));
+                    for feed in BEAD_FEEDS {
+                        let _ = tx.send(Msg::RefreshFeed(feed.into(), changed_dir.clone()));
+                    }
                 };
                 tokio::task::spawn_blocking(move || beads_feed::press(&dir, &bead, &pane, changed)).await
             }
@@ -581,7 +587,7 @@ impl Core {
                 done
             }
             "pr_merge" | "pr_close" | "pr_draft" | "pr_checkout" | "pr_worktree" | "pr_button" | "pr_refresh" => {
-                let number = p.args.get("number").and_then(prs_feed::number_of);
+                let number = p.args.get("number").and_then(crate::core::number_of);
                 if number.is_none() && p.action != "pr_refresh" {
                     return Err(bad(format!("{} needs args.number, a PR number", p.action)));
                 }
@@ -855,6 +861,20 @@ mod tests {
         assert_eq!(pkeys_of(subs.values(), "prs", "/r").len(), 1);
         assert!(pkeys_of(subs.values(), "pr_detail", "/nowhere").is_empty());
         assert!(pkeys_of(subs.values(), "repo", "/r").is_empty());
+    }
+
+    #[test]
+    fn beads_graph_is_a_feed_that_watches_what_beads_watches_and_is_one_of_the_feeds_a_press_refreshes() {
+        assert!(FEEDS.contains(&"beads_graph"));
+        assert_eq!(BEAD_FEEDS, ["beads", "beads_graph"]);
+        assert!(BEAD_FEEDS.iter().all(|f| FEEDS.contains(f)));
+        let top = p("/r");
+        let (a, b) = (watches("beads", "/r", &top), watches("beads_graph", "/r", &top));
+        assert_eq!(a.watch, b.watch);
+        assert!(!b.watch.is_empty() && !reads_git("beads_graph") && !on_clock("beads_graph"));
+        let params = json!({ "dir": "/r", "view": "focus", "sel": "x" });
+        let subs: HashMap<String, Sub> = [sub("beads", json!({ "dir": "/r" })), sub("beads_graph", params.clone())].into_iter().collect();
+        assert_eq!(pkeys_of(subs.values(), "beads_graph", "/r"), BTreeSet::from([params.to_string()]));
     }
 
     #[test]

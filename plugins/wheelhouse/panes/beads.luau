@@ -1,9 +1,10 @@
 -- The Beads pane: a project's beads as a list, an epics tree, a depends-on tree and an unlocks tree, with search,
--- filters, status boxes, a sortable table, a detail card and the project's buttons. A port of the page in
--- src/beads.rs (the Focus and Graph views are not here).
+-- filters, status boxes, a sortable table, a detail card and the project's buttons, and the Focus and Graph views drawn
+-- on a Canvas.
 --
 -- `wheelhouse.beads` (the backend's feed, see wheel-plugin.toml) holds the beads; `wheel.panes` says which panes are
--- open. The pane's own state (view, search and filters, sort, selection, folds, the open bead) lives in `state`.
+-- open; `wheelhouse.beads_graph` holds the scene Focus and Graph draw. The pane's own state (view, search and filters,
+-- sort, selection, folds, the open bead, the focused bead and its history, the hops) lives in `state`.
 local kit = require("lib/ui")
 local list = require("lib/list")
 local tm = require("lib/time")
@@ -19,6 +20,25 @@ for i, k in KINDS do RANK[k] = i end
 
 local VIEWS = {
     { "list", "List" }, { "epics", "Epics" }, { "deps", "Depends on" }, { "unlocks", "Unlocks" },
+    { "focus", "Focus" }, { "graph", "Graph" },
+}
+
+-- The height of the Canvas: the client wraps a plugin pane in a scroll view, which gives a view that fills its space no
+-- height, so the page names it. Graph and every state with no scene to measure (loading, empty) use CANVAS_HEIGHT; Focus
+-- uses its scene's height, never under CANVAS_MIN, so a tall scene is drawn whole instead of spilling out of its frame.
+local CANVAS_HEIGHT = 520
+local CANVAS_MIN = 380
+local CANVAS_MAX = 1200
+
+-- The last feed value drawn per view ("focus", "graph"). The feed's params are the layout's inputs, so every click, hop or
+-- width change reads nil until the backend answers; the view draws this meanwhile, so the Canvas stays mounted (it keeps
+-- its camera) and nothing moves. Kept here and not in `state`, which a check reads as JSON.
+local LAST = {}
+
+-- The status legend of the drawn views: glyph, word and tone, in the order the backend numbers its statuses.
+local LEGEND = {
+    { "●", "ready", "ok" }, { "◐", "in progress", "accent" }, { "⊘", "blocked", "warn" }, { "◆", "needs you", "purple" },
+    { "◌", "deferred", "faint" }, { "○", "open", "muted" }, { "✓", "done", "muted" },
 }
 
 local COLS = {
@@ -567,6 +587,156 @@ local function detail(ix, st, id)
     return ui.Modal{ presented = true, dismissAction = { type = "close_detail" }, actions = footer, body }
 end
 
+-- ───────────────────────────── Focus and Graph ─────────────────────────────
+
+local function is_drawn(view)
+    return view == "focus" or view == "graph"
+end
+
+-- The feed's params for the drawn views: the search and filters narrow what the scene draws as they narrow the list.
+local function graph_params(st, data)
+    local l = st.list
+    local f = {}
+    for k, v in l.f do
+        if #v > 0 then f[k] = v end
+    end
+    local neg = {}
+    for k in l.neg do table.insert(neg, k) end
+    table.sort(neg)
+    local lst = { q = l.q, ["not"] = neg }
+    -- An empty table would travel as an array, so an unset filter set is left out.
+    if next(f) ~= nil then lst.f = f end
+    return {
+        dir = data.cwd, view = st.view, sel = st.sel or "", depth = math.floor(st.depth),
+        width = math.floor(st.width), more = st.more or "", list = lst,
+    }
+end
+
+-- Focus's toolbar: Back (disabled when there is nowhere to go back to) and the hops. Graph keeps the row, invisible, so the
+-- caption and the drawing sit where Focus has them.
+local function toolbar(st, focus)
+    local back = kit.button("‹ Back", { type = "focus_back" }, { style = "link", disabled = #st.fhist == 0 })
+    kit.modify(back, { frame = { minWidth = 56 } })
+    local depth = ui.ChoicePicker{
+        variant = "mutuallyExclusive", displayStyle = "menu", on_change = { type = "set_depth" }, value = { tostring(st.depth) },
+        options = { { label = "1 hop", value = "1" }, { label = "2 hops", value = "2" }, { label = "3 hops", value = "3" } },
+    }
+    local row = kit.box("h", { back, depth }, { spacing = 8, align = "center", padding = { 10, 0, 4, 0 } })
+    if not focus then
+        kit.modify(row, { opacity = 0 })
+        kit.modify(row, { disabled = true })
+    end
+    return row
+end
+
+local function legend(focus, cyc)
+    local runs = {}
+    for _, g in LEGEND do
+        table.insert(runs, { text = g[1] .. " ", tone = g[3] })
+        table.insert(runs, { text = g[2] .. "    ", tone = g[3], weight = "semibold" })
+    end
+    local hint
+    if focus then
+        hint = "solid arrow: blocks · dotted line: parent and child" .. (if cyc then " · red: dependency cycle" else "")
+    else
+        hint = "one dot per bead · drag to pan, wheel or pinch to zoom"
+    end
+    local words = kit.label("", { runs = runs, size = 12 })
+    return kit.box("h", { words, kit.label(hint, { tone = "muted", size = 12 }) }, { spacing = 8, padding = { 10, 2, 0, 2 }, align = "center" })
+end
+
+-- The sheet behind a "+ N more" node: one row per hidden bead, a pick centres Focus on it. Not presented when nothing is open.
+local function more_sheet(more)
+    if not more then
+        return ui.Modal{ presented = false, dismissAction = { type = "graph_escape" } }
+    end
+    local rows = {}
+    for _, r in more.rows or NONE do
+        table.insert(rows, {
+            id = r.id, path = r.id, depth = 0, menu = {},
+            cells = {
+                { key = "id", text = r.id, mono = true, tone = "muted" },
+                { key = "title", text = r.title },
+                { key = "status", text = r.word, chip = true, tone = r.tone },
+            },
+        })
+    end
+    local t = kit.sized_table({
+        component = "Table",
+        columns = {
+            kit.column("id", "ID", 150, false, false, false), kit.column("title", "Title", nil, false, false, false),
+            kit.column("status", "Status", 110, false, false, false),
+        },
+        sections = { { title = "", count = #rows, rows = rows } },
+        rowAction = { type = "focus_on" },
+        empty = "",
+    })
+    return ui.Modal{
+        presented = true, dismissAction = { type = "graph_escape" },
+        ui.Column{ spacing = 8, kit.label(more.title or "", { size = 13, weight = "semibold" }), t },
+    }
+end
+
+-- The body of the drawn views, in the slot the list views give their table: the toolbar, the caption, the drawing (or the
+-- label that stands in for it, in a frame as tall as the drawing's) and the legend; and the sheet after the detail card.
+-- Each part keeps its place whether the feed has answered or not.
+local function drawn(st, data)
+    local focus = st.view == "focus"
+    local fresh, stale = data.feed("wheelhouse.beads_graph", graph_params(st, data))
+    local value = fresh
+    if fresh ~= nil then LAST[st.view] = fresh else value = LAST[st.view] end
+    local caption, caption_tone, middle, cyc, more = "", "muted", nil, false, nil
+    local height = CANVAS_HEIGHT
+    local function standing_in(text)
+        local l = kit.label(text, { tone = "muted" })
+        kit.modify(l, { padding = 12 })
+        local box = kit.box("v", { l }, {})
+        kit.modify(box, { frame = { height = height, alignment = "leading" } })
+        return box
+    end
+    if value == nil then
+        st.center = nil
+        middle = standing_in("Drawing the graph…")
+    else
+        st.center = value.center
+        caption = value.caption or ""
+        if value.captionBad then caption_tone = "bad" end
+        cyc = value.cyc == true
+        more = value.more
+        local scene = value.scene
+        if scene == nil or value.empty then
+            middle = standing_in(value.empty or "")
+        else
+            local props = {}
+            for k, v in scene do props[k] = v end
+            props.escapeAction = { type = "graph_escape" }
+            props.fitKey = st.view
+            if focus then
+                local b = scene.bounds
+                local h = if b and type(b[4]) == "number" then b[4] else CANVAS_HEIGHT
+                height = math.clamp(math.ceil(h), CANVAS_MIN, CANVAS_MAX)
+                props.sizeAction = { type = "set_width" }
+                props.sizeKnown = st.width
+            end
+            -- `height` is the stage's own height; the client sizes it to the pane's height otherwise and it spills out of a frame.
+            props.height = height
+            props.modifiers = { { clipShape = { cornerRadius = 0 } } }
+            middle = ui.Canvas(props)
+        end
+    end
+    local hint = {}
+    if stale then
+        table.insert(hint, kit.label("Showing the last data: the beads backend is not answering.", { tone = "warn", size = 12 }))
+    end
+    local body = ui.Column{
+        spacing = 0, align = "stretch",
+        toolbar(st, focus),
+        kit.modify(kit.label(caption, { tone = caption_tone, size = 12 }), { padding = { 0, 2, 8, 2 } }),
+        middle, legend(focus, cyc), ui.Column{ spacing = 0, table.unpack(hint) },
+    }
+    return body, more_sheet(more)
+end
+
 -- ───────────────────────────── the page ─────────────────────────────
 
 local function problem_box(text, tone)
@@ -659,7 +829,10 @@ local function page(state, data, snap, stale, panes)
             pri,
         }
 
-        local rows, cut = build(ix, st)
+        -- The list bar and what it acts on are the list views' own: in Focus and Graph the listed beads are the ones the search
+        -- and filters let through, as the List view shows them.
+        local drew = is_drawn(st.view)
+        local rows, cut = build(ix, if drew then { view = "list", list = st.list, collapsed = st.collapsed } else st)
         -- The ids the list actions take: the listed leaves in the order shown, narrowed to the selected rows among them.
         local listed = {}
         for _, r in rows do
@@ -670,11 +843,19 @@ local function page(state, data, snap, stale, panes)
         st.ids = took
         local actions = list.actions(snap.scripts or NONE, took, #listed, "ids", "beads")
         table.insert(children, list.bar(SPEC, st.list, options, actions))
-        table.insert(children, kit.box("v", { table_node(ix, st, rows, #all, cut) }, {}))
+        local sheet
+        if drew then
+            local body
+            body, sheet = drawn(st, data)
+            table.insert(children, body)
+        else
+            table.insert(children, kit.box("v", { table_node(ix, st, rows, #all, cut) }, {}))
+        end
 
         -- A closed panel is a Modal that is not presented, so the open one is replaced rather than left behind.
         local modal = st.detail and detail(ix, st, st.detail)
         table.insert(children, modal or ui.Modal{ presented = false, dismissAction = { type = "close_detail" } })
+        if sheet then table.insert(children, sheet) end
     end
     return ui.Column{ align = "stretch", kit.box("v", children, { align = "start", padding = { 18, 16, 48, 16 } }) }
 end
@@ -686,6 +867,11 @@ local function init(previous)
         view = "list", list = list.new("status", true), collapsed = {}, detail = nil, hist = {},
         ran = nil, said = nil, said_bad = false,
     }
+    -- Focus and Graph: the selected bead, the beads Focus was centred on before, the hops, the open "+ N more" list and the
+    -- canvas width the client last reported.
+    state.fhist = state.fhist or {}
+    state.depth = state.depth or 2
+    state.width = state.width or 900
     -- The beads whose presses have not answered yet, oldest first.
     state.pressed = state.pressed or {}
     return state
@@ -726,16 +912,19 @@ local function update(state, msg)
         if valid_view(v) then
             state.view = v
             state.collapsed = {}
+            state.more = nil
             state.list.selected = {}
         end
     elseif t == "toggle_path" then
         if state.collapsed[msg.path] then state.collapsed[msg.path] = nil else state.collapsed[msg.path] = true end
     elseif t == "select_bead" then
         if msg.id == MORE_ID then return end
+        state.sel = msg.id
         state.hist = {}
         forget(state, msg.id)
         state.detail = msg.id
     elseif t == "open_bead" then
+        state.sel = msg.id
         if state.detail then table.insert(state.hist, state.detail) end
         state.detail = msg.id
         forget(state, msg.id)
@@ -745,6 +934,40 @@ local function update(state, msg)
     elseif t == "close_detail" then
         state.detail = nil
         state.hist = {}
+    elseif t == "set_depth" then
+        local v = if type(msg.value) == "table" then msg.value[1] else msg.value
+        local d = tonumber(v)
+        if d then
+            state.depth = math.clamp(math.floor(d), 1, 3)
+            state.more = nil
+        end
+    elseif t == "focus_on" then
+        if msg.id and msg.id ~= "" and (state.known == nil or state.known[msg.id]) then
+            if state.center and state.center ~= msg.id then table.insert(state.fhist, state.center) end
+            state.sel = msg.id
+            state.more = nil
+        end
+    elseif t == "focus_back" then
+        local prev = table.remove(state.fhist)
+        if prev then
+            state.sel = prev
+            state.more = nil
+        end
+    elseif t == "graph_select" then
+        if msg.id == nil or msg.id == "" or msg.id == state.sel then state.sel = nil else state.sel = msg.id end
+    elseif t == "graph_more" then
+        if msg.key then state.more = if state.more == msg.key then nil else msg.key end
+    elseif t == "set_width" then
+        local w = tonumber(msg.value)
+        if w then state.width = math.clamp(w, 300, 4000) end
+    elseif t == "graph_escape" then
+        if state.more then
+            state.more = nil
+        elseif state.view == "focus" and #state.fhist > 0 then
+            state.sel = table.remove(state.fhist)
+        elseif state.view == "graph" then
+            state.sel = nil
+        end
     elseif t == "press" then
         if state.dir and msg.bead then
             table.insert(state.pressed, msg.bead)
@@ -763,6 +986,16 @@ local function view(state, data)
         return ui.Column{ modifiers = { { padding = 16 } }, ui.Text{ text = "Reading the beads…" } }
     end
     local panes = data.feed("wheel.panes", {})
+    -- The focus history and the selection drop beads the tracker no longer has.
+    local ids = {}
+    for _, b in snap.beads do ids[b.id] = true end
+    local kept = {}
+    for _, id in state.fhist do
+        if ids[id] then table.insert(kept, id) end
+    end
+    state.fhist = kept
+    state.known = ids
+    if state.sel and not ids[state.sel] then state.sel = nil end
     return page(state, data, snap, stale, panes)
 end
 

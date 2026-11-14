@@ -52,7 +52,7 @@ enum Command {
 
 /// Every view `serve` offers.
 fn registry() -> view::Registry {
-    view::Registry::default().with(beads::serve::BeadsView::new())
+    view::Registry::default()
         .with(issues::serve::IssuesView::new())
 }
 

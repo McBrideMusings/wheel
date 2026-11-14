@@ -13,7 +13,9 @@
 # wheelhouse/project reads `wheelhouse.project` of the bd fixture (a write to docs/CONTEXT.md arrives as a patch) and
 # invokes `wheelhouse.vision_save`; a pane of kind wheelhouse/implement reads `wheelhouse.work`, which lists the fake
 # agent started in its own space with its declared item and stage and no agent of another space, and invokes
-# `wheelhouse.agent_start`. Prints PASS or FAIL per case. Uses no GUI, focus, mouse or keyboard. Everything it starts is killed by pid at the end.
+# `wheelhouse.agent_start`; the beads pane's Focus and Graph views read `wheelhouse.beads_graph` of a bd project whose hub bead has
+# 15 blockers (a Focus centre and caption, hits carrying focus_on and open_bead tables, a `+ N more` hit and its rows, a Graph hit per bead).
+# Prints PASS or FAIL per case. Uses no GUI, focus, mouse or keyboard. Everything it starts is killed by pid at the end.
 #
 #   tools/wheelhouse-plugin.sh         # uses target/debug/{wheeld,wheel,wheelhouse}
 set -u
@@ -1021,6 +1023,145 @@ if not problems:
 print("ok" if not problems else "; ".join(problems))
 PY
 check "the work feed lists the agent started in this space with its declared item and stage, and not the other space's agent" "$(head -1 "$T/work-shape.verdict")"
+
+# 11h the Focus and Graph views of the Beads pane (wheel-pmf2.4.8): the pane reads `wheelhouse.beads_graph` of a temp project
+# whose hub bead has 15 blockers (more than Focus draws on one side), with the params the pane sends.
+G="$T/proj-g"
+make_project "$G" g
+HUB=$(new_bead "$G" "Hub bead" -t task -p 2)
+for i in $(seq 1 15); do
+  BL=$(new_bead "$G" "Blocker $i" -t task -p 2)
+  ( cd "$G" && bd dep add "$HUB" "$BL" > /dev/null 2>&1 )
+done
+GSPACE=$(w space new "$G")
+GPANE=$(w pane ls | awk -v s="$GSPACE" '$1 == s {print $2; exit}')
+w pane kind "$GPANE" plugin --plugin wheelhouse --plugin-pane beads > /dev/null
+
+# gfeed <file> <view> <sel> <more>: the graph feed as the pane asks for it (an unset filter set is left out of `list`).
+gfeed() {
+  w plugin feed "$GPANE" wheelhouse.beads_graph --count 200 --params \
+    "{\"dir\":\"$G\",\"view\":\"$2\",\"sel\":\"$3\",\"depth\":1,\"width\":900,\"more\":\"$4\",\"list\":{\"q\":\"\",\"not\":[]}}" \
+    > "$1" 2> "$1.err" &
+  PIDS+=($!)
+}
+# Prints the last value of a feed file that has a scene, as one JSON line, or nothing.
+gvalue() {
+  python3 - "$1" <<'PY'
+import json, sys
+last = None
+for l in open(sys.argv[1]):
+    if l.strip().startswith("{"):
+        r = json.loads(l)
+        if r.get("value") and r["value"].get("scene"):
+            last = r["value"]
+if last:
+    print(json.dumps(last))
+PY
+}
+has_scene() { [ -n "$(gvalue "$1")" ]; }
+
+# 1 Focus on the hub: a centre, a caption and a scene whose hits are action tables the pane's update handles.
+GF="$T/graph-focus.jsonl"
+gfeed "$GF" focus "$HUB" ""
+poll 30 has_scene "$GF"
+gvalue "$GF" > "$T/graph-focus.value"
+python3 - "$T/graph-focus.value" "$HUB" <<'PY' > "$T/graph-focus.verdict"
+import json, sys
+text = open(sys.argv[1]).read().strip()
+if not text:
+    print("no value with a scene"); sys.exit()
+v = json.loads(text)
+s = v["scene"]
+problems = []
+if v.get("center") != sys.argv[2]:
+    problems.append("center %r" % v.get("center"))
+if not v.get("caption"):
+    problems.append("no caption")
+for k in ("ops", "hits", "bounds", "controls", "wheel"):
+    if k not in s:
+        problems.append("scene lacks " + k)
+def types(h):
+    return {(h.get(k) or {}).get("type") for k in ("action", "doubleAction") if isinstance(h.get(k), dict)}
+seen = set()
+for h in s.get("hits", []):
+    seen |= types(h)
+for t in ("focus_on", "open_bead"):
+    if t not in seen:
+        problems.append("no hit carries {type: %s}; hit actions seen %r" % (t, sorted(seen)))
+print("ok" if not problems else "; ".join(problems))
+PY
+check "beads_graph in Focus on the hub has its centre, a caption and a scene whose hits carry focus_on and open_bead tables" "$(cat "$T/graph-focus.verdict")"
+
+# 2 Graph: one hit per bead and the pan and zoom controls.
+GG="$T/graph-graph.jsonl"
+gfeed "$GG" graph "" ""
+poll 30 has_scene "$GG"
+gvalue "$GG" > "$T/graph-graph.value"
+python3 - "$T/graph-graph.value" "$G" <<'PY' > "$T/graph-graph.verdict"
+import json, subprocess, sys
+text = open(sys.argv[1]).read().strip()
+if not text:
+    print("no value with a scene"); sys.exit()
+v = json.loads(text)
+s = v["scene"]
+out = subprocess.run(["bd", "list", "--all", "--json", "-n", "0"], cwd=sys.argv[2], capture_output=True, text=True).stdout
+ids = {b["id"] for b in json.loads(out)}
+hit_ids = {h.get("id") for h in s.get("hits", [])}
+problems = []
+if v.get("view") != "graph":
+    problems.append("view %r" % v.get("view"))
+if s.get("controls") is not True:
+    problems.append("controls %r" % s.get("controls"))
+if not ids <= hit_ids:
+    problems.append("beads with no hit: %r" % sorted(ids - hit_ids))
+print("ok" if not problems else "; ".join(problems))
+PY
+check "beads_graph in Graph has controls true and a hit for every bead" "$(cat "$T/graph-graph.verdict")"
+
+# 3 Focus on the hub with 15 blockers: a "+ N more" hit, whose key the `more` param turns into rows.
+python3 - "$T/graph-focus.value" <<'PY' > "$T/graph-more.key"
+import json, sys
+v = json.loads(open(sys.argv[1]).read() or "{}")
+for h in v.get("scene", {}).get("hits", []):
+    a = h.get("action")
+    if isinstance(a, dict) and a.get("type") == "graph_more":
+        print((h.get("context") or {}).get("key", ""))
+        break
+PY
+MORE_KEY=$(head -1 "$T/graph-more.key")
+if [ -z "$MORE_KEY" ]; then
+  fail "a focus on a bead with 15 blockers has a graph_more hit with a key (hits: $(python3 -c 'import json,sys; print([h.get("action") for h in json.loads(open(sys.argv[1]).read() or "{}").get("scene", {}).get("hits", [])][:20])' "$T/graph-focus.value"))"
+else
+  GM="$T/graph-more.jsonl"
+  gfeed "$GM" focus "$HUB" "$MORE_KEY"
+  poll 30 grep -q '"more":{' "$GM"
+  python3 - "$GM" <<'PY' > "$T/graph-more.verdict"
+import json, sys
+last = None
+for l in open(sys.argv[1]):
+    if l.strip().startswith("{"):
+        r = json.loads(l)
+        if r.get("value") and r["value"].get("more"):
+            last = r["value"]["more"]
+if not last:
+    print("no value with more")
+else:
+    rows = last.get("rows") or []
+    bad = [r for r in rows if not all(k in r for k in ("id", "title", "word", "tone"))]
+    print("ok" if rows and not bad and last.get("title") else "more %r" % last)
+PY
+  check "a focus on a bead with 15 blockers has a graph_more hit and its key returns more.rows of {id, title, word, tone}" "$(cat "$T/graph-more.verdict")"
+fi
+
+# 4 a bead made with bd while the Graph feed is subscribed arrives in it, as a hit for the new bead, within 5 s: the feed is read
+# again on the same events as `beads`, and nothing was refused.
+NEW_G=$(new_bead "$G" "Added while watching" -t task -p 2)
+poll 5 grep -q "\"$NEW_G\"" "$GG"
+if grep -q "\"$NEW_G\"" "$GG" && ! grep -q 'refus\|may not read' "$GF.err" "$GG.err"; then
+  pass "a bead added with bd reaches the subscribed Graph feed as a hit within 5 s ($NEW_G)"
+else
+  fail "a bead added with bd ($NEW_G) did not reach the Graph feed within 5 s; errors: $(cat "$GF.err" "$GG.err" 2>/dev/null)"
+fi
 
 # 12 kill -9 of the backend: stale, then a fresh value.
 OLD=$(backend_pid "$SPACE")

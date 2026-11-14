@@ -9,7 +9,7 @@ command = "../../target/debug/wheelhouse backend"
 id = "beads"
 title = "Beads"
 script = "panes/beads.luau"
-reads = ["wheelhouse.beads", "wheel.panes"]
+reads = ["wheelhouse.beads", "wheelhouse.beads_graph", "wheel.panes"]
 actions = ["wheelhouse.press", "wheelhouse.run_list"]
 
 [[pane]]
