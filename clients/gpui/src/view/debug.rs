@@ -706,6 +706,7 @@ impl Client {
         // The popped cards, bottom first, in window coordinates.
         out["cards"] = layers.iter().filter_map(|l| l.card.as_ref()).map(|c| json!({"panes": c.panes, "frame": [c.frame.x, c.frame.y, c.frame.w, c.frame.h], "grip": [c.grip.x, c.grip.y, c.grip.w, c.grip.h]})).collect();
         out["tray"] = self.tray_json();
+        out["frames"] = json!(self.frames);
         out["header_layout"] = self.header_layout.borrow().layout.choices_json();
         out["header_settings_kind"] = json!(self.header_settings_kind);
         out["grid_motion"] = self.motion_json();
