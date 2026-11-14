@@ -1413,6 +1413,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 if let path = value["path"] as? String, let given = value["value"] { plugin.set(path: path, value: given) } else { ok = false }
             case "raise":
                 ok = (value["component"] as? String).flatMap { c in (value["key"] as? String).map { plugin.raise(component: c, key: $0, context: value["context"]) } } ?? false
+            case "scroll":
+                // The pane's ScrollView moves without the pointer: `to` is `top` or `bottom`, `dy` a distance in points (positive is down).
+                if let dy = value["dy"] as? Double { plugin.scroll(.by(dy)) }
+                else if let to = value["to"] as? String, to == "top" || to == "bottom" { plugin.scroll(to == "top" ? .top : .bottom) }
+                else { ok = false }
             case "answer":
                 // The card's own answer for the pane's waiting request: `value` is an option id, `allow` or `deny`.
                 if let perm = waitingPermission(for: panes[pane]), let choice = value["value"] as? String {
@@ -1426,6 +1431,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             default: break
             }
             return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts, "feeds": plugin.feedJSON,
+                "fills": plugin.fillsPane,
+                "scroll": (plugin.fillsPane ? nil : plugin.scrollMetrics).map { ["offset": $0.offset, "content": $0.content, "visible": $0.visible] as [String: Any] } ?? NSNull(),
                 "agent_view": panes[pane]?.agentTarget != nil,
                 "permission": waitingPermission(for: panes[pane]).map { ["id": $0.id, "title": $0.title, "options": $0.options.map(\.id)] as [String: Any] } ?? NSNull(),
                 "embeds": embeds.values.filter { $0.hostPane == pane }.map { ["pane": $0.pane, "term": $0.termID ?? NSNull(), "bytes": $0.bytes] as [String: Any] }
