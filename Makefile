@@ -44,10 +44,10 @@ fmt: ## Format the Rust tree
 kill: ## Stop a wheeld left running by `make dev`
 	-pkill -f '$(ROOT)/target/debug/wheeld'
 
-deploy-client: ## Build the Release app and install it as /Applications/Wheel.app; wheeld keeps running
+deploy-client: ## Build the GPUI client and install it as /Applications/Wheel.app; wheeld keeps running
 	bash $(ROOT)/tools/install-app.sh release
 
-deploy-dev: ## Build the dev app (DEV icon, .dev id, its own wheeld) and install it as /Applications/Wheel Dev.app
+deploy-dev: ## Build the dev GPUI client (DEV icon, .dev id, its own wheeld) and install it as /Applications/Wheel Dev.app
 	bash $(ROOT)/tools/install-app.sh dev
 
 restart-server: ## Restart Wheel.app's wheeld from its bundle; ends every terminal and agent

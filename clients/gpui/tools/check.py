@@ -8,7 +8,7 @@ from fixture import fixture  # noqa: E402
 
 out = here.parent / 'target/check'
 out.mkdir(parents=True, exist_ok=True)
-app = here.parent / 'target/app/Wheel GPUI.app/Contents/MacOS'
+app = here.parent / 'target/app/Wheel.app/Contents/MacOS'
 host = app / 'wheel-gpui-check'
 contents = app.parent
 
@@ -35,7 +35,7 @@ def app_bundle():
     plist = plistlib.loads((contents / 'Info.plist').read_bytes())
     verified = subprocess.run(['codesign', '--verify', '--strict', str(contents.parent)], capture_output=True, text=True)
     signer = subprocess.run(['codesign', '--display', '--verbose=2', str(contents.parent)], capture_output=True, text=True).stderr
-    assert plist['CFBundleIdentifier'] == 'com.piercemakes.wheel.gpui' and plist['CFBundleName'] == 'Wheel GPUI', plist
+    assert plist['CFBundleIdentifier'] == 'com.piercemakes.wheel' and plist['CFBundleName'] == 'Wheel', plist
     assert (contents / 'Resources' / f"{plist['CFBundleIconFile']}.icns").exists(), 'no app icon'
     assert verified.returncode == 0, f'codesign --verify of the app: {verified.stderr}'
     return dict(bundle_id=plist['CFBundleIdentifier'], name=plist['CFBundleName'], category=plist['LSApplicationCategoryType'],

@@ -5,7 +5,7 @@
 # two renames that swap the bundles, and the new one is relaunched with a Finder-like environment.
 # Only processes whose executable lies inside the destination bundle stop, so wheeld (which runs
 # from a copy in Application Support) keeps running (ADR-0020). The caller owns the log: this
-# script writes to stdout, and install-app.sh and clients/gpui/tools/install.sh tee it.
+# script writes to stdout, and install-app.sh tees it.
 set -euo pipefail
 
 APP="${1:-}"

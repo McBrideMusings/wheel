@@ -28,7 +28,7 @@ sys.path.insert(0, str(here))
 from fixture import fixture  # noqa: E402
 
 REPO = here.parents[2]
-GPUI_APP = here.parent / 'target/app/Wheel GPUI.app'
+GPUI_APP = here.parent / 'target/app/Wheel.app'
 # The Swift app's debug server is compiled only into its Debug configuration, so the app measured is
 # that configuration built optimized (`make compare-swift`), set against the optimized GPUI build.
 SWIFT_APP = REPO / 'DerivedData-compare-opt.noindex/Build/Products/Debug/Wheel.app'

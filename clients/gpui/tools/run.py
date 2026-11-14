@@ -9,7 +9,7 @@ here = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(here))
 from fixture import fixture  # noqa: E402
 
-app = here.parent / 'target/app/Wheel GPUI.app/Contents/MacOS'
+app = here.parent / 'target/app/Wheel.app/Contents/MacOS'
 client = [str(app / 'wheel-gpui')]
 if '--real' in sys.argv:
     subprocess.run(client, env={**__import__('os').environ, 'WHEEL_GPUI_BRIDGE': str(app / 'libWheelGpuiBridge.dylib')})

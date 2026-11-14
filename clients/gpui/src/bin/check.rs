@@ -2571,10 +2571,17 @@ async fn sidebar(run: Run, click: [f64; 2], cx: &mut AsyncApp) -> Result<(Run, S
     let asked = window.update(cx, |c, _, _| c.confirmation.as_ref().map(|c| (c.title.clone(), c.button.clone())))?;
     ensure!(asked.as_ref().map(|a| a.1.as_str()) == Some("Close Other Spaces") && asked.as_ref().is_some_and(|a| a.0.contains("2 other spaces")), "Close Other Spaces did not ask as expected: {asked:?}");
     window.update(cx, |c, _, _| c.answer_confirmation(true))?;
-    pump(&mut connection, 1200, &mut layouts, window, cx).await?;
+    // The rows go when wheeld's layout without the two spaces arrives.
+    let mut left_over: Vec<String> = Vec::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        left_over = session_order(cx)?.into_iter().map(|(id, _)| id).collect();
+        if left_over == [fixture_space.clone()] {
+            break;
+        }
+    }
     draw(window, None, cx)?;
-    let left_over: Vec<String> = session_order(cx)?.into_iter().map(|(id, _)| id).collect();
-    ensure!(left_over == [fixture_space.clone()], "only the fixture space should remain in the first session: {left_over:?}");
+    ensure!(left_over == [fixture_space.clone()], "only the fixture space should remain in the first session 10 s after Close Other Spaces: {left_over:?}");
     // Back on the fixture space, as the sections below expect.
     window.update(cx, |c, _, _| c.select_space(&fixture_space))?;
     pump(&mut connection, 500, &mut layouts, window, cx).await?;

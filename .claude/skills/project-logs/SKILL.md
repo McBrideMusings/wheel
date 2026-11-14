@@ -71,13 +71,20 @@ window, say the window used in UTC beside their local time, and filter on the pr
   `log show --info --last 2h --predicate 'subsystem == "com.piercemakes.wheel"'` (without `--info` it shows none of them).
 - **Retention:** past 10 MB the file rolls to `WheelMac.log.1`; `WheelMac.log.sent` holds how far
   wheeld has it. The unified log ages out on the OS's schedule.
+- **The GPUI client** (`clients/gpui`, installed as `Wheel.app` and `Wheel Dev.app` by
+  `make deploy-client` and `deploy-dev`, ADR-0040) writes no `WheelMac.log` and ships nothing to
+  Loki: the file above is the Swift app's. Its lines are kept in memory, the last 200 each, and
+  read with `WHEEL_DEBUG_PORT` set from `GET /state`'s `log` arrays (the window's, its `server`
+  block's and the menu bar's); the menu bar's also go to stderr (`wheel-gpui: <line>`), which an
+  app opened from Finder loses.
 
 ## Deploys and server restarts — this Mac
 
 - **Files:** `~/Library/Logs/wheel/deploy-release.log` (`make deploy-client`) and
   `deploy-dev.log` (`make deploy-dev`), one UTC-stamped line per step: staged, stopping (with
-  pids), installed, launched; xcodebuild's output goes to `deploy-<variant>-xcodebuild.log`,
-  replaced each run. `~/Library/Logs/wheel/restart-server.log` holds each `make restart-server`
+  pids), installed, launched; the Swift Release build's xcodebuild output goes to
+  `deploy-<variant>-xcodebuild.log` and the GPUI client's build (`clients/gpui/tools/build.py`)
+  to `deploy-<variant>-build.log`, both replaced each run. `~/Library/Logs/wheel/restart-server.log` holds each `make restart-server`
   and `restart-server-dev`: the service, the pid before and after, and the executable the new
   one runs.
 - **Fetch:** `grep '^2026-10-30T14' ~/Library/Logs/wheel/deploy-release.log`; the deploy and

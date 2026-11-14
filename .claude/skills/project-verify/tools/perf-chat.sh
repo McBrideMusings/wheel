@@ -15,7 +15,7 @@
 # a minute. Run it after every client deploy; real agents stream more than the fake agent does.
 if [ "${1:-}" = --live ]; then
   WINDOW_S="${LIVE_WINDOW_S:-60}"
-  pid="$(pgrep -x Wheel | head -1)"
+  pid="$(pgrep -fx /Applications/Wheel.app/Contents/MacOS/wheel-gpui | head -1)"
   [ -n "$pid" ] || { echo "no Wheel app running" >&2; exit 2; }
   log="$HOME/Library/Logs/wheel/wheeld.log"
   # cputime as M:SS.ss or H:MM:SS, in seconds.

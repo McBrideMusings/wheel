@@ -3,17 +3,17 @@
 
     build.py [release|dev]
 
-`release` (the default) makes `target/app/Wheel GPUI.app`, id `com.piercemakes.wheel.gpui`, carrying
-the release wheeld as `com.piercemakes.wheel.daemon` on 7420, the daemon Wheel.app runs. `dev` makes
-`target/app/Wheel GPUI Dev.app`, id `com.piercemakes.wheel.gpui.dev`, with the DEV icon and the
-debug wheeld as `com.piercemakes.wheel.dev.daemon` on 7422, the daemon Wheel Dev.app runs: the two
-GPUI apps run beside the two Swift apps and share their daemons, never a bundle or a launch agent of
-the other variant.
+`release` (the default) makes `target/app/Wheel.app`, id `com.piercemakes.wheel`, carrying the
+release wheeld as `com.piercemakes.wheel.daemon` on 7420. `dev` makes `target/app/Wheel Dev.app`, id
+`com.piercemakes.wheel.dev`, with the DEV icon and the debug wheeld as
+`com.piercemakes.wheel.dev.daemon` on 7422. These are the ids macOS holds the permissions and login
+items under, so `make deploy-client` and `make deploy-dev` install these bundles as
+`/Applications/Wheel.app` and `/Applications/Wheel Dev.app` (ADR-0040).
 
 The bridge links Wheel's already-built release objects (GhosttyTerminal, WheelKit, WheelUI and what
-they use) from DerivedData, so build the Mac app first (`make deploy-client` or a Release
-xcodebuild). WHEEL_NATIVE_PRODUCTS selects another product directory. CARGO_TARGET_DIR is honoured
-for the client's own crates.
+they use) from DerivedData, so the Swift Release build runs first (`tools/install-app.sh` does it,
+or a Release xcodebuild into `DerivedData-deploy-release.noindex`). WHEEL_NATIVE_PRODUCTS selects
+another product directory. CARGO_TARGET_DIR is honoured for the client's own crates.
 
 The server goes in the same way as the Mac app's: `apple/Mac/embed-wheeld.sh`, the Xcode build
 phase, run with the variables Xcode would set (CONFIGURATION Release or Debug picks the variant),
@@ -29,8 +29,8 @@ granted across rebuilds; with no certificate the signature is ad hoc.
 import os, pathlib, plistlib, shutil, subprocess, sys, tempfile
 
 VARIANTS = dict(
-    release=dict(name='Wheel GPUI', bundle_id='com.piercemakes.wheel.gpui', configuration='Release', icon='AppIcon'),
-    dev=dict(name='Wheel GPUI Dev', bundle_id='com.piercemakes.wheel.gpui.dev', configuration='Debug', icon='AppIconDev'),
+    release=dict(name='Wheel', bundle_id='com.piercemakes.wheel', configuration='Release', icon='AppIcon'),
+    dev=dict(name='Wheel Dev', bundle_id='com.piercemakes.wheel.dev', configuration='Debug', icon='AppIconDev'),
 )
 variant = sys.argv[1] if len(sys.argv) > 1 else 'release'
 if variant not in VARIANTS or len(sys.argv) > 2:
