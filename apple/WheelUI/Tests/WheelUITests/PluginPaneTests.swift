@@ -212,4 +212,25 @@ import WheelKit
         #expect(pane.error == nil)
         #expect(pane.reloads == 1)
     }
+
+    @Test func aRequiredModuleDrawsAndAnEditedOneReloadsAndABadPathShowsInTheError() {
+        let main = """
+        local lib = require("lib/ui")
+        return { view = function() return lib.heading() end }
+        """
+        let pane = PluginPane()
+        pane.load(source: main, modules: ["lib/ui.luau": "return { heading = function() return ui.Text(\"one\") end }"],
+                  chunk: "demo/main.luau")
+        #expect(pane.error == nil)
+        #expect(texts(pane) == ["one"])
+        pane.load(source: main, modules: ["lib/ui.luau": "return { heading = function() return ui.Text(\"two\") end }"],
+                  chunk: "demo/main.luau")
+        #expect(texts(pane) == ["two"])
+        #expect(pane.reloads == 1)
+        pane.load(source: "require(\"../x\")\n" + main, modules: [:], chunk: "demo/main.luau")
+        #expect(pane.error?.contains("demo/main.luau:1:") == true)
+        #expect(pane.error?.contains("the path leaves the package") == true)
+        #expect(texts(pane) == ["two"])
+    }
 }
+

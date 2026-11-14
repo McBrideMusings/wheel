@@ -76,15 +76,16 @@ public final class PluginPane {
         }
     }
 
-    /// Takes the script's source: the first call starts the runtime, a later one reloads it with its state kept.
-    public func load(source: String, chunk: String) {
+    /// Takes the script's source and the package's other `.luau` files (path in the package to source) for its
+    /// `require`: the first call starts the runtime, a later one reloads it with its state kept.
+    public func load(source: String, modules: [String: String] = [:], chunk: String) {
         self.chunk = chunk
         do {
             if let runtime {
-                try runtime.reload(source: source)
+                try runtime.reload(source: source, modules: modules)
                 reloads += 1
             } else {
-                runtime = try PaneRuntime(source: source, chunkName: chunk, host: PaneRuntime.Host(feed: { [weak self] name, params in
+                runtime = try PaneRuntime(source: source, modules: modules, chunkName: chunk, host: PaneRuntime.Host(feed: { [weak self] name, params in
                     self?.read(feed: name, params: params) ?? PaneRuntime.FeedRead(value: .null)
                 }, action: { [weak self] name, args in
                     self?.onAction?(name, args)

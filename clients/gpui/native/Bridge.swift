@@ -430,14 +430,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
         }
     }
-    /// `plugin_source`, asked for or pushed because the script changed, loads into the pane it names; an error answering
+    /// `plugin_source`, asked for or pushed because the script or one of its package's modules changed, loads into the pane it names; an error answering
     /// a request for one is that pane's failure.
     func pluginMessage(_ value: [String: Any]) {
         switch value["ev"] as? String {
         case "plugin_source":
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin, let source = value["source"] as? String else { return }
             if let req = value["req"] as? Int { pluginReqs[req] = nil }
-            plugin.load(source: source, chunk: value["chunk"] as? String ?? "pane")
+            plugin.load(source: source, modules: value["modules"] as? [String: String] ?? [:], chunk: value["chunk"] as? String ?? "pane")
         case "feed_update":
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin, let feed = value["feed"] as? String else { return }
             if let req = value["req"] as? Int { feedReqs[req] = nil }

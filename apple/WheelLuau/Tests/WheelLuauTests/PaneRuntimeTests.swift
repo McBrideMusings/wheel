@@ -82,7 +82,7 @@ private func text(_ node: PaneNode) -> String? {
         #expect(text(try pane.view()) == "alive")
     }
 
-    @Test func ioOsAndRequireAreAbsent() throws {
+    @Test func ioAndOsAreAbsentAndRequireIsThePackageOne() throws {
         let pane = try PaneRuntime(source: """
         return {
             view = function()
@@ -90,7 +90,7 @@ private func text(_ node: PaneNode) -> String? {
             end,
         }
         """)
-        #expect(text(try pane.view()) == "nil nil nil nil")
+        #expect(text(try pane.view()) == "nil nil function nil")
     }
 
     @Test func globalsAndLibrariesAreFrozen() throws {
@@ -301,5 +301,126 @@ private func text(_ node: PaneNode) -> String? {
             "sparse": .object(["1": .number(1), "2": .number(2), "4": .number(4)]),
             "mixed": .object(["1": .number(1), "x": .number(2)]),
         ]))
+    }
+
+    // MARK: - require
+
+    private static let usesUI = """
+    local ui_lib = require("lib/ui")
+    return { view = function(state) return ui_lib.title("Hello") end }
+    """
+
+    @Test func aPaneRequiringAModuleDrawsWhatTheModuleBuilds() throws {
+        let pane = try PaneRuntime(source: Self.usesUI, modules: [
+            "lib/ui.luau": "local M = {}\nfunction M.title(s) return ui.Text(\"Title: \" .. s) end\nreturn M",
+        ], chunkName: "demo/main.luau")
+        #expect(text(try pane.view()) == "Title: Hello")
+    }
+
+    @Test func aModuleRunsOncePerVMAndModulesShareIt() throws {
+        let pane = try PaneRuntime(source: """
+        local a = require("lib/count")
+        local b = require("./lib/count.luau")
+        return { view = function() return ui.Text(tostring(a == b) .. " " .. a.n) end }
+        """, modules: ["lib/count.luau": "return { n = 1 }"])
+        #expect(text(try pane.view()) == "true 1")
+    }
+
+    @Test func aReloadRunsTheEditedModule() throws {
+        let pane = try PaneRuntime(source: Self.usesUI, modules: [
+            "lib/ui.luau": "return { title = function(s) return ui.Text(\"one \" .. s) end }",
+        ])
+        #expect(text(try pane.view()) == "one Hello")
+        try pane.reload(source: Self.usesUI, modules: [
+            "lib/ui.luau": "return { title = function(s) return ui.Text(\"two \" .. s) end }",
+        ])
+        #expect(text(try pane.view()) == "two Hello")
+    }
+
+    @Test func aFailedReloadKeepsTheModulesItHad() throws {
+        // The second view requires a module the first never did, so it must come from the old map.
+        let pane = try PaneRuntime(source: """
+        local views = 0
+        return { view = function()
+            views += 1
+            return require(if views == 1 then "lib/x" else "lib/z").node()
+        end }
+        """, modules: [
+            "lib/x.luau": "return { node = function() return ui.Text(\"kept\") end }",
+            "lib/z.luau": "return { node = function() return ui.Text(\"old map\") end }",
+        ])
+        #expect(text(try pane.view()) == "kept")
+        #expect(throws: PaneRuntime.Failure.self) {
+            try pane.reload(source: "return { view = function() return ui.Text(require(\"lib/x\")) end, init = function() require(\"lib/y\") end }",
+                            modules: [:])
+        }
+        #expect(text(try pane.view()) == "old map")
+    }
+
+    @Test func aPathOutOfThePackageIsAnError() {
+        for path in ["../x", "lib/../../x", "/etc/x", "./../x"] {
+            #expect {
+                _ = try PaneRuntime(source: "require(\"\(path)\")\nreturn { view = function() return ui.Text(\"\") end }",
+                                    chunkName: "demo/main.luau")
+            } throws: { error in
+                guard case let .runtime(message)? = error as? PaneRuntime.Failure else { return false }
+                return message.contains("demo/main.luau:1:") && message.contains("the path leaves the package")
+            }
+        }
+    }
+
+    @Test func aPathThatClimbsBackIntoThePackageResolves() throws {
+        let pane = try PaneRuntime(source: """
+        local a = require("lib/../ui")
+        local b = require("./x/../ui.luau")
+        return { view = function() return ui.Text(tostring(a == b) .. " " .. a) end }
+        """, modules: ["ui.luau": "return \"root ui\""])
+        #expect(text(try pane.view()) == "true root ui")
+    }
+
+    @Test func aMissingModuleIsAnError() {
+        #expect {
+            _ = try PaneRuntime(source: "require(\"lib/none\")\nreturn { view = function() return ui.Text(\"\") end }")
+        } throws: { error in
+            guard case let .runtime(message)? = error as? PaneRuntime.Failure else { return false }
+            return message.contains("the package has no lib/none.luau")
+        }
+    }
+
+    @Test func aRequireCycleIsAnErrorAndTheNextEntryIsNotBlamedForIt() throws {
+        let modules = [
+            "a.luau": "require(\"b\")\nreturn 1",
+            "b.luau": "require(\"a\")\nreturn 2",
+        ]
+        #expect {
+            _ = try PaneRuntime(source: "require(\"a\")\nreturn { view = function() return ui.Text(\"\") end }",
+                                modules: modules, chunkName: "demo/main.luau")
+        } throws: { error in
+            guard case let .runtime(message)? = error as? PaneRuntime.Failure else { return false }
+            return message.contains("demo/b.luau:1:") && message.contains("a.luau is already being required (a require cycle)")
+        }
+        // A module that failed while loading is not left marked as loading.
+        let pane = try PaneRuntime(source: """
+        local function view()
+            local ok, err = pcall(require, "bad")
+            local ok2, err2 = pcall(require, "bad")
+            return ui.Text(tostring(err2))
+        end
+        return { view = view }
+        """, modules: ["bad.luau": "error(\"broken\")"], chunkName: "demo/main.luau")
+        let first = text(try pane.view()) ?? ""
+        #expect(first.contains("broken"))
+        let second = text(try pane.view()) ?? ""
+        #expect(second.contains("broken") && !second.contains("cycle"))
+    }
+
+    @Test func aSyntaxErrorInAModuleNamesTheModule() {
+        #expect {
+            _ = try PaneRuntime(source: "require(\"lib/x\")\nreturn { view = function() return ui.Text(\"\") end }",
+                                modules: ["lib/x.luau": "local = ="], chunkName: "demo/main.luau")
+        } throws: { error in
+            guard case let .runtime(message)? = error as? PaneRuntime.Failure else { return false }
+            return message.contains("demo/lib/x.luau")
+        }
     }
 }

@@ -2821,13 +2821,14 @@ async fn handle(
                 tokio::task::spawn_blocking(move || state.plugin_source(&pane)).await
             };
             match read {
-                Ok(Ok((plugin, plugin_pane, chunk, source))) => req.map(|_| ServerMsg::PluginSource {
+                Ok(Ok((plugin, plugin_pane, script))) => req.map(|_| ServerMsg::PluginSource {
                     req,
                     pane,
                     plugin,
                     plugin_pane,
-                    chunk,
-                    source,
+                    chunk: script.chunk,
+                    source: script.source,
+                    modules: script.modules,
                 }),
                 Ok(Err(message)) => {
                     tracing::warn!(%peer, %pane, %message, "plugin source refused");

@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 38;
+pub const PROTOCOL_VERSION: u32 = 39;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -2489,6 +2489,9 @@ pub enum ServerMsg {
     /// A plugin pane's script: the reply to `plugin_source` (with its `req`), and sent unasked to
     /// every connection whenever the script file of a plugin pane some space shows changes on
     /// disk (`req` absent). `chunk` names the script for error messages (`<plugin>/<script>`).
+    /// `modules` holds every other `.luau` file of the package, keyed by its path in the package
+    /// (`lib/ui.luau`), for the script's `require`; a change to one is sent like a change to the
+    /// script. `PROTOCOL_VERSION` 39.
     PluginSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -2497,6 +2500,8 @@ pub enum ServerMsg {
         plugin_pane: String,
         chunk: String,
         source: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        modules: std::collections::BTreeMap<String, String>,
     },
     /// A change to a feed a pane reads (`feed_subscribe`): the whole new `value`, or `patch`, an
     /// RFC 6902 JSON Patch to apply to the value the pane holds. The reply to `feed_subscribe`

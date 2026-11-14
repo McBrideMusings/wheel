@@ -10,8 +10,13 @@ import WheelKit
 /// built with `ui.<Component>{ ... }`. `data.feed(name, params)` and `wheel.action(name, args)`
 /// call the caller's `Host`.
 ///
-/// The VM is interpreter only, its globals are frozen by `luaL_sandbox`, it has no `os`, `io` or
-/// `require`, every entry into script code runs under a step budget, and the state's memory is
+/// `require("lib/ui")` runs the package's `lib/ui.luau` from `modules` (paths in the package; the
+/// `.luau` may be left off) once per VM and returns what it returned. A path that leaves the
+/// package, a missing file and a module that requires itself again before it returns each raise
+/// an error. A reload takes the new modules and runs each again on its next `require`.
+///
+/// The VM is interpreter only, its globals are frozen by `luaL_sandbox`, it has no `os` or `io`,
+/// every entry into script code (a required module included) runs under a step budget, and the state's memory is
 /// capped while script code runs. Every failure comes back as a thrown `Failure` and leaves the
 /// last good module in place; the state keeps whatever the script changed in it before failing.
 /// The module's fields are read raw, so a metatable on it runs no script code outside the limits.
@@ -82,12 +87,19 @@ public final class PaneRuntime {
     private let limits: UnsafeMutablePointer<WheelLuauLimits>
     private let host: Host
     private let chunkName: String
+    /// What a module's chunk name starts with: the pane chunk's plugin, `<plugin>/`.
+    private let modulePrefix: String
+    private var modules: [String: String]
     private var moduleRef: Int32 = 0
     private var stateRef: Int32 = 0
+    /// `require`'s table: `loaded` (path to `{ value = <what the module returned> }`) and
+    /// `loading` (the paths whose module is running now).
+    private var requireRef: Int32 = 0
 
-    private enum HostKind: Int32 { case feed = 0, action = 1 }
+    private enum HostKind: Int32 { case feed = 0, action = 1, module = 2 }
 
-    public init(source: String, chunkName: String = "pane", limits: Limits = Limits(), host: Host = Host()) throws {
+    public init(source: String, modules: [String: String] = [:], chunkName: String = "pane",
+                limits: Limits = Limits(), host: Host = Host()) throws {
         self.limits = .allocate(capacity: 1)
         self.limits.initialize(to: WheelLuauLimits(
             memoryLimit: limits.memory, used: 0, stepBudget: limits.steps, steps: 0,
@@ -100,6 +112,9 @@ public final class PaneRuntime {
         self.L = L
         self.host = host
         self.chunkName = "=" + chunkName
+        self.modulePrefix = chunkName.split(separator: "/", maxSplits: 1).count == 2
+            ? String(chunkName.prefix { $0 != "/" }) + "/" : ""
+        self.modules = modules
         self.limits.pointee.host = Unmanaged.passUnretained(self).toOpaque()
         self.limits.pointee.hostCall = { host, L, kind in
             let runtime = Unmanaged<PaneRuntime>.fromOpaque(host!).takeUnretainedValue()
@@ -157,17 +172,34 @@ public final class PaneRuntime {
         return node
     }
 
-    /// Runs `source` as the pane's module and hands the current state to its `init`. A failure
-    /// keeps the previous module and state.
-    public func reload(source: String) throws {
-        let module = try load(source)
+    /// Runs `source` as the pane's module, with `modules` for its `require`, and hands the current
+    /// state to its `init`. A failure keeps the previous module, modules and state.
+    public func reload(source: String, modules: [String: String] = [:]) throws {
+        let oldModules = self.modules
+        let oldLoaded = swapLoaded()
+        // A module that yielded while loading and was never resumed must not read as a cycle.
+        lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, requireRef)
+        lua_rawgetfield(L, -1, "loading")
+        lua_cleartable(L, -1)
+        pop(2)
+        self.modules = modules
+        let module: Int32
         let state: Int32
         do {
-            state = try initState(module: module, previous: stateRef)
+            module = try load(source)
+            do {
+                state = try initState(module: module, previous: stateRef)
+            } catch {
+                lua_unref(L, module)
+                throw error
+            }
         } catch {
-            lua_unref(L, module)
+            self.modules = oldModules
+            lua_unref(L, swapLoaded(to: oldLoaded))
+            lua_unref(L, oldLoaded)
             throw error
         }
+        lua_unref(L, oldLoaded)
         lua_unref(L, moduleRef)
         lua_unref(L, stateRef)
         moduleRef = module
@@ -216,6 +248,51 @@ public final class PaneRuntime {
     })
     """
 
+    /// `require(path)`, called with the host's module loader and `require`'s table.
+    private static let requirePrelude = """
+    local load_module, modules = ...
+    local function resolve(path)
+        if type(path) ~= "string" then
+            error('require takes a path in the package, like "lib/ui"', 3)
+        end
+        if string.sub(path, 1, 1) == "/" then
+            error('require("' .. path .. '"): the path leaves the package', 3)
+        end
+        local parts = {}
+        for part in string.gmatch(path, "[^/]+") do
+            if part == ".." then
+                if #parts == 0 then
+                    error('require("' .. path .. '"): the path leaves the package', 3)
+                end
+                table.remove(parts)
+            elseif part ~= "." then
+                table.insert(parts, part)
+            end
+        end
+        local key = table.concat(parts, "/")
+        if string.sub(key, -5) ~= ".luau" then key ..= ".luau" end
+        return key
+    end
+    return function(path)
+        local key = resolve(path)
+        local hit = modules.loaded[key]
+        if hit ~= nil then return hit.value end
+        if modules.loading[key] then
+            error('require("' .. path .. '"): ' .. key .. ' is already being required (a require cycle)', 2)
+        end
+        local fn, message = load_module(key)
+        if fn == nil then
+            error(message or ('require("' .. path .. '"): the package has no ' .. key), 2)
+        end
+        modules.loading[key] = true
+        local ok, value = pcall(fn)
+        modules.loading[key] = nil
+        if not ok then error(value, 0) end
+        modules.loaded[key] = { value = value }
+        return value
+    end
+    """
+
     private func prepareGlobals() throws {
         luaL_openlibs(L)
         lua_pushnil(L)
@@ -223,6 +300,18 @@ public final class PaneRuntime {
         try compile(Self.prelude, chunkName: "=ui")
         try call(args: 0, results: 1)
         lua_setfield(L, WHEEL_LUA_GLOBALSINDEX, "ui")
+        lua_createtable(L, 0, 2)
+        lua_createtable(L, 0, 0)
+        lua_setfield(L, -2, "loaded")
+        lua_createtable(L, 0, 0)
+        lua_setfield(L, -2, "loading")
+        requireRef = lua_ref(L, -1)
+        pop(1)
+        try compile(Self.requirePrelude, chunkName: "=require")
+        wheel_luau_pushhost(L, HostKind.module.rawValue)
+        lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, requireRef)
+        try call(args: 2, results: 1)
+        lua_setfield(L, WHEEL_LUA_GLOBALSINDEX, "require")
         lua_createtable(L, 0, 1)
         wheel_luau_pushhost(L, HostKind.action.rawValue)
         lua_setfield(L, -2, "action")
@@ -302,6 +391,19 @@ public final class PaneRuntime {
         return false
     }
 
+    /// Puts a new `loaded` table in `require`'s table, or `ref`'s table, and returns a ref to the
+    /// one it replaced.
+    private func swapLoaded(to ref: Int32? = nil) -> Int32 {
+        lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, requireRef)
+        lua_rawgetfield(L, -1, "loaded")
+        let old = lua_ref(L, -1)
+        pop(1)
+        if let ref { lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, ref) } else { lua_createtable(L, 0, 0) }
+        lua_rawsetfield(L, -2, "loaded")
+        pop(1)
+        return old
+    }
+
     /// Calls the function below `args` arguments with the limits on; on failure pops the error
     /// and throws it.
     private func call(args: Int32, results: Int32) throws {
@@ -339,6 +441,19 @@ public final class PaneRuntime {
             return -1
         }
         switch HostKind(rawValue: kind) {
+        case .module:
+            guard let source = modules[name] else {
+                lua_pushnil(L)
+                return 1
+            }
+            do {
+                try compile(source, chunkName: "=" + modulePrefix + name)
+                return 1
+            } catch {
+                lua_pushnil(L)
+                lua_pushstring(L, "\(error)")
+                return 2
+            }
         case .feed:
             let read = host.feed(name, args)
             push(read.value)

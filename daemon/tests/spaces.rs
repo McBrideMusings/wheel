@@ -8269,6 +8269,23 @@ async fn a_plugin_pane_resolves_serves_its_script_and_pushes_a_save() {
     };
     assert_eq!(pushed, (pane_a.clone(), "-- two".to_string()));
     assert!(saved.elapsed() < Duration::from_secs(1), "pushed in {:?}", saved.elapsed());
+
+    // A new module in a subfolder, and then a save of it, each reach the connection with the
+    // script unchanged.
+    std::fs::create_dir_all(package.join("lib")).unwrap();
+    std::fs::write(package.join("lib/ui.luau"), "return 1").unwrap();
+    let (source, modules) = next_push_modules(&mut ws, &pane_a).await;
+    assert_eq!(source, "-- two");
+    assert_eq!(modules.get("lib/ui.luau").map(String::as_str), Some("return 1"));
+    std::fs::write(package.join("lib/ui.luau"), "return 2").unwrap();
+    let (_, modules) = next_push_modules(&mut ws, &pane_a).await;
+    assert_eq!(modules.get("lib/ui.luau").map(String::as_str), Some("return 2"));
+    match call(&mut ws, ClientMsg::PluginSource { req: Some(45), pane: pane_a.clone() }).await {
+        ServerMsg::PluginSource { modules, .. } => {
+            assert_eq!(modules.keys().collect::<Vec<_>>(), ["lib/ui.luau"]);
+        }
+        other => panic!("expected plugin_source, got {other:?}"),
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -8294,6 +8311,21 @@ async fn reply_and_push(ws: &mut Ws, msg: ClientMsg, req: u64, pane: &str) -> (S
         .await
         .expect("both the reply and the push arrived");
     (reply.unwrap(), pushed.unwrap())
+}
+
+/// The next unasked `plugin_source` for `pane`: its source and modules.
+async fn next_push_modules(ws: &mut Ws, pane: &str) -> (String, std::collections::BTreeMap<String, String>) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ServerMsg::PluginSource { req: None, pane: p, source, modules, .. } = recv(ws).await {
+                if p == pane {
+                    return (source, modules);
+                }
+            }
+        }
+    })
+    .await
+    .expect("a push arrived")
 }
 
 /// The next unasked `plugin_source` for `pane`: its source.

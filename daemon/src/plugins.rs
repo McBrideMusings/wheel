@@ -1,13 +1,13 @@
 //! Plugin packages (ADR-0041): a folder holding `wheel-plugin.toml` and the Luau scripts of its
 //! panes. wheeld finds the packages a space can use, sends a plugin pane's script source to
-//! clients (`plugin_source`), and watches the script files so a save reaches every open pane
-//! within a moment. It never runs a script: each client does.
+//! clients (`plugin_source`) with every other `.luau` file of its package for `require`, and
+//! watches the package folders so a save reaches every open pane within a moment. It never runs a script: each client does.
 //!
 //! A package comes from the space's project (`<project>/.wheel/plugins/<id>/`), this machine
 //! (`plugins/<id>/` beside the machine `wheel.toml`) or is compiled into wheeld. An id resolves to
 //! the first package carrying it, in that order.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -344,42 +344,164 @@ fn find_pane<'a>(package: &'a Package, pane_id: &str) -> Result<&'a PluginPaneIn
         .ok_or_else(|| format!("plugin {} has no pane {pane_id}", package.info.id))
 }
 
-/// The script of `pane`: `(chunk, source)`, read now.
-fn read_script(package: &Package, pane: &PluginPaneInfo) -> Result<(String, String), String> {
+/// What a plugin pane runs: its script, and every other `.luau` file of its package keyed by its
+/// path in the package, for `require`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Script {
+    /// `<plugin>/<script>`, naming the script in error messages.
+    pub chunk: String,
+    pub source: String,
+    pub modules: BTreeMap<String, String>,
+}
+
+/// The pane's script and the package's other `.luau` files, together at most [`MAX_SCRIPT`]
+/// bytes. A file a symlink carries out of the package is never read: the script is refused, a
+/// module left out.
+fn read_script(package: &Package, pane: &PluginPaneInfo) -> Result<Script, String> {
     let chunk = format!("{}/{}", package.info.id, pane.script);
-    let source = match &package.files {
+    let too_large = || format!("cannot read {chunk}: the script and the package's Luau files are larger than 1 MB");
+    let want = Path::new(&pane.script);
+    let (source, modules) = match &package.files {
         Files::Builtin(files) => {
-            let want = Path::new(&pane.script);
-            files
+            let source = files
                 .iter()
                 .find(|(name, _)| Path::new(name) == want)
                 .map(|(_, text)| text.to_string())
-                .ok_or_else(|| format!("cannot read {chunk}: no such file"))?
+                .ok_or_else(|| format!("cannot read {chunk}: no such file"))?;
+            let modules = files
+                .iter()
+                .filter(|(name, _)| name.ends_with(".luau") && Path::new(name) != want)
+                .map(|(name, text)| (name.to_string(), text.to_string()))
+                .collect();
+            (source, modules)
         }
         Files::Dir(dir) => {
-            let path = dir.join(&pane.script);
-            // A symlink must not carry the script out of the package folder.
-            let real = path
+            let root = dir
                 .canonicalize()
                 .map_err(|e| format!("cannot read {chunk}: {e}"))?;
-            let root = dir
+            // A symlink must not carry the script out of the package folder.
+            let real = dir
+                .join(&pane.script)
                 .canonicalize()
                 .map_err(|e| format!("cannot read {chunk}: {e}"))?;
             if !real.starts_with(&root) {
                 return Err(format!("cannot read {chunk}: it is outside the package folder"));
             }
-            use std::io::Read;
-            let mut text = String::new();
-            std::fs::File::open(&real)
-                .and_then(|f| f.take(MAX_SCRIPT + 1).read_to_string(&mut text))
-                .map_err(|e| format!("cannot read {chunk}: {e}"))?;
-            text
+            let source = read_capped(&real, MAX_SCRIPT).map_err(|e| format!("cannot read {chunk}: {e}"))?;
+            if source.len() as u64 > MAX_SCRIPT {
+                return Err(too_large());
+            }
+            let mut modules = BTreeMap::new();
+            let mut walk = Walk {
+                root: &root,
+                script: &real,
+                left: MAX_SCRIPT - source.len() as u64,
+                entries: 0,
+            };
+            walk.folder(&root, 0, &mut modules).map_err(|TooLarge| too_large())?;
+            if walk.entries > MODULE_ENTRIES {
+                tracing::warn!(%chunk, "the package has more than {MODULE_ENTRIES} entries; modules past them are left out");
+            }
+            (source, modules)
         }
     };
-    if source.len() as u64 > MAX_SCRIPT {
-        return Err(format!("cannot read {chunk}: the script is larger than 1 MB"));
+    if (source.len() + modules.values().map(String::len).sum::<usize>()) as u64 > MAX_SCRIPT {
+        return Err(too_large());
     }
-    Ok((chunk, source))
+    Ok(Script {
+        chunk,
+        source,
+        modules,
+    })
+}
+
+/// Reads at most `cap + 1` bytes of `path`, so an oversized file is noticed without reading it all.
+fn read_capped(path: &Path, cap: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path).and_then(|f| f.take(cap + 1).read_to_string(&mut text))?;
+    Ok(text)
+}
+
+/// The package's Luau files come to more than [`MAX_SCRIPT`] with the script.
+struct TooLarge;
+
+/// Folders a package's modules are never looked for in: hidden ones, and the ones a backend
+/// installs packages or writes its build into.
+fn skipped_folder(name: &str) -> bool {
+    name.starts_with('.') || matches!(name, "node_modules" | "target" | "build" | "dist" | "vendor")
+}
+
+/// How deep below the package folder modules are looked for.
+const MODULE_DEPTH: usize = 8;
+
+/// The most folder entries one look for modules visits; past it the rest are left out.
+const MODULE_ENTRIES: usize = 10_000;
+
+/// One look for a package's modules.
+struct Walk<'a> {
+    root: &'a Path,
+    /// The pane's own script, which is not a module.
+    script: &'a Path,
+    /// Bytes still allowed.
+    left: u64,
+    /// Folder entries visited.
+    entries: usize,
+}
+
+impl Walk<'_> {
+    /// Adds every `.luau` file under `dir` but the script to `modules`, keyed by its path below
+    /// the root with `/` separators. Symlinked folders are not entered; a symlinked file that
+    /// resolves outside the root, and a folder or file that cannot be read, are left out.
+    fn folder(&mut self, dir: &Path, depth: usize, modules: &mut BTreeMap<String, String>) -> Result<(), TooLarge> {
+        let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+            Ok(read) => read.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!(dir = %dir.display(), error = %e, "a plugin package folder cannot be read; its modules are left out");
+                return Ok(());
+            }
+        };
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            self.entries += 1;
+            if self.entries > MODULE_ENTRIES {
+                return Ok(());
+            }
+            let Ok(kind) = entry.file_type() else { continue };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let path = entry.path();
+            if kind.is_dir() {
+                if depth < MODULE_DEPTH && !skipped_folder(name) {
+                    self.folder(&path, depth + 1, modules)?;
+                }
+                continue;
+            }
+            if !name.ends_with(".luau") {
+                continue;
+            }
+            let Ok(real) = path.canonicalize() else { continue };
+            if real == self.script || !real.starts_with(self.root) || !real.is_file() {
+                continue;
+            }
+            let Ok(key) = path.strip_prefix(self.root) else { continue };
+            let key: Vec<&str> = key.components().filter_map(|c| c.as_os_str().to_str()).collect();
+            let key = key.join("/");
+            let text = match read_capped(&real, self.left) {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!(module = %key, error = %e, "a plugin module cannot be read; it is left out");
+                    continue;
+                }
+            };
+            if text.len() as u64 > self.left {
+                return Err(TooLarge);
+            }
+            self.left -= text.len() as u64;
+            modules.insert(key, text);
+        }
+        Ok(())
+    }
 }
 
 /// One plugin pane of the layout: where it is and what it shows.
@@ -507,9 +629,9 @@ impl AppState {
         find_pane(package, plugin_pane).map(|_| ())
     }
 
-    /// The script a plugin pane shows, read now: `(plugin, plugin_pane, chunk, source)`. It
-    /// records nothing: only the watch decides what clients last had.
-    pub fn plugin_source(&self, pane: &str) -> Result<(String, String, String, String), String> {
+    /// The script a plugin pane shows, read now: `(plugin, plugin_pane, script)`. It records
+    /// nothing: only the watch decides what clients last had.
+    pub fn plugin_source(&self, pane: &str) -> Result<(String, String, Script), String> {
         let (cwd, plugin, plugin_pane) = {
             let spaces = self.spaces.lock().unwrap();
             let (space, kind) = spaces
@@ -526,11 +648,11 @@ impl AppState {
                 _ => return Err(format!("{pane} is not a plugin pane")),
             }
         };
-        let (chunk, source) = self.plugin_script(&cwd, &plugin, &plugin_pane)?;
-        Ok((plugin, plugin_pane, chunk, source))
+        let script = self.plugin_script(&cwd, &plugin, &plugin_pane)?;
+        Ok((plugin, plugin_pane, script))
     }
 
-    fn plugin_script(&self, cwd: &str, plugin: &str, plugin_pane: &str) -> Result<(String, String), String> {
+    fn plugin_script(&self, cwd: &str, plugin: &str, plugin_pane: &str) -> Result<Script, String> {
         let packages = discover(Some(cwd), &self.machine_plugins());
         let package = resolve(&packages, plugin)?;
         read_script(package, find_pane(package, plugin_pane)?)
@@ -571,12 +693,12 @@ impl AppState {
         for p in &panes {
             let known = self.plugin_seen.lock().unwrap().contains_key(&p.pane);
             if !known {
-                if let Ok((_, source)) = self.plugin_script(&p.cwd, &p.plugin, &p.plugin_pane) {
+                if let Ok(script) = self.plugin_script(&p.cwd, &p.plugin, &p.plugin_pane) {
                     self.plugin_seen
                         .lock()
                         .unwrap()
                         .entry(p.pane.clone())
-                        .or_insert(source);
+                        .or_insert(script);
                 }
             }
         }
@@ -629,12 +751,12 @@ impl AppState {
         self.plugin_broadcast_changes();
     }
 
-    /// Read each plugin pane's script and send every client the ones that now differ from what
-    /// the last broadcast carried.
+    /// Read each plugin pane's script and modules and send every client the ones that now differ
+    /// from what the last broadcast carried.
     fn plugin_broadcast_changes(&self) {
         let panes = plugin_panes_of(&self.spaces.lock().unwrap());
         for p in panes {
-            let (chunk, source) = match self.plugin_script(&p.cwd, &p.plugin, &p.plugin_pane) {
+            let script = match self.plugin_script(&p.cwd, &p.plugin, &p.plugin_pane) {
                 Ok(read) => read,
                 Err(e) => {
                     tracing::warn!(pane = %p.pane, error = %e, "a plugin script cannot be read; clients keep the last source");
@@ -643,19 +765,20 @@ impl AppState {
             };
             {
                 let mut seen = self.plugin_seen.lock().unwrap();
-                if seen.get(&p.pane) == Some(&source) {
+                if seen.get(&p.pane) == Some(&script) {
                     continue;
                 }
-                seen.insert(p.pane.clone(), source.clone());
+                seen.insert(p.pane.clone(), script.clone());
             }
-            tracing::info!(pane = %p.pane, %chunk, bytes = source.len(), "plugin script changed; sent to clients");
+            tracing::info!(pane = %p.pane, chunk = %script.chunk, bytes = script.source.len(), modules = script.modules.len(), "plugin script changed; sent to clients");
             let _ = self.global.send(ServerMsg::PluginSource {
                 req: None,
                 pane: p.pane,
                 plugin: p.plugin,
                 plugin_pane: p.plugin_pane,
-                chunk,
-                source,
+                chunk: script.chunk,
+                source: script.source,
+                modules: script.modules,
             });
         }
     }
@@ -702,7 +825,7 @@ fn watch_targets_start(
 }
 
 /// The map type `AppState` keeps: pane id to the script clients last had.
-pub(crate) type Seen = HashMap<String, String>;
+pub(crate) type Seen = HashMap<String, Script>;
 
 #[cfg(test)]
 mod tests {
@@ -832,7 +955,7 @@ actions = ["go"]
         );
         assert_eq!(resolve(&all, "sample").unwrap().info.scope, PluginScope::Project);
         let pane = find_pane(resolve(&all, "demo").unwrap(), "main").unwrap();
-        assert_eq!(read_script(resolve(&all, "demo").unwrap(), pane).unwrap().1, "-- script");
+        assert_eq!(read_script(resolve(&all, "demo").unwrap(), pane).unwrap().source, "-- script");
         assert!(find_pane(resolve(&all, "demo").unwrap(), "nope").is_err());
         assert!(resolve(&all, "ghost").is_err());
         std::fs::remove_dir_all(&root).unwrap();
@@ -857,9 +980,9 @@ actions = ["go"]
         let all = discover(None, Path::new("/nonexistent"));
         let sample = resolve(&all, "sample").unwrap();
         let pane = find_pane(sample, "counter").unwrap();
-        let (chunk, source) = read_script(sample, pane).unwrap();
-        assert_eq!(chunk, "sample/main.luau");
-        assert!(!source.is_empty());
+        let script = read_script(sample, pane).unwrap();
+        assert_eq!(script.chunk, "sample/main.luau");
+        assert!(!script.source.is_empty());
     }
 
     #[test]
@@ -887,9 +1010,54 @@ actions = ["go"]
         let all = discover(None, &machine);
         let demo = resolve(&all, "demo").unwrap();
         let pane = find_pane(demo, "main").unwrap();
-        assert_eq!(read_script(demo, pane).unwrap().1.len() as u64, MAX_SCRIPT);
+        assert_eq!(read_script(demo, pane).unwrap().source.len() as u64, MAX_SCRIPT);
         std::fs::write(&script, vec![b'-'; MAX_SCRIPT as usize + 1]).unwrap();
         let err = read_script(demo, pane).unwrap_err();
+        assert!(err.contains("larger than 1 MB"), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_packages_other_luau_files_come_with_the_script() {
+        let root = tmp("modules");
+        let machine = root.join("machine");
+        write_plugin(&machine, "demo", GOOD);
+        let dir = machine.join("demo");
+        std::fs::create_dir_all(dir.join("lib/deep")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("lib/ui.luau"), "return 1").unwrap();
+        std::fs::write(dir.join("lib/deep/x.luau"), "return 2").unwrap();
+        std::fs::write(dir.join("lib/notes.md"), "no").unwrap();
+        std::fs::write(dir.join(".git/hidden.luau"), "no").unwrap();
+        std::fs::write(dir.join("node_modules/dep.luau"), "no").unwrap();
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        std::fs::write(dir.join("target/built.luau"), "no").unwrap();
+        // Not UTF-8: left out, never a refusal of the pane.
+        std::fs::write(dir.join("lib/latin1.luau"), [0xff, 0xfe, 0x00]).unwrap();
+        std::fs::write(root.join("outside.luau"), "secret").unwrap();
+        std::os::unix::fs::symlink(root.join("outside.luau"), dir.join("lib/leak.luau")).unwrap();
+        let all = discover(None, &machine);
+        let demo = resolve(&all, "demo").unwrap();
+        let script = read_script(demo, find_pane(demo, "main").unwrap()).unwrap();
+        assert_eq!(script.source, "-- script");
+        let keys: Vec<&str> = script.modules.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["lib/deep/x.luau", "lib/ui.luau"]);
+        assert_eq!(script.modules["lib/ui.luau"], "return 1");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn modules_count_against_the_one_megabyte_budget() {
+        let root = tmp("bigmodules");
+        let machine = root.join("machine");
+        write_plugin(&machine, "demo", GOOD);
+        let half = MAX_SCRIPT as usize / 2;
+        std::fs::write(machine.join("demo/a.luau"), vec![b'-'; half]).unwrap();
+        std::fs::write(machine.join("demo/b.luau"), vec![b'-'; half]).unwrap();
+        let all = discover(None, &machine);
+        let demo = resolve(&all, "demo").unwrap();
+        let err = read_script(demo, find_pane(demo, "main").unwrap()).unwrap_err();
         assert!(err.contains("larger than 1 MB"), "{err}");
         std::fs::remove_dir_all(&root).unwrap();
     }
