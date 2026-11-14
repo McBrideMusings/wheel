@@ -67,11 +67,18 @@ impl Client {
     /// down 3 s after the last copy.
     pub fn tick_pane_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for pane in std::mem::take(&mut self.pane_images.window_shots) {
-            cx.on_next_frame(window, move |this, window, cx| {
-                let result = this.cut_pane(&pane, window);
-                this.pane_images.ready.push((pane, result));
-                cx.notify();
-            });
+            // After this render, drawn the way the debug snapshot is: a hidden window has no display
+            // link to call a next-frame callback, and render_to_image needs a current frame.
+            cx.spawn_in(window, async move |this, cx| {
+                this.update_in(cx, |this, window, cx| {
+                    window.draw(cx).clear();
+                    let result = this.cut_pane(&pane, window);
+                    this.pane_images.ready.push((pane, result));
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
         }
         for (pane, result) in std::mem::take(&mut self.pane_images.ready) {
             let toast = match result {
