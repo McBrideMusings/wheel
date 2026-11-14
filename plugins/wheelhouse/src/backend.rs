@@ -218,7 +218,7 @@ impl Core {
         for sub in subs.values_mut().filter(|s| s.dir == dir) {
             let update = match &sub.last {
                 None => json!({ "feed": "beads", "params": sub.params, "value": value }),
-                Some(old) if *old == value => continue,
+                Some(old) if same(old, &value) => continue,
                 Some(old) => {
                     let patch = serde_json::to_value(json_patch::diff(old, &value)).unwrap_or(Value::Null);
                     json!({ "feed": "beads", "params": sub.params, "patch": patch })
@@ -291,6 +291,18 @@ impl Core {
             Err(e) => Err(failed(e.to_string())),
         }
     }
+}
+
+/// Whether two snapshots differ in anything but `now`, the time each was read.
+fn same(a: &Value, b: &Value) -> bool {
+    let bare = |v: &Value| {
+        let mut v = v.clone();
+        if let Some(o) = v.as_object_mut() {
+            o.remove("now");
+        }
+        v
+    };
+    bare(a) == bare(b)
 }
 
 fn key(r: &FeedRef) -> String {

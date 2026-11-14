@@ -195,7 +195,7 @@ wheel plugin restart wheelhouse     # after each rebuild; the manifest has no wa
 **Feed `beads`**, params `{dir}` (the absolute project directory, echoed as subscribed). Each subscribe sends the whole value, later changes send an RFC 6902 patch, and a value equal to the last one sends nothing. The backend reads again, 150 ms after the last event, when `<dir>/.beads/last-touched`, `<dir>/wheel.toml` or `~/.wheel/bead-panes.json` changes (a file watcher, no polling), and right after a press claims or releases a bead. The value, from a fixture project:
 
 ```json
-{"name": "proj-a", "path": "/private/tmp/claude/wheel/wh/proj-a", "has_repo": true, "error": null, "problems": [],
+{"now": 1763110000, "name": "proj-a", "path": "/private/tmp/claude/wheel/wh/proj-a", "has_repo": true, "error": null, "problems": [],
  "buttons": {"task": {"start": {"label": "Implement", "run": "..."}, "resume": {"label": "Continue", "run": "..."}, "focus": {"label": "Focus", "run": null}},
              "epic": {"start": {"label": "Plan", "run": "..."}, "resume": {"label": null, "run": null}, "focus": {"label": null, "run": null}},
              "closed": null},
@@ -206,7 +206,7 @@ wheel plugin restart wheelhouse     # after each rebuild; the manifest has no wa
             "owner": "someone@example.com", "updated": "2026-11-14T08:43:33Z", "blocked_by": [], "description": "", "ready": true, "epic": false}]}
 ```
 
-`buttons` is `[beads.task]`, `[beads.epic]` and `[beads.disabled] closed` of the project's `wheel.toml` (a group is null when the project wrote none); `scripts` are its `[beads.list.<name>]` buttons with their label; `records` is the pane and conversation each press recorded; `pressing` lists the beads a press holds now. With no `.beads` folder `has_repo` is false and `beads` is empty; a failing `bd` is in `error`. The backend sends data only: which button a bead shows, from `buttons`, `records` and `wheel.panes`, is the pane's decision.
+`now` is the epoch second (an integer) the snapshot was read, for a pane that has no clock; a snapshot that differs only in `now` sends nothing, and a patch for any other change carries the new `now`. `buttons` is `[beads.task]`, `[beads.epic]` and `[beads.disabled] closed` of the project's `wheel.toml` (a group is null when the project wrote none); `scripts` are its `[beads.list.<name>]` buttons with their label; `records` is the pane and conversation each press recorded; `pressing` lists the beads a press holds now. With no `.beads` folder `has_repo` is false and `beads` is empty; a failing `bd` is in `error`. The backend sends data only: which button a bead shows, from `buttons`, `records` and `wheel.panes`, is the pane's decision.
 
 **Actions**, both returning `{"said": "<words for the pane>"}` or an error that reaches the caller as `wheelhouse.<action> failed: <message>`:
 

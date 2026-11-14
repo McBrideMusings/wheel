@@ -155,7 +155,7 @@ r = vals[0]
 v = r["value"]
 if r.get("params") != {"dir": dirn}:
     print("params not echoed: %r" % r.get("params")); sys.exit()
-want = {"name", "path", "has_repo", "error", "problems", "buttons", "scripts", "records", "pressing", "beads"}
+want = {"now", "name", "path", "has_repo", "error", "problems", "buttons", "scripts", "records", "pressing", "beads"}
 if set(v) != want:
     print("keys %r" % sorted(v)); sys.exit()
 bead_keys = {"id", "title", "status", "kind", "priority", "parent", "labels", "owner", "updated",

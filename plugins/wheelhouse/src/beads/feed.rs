@@ -42,7 +42,9 @@ pub fn value(dir: &str) -> Value {
             })
         })
         .collect();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     json!({
+        "now": now,
         "name": snap.name,
         "path": snap.path,
         "has_repo": snap.has_repo,
