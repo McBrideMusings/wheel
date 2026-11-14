@@ -29,13 +29,24 @@ public final class PaneRuntime {
         }
     }
 
+    /// A feed as the script reads it: its value, and whether the backend that publishes it is
+    /// down, so the value is the last one it sent.
+    public struct FeedRead: Equatable {
+        public var value: JSONValue
+        public var stale: Bool
+        public init(value: JSONValue, stale: Bool = false) {
+            self.value = value
+            self.stale = stale
+        }
+    }
+
     /// What the script reaches outside its VM.
     public struct Host {
-        /// The current value of a feed, for `data.feed(name, params)`.
-        public var feed: (String, JSONValue) -> JSONValue
+        /// A feed now, for `data.feed(name, params)`, which returns `value, stale`.
+        public var feed: (String, JSONValue) -> FeedRead
         /// `wheel.action(name, args)`.
         public var action: (String, JSONValue) -> Void
-        public init(feed: @escaping (String, JSONValue) -> JSONValue = { _, _ in .null },
+        public init(feed: @escaping (String, JSONValue) -> FeedRead = { _, _ in FeedRead(value: .null) },
                     action: @escaping (String, JSONValue) -> Void = { _, _ in }) {
             self.feed = feed
             self.action = action
@@ -329,8 +340,10 @@ public final class PaneRuntime {
         }
         switch HostKind(rawValue: kind) {
         case .feed:
-            push(host.feed(name, args))
-            return 1
+            let read = host.feed(name, args)
+            push(read.value)
+            lua_pushboolean(L, read.stale ? 1 : 0)
+            return 2
         case .action:
             host.action(name, args)
             return 0

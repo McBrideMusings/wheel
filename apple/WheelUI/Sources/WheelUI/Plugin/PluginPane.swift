@@ -43,6 +43,8 @@ public final class PluginPane {
     @ObservationIgnored private var subscribed: [FeedKey: JSONValue] = [:]
     /// The value held for each subscribed feed.
     @ObservationIgnored private var feedValues: [FeedKey: JSONValue] = [:]
+    /// The subscribed feeds whose backend is down: their held value is the last one it sent.
+    @ObservationIgnored private var staleFeeds: Set<FeedKey> = []
     /// The feeds the render in progress has read.
     @ObservationIgnored private var asked: [FeedKey: JSONValue] = [:]
 
@@ -69,7 +71,7 @@ public final class PluginPane {
                 reloads += 1
             } else {
                 runtime = try PaneRuntime(source: source, chunkName: chunk, host: PaneRuntime.Host(feed: { [weak self] name, params in
-                    self?.read(feed: name, params: params) ?? .null
+                    self?.read(feed: name, params: params) ?? PaneRuntime.FeedRead(value: .null)
                 }, action: { [weak self] name, args in
                     self?.onAction?(name, args)
                 }))
@@ -91,11 +93,13 @@ public final class PluginPane {
     }
 
     /// Takes a change to a feed the pane reads: the whole `value`, or an RFC 6902 `patch` applied to the value held.
+    /// `stale` says the feed's backend is down and `value` is the last one it sent; an update without it is fresh.
     /// The arguments are what JSONSerialization returns. A patch that does not apply sets `error` and keeps the last value.
-    public func feedUpdate(feed: String, params: Any?, value: Any?, patch: Any?) {
+    public func feedUpdate(feed: String, params: Any?, value: Any?, patch: Any?, stale: Bool = false) {
         let params = Self.jsonValue(params ?? NSNull())
         let key = FeedKey(name: feed, params: Self.canonical(params))
         guard subscribed[key] != nil else { return }
+        if stale { staleFeeds.insert(key) } else { staleFeeds.remove(key) }
         do {
             if let patch {
                 feedValues[key] = try JSONPatch.apply(Self.jsonValue(patch), to: feedValues[key] ?? .null)
@@ -122,6 +126,7 @@ public final class PluginPane {
         let key = FeedKey(name: feed, params: Self.canonical(Self.jsonValue(params ?? NSNull())))
         subscribed[key] = nil
         feedValues[key] = nil
+        staleFeeds.remove(key)
         fail(message: message)
     }
 
@@ -141,6 +146,7 @@ public final class PluginPane {
         let unsubscribe = subscribed.map { ($0.key.name, $0.value) }
         subscribed = [:]
         feedValues = [:]
+        staleFeeds = []
         if !unsubscribe.isEmpty { onFeeds?([], unsubscribe) }
     }
 
@@ -158,12 +164,12 @@ public final class PluginPane {
         return out
     }
 
-    private func read(feed name: String, params given: JSONValue) -> JSONValue {
+    private func read(feed name: String, params given: JSONValue) -> PaneRuntime.FeedRead {
         // Params are an object; a Luau `{}` reaches here as an empty array.
         let params: JSONValue = given == .array([]) ? .object([:]) : given
         let key = FeedKey(name: name, params: Self.canonical(params))
         asked[key] = params
-        return feedValues[key] ?? .null
+        return PaneRuntime.FeedRead(value: feedValues[key] ?? .null, stale: staleFeeds.contains(key))
     }
 
     /// After a good render: subscribes the feeds it read that are new and unsubscribes those it no longer reads.
@@ -171,7 +177,10 @@ public final class PluginPane {
         let subscribe = asked.filter { subscribed[$0.key] == nil }
         let unsubscribe = subscribed.filter { asked[$0.key] == nil }
         guard !subscribe.isEmpty || !unsubscribe.isEmpty else { return }
-        for key in unsubscribe.keys { feedValues[key] = nil }
+        for key in unsubscribe.keys {
+            feedValues[key] = nil
+            staleFeeds.remove(key)
+        }
         subscribed = asked
         onFeeds?(subscribe.map { ($0.key.name, $0.value) }.sorted { $0.0 < $1.0 },
                  unsubscribe.map { ($0.key.name, $0.value) }.sorted { $0.0 < $1.0 })

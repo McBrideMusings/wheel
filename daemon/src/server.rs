@@ -2718,9 +2718,9 @@ async fn handle(
                 // Taken before the grant check, so a change during the check is not missed.
                 let grants = state.grants_changed.subscribe();
                 match state.feed_subscribe(&pane, &feed, &params).await {
-                    Ok((subscription, value, rx)) => {
+                    Ok((subscription, value, stale, rx)) => {
                         let at = FeedAddress { req, pane, feed, params };
-                        forward_feed(&state, subscription, value, rx, grants, at, out).await;
+                        forward_feed(&state, subscription, (value, stale), rx, grants, at, out).await;
                     }
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %feed, %message, "feed subscribe refused");
@@ -2794,6 +2794,25 @@ async fn handle(
                 }),
                 Err(message) => Some(failed(req, message)),
             }
+        }
+        ClientMsg::PluginRestart { req, plugin, space } => {
+            // A backend can take seconds to stop and start: the restart runs in its own task, so
+            // the connection's other messages are not held.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.plugin_restart(&plugin, space.as_deref()).await {
+                    Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %plugin, %message, "plugin restart failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
         }
         ClientMsg::PluginSource { req, pane } => {
             let state = state.clone();
@@ -3121,22 +3140,23 @@ struct FeedAddress {
 async fn forward_feed(
     state: &AppState,
     subscription: crate::backends::Subscription,
-    value: serde_json::Value,
+    (value, stale): (serde_json::Value, bool),
     mut rx: broadcast::Receiver<crate::backends::Update>,
     mut grants: broadcast::Receiver<()>,
     at: FeedAddress,
     out: mpsc::Sender<ServerMsg>,
 ) {
     use crate::backends::Update;
-    let msg = |req, value, patch| ServerMsg::FeedUpdate {
+    let msg = |req, value, patch, stale| ServerMsg::FeedUpdate {
         req,
         pane: at.pane.clone(),
         feed: at.feed.clone(),
         params: at.params.clone(),
         value,
         patch,
+        stale,
     };
-    if out.send(msg(at.req, Some(value), None)).await.is_err() {
+    if out.send(msg(at.req, Some(value), None, stale)).await.is_err() {
         return;
     }
     loop {
@@ -3157,14 +3177,15 @@ async fn forward_feed(
             update = rx.recv() => update,
         };
         let next = match next {
-            Ok(Update::Value(value)) => msg(None, Some(value), None),
-            Ok(Update::Patch(patch)) => msg(None, None, Some(patch)),
+            Ok(Update::Value(value)) => msg(None, Some(value), None, false),
+            Ok(Update::Patch(patch)) => msg(None, None, Some(patch), false),
+            Ok(Update::Stale(value)) => msg(None, Some(value), None, true),
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 // A fresh value and a fresh receiver taken together: the old receiver would
                 // replay patches the value already holds.
-                let (value, fresh) = subscription.resync();
+                let (value, stale, fresh) = subscription.resync();
                 rx = fresh;
-                msg(None, Some(value), None)
+                msg(None, Some(value), None, stale)
             }
             Err(broadcast::error::RecvError::Closed) => return,
         };

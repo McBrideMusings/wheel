@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 37;
+pub const PROTOCOL_VERSION: u32 = 38;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -178,7 +178,8 @@ pub enum BackendTransport {
 
 /// What a backend's process is doing now. `stopped`: never started, since nothing has read one of
 /// its feeds; `starting`: spawned, `initialize` not answered yet; `running`; `exited`: it ended or
-/// failed (`error` says how).
+/// failed, and `error` says how and whether its `restart` policy starts it again
+/// (`ended by signal 9; restarting in 1 s`, `exited with status 1; not restarted (restart = never)`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendState {
@@ -196,9 +197,12 @@ pub struct BackendInfo {
     pub command: String,
     #[serde(default)]
     pub transport: BackendTransport,
-    /// `always`, `on-failure` (the default) or `never`.
+    /// When wheeld starts the process again after it ends unasked: `always`, `on-failure` (the
+    /// default: any end but exit status 0) or `never`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub restart: String,
+    /// Paths relative to the package folder (`*` matches any run of characters); a change to a
+    /// matching file restarts the process while it runs or waits to restart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watch: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1614,6 +1618,17 @@ pub enum ClientMsg {
         #[serde(default)]
         args: serde_json::Value,
     },
+    /// Restart plugin `plugin`'s backend (as resolved in `space`): wheeld stops its process (sends
+    /// `shutdown`, kills its process group after 1 s), starts a new one, or starts one when none
+    /// runs, and replays every feed a pane reads. Replies `ok` once the new process answered
+    /// `initialize`, or `error`. `PROTOCOL_VERSION` 38.
+    PluginRestart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        plugin: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
     /// The log of plugin `plugin`'s backend (as resolved in `space`), the last `tail` lines when
     /// given: its stderr (and stdout, over a unix socket) and its `log` messages. Replies
     /// `plugin_logs`. `PROTOCOL_VERSION` 36.
@@ -2485,7 +2500,9 @@ pub enum ServerMsg {
     },
     /// A change to a feed a pane reads (`feed_subscribe`): the whole new `value`, or `patch`, an
     /// RFC 6902 JSON Patch to apply to the value the pane holds. The reply to `feed_subscribe`
-    /// (with its `req`) always carries `value`. `PROTOCOL_VERSION` 36.
+    /// (with its `req`) always carries `value`. `stale: true` (with `value`, the last one the
+    /// backend sent) says the backend that publishes the feed is down; a `feed_update` without
+    /// `stale` is fresh. `PROTOCOL_VERSION` 36; `stale` 38.
     FeedUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -2497,6 +2514,8 @@ pub enum ServerMsg {
         value: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stale: bool,
     },
     /// The backend's answer to `plugin_action`: `result` is what its `action/invoke` returned.
     PluginAction {

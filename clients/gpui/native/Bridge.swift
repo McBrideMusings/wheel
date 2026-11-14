@@ -441,7 +441,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "feed_update":
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin, let feed = value["feed"] as? String else { return }
             if let req = value["req"] as? Int { feedReqs[req] = nil }
-            plugin.feedUpdate(feed: feed, params: value["params"], value: value["value"], patch: value["patch"])
+            plugin.feedUpdate(feed: feed, params: value["params"], value: value["value"], patch: value["patch"],
+                              stale: value["stale"] as? Bool ?? false)
         case "plugin_action":
             guard let req = value["req"] as? Int, let sent = actionReqs.removeValue(forKey: req) else { return }
             panes[sent.pane]?.plugin?.actionResult(action: sent.action, result: value["result"])

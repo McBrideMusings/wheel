@@ -46,6 +46,22 @@ import WheelKit
         #expect(pane.feedJSON == ["x.y {}": "{\"n\":7}"])
     }
 
+    @Test func aStaleUpdateKeepsTheValueAndTheScriptReadsTheFlag() {
+        let pane = PluginPane()
+        pane.load(source: """
+        return { view = function(state, data)
+            local v, stale = data.feed("x.y", {})
+            return ui.Text(tostring(if v == nil then "nil" else v.n) .. (if stale then " stale" else ""))
+        end }
+        """, chunk: "s.luau")
+        pane.feedUpdate(feed: "x.y", params: [String: Any](), value: ["n": 3], patch: nil)
+        #expect(texts(pane) == ["3"])
+        pane.feedUpdate(feed: "x.y", params: [String: Any](), value: ["n": 3], patch: nil, stale: true)
+        #expect(texts(pane) == ["3 stale"])
+        pane.feedUpdate(feed: "x.y", params: [String: Any](), value: nil, patch: [["op": "replace", "path": "/n", "value": 4]])
+        #expect(texts(pane) == ["4"], "the next update from the backend is fresh")
+    }
+
     @Test func aBadPatchSetsErrorAndReadsTheFeedAgain() {
         let calls = Calls()
         let pane = make(calls)

@@ -145,7 +145,7 @@ private func text(_ node: PaneNode) -> String? {
         var actions: [JSONValue] = []
         let host = PaneRuntime.Host(
             feed: { name, params in
-                name == "build" ? .object(["progress": .number(0.5), "target": params]) : .null
+                PaneRuntime.FeedRead(value: name == "build" ? .object(["progress": .number(0.5), "target": params]) : .null)
             },
             action: { name, args in actions.append(.array([.string(name), args])) })
         let pane = try PaneRuntime(source: """
@@ -165,7 +165,7 @@ private func text(_ node: PaneNode) -> String? {
     }
 
     @Test func aHostCallFromACoroutineReadsTheCoroutinesArguments() throws {
-        let host = PaneRuntime.Host(feed: { name, params in .string("\(name):\(params)") })
+        let host = PaneRuntime.Host(feed: { name, params in PaneRuntime.FeedRead(value: .string("\(name):\(params)")) })
         let pane = try PaneRuntime(source: """
         return { view = function(state, data)
             local co = coroutine.wrap(function(feedName) return data.feed(feedName, true) end)
@@ -173,6 +173,20 @@ private func text(_ node: PaneNode) -> String? {
         end }
         """, host: host)
         #expect(text(try pane.view()) == "log:bool(true)")
+    }
+
+    @Test func aFeedReadReturnsItsValueAndWhetherItIsStale() throws {
+        let host = PaneRuntime.Host(feed: { name, _ in
+            PaneRuntime.FeedRead(value: .string(name), stale: name == "down")
+        })
+        let pane = try PaneRuntime(source: """
+        return { view = function(state, data)
+            local up, upStale = data.feed("up")
+            local down, downStale = data.feed("down")
+            return ui.Text(up .. tostring(upStale) .. " " .. down .. tostring(downStale))
+        end }
+        """, host: host)
+        #expect(text(try pane.view()) == "upfalse downtrue")
     }
 
     @Test func aHostCallWithoutANameIsAScriptError() throws {

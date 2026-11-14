@@ -21,7 +21,7 @@ local function update(state, msg)
 end
 
 local function view(state, data)
-    local now = data.feed("clock.now", {})
+    local now, stale = data.feed("clock.now", {})
     local lines = data.feed("clock.lines", {})
     local spaces = data.feed("wheel.spaces", {})
     local tick = if now then now.tick else 0
@@ -30,7 +30,7 @@ local function view(state, data)
     local last = list[#list]
     return ui.Column{
         modifiers = { { padding = 16 } },
-        ui.Text{ text = "Tick " .. tostring(tick) .. " at " .. time, variant = "h2" },
+        ui.Text{ text = "Tick " .. tostring(tick) .. " at " .. time .. (if stale then " (stale)" else ""), variant = "h2" },
         ui.Text("Lines: " .. tostring(#list)),
         ui.Text("Last line: " .. (last or "none")),
         ui.Text("Spaces: " .. tostring(if spaces then #spaces else 0)),

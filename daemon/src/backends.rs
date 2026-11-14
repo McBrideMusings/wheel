@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use async_lsp::{ErrorCode, MainLoop, ResponseError, ServerSocket};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wheel_proto::{BackendInfo, BackendState, BackendTransport, PaneKind, PluginPaneInfo};
 
@@ -36,6 +37,18 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a backend has to leave after `shutdown` before its process group is killed.
 const STOP_GRACE: Duration = Duration::from_secs(1);
+
+/// The wait before the first restart after a process ends; it doubles per consecutive failure.
+const BACKOFF_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest wait before a restart.
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// A process that ran this long was healthy: the next end starts the backoff over.
+const STABLE_AFTER: Duration = Duration::from_secs(10);
+
+/// A change to a watched file restarts the backend once no matching change came for this long.
+const WATCH_QUIET: Duration = Duration::from_millis(300);
 
 /// The feeds wheeld itself publishes, named `wheel.<name>`.
 pub(crate) const BUILTIN_FEEDS: [&str; 3] = ["spaces", "panes", "agents"];
@@ -146,6 +159,8 @@ impl Notification for LogN {
 pub(crate) enum Update {
     Value(Value),
     Patch(Value),
+    /// The backend that publishes the feed is down: the last value, marked stale.
+    Stale(Value),
 }
 
 /// `params` as a key: a feed read with no params and with `{}` is one feed.
@@ -167,6 +182,8 @@ struct FeedKey {
 
 struct CellState {
     value: Value,
+    /// The backend that publishes the feed ended and has not sent an update since.
+    stale: bool,
     tx: broadcast::Sender<Update>,
     subscribers: usize,
 }
@@ -189,14 +206,14 @@ pub(crate) struct Hub {
 impl Hub {
     /// Subscribe to a feed. The first subscriber sends the source's current backend
     /// `feed/subscribe`, and for a built-in feed sets the value to `initial`. Returns the guard,
-    /// the value now and the changes after it.
+    /// the value now, whether it is stale and the changes after it.
     fn subscribe(
         self: &Arc<Self>,
         source: &str,
         feed: &str,
         params: &Value,
         initial: Option<Value>,
-    ) -> (Subscription, Value, broadcast::Receiver<Update>) {
+    ) -> (Subscription, Value, bool, broadcast::Receiver<Update>) {
         let key = FeedKey {
             source: source.to_string(),
             feed: feed.to_string(),
@@ -209,6 +226,7 @@ impl Hub {
                 Arc::new(Cell {
                     state: Mutex::new(CellState {
                         value: Value::Null,
+                        stale: false,
                         tx: broadcast::channel(256).0,
                         subscribers: 0,
                     }),
@@ -224,6 +242,7 @@ impl Hub {
             self.send_feed::<FeedSubscribe>(source, feed, params);
         }
         let value = state.value.clone();
+        let stale = state.stale;
         let rx = state.tx.subscribe();
         drop(state);
         drop(cells);
@@ -233,7 +252,7 @@ impl Hub {
             cell,
             params: params.clone(),
         };
-        (subscription, value, rx)
+        (subscription, value, stale, rx)
     }
 
     /// Tell the current backend of `source` about a feed; nothing when it has none running.
@@ -262,9 +281,23 @@ impl Hub {
         }
     }
 
-    /// A backend's `feed/update` for a feed: set or patch its value and tell its subscribers.
-    /// Dropped when nobody reads the feed.
+    /// An update with no backend instance behind it.
+    #[cfg(test)]
     fn apply(&self, source: &str, feed: &str, params: &Value, update: Update) -> Result<(), String> {
+        self.apply_from(None, source, feed, params, update)
+    }
+
+    /// A backend's `feed/update` for a feed: set or patch its value and tell its subscribers.
+    /// Dropped when nobody reads the feed, and when `from` (the instance that sent it) is no
+    /// longer the current backend of `source`: an instance that was replaced says nothing more.
+    fn apply_from(
+        &self,
+        from: Option<u64>,
+        source: &str,
+        feed: &str,
+        params: &Value,
+        update: Update,
+    ) -> Result<(), String> {
         let key = FeedKey {
             source: source.to_string(),
             feed: feed.to_string(),
@@ -274,7 +307,14 @@ impl Hub {
             return Ok(());
         };
         let mut state = cell.state.lock().unwrap();
+        if let Some(id) = from {
+            let current = self.live.lock().unwrap().get(source).is_some_and(|b| b.id == id);
+            if !current {
+                return Ok(());
+            }
+        }
         match &update {
+            Update::Stale(_) => return Ok(()),
             Update::Value(value) => state.value = value.clone(),
             Update::Patch(patch) => {
                 let patch: json_patch::Patch = serde_json::from_value(patch.clone())
@@ -285,8 +325,23 @@ impl Hub {
                 state.value = next;
             }
         }
+        state.stale = false;
         let _ = state.tx.send(update);
         Ok(())
+    }
+
+    /// The backend of `source` ended: each feed of it keeps its value, marked stale until the
+    /// next `feed/update`, and its subscribers are sent that value with the flag.
+    fn mark_stale(&self, source: &str) {
+        let cells = self.cells.lock().unwrap();
+        for (key, cell) in cells.iter() {
+            if key.source != source {
+                continue;
+            }
+            let mut state = cell.state.lock().unwrap();
+            state.stale = true;
+            let _ = state.tx.send(Update::Stale(state.value.clone()));
+        }
     }
 
     /// Whether any pane reads one of wheeld's own feeds.
@@ -321,11 +376,11 @@ pub(crate) struct Subscription {
 }
 
 impl Subscription {
-    /// The feed's value now and a receiver of the changes after it, taken under one lock, for a
-    /// reader that fell behind its receiver.
-    pub(crate) fn resync(&self) -> (Value, broadcast::Receiver<Update>) {
+    /// The feed's value now, whether it is stale, and a receiver of the changes after it, taken
+    /// under one lock, for a reader that fell behind its receiver.
+    pub(crate) fn resync(&self) -> (Value, bool, broadcast::Receiver<Update>) {
         let state = self.cell.state.lock().unwrap();
-        (state.value.clone(), state.tx.subscribe())
+        (state.value.clone(), state.stale, state.tx.subscribe())
     }
 
     /// The feed's value now.
@@ -415,11 +470,16 @@ fn pump(reader: impl AsyncRead + Unpin + Send + 'static, log: Log) {
 struct Handler {
     hub: Arc<Hub>,
     source: String,
+    /// The [`Backend::id`] of the instance this connection belongs to.
+    instance: u64,
     log: Log,
 }
 
 /// One backend instance: its process and what it told `initialize`.
 pub(crate) struct Backend {
+    /// Which instance this is: no two share one, so a connection can tell whether it still
+    /// belongs to its package's current backend.
+    id: u64,
     plugin: String,
     info: Mutex<BackendInfo>,
     state: watch::Sender<BackendState>,
@@ -429,7 +489,21 @@ pub(crate) struct Backend {
     deadline: Instant,
 }
 
+static NEXT_BACKEND: AtomicU64 = AtomicU64::new(1);
+
 impl Backend {
+    fn new(plugin: String, info: BackendInfo) -> Backend {
+        Backend {
+            id: NEXT_BACKEND.fetch_add(1, Ordering::SeqCst),
+            plugin,
+            state: watch::channel(info.state).0,
+            info: Mutex::new(info),
+            socket: Mutex::new(None),
+            pgid: Mutex::new(None),
+            deadline: Instant::now() + START_TIMEOUT,
+        }
+    }
+
     fn set(&self, change: impl FnOnce(&mut BackendInfo)) {
         let mut info = self.info.lock().unwrap();
         change(&mut info);
@@ -446,18 +520,24 @@ impl Backend {
         }
     }
 
-    /// Tell the backend to exit, then kill its process group when it has not within the grace.
-    async fn stop(&self) {
-        if let Some(socket) = self.socket.lock().unwrap().clone() {
-            let _ = socket.notify::<Shutdown>(());
+    /// Tell the backend to exit, then kill its process group when its process has not ended
+    /// within the grace. A backend with no connection yet (still starting) was never told it
+    /// can shut down, so its group is killed at once. Returns how the process ended.
+    async fn stop(&self, handle: &mut tokio::task::JoinHandle<Ended>) -> Ended {
+        let socket = self.socket.lock().unwrap().clone();
+        match socket {
+            Some(socket) => {
+                let _ = socket.notify::<Shutdown>(());
+            }
+            None => self.kill(),
         }
-        let mut state = self.state.subscribe();
-        let _ = tokio::time::timeout(
-            STOP_GRACE,
-            state.wait_for(|s| matches!(s, BackendState::Exited)),
-        )
-        .await;
+        let first = tokio::time::timeout(STOP_GRACE, &mut *handle).await;
         self.kill();
+        let joined = match first {
+            Ok(joined) => joined,
+            Err(_) => handle.await,
+        };
+        joined.unwrap_or_else(|e| Ended::failed(format!("its task failed: {e}")))
     }
 
     /// SIGKILL the process group this backend started, while it is recorded: the whole group, so
@@ -477,7 +557,69 @@ impl Backend {
     }
 }
 
+/// When wheeld starts a backend's process again after it ends without wheeld asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Policy {
+    Always,
+    OnFailure,
+    Never,
+}
+
+impl Policy {
+    /// The manifest's `restart` value; the manifest parser has refused any other.
+    fn parse(name: &str) -> Policy {
+        match name {
+            "always" => Policy::Always,
+            "never" => Policy::Never,
+            _ => Policy::OnFailure,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Policy::Always => "always",
+            Policy::OnFailure => "on-failure",
+            Policy::Never => "never",
+        }
+    }
+
+    /// Whether a process that ended with exit status `code` (`None`: a signal, or it never
+    /// started) is started again.
+    fn restarts(self, code: Option<i32>) -> bool {
+        match self {
+            Policy::Always => true,
+            Policy::OnFailure => code != Some(0),
+            Policy::Never => false,
+        }
+    }
+}
+
+/// The wait before restart number `failures` in a row (1 is the first): 1 s, doubling, at most
+/// 30 s.
+fn backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(5);
+    (BACKOFF_FIRST * (1u32 << doublings)).min(BACKOFF_MAX)
+}
+
+/// How a process ended, and its exit status when it exited.
+struct Ended {
+    why: String,
+    code: Option<i32>,
+}
+
+impl Ended {
+    fn failed(why: impl Into<String>) -> Ended {
+        Ended { why: why.into(), code: None }
+    }
+
+    fn status(status: std::io::Result<std::process::ExitStatus>) -> Ended {
+        let code = status.as_ref().ok().and_then(std::process::ExitStatus::code);
+        Ended { why: exit_reason(status), code }
+    }
+}
+
 /// What a backend instance is started from.
+#[derive(Clone)]
 struct Spec {
     /// The package key the backend's feeds are filed under in the hub.
     key: String,
@@ -489,13 +631,48 @@ struct Spec {
     path: String,
     socket: PathBuf,
     log: Log,
+    /// The manifest's `[backend]`, which the instance reports until it says more.
+    declared: BackendInfo,
+    /// The package folder watched for `declared.watch`; none for a built-in package.
+    watch_dir: Option<PathBuf>,
+}
+
+/// What a request to a supervisor answers: the instance, or why there is none.
+type Reply = oneshot::Sender<Result<Arc<Backend>, String>>;
+
+/// A request to a package's supervisor.
+enum Cmd {
+    /// Reply with the running instance. Starts one when none runs and none waits to restart; an
+    /// instance that waits to restart is refused with the time left, the wait is never skipped.
+    Ensure { spec: Box<Spec>, reply: Reply },
+    /// Stop the running instance if any, start a new one at once and reply with it.
+    Restart {
+        spec: Box<Spec>,
+        reason: String,
+        reply: Reply,
+    },
+    /// wheeld is stopping: stop the instance, and end.
+    Quit(oneshot::Sender<()>),
+}
+
+/// A package's supervisor: one task per package that starts its process, starts it again by the
+/// restart policy, a watched file or a request, and so never lets two run at once.
+struct Slot {
+    cmd: mpsc::UnboundedSender<Cmd>,
+    log: Log,
 }
 
 /// Every backend wheeld started, by package key, and the feeds they and wheeld publish.
 #[derive(Default)]
 pub(crate) struct Backends {
     pub(crate) hub: Arc<Hub>,
+    slots: Mutex<HashMap<String, Arc<Slot>>>,
+    /// Set, under the `slots` lock, when wheeld is stopping: no supervisor or process is started
+    /// again.
+    closing: Arc<AtomicBool>,
 }
+
+const STOPPING: &str = "wheeld is stopping";
 
 fn exit_reason(status: std::io::Result<std::process::ExitStatus>) -> String {
     use std::os::unix::process::ExitStatusExt;
@@ -509,21 +686,391 @@ fn exit_reason(status: std::io::Result<std::process::ExitStatus>) -> String {
     }
 }
 
-/// Run one backend instance until its process ends, and record how it ended.
-async fn run(backend: Arc<Backend>, hub: Arc<Hub>, spec: Spec) {
-    let why = serve(&backend, &hub, &spec).await;
-    spec.log.message("info", &format!("backend stopped: {why}"));
-    backend.set(|i| {
-        i.state = BackendState::Exited;
-        i.pid = None;
-        i.error = Some(why);
-    });
-    backend.socket.lock().unwrap().take();
+/// The process of a running instance.
+struct Running {
+    backend: Arc<Backend>,
+    handle: tokio::task::JoinHandle<Ended>,
+    started: Instant,
+}
+
+/// The state of one package's supervisor.
+struct Sup {
+    hub: Arc<Hub>,
+    closing: Arc<AtomicBool>,
+    log: Log,
+    rx: mpsc::UnboundedReceiver<Cmd>,
+    /// What the last instance was started from, which a restart without a request reuses.
+    spec: Option<Spec>,
+    running: Option<Running>,
+    /// When the instance that ended is started again.
+    wait: Option<tokio::time::Instant>,
+    /// Why the wait runs: how the process ended, or the file that changed.
+    wait_why: String,
+    /// When the last process was started.
+    last_launch: Option<Instant>,
+    /// Consecutive failures, which set the wait.
+    failures: u32,
+    watch_tx: mpsc::UnboundedSender<String>,
+    watch_rx: mpsc::UnboundedReceiver<String>,
+    watcher: Option<notify::RecommendedWatcher>,
+    /// A change to a watched file, and when it restarts the backend.
+    debounce: Option<(tokio::time::Instant, String)>,
+}
+
+/// What a supervisor wakes for.
+enum Event {
+    Cmd(Option<Cmd>),
+    Ended(Ended),
+    Wait,
+    Changed(String),
+    Quiet,
+}
+
+async fn supervise(mut sup: Sup) {
+    loop {
+        let event = {
+            let running = &mut sup.running;
+            let ended = async {
+                match running {
+                    Some(r) => (&mut r.handle).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let waiting = async {
+                match sup.wait {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let quiet = async {
+                match &sup.debounce {
+                    Some((at, _)) => tokio::time::sleep_until(*at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                cmd = sup.rx.recv() => Event::Cmd(cmd),
+                joined = ended => Event::Ended(
+                    joined.unwrap_or_else(|e| Ended::failed(format!("its task failed: {e}")))
+                ),
+                () = waiting => Event::Wait,
+                Some(file) = sup.watch_rx.recv() => Event::Changed(file),
+                () = quiet => Event::Quiet,
+            }
+        };
+        match event {
+            Event::Cmd(None) => return,
+            Event::Cmd(Some(Cmd::Quit(ack))) => {
+                sup.wait = None;
+                sup.debounce = None;
+                sup.halt().await;
+                let _ = ack.send(());
+                return;
+            }
+            Event::Cmd(Some(Cmd::Ensure { spec, reply })) => {
+                if sup.closing.load(Ordering::SeqCst) {
+                    let _ = reply.send(Err(STOPPING.into()));
+                    continue;
+                }
+                sup.settle_ended().await;
+                let answer = match (&sup.running, sup.wait) {
+                    (Some(r), _) => Ok(r.backend.clone()),
+                    (None, Some(at)) => Err(format!(
+                        "backend of {} is restarting in {} s: {}",
+                        spec.plugin,
+                        remaining_secs(at.saturating_duration_since(tokio::time::Instant::now())),
+                        sup.wait_why
+                    )),
+                    (None, None) => {
+                        sup.failures = 0;
+                        Ok(sup.launch(*spec))
+                    }
+                };
+                let _ = reply.send(answer);
+            }
+            Event::Cmd(Some(Cmd::Restart { mut spec, reason, reply })) => {
+                if sup.closing.load(Ordering::SeqCst) {
+                    let _ = reply.send(Err(STOPPING.into()));
+                    continue;
+                }
+                sup.log.message("info", &reason);
+                if let Some(last) = &sup.spec {
+                    spec.space_dir = last.space_dir.clone();
+                }
+                let backend = sup.relaunch(Some(*spec)).await;
+                let _ = reply.send(Ok(backend));
+            }
+            Event::Ended(ended) => {
+                if let Some(r) = sup.running.take() {
+                    sup.lost(r.backend, r.started, ended);
+                }
+            }
+            Event::Wait => {
+                sup.wait = None;
+                match sup.refresh() {
+                    Ok(()) => {
+                        if let Some(spec) = sup.spec.clone() {
+                            sup.launch(spec);
+                        }
+                    }
+                    Err(reason) => sup.refuse(&reason),
+                }
+            }
+            Event::Changed(file) => {
+                let patterns = sup.spec.as_ref().map(|s| s.declared.watch.clone()).unwrap_or_default();
+                if patterns.iter().any(|p| crate::plugins::glob_match(p, &file)) {
+                    sup.debounce = Some((tokio::time::Instant::now() + WATCH_QUIET, file));
+                }
+            }
+            Event::Quiet => {
+                let Some((_, file)) = sup.debounce.take() else { continue };
+                // A backend that never started has nothing to restart; one that started and
+                // exited is started again too.
+                if sup.spec.is_none() {
+                    continue;
+                }
+                if let Err(reason) = sup.refresh() {
+                    sup.refuse(&reason);
+                    continue;
+                }
+                // A change while a restart already waits restarts at once: that end was counted.
+                let counted = if sup.wait.is_some() {
+                    None
+                } else {
+                    watch_restart(sup.last_launch.map(|t| t.elapsed()), sup.failures)
+                };
+                match counted {
+                    Some((failures, delay)) => {
+                        sup.halt().await;
+                        sup.failures = failures;
+                        let secs = remaining_secs(delay);
+                        sup.log.message("info", &format!("restarting in {secs} s: {file} changed"));
+                        sup.arm(delay, format!("{file} changed"), format!("{file} changed; restarting in {secs} s"));
+                    }
+                    None => {
+                        sup.log.message("info", &format!("restarting: {file} changed"));
+                        sup.relaunch(None).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whole seconds of `d`, rounded up, at least 1: what a message says is left to wait.
+fn remaining_secs(d: Duration) -> u64 {
+    d.as_millis().div_ceil(1000).max(1) as u64
+}
+
+/// A change to a watched file restarts the backend. One within [`STABLE_AFTER`] of the previous
+/// launch counts as a failure, so a backend that rewrites its own watched file is slowed to the
+/// backoff schedule: `Some((failures now, wait))`. Otherwise the backoff starts over: `None`.
+fn watch_restart(since_launch: Option<Duration>, failures: u32) -> Option<(u32, Duration)> {
+    match since_launch {
+        Some(ago) if ago < STABLE_AFTER => {
+            let failures = failures.saturating_add(1);
+            Some((failures, backoff(failures)))
+        }
+        _ => None,
+    }
+}
+
+/// `old` run from the manifest text `text`: its command, transport and `[backend]` keys are the
+/// manifest's now. Fails when the manifest does not parse or has no `[backend]`.
+fn spec_from_manifest(old: &Spec, text: &str) -> Result<Spec, String> {
+    let manifest = crate::plugins::parse_manifest(text)?;
+    let Some(declared) = manifest.backend else {
+        return Err(format!("{} has no [backend]", crate::plugins::MANIFEST));
+    };
+    Ok(Spec {
+        command: declared.command.clone(),
+        transport: declared.transport,
+        declared,
+        ..old.clone()
+    })
+}
+
+impl Sup {
+    /// Start a process from `spec`, which the next restart reuses. Starts the watch on the
+    /// package folder the first time.
+    fn launch(&mut self, spec: Spec) -> Arc<Backend> {
+        self.wait = None;
+        let backend = Arc::new(Backend::new(
+            spec.plugin.clone(),
+            BackendInfo {
+                state: BackendState::Starting,
+                log: Some(spec.log.path.display().to_string()),
+                ..spec.declared.clone()
+            },
+        ));
+        spec.log.message("info", &format!("starting `{}`", spec.command));
+        self.hub.live.lock().unwrap().insert(spec.key.clone(), backend.clone());
+        let handle = {
+            let (backend, hub, spec) = (backend.clone(), self.hub.clone(), spec.clone());
+            tokio::spawn(async move { serve(&backend, &hub, &spec).await })
+        };
+        let started = Instant::now();
+        self.last_launch = Some(started);
+        self.running = Some(Running {
+            backend: backend.clone(),
+            handle,
+            started,
+        });
+        self.spec = Some(spec);
+        self.watch_folder();
+        backend
+    }
+
+    /// Stop the running process, if any, and start another from `spec`, or the last one's:
+    /// a request or a changed file, so the failures start over.
+    async fn relaunch(&mut self, spec: Option<Spec>) -> Arc<Backend> {
+        self.halt().await;
+        self.failures = 0;
+        self.debounce = None;
+        let spec = spec.or_else(|| self.spec.clone()).expect("a restart follows a start");
+        self.launch(spec)
+    }
+
+    /// Read the package's manifest again and make the next process from it: command, transport,
+    /// restart policy and watch patterns. A built-in package has no folder and keeps its spec.
+    /// Fails with the reason when the manifest cannot be read, does not parse or has no
+    /// `[backend]`; the spec is then left as it was.
+    fn refresh(&mut self) -> Result<(), String> {
+        let Some(spec) = &self.spec else { return Ok(()) };
+        let Some(dir) = &spec.watch_dir else { return Ok(()) };
+        let path = dir.join(crate::plugins::MANIFEST);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let next = spec_from_manifest(spec, &text)?;
+        self.spec = Some(next);
+        self.watch_folder();
+        Ok(())
+    }
+
+    /// The instance last started, running or exited.
+    fn current(&self) -> Option<Arc<Backend>> {
+        let key = &self.spec.as_ref()?.key;
+        self.hub.live.lock().unwrap().get(key).cloned()
+    }
+
+    /// An automatic restart is not made: say why in the log and in the instance's `error`.
+    fn refuse(&mut self, reason: &str) {
+        self.wait = None;
+        self.log.message("warn", &format!("not restarted: {reason}"));
+        if let Some(backend) = self.current() {
+            backend.set(|i| i.error = Some(format!("not restarted: {reason}")));
+        }
+    }
+
+    /// Start the process again in `delay`: `why` is what a request meanwhile is told, `error`
+    /// what the instance reports.
+    fn arm(&mut self, delay: Duration, why: String, error: String) {
+        self.wait = Some(tokio::time::Instant::now() + delay);
+        self.wait_why = why;
+        if let Some(backend) = self.current() {
+            backend.set(|i| i.error = Some(error));
+        }
+    }
+
+    /// Stop the running process, if any, and record that it ended because wheeld asked.
+    async fn halt(&mut self) {
+        self.wait = None;
+        if let Some(mut r) = self.running.take() {
+            let ended = r.backend.stop(&mut r.handle).await;
+            self.finish(&r.backend, &ended, ended.why.clone());
+        }
+    }
+
+    /// A process that ended on its own is waiting in the handle: take it as `lost`.
+    async fn settle_ended(&mut self) {
+        if self.running.as_ref().is_some_and(|r| r.handle.is_finished()) {
+            if let Some(mut r) = self.running.take() {
+                let ended = (&mut r.handle)
+                    .await
+                    .unwrap_or_else(|e| Ended::failed(format!("its task failed: {e}")));
+                self.lost(r.backend, r.started, ended);
+            }
+        }
+    }
+
+    /// The process ended: its feeds go stale, its connection goes, and the instance is `exited`
+    /// with `error` saying how and what happens next.
+    fn finish(&self, backend: &Backend, ended: &Ended, error: String) {
+        let key = self.spec.as_ref().map(|s| s.key.clone()).unwrap_or_default();
+        self.log.message("info", &format!("backend stopped: {}", ended.why));
+        backend.socket.lock().unwrap().take();
+        self.hub.mark_stale(&key);
+        backend.set(|i| {
+            i.state = BackendState::Exited;
+            i.pid = None;
+            i.error = Some(error);
+        });
+    }
+
+    /// The process ended without wheeld asking: start it again after the backoff, or say it is not
+    /// restarted, by the policy.
+    fn lost(&mut self, backend: Arc<Backend>, started: Instant, ended: Ended) {
+        if self.closing.load(Ordering::SeqCst) {
+            self.finish(&backend, &ended, ended.why.clone());
+            return;
+        }
+        let policy = Policy::parse(&backend.info.lock().unwrap().restart);
+        if started.elapsed() >= STABLE_AFTER {
+            self.failures = 0;
+        }
+        if !policy.restarts(ended.code) {
+            let error = format!("{}; not restarted (restart = {})", ended.why, policy.name());
+            self.finish(&backend, &ended, error);
+            return;
+        }
+        self.failures += 1;
+        let delay = backoff(self.failures);
+        let secs = remaining_secs(delay);
+        self.finish(&backend, &ended, format!("{}; restarting in {secs} s", ended.why));
+        self.log
+            .message("info", &format!("restarting in {secs} s after: {}", ended.why));
+        self.wait = Some(tokio::time::Instant::now() + delay);
+        self.wait_why = ended.why;
+    }
+
+    /// Watch the package folder for the files `watch` names, once, when the first process starts.
+    fn watch_folder(&mut self) {
+        let Some(spec) = &self.spec else { return };
+        let Some(dir) = spec.watch_dir.clone() else { return };
+        if self.watcher.is_some() || spec.declared.watch.is_empty() {
+            return;
+        }
+        let base = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let tx = self.watch_tx.clone();
+        let root = base.clone();
+        let made = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let Ok(event) = event else { return };
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
+            for path in &event.paths {
+                if let Ok(rel) = path.strip_prefix(&root) {
+                    let _ = tx.send(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        });
+        let result = made.map_err(|e| e.to_string()).and_then(|mut w| {
+            notify::Watcher::watch(&mut w, &base, notify::RecursiveMode::Recursive)
+                .map(|()| w)
+                .map_err(|e| e.to_string())
+        });
+        match result {
+            Ok(w) => self.watcher = Some(w),
+            Err(e) => self
+                .log
+                .message("warn", &format!("cannot watch {}: {e}", base.display())),
+        }
+    }
 }
 
 /// Start the process, connect, `initialize`, then keep the connection until either side ends.
 /// Returns why it ended.
-async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> String {
+async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
     let mut command = tokio::process::Command::new("/bin/sh");
     command
         .arg("-c")
@@ -551,13 +1098,13 @@ async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> String {
                     command.stdin(Stdio::null()).env("WHEEL_PLUGIN_SOCKET", &spec.socket);
                     Some(l)
                 }
-                Err(e) => return format!("could not bind {}: {e}", spec.socket.display()),
+                Err(e) => return Ended::failed(format!("could not bind {}: {e}", spec.socket.display())),
             }
         }
     };
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(e) => return format!("could not start `{}`: {e}", spec.command),
+        Err(e) => return Ended::failed(format!("could not start `{}`: {e}", spec.command)),
     };
     let pid = child.id();
     *backend.pgid.lock().unwrap() = pid;
@@ -577,7 +1124,7 @@ async fn drive(
     spec: &Spec,
     child: &mut tokio::process::Child,
     listener: Option<tokio::net::UnixListener>,
-) -> String {
+) -> Ended {
     let stderr = child.stderr.take().expect("stderr is piped");
     pump(stderr, spec.log.clone());
     let stdout = child.stdout.take().expect("stdout is piped");
@@ -585,6 +1132,7 @@ async fn drive(
     let handler = Handler {
         hub: hub.clone(),
         source: spec.key.clone(),
+        instance: backend.id,
         log: spec.log.clone(),
     };
     let (main, server) = match listener {
@@ -599,7 +1147,8 @@ async fn drive(
                 accepted = tokio::time::timeout_at(deadline, listener.accept()) => accepted,
                 status = child.wait() => {
                     let _ = std::fs::remove_file(&spec.socket);
-                    return format!("{} before it connected to its socket", exit_reason(status));
+                    let ended = Ended::status(status);
+                    return Ended { why: format!("{} before it connected to its socket", ended.why), code: ended.code };
                 }
             };
             let _ = std::fs::remove_file(&spec.socket);
@@ -608,14 +1157,18 @@ async fn drive(
                     let (read, write) = stream.into_split();
                     connect(read, write, handler)
                 }
-                Ok(Err(e)) => return format!("its socket failed: {e}"),
+                Ok(Err(e)) => return Ended::failed(format!("its socket failed: {e}")),
                 Err(_) => {
-                    return format!("did not connect to its socket within {} s", START_TIMEOUT.as_secs())
+                    return Ended::failed(format!(
+                        "did not connect to its socket within {} s",
+                        START_TIMEOUT.as_secs()
+                    ))
                 }
             }
         }
     };
-    let mut main = main;
+    // The connection's loop ends with this function, whichever way it returns.
+    let mut main = AbortOnDrop(main);
 
     let params = InitializeParams {
         wheel_version: env!("CARGO_PKG_VERSION").into(),
@@ -628,7 +1181,10 @@ async fn drive(
     );
     let initialized = tokio::select! {
         init = init => init,
-        status = child.wait() => return format!("{} before it answered initialize", exit_reason(status)),
+        status = child.wait() => {
+            let ended = Ended::status(status);
+            return Ended { why: format!("{} before it answered initialize", ended.why), code: ended.code };
+        }
     };
     match initialized {
         Ok(Ok(result)) => {
@@ -641,27 +1197,49 @@ async fn drive(
             });
         }
         Ok(Err(e)) => {
-            return format!("initialize failed: {e}");
+            // A closed connection is often a process that has exited: its status decides whether
+            // the restart policy starts it again.
+            if !matches!(e, async_lsp::Error::Response(_)) {
+                if let Ok(status) = tokio::time::timeout(STOP_GRACE, child.wait()).await {
+                    let ended = Ended::status(status);
+                    return Ended {
+                        why: format!("{} before it answered initialize", ended.why),
+                        code: ended.code,
+                    };
+                }
+            }
+            return Ended::failed(format!("initialize failed: {e}"));
         }
         Err(_) => {
-            return format!("did not answer initialize within {} s", START_TIMEOUT.as_secs());
+            return Ended::failed(format!("did not answer initialize within {} s", START_TIMEOUT.as_secs()));
         }
     }
 
     tokio::select! {
-        status = child.wait() => exit_reason(status),
-        ended = &mut main => {
+        status = child.wait() => Ended::status(status),
+        ended = &mut main.0 => {
             let how = match ended {
                 Ok(Ok(())) => "closed its connection".to_string(),
                 Ok(Err(e)) => format!("its connection failed: {e}"),
                 Err(e) => format!("its connection task failed: {e}"),
             };
-            let status = match tokio::time::timeout(STOP_GRACE, child.wait()).await {
-                Ok(status) => exit_reason(status),
-                Err(_) => "was killed".into(),
-            };
-            format!("{how}; it {status}")
+            match tokio::time::timeout(STOP_GRACE, child.wait()).await {
+                Ok(status) => {
+                    let ended = Ended::status(status);
+                    Ended { why: format!("{how}; it {}", ended.why), code: ended.code }
+                }
+                Err(_) => Ended::failed(format!("{how}; it was killed")),
+            }
         }
+    }
+}
+
+/// Aborts its task when dropped.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -718,81 +1296,112 @@ fn feed_update(handler: &Handler, params: &Value) -> Result<(), String> {
         (None, Some(patch)) => Update::Patch(patch.clone()),
         _ => return Err(format!("feed/update for {feed} needs one of value and patch")),
     };
-    handler.hub.apply(&handler.source, feed, &feed_params, update)
+    handler
+        .hub
+        .apply_from(Some(handler.instance), &handler.source, feed, &feed_params, update)
 }
 
 impl Backends {
+    /// The supervisor of `package`, started if the package has none: its log is opened once, so
+    /// every process of the package appends through one handle.
+    fn slot(&self, state: &AppState, package: &Package) -> Result<Arc<Slot>, String> {
+        let key = package.key();
+        let mut slots = self.slots.lock().unwrap();
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(STOPPING.into());
+        }
+        if let Some(slot) = slots.get(&key) {
+            return Ok(slot.clone());
+        }
+        let log_path = state.plugin_log_path(&package.info.id);
+        let log = Log::open(&log_path).map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
+        let (cmd, rx) = mpsc::unbounded_channel();
+        let (watch_tx, watch_rx) = mpsc::unbounded_channel();
+        tokio::spawn(supervise(Sup {
+            hub: self.hub.clone(),
+            closing: self.closing.clone(),
+            log: log.clone(),
+            rx,
+            spec: None,
+            running: None,
+            wait: None,
+            wait_why: String::new(),
+            last_launch: None,
+            failures: 0,
+            watch_tx,
+            watch_rx,
+            watcher: None,
+            debounce: None,
+        }));
+        let slot = Arc::new(Slot { cmd, log });
+        slots.insert(key, slot.clone());
+        Ok(slot)
+    }
+
+    /// What `package` is started from, run for the space directory `space_dir`.
+    fn spec(&self, state: &AppState, package: &Package, slot: &Slot, space_dir: &str) -> Result<Spec, String> {
+        let Some(declared) = package.info.backend.clone() else {
+            return Err(format!("plugin {} has no [backend]", package.info.id));
+        };
+        let key = package.key();
+        Ok(Spec {
+            plugin: package.info.id.clone(),
+            command: declared.command.clone(),
+            transport: declared.transport,
+            dir: package
+                .dir()
+                .map_or_else(|| state.instance_dir.clone(), Path::to_path_buf),
+            space_dir: space_dir.to_string(),
+            path: state.path(),
+            socket: socket_path(&state.instance_dir, &key),
+            log: slot.log.clone(),
+            watch_dir: package.dir().map(Path::to_path_buf),
+            declared,
+            key,
+        })
+    }
+
     /// The running instance for `package`, started if there is none or it exited, once it has
-    /// answered `initialize`. `space_dir` is the space that read the feed.
+    /// answered `initialize`. `space_dir` is the space that read the feed. An instance that waits
+    /// to restart is refused with the time left; one that ended and is not restarted by the
+    /// policy is started again.
     pub(crate) async fn ensure(
         &self,
         state: &AppState,
         package: &Package,
         space_dir: &str,
     ) -> Result<Arc<Backend>, String> {
-        let key = package.key();
-        let Some(declared) = package.info.backend.clone() else {
-            return Err(format!("plugin {} has no [backend]", package.info.id));
-        };
-        let backend = {
-            let mut map = self.hub.live.lock().unwrap();
-            match map.get(&key) {
-                Some(b) if !matches!(*b.state.borrow(), BackendState::Exited) => b.clone(),
-                _ => {
-                    let log_path = state.plugin_log_path(&package.info.id);
-                    let log = Log::open(&log_path)
-                        .map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
-                    let dir = package
-                        .dir()
-                        .map_or_else(|| state.instance_dir.clone(), Path::to_path_buf);
-                    let backend = Arc::new(Backend {
-                        plugin: package.info.id.clone(),
-                        info: Mutex::new(BackendInfo {
-                            state: BackendState::Starting,
-                            log: Some(log_path.display().to_string()),
-                            ..declared.clone()
-                        }),
-                        state: watch::channel(BackendState::Starting).0,
-                        socket: Mutex::new(None),
-                        pgid: Mutex::new(None),
-                        deadline: Instant::now() + START_TIMEOUT,
-                    });
-                    let spec = Spec {
-                        key: key.clone(),
-                        plugin: package.info.id.clone(),
-                        command: declared.command.clone(),
-                        transport: declared.transport,
-                        dir,
-                        space_dir: space_dir.to_string(),
-                        path: state.path(),
-                        socket: socket_path(&state.instance_dir, &key),
-                        log,
-                    };
-                    spec.log.message("info", &format!("starting `{}`", spec.command));
-                    tokio::spawn(run(backend.clone(), self.hub.clone(), spec));
-                    map.insert(key, backend.clone());
-                    backend
-                }
-            }
-        };
-        let mut watcher = backend.state.subscribe();
-        // The start's own deadline, which `serve` enforces, and the time to record how it failed.
-        let settled = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(backend.deadline) + STOP_GRACE * 2,
-            watcher.wait_for(|s| !matches!(s, BackendState::Starting)),
-        )
-        .await
-        .is_ok();
-        let info = backend.info.lock().unwrap().clone();
-        match (settled, info.state) {
-            (true, BackendState::Running) => Ok(backend),
-            (_, BackendState::Starting) => Err(format!("backend of {} did not start in time", backend.plugin)),
-            _ => Err(format!(
-                "backend of {} is not running: {}",
-                backend.plugin,
-                info.error.unwrap_or_else(|| "it stopped".into())
-            )),
-        }
+        let slot = self.slot(state, package)?;
+        let spec = self.spec(state, package, &slot, space_dir)?;
+        let (reply, answer) = oneshot::channel();
+        slot.cmd
+            .send(Cmd::Ensure { spec: Box::new(spec), reply })
+            .map_err(|_| STOPPING.to_string())?;
+        let backend = answer.await.map_err(|_| STOPPING.to_string())??;
+        settle(backend).await
+    }
+
+    /// Stop the instance of `package` if one runs and start a new one, or start one when none
+    /// does, once it has answered `initialize`. `space_dir` is used only when the package never
+    /// started before; a restart runs in the space the package last started with.
+    pub(crate) async fn restart(
+        &self,
+        state: &AppState,
+        package: &Package,
+        space_dir: &str,
+    ) -> Result<(), String> {
+        let slot = self.slot(state, package)?;
+        let spec = self.spec(state, package, &slot, space_dir)?;
+        let (reply, answer) = oneshot::channel();
+        slot.cmd
+            .send(Cmd::Restart {
+                spec: Box::new(spec),
+                reason: "restart requested".into(),
+                reply,
+            })
+            .map_err(|_| STOPPING.to_string())?;
+        let backend = answer.await.map_err(|_| STOPPING.to_string())??;
+        settle(backend).await.map(|_| ())
     }
 
     /// `info` with what the running instance of the package keyed `key` says of itself.
@@ -808,10 +1417,42 @@ impl Backends {
         }
     }
 
-    /// Ask every backend to exit and kill the ones that do not: wheeld is stopping.
+    /// Ask every backend to exit and kill the ones that do not, and end every supervisor: wheeld
+    /// is stopping, so nothing starts again.
     pub(crate) async fn stop_all(&self) {
-        let all: Vec<Arc<Backend>> = self.hub.live.lock().unwrap().values().cloned().collect();
-        futures_util::future::join_all(all.iter().map(|b| b.stop())).await;
+        // Set under the lock `slot` reads it under, so no supervisor is made after this list.
+        let slots: Vec<Arc<Slot>> = {
+            let slots = self.slots.lock().unwrap();
+            self.closing.store(true, Ordering::SeqCst);
+            slots.values().cloned().collect()
+        };
+        let acks = slots.iter().filter_map(|slot| {
+            let (ack, done) = oneshot::channel();
+            slot.cmd.send(Cmd::Quit(ack)).ok().map(|()| done)
+        });
+        futures_util::future::join_all(acks.collect::<Vec<_>>()).await;
+    }
+}
+
+/// Wait for a started instance to answer `initialize`, or fail with how it did not.
+async fn settle(backend: Arc<Backend>) -> Result<Arc<Backend>, String> {
+    let mut watcher = backend.state.subscribe();
+    // The start's own deadline, which `serve` enforces, and the time to record how it failed.
+    let settled = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(backend.deadline) + STOP_GRACE * 2,
+        watcher.wait_for(|s| !matches!(s, BackendState::Starting)),
+    )
+    .await
+    .is_ok();
+    let info = backend.info.lock().unwrap().clone();
+    match (settled, info.state) {
+        (true, BackendState::Running) => Ok(backend),
+        (_, BackendState::Starting) => Err(format!("backend of {} did not start in time", backend.plugin)),
+        _ => Err(format!(
+            "backend of {} is not running: {}",
+            backend.plugin,
+            info.error.unwrap_or_else(|| "it stopped".into())
+        )),
     }
 }
 
@@ -1032,13 +1673,13 @@ impl AppState {
 
     /// Read feed `feed` (`<plugin>.<name>`, or `wheel.<name>`) for plugin pane `pane`: starts the
     /// plugin's backend if it is not running. Refused unless the pane's `reads` match the feed.
-    /// Returns the subscription, the value now and the changes after it.
+    /// Returns the subscription, the value now, whether it is stale and the changes after it.
     pub(crate) async fn feed_subscribe(
         &self,
         pane: &str,
         feed: &str,
         params: &Value,
-    ) -> Result<(Subscription, Value, broadcast::Receiver<Update>), String> {
+    ) -> Result<(Subscription, Value, bool, broadcast::Receiver<Update>), String> {
         let ctx = self.feed_grant(pane, feed).await?;
         let cwd = ctx.cwd.clone();
         let (plugin, name) = feed
@@ -1160,6 +1801,29 @@ impl AppState {
         Ok((path.display().to_string(), text))
     }
 
+    /// Restart plugin `plugin`'s backend (as resolved in `space`): stop its process if one runs
+    /// and start a new one, or start one when none does. Returns once the new process answered
+    /// `initialize`.
+    pub(crate) async fn plugin_restart(&self, plugin: &str, space: Option<&str>) -> Result<(), String> {
+        let cwd = self.settings_space(space)?.map(|(_, cwd)| cwd);
+        let package = {
+            let state = self.me.upgrade().ok_or("wheeld is stopping")?;
+            let (cwd, plugin) = (cwd.clone(), plugin.to_string());
+            tokio::task::spawn_blocking(move || {
+                let packages = crate::plugins::discover(cwd.as_deref(), &state.machine_plugins());
+                crate::plugins::resolve(&packages, &plugin).cloned()
+            })
+            .await
+            .map_err(|e| format!("plugin lookup failed: {e}"))??
+        };
+        if package.info.backend.is_none() {
+            return Err(format!("plugin {plugin} has no [backend]"));
+        }
+        self.backends
+            .restart(self, &package, cwd.as_deref().unwrap_or_default())
+            .await
+    }
+
     /// Ask every plugin backend to exit; wheeld is stopping.
     pub async fn stop_backends(&self) {
         self.backends.stop_all().await;
@@ -1170,14 +1834,14 @@ impl AppState {
 mod tests {
     use super::*;
 
-    fn subscribe(hub: &Arc<Hub>, feed: &str) -> (Subscription, Value, broadcast::Receiver<Update>) {
+    fn subscribe(hub: &Arc<Hub>, feed: &str) -> (Subscription, Value, bool, broadcast::Receiver<Update>) {
         hub.subscribe("src", feed, &json!({}), None)
     }
 
     #[test]
     fn a_patch_keeps_the_value_current_and_a_late_reader_sees_it() {
         let hub = Arc::new(Hub::default());
-        let (first, value, mut rx) = subscribe(&hub, "lines");
+        let (first, value, _, mut rx) = subscribe(&hub, "lines");
         assert_eq!(value, Value::Null);
         hub.apply("src", "lines", &json!({}), Update::Value(json!({"lines": []}))).unwrap();
         hub.apply(
@@ -1189,7 +1853,7 @@ mod tests {
         .unwrap();
         assert!(matches!(rx.try_recv().unwrap(), Update::Value(_)));
         assert!(matches!(rx.try_recv().unwrap(), Update::Patch(_)));
-        let (_second, value, mut rx2) = subscribe(&hub, "lines");
+        let (_second, value, _, mut rx2) = subscribe(&hub, "lines");
         assert_eq!(value, json!({"lines": ["a"]}));
         assert!(rx2.try_recv().is_err(), "no duplicate of what the snapshot holds");
         assert_eq!(first.current(), value);
@@ -1198,11 +1862,11 @@ mod tests {
     #[test]
     fn a_resync_takes_the_value_and_a_receiver_with_no_replay() {
         let hub = Arc::new(Hub::default());
-        let (sub, _, mut rx) = subscribe(&hub, "lines");
+        let (sub, _, _, mut rx) = subscribe(&hub, "lines");
         hub.apply("src", "lines", &json!({}), Update::Value(json!({"lines": []}))).unwrap();
         let add = |v: &str| Update::Patch(json!([{"op": "add", "path": "/lines/-", "value": v}]));
         hub.apply("src", "lines", &json!({}), add("a")).unwrap();
-        let (value, mut fresh) = sub.resync();
+        let (value, _, mut fresh) = sub.resync();
         assert_eq!(value, json!({"lines": ["a"]}));
         assert!(fresh.try_recv().is_err(), "the patches the value holds are not replayed");
         hub.apply("src", "lines", &json!({}), add("b")).unwrap();
@@ -1227,7 +1891,7 @@ mod tests {
     #[test]
     fn a_bad_patch_is_refused_and_keeps_the_value() {
         let hub = Arc::new(Hub::default());
-        let (sub, _, mut rx) = subscribe(&hub, "f");
+        let (sub, _, _, mut rx) = subscribe(&hub, "f");
         hub.apply("src", "f", &json!({}), Update::Value(json!({"a": 1}))).unwrap();
         let _ = rx.try_recv();
         let bad = Update::Patch(json!([{"op": "remove", "path": "/missing"}]));
@@ -1240,21 +1904,21 @@ mod tests {
     #[test]
     fn the_last_reader_leaving_forgets_the_feed() {
         let hub = Arc::new(Hub::default());
-        let (a, _, _) = subscribe(&hub, "f");
-        let (b, _, _) = subscribe(&hub, "f");
+        let (a, _, _, _) = subscribe(&hub, "f");
+        let (b, _, _, _) = subscribe(&hub, "f");
         hub.apply("src", "f", &json!({}), Update::Value(json!(1))).unwrap();
         drop(a);
         assert_eq!(hub.cells.lock().unwrap().len(), 1);
         drop(b);
         assert!(hub.cells.lock().unwrap().is_empty());
-        let (_c, value, _) = subscribe(&hub, "f");
+        let (_c, value, _, _) = subscribe(&hub, "f");
         assert_eq!(value, Value::Null, "a feed read again starts empty");
     }
 
     #[test]
     fn no_params_and_empty_params_are_one_feed() {
         let hub = Arc::new(Hub::default());
-        let (_a, _, mut rx) = hub.subscribe("src", "f", &Value::Null, None);
+        let (_a, _, _, mut rx) = hub.subscribe("src", "f", &Value::Null, None);
         hub.apply("src", "f", &json!({}), Update::Value(json!(7))).unwrap();
         assert!(matches!(rx.try_recv().unwrap(), Update::Value(_)));
     }
@@ -1263,13 +1927,153 @@ mod tests {
     fn built_in_feeds_publish_only_a_change() {
         let hub = Arc::new(Hub::default());
         assert!(!hub.has_builtin_readers());
-        let (_s, value, mut rx) = hub.subscribe("wheel", "spaces", &json!({}), Some(json!([1])));
+        let (_s, value, _, mut rx) = hub.subscribe("wheel", "spaces", &json!({}), Some(json!([1])));
         assert_eq!(value, json!([1]));
         assert!(hub.has_builtin_readers());
         hub.publish_builtin("spaces", &json!([1]));
         assert!(rx.try_recv().is_err(), "the same value is not sent again");
         hub.publish_builtin("spaces", &json!([1, 2]));
         assert!(matches!(rx.try_recv().unwrap(), Update::Value(v) if v == json!([1, 2])));
+    }
+
+    #[test]
+    fn a_backend_ending_marks_its_feeds_stale_until_the_next_update() {
+        let hub = Arc::new(Hub::default());
+        let (sub, _, stale, mut rx) = subscribe(&hub, "now");
+        assert!(!stale);
+        let (_other, _, _, mut other_rx) = hub.subscribe("elsewhere", "now", &json!({}), None);
+        hub.apply("src", "now", &json!({}), Update::Value(json!({"t": 1}))).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Update::Value(_)));
+        hub.mark_stale("src");
+        assert!(matches!(rx.try_recv().unwrap(), Update::Stale(v) if v == json!({"t": 1})));
+        assert!(other_rx.try_recv().is_err(), "another package's feeds are not marked");
+        let (value, stale, _) = sub.resync();
+        assert!((value, stale) == (json!({"t": 1}), true), "a resync reports the flag");
+        let (_late, value, stale, _) = subscribe(&hub, "now");
+        assert!(stale && value == json!({"t": 1}), "a subscribe reply carries the flag and the value");
+        hub.apply("src", "now", &json!({}), Update::Value(json!({"t": 2}))).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Update::Value(_)), "the update itself is fresh");
+        let (_next, value, stale, _) = subscribe(&hub, "now");
+        assert!(!stale && value == json!({"t": 2}));
+        hub.mark_stale("src");
+        hub.apply(
+            "src",
+            "now",
+            &json!({}),
+            Update::Patch(json!([{"op": "replace", "path": "/t", "value": 3}])),
+        )
+        .unwrap();
+        assert!(!sub.resync().1, "a patch clears the flag too");
+    }
+
+    #[test]
+    fn the_backoff_doubles_from_one_second_to_thirty() {
+        let secs: Vec<u64> = (1..=8).map(|n| backoff(n).as_secs()).collect();
+        assert_eq!(secs, [1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(backoff(0).as_secs(), 1);
+        assert_eq!(backoff(u32::MAX).as_secs(), 30);
+    }
+
+    #[test]
+    fn the_policy_decides_from_the_exit_status() {
+        for (policy, code, restarts) in [
+            (Policy::Always, Some(0), true),
+            (Policy::Always, Some(1), true),
+            (Policy::Always, None, true),
+            (Policy::OnFailure, Some(0), false),
+            (Policy::OnFailure, Some(1), true),
+            (Policy::OnFailure, None, true),
+            (Policy::Never, Some(0), false),
+            (Policy::Never, Some(1), false),
+            (Policy::Never, None, false),
+        ] {
+            assert_eq!(policy.restarts(code), restarts, "{policy:?} after {code:?}");
+        }
+        assert_eq!(Policy::parse("always"), Policy::Always);
+        assert_eq!(Policy::parse("never"), Policy::Never);
+        assert_eq!(Policy::parse("on-failure"), Policy::OnFailure);
+        assert_eq!(Policy::parse(""), Policy::OnFailure);
+    }
+
+    #[test]
+    fn the_time_left_rounds_up_and_is_at_least_one_second() {
+        let secs = |ms: u64| remaining_secs(Duration::from_millis(ms));
+        assert_eq!([secs(0), secs(1), secs(999), secs(1000), secs(1001), secs(30_000)], [1, 1, 1, 1, 2, 30]);
+    }
+
+    #[test]
+    fn a_quick_watch_restart_counts_as_a_failure_and_a_late_one_resets() {
+        let at = |s: u64| Some(Duration::from_secs(s));
+        assert_eq!(watch_restart(at(0), 0), Some((1, Duration::from_secs(1))));
+        assert_eq!(watch_restart(at(9), 1), Some((2, Duration::from_secs(2))));
+        assert_eq!(watch_restart(at(2), 5), Some((6, Duration::from_secs(30))));
+        assert_eq!(watch_restart(at(10), 4), None, "a launch that stood 10 s resets the backoff");
+        assert_eq!(watch_restart(None, 3), None, "no earlier launch resets it too");
+    }
+
+    fn spec_for(dir: &Path) -> Spec {
+        let declared = BackendInfo {
+            command: "old".into(),
+            restart: "never".into(),
+            watch: vec!["old".into()],
+            ..BackendInfo::default()
+        };
+        Spec {
+            key: "k".into(),
+            plugin: "p".into(),
+            command: declared.command.clone(),
+            transport: BackendTransport::Stdio,
+            dir: dir.to_path_buf(),
+            space_dir: "/space".into(),
+            path: String::new(),
+            socket: dir.join("s.sock"),
+            log: Log::open(&dir.join("p.log")).unwrap(),
+            declared,
+            watch_dir: Some(dir.to_path_buf()),
+        }
+    }
+
+    #[test]
+    fn a_restart_runs_what_the_manifest_says_now() {
+        let dir = std::env::temp_dir().join(format!("wheel-spec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = spec_for(&dir);
+        let text = "[plugin]\nid = \"p\"\nversion = \"1\"\n\n[backend]\ncommand = \"new\"\ntransport = \"unix\"\nrestart = \"always\"\nwatch = [\"*\"]\n";
+        let next = spec_from_manifest(&old, text).unwrap();
+        assert_eq!(next.command, "new");
+        assert_eq!(next.transport, BackendTransport::Unix);
+        assert_eq!((next.declared.restart.as_str(), next.declared.watch.clone()), ("always", vec!["*".to_string()]));
+        assert_eq!((next.space_dir.as_str(), next.key.as_str()), ("/space", "k"), "what the manifest does not say stays");
+        let none = spec_from_manifest(&old, "[plugin]\nid = \"p\"\nversion = \"1\"\n").err().unwrap();
+        assert!(none.contains("no [backend]"), "{none}");
+        assert!(spec_from_manifest(&old, "[plugin\n").err().unwrap().contains("wheel-plugin.toml"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_update_from_a_replaced_instance_is_dropped() {
+        let hub = Arc::new(Hub::default());
+        let (sub, _, _, mut rx) = subscribe(&hub, "f");
+        let first = Arc::new(Backend::new("p".into(), BackendInfo::default()));
+        let second = Arc::new(Backend::new("p".into(), BackendInfo::default()));
+        assert_ne!(first.id, second.id);
+        hub.live.lock().unwrap().insert("src".into(), first.clone());
+        hub.live.lock().unwrap().insert("src".into(), second.clone());
+        let send = |from: &Backend, v: i32| hub.apply_from(Some(from.id), "src", "f", &json!({}), Update::Value(json!(v)));
+        send(&first, 1).unwrap();
+        assert!(rx.try_recv().is_err(), "the replaced instance's update is dropped");
+        assert_eq!(sub.current(), Value::Null);
+        send(&second, 2).unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), Update::Value(v) if v == json!(2)));
+    }
+
+    #[test]
+    fn a_closing_backends_refuses_new_supervisors() {
+        let backends = Backends::default();
+        assert!(!backends.closing.load(Ordering::SeqCst));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(backends.stop_all());
+        assert!(backends.closing.load(Ordering::SeqCst));
     }
 
     #[test]

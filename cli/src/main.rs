@@ -410,6 +410,15 @@ enum PluginCommand {
         #[arg(long)]
         tail: Option<usize>,
     },
+    /// Restart a plugin's backend: stop its process if one runs, start a new one (or start one
+    /// when none does) and wait until it answers `initialize`. Panes keep reading their feeds.
+    Restart {
+        /// The plugin's id.
+        plugin: String,
+        /// The space the plugin is resolved in; the space of the calling pane, else none.
+        #[arg(long)]
+        space: Option<String>,
+    },
     /// Read a feed as plugin pane PANE does and print each `feed_update` as one JSON line: the
     /// whole value first, then each change. Starts the plugin's backend if it is not running.
     Feed {
@@ -4314,6 +4323,36 @@ async fn plugin_logs(
     Ok(())
 }
 
+/// Restart a plugin's backend and print the new process id when `plugin_ls` has it.
+async fn plugin_restart(conn: &mut Conn, plugin: String, space: Option<String>) -> Result<(), Fail> {
+    let req = conn.req();
+    // The reply waits for the new process to answer `initialize`, up to the daemon's 10 s.
+    conn.call_within(
+        ClientMsg::PluginRestart {
+            req: Some(req),
+            plugin: plugin.clone(),
+            space: space.clone(),
+        },
+        req,
+        Duration::from_secs(30),
+    )
+    .await?;
+    let req = conn.req();
+    let pid = match conn.call(ClientMsg::PluginLs { req: Some(req), space }, req).await? {
+        ServerMsg::Plugins { plugins, .. } => plugins
+            .iter()
+            .find(|p| p.id == plugin)
+            .and_then(|p| p.backend.as_ref())
+            .and_then(|b| b.pid),
+        _ => None,
+    };
+    match pid {
+        Some(pid) => println!("restarted {plugin} (pid {pid})"),
+        None => println!("restarted {plugin}"),
+    }
+    Ok(())
+}
+
 /// Subscribe to a feed as plugin pane `pane` and print each `feed_update` as one JSON line.
 async fn plugin_feed(
     conn: &mut Conn,
@@ -6312,6 +6351,10 @@ async fn main() -> ExitCode {
             Command::Plugin(PluginCommand::Logs { plugin, space, tail }) => {
                 let space = default_space(&mut conn, space).await?;
                 plugin_logs(&mut conn, plugin, space, tail).await
+            }
+            Command::Plugin(PluginCommand::Restart { plugin, space }) => {
+                let space = default_space(&mut conn, space).await?;
+                plugin_restart(&mut conn, plugin, space).await
             }
             Command::Plugin(PluginCommand::Feed {
                 pane,
