@@ -24,6 +24,7 @@ pub mod saved;
 pub mod palette;
 pub mod pane_header;
 pub mod procs;
+pub mod running;
 pub mod server;
 pub mod settings;
 pub mod sidebar;

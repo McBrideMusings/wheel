@@ -640,6 +640,7 @@ impl Client {
                     entry["draft"] = json!(self.drafts.get(agent).cloned().unwrap_or_default());
                     entry["rows"] = json!(self.transcripts.get(agent).map(|t| t.rows.len()).unwrap_or(0));
                     entry["perm_card"] = self.perm_card_json(&leaf.id);
+                    entry["footer"] = self.running_json(agent);
                     entry["composer"] = self.composer_json(agent, leaf.harness.as_deref().unwrap_or(""));
                     entry["conversation_error"] = json!(self.conversations.errors.get(agent));
                 }
