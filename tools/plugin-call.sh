@@ -75,6 +75,14 @@ else
   fail "3 forbidden command.run: $OUT"
 fi
 
+mkdir -p "$T/other"
+OTHER=$(w space new "$T/other")
+OPANE=$(w pane ls | awk -v s="$OTHER" '$1 == s {print $2; exit}')
+OUT=$(call '{"method":"command.run","args":{"pane":"'"$OPANE"'","command":"echo hi"}}')
+echo "$OUT" | grep -q 'may not act on pane' \
+  && pass "3c a pane in a space with none of the plugin's panes is refused" \
+  || fail "3c foreign pane: $OUT"
+
 sed -i '' 's/, "notify"//' "$M"
 w plugin restart clock --space "$SPACE" > /dev/null 2>&1
 OUT=$(call '{"method":"notify","args":{"text":"x"}}')

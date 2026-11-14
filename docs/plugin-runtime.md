@@ -211,7 +211,7 @@ Every automatic launch (after a wait, or on a watched change) reads the package'
 | `shutdown` | wheeld to backend | notification | no params: exit now |
 | `feed/update` | backend to wheeld | notification | `{feed, params, value}` (the whole value) or `{feed, params, patch}` (RFC 6902); `params` is echoed as subscribed |
 | `log` | backend to wheeld | notification | `{level, message}` |
-| `wheel/call` | backend to wheeld | request | answered with the JSON-RPC error -32601 until `needs` is enforced |
+| `wheel/call` | backend to wheeld | request | `{method, args}`; runs the Wheel operation if the plugin's `[backend] needs` names it, else answers error -32000 (`plugin <id> may not call <method>: its [backend] needs does not name "<need>"`); an unknown method answers -32601. `pane.open` (`pane`, one of `url` or `artifact`, optional `dir`, `site`, `scope`; result `{pane}`) needs `pane.open`; `notify` (`text`, optional `level`, `id`, `pane`; result `{}`) needs `notify`, and its toast id is `plugin:<plugin id>:<id>` so a plugin never replaces another source's toast; `command.run` (`pane`, `command`, optional `site`; result `{pane}`) needs `run:<command>`, the exact command string. `pane` must be in a space where a pane of the same plugin is open, else the call is refused (`may not act on pane`). An `[[external_backend]]` has no manifest, so every call is refused. `tools/plugin-call.sh` drives each |
 
 A malformed `feed/update`, or a patch that does not apply, is written to the log and dropped; it never ends the connection.
 

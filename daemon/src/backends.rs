@@ -1644,6 +1644,30 @@ async fn wheel_call(
         .ok_or_else(|| ResponseError::new(ErrorCode::REQUEST_FAILED, STOPPING))?;
     let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_string);
     let parsed = |key: &str| -> Result<Option<Value>, ResponseError> { Ok(args.get(key).cloned()) };
+    // A pane id is acted on only in a space where one of this plugin's own panes is open.
+    if matches!(method, "pane.open" | "command.run") {
+        let pane = text("pane").ok_or_else(|| bad_args(method, "needs pane"))?;
+        let spaces = state.spaces.lock().unwrap();
+        let space = spaces.spaces.iter().find(|s| space_find(s, &pane).is_some());
+        let own = space.is_some_and(|s| {
+            space_panes(s)
+                .iter()
+                .any(|(_, k)| crate::plugins::shown_plugin(k).is_some_and(|(p, _)| p == plugin))
+        });
+        if !own {
+            return Err(ResponseError::new(
+                ErrorCode::REQUEST_FAILED,
+                format!("plugin {plugin} may not act on pane {pane}: no pane of {plugin} is open in its space"),
+            ));
+        }
+    }
+    if method == "notify" {
+        if let Some(pane) = text("pane") {
+            if !state.spaces.lock().unwrap().spaces.iter().any(|s| space_find(s, &pane).is_some()) {
+                return Err(bad_args(method, format!("no pane {pane}")));
+            }
+        }
+    }
     match method {
         "pane.open" => {
             let pane = text("pane").ok_or_else(|| bad_args(method, "needs pane"))?;
@@ -1672,9 +1696,9 @@ async fn wheel_call(
             let level = parsed("level")?
                 .map_or(Ok(wheel_proto::NoticeLevel::Notice), serde_json::from_value)
                 .map_err(|e| bad_args(method, e))?;
-            let id = text("id").unwrap_or_else(|| format!("plugin:{plugin}"));
-            if id.is_empty() || id.len() > 200 {
-                return Err(bad_args(method, "id is 1 to 200 bytes"));
+            let id = format!("plugin:{plugin}:{}", text("id").unwrap_or_default());
+            if id.len() > 200 {
+                return Err(bad_args(method, "id is at most 150 bytes"));
             }
             tracing::info!(%plugin, %id, ?level, bytes = body.len(), "plugin toast sent");
             let _ = state.global.send(wheel_proto::ServerMsg::Toast {
