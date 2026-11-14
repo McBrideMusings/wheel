@@ -5777,6 +5777,11 @@ fn menu_log_line(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, prefix: &str, c
     menu.update(cx, |m, cx| m.state_json(cx))["log"].as_array().and_then(|l| l.iter().rev().filter_map(|l| l.as_str()).find(|l| l.starts_with(prefix)).map(str::to_owned))
 }
 
+/// How many lines of the menu bar's log start with `prefix`.
+fn menu_log_count(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, prefix: &str, cx: &mut AsyncApp) -> usize {
+    menu.update(cx, |m, cx| m.state_json(cx))["log"].as_array().map(|l| l.iter().filter_map(|l| l.as_str()).filter(|l| l.starts_with(prefix)).count()).unwrap_or(0)
+}
+
 /// Copy pairing code with every window closed (wheel-ynjo.7.4.6): the popover's button copies
 /// through the menu bar's own connection, no window opens, and the bridge writes the concealed item.
 async fn closed_copy_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &mut AsyncApp) -> Result<Value> {
@@ -5796,6 +5801,9 @@ async fn closed_copy_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &
     let shown = popover_settle(popover, menu, cx, |s| popover_fitted(s) && s["popover"]["controls"]["pairing-copy"].is_array() && s["pairing"]["disabled"].is_null()).await;
     ensure!(shown["pairing"]["disabled"].is_null() && shown["popover"]["controls"]["pairing-copy"].is_array(), "with no window the pairing row reads disabled {}", shown["pairing"]["disabled"]);
     let before = wheel_gpui::view::copied_pairing_code();
+    let copies_before = menu_log_count(menu, "pairing code copied", cx);
+    // Two presses before wheeld answers are one copy; the second is logged and ignored.
+    popover_press(popover, &shown, "pairing-copy", cx)?;
     popover_press(popover, &shown, "pairing-copy", cx)?;
     let mut copied = None;
     for _ in 0..100 {
@@ -5808,9 +5816,13 @@ async fn closed_copy_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &
     ensure!(copied.is_some() && copied != before, "Copy pairing code with no window copied nothing (had a code before: {})", before.is_some());
     let windows = wheel_gpui::windows::with(|r| r.windows.len());
     ensure!(windows == 0, "Copy pairing code with no window opened {windows} window(s)");
+    tick(cx, 500).await;
     let line = menu_log_line(menu, "pairing code copied", cx);
     ensure!(line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {line:?}");
-    Ok(json!({"windows": windows, "copied": true, "line": line}))
+    let copies = menu_log_count(menu, "pairing code copied", cx) - copies_before;
+    let ignored = menu_log_count(menu, "popover: pairing copy already in flight", cx);
+    ensure!(copies == 1 && ignored >= 1, "two quick presses made {copies} copies and {ignored} ignored line(s); the menu logged {:?}", menu.update(cx, |m, cx| m.state_json(cx))["log"]);
+    Ok(json!({"windows": windows, "copied": true, "line": line, "copies_from_two_presses": copies, "second_press_ignored": ignored}))
 }
 
 /// The popover's rows and cards act (wheel-ynjo.7.4.4): a click on a row's name shows its space in
