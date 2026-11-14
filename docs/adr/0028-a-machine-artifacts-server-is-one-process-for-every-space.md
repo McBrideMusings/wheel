@@ -1,5 +1,7 @@
 # ADR-0028: A server that declares it is shared is one process for every space
 
+Superseded by ADR-0041: backends are plugins that speak Wheel's JSON-RPC, not shared MCP servers.
+
 An entry that names an `mcp` or `mcp_url` server (ADR-0026) and says `shared = true` gets one session for the machine, not one per space, and every shared entry that names the same server (the same `mcp` command, or the same `mcp_url`) uses that one session, so several artifacts can be views of one process. The server tells its views apart by the artifact's name, which wheeld sends in `_meta` under `wheel/artifact`. Only a machine artifact can be shared. Any other server, shared or not declared, stays one process per space, run in the space's directory: Wheel never assumes a server can keep many projects apart.
 
 wheeld names the asking pane and its project in `_meta` on every `tools/call` and `resources/read`, under `wheel/pane`, `wheel/dir` and `wheel/artifact`, and reads a resource as `<uri>?dir=<project>`. It subscribes to that URI (`resources/subscribe`) while a pane shows the project and unsubscribes (`resources/unsubscribe`) when none does. The server keeps its state per pane and per project, watches only the projects subscribed to, and when one changes sends `notifications/resources/updated` for the URI; wheeld sends `mcp_updated` to each pane that shows that project. wheeld uses no MCP roots, which the protocol deprecates.

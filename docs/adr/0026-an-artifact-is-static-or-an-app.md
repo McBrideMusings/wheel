@@ -1,5 +1,7 @@
 # ADR-0026: An artifact is static or an app
 
+ADR-0041 supersedes the app half of this decision: the `app`, `mcp` and `mcp_url` keys and everything said about them. The static artifact stands.
+
 An artifact is either static or an app. This adds to ADR-0003 and ADR-0004; their rules for a static artifact stand.
 
 A **static artifact** is HTML or Markdown on disk with no process of its own. Its entry has a `path` (or, for a browser pane, a `url`), and may carry the refresh command, interval, `renderer` and `wheel.run` behaviour that ADR-0004 and ADR-0016 describe. None of that changes.
