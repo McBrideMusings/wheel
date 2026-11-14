@@ -7,6 +7,8 @@ import WheelKit
 @MainActor
 final class PhoneTerminal: ObservableObject {
     let term: String
+    /// The plugin pane whose page draws this surface (`Terminal{pane}`, ADR-0042); nil for the terminal's own page.
+    let host: String?
     let view: TerminalViewState
     let session: InMemoryTerminalSession
     /// The daemon is streaming this terminal to this connection.
@@ -21,20 +23,29 @@ final class PhoneTerminal: ObservableObject {
     /// surface's padding (20 pt wide, 16 pt tall), rounded up to one value for both axes.
     static let paddingPoints: CGFloat = 24
 
-    init(term: String, controller: TerminalController, model: PhoneModel) {
+    init(term: String, host: String? = nil, controller: TerminalController, model: PhoneModel) {
         self.term = term
+        self.host = host
         view = TerminalViewState(controller: controller)
+        // The session's callbacks name the surface, so the model tells a page's surface from an embed's of one term.
+        let back = SurfaceRef()
         session = InMemoryTerminalSession(
             write: { [weak model] data in
-                Task { @MainActor in model?.typed(term, data) }
+                Task { @MainActor in if let surface = back.surface { model?.typed(surface, data) } }
             },
             resize: { [weak model] vp in
-                Task { @MainActor in model?.resized(term, vp) }
+                Task { @MainActor in if let surface = back.surface { model?.resized(surface, vp) } }
             },
             suppressesPixelOnlyResizes: true
         )
         view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        back.surface = self
     }
+}
+
+/// The surface a session's callbacks report for, set once the surface exists.
+@MainActor private final class SurfaceRef {
+    weak var surface: PhoneTerminal?
 }
 
 /// A terminal pane's page: the shell's screen, with the keyboard's key bar (esc, tab, ctrl, arrows)
@@ -82,11 +93,21 @@ private struct KeyBar: View {
     @Binding var ctrlArmed: Bool
 
     var body: some View {
+        // A column narrower than the keys (a terminal inside a plugin page) scrolls them sideways instead of
+        // widening the page past the screen.
+        ViewThatFits(in: .horizontal) {
+            keys(spacer: true)
+            ScrollView(.horizontal, showsIndicators: false) { keys(spacer: false) }
+        }
+        .background(.bar)
+    }
+
+    private func keys(spacer: Bool) -> some View {
         HStack(spacing: 6) {
             key("esc") { _ = termState.sendKey(.escape) }
             key("tab") { _ = termState.sendKey(.tab) }
             key("ctrl", on: ctrlArmed) { toggleCtrl() }
-            Spacer(minLength: 0)
+            if spacer { Spacer(minLength: 0) }
             key("←") { _ = termState.sendKey(.arrowLeft) }
             key("↓") { _ = termState.sendKey(.arrowDown) }
             key("↑") { _ = termState.sendKey(.arrowUp) }
@@ -94,7 +115,6 @@ private struct KeyBar: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(.bar)
     }
 
     private func key(_ label: String, on: Bool = false, action: @escaping () -> Void) -> some View {
