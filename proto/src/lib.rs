@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 40;
+pub const PROTOCOL_VERSION: u32 = 41;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1573,7 +1573,7 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
-    /// The script of the plugin pane `pane` shows, read off disk now. Replies `plugin_source`.
+    /// The script the plugin pane or agent pane `pane` shows, read off disk now. Replies `plugin_source`.
     /// `PROTOCOL_VERSION` 35.
     PluginSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]

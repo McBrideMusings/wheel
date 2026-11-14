@@ -374,7 +374,7 @@ PANE=$PANE1
 if start_feed kind "$KIND_PANE" clock.now; then
   w pane kind "$KIND_PANE" terminal > /dev/null
   check "changing a plugin pane's kind ends its feed subscription" "$(ended "$FEED_PID")"
-  grep -q 'is not a plugin pane' "$T/kind.err" \
+  grep -q 'is not a plugin or agent pane' "$T/kind.err" \
     && pass "the refusal names the pane as no longer a plugin pane" \
     || fail "the refusal names the pane as no longer a plugin pane: $(cat "$T/kind.err")"
   N=$(wc -l < "$T/kind.out"); sleep 2

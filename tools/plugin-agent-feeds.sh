@@ -91,6 +91,65 @@ PYEOF
 # Succeeds when file $1 holds a `patch` line (an appended event, not a whole value).
 has_patch() { grep -q '"patch":' "$1"; }
 
+# One request over a raw WebSocket (the wheel command has no `plugin source`): sends the JSON message $1 with req 1 and
+# prints the first reply that carries req 1, as one JSON line.
+ws_call() {
+  python3 - "$PORT" "$T/support/token" "$1" <<'PYEOF'
+import base64, json, os, socket, struct, sys
+port, token_file, msg = int(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3])
+msg["req"] = 1
+token = open(token_file).read().strip()
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+key = base64.b64encode(os.urandom(16)).decode()
+s.sendall((f"GET /ws?token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+           f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+buf = b""
+while b"\r\n\r\n" not in buf:
+    buf += s.recv(4096)
+buf = buf.split(b"\r\n\r\n", 1)[1]
+def need(n):
+    global buf
+    while len(buf) < n:
+        chunk = s.recv(65536)
+        if not chunk:
+            raise SystemExit("closed")
+        buf += chunk
+    out, buf = buf[:n], buf[n:]
+    return out
+def send(text):
+    data = text.encode()
+    mask = os.urandom(4)
+    head = bytes([0x81])
+    if len(data) < 126:
+        head += bytes([0x80 | len(data)])
+    elif len(data) < 65536:
+        head += bytes([0x80 | 126]) + struct.pack(">H", len(data))
+    else:
+        head += bytes([0x80 | 127]) + struct.pack(">Q", len(data))
+    s.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+def frame():
+    b0, b1 = need(2)
+    n = b1 & 0x7F
+    if n == 126:
+        n = struct.unpack(">H", need(2))[0]
+    elif n == 127:
+        n = struct.unpack(">Q", need(8))[0]
+    return b0, need(n)
+send(json.dumps(msg))
+text = b""
+while True:
+    b0, payload = frame()
+    text += payload
+    if not b0 & 0x80:
+        continue
+    row = json.loads(text) if b0 & 0x0F == 1 else {}
+    text = b""
+    if row.get("req") == 1:
+        print(json.dumps(row))
+        break
+PYEOF
+}
+
 SPACE=$(w space new "$T/proj")
 PANE=$(w pane ls | awk -v s="$SPACE" '$1 == s {print $2; exit}')
 w pane kind "$PANE" plugin --plugin watcher --plugin-pane main > /dev/null
@@ -221,6 +280,44 @@ w plugin feed "$PANE" wheel.agent.transcript --params "{\"agent\":\"$AGENT_PANE\
 folds_to "$T/second.jsonl" "any(e['kind'] == 'user' and e['text'] == 'hello feeds' for e in v['events'])" \
   && pass "a second reader's first value holds the turns so far" \
   || fail "a second reader's first value holds the turns: $(head -c 400 "$T/second.jsonl")"
+
+# 6 an agent pane shows the built-in agent view: its own feeds, actions and script, from the pane itself.
+w plugin feed "$AGENT_PANE" wheel.agent.transcript --params "$P" --count 1 > "$T/self.jsonl" 2> "$T/self.err"
+folds_to "$T/self.jsonl" "v['agent'] and any(e['kind'] == 'user' and e['text'] == 'hello feeds' for e in v['events'])" \
+  && pass "an agent pane reads its own wheel.agent.transcript" \
+  || fail "an agent pane reads its own transcript: $(cat "$T/self.jsonl" "$T/self.err")"
+w plugin action "$AGENT_PANE" wheel.agent.send --args "{\"agent\":\"$AGENT_PANE\",\"text\":\"from the view\"}" > "$T/self-send.json" 2> "$T/self-send.err"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if r["turn"] >= 1 and r["agent"] else 1)' "$T/self-send.json" 2>/dev/null \
+  && pass "an agent pane sends through wheel.agent.send from itself" \
+  || fail "an agent pane sends from itself: $(cat "$T/self-send.json" "$T/self-send.err")"
+self_sent() { w plugin feed "$AGENT_PANE" wheel.agent.transcript --params "$P" --count 1 | grep -q 'from the view'; }
+poll 10 self_sent \
+  && pass "the message sent from the agent pane reaches its transcript" \
+  || fail "the message sent from the agent pane reaches the transcript"
+ws_call "{\"op\":\"plugin_source\",\"pane\":\"$AGENT_PANE\"}" > "$T/source.json" 2> "$T/source.err"
+python3 - "$T/source.json" <<'PYEOF' && pass "plugin_source of an agent pane returns the built-in agent/view script and its modules" || fail "plugin_source of an agent pane: $(head -c 400 "$T/source.json" "$T/source.err")"
+import json, sys
+r = json.load(open(sys.argv[1]))
+mods = r.get("modules", {})
+ok = (r.get("ev") == "plugin_source" and r["plugin"] == "agent" and r["plugin_pane"] == "view"
+      and r["chunk"] == "agent/main.luau" and "wheel.agent.send" in r["source"]
+      and all(f"lib/{m}.luau" in mods for m in ("transcript", "tool_card", "diff", "status_header", "composer")))
+sys.exit(0 if ok else 1)
+PYEOF
+w plugin feed "$AGENT_PANE" wheel.panes --count 1 > "$T/panes-from-agent.jsonl" 2> "$T/panes-from-agent.err"
+grep -q 'may not read wheel.panes; its reads: wheel.agent.\*' "$T/panes-from-agent.err" \
+  && pass "an agent pane's view may read only wheel.agent.*" \
+  || fail "an agent pane's read outside wheel.agent.* is refused: $(cat "$T/panes-from-agent.err")"
+TERM_PANE=$(w pane split "$PANE" down)
+w pane start "$TERM_PANE" terminal > /dev/null 2>&1
+w plugin feed "$TERM_PANE" wheel.agent.status --params "$P" --count 1 > /dev/null 2> "$T/term.err"
+grep -q "$TERM_PANE is not a plugin or agent pane" "$T/term.err" \
+  && pass "a terminal pane's feed read is refused: not a plugin or agent pane" \
+  || fail "a terminal pane's feed read is refused: $(cat "$T/term.err")"
+ws_call "{\"op\":\"plugin_source\",\"pane\":\"$TERM_PANE\"}" > "$T/term-source.json" 2> /dev/null
+grep -q 'is not a plugin or agent pane' "$T/term-source.json" \
+  && pass "plugin_source of a terminal pane is refused" \
+  || fail "plugin_source of a terminal pane is refused: $(head -c 300 "$T/term-source.json")"
 
 echo "$FAILS failed"
 [ "$FAILS" -eq 0 ]

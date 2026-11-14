@@ -28,16 +28,49 @@ pub(crate) const MANIFEST: &str = "wheel-plugin.toml";
 type Builtin = (&'static str, &'static [(&'static str, &'static str)]);
 
 /// The packages compiled into wheeld. Adding one is one line here.
-const BUILTINS: &[Builtin] = &[(
-    "sample",
-    &[
-        (
-            MANIFEST,
-            include_str!("../plugins/sample/wheel-plugin.toml"),
-        ),
-        ("main.luau", include_str!("../plugins/sample/main.luau")),
-    ],
-)];
+const BUILTINS: &[Builtin] = &[
+    (
+        "sample",
+        &[
+            (
+                MANIFEST,
+                include_str!("../plugins/sample/wheel-plugin.toml"),
+            ),
+            ("main.luau", include_str!("../plugins/sample/main.luau")),
+        ],
+    ),
+    (
+        AGENT_VIEW_PLUGIN,
+        &[
+            (
+                MANIFEST,
+                include_str!("../plugins/agent/wheel-plugin.toml"),
+            ),
+            ("main.luau", include_str!("../plugins/agent/main.luau")),
+            ("lib/transcript.luau", include_str!("../plugins/agent/lib/transcript.luau")),
+            ("lib/tool_card.luau", include_str!("../plugins/agent/lib/tool_card.luau")),
+            ("lib/diff.luau", include_str!("../plugins/agent/lib/diff.luau")),
+            ("lib/status_header.luau", include_str!("../plugins/agent/lib/status_header.luau")),
+            ("lib/composer.luau", include_str!("../plugins/agent/lib/composer.luau")),
+            ("lib/style.luau", include_str!("../plugins/agent/lib/style.luau")),
+        ],
+    ),
+];
+
+/// The plugin an agent pane shows when its person asks for the Luau view, and that plugin's pane.
+pub(crate) const AGENT_VIEW_PLUGIN: &str = "agent";
+pub(crate) const AGENT_VIEW_PANE: &str = "view";
+
+/// The plugin and plugin pane a pane of `kind` shows: a plugin pane's own, the built-in agent view
+/// for an agent pane, none for any other kind. Every place that reads a pane's script, feeds or
+/// actions asks this.
+pub(crate) fn shown_plugin(kind: &PaneKind) -> Option<(String, String)> {
+    match kind {
+        PaneKind::Plugin { plugin, pane, .. } => Some((plugin.clone(), pane.clone())),
+        PaneKind::Agent { .. } => Some((AGENT_VIEW_PLUGIN.to_string(), AGENT_VIEW_PANE.to_string())),
+        _ => None,
+    }
+}
 
 /// Where a package's files are.
 #[derive(Debug, Clone)]
@@ -517,18 +550,14 @@ fn plugin_panes_of(spaces: &Spaces) -> Vec<PluginPane> {
         .spaces
         .iter()
         .flat_map(|space| {
-            space_panes(space).into_iter().filter_map(|(pane, kind)| match kind {
-                PaneKind::Plugin {
-                    plugin,
-                    pane: plugin_pane,
-                    ..
-                } => Some(PluginPane {
+            space_panes(space).into_iter().filter_map(|(pane, kind)| {
+                let (plugin, plugin_pane) = shown_plugin(kind)?;
+                Some(PluginPane {
                     pane: pane.to_string(),
                     cwd: space.cwd.clone(),
-                    plugin: plugin.clone(),
-                    plugin_pane: plugin_pane.clone(),
-                }),
-                _ => None,
+                    plugin,
+                    plugin_pane,
+                })
             })
         })
         .collect()
@@ -639,14 +668,9 @@ impl AppState {
                 .iter()
                 .find_map(|s| space_find(s, pane).map(|k| (s, k)))
                 .ok_or_else(|| format!("no pane {pane}"))?;
-            match kind {
-                PaneKind::Plugin {
-                    plugin,
-                    pane: plugin_pane,
-                    ..
-                } => (space.cwd.clone(), plugin.clone(), plugin_pane.clone()),
-                _ => return Err(format!("{pane} is not a plugin pane")),
-            }
+            let (plugin, plugin_pane) = shown_plugin(kind)
+                .ok_or_else(|| format!("{pane} is not a plugin or agent pane"))?;
+            (space.cwd.clone(), plugin, plugin_pane)
         };
         let script = self.plugin_script(&cwd, &plugin, &plugin_pane)?;
         Ok((plugin, plugin_pane, script))
@@ -951,6 +975,7 @@ actions = ["go"]
                 ("demo", PluginScope::Machine),
                 ("sample", PluginScope::Machine),
                 ("sample", PluginScope::Builtin),
+                ("agent", PluginScope::Builtin),
             ]
         );
         assert_eq!(resolve(&all, "sample").unwrap().info.scope, PluginScope::Project);
@@ -983,6 +1008,47 @@ actions = ["go"]
         let script = read_script(sample, pane).unwrap();
         assert_eq!(script.chunk, "sample/main.luau");
         assert!(!script.source.is_empty());
+    }
+
+    #[test]
+    fn the_agent_builtin_reads_its_embedded_script_and_modules() {
+        let all = discover(None, Path::new("/nonexistent"));
+        let agent = resolve(&all, AGENT_VIEW_PLUGIN).unwrap();
+        let pane = find_pane(agent, AGENT_VIEW_PANE).unwrap();
+        assert_eq!(pane.reads, ["wheel.agent.*"]);
+        assert_eq!(pane.actions, ["wheel.agent.*"]);
+        let script = read_script(agent, pane).unwrap();
+        assert_eq!(script.chunk, "agent/main.luau");
+        assert!(script.source.contains("wheel.agent.transcript"));
+        let names: Vec<&str> = script.modules.keys().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            ["lib/composer.luau", "lib/diff.luau", "lib/status_header.luau", "lib/style.luau", "lib/tool_card.luau", "lib/transcript.luau"]
+        );
+    }
+
+    #[test]
+    fn an_agent_pane_shows_the_agent_view_and_a_terminal_shows_nothing() {
+        let kind = |json: &str| serde_json::from_str::<PaneKind>(json).unwrap();
+        let agent = kind(r#"{"kind":"agent","agent":"claude-1","harness":"claude"}"#);
+        assert_eq!(shown_plugin(&agent), Some(("agent".to_string(), "view".to_string())));
+        let plugin = kind(r#"{"kind":"plugin","plugin":"demo","pane":"main"}"#);
+        assert_eq!(shown_plugin(&plugin), Some(("demo".to_string(), "main".to_string())));
+        assert_eq!(shown_plugin(&kind(r#"{"kind":"terminal","term":"t1"}"#)), None);
+    }
+
+    #[test]
+    fn a_project_package_with_id_agent_wins_over_the_builtin() {
+        let root = tmp("agent-override");
+        let (space, machine) = (root.join("space"), root.join("machine"));
+        let own = GOOD.replace("demo", "agent").replace("\"main\"", "\"view\"");
+        write_plugin(&project_plugins(space.to_str().unwrap()), "agent", &own);
+        let all = discover(space.to_str(), &machine);
+        let agent = resolve(&all, AGENT_VIEW_PLUGIN).unwrap();
+        assert_eq!(agent.info.scope, PluginScope::Project);
+        let pane = find_pane(agent, AGENT_VIEW_PANE).unwrap();
+        assert_eq!(read_script(agent, pane).unwrap().source, "-- script");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

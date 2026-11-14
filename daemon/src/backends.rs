@@ -1715,7 +1715,7 @@ impl AppState {
         }
     }
 
-    /// The space, directory, plugin and plugin pane id of plugin pane `pane`.
+    /// The space, directory, plugin and plugin pane id that `pane` shows (a plugin pane, or an agent pane's view).
     fn plugin_pane_ctx(&self, pane: &str) -> Result<PaneCtx, String> {
         let spaces = self.spaces.lock().unwrap();
         let (space, kind) = spaces
@@ -1723,15 +1723,14 @@ impl AppState {
             .iter()
             .find_map(|s| space_find(s, pane).map(|k| (s, k)))
             .ok_or_else(|| format!("no pane {pane}"))?;
-        match kind {
-            PaneKind::Plugin { plugin, pane: plugin_pane, .. } => Ok(PaneCtx {
-                space: space.id.clone(),
-                cwd: space.cwd.clone(),
-                plugin: plugin.clone(),
-                plugin_pane: plugin_pane.clone(),
-            }),
-            _ => Err(format!("{pane} is not a plugin pane")),
-        }
+        let (plugin, plugin_pane) = crate::plugins::shown_plugin(kind)
+            .ok_or_else(|| format!("{pane} is not a plugin or agent pane"))?;
+        Ok(PaneCtx {
+            space: space.id.clone(),
+            cwd: space.cwd.clone(),
+            plugin,
+            plugin_pane,
+        })
     }
 
     /// The package `plugin` resolved in the space directory `cwd`.

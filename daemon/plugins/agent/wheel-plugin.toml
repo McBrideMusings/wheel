@@ -1,0 +1,10 @@
+[plugin]
+id = "agent"
+version = "0.1.0"
+
+[[pane]]
+id = "view"
+title = "Agent"
+script = "main.luau"
+reads = ["wheel.agent.*"]
+actions = ["wheel.agent.*"]

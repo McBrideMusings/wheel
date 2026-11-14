@@ -27,7 +27,7 @@ public struct A2UIPaneView: View {
             if let surface = pane.surface {
                 GeometryReader { geo in
                     Group {
-                        if fillsPane(surface) {
+                        if surface.fillsPane {
                             A2UISurfaceView(surface: surface)
                                 .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
                         } else {
@@ -48,16 +48,6 @@ public struct A2UIPaneView: View {
         }
         .background(palette.bg)
         .accessibilityIdentifier("a2ui.pane")
-    }
-
-    /// A Table with no `frame` modifier fills the pane, so the page around it stays put and the table scrolls itself.
-    private func fillsPane(_ surface: SurfaceModel) -> Bool {
-        // Only a Table the page now shows counts: the surface keeps every component it was ever sent.
-        func shows(_ n: ComponentNode) -> Bool {
-            (n.instance.type == "Table" && !(n.instance.properties["modifiers"]?.arrayValue ?? []).contains { $0.dictionaryValue?["frame"] != nil })
-                || n.children.contains(where: shows)
-        }
-        return surface.root.map(shows) ?? false
     }
 
     /// A message above the page: its text can be selected, and the button copies the text with the pane's details.
@@ -96,5 +86,25 @@ public struct A2UIPaneView: View {
             .background(tone.opacity(0.08))
             .accessibilityIdentifier(id)
         }
+    }
+}
+
+extension SurfaceModel {
+    /// A Table or a vertical List with no `frame` modifier fills the pane, so the page around it stays put and that
+    /// component scrolls itself; any other page scrolls as a whole. Only a component the page now shows counts: the
+    /// surface keeps every component it was ever sent.
+    var fillsPane: Bool {
+        func scrollsItself(_ n: ComponentNode) -> Bool {
+            switch n.instance.type {
+            case "Table": true
+            case "List": n.instance.properties["direction"]?.stringValue != "horizontal"
+            default: false
+            }
+        }
+        func shows(_ n: ComponentNode) -> Bool {
+            (scrollsItself(n) && !(n.instance.properties["modifiers"]?.arrayValue ?? []).contains { $0.dictionaryValue?["frame"] != nil })
+                || n.children.contains(where: shows)
+        }
+        return root.map(shows) ?? false
     }
 }

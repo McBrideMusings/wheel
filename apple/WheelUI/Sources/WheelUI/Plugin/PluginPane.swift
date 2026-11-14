@@ -426,9 +426,18 @@ public struct PluginPaneView: View {
     public var body: some View {
         let palette = WheelPalette(dark: scheme == .dark)
         GeometryReader { geo in
-            ScrollView {
-                A2UISurfaceView(surface: pane.surface)
-                    .frame(maxWidth: .infinity, alignment: .top)
+            Group {
+                // The same decision as A2UIPaneView: a frame-less Table or vertical List takes the pane's height and
+                // scrolls itself; any other surface scrolls as a whole.
+                if pane.surface.fillsPane {
+                    A2UISurfaceView(surface: pane.surface)
+                        .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                } else {
+                    ScrollView {
+                        A2UISurfaceView(surface: pane.surface)
+                            .frame(maxWidth: .infinity, alignment: .top)
+                    }
+                }
             }
             .environment(\.a2uiPane, geo.size)
             .environment(\.a2uiCanvasSizes, true)

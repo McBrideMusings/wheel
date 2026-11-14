@@ -646,6 +646,9 @@ impl Client {
                     "browser": self.browsers.get(&leaf.id).map(|b| json!({"address": b.address, "failure": b.failure})),
                     "bridge": native["panes"][leaf.id.as_str()],
                 });
+                if leaf.kind == "agent" {
+                    entry["agent_view"] = json!(if self.agent_views.contains(&leaf.id) { "luau" } else { "native" });
+                }
                 if let Some(agent) = &leaf.agent {
                     entry["draft"] = json!(self.drafts.get(agent).cloned().unwrap_or_default());
                     entry["rows"] = json!(self.transcripts.get(agent).map(|t| t.rows.len()).unwrap_or(0));

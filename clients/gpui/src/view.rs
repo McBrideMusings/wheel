@@ -189,6 +189,8 @@ pub struct Client {
     browsers: HashMap<String, BrowserState>,
     /// Each plugin pane's last failure as the bridge reported it (None once its script loads), shown in the pane's header.
     plugin_errors: HashMap<String, Option<String>>,
+    /// The agent panes showing the Luau agent view in place of the native one; client memory only (ADR-0022).
+    pub(crate) agent_views: HashSet<String>,
     /// The plugin packages each space can use, as `plugin_ls` last listed them, for the empty pane's buttons.
     plugins: HashMap<String, Vec<PluginInfo>>,
     /// `plugin_ls` requests waiting for an answer (request id to the space asked about), and when each space was last asked.
@@ -423,7 +425,7 @@ impl Client {
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
-            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
+            browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
@@ -1791,11 +1793,13 @@ impl Client {
                     ("browser", _) => "browser".to_owned(),
                     ("terminal", Some(_)) => "terminal".to_owned(),
                     ("plugin", _) => format!("plugin:{}:{cwd}", p.leaf.label),
+                    ("agent", _) if self.agent_views.contains(&p.leaf.id) => format!("agent-view:{cwd}"),
                     _ => continue,
                 };
                 if self.opened.get(&p.leaf.id) != Some(&kind) {
                     match (&p.leaf.term, p.leaf.kind.as_str()) {
                         (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, self.space_id.as_deref(), &self.endpoint.ws),
+                        (None, "agent") => self.native.open_agent_view(&p.leaf.id, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                         (None, "plugin") => self.native.open_plugin(&p.leaf.id, &p.leaf.label, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                         (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
                         (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
@@ -1835,7 +1839,18 @@ impl Client {
                 self.placed.remove(&id);
                 self.browsers.remove(&id);
                 self.plugin_errors.remove(&id);
+                self.agent_views.remove(&id);
             }
+        }
+        // A pane that no longer holds an agent forgets its choice, so an agent started in it again opens on the native view.
+        let agents: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).filter(|l| l.kind == "agent").map(|l| l.id.as_str()).collect();
+        self.agent_views.retain(|id| agents.contains(id.as_str()));
+        // An agent pane back on the native view closes the bridge's view of it; the GPUI agent view draws again.
+        for id in self.opened.iter().filter(|(id, kind)| kind.starts_with("agent-view:") && !self.agent_views.contains(*id)).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
+            self.native.close(&id);
+            self.opened.remove(&id);
+            self.placed.remove(&id);
+            self.plugin_errors.remove(&id);
         }
         if self.address_edit.as_ref().is_some_and(|(pane, _)| !alive.contains(pane.as_str())) {
             self.address_edit = None;

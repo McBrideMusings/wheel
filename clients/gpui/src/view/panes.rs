@@ -41,6 +41,11 @@ fn switch_title(view: PaneView) -> &'static str {
     if view == PaneView::Agent { "Show as Chat" } else { "Show in Terminal" }
 }
 
+/// The agent-view item's title: what choosing it switches the pane to.
+pub(crate) fn agent_view_title(luau: bool) -> &'static str {
+    if luau { "Show Native View" } else { "Show Luau View" }
+}
+
 /// The width `n` header buttons take.
 fn buttons_width(n: usize) -> f32 {
     n as f32 * BUTTON + n.saturating_sub(1) as f32 * BUTTON_GAP
@@ -229,6 +234,9 @@ impl Client {
                 _ => {}
             }
         }
+        if leaf.kind == "agent" {
+            items.push(item("agent-view".into(), agent_view_title(self.agent_views.contains(pane)).into(), true));
+        }
         if known {
             for word in ["right", "left", "down", "up"] {
                 let off = match word {
@@ -279,6 +287,11 @@ impl Client {
             "background" => self.toggle_site(&pane, PaneSite::Backgrounded),
             "zoom" => self.toggle_zoom(&pane),
             "switch-view" => self.switch_view(&pane),
+            "agent-view" => {
+                if !self.agent_views.remove(&pane) {
+                    self.agent_views.insert(pane);
+                }
+            }
             "info" => self.toggle_pane_info(&pane),
             "screenshot" => self.copy_pane_image(&pane),
             // The Browser controls button: its menu opens under the button, as BrowserMenu hangs from it.
@@ -527,6 +540,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::windows::{Record, Registry};
 
     fn session(id: &str, spaces: &[&str]) -> Session {
