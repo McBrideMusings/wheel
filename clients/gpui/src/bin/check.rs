@@ -167,20 +167,14 @@ async fn run_pumped(args: &[&str], connection: &mut Connection, layouts: &mut us
     Ok((done.is_some_and(|s| s.success()), String::from_utf8_lossy(&out.stdout).trim().to_owned(), String::from_utf8_lossy(&out.stderr).trim().to_owned()))
 }
 
-/// Waits until `wheel pane view <pane>` names a conversation (its second field is not `-`), as
-/// switch-by-status.sh does before a terminal-to-chat switch: wheeld samples the terminal for a
-/// running agent and refuses the switch until it finds one.
-async fn until_conversation(pane: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
-    let mut last = String::new();
-    for _ in 0..60 {
-        let (ok, out, err) = run_pumped(&["pane", "view", pane], connection, layouts, window, cx).await?;
-        if ok && out.split_whitespace().nth(1).is_some_and(|c| c != "-") {
-            return Ok(());
-        }
-        last = if ok { out } else { err };
-        pump(connection, 500, layouts, window, cx).await?;
-    }
-    anyhow::bail!("wheel pane view {pane} never named a conversation: {last}")
+/// Waits until the Claude Code stand-in runs in the terminal `pane` shows, which it prints as
+/// `claude-fake <session> ready`: wheeld samples the terminal for a running agent when asked to
+/// show it as a chat, and refuses until it finds one. The conversation the pane remembers is no
+/// signal, since the switch to the terminal sets it before the resume command starts.
+async fn until_stand_in_ready(pane: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
+    let (ok, out, err) = run_pumped(&["term", "read", pane, "--until", " ready", "--timeout", "40"], connection, layouts, window, cx).await?;
+    ensure!(ok, "the Claude Code stand-in never started in {pane}'s terminal: {err} {}", out.lines().rev().take(5).collect::<Vec<_>>().join(" | "));
+    Ok(())
 }
 
 /// One request to the client's debug server from a thread, answered while this check keeps
@@ -5397,7 +5391,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     let in_menu = state!();
     ensure!(!strings(&in_menu["panes"][grid_b.as_str()]["header_order"]).contains(&"switch-view".to_owned()) && strings(&in_menu["panes"][grid_b.as_str()]["more_menu"]).contains(&"switch-view".to_owned()),
         "the switch set to the ⋯ menu: bar {:?}, menu {:?}", in_menu["panes"][grid_b.as_str()]["header_order"], in_menu["panes"][grid_b.as_str()]["more_menu"]);
-    until_conversation(&grid_b, &mut connection, &mut layouts, window, cx).await?;
+    until_stand_in_ready(&grid_b, &mut connection, &mut layouts, window, cx).await?;
     let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_b}&x=420&y=120&level=header"));
     ensure!(code == 200, "panemenu open got {code}");
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_b}&item=switch-view"));
@@ -5408,7 +5402,7 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     // shift+cmd+t on the focused pane: to the terminal and back.
     for (what, kind) in [("the terminal", "terminal"), ("the chat", "agent")] {
         if kind == "agent" {
-            until_conversation(&grid_b, &mut connection, &mut layouts, window, cx).await?;
+            until_stand_in_ready(&grid_b, &mut connection, &mut layouts, window, cx).await?;
         }
         window.update(cx, |c, _, _| c.show_requested(&grid, Some(&grid_b)))?;
         let (code, pressed) = call!("POST", "/key?keys=shift+cmd+t");

@@ -130,6 +130,11 @@ def fixture():
         (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
         (root / 'machine.toml').write_text(machine_artifacts(gallery))
         (root / 'usage.json').write_text(usage_readings())
+        # `claude` on the daemon's PATH is the stand-in, so a pane shown as a terminal resumes its
+        # conversation in it (`claude --resume <id>`) and wheeld finds it there for the switch back.
+        (root / 'bin').mkdir()
+        (root / 'bin/claude').symlink_to(built('wheel-fake-agent'))
+        env['PATH'] = f"{root / 'bin'}:{env.get('PATH', '')}"
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
