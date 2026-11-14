@@ -207,7 +207,7 @@ fn write(path: &Path, text: &str, mode: u32) -> std::io::Result<()> {
 }
 
 /// Write the shell integration under `instance_dir`. `cli` is the `wheel` program to link into the
-/// bin directory when there is one.
+/// bin directory when there is one, with the `wheel-runner` program beside it.
 pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Result<()> {
     let root = dir(instance_dir);
     write(&root.join("zsh/.zshenv"), ZSHENV, 0o644)?;
@@ -256,8 +256,16 @@ pub(crate) fn install(instance_dir: &Path, cli: Option<&Path>) -> std::io::Resul
     )?;
     let link = bin.join("wheel");
     let _ = std::fs::remove_file(&link);
+    // `wheel-runner`, the runner plugin's backend, sits beside `wheel` in the app's Helpers (and in
+    // cargo's target directory); the plugin's backend command finds it on this directory's PATH.
+    let runner_link = bin.join("wheel-runner");
+    let _ = std::fs::remove_file(&runner_link);
     if let Some(cli) = cli {
         std::os::unix::fs::symlink(cli, &link)?;
+        let runner = cli.with_file_name("wheel-runner");
+        if runner.exists() {
+            std::os::unix::fs::symlink(runner, &runner_link)?;
+        }
     }
     Ok(())
 }

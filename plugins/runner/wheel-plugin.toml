@@ -1,0 +1,13 @@
+[plugin]
+id = "runner"
+version = "0.1.0"
+
+[backend]
+command = "wheel-runner backend"
+
+[[pane]]
+id = "runner"
+title = "Runner"
+script = "panes/runner.luau"
+reads = ["runner.commands", "runner.log"]
+actions = ["runner.run", "runner.stop"]

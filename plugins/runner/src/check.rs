@@ -12,7 +12,7 @@ use crate::config::StatusCheck;
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One readout: whether the check succeeded and the text to show.
-#[derive(Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Reading {
     pub up: bool,
     pub text: String,

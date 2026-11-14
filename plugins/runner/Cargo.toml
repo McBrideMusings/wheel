@@ -2,7 +2,7 @@
 name = "wheel-runner"
 version.workspace = true
 edition.workspace = true
-description = "Wheel's runner: runs the commands a project's wheel.toml [runner] table names, keeps each run's log, status and exit code, as a command line and as an MCP server a host such as Wheel draws a page for"
+description = "Wheel's runner: runs the commands a project's wheel.toml [runner] table names, keeps each run's log, status and exit code, as a command line and as the backend of Wheel's runner plugin"
 
 [[bin]]
 name = "wheel-runner"
@@ -12,14 +12,16 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
-rmcp = { version = "3.8", default-features = false, features = ["server", "macros", "transport-io"] }
+async-lsp = { version = "0.2.4", default-features = false, features = ["tokio"] }
+json-patch = "5.0.0"
+notify = "7.0.0"
+tokio-util = { version = "0.7", features = ["compat"] }
 serde.workspace = true
 serde_json.workspace = true
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 tokio.workspace = true
 toml_edit = "0.25"
 ureq = "3"
-url = "2"
 
 [dev-dependencies]
 libc = "0.2"
