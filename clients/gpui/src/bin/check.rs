@@ -776,6 +776,14 @@ async fn wait_pane(run: &mut Run, pane: &str, what: &str, want: impl Fn(&Value) 
     anyhow::bail!("{what}: the pane's footer is {}; the pane is {shown}; focus {focus}; {menus}", state["footer"])
 }
 
+/// Send `text` to the agent in `pane` through `wheel agent send`, as background-footer.sh does.
+fn agent_send(pane: &str, text: &str) -> Result<()> {
+    let out = std::process::Command::new(std::env::var("WHEEL_CLIENT_CLI")?)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", "--timeout", "0", pane, text]).output()?;
+    ensure!(out.status.success(), "wheel agent send {text:?}: {}", String::from_utf8_lossy(&out.stderr));
+    Ok(())
+}
+
 /// Background tasks (wheel-96jo): the fake agent starts a background shell and a subagent; the
 /// strip above the composer has a row for each with its latest line and running time, and the
 /// shell's call on the transcript reads `● running m:ss`.
@@ -792,7 +800,7 @@ async fn running_strip(run: Run, agent_pane: String, _agent_name: String, cx: &m
     let draft = pane_state(window, &agent_pane, cx)?["draft"].as_str().unwrap_or_default().chars().count();
     erase(&native, draft, cx).await;
     let before = wait_pane(&mut run, &agent_pane, "before any task", |f| f["tasks"].as_array().is_some_and(Vec::is_empty) || f.is_null(), cx).await?;
-    type_line(&native, "start background", cx).await;
+    agent_send(&agent_pane, "start background")?;
     let shown = |f: &Value| f["tasks"].as_array().is_some_and(|t| t.len() == 3 && t[1]["latest"] == "2 tool calls \u{b7} last: Bash \u{b7} 26.7k tokens" && t.iter().all(|t| t["strip_row_drawn"] == true))
         && f["marks"].as_array().is_some_and(|m| m.len() == 2);
     let footer = match wait_pane(&mut run, &agent_pane, "one shell and two subagents in the strip", shown, cx).await {
@@ -847,7 +855,7 @@ async fn running_full_view(run: Run, agent_pane: String, agent_name: String, cx:
     wait_pane(&mut run, &agent_pane, "Show in Transcript closing the full view", |f| f["full_task"].is_null(), cx).await?;
     let revealed = window.update(cx, |c, _, _| c.toast_log.iter().any(|l| l.contains("shows call bg-call-1")))?;
     ensure!(revealed, "the log does not say the transcript scrolled to bg-call-1");
-    type_line(&native, "end background", cx).await;
+    agent_send(&agent_pane, "end background")?;
     let ended = wait_pane(&mut run, &agent_pane, "the tasks ending",
         |f| f["tasks"].as_array().is_some_and(Vec::is_empty) && f["background_text"].is_null() && f["marks"].as_array().is_some_and(Vec::is_empty), cx).await?;
     ensure!(window.update(cx, |c, _, _| c.control_bounds(&agent_name, "task-row:bash-1"))?.is_none(), "a strip row is still drawn after the tasks ended");
