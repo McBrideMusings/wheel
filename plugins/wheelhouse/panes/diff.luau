@@ -20,9 +20,6 @@ local STACKED = 2000
 -- above, so this bounds the view tree: 400 files with 60-character lines at both line budgets make 74,351 values, under the
 -- 100,000 the runtime accepts.
 local FILES = 200
--- The wide layout's height. The client wraps a plugin pane's surface in a scroll view, which gives the split's lists no height
--- of their own, so the page names one; wheel-pmf2.10 removes the wrapper and with it this height.
-local WIDE_HEIGHT = 600
 -- The fixed-width slot the totals sit in at the right of the top row, so a longer or shorter total moves nothing.
 local TOTALS = 210
 -- Rows the narrow layout's file table shows before it scrolls (its header row included in the height).
@@ -300,7 +297,7 @@ local function wide_layout(scope, sel)
     if at then stream.scrollTo = WIDE_STREAM .. "." .. (at - 1) end
     local split = ui.HSplitView{ side, ui.List(stream), modifiers = { { frame = { maxHeight = "infinity" } } } }
     local wide = kit.box("v", { split }, { spacing = 0 })
-    return kit.modify(wide, { frame = { minWidth = WIDE, idealWidth = WIDE, maxWidth = "infinity", height = WIDE_HEIGHT } })
+    return kit.modify(wide, { frame = { minWidth = WIDE, idealWidth = WIDE, maxWidth = "infinity", maxHeight = "infinity" } })
 end
 
 -- A previous or next button that keeps its place: disabled at the end of the list.
