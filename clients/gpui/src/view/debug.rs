@@ -197,6 +197,14 @@ impl Client {
                 let value = json_value.or_else(|| q("value").map(Value::String));
                 Some(self.native.call(json!({"op":"plugin","pane":pane,"action":action,"component":q("component"),"path":q("path"),"value":value,"key":q("key"),"context":context})))
             }
+            // Scrolls a plugin pane's view with no pointer: `dy=<points>` (positive is down) or `to=top|bottom`; answers the pane's `fills` and `scroll` offsets.
+            "/pane/scroll" => {
+                let Some(pane) = q("pane") else { return refuse(BAD, "pane= and dy=<points> or to=top|bottom are required") };
+                let dy = q("dy").map(|d| d.parse::<f64>());
+                if !matches!(dy, None | Some(Ok(_))) || matches!(dy, Some(Ok(d)) if !d.is_finite()) { return refuse(BAD, "dy= must be a number") }
+                if dy.is_none() && !matches!(q("to").as_deref(), Some("top" | "bottom")) { return refuse(BAD, "pane= and dy=<points> or to=top|bottom are required") }
+                Some(self.native.call(json!({"op":"plugin","pane":pane,"action":"scroll","dy":dy.and_then(Result::ok),"to":q("to")})))
+            }
             "/start" => {
                 let (Some(pane), Some(kind)) = (q("pane"), q("kind")) else { return refuse(BAD, "pane= and kind=terminal|agent are required") };
                 match kind.as_str() {

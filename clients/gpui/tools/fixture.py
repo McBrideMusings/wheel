@@ -18,6 +18,8 @@ BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse'
 PAGES = ['gallery']
 # The Wheelhouse plugin panes the check opens in the GPUI client, one after another in one pane.
 PLUGIN_PANES = ['beads', 'issues', 'repo']
+# The rows of the `tall` plugin's one pane.
+TALL_ROWS = 80
 
 
 def build():
@@ -167,6 +169,17 @@ def fixture():
         # The Wheelhouse package, installed the way a machine installs one: a folder beside the machine file.
         (root / 'plugins').mkdir()
         (root / 'plugins/wheelhouse').symlink_to(REPO / 'plugins/wheelhouse')
+        # A plugin whose one pane is `TALL_ROWS` Text rows and nothing that fills the pane, so the pane scrolls as a whole.
+        (root / 'plugins/tall/panes').mkdir(parents=True)
+        (root / 'plugins/tall/wheel-plugin.toml').write_text('[plugin]\nid = "tall"\nversion = "0.1.0"\n\n[[pane]]\nid = "tall"\ntitle = "Tall"\nscript = "panes/tall.luau"\n')
+        (root / 'plugins/tall/panes/tall.luau').write_text(
+            'local function init(previous) return previous or {} end\n'
+            'local function update(state, msg) end\n'
+            'local function view(state, data)\n'
+            f'    local rows = {{}}\n    for i = 1, {TALL_ROWS} do rows[i] = ui.Text("Row " .. i) end\n'
+            '    return ui.Column(rows)\n'
+            'end\n'
+            'return { init = init, update = update, view = view }\n')
         wheelhouse = wheelhouse_project(root)
         (root / 'usage.json').write_text(usage_readings())
         # `claude` on the daemon's PATH is the stand-in, so a pane shown as a terminal resumes its
@@ -280,7 +293,7 @@ def fixture():
             # moves through each of `PLUGIN_PANES` as a plugin pane.
             plugins_session = cli('session', 'new', 'Plugins').splitlines()[-1]
             plugins_space = cli('space', 'new', str(wheelhouse), '--name', 'wheelhouse', '--session', plugins_session).splitlines()[-1]
-            env.update(WHEEL_CLIENT_PLUGINS_SESSION=plugins_session, WHEEL_CLIENT_PLUGINS_PANE=tree(plugins_space)['root']['id'], WHEEL_CLIENT_PLUGIN_PANES=json.dumps(PLUGIN_PANES))
+            env.update(WHEEL_CLIENT_PLUGINS_SESSION=plugins_session, WHEEL_CLIENT_PLUGINS_PANE=tree(plugins_space)['root']['id'], WHEEL_CLIENT_PLUGIN_PANES=json.dumps(PLUGIN_PANES), WHEEL_CLIENT_TALL_ROWS=str(TALL_ROWS))
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
                        WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page), WHEEL_CLIENT_PAGES=str(pages))
             info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),

@@ -24,6 +24,33 @@ public final class PluginPane {
     /// The script's file name as wheeld sent it, in error messages.
     public private(set) var chunk = "pane"
 
+    /// The scroll the host last asked for; the pane's ScrollView applies each new `id` once.
+    public private(set) var scrollRequest = ScrollRequest(id: 0, to: .by(0))
+    /// Where the pane's ScrollView stands as last reported; stale once the surface fills the pane, so read it with `fillsPane`.
+    public internal(set) var scrollMetrics: ScrollMetrics?
+
+    /// A scroll asked from outside the pointer: to an edge, or by a distance in points (positive is down).
+    public struct ScrollRequest: Equatable, Sendable {
+        public enum Target: Equatable, Sendable { case top, bottom, by(Double) }
+        public let id: Int
+        public let to: Target
+    }
+
+    /// A ScrollView's offset, content height and visible height, in points.
+    public struct ScrollMetrics: Equatable, Sendable {
+        public var offset: Double
+        public var content: Double
+        public var visible: Double
+    }
+
+    /// Whether the surface takes the pane's height itself (a frame-less Table or vertical List), so the pane has no ScrollView.
+    public var fillsPane: Bool { surface.fillsPane }
+
+    /// Asks the pane's ScrollView to move; a surface that fills the pane has none and ignores it.
+    public func scroll(_ to: ScrollRequest.Target) {
+        scrollRequest = ScrollRequest(id: scrollRequest.id + 1, to: to)
+    }
+
     @ObservationIgnored private var runtime: PaneRuntime?
     /// Whether `error` came from loading the script: the file is still broken, so a message the script handles does not clear it.
     @ObservationIgnored private var loadFailed = false
@@ -420,6 +447,7 @@ public final class PluginPane {
 public struct PluginPaneView: View {
     let pane: PluginPane
     @Environment(\.colorScheme) private var scheme
+    @State private var position = ScrollPosition()
 
     public init(pane: PluginPane) { self.pane = pane }
 
@@ -436,6 +464,19 @@ public struct PluginPaneView: View {
                     ScrollView {
                         A2UISurfaceView(surface: pane.surface)
                             .frame(maxWidth: .infinity, alignment: .top)
+                    }
+                    .scrollPosition($position)
+                    .onScrollGeometryChange(for: PluginPane.ScrollMetrics.self) { g in
+                        PluginPane.ScrollMetrics(offset: g.contentOffset.y, content: g.contentSize.height, visible: g.visibleRect.height)
+                    } action: { _, metrics in
+                        pane.scrollMetrics = metrics
+                    }
+                    .onChange(of: pane.scrollRequest) { _, request in
+                        switch request.to {
+                        case .top: position.scrollTo(edge: .top)
+                        case .bottom: position.scrollTo(edge: .bottom)
+                        case let .by(dy): position.scrollTo(y: max(0, (pane.scrollMetrics?.offset ?? 0) + dy))
+                        }
                     }
                 }
             }

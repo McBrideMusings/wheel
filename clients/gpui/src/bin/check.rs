@@ -4028,6 +4028,10 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         ensure!(bytes > 5000, "the {name} plugin pane's picture is missing: {} ({bytes} bytes)", png.display());
         let mut entry = json!({"components": components(&seen).len(), "texts": texts(&seen).into_iter().take(6).collect::<Vec<_>>(), "png_bytes": bytes});
         if name == "beads" {
+            // The Table fills the pane, so the pane has no ScrollView of its own to scroll.
+            ensure!(seen["fills"] == true && seen["scroll"].is_null(), "the Beads Table should fill its pane: fills {} scroll {}", seen["fills"], seen["scroll"]);
+            let refused = native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"bottom"}));
+            ensure!(refused["ok"] == false, "a pane that fills has no ScrollView, so a scroll should answer ok false: {refused}");
             let picker = components(&seen).iter().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Beads pane has no view picker"))?;
             let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","path":format!("/{picker}"),"value":["graph"]}));
             ensure!(set["ok"] == true, "the Beads view picker refused `graph`: {set}");
@@ -4045,6 +4049,59 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         }
         report.insert(name.clone(), entry);
     }
+    // A plugin pane taller than the pane, holding nothing that fills it, scrolls as a whole: scrolled to the bottom its last row is inside the view.
+    let rows: u64 = std::env::var("WHEEL_CLIENT_TALL_ROWS")?.parse()?;
+    let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "tall", "--plugin-pane", "tall"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane kind plugin tall/tall: {err}");
+    let last = format!("Row {rows}");
+    let mut tall = Value::Null;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        tall = state(&native);
+        if texts(&tall).contains(&last) && tall["scroll"]["content"].as_f64().is_some_and(|c| c > 0.0) {
+            break;
+        }
+    }
+    ensure!(texts(&tall).contains(&last) && tall["error"].is_null(), "the tall plugin pane never drew {last}: error {} texts {}", tall["error"], texts(&tall).len());
+    let (content, visible) = (tall["scroll"]["content"].as_f64().unwrap_or(0.0), tall["scroll"]["visible"].as_f64().unwrap_or(0.0));
+    ensure!(tall["fills"] == false && content > visible && visible > 0.0 && tall["scroll"]["offset"].as_f64() == Some(0.0), "the tall pane should scroll from the top: fills {} scroll {}", tall["fills"], tall["scroll"]);
+    // A hidden window draws a native plugin view blank, so the pane's own picture comes from wheeld's `pane shot`, which the client answers with the view's pixels.
+    let top = output.join("client-plugin-tall-top.png");
+    let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &top.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane shot of the tall pane at the top: {err}");
+    let sent = native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"bottom"}));
+    ensure!(sent["ok"] == true, "the tall pane refused a scroll to the bottom: {sent}");
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        tall = state(&native);
+        if tall["scroll"]["offset"].as_f64().is_some_and(|o| o > 0.0) {
+            break;
+        }
+    }
+    let offset = tall["scroll"]["offset"].as_f64().unwrap_or(0.0);
+    ensure!(offset > 0.0 && (offset + visible - content).abs() < 1.5, "scrolled to the bottom the tall pane should end at its content: offset {offset} visible {visible} content {content}");
+    let png = output.join("client-plugin-tall-bottom.png");
+    let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane shot of the tall pane at the bottom: {err}");
+    let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+    ensure!(bytes > 5000 && std::fs::read(&png)? != std::fs::read(&top)?, "the scrolled tall pane's picture is missing or equals the top's: {} ({bytes} bytes)", png.display());
+    // `to=top` returns to offset 0, then `dy=100` moves down by 100 points from there.
+    for (body, want) in [(json!({"to":"top"}), 0.0), (json!({"dy":100.0}), 100.0)] {
+        let mut request = json!({"op":"plugin","pane":pane,"action":"scroll"});
+        request.as_object_mut().unwrap().extend(body.as_object().unwrap().clone());
+        let sent = native.call(request);
+        ensure!(sent["ok"] == true, "the tall pane refused {body}: {sent}");
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            tall = state(&native);
+            if tall["scroll"]["offset"].as_f64().is_some_and(|o| (o - want).abs() < 1.5) {
+                break;
+            }
+        }
+        let now = tall["scroll"]["offset"].as_f64().unwrap_or(-1.0);
+        ensure!((now - want).abs() < 1.5, "after {body} the tall pane's offset should be {want}: {now}");
+    }
+    report.insert("tall".into(), json!({"last_row": last, "content": content, "visible": visible, "offset": offset, "png_bytes": bytes}));
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
     wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
