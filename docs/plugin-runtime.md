@@ -192,7 +192,7 @@ wheel plugin restart wheelhouse     # after each rebuild; the manifest has no wa
 
 `wheeld` follows a symlink at the package root (`daemon/src/plugins.rs` canonicalizes it for the script and the module scan; modules still may not leave the resolved package). Every project's spaces see it.
 
-**Feed `beads`**, params `{dir}` (the absolute project directory, echoed as subscribed). Each subscribe sends the whole value, later changes send an RFC 6902 patch, and a value equal to the last one sends nothing. The backend reads again, 150 ms after the last event, when `<dir>/.beads/last-touched`, `<dir>/wheel.toml` or `~/.wheel/bead-panes.json` changes (a file watcher, no polling), and right after a press claims or releases a bead. The value, from a fixture project:
+**Feed `beads`**, params `{dir}` (the absolute project directory, echoed as subscribed). Each subscribe sends the whole value, later changes send an RFC 6902 patch, and a value equal to the last one sends nothing. The backend reads again, 150 ms after the last event that changes a project it serves (and at most 1 s after the first, however long events keep coming), when `<dir>/.beads/last-touched`, `<dir>/wheel.toml` or `~/.wheel/bead-panes.json` changes (a file watcher, no polling), and right after a press claims or releases a bead. The value, from a fixture project:
 
 ```json
 {"now": 1763110000, "name": "proj-a", "path": "/private/tmp/claude/wheel/wh/proj-a", "has_repo": true, "error": null, "problems": [],
@@ -210,8 +210,10 @@ wheel plugin restart wheelhouse     # after each rebuild; the manifest has no wa
 
 **Actions**, both returning `{"said": "<words for the pane>"}` or an error that reaches the caller as `wheelhouse.<action> failed: <message>`:
 
-- `press {dir, bead}`: decides the bead's act again from the records and the panes open now (`wheel pane ls`). A recorded pane that is open is focused (`wheel pane focus`); otherwise the `[beads.task]` or `[beads.epic]` `start` or `resume` command runs in `dir` with `BEAD_ID`, `BEAD_TITLE`, `BEAD_TYPE`, `BEAD_REPO`, `BEAD_PATH` (and `CONVERSATION` for resume) and `WHEEL_PANE` set to the pressing pane, and the last line it prints is recorded as the bead's pane. Errors: `no bead <id>`, `<id> has no button to press`, `<id> is already starting`, the command's own failure.
+- `press {dir, bead}`: decides the bead's act again from the records and the panes open now (`wheel pane ls`). A recorded pane that is open is focused (`wheel pane focus`); otherwise the `[beads.task]` or `[beads.epic]` `start` or `resume` command runs in `dir` with `BEAD_ID`, `BEAD_TITLE`, `BEAD_TYPE`, `BEAD_REPO`, `BEAD_PATH` (and `CONVERSATION` for resume) and `WHEEL_PANE` set to the pressing pane, and the last line it prints is recorded as the bead's pane. Errors: `no bead <id>`, a disabled button's own help (`Starting; wait for the pane`, `[beads.task] has no start.run`, `This bead is closed`), `<id> has no button to press`, `<id> is already starting`, the command's own failure.
 - `run_list {dir, script, ids}`: runs `[beads.list.<script>]` in `dir` with `BEAD_IDS` (the ids space separated), `BEAD_REPO` and `BEAD_PATH`. The pane sends the ids it lists. Errors: `no list button <script>`, `the list is empty`.
+
+**`dir` is any absolute directory.** The feed and both actions take whatever directory the pane names: a pane granted `wheelhouse.beads` reads, and one granted `wheelhouse.press` or `wheelhouse.run_list` runs the buttons of, any project on the machine, not only its own space's. The backend is trusted local code and a grant names a feed or an action, never a directory.
 
 `WHEEL_DATA_DIR`, which the MCP page hands a button from the asking pane's data directory, is not set: no `[beads.*]` command in `~/.wheel/wheel.toml` or in any project's `wheel.toml` under `~/Projects` reads it (only artifact refresh commands do), and a plugin pane has no data directory.
 

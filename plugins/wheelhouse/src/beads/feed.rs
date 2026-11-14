@@ -76,9 +76,12 @@ pub fn press(dir: &str, bead: &str, pane: &str, changed: impl Fn() + Send + Sync
     let Some(b) = snap.beads.iter().find(|b| b.id == bead) else {
         return Err(format!("no bead {bead}"));
     };
-    let Some(act) = snap.acts.get(bead).cloned().filter(|a| !a.disabled) else {
+    let Some(act) = snap.acts.get(bead).cloned() else {
         return Err(format!("{bead} has no button to press"));
     };
+    if act.disabled {
+        return Err(if act.help.is_empty() { format!("{bead} has no button to press") } else { act.help });
+    }
     if let State::Live(p) = &act.state {
         run::text("wheel", &snap.path, &["pane", "focus", p])?;
         return Ok(format!("Focused {p} for {bead}."));

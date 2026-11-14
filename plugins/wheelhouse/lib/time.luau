@@ -34,14 +34,4 @@ function M.ago(iso, now)
     return round(m / 1440) .. "d"
 end
 
--- How long before `now` the Unix time `ts` was, in the largest whole unit: `now`, `5m`, `3h`, `2d`, `6w`.
-function M.age(ts, now)
-    local s = math.max(now - ts, 0)
-    if s < 60 then return "now" end
-    if s < 3600 then return (s // 60) .. "m" end
-    if s < 86400 then return (s // 3600) .. "h" end
-    if s < 1209600 then return (s // 86400) .. "d" end
-    return (s // 604800) .. "w"
-end
-
 return M

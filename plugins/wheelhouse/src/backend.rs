@@ -29,6 +29,8 @@ const ACTIONS: [&str; 2] = ["press", "run_list"];
 
 /// How long file events must stop before the changed projects are read again.
 const QUIET: Duration = Duration::from_millis(150);
+/// The longest a refresh waits after the first relevant file event, however long events keep coming.
+const MAX_WAIT: Duration = Duration::from_secs(1);
 
 struct Initialize;
 
@@ -162,8 +164,9 @@ impl Core {
         self.watch(real.join(".beads"));
     }
 
-    fn unwatch_unused(&self, real: &std::path::Path) {
-        if self.subs.lock().unwrap().values().any(|s| s.real == real) {
+    /// Stop watching `real` when no subscription in `subs` reads it; `subs` is the locked map.
+    fn unwatch_unused(&self, subs: &HashMap<String, Sub>, real: &std::path::Path) {
+        if subs.values().any(|s| s.real == real) {
             return;
         }
         let mut watched = self.watched.lock().unwrap();
@@ -184,16 +187,20 @@ impl Core {
             return;
         };
         let real = PathBuf::from(&dir).canonicalize().unwrap_or_else(|_| PathBuf::from(&dir));
-        self.watch_project(&real);
-        self.subs.lock().unwrap().insert(key(&r), Sub { params: r.params, dir: dir.clone(), real, last: None });
+        {
+            // Watching happens while the subscription is added, so an unsubscribe never runs between them.
+            let mut subs = self.subs.lock().unwrap();
+            self.watch_project(&real);
+            subs.insert(key(&r), Sub { params: r.params, dir: dir.clone(), real, last: None });
+        }
         let core = self.clone();
         tokio::spawn(async move { core.refresh(&dir).await });
     }
 
     fn unsubscribe(&self, r: FeedRef) {
-        let removed = self.subs.lock().unwrap().remove(&key(&r));
-        if let Some(sub) = removed {
-            self.unwatch_unused(&sub.real);
+        let mut subs = self.subs.lock().unwrap();
+        if let Some(sub) = subs.remove(&key(&r)) {
+            self.unwatch_unused(&subs, &sub.real);
         }
     }
 
@@ -201,14 +208,14 @@ impl Core {
     /// none yet, a patch to the others, nothing when the value is the same.
     async fn refresh(&self, dir: &str) {
         let _one_at_a_time = self.work.lock().await;
-        let real = {
+        {
+            // Re-watch under the subs lock: a project nobody reads any more is not watched again.
             let subs = self.subs.lock().unwrap();
             match subs.values().find(|s| s.dir == dir) {
-                Some(s) => s.real.clone(),
+                Some(s) => self.watch_project(&s.real),
                 None => return,
             }
-        };
-        self.watch_project(&real);
+        }
         let d = dir.to_string();
         let value = match tokio::task::spawn_blocking(move || feed::value(&d)).await {
             Ok(v) => v,
@@ -309,21 +316,40 @@ fn key(r: &FeedRef) -> String {
     format!("{}\n{}", r.feed, r.params)
 }
 
-/// Read file events, wait for them to stop, then refresh each project they changed.
+/// Read file events, wait for them to stop, then refresh each project they changed. Only events that
+/// change a subscribed project restart the quiet wait, and a refresh comes at most `MAX_WAIT` after
+/// the first of them however long events keep arriving.
 async fn events(core: Arc<Core>, mut rx: UnboundedReceiver<Msg>) {
-    while let Some(first) = rx.recv().await {
-        let mut dirs = BTreeSet::new();
-        let take = |m: Msg, dirs: &mut BTreeSet<String>| match m {
-            Msg::Fs(paths) => core.affected(&paths, dirs),
-            Msg::Refresh(d) => {
-                dirs.insert(d);
-            }
-        };
-        take(first, &mut dirs);
-        while let Ok(Some(m)) = tokio::time::timeout(QUIET, rx.recv()).await {
-            take(m, &mut dirs);
+    let take = |core: &Core, m: Msg, dirs: &mut BTreeSet<String>| match m {
+        Msg::Fs(paths) => core.affected(&paths, dirs),
+        Msg::Refresh(d) => {
+            dirs.insert(d);
         }
-        for dir in dirs {
+    };
+    let mut dirs = BTreeSet::new();
+    loop {
+        while dirs.is_empty() {
+            let Some(m) = rx.recv().await else { return };
+            take(&core, m, &mut dirs);
+        }
+        let deadline = tokio::time::Instant::now() + MAX_WAIT;
+        let mut quiet = tokio::time::Instant::now() + QUIET;
+        loop {
+            let until = quiet.min(deadline);
+            match tokio::time::timeout_at(until, rx.recv()).await {
+                Ok(Some(m)) => {
+                    let mut seen = BTreeSet::new();
+                    take(&core, m, &mut seen);
+                    if !seen.is_empty() {
+                        quiet = tokio::time::Instant::now() + QUIET;
+                    }
+                    dirs.extend(seen);
+                }
+                Ok(None) => return,
+                Err(_) => break,
+            }
+        }
+        for dir in std::mem::take(&mut dirs) {
             core.refresh(&dir).await;
         }
     }

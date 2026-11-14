@@ -227,7 +227,12 @@ local function compare(ix, key, a, b)
     return 0
 end
 
+-- The most rows a view works out (a tree stops there, and says so), and the most the table is sent: a view tree over
+-- 100,000 JSON values is refused by the pane runtime and each row is about 45, so the table sends 1,500 rows and ends
+-- with one row saying how many more are not shown.
 local MAX_ROWS = 20000
+local SHOWN = 1500
+local MORE_ID = "\u{2026}more"
 
 -- A bead and what a tree view hangs under it, kept ones only: a bead with no kept row below it and not matching drops out.
 local function walk(ctx, b, depth)
@@ -236,7 +241,10 @@ local function walk(ctx, b, depth)
         return nil
     end
     ctx.budget -= 1
-    if ctx.budget < 0 then return nil end
+    if ctx.budget < 0 then
+        ctx.cut = true
+        return nil
+    end
     local onpath = ctx.onpath
     onpath[b.id] = true
     local nodes = {}
@@ -259,7 +267,10 @@ local function walk(ctx, b, depth)
 end
 
 local function flat(n, parent, collapsed, out)
-    if #out >= MAX_ROWS then return end
+    if #out >= MAX_ROWS then
+        out.cut = true
+        return
+    end
     local path = parent .. ">" .. n.b.id
     table.insert(out, { b = n.b, depth = n.depth, path = path, kids = #n.nodes > 0 })
     if not collapsed[path] then
@@ -268,7 +279,7 @@ local function flat(n, parent, collapsed, out)
 end
 
 -- The rows a view shows, as the page's table builds them: a flat sorted list, or a tree flattened with a depth and cut at
--- the collapsed paths.
+-- the collapsed paths. The second value is true when a tree stopped at MAX_ROWS and has more below.
 local function build(ix, st)
     local l = st.list
     local beads = ix.snap.beads
@@ -281,7 +292,7 @@ local function build(ix, st)
             function(a, b) return compare(ix, "status", a, b) end)
         local rows = {}
         for i, b in sorted do rows[i] = { b = b, depth = 0, path = b.id, kids = false } end
-        return rows
+        return rows, false
     end
     local pool = {}
     local want_done = table.find(list.values(l, "status"), "done") ~= nil
@@ -333,7 +344,7 @@ local function build(ix, st)
         end
         return v
     end
-    local ctx = { children = children, keep = keep, ok = ok, onpath = {}, budget = MAX_ROWS }
+    local ctx = { children = children, keep = keep, ok = ok, onpath = {}, budget = MAX_ROWS, cut = false }
     local tops = {}
     for _, r in roots do
         local n = walk(ctx, r, 0)
@@ -348,7 +359,7 @@ local function build(ix, st)
     end)
     local out = {}
     for _, n in tops do flat(n, "", st.collapsed, out) end
-    return out
+    return out, ctx.cut or out.cut == true
 end
 
 -- ───────────────────────────── the table ─────────────────────────────
@@ -400,21 +411,40 @@ local function row_json(ix, st, r)
     return row
 end
 
-local function table_node(ix, st, rows, total)
+-- 1234 as "1,234".
+local function commas(n)
+    local s = tostring(n)
+    while true do
+        local t, k = string.gsub(s, "^(-?%d+)(%d%d%d)", "%1,%2")
+        s = t
+        if k == 0 then return s end
+    end
+end
+
+-- The row that ends a table cut at SHOWN rows: how many more there are, `more` when the count is a lower bound.
+local function more_row(hidden, more)
+    local text = if hidden > 0
+        then commas(hidden) .. (if more then "+" else "") .. " more not shown; search or filter to narrow"
+        else "More not shown; search or filter to narrow"
+    return { id = MORE_ID, path = MORE_ID, depth = 0, cells = { { key = "title", text = text, tone = "muted" } } }
+end
+
+local function table_node(ix, st, rows, total, cut)
     local sortable = st.view == "list"
     local columns = {}
     for _, c in COLS do
         table.insert(columns, kit.column(c.key, c.label, c.width, c.tree, c.wide, sortable))
     end
     local out = {}
-    for i, r in rows do out[i] = row_json(ix, st, r) end
+    for i = 1, math.min(#rows, SHOWN) do out[i] = row_json(ix, st, rows[i]) end
+    if #rows > SHOWN or cut then table.insert(out, more_row(#rows - SHOWN, cut)) end
     local selected = {}
     for id in st.list.selected do table.insert(selected, id) end
     table.sort(selected)
     local t = {
         component = "Table",
         columns = columns,
-        sections = { { title = "", count = #out, rows = out } },
+        sections = { { title = "", count = #rows, rows = out } },
         rowAction = { type = "select_bead" },
         foldAction = { type = "toggle_path" },
         selectAction = { type = "list.select" },
@@ -489,22 +519,22 @@ local function detail(ix, st, id)
     if not b then return nil end
     local k = b._k
     local c = {}
-    if #st.hist > 0 then
-        table.insert(c, kit.button("← Back", { type = "back" }, { style = "link" }))
-    end
+    -- Back keeps its slot: hidden and disabled when there is nowhere to go back to.
+    table.insert(c, kit.button("← Back", { type = "back" }, { style = "link", disabled = #st.hist == 0, hideOff = true }))
     table.insert(c, kit.label(b.title, { size = 17, weight = "semibold" }))
     table.insert(c, fact("ID", kit.label(b.id, { mono = true, size = 12 })))
     table.insert(c, fact("Status", kit.label(k, { chip = true, size = 11, tone = tone_of(k) })))
     table.insert(c, fact("Priority", kit.label(if b.priority then "P" .. b.priority else "—", {})))
     table.insert(c, fact("Type", kit.label(b.kind, {})))
-    if #(b.labels or NONE) > 0 then
-        table.insert(c, fact("Labels", kit.label(table.concat(b.labels, "  ·  "), {})))
-    end
+    -- Every fact keeps its row; a missing value reads "—", as Priority does.
+    table.insert(c, fact("Labels", kit.label(if #(b.labels or NONE) > 0 then table.concat(b.labels, "  ·  ") else "—", {})))
     local par = b.parent and ix.by_id[b.parent]
     if par then
         table.insert(c, fact("Parent", kit.button(ix.short(par.id) .. "  " .. par.title, { type = "open_bead", id = par.id }, { style = "link" })))
+    else
+        table.insert(c, fact("Parent", kit.label("—", {})))
     end
-    if b.owner then table.insert(c, fact("Owner", kit.label(b.owner, {}))) end
+    table.insert(c, fact("Owner", kit.label(b.owner or "—", {})))
     table.insert(c, fact("Updated", kit.label(tm.ago(b.updated, ix.now) .. " ago", {})))
     if b.description and b.description ~= "" then
         -- Flat: a rule above and below the text, no raised box.
@@ -526,9 +556,10 @@ local function detail(ix, st, id)
     local footer = {}
     local act = act_of(ix, b)
     if act then
-        if st.ran then
-            table.insert(footer, kit.label(st.ran, { tone = if st.ran_bad then "bad" else "ok", weight = "semibold" }))
-        end
+        -- The result slot is always there, empty until this bead's press answers, so the button never changes place.
+        local ran = st.ran
+        if ran and ran.bead ~= b.id then ran = nil end
+        table.insert(footer, kit.label(if ran then ran.text else "", { tone = if ran and ran.bad then "bad" else "ok", weight = "semibold" }))
         local e = { style = "primary", disabled = act.disabled }
         if act.help ~= "" then e.help = act.help end
         table.insert(footer, kit.button(act.label, { type = "press", bead = b.id }, e))
@@ -628,7 +659,7 @@ local function page(state, data, snap, stale, panes)
             pri,
         }
 
-        local rows = build(ix, st)
+        local rows, cut = build(ix, st)
         -- The ids the list actions take: the listed leaves in the order shown, narrowed to the selected rows among them.
         local listed = {}
         for _, r in rows do
@@ -639,7 +670,7 @@ local function page(state, data, snap, stale, panes)
         st.ids = took
         local actions = list.actions(snap.scripts or NONE, took, #listed, "ids", "beads")
         table.insert(children, list.bar(SPEC, st.list, options, actions))
-        table.insert(children, kit.box("v", { table_node(ix, st, rows, #all) }, {}))
+        table.insert(children, kit.box("v", { table_node(ix, st, rows, #all, cut) }, {}))
 
         -- A closed panel is a Modal that is not presented, so the open one is replaced rather than left behind.
         local modal = st.detail and detail(ix, st, st.detail)
@@ -651,10 +682,13 @@ end
 -- ───────────────────────────── the module ─────────────────────────────
 
 local function init(previous)
-    return previous or {
+    local state = previous or {
         view = "list", list = list.new("status", true), collapsed = {}, detail = nil, hist = {},
-        ran = nil, ran_bad = false, said = nil, said_bad = false,
+        ran = nil, said = nil, said_bad = false,
     }
+    -- The beads whose presses have not answered yet, oldest first.
+    state.pressed = state.pressed or {}
+    return state
 end
 
 local function valid_view(v)
@@ -664,13 +698,20 @@ local function valid_view(v)
     return false
 end
 
+-- Drops the last press result unless it is for `id`, the bead about to be shown.
+local function forget(state, id)
+    if state.ran and state.ran.bead ~= id then state.ran = nil end
+end
+
 local function update(state, msg)
     if msg.action then
         -- What wheeld answered for an action this pane called.
         local failed = msg.error ~= nil
         local words = if failed then msg.error else (type(msg.result) == "table" and msg.result.said) or "Done."
         if msg.action == "wheelhouse.press" then
-            state.ran, state.ran_bad = words, failed
+            -- The answer names no bead: it is for the oldest press still waiting.
+            local bead = table.remove(state.pressed, 1)
+            state.ran = { bead = bead, text = words, bad = failed }
         elseif msg.action == "wheelhouse.run_list" then
             state.said, state.said_bad = words, failed
         end
@@ -690,22 +731,23 @@ local function update(state, msg)
     elseif t == "toggle_path" then
         if state.collapsed[msg.path] then state.collapsed[msg.path] = nil else state.collapsed[msg.path] = true end
     elseif t == "select_bead" then
+        if msg.id == MORE_ID then return end
         state.hist = {}
-        state.ran = nil
+        forget(state, msg.id)
         state.detail = msg.id
     elseif t == "open_bead" then
         if state.detail then table.insert(state.hist, state.detail) end
         state.detail = msg.id
-        state.ran = nil
+        forget(state, msg.id)
     elseif t == "back" then
         local prev = table.remove(state.hist)
         if prev then state.detail = prev end
     elseif t == "close_detail" then
         state.detail = nil
         state.hist = {}
-        state.ran = nil
     elseif t == "press" then
         if state.dir and msg.bead then
+            table.insert(state.pressed, msg.bead)
             wheel.action("wheelhouse.press", { dir = state.dir, bead = msg.bead })
         end
     elseif t == "list.run" then

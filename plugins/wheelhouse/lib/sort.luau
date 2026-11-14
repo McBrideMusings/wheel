@@ -1,12 +1,11 @@
 -- Ordering helpers for the wheelhouse panes.
 local M = {}
 
-local WIDTH = 12
-
+-- A digit run as its length (four digits) then its value without leading zeros, so a longer number sorts after a shorter
+-- one at any length, as Rust's `natural` compares runs.
 local function pad(digits)
     local d = string.gsub(digits, "^0+", "")
-    if #d >= WIDTH then return d end
-    return string.rep("0", WIDTH - #d) .. d
+    return string.format("%04d", #d) .. d
 end
 
 -- A string that sorts like the natural order of `s`: case-insensitive, and a run of digits by its number (`wheel-9` before

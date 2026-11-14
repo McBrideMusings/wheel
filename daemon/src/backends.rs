@@ -628,8 +628,9 @@ struct Spec {
     transport: BackendTransport,
     dir: PathBuf,
     space_dir: String,
-    /// The environment `wheel` reads (`WHEEL_URL`, `WHEEL_TOKEN_FILE`) and a `PATH` that finds it.
-    env: Vec<(String, String)>,
+    /// The environment `wheel` reads (`WHEEL_URL`, `WHEEL_TOKEN_FILE`) and a `PATH` that finds it,
+    /// asked for at each process start: the daemon's control address may be set after the first.
+    env: Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>,
     socket: PathBuf,
     log: Log,
     /// The manifest's `[backend]`, which the instance reports until it says more.
@@ -1077,7 +1078,7 @@ async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
         .arg("-c")
         .arg(&spec.command)
         .current_dir(&spec.dir)
-        .envs(spec.env.iter().map(|(k, v)| (k, v)))
+        .envs((spec.env)())
         .env("WHEEL_PLUGIN_ID", &spec.plugin)
         .env("WHEEL_SPACE_DIR", &spec.space_dir)
         .stdout(Stdio::piped())
@@ -1353,7 +1354,14 @@ impl Backends {
                 .dir()
                 .map_or_else(|| state.instance_dir.clone(), Path::to_path_buf),
             space_dir: space_dir.to_string(),
-            env: crate::shell::command_env(state.control.lock().unwrap().as_ref(), &state.instance_dir, &state.path()),
+            env: {
+                let me = state.me.clone();
+                Arc::new(move || {
+                    me.upgrade().map_or_else(Vec::new, |s| {
+                        crate::shell::command_env(s.control.lock().unwrap().as_ref(), &s.instance_dir, &s.path())
+                    })
+                })
+            },
             socket: socket_path(&state.instance_dir, &key),
             log: slot.log.clone(),
             watch_dir: package.dir().map(Path::to_path_buf),
@@ -2026,7 +2034,7 @@ mod tests {
             transport: BackendTransport::Stdio,
             dir: dir.to_path_buf(),
             space_dir: "/space".into(),
-            env: vec![],
+            env: Arc::new(Vec::new),
             socket: dir.join("s.sock"),
             log: Log::open(&dir.join("p.log")).unwrap(),
             declared,

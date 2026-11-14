@@ -210,19 +210,6 @@ function M.counted(items, of)
     return out
 end
 
--- A filter's options in a fixed order, each with how many `items` have it: `values` are { value, text }.
-function M.fixed(spec, key, items, values)
-    local out = {}
-    for _, p in values do
-        local n = 0
-        for _, item in items do
-            if spec.has(item, key, p[1]) then n += 1 end
-        end
-        table.insert(out, { p[1], p[2] .. "  " .. n })
-    end
-    return out
-end
-
 -- The status boxes: each a number over a caption that, tapped, sets one filter to its value alone, and tapped again
 -- clears it. `cards` are { caption, filter key, value, count, whether a non-zero count is good news }.
 function M.boxes(l, cards)
