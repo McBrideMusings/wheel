@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::core::{git, run};
 
 pub mod cli;
-pub mod serve;
+pub mod feed;
 
 const SEP: char = '\x1f';
 

@@ -2,7 +2,9 @@
 # Check the wheelhouse plugin's backend (wheel-pmf2.4.7) against a throwaway wheeld: the package
 # plugins/wheelhouse is installed through a symlink, a plugin pane of kind wheelhouse/beads reads
 # the `wheelhouse.beads` feed of temp projects (made with `bd init`) and invokes
-# `wheelhouse.press` and `wheelhouse.run_list`, as the Luau pane does. Prints PASS or FAIL per
+# `wheelhouse.press` and `wheelhouse.run_list`, as the Luau pane does; a pane of kind
+# wheelhouse/repo reads `wheelhouse.repo` of a temp git repo with an origin and invokes
+# `wheelhouse.branch_delete` and `wheelhouse.run_list` with view repo. Prints PASS or FAIL per
 # case. Uses no GUI, focus, mouse or keyboard. Everything it starts is killed by pid at the end.
 #
 #   tools/wheelhouse-plugin.sh         # uses target/debug/{wheeld,wheel,wheelhouse}
@@ -342,6 +344,145 @@ grep -q 'may not invoke wheelhouse.shutdown_now; its actions: wheelhouse.press, 
 sed -i '' 's/label = "Mark list"/label = "Mark all"/' "$A/wheel.toml"
 poll 10 grep -q 'Mark all' "$FA"
 grep -q 'Mark all' "$FA" && pass "an edit of wheel.toml reaches the feed" || fail "an edit of wheel.toml reaches the feed"
+
+# 11b the repo feed and its actions (wheel-pmf2.4.10): a fixture repo with an origin whose HEAD is
+# main, a branch at main's tip (merged), a branch with a local-only commit, and one stash.
+R="$T/proj-r"
+ORIGIN="$T/origin.git"
+git init -q --bare -b main "$ORIGIN"
+git init -q -b main "$R"
+rgit() { git -C "$R" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+echo one > "$R/f.txt"
+rgit add f.txt
+rgit commit -q -m "first commit"
+rgit remote add origin "$ORIGIN"
+rgit push -q -u origin main
+rgit remote set-head origin main > /dev/null
+rgit branch merged-b
+rgit checkout -q -b wip
+echo two >> "$R/f.txt"
+rgit commit -q -am "local-only work"
+rgit checkout -q main
+echo three >> "$R/f.txt"
+rgit stash -q
+cat > "$R/wheel.toml" <<TOML
+[repo.list.mark]
+label = "Mark branches"
+run = 'echo "\$BRANCHES|\$REPO_PATH" > "$T/marker-repo-list"'
+TOML
+RSPACE=$(w space new "$R")
+RPANE=$(w pane ls | awk -v s="$RSPACE" '$1 == s {print $2; exit}')
+w pane kind "$RPANE" plugin --plugin wheelhouse --plugin-pane repo > /dev/null
+FR="$T/feed-r.jsonl"
+w plugin feed "$RPANE" wheelhouse.repo --params "{\"dir\":\"$R\"}" --count 200 > "$FR" 2> "$FR.err" &
+PIDS+=($!)
+poll 30 grep -q '"branches":\[{' "$FR"
+python3 - "$FR" "$R" > "$T/repo-shape.verdict" <<'PY'
+import json, sys
+path, dirn = sys.argv[1:]
+rows = [json.loads(l) for l in open(path) if l.strip().startswith("{")]
+vals = [r for r in rows if r.get("value") and r["value"].get("branches")]
+if not vals:
+    print("no value with branches: %r" % rows[:2]); sys.exit()
+r = vals[0]
+v = r["value"]
+want = {"now", "name", "top", "default", "head", "branches", "stashes", "commits", "pr_error", "error", "scripts"}
+bkeys = {"branch", "ts", "subject", "author", "ahead", "behind", "upstream", "upstream_gone", "remote", "unpushed",
+         "worktree", "pr", "pr_merged", "local_only", "dead", "blocked"}
+by = {b["branch"]: b for b in v["branches"]}
+problems = []
+if r.get("params") != {"dir": dirn}:
+    problems.append("params %r" % r.get("params"))
+if set(v) != want:
+    problems.append("keys %r" % sorted(v))
+if v["name"] != "proj-r" or v["default"] != "origin/main" or v["head"] != "main" or v["error"] is not None:
+    problems.append("header %r" % {k: v[k] for k in ("name", "default", "head", "error")})
+if set(by) != {"merged-b", "wip"} or any(set(b) != bkeys for b in v["branches"]):
+    problems.append("branches %r" % sorted(by))
+elif not (by["merged-b"]["ahead"] == 0 and by["merged-b"]["dead"] == "merged" and by["merged-b"]["local_only"] == 0
+          and by["wip"]["ahead"] == 1 and by["wip"]["dead"] is None and by["wip"]["local_only"] == 1):
+    problems.append("branch fields %r" % by)
+if len(v["stashes"]) != 1 or set(v["stashes"][0]) != {"ref", "subject", "when"} or v["stashes"][0]["ref"] != "stash@{0}":
+    problems.append("stashes %r" % v["stashes"])
+if [c["subject"] for c in v["commits"]] != ["first commit"] or set(v["commits"][0]) != {"sha", "subject", "author", "ts"}:
+    problems.append("commits %r" % v["commits"])
+if v["scripts"] != [{"name": "mark", "label": "Mark branches"}]:
+    problems.append("scripts %r" % v["scripts"])
+print("ok" if not problems else "; ".join(problems))
+PY
+check "the repo feed lists branches, stashes, commits and scripts with the documented keys" "$(head -1 "$T/repo-shape.verdict")"
+
+# 2 a new branch arrives as a patch.
+rgit branch new-x
+has_new_x() { grep '"patch"' "$FR" | grep -q 'new-x'; }
+poll 30 has_new_x
+has_new_x && pass "git branch new-x arrives in the repo feed as a patch" || fail "git branch new-x arrives in the repo feed as a patch"
+
+# 3 branch_delete.
+w plugin action "$RPANE" wheelhouse.branch_delete --args "{\"dir\":\"$R\",\"branch\":\"merged-b\"}" > "$T/del.json" 2> "$T/del.err"
+python3 - "$T/del.json" > "$T/del.verdict" <<'PY'
+import json, sys
+try:
+    r = json.loads(open(sys.argv[1]).readline())
+except Exception as e:
+    print("no result: %s" % e); sys.exit()
+print("ok" if "deleted branch merged-b" in r.get("said", "") else repr(r))
+PY
+check "branch_delete of a merged branch answers said with 'deleted branch'" "$(cat "$T/del.verdict")"
+# The patches are checked by their text: one of them removes merged-b's row.
+removed() { grep '"patch"' "$FR" | grep '"remove"' | grep -q '/branches/'; }
+poll 30 removed
+removed && [ -z "$(git -C "$R" branch --list merged-b)" ] && pass "the deleted branch is gone from git and leaves the repo feed (a remove patch)" \
+  || fail "the deleted branch leaves the repo feed"
+w plugin action "$RPANE" wheelhouse.branch_delete --args "{\"dir\":\"$R\",\"branch\":\"wip\"}" > /dev/null 2> "$T/del2.err"
+grep -q 'wip: not deletable' "$T/del2.err" && ! grep -q 'wip: wip:' "$T/del2.err" && [ -n "$(git -C "$R" branch --list wip)" ] \
+  && pass "branch_delete of a branch with local-only commits errors with 'not deletable' (the branch named once) and keeps it" \
+  || fail "branch_delete of wip: $(cat "$T/del2.err")"
+
+# 4 run_list with view repo runs [repo.list] with BRANCHES and REPO_PATH.
+w plugin action "$RPANE" wheelhouse.run_list --args "{\"dir\":\"$R\",\"view\":\"repo\",\"script\":\"mark\",\"ids\":[\"wip\",\"new-x\"]}" > "$T/rlist.json" 2> "$T/rlist.err"
+poll 5 has_file "$T/marker-repo-list"
+RTOP=$(cd "$R" && pwd -P)
+if [ "$(cat "$T/marker-repo-list" 2>/dev/null)" = "wip new-x|$RTOP" ] && grep -q 'Mark branches started over 2 branches' "$T/rlist.json"; then
+  pass "run_list with view repo runs [repo.list] with BRANCHES and REPO_PATH"
+else
+  fail "run_list view repo: $(cat "$T/rlist.json") $(cat "$T/rlist.err") marker=$(cat "$T/marker-repo-list" 2>/dev/null)"
+fi
+w plugin action "$RPANE" wheelhouse.run_list --args "{\"dir\":\"$R\",\"view\":\"nope\",\"script\":\"mark\",\"ids\":[\"wip\"]}" > /dev/null 2> "$T/rview.err"
+grep -q 'no view nope' "$T/rview.err" && pass "run_list with an unknown view is an error" || fail "run_list unknown view: $(cat "$T/rview.err")"
+
+# 11c a repo feed on a checkout with no origin sees `git remote add origin` and the first fetch at once
+# (the missing refs/remotes/origin is watched through its nearest existing ancestor), not at the 120 s tick.
+N="$T/proj-n"
+git init -q -b main "$N"
+ngit() { git -C "$N" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+echo n > "$N/f.txt"
+ngit add f.txt
+ngit commit -q -m "only commit"
+FN="$T/feed-n.jsonl"
+w plugin feed "$RPANE" wheelhouse.repo --params "{\"dir\":\"$N\"}" --count 200 > "$FN" 2> "$FN.err" &
+PIDS+=($!)
+poll 30 grep -q '"branches"' "$FN"
+ngit remote add origin "$ORIGIN"
+ngit fetch -q origin
+saw_origin() { grep '"patch"' "$FN" | grep -q 'origin'; }
+poll 3 saw_origin
+saw_origin && pass "git remote add origin and the first fetch reach a repo feed that had no origin within 3 s" \
+  || fail "git remote add origin and the first fetch reach the repo feed: $(tail -c 400 "$FN")"
+
+# 11d closing the repo pane's feed on a directory leaves the beads feed on the same directory updating.
+FRA="$T/feed-ra.jsonl"
+w plugin feed "$RPANE" wheelhouse.repo --params "{\"dir\":\"$A\"}" --count 200 > "$FRA" 2> "$FRA.err" &
+RAPID=$!
+PIDS+=($RAPID)
+poll 30 grep -q '"now"' "$FRA"
+kill "$RAPID" 2>/dev/null
+wait "$RAPID" 2>/dev/null
+sleep 1
+( cd "$A" && bd update "$C2" --title "After the repo feed closed" > /dev/null 2>&1 )
+poll 10 grep -q 'After the repo feed closed' "$FA"
+grep -q 'After the repo feed closed' "$FA" && pass "closing a repo feed on a directory leaves the beads feed on it updating" \
+  || fail "closing a repo feed on a directory leaves the beads feed on it updating"
 
 # 12 kill -9 of the backend: stale, then a fresh value.
 OLD=$(backend_pid "$SPACE")

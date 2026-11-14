@@ -2,9 +2,10 @@
 //! Wheel's JSON-RPC 2.0 over standard input and output (Content-Length framing, `async-lsp`;
 //! `docs/plugin-runtime.md`, "Plugin backends") as the server side.
 //!
-//! One process serves every project: a feed's params name the project (`{dir}`). The `beads`
-//! feed sends the whole value on every subscribe and a JSON Patch on each later change, found by
-//! watching the files that can change it. Actions are `press` and `run_list`.
+//! One process serves every project: a feed's params name the project (`{dir}`). The `beads` and
+//! `repo` feeds send the whole value on every subscribe and a JSON Patch on each later change,
+//! found by watching the files that can change it (the `repo` feed is also read again every 120 s,
+//! for the open PRs and checks only `gh` knows). Actions are `press`, `run_list` and `branch_delete`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
@@ -22,10 +23,17 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::beads::feed;
+use crate::beads::feed as beads_feed;
+use crate::repo::feed as repo_feed;
 
-const FEEDS: [&str; 1] = ["beads"];
-const ACTIONS: [&str; 2] = ["press", "run_list"];
+/// The lock that orders the reads of one (feed, project).
+type ReadLock = Arc<tokio::sync::Mutex<()>>;
+
+const FEEDS: [&str; 2] = ["beads", "repo"];
+const ACTIONS: [&str; 3] = ["press", "run_list", "branch_delete"];
+
+/// How often a `repo` subscription is read again whatever the files do: GitHub has no event.
+const REPO_EVERY: Duration = Duration::from_secs(120);
 
 /// How long file events must stop before the changed projects are read again.
 const QUIET: Duration = Duration::from_millis(150);
@@ -108,18 +116,69 @@ impl Notification for LogN {
 enum Msg {
     /// Files changed.
     Fs(Vec<PathBuf>),
-    /// Read this project again: a press claimed or released one of its beads.
-    Refresh(String),
+    /// Read this one feed of this project again.
+    RefreshFeed(String, String),
 }
 
 struct Sub {
+    feed: String,
     /// The params as subscribed, echoed in every update.
     params: Value,
     dir: String,
     /// `dir` as the file watcher reports paths under it.
     real: PathBuf,
+    /// The directories this subscription needs watched, and whether each is watched recursively.
+    watch: Vec<(PathBuf, bool)>,
+    /// A `repo` subscription: the files whose change matters (found by their exact path)...
+    files: Vec<PathBuf>,
+    /// ...and the directories under which any change matters.
+    trees: Vec<PathBuf>,
     /// The value last sent; none until the first.
     last: Option<Value>,
+}
+
+/// What a subscription to `feed` for `dir` needs watched: (directories, files, trees).
+fn watches(feed: &str, dir: &str, real: &std::path::Path) -> (Vec<(PathBuf, bool)>, Vec<PathBuf>, Vec<PathBuf>) {
+    if feed != "repo" {
+        return (vec![(real.to_path_buf(), false), (real.join(".beads"), false)], vec![], vec![]);
+    }
+    let Some((own, common)) = crate::core::git::dirs(dir) else { return Default::default() };
+    let (own, common) = (PathBuf::from(own), PathBuf::from(common));
+    let files = [own.join("logs/HEAD"), own.join("HEAD"), common.join("packed-refs"), common.join("refs/stash")];
+    let trees = [common.join("refs/heads"), common.join("refs/remotes/origin"), common.join("worktrees")];
+    // The watcher reports real paths, so name them that way: the nearest existing ancestor made real,
+    // then the rest (a file or tree that does not exist yet).
+    let real_of = |p: &PathBuf| {
+        let mut tail = vec![];
+        let mut at = p.clone();
+        loop {
+            if let Ok(real) = at.canonicalize() {
+                return tail.iter().rev().fold(real, |acc, n| acc.join(n));
+            }
+            match (at.parent().map(|d| d.to_path_buf()), at.file_name().map(|n| n.to_os_string())) {
+                (Some(d), Some(n)) => {
+                    tail.push(n);
+                    at = d;
+                }
+                _ => return p.clone(),
+            }
+        }
+    };
+    let files: Vec<PathBuf> = files.iter().map(real_of).collect();
+    let trees: Vec<PathBuf> = trees.iter().map(real_of).collect();
+    let mut watch: Vec<(PathBuf, bool)> = files.iter().filter_map(|f| f.parent().map(|d| (d.to_path_buf(), false))).collect();
+    for t in &trees {
+        if t.is_dir() {
+            watch.push((t.clone(), true));
+        } else {
+            // A tree that does not exist yet (`refs/remotes/origin` before the first fetch): watch the
+            // nearest ancestor that does, so its creation is an event; the next read watches the tree.
+            if let Some(up) = t.ancestors().skip(1).find(|a| a.is_dir()) {
+                watch.push((up.to_path_buf(), false));
+            }
+        }
+    }
+    (watch, files, trees)
 }
 
 struct Core {
@@ -128,8 +187,12 @@ struct Core {
     watched: Mutex<HashSet<PathBuf>>,
     watcher: Mutex<notify::RecommendedWatcher>,
     tx: UnboundedSender<Msg>,
-    /// Held while a project is read and its value sent, so two reads never swap order.
-    work: tokio::sync::Mutex<()>,
+    /// One lock per (feed, project), held while it is read and its value sent, so two reads of the same
+    /// feed and project never swap order and a slow read (`gh`) delays nothing else.
+    work: Mutex<HashMap<(String, String), ReadLock>>,
+    /// The (feed, project) pairs a refresh is queued for and has not started reading: another event for
+    /// one of them needs no second refresh.
+    waiting: Mutex<HashSet<(String, String)>>,
 }
 
 fn records_dir() -> Option<PathBuf> {
@@ -142,12 +205,13 @@ impl Core {
         let _ = self.client.notify::<LogN>(json!({ "level": level, "message": message }));
     }
 
-    fn watch(&self, path: PathBuf) {
+    fn watch(&self, path: PathBuf, recursive: bool) {
         let mut watched = self.watched.lock().unwrap();
         if watched.contains(&path) || !path.is_dir() {
             return;
         }
-        match self.watcher.lock().unwrap().watch(&path, RecursiveMode::NonRecursive) {
+        let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        match self.watcher.lock().unwrap().watch(&path, mode) {
             Ok(()) => {
                 watched.insert(path);
             }
@@ -158,21 +222,12 @@ impl Core {
         }
     }
 
-    /// Watch the project's directory (its `wheel.toml`, and `.beads` appearing) and its `.beads`.
-    fn watch_project(&self, real: &std::path::Path) {
-        self.watch(real.to_path_buf());
-        self.watch(real.join(".beads"));
-    }
-
-    /// Stop watching `real` when no subscription in `subs` reads it; `subs` is the locked map.
-    fn unwatch_unused(&self, subs: &HashMap<String, Sub>, real: &std::path::Path) {
-        if subs.values().any(|s| s.real == real) {
-            return;
-        }
+    /// Stop watching every path in `gone` that no subscription in `subs` needs; `subs` is the locked map.
+    fn unwatch_unused(&self, subs: &HashMap<String, Sub>, gone: &[(PathBuf, bool)]) {
         let mut watched = self.watched.lock().unwrap();
-        for p in [real.to_path_buf(), real.join(".beads")] {
-            if watched.remove(&p) {
-                let _ = self.watcher.lock().unwrap().unwatch(&p);
+        for (p, _) in gone {
+            if !subs.values().any(|s| s.watch.iter().any(|(w, _)| w == p)) && watched.remove(p) {
+                let _ = self.watcher.lock().unwrap().unwatch(p);
             }
         }
     }
@@ -187,48 +242,80 @@ impl Core {
             return;
         };
         let real = PathBuf::from(&dir).canonicalize().unwrap_or_else(|_| PathBuf::from(&dir));
+        let feed = r.feed.clone();
         {
             // Watching happens while the subscription is added, so an unsubscribe never runs between them.
+            // A `repo` subscription's paths come from git, so its first refresh finds them.
             let mut subs = self.subs.lock().unwrap();
-            self.watch_project(&real);
-            subs.insert(key(&r), Sub { params: r.params, dir: dir.clone(), real, last: None });
+            let (watch, files, trees) = if feed == "repo" { Default::default() } else { watches(&feed, &dir, &real) };
+            for (p, rec) in &watch {
+                self.watch(p.clone(), *rec);
+            }
+            let old = subs.insert(key(&r), Sub { feed: feed.clone(), params: r.params, dir: dir.clone(), real, watch, files, trees, last: None });
+            if let Some(old) = old {
+                self.unwatch_unused(&subs, &old.watch);
+            }
         }
         let core = self.clone();
-        tokio::spawn(async move { core.refresh(&dir).await });
+        tokio::spawn(async move { core.refresh(&feed, &dir).await });
     }
 
     fn unsubscribe(&self, r: FeedRef) {
         let mut subs = self.subs.lock().unwrap();
         if let Some(sub) = subs.remove(&key(&r)) {
-            self.unwatch_unused(&subs, &sub.real);
+            self.unwatch_unused(&subs, &sub.watch);
         }
     }
 
-    /// Read `dir` and send every subscriber of it what changed: the whole value to one that has
-    /// none yet, a patch to the others, nothing when the value is the same.
-    async fn refresh(&self, dir: &str) {
-        let _one_at_a_time = self.work.lock().await;
-        {
-            // Re-watch under the subs lock: a project nobody reads any more is not watched again.
+    /// Read `feed` of `dir` and send every subscriber of it what changed: the whole value to one that
+    /// has none yet, a patch to the others, nothing when the value is the same.
+    async fn refresh(&self, feed: &str, dir: &str) {
+        let lock = self.work.lock().unwrap().entry((feed.to_string(), dir.to_string())).or_default().clone();
+        let _one_at_a_time = lock.lock().await;
+        self.waiting.lock().unwrap().remove(&(feed.to_string(), dir.to_string()));
+        let real = {
             let subs = self.subs.lock().unwrap();
-            match subs.values().find(|s| s.dir == dir) {
-                Some(s) => self.watch_project(&s.real),
+            match subs.values().find(|s| s.feed == feed && s.dir == dir) {
+                Some(s) => s.real.clone(),
                 None => return,
             }
+        };
+        // Find what to watch and watch it before reading, so a change made while the read runs is an event.
+        let (f, d) = (feed.to_string(), dir.to_string());
+        let paths = tokio::task::spawn_blocking(move || watches(&f, &d, &real)).await;
+        let (watch, files, trees) = match paths {
+            Ok(v) => v,
+            Err(e) => return self.log("error", &format!("reading {dir}: {e}")),
+        };
+        {
+            // Under the subs lock, so a project nobody reads any more is not watched again.
+            let subs = self.subs.lock().unwrap();
+            if subs.values().any(|s| s.feed == feed && s.dir == dir) {
+                for (p, rec) in &watch {
+                    self.watch(p.clone(), *rec);
+                }
+            }
         }
-        let d = dir.to_string();
-        let value = match tokio::task::spawn_blocking(move || feed::value(&d)).await {
+        let (f, d) = (feed.to_string(), dir.to_string());
+        let read = tokio::task::spawn_blocking(move || if f == "repo" { repo_feed::value(&d) } else { beads_feed::value(&d) }).await;
+        let value = match read {
             Ok(v) => v,
             Err(e) => return self.log("error", &format!("reading {dir}: {e}")),
         };
         let mut subs = self.subs.lock().unwrap();
-        for sub in subs.values_mut().filter(|s| s.dir == dir) {
+        let mut gone = vec![];
+        for sub in subs.values_mut().filter(|s| s.feed == feed && s.dir == dir) {
+            if !watch.is_empty() || feed != "repo" {
+                gone.extend(std::mem::replace(&mut sub.watch, watch.clone()));
+                sub.files = files.clone();
+                sub.trees = trees.clone();
+            }
             let update = match &sub.last {
-                None => json!({ "feed": "beads", "params": sub.params, "value": value }),
+                None => json!({ "feed": feed, "params": sub.params, "value": value }),
                 Some(old) if same(old, &value) => continue,
                 Some(old) => {
                     let patch = serde_json::to_value(json_patch::diff(old, &value)).unwrap_or(Value::Null);
-                    json!({ "feed": "beads", "params": sub.params, "patch": patch })
+                    json!({ "feed": feed, "params": sub.params, "patch": patch })
                 }
             };
             match self.client.notify::<FeedUpdate>(update) {
@@ -236,26 +323,29 @@ impl Core {
                 Err(e) => eprintln!("wheelhouse backend: feed/update: {e}"),
             }
         }
+        self.unwatch_unused(&subs, &gone);
     }
 
-    /// The projects a batch of file events changes.
-    fn affected(&self, paths: &[PathBuf], dirs: &mut BTreeSet<String>) {
+    /// The (feed, project) pairs a batch of file events changes.
+    fn affected(&self, paths: &[PathBuf], out: &mut BTreeSet<(String, String)>) {
         let records = records_dir();
         let subs = self.subs.lock().unwrap();
         for p in paths {
             let (Some(name), Some(parent)) = (p.file_name().and_then(|n| n.to_str()), p.parent()) else { continue };
-            if name == "bead-panes.json" && records.as_deref() == Some(parent) {
-                dirs.extend(subs.values().map(|s| s.dir.clone()));
-                continue;
-            }
             for s in subs.values() {
-                let hit = match name {
-                    "wheel.toml" | ".beads" => parent == s.real,
-                    "last-touched" => parent == s.real.join(".beads"),
-                    _ => false,
+                let hit = if s.feed == "repo" {
+                    s.files.iter().any(|f| f == p) || s.trees.iter().any(|t| p.starts_with(t) || t.starts_with(p))
+                } else if name == "bead-panes.json" && records.as_deref() == Some(parent) {
+                    true
+                } else {
+                    match name {
+                        "wheel.toml" | ".beads" => parent == s.real,
+                        "last-touched" => parent == s.real.join(".beads"),
+                        _ => false,
+                    }
                 };
                 if hit {
-                    dirs.insert(s.dir.clone());
+                    out.insert((s.feed.clone(), s.dir.clone()));
                 }
             }
         }
@@ -273,17 +363,36 @@ impl Core {
                 let tx = self.tx.clone();
                 let changed_dir = dir.clone();
                 let changed = move || {
-                    let _ = tx.send(Msg::Refresh(changed_dir.clone()));
+                    let _ = tx.send(Msg::RefreshFeed("beads".into(), changed_dir.clone()));
                 };
-                tokio::task::spawn_blocking(move || feed::press(&dir, &bead, &pane, changed)).await
+                tokio::task::spawn_blocking(move || beads_feed::press(&dir, &bead, &pane, changed)).await
             }
             "run_list" => {
                 let script = arg("script").ok_or_else(|| bad("run_list needs args.script".into()))?;
+                let view = arg("view").unwrap_or_else(|| "beads".into());
+                if view != "beads" && view != "repo" {
+                    return Err(bad(format!("run_list: no view {view}; its views: beads, repo")));
+                }
                 let ids: Vec<String> = match p.args.get("ids") {
                     Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-                    _ => return Err(bad("run_list needs args.ids, a list of bead ids".into())),
+                    _ => return Err(bad("run_list needs args.ids, a list of ids".into())),
                 };
-                tokio::task::spawn_blocking(move || feed::run_list(&dir, &script, &ids, &pane)).await
+                tokio::task::spawn_blocking(move || {
+                    if view == "repo" {
+                        repo_feed::run_list(&dir, &script, &ids, &pane)
+                    } else {
+                        beads_feed::run_list(&dir, &script, &ids, &pane)
+                    }
+                })
+                .await
+            }
+            "branch_delete" => {
+                let branch = arg("branch").ok_or_else(|| bad("branch_delete needs args.branch".into()))?;
+                let changed_dir = dir.clone();
+                let done = tokio::task::spawn_blocking(move || repo_feed::delete(&dir, &branch)).await;
+                // Read the project again whether or not the delete went through.
+                let _ = self.tx.send(Msg::RefreshFeed("repo".into(), changed_dir));
+                done
             }
             other => {
                 return Err(ResponseError::new(
@@ -320,17 +429,17 @@ fn key(r: &FeedRef) -> String {
 /// change a subscribed project restart the quiet wait, and a refresh comes at most `MAX_WAIT` after
 /// the first of them however long events keep arriving.
 async fn events(core: Arc<Core>, mut rx: UnboundedReceiver<Msg>) {
-    let take = |core: &Core, m: Msg, dirs: &mut BTreeSet<String>| match m {
-        Msg::Fs(paths) => core.affected(&paths, dirs),
-        Msg::Refresh(d) => {
-            dirs.insert(d);
+    let take = |core: &Core, m: Msg, out: &mut BTreeSet<(String, String)>| match m {
+        Msg::Fs(paths) => core.affected(&paths, out),
+        Msg::RefreshFeed(f, d) => {
+            out.insert((f, d));
         }
     };
-    let mut dirs = BTreeSet::new();
+    let mut pending = BTreeSet::new();
     loop {
-        while dirs.is_empty() {
+        while pending.is_empty() {
             let Some(m) = rx.recv().await else { return };
-            take(&core, m, &mut dirs);
+            take(&core, m, &mut pending);
         }
         let deadline = tokio::time::Instant::now() + MAX_WAIT;
         let mut quiet = tokio::time::Instant::now() + QUIET;
@@ -343,14 +452,31 @@ async fn events(core: Arc<Core>, mut rx: UnboundedReceiver<Msg>) {
                     if !seen.is_empty() {
                         quiet = tokio::time::Instant::now() + QUIET;
                     }
-                    dirs.extend(seen);
+                    pending.extend(seen);
                 }
                 Ok(None) => return,
                 Err(_) => break,
             }
         }
-        for dir in std::mem::take(&mut dirs) {
-            core.refresh(&dir).await;
+        // Each refresh runs on its own, so a slow one (`gh`) holds up only its own feed and project.
+        for (feed, dir) in std::mem::take(&mut pending) {
+            if !core.waiting.lock().unwrap().insert((feed.clone(), dir.clone())) {
+                continue;
+            }
+            let core = core.clone();
+            tokio::spawn(async move { core.refresh(&feed, &dir).await });
+        }
+    }
+}
+
+/// Ask for every `repo` subscription to be read again each `REPO_EVERY`.
+async fn repo_clock(core: Arc<Core>) {
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + REPO_EVERY, REPO_EVERY);
+    loop {
+        tick.tick().await;
+        let dirs: BTreeSet<String> = core.subs.lock().unwrap().values().filter(|s| s.feed == "repo").map(|s| s.dir.clone()).collect();
+        for dir in dirs {
+            let _ = core.tx.send(Msg::RefreshFeed("repo".into(), dir));
         }
     }
 }
@@ -372,12 +498,14 @@ pub async fn run() -> anyhow::Result<()> {
             watched: Mutex::default(),
             watcher: Mutex::new(watcher),
             tx,
-            work: tokio::sync::Mutex::new(()),
+            work: Mutex::default(),
+            waiting: Mutex::default(),
         });
         if let Some(dir) = records_dir() {
-            core.watch(dir);
+            core.watch(dir, false);
         }
         tokio::spawn(events(core.clone(), rx));
+        tokio::spawn(repo_clock(core.clone()));
         let mut router = Router::new(core);
         router
             .request::<Initialize, _>(|_, _| async {

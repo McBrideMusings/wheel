@@ -11,3 +11,10 @@ title = "Beads"
 script = "panes/beads.luau"
 reads = ["wheelhouse.beads", "wheel.panes"]
 actions = ["wheelhouse.press", "wheelhouse.run_list"]
+
+[[pane]]
+id = "repo"
+title = "Repo"
+script = "panes/repo.luau"
+reads = ["wheelhouse.repo"]
+actions = ["wheelhouse.branch_delete", "wheelhouse.run_list"]
