@@ -26,7 +26,7 @@ public final class PluginPane {
 
     /// The scroll the host last asked for; the pane's ScrollView applies each new `id` once.
     public private(set) var scrollRequest = ScrollRequest(id: 0, to: .by(0))
-    /// Where the pane's ScrollView stands (nil while the surface fills the pane and has no ScrollView).
+    /// Where the pane's ScrollView stands as last reported; stale once the surface fills the pane, so read it with `fillsPane`.
     public internal(set) var scrollMetrics: ScrollMetrics?
 
     /// A scroll asked from outside the pointer: to an edge, or by a distance in points (positive is down).

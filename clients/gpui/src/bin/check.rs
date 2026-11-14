@@ -4030,6 +4030,8 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         if name == "beads" {
             // The Table fills the pane, so the pane has no ScrollView of its own to scroll.
             ensure!(seen["fills"] == true && seen["scroll"].is_null(), "the Beads Table should fill its pane: fills {} scroll {}", seen["fills"], seen["scroll"]);
+            let refused = native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"bottom"}));
+            ensure!(refused["ok"] == false, "a pane that fills has no ScrollView, so a scroll should answer ok false: {refused}");
             let picker = components(&seen).iter().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Beads pane has no view picker"))?;
             let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","path":format!("/{picker}"),"value":["graph"]}));
             ensure!(set["ok"] == true, "the Beads view picker refused `graph`: {set}");
@@ -4083,6 +4085,22 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     ensure!(ok, "pane shot of the tall pane at the bottom: {err}");
     let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
     ensure!(bytes > 5000 && std::fs::read(&png)? != std::fs::read(&top)?, "the scrolled tall pane's picture is missing or equals the top's: {} ({bytes} bytes)", png.display());
+    // `to=top` returns to offset 0, then `dy=100` moves down by 100 points from there.
+    for (body, want) in [(json!({"to":"top"}), 0.0), (json!({"dy":100.0}), 100.0)] {
+        let mut request = json!({"op":"plugin","pane":pane,"action":"scroll"});
+        request.as_object_mut().unwrap().extend(body.as_object().unwrap().clone());
+        let sent = native.call(request);
+        ensure!(sent["ok"] == true, "the tall pane refused {body}: {sent}");
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            tall = state(&native);
+            if tall["scroll"]["offset"].as_f64().is_some_and(|o| (o - want).abs() < 1.5) {
+                break;
+            }
+        }
+        let now = tall["scroll"]["offset"].as_f64().unwrap_or(-1.0);
+        ensure!((now - want).abs() < 1.5, "after {body} the tall pane's offset should be {want}: {now}");
+    }
     report.insert("tall".into(), json!({"last_row": last, "content": content, "visible": visible, "offset": offset, "png_bytes": bytes}));
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");

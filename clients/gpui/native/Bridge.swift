@@ -1414,6 +1414,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             case "raise":
                 ok = (value["component"] as? String).flatMap { c in (value["key"] as? String).map { plugin.raise(component: c, key: $0, context: value["context"]) } } ?? false
             case "scroll":
+                if plugin.fillsPane { ok = false; break }
                 // The pane's ScrollView moves without the pointer: `to` is `top` or `bottom`, `dy` a distance in points (positive is down).
                 if let dy = value["dy"] as? Double { plugin.scroll(.by(dy)) }
                 else if let to = value["to"] as? String, to == "top" || to == "bottom" { plugin.scroll(to == "top" ? .top : .bottom) }
