@@ -50,6 +50,7 @@ mod submit;
 mod title_buttons;
 pub mod usage;
 mod views;
+mod inbox;
 mod orchestrator;
 mod orchestrator_events;
 

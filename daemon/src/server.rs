@@ -147,8 +147,11 @@ pub struct AppState {
     pub(crate) agent_timing: Mutex<AgentTiming>,
     /// The connection that owns orchestrator, if any (`crate::orchestrator`).
     pub(crate) orchestrator_lease: Mutex<Option<SocketAddr>>,
-    /// The events each orchestrator has not been told yet, by scope.
-    pub(crate) orchestrator_events: Mutex<HashMap<String, std::collections::VecDeque<String>>>,
+    /// Each running orchestrator's inbox, by scope (`crate::inbox`).
+    pub(crate) orchestrator_inboxes: Mutex<HashMap<String, Arc<Mutex<crate::inbox::Inbox>>>>,
+    /// A pane agent's failed build or test command, as (agent, command), for the orchestrators'
+    /// inboxes (`crate::agent::build_command`).
+    pub(crate) build_failures: broadcast::Sender<(String, String)>,
     /// Panes whose `start_agent` is still running, so a second agent start on one of them is
     /// refused instead of replacing the agent that is coming up. Other kind changes are not held.
     pub(crate) agent_starts: Mutex<HashSet<String>>,
@@ -344,7 +347,8 @@ impl AppState {
             agents: Mutex::new(HashMap::new()),
             agent_timing: Mutex::new(AgentTiming::default()),
             orchestrator_lease: Mutex::new(None),
-            orchestrator_events: Mutex::new(HashMap::new()),
+            orchestrator_inboxes: Mutex::new(HashMap::new()),
+            build_failures: broadcast::channel(64).0,
             agent_starts: Mutex::new(HashSet::new()),
             view_options: Mutex::new(HashMap::new()),
             spaces: Mutex::new(Spaces::default()),
@@ -689,6 +693,14 @@ impl AppState {
             model,
             permissions,
             orchestrator: false,
+            on_build_failed: Some(Arc::new({
+                let failures = self.build_failures.clone();
+                let agent = name.to_string();
+                move |command: &str| {
+                    tracing::info!(%agent, command, "agent build failed");
+                    let _ = failures.send((agent.clone(), command.to_string()));
+                }
+            })),
         };
         let agent = Agent::start(
             name.into(),
@@ -725,6 +737,7 @@ impl AppState {
             model: Some(model.into()),
             permissions: AgentPermissions::default(),
             orchestrator: true,
+            on_build_failed: None,
         };
         // One lock holds the check and the insert, so two starts never leave a process unowned.
         let mut agents = self.agents.lock().unwrap();
@@ -1539,7 +1552,11 @@ async fn handle(
             });
             None
         }
-        ClientMsg::OrchestratorStart { req, scope } => match state.orchestrator_start(&scope) {
+        ClientMsg::OrchestratorStart { req, scope, pull_after_secs, turn_limit_secs } => match state.orchestrator_start(
+            &scope,
+            pull_after_secs.map(std::time::Duration::from_secs),
+            turn_limit_secs.map(std::time::Duration::from_secs),
+        ) {
             Ok(agent) => {
                 tracing::info!(%peer, %scope, %agent, "orchestrator start");
                 req.map(|req| ServerMsg::OrchestratorStarted { req, scope, agent })
@@ -1558,8 +1575,25 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::OrchestratorEvents { req, scope } => match state.orchestrator_take_events(&scope) {
-            Ok(lines) => req.map(|req| ServerMsg::OrchestratorEventLines { req, lines }),
+        ClientMsg::InboxList { req, scope, all } => match state.inbox(&scope) {
+            Ok(inbox) => {
+                let items = inbox.lock().unwrap().list(all);
+                req.map(|req| ServerMsg::InboxItems { req, items })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::InboxAck { req, scope, ids } => match state.inbox(&scope).and_then(|inbox| inbox.lock().unwrap().ack(&ids)) {
+            Ok(()) => {
+                tracing::info!(%peer, %scope, ?ids, "inbox ack");
+                req.map(|req| ServerMsg::Ok { req })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::InboxReply { req, scope, id, text } => match state.inbox_reply(&scope, id, text) {
+            Ok((agent, turn)) => {
+                tracing::info!(%peer, %scope, id, %agent, "inbox reply");
+                req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
+            }
             Err(message) => Some(failed(req, message)),
         },
         ClientMsg::OrchestratorStop { req, scope } => match state.orchestrator_stop(&scope) {

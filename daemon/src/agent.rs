@@ -277,6 +277,9 @@ pub struct Agent {
     permissions: Mutex<AgentPermissions>,
 }
 
+/// What an agent calls with the command when a build or test it ran fails.
+pub type OnBuildFailed = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// How an agent's program is started.
 #[derive(Clone)]
 pub struct AgentConfig {
@@ -315,6 +318,9 @@ pub struct AgentConfig {
     pub permissions: AgentPermissions,
     /// The agent is the orchestrator (`crate::orchestrator`).
     pub orchestrator: bool,
+    /// Called with the command when a build or test command the agent ran fails
+    /// ([`build_command`]), for the orchestrator's inbox.
+    pub on_build_failed: Option<OnBuildFailed>,
 }
 
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
@@ -1317,6 +1323,30 @@ impl Agent {
         self.push_locked(&mut self.inner.lock().unwrap(), event);
     }
 
+    /// The build or test command `event` reports failing, if it does: a command call that ends
+    /// `failed`, its command read from the call already in the transcript.
+    fn failed_build(&self, event: &AgentEvent) -> Option<String> {
+        let command = |tool_kind: &str, title: &str, detail: &Option<String>| {
+            (tool_kind == "execute").then(|| detail.clone().unwrap_or_else(|| title.to_string()))
+        };
+        let command = match event {
+            AgentEvent::ToolCall { status, tool_kind, title, detail, .. } if status == "failed" => {
+                command(tool_kind, title, detail)
+            }
+            AgentEvent::ToolUpdate { id, status: Some(status), .. } if status == "failed" => {
+                let inner = self.inner.lock().unwrap();
+                inner.events.iter().rev().find_map(|e| match &e.event {
+                    AgentEvent::ToolCall { id: call, tool_kind, title, detail, .. } if call == id => {
+                        command(tool_kind, title, detail)
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        }?;
+        build_command(&command).then_some(command)
+    }
+
     /// An event of the agent's turn. Dropped while the running turn is being unsent: its message
     /// is gone from the conversation, so nothing it produces belongs to it.
     fn push_agent(&self, event: AgentEvent) {
@@ -1837,7 +1867,12 @@ impl Agent {
                 event = agent.events.recv() => match event {
                     None => return Ok(()),
                     Some(DriverEvent::Exited { error }) => return error.map_or(Ok(()), Err),
-                    Some(DriverEvent::Transcript(event)) => self.push_agent(event),
+                    Some(DriverEvent::Transcript(event)) => {
+                        if let (Some(failed), Some(command)) = (&config.on_build_failed, self.failed_build(&event)) {
+                            failed(&command);
+                        }
+                        self.push_agent(event)
+                    }
                     Some(DriverEvent::Permission { request, title, tool_call, options, why }) => {
                         if self.inner.lock().unwrap().unsent.is_some() {
                             let _ = agent.input.answer(request, None);
@@ -2224,8 +2259,39 @@ fn page(list: Vec<ConversationInfo>, limit: Option<usize>, before: Option<(&str,
     crate::resume::select_page(items, limit, before)
 }
 
+/// Whether `command` builds or tests code: a shell command any of whose steps starts with a
+/// build or test tool (`cargo test`, `xcodebuild`, `make`, `npm test`, …), after any `cd` or
+/// environment assignment.
+pub(crate) fn build_command(command: &str) -> bool {
+    const TOOLS: &[&[&str]] = &[
+        &["cargo", "build"], &["cargo", "test"], &["cargo", "check"], &["cargo", "clippy"], &["cargo", "nextest"],
+        &["xcodebuild"], &["swift", "build"], &["swift", "test"], &["make"], &["just"], &["zig", "build"],
+        &["go", "build"], &["go", "test"], &["npm", "test"], &["npm", "run", "build"], &["npm", "run", "test"],
+        &["pnpm", "test"], &["pnpm", "build"], &["yarn", "test"], &["yarn", "build"], &["bun", "test"],
+        &["pytest"], &["tsc"], &["jest"], &["vitest"], &["gradle"], &["./gradlew"], &["mvn"],
+    ];
+    command.split(['&', '|', ';', '\n']).any(|step| {
+        let words: Vec<&str> = step
+            .split_whitespace()
+            .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+            .collect();
+        TOOLS.iter().any(|tool| words.len() >= tool.len() && words[..tool.len()] == **tool)
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn build_and_test_commands_are_known_after_cd_and_env() {
+        assert!(super::build_command("cargo test -p parser"));
+        assert!(super::build_command("cd daemon && RUST_LOG=debug cargo build 2>&1 | tail -40"));
+        assert!(super::build_command("make build"));
+        assert!(super::build_command("xcodebuild -scheme Wheel"));
+        assert!(!super::build_command("ls -la"));
+        assert!(!super::build_command("cargo fmt"));
+        assert!(!super::build_command("echo make"));
+    }
+
     /// A conversation is titled by its first message cut to one line.
     #[test]
     fn a_title_is_the_first_line_of_the_first_message_cut_to_length() {

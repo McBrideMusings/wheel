@@ -54,8 +54,8 @@ eq "a pipe from an allowed command did not run" "$([ -e "$SCR/alpha/made-by-pipe
 w agent send "$V" "Run exactly this command and nothing else: wheel perm list" --timeout 120 >/dev/null 2>&1
 check "it ran wheel perm list" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' agent read '$V' 2>&1 | grep -q 'wheel perm list'"
 
-w agent send "$V" "Run exactly this command and nothing else: wheel orchestrator events $A" --timeout 120 >/dev/null 2>&1
-check "it ran wheel orchestrator events" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' agent read '$V' 2>&1 | grep -q 'wheel orchestrator events'"
+w agent send "$V" "Run exactly this command and nothing else: wheel inbox list $A" --timeout 120 >/dev/null 2>&1
+check "it ran wheel inbox list" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' agent read '$V' 2>&1 | grep -q 'wheel inbox list'"
 
 w orchestrator stop "$A"
 check "orchestrator stop ends it" bash -c "! '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' orchestrator stop $A 2>/dev/null"

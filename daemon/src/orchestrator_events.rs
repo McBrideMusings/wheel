@@ -1,77 +1,132 @@
-//! What the orchestrator is told about: wheeld's global broadcast reduced to short spoken
-//! lines. A permission request or a failure is urgent and is sent to the orchestrator at once,
-//! which says it unprompted; a finished turn or an answered request waits in a buffer until the
-//! orchestrator asks (`orchestrator_events`). Raw transcripts never come through here.
+//! What the orchestrator's inbox is told about: wheeld's global broadcast reduced to agent
+//! lifecycle events, each one short line (`crate::inbox` keeps them). Raw transcripts never come
+//! through here.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-use wheel_proto::{AgentState, ServerMsg};
+use wheel_proto::{AgentState, InboxKind, ServerMsg};
 
-/// One event as a line of speech.
+/// One agent event, or a permission request that no longer waits.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Line {
-    /// The agent the event is about.
-    pub agent: String,
-    pub text: String,
-    /// Said unprompted: a permission request or a failure.
-    pub urgent: bool,
+pub(crate) enum Event {
+    Add {
+        /// The agent the event is about.
+        agent: String,
+        kind: InboxKind,
+        text: String,
+        /// The permission request a `permission` event is about.
+        perm: Option<String>,
+    },
+    /// Permission request `perm` was answered.
+    Resolved { perm: String },
 }
 
-/// Turns the broadcast into lines. It remembers which agents are busy, so a turn that ends reads
-/// as one line and a state that never worked reads as none.
+/// Turns the broadcast into events. It remembers which agents are busy and since when, so a
+/// turn that ends reads as one event, a state that never worked reads as none, and a turn past
+/// the limit reads as one `over_time` event.
 #[derive(Default)]
 pub(crate) struct Filter {
-    busy: HashSet<String>,
+    busy: HashMap<String, Instant>,
+    /// Busy agents already reported over the limit this turn.
+    overdue: HashSet<String>,
 }
 
 impl Filter {
-    /// The line `msg` makes, if it makes one.
-    pub(crate) fn line(&mut self, msg: &ServerMsg) -> Option<Line> {
+    /// The event `msg` makes, if it makes one; `now` stamps a turn that starts.
+    pub(crate) fn event(&mut self, msg: &ServerMsg, now: Instant) -> Option<Event> {
+        let add = |agent: &str, kind, text: String| {
+            Some(Event::Add { agent: agent.to_string(), kind, text, perm: None })
+        };
         match msg {
-            ServerMsg::PermRequested { perm } => Some(Line {
+            ServerMsg::PermRequested { perm } => Some(Event::Add {
                 agent: perm.agent.clone(),
+                kind: InboxKind::Permission,
                 text: if wheel_proto::is_irreversible(&perm.title) {
                     format!("{} needs permission: {} (this cannot be undone: ask the person out loud, then answer with --confirmed)", perm.agent, perm.title)
                 } else {
                     format!("{} needs permission: {}", perm.agent, perm.title)
                 },
-                urgent: true,
+                perm: Some(perm.id.clone()),
             }),
-            ServerMsg::PermResolved { id, choice } => Some(Line {
-                agent: String::new(),
-                text: format!("Permission request {id} was answered: {choice}"),
-                urgent: false,
-            }),
-            ServerMsg::AgentStateChanged { agent, state } => match state {
-                AgentState::Busy { .. } => {
-                    self.busy.insert(agent.clone());
-                    None
+            ServerMsg::PermResolved { id, .. } => Some(Event::Resolved { perm: id.clone() }),
+            ServerMsg::AgentStateChanged { agent, state } => {
+                let was_busy = !matches!(state, AgentState::Busy { .. }) && self.end_turn(agent);
+                match state {
+                    AgentState::Busy { .. } => {
+                        self.busy.entry(agent.clone()).or_insert(now);
+                        None
+                    }
+                    AgentState::Ready if was_busy => add(agent, InboxKind::Finished, format!("{agent} finished its turn")),
+                    AgentState::Failed { message } => add(agent, InboxKind::Failed, format!("{agent} failed: {message}")),
+                    AgentState::GaveUp { message, .. } => {
+                        add(agent, InboxKind::Failed, format!("{agent} gave up and will not restart: {message}"))
+                    }
+                    _ => None,
                 }
-                AgentState::Ready => self.busy.remove(agent).then(|| Line {
-                    agent: agent.clone(),
-                    text: format!("{agent} finished its turn"),
-                    urgent: false,
-                }),
-                AgentState::Failed { message } => {
-                    self.busy.remove(agent);
-                    Some(Line {
-                        agent: agent.clone(),
-                        text: format!("{agent} failed: {message}"),
-                        urgent: true,
-                    })
-                }
-                AgentState::GaveUp { message, .. } => {
-                    self.busy.remove(agent);
-                    Some(Line {
-                        agent: agent.clone(),
-                        text: format!("{agent} gave up and will not restart: {message}"),
-                        urgent: true,
-                    })
-                }
-                AgentState::Starting | AgentState::Switching | AgentState::Unknown(_) => None,
-            },
+            }
             _ => None,
         }
+    }
+
+    /// One `over_time` event for each agent whose turn has run `limit` or longer by `now`, once
+    /// per turn.
+    pub(crate) fn overdue(&mut self, now: Instant, limit: Duration) -> Vec<Event> {
+        let mut events = Vec::new();
+        for (agent, since) in &self.busy {
+            let ran = now.saturating_duration_since(*since);
+            if ran >= limit && self.overdue.insert(agent.clone()) {
+                events.push(Event::Add {
+                    agent: agent.clone(),
+                    kind: InboxKind::OverTime,
+                    text: format!("{agent} has worked on one turn for {}", minutes(ran)),
+                    perm: None,
+                });
+            }
+        }
+        events
+    }
+
+    /// When the next busy agent not yet reported reaches `limit`.
+    pub(crate) fn next_overdue(&self, limit: Duration) -> Option<Instant> {
+        self.busy
+            .iter()
+            .filter(|(agent, _)| !self.overdue.contains(*agent))
+            .map(|(_, since)| *since + limit)
+            .min()
+    }
+
+    /// Drop the busy agents `gone` names, which ended mid-turn and will report no state again.
+    pub(crate) fn forget(&mut self, gone: impl Fn(&str) -> bool) {
+        let ended: Vec<String> = self.busy.keys().filter(|a| gone(a)).cloned().collect();
+        for agent in ended {
+            self.end_turn(&agent);
+        }
+    }
+
+    /// `agent` is no longer busy; whether it was.
+    fn end_turn(&mut self, agent: &str) -> bool {
+        self.overdue.remove(agent);
+        self.busy.remove(agent).is_some()
+    }
+}
+
+/// The event a failed build or test command makes (`crate::agent::build_command`).
+pub(crate) fn build_failed(agent: &str, command: &str) -> Event {
+    Event::Add {
+        agent: agent.to_string(),
+        kind: InboxKind::BuildFailed,
+        text: format!("{agent} ran a build or test that failed: {command}"),
+        perm: None,
+    }
+}
+
+/// `d` in whole minutes, as speech: "1 minute", "31 minutes", or seconds under a minute.
+fn minutes(d: Duration) -> String {
+    match d.as_secs() {
+        s if s < 60 => format!("{s} seconds"),
+        s if s < 120 => "1 minute".into(),
+        s => format!("{} minutes", s / 60),
     }
 }
 
@@ -84,72 +139,114 @@ mod tests {
         ServerMsg::AgentStateChanged { agent: agent.into(), state }
     }
 
+    fn perm(id: &str, title: &str) -> ServerMsg {
+        ServerMsg::PermRequested {
+            perm: PermInfo {
+                id: id.into(),
+                agent: "w5".into(),
+                title: title.into(),
+                options: Vec::new(),
+                tool_call: None,
+                why: PermWhy::default(),
+            },
+        }
+    }
+
+    fn text(event: Option<Event>) -> (InboxKind, String) {
+        match event {
+            Some(Event::Add { kind, text, .. }) => (kind, text),
+            other => panic!("not an added event: {other:?}"),
+        }
+    }
+
     #[test]
-    fn a_permission_request_is_urgent() {
-        let perm = PermInfo {
-            id: "q1".into(),
-            agent: "w5".into(),
-            title: "Bash: cargo test".into(),
-            options: Vec::new(),
-            tool_call: None,
-            why: PermWhy::default(),
-        };
-        let line = Filter::default().line(&ServerMsg::PermRequested { perm }).unwrap();
-        assert_eq!(line.text, "w5 needs permission: Bash: cargo test");
-        assert!(line.urgent);
-        assert_eq!(line.agent, "w5");
+    fn a_permission_request_names_its_request() {
+        let event = Filter::default().event(&perm("q1", "Bash: cargo test"), Instant::now());
+        assert_eq!(
+            event,
+            Some(Event::Add {
+                agent: "w5".into(),
+                kind: InboxKind::Permission,
+                text: "w5 needs permission: Bash: cargo test".into(),
+                perm: Some("q1".into()),
+            })
+        );
     }
 
     #[test]
     fn an_irreversible_request_says_to_confirm_out_loud() {
-        let perm = PermInfo {
-            id: "q2".into(),
-            agent: "w5".into(),
-            title: "Bash: git push origin main".into(),
-            options: Vec::new(),
-            tool_call: None,
-            why: PermWhy::default(),
-        };
-        let line = Filter::default().line(&ServerMsg::PermRequested { perm }).unwrap();
-        assert!(line.text.contains("cannot be undone: ask the person out loud"), "{}", line.text);
-        assert!(line.urgent);
+        let (_, line) = text(Filter::default().event(&perm("q2", "Bash: git push origin main"), Instant::now()));
+        assert!(line.contains("cannot be undone: ask the person out loud"), "{line}");
     }
 
     #[test]
-    fn an_answered_request_waits_to_be_asked() {
-        let line = Filter::default()
-            .line(&ServerMsg::PermResolved { id: "q1".into(), choice: "allow".into() })
-            .unwrap();
-        assert_eq!(line.text, "Permission request q1 was answered: allow");
-        assert!(!line.urgent);
+    fn an_answered_request_is_resolved() {
+        let msg = ServerMsg::PermResolved { id: "q1".into(), choice: "allow".into() };
+        assert_eq!(Filter::default().event(&msg, Instant::now()), Some(Event::Resolved { perm: "q1".into() }));
     }
 
     #[test]
-    fn a_turn_that_ends_is_one_line_and_a_start_up_is_none() {
+    fn a_turn_that_ends_is_one_event_and_a_start_up_is_none() {
         let mut filter = Filter::default();
-        assert_eq!(filter.line(&state("w5", AgentState::Starting)), None);
-        assert_eq!(filter.line(&state("w5", AgentState::Ready)), None);
-        assert_eq!(filter.line(&state("w5", AgentState::Busy { queued: 0 })), None);
-        let line = filter.line(&state("w5", AgentState::Ready)).unwrap();
-        assert_eq!(line.text, "w5 finished its turn");
-        assert!(!line.urgent);
-        assert_eq!(filter.line(&state("w5", AgentState::Ready)), None);
+        let now = Instant::now();
+        assert_eq!(filter.event(&state("w5", AgentState::Starting), now), None);
+        assert_eq!(filter.event(&state("w5", AgentState::Ready), now), None);
+        assert_eq!(filter.event(&state("w5", AgentState::Busy { queued: 0 }), now), None);
+        assert_eq!(
+            text(filter.event(&state("w5", AgentState::Ready), now)),
+            (InboxKind::Finished, "w5 finished its turn".into())
+        );
+        assert_eq!(filter.event(&state("w5", AgentState::Ready), now), None);
     }
 
     #[test]
-    fn a_failure_and_a_give_up_are_urgent() {
+    fn a_failure_and_a_give_up_are_failures() {
         let mut filter = Filter::default();
-        let failed = filter.line(&state("w5", AgentState::Failed { message: "exit 1".into() })).unwrap();
-        assert_eq!(failed.text, "w5 failed: exit 1");
-        assert!(failed.urgent);
-        let gave_up = filter.line(&state("w5", AgentState::GaveUp { tries: 3, message: "no login".into() })).unwrap();
-        assert_eq!(gave_up.text, "w5 gave up and will not restart: no login");
-        assert!(gave_up.urgent);
+        let now = Instant::now();
+        assert_eq!(
+            text(filter.event(&state("w5", AgentState::Failed { message: "exit 1".into() }), now)),
+            (InboxKind::Failed, "w5 failed: exit 1".into())
+        );
+        assert_eq!(
+            text(filter.event(&state("w5", AgentState::GaveUp { tries: 3, message: "no login".into() }), now)),
+            (InboxKind::Failed, "w5 gave up and will not restart: no login".into())
+        );
+    }
+
+    #[test]
+    fn a_turn_past_the_limit_is_over_time_once() {
+        let mut filter = Filter::default();
+        let start = Instant::now();
+        let limit = Duration::from_secs(1800);
+        filter.event(&state("w5", AgentState::Busy { queued: 0 }), start);
+        // A second busy state (a queued message) keeps the turn's start.
+        filter.event(&state("w5", AgentState::Busy { queued: 1 }), start + Duration::from_secs(60));
+        assert_eq!(filter.next_overdue(limit), Some(start + limit));
+        assert!(filter.overdue(start + Duration::from_secs(1799), limit).is_empty());
+        let events = filter.overdue(start + Duration::from_secs(1860), limit);
+        assert_eq!(
+            events,
+            vec![Event::Add {
+                agent: "w5".into(),
+                kind: InboxKind::OverTime,
+                text: "w5 has worked on one turn for 31 minutes".into(),
+                perm: None,
+            }]
+        );
+        assert!(filter.overdue(start + Duration::from_secs(3600), limit).is_empty(), "once a turn");
+        assert_eq!(filter.next_overdue(limit), None, "nothing left to report this turn");
+        // The next turn can run over again.
+        filter.event(&state("w5", AgentState::Ready), start + Duration::from_secs(3600));
+        filter.event(&state("w5", AgentState::Busy { queued: 0 }), start + Duration::from_secs(3600));
+        assert_eq!(filter.overdue(start + Duration::from_secs(5400), limit).len(), 1);
+        // An agent that ended mid-turn is forgotten, and never reported over time.
+        filter.event(&state("w6", AgentState::Busy { queued: 0 }), start);
+        filter.forget(|agent| agent == "w6");
+        assert!(filter.overdue(start + Duration::from_secs(9000), limit).is_empty());
     }
 
     #[test]
     fn transcripts_and_other_events_say_nothing() {
-        let toast = ServerMsg::Ok { req: 1 };
-        assert_eq!(Filter::default().line(&toast), None);
+        assert_eq!(Filter::default().event(&ServerMsg::Ok { req: 1 }, Instant::now()), None);
     }
 }

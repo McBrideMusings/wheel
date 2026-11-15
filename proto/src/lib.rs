@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -762,10 +762,19 @@ pub enum ClientMsg {
     /// running for it. Replies `orchestrator_started` naming its agent; a client attaches to that agent
     /// with `agent_attach` for its transcript stream and sends to it with `agent_send`, as for
     /// any agent. It is no pane's agent. Fails for a scope that names no space.
+    ///
+    /// Agent events for the scope queue in its inbox (`inbox_list`). wheeld sends the orchestrator
+    /// the items it has not been told once it has been idle `pull_after_secs` (15 when absent), and
+    /// adds an `over_time` item for a turn running past `turn_limit_secs` (1800 when absent; 0 is
+    /// refused). A start for a running orchestrator sets the values given. `PROTOCOL_VERSION` 42.
     OrchestratorStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         scope: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pull_after_secs: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_limit_secs: Option<u64>,
     },
     /// Take the orchestrator lease: this connection owns orchestrator until it releases it or closes. Another
     /// connection's claim takes it over. Replies `orchestrator_claimed` naming this connection, and
@@ -779,12 +788,32 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
-    /// The events the orchestrator for `scope` has not been told yet, as short lines, oldest
-    /// first; asking takes them. Replies `orchestrator_event_lines`. Fails when none is running.
-    OrchestratorEvents {
+    /// The inbox of the orchestrator for `scope`: the items not acked yet, oldest first, or every
+    /// item kept when `all`. Replies `inbox_items`. Fails when no orchestrator runs for `scope`.
+    /// `PROTOCOL_VERSION` 42.
+    InboxList {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         scope: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+    },
+    /// Mark inbox items of `scope` done, so `inbox_list` no longer shows them. Every id that
+    /// names an item is acked; fails naming the ids that name none. Replies `ok`. `PROTOCOL_VERSION` 42.
+    InboxAck {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        scope: String,
+        ids: Vec<u64>,
+    },
+    /// Send `text` to the agent inbox item `id` of `scope` is about, as `agent_send` does, and ack
+    /// the item. Replies `agent_queued`. `PROTOCOL_VERSION` 42.
+    InboxReply {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        scope: String,
+        id: u64,
+        text: String,
     },
     /// End the orchestrator for `scope` and its agent process. Fails when none is running.
     OrchestratorStop {
@@ -2287,10 +2316,10 @@ pub enum ServerMsg {
         req: u64,
         owner: String,
     },
-    /// The reply to `orchestrator_events`.
-    OrchestratorEventLines {
+    /// The reply to `inbox_list`.
+    InboxItems {
         req: u64,
-        lines: Vec<String>,
+        items: Vec<InboxItem>,
     },
     /// Sent to every connection when the orchestrator lease changes hands: the owner's connection id, or
     /// none once it is released or its connection closed.
@@ -2888,7 +2917,7 @@ impl ServerMsg {
             | ServerMsg::PaneShot { req, .. }
             | ServerMsg::OrchestratorStarted { req, .. }
             | ServerMsg::OrchestratorClaimed { req, .. }
-            | ServerMsg::OrchestratorEventLines { req, .. }
+            | ServerMsg::InboxItems { req, .. }
             | ServerMsg::PaneRecorded { req, .. }
             | ServerMsg::Inspected { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
@@ -3299,6 +3328,44 @@ pub enum ToolContent {
 pub struct PlanItem {
     pub content: String,
     pub status: String,
+}
+
+/// What an orchestrator inbox item is about.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxKind {
+    /// The agent waits on a permission request.
+    Permission,
+    /// The agent finished a turn and is idle.
+    Finished,
+    /// The agent stopped, or gave up restarting.
+    Failed,
+    /// One turn has run past the orchestrator's turn limit.
+    OverTime,
+    /// A build or test command the agent ran failed.
+    BuildFailed,
+    /// A kind this build does not know; a newer daemon may send one.
+    #[serde(other)]
+    Other,
+}
+
+/// One item in an orchestrator's inbox (`inbox_list`). wheeld keeps one item per agent and kind
+/// until it is acked: a repeat of the event raises `count`, replaces `text` and `at_ms`, and makes
+/// the item untold again.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InboxItem {
+    pub id: u64,
+    pub agent: String,
+    pub kind: InboxKind,
+    /// The event as one short line, naming the agent.
+    pub text: String,
+    /// How many times the event happened since the item was made.
+    pub count: u32,
+    /// When the event last happened, in milliseconds since the Unix epoch.
+    pub at_ms: u64,
+    /// wheeld has sent the item to the orchestrator since it last happened.
+    pub told: bool,
+    pub acked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

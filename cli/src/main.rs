@@ -106,6 +106,10 @@ enum Command {
     /// no pane's agent.
     #[command(subcommand)]
     Orchestrator(OrchestratorCommand),
+    /// The orchestrator's inbox: agent events for a scope, queued in the daemon until the
+    /// orchestrator reads them.
+    #[command(subcommand)]
+    Inbox(InboxCommand),
     /// Permission requests waiting on a person.
     #[command(subcommand)]
     Perm(PermCommand),
@@ -1413,17 +1417,54 @@ enum OrchestratorCommand {
     Start {
         /// A space id, or `daemon` for the whole daemon.
         scope: String,
-    },
-    /// Print, one per line, what the orchestrator for a scope has not been told yet, and
-    /// take it. Fails when none is running.
-    Events {
-        /// A space id, or `daemon`.
-        scope: String,
+        /// Seconds the orchestrator is idle before the daemon sends it the inbox items it has
+        /// not been told (15 when not given).
+        #[arg(long)]
+        pull_after: Option<u64>,
+        /// Seconds one agent turn runs before the inbox reports it over time (1800 when not
+        /// given).
+        #[arg(long)]
+        turn_limit: Option<u64>,
     },
     /// End the orchestrator for a scope. Fails when none is running.
     Stop {
         /// A space id, or `daemon`.
         scope: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum InboxCommand {
+    /// Print the items not acked yet, oldest first, one per line as `[id] text`, with
+    /// `(N times)` for a repeated event and `(told)` once the orchestrator was sent it. Fails
+    /// when no orchestrator runs for the scope.
+    List {
+        /// A space id, or `daemon`.
+        scope: String,
+        /// Every item kept, the acked ones marked `(acked)`.
+        #[arg(long)]
+        all: bool,
+        /// Print the items as a JSON array.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark items done, so `list` no longer shows them. Every id that names an item is acked;
+    /// fails naming the ones that name none.
+    Ack {
+        /// A space id, or `daemon`.
+        scope: String,
+        #[arg(required = true)]
+        ids: Vec<u64>,
+    },
+    /// Send a message to the agent an item is about, and ack the item. Prints the turn it
+    /// queued as.
+    Reply {
+        /// A space id, or `daemon`.
+        scope: String,
+        id: u64,
+        /// What to send; the words are joined with spaces.
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
     },
 }
 
@@ -3067,9 +3108,15 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
 }
 
 /// Start the orchestrator for `scope` and print its agent's name.
-async fn orchestrator_start(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+async fn orchestrator_start(
+    conn: &mut Conn,
+    scope: String,
+    pull_after_secs: Option<u64>,
+    turn_limit_secs: Option<u64>,
+) -> Result<(), Fail> {
     let req = conn.req();
-    match conn.call(ClientMsg::OrchestratorStart { req: Some(req), scope }, req).await? {
+    let start = ClientMsg::OrchestratorStart { req: Some(req), scope, pull_after_secs, turn_limit_secs };
+    match conn.call(start, req).await? {
         ServerMsg::OrchestratorStarted { agent, .. } => {
             println!("{agent}");
             Ok(())
@@ -3078,13 +3125,37 @@ async fn orchestrator_start(conn: &mut Conn, scope: String) -> Result<(), Fail> 
     }
 }
 
-async fn orchestrator_events(conn: &mut Conn, scope: String) -> Result<(), Fail> {
+async fn inbox_list(conn: &mut Conn, scope: String, all: bool, json: bool) -> Result<(), Fail> {
     let req = conn.req();
-    match conn.call(ClientMsg::OrchestratorEvents { req: Some(req), scope }, req).await? {
-        ServerMsg::OrchestratorEventLines { lines, .. } => {
-            for line in lines {
+    match conn.call(ClientMsg::InboxList { req: Some(req), scope, all }, req).await? {
+        ServerMsg::InboxItems { items, .. } if json => {
+            println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
+            Ok(())
+        }
+        ServerMsg::InboxItems { items, .. } => {
+            for item in items {
+                let mut line = format!("[{}] {}", item.id, item.text);
+                if item.count > 1 {
+                    line.push_str(&format!(" ({} times)", item.count));
+                }
+                if item.acked {
+                    line.push_str(" (acked)");
+                } else if item.told {
+                    line.push_str(" (told)");
+                }
                 println!("{line}");
             }
+            Ok(())
+        }
+        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+    }
+}
+
+async fn inbox_reply(conn: &mut Conn, scope: String, id: u64, text: String) -> Result<(), Fail> {
+    let req = conn.req();
+    match conn.call(ClientMsg::InboxReply { req: Some(req), scope, id, text }, req).await? {
+        ServerMsg::AgentQueued { agent, turn, .. } => {
+            println!("{agent} turn {turn}");
             Ok(())
         }
         other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
@@ -6246,8 +6317,14 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Commands { agent, json }) => {
                 agent_commands(&mut conn, agent, json).await
             }
-            Command::Orchestrator(OrchestratorCommand::Start { scope }) => orchestrator_start(&mut conn, scope).await,
-            Command::Orchestrator(OrchestratorCommand::Events { scope }) => orchestrator_events(&mut conn, scope).await,
+            Command::Orchestrator(OrchestratorCommand::Start { scope, pull_after, turn_limit }) => {
+                orchestrator_start(&mut conn, scope, pull_after, turn_limit).await
+            }
+            Command::Inbox(InboxCommand::List { scope, all, json }) => inbox_list(&mut conn, scope, all, json).await,
+            Command::Inbox(InboxCommand::Ack { scope, ids }) => {
+                simple(&mut conn, |req| ClientMsg::InboxAck { req: Some(req), scope, ids }).await
+            }
+            Command::Inbox(InboxCommand::Reply { scope, id, text }) => inbox_reply(&mut conn, scope, id, text.join(" ")).await,
             Command::Orchestrator(OrchestratorCommand::Stop { scope }) => orchestrator_stop(&mut conn, scope).await,
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await

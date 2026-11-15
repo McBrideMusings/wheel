@@ -5506,7 +5506,7 @@ async fn the_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
     let mut ws = connect(&url).await;
     let (space_id, _) = space(&url, "/tmp").await;
 
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(70), scope: "s-missing".into() }).await;
+    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(70), scope: "s-missing".into(), pull_after_secs: None, turn_limit_secs: None }).await;
     let refused = loop {
         match recv(&mut ws).await {
             ServerMsg::Error { req: Some(70), message, .. } => break message,
@@ -5515,7 +5515,7 @@ async fn the_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
     };
     assert!(refused.contains("no space s-missing"), "{refused:?}");
 
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(71), scope: space_id.clone() }).await;
+    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(71), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
     let agent = loop {
         if let ServerMsg::OrchestratorStarted { req: 71, scope, agent } = recv(&mut ws).await {
             assert_eq!(scope, space_id);
@@ -5524,7 +5524,7 @@ async fn the_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
     };
     assert_eq!(agent, format!("orchestrator-{space_id}"));
 
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(72), scope: space_id.clone() }).await;
+    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(72), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
     let again = loop {
         if let ServerMsg::OrchestratorStarted { req: 72, agent, .. } = recv(&mut ws).await {
             break agent;
@@ -5567,7 +5567,7 @@ async fn closing_a_space_ends_its_orchestrator() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let (space_id, _) = space(&url, "/tmp").await;
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(80), scope: space_id.clone() }).await;
+    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(80), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
     loop {
         if let ServerMsg::OrchestratorStarted { req: 80, .. } = recv(&mut ws).await {
             break;
@@ -5581,7 +5581,7 @@ async fn closing_a_space_ends_its_orchestrator() {
             break;
         }
     }
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(83), scope: space_id.clone() }).await;
+    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(83), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
     loop {
         if let ServerMsg::Error { req: Some(83), message, .. } = recv(&mut ws).await {
             assert!(message.contains(&format!("no space {space_id}")), "{message:?}");
@@ -5661,56 +5661,112 @@ async fn one_connection_owns_orchestrator_at_a_time() {
     }
 }
 
-/// The orchestrator hears its space's events: a finished turn waits until it asks, a permission
-/// request is sent to it at once, and another space's events never reach it.
+/// The inbox of the orchestrator for `scope`.
+async fn inbox(ws: &mut Ws, scope: &str, req: u64) -> Vec<wheel_proto::InboxItem> {
+    send(ws, ClientMsg::InboxList { req: Some(req), scope: scope.into(), all: false }).await;
+    loop {
+        if let ServerMsg::InboxItems { req: r, items } = recv(ws).await {
+            if r == req {
+                return items;
+            }
+        }
+    }
+}
+
+/// The orchestrator's transcript as one string, to search.
+async fn transcript_text(url: &str, agent: &str) -> String {
+    let mut peek = connect(url).await;
+    format!("{:?}", attach(&mut peek, agent, 500).await)
+}
+
+/// Agent events queue in the orchestrator's inbox (wheel-eg4e.13): a child agent finishing while
+/// the orchestrator works on a turn adds an item and sends the orchestrator nothing; once the
+/// orchestrator has been idle `pull_after_secs` it is sent the item; a repeat is the same item;
+/// a reply reaches the item's agent and acks the item; another space's agents never get in.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_orchestrator_is_told_its_spaces_events() {
+async fn agent_events_queue_in_the_orchestrators_inbox() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let (space_id, pane) = space(&url, "/tmp").await;
     let (_, other_pane) = space(&url, "/tmp").await;
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(95), scope: space_id.clone() }).await;
+    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(95), scope: space_id.clone(), pull_after_secs: Some(1), turn_limit_secs: None }).await;
     let orchestrator = loop {
         if let ServerMsg::OrchestratorStarted { req: 95, agent, .. } = recv(&mut ws).await {
             break agent;
         }
     };
+    // The orchestrator is mid-conversation: a turn that takes 6 s.
+    let mut talk = connect(&url).await;
+    attach_and_send(&mut talk, &orchestrator, "hold first 6000").await;
     let mine = start_agent(&url, &pane, Some("hello")).await;
     let _theirs = start_agent(&url, &other_pane, Some("hello")).await;
-    let mut watcher = connect(&url).await;
-    transcript_when(&mut watcher, &mine, |events| {
-        events.contains(&AgentEvent::TurnEnd { turn: 1, stop_reason: "end_turn".into() })
-    })
-    .await;
 
-    let mut lines = Vec::new();
+    let mut items = Vec::new();
     for _ in 0..50 {
-        send(&mut ws, ClientMsg::OrchestratorEvents { req: Some(96), scope: space_id.clone() }).await;
-        loop {
-            if let ServerMsg::OrchestratorEventLines { req: 96, lines: got } = recv(&mut ws).await {
-                lines.extend(got);
+        items = inbox(&mut ws, &space_id, 96).await;
+        if !items.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(items.len(), 1, "only this space's agent: {items:?}");
+    let item = items[0].clone();
+    assert_eq!((item.agent.as_str(), item.kind, item.count), (mine.as_str(), wheel_proto::InboxKind::Finished, 1));
+    assert_eq!(item.text, format!("{mine} finished its turn"));
+    assert!(!item.told);
+
+    // 1. Mid-turn, nothing reaches the orchestrator.
+    let seen = transcript_text(&url, &orchestrator).await;
+    assert!(seen.contains("hold first 6000") && !seen.contains("Inbox:"), "{seen}");
+
+    // 2. Once its turn ends and it has been idle a second, it is sent the item.
+    let mut seen = String::new();
+    for _ in 0..120 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        seen = transcript_text(&url, &orchestrator).await;
+        if seen.contains("Inbox:") {
+            break;
+        }
+    }
+    assert!(seen.contains(&format!("Inbox: 1 new item. Tell the person, then run `wheel inbox ack {space_id} <ids>`.\\n[{}] {mine} finished its turn", item.id)), "{seen}");
+    assert!(inbox(&mut ws, &space_id, 97).await[0].told);
+
+    // 3. The same event again is the same item.
+    send(&mut ws, ClientMsg::AgentSend { req: Some(98), agent: mine.clone(), text: "hello again".into() }).await;
+    let mut items = Vec::new();
+    for _ in 0..50 {
+        items = inbox(&mut ws, &space_id, 99).await;
+        if items.first().is_some_and(|i| i.count == 2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!((items[0].id, items[0].count), (item.id, 2));
+
+    // 4. A reply goes to the item's agent and acks the item.
+    send(&mut ws, ClientMsg::InboxReply { req: Some(100), scope: space_id.clone(), id: item.id, text: "reply from the inbox".into() }).await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::AgentQueued { req: 100, agent, .. } => {
+                assert_eq!(agent, mine);
                 break;
             }
+            ServerMsg::Error { req: Some(100), message, .. } => panic!("{message}"),
+            _ => {}
         }
-        if lines.iter().any(|l| l.contains("finished its turn")) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(lines.iter().any(|l| l == &format!("{mine} finished its turn")), "{lines:?}");
-    assert!(lines.iter().all(|l| l.starts_with(&mine)), "only this space's events: {lines:?}");
+    let mut watcher = connect(&url).await;
+    transcript_when(&mut watcher, &mine, |events| format!("{events:?}").contains("echo: reply from the inbox")).await;
+    let left = inbox(&mut ws, &space_id, 101).await;
+    assert!(left.iter().all(|i| i.id != item.id), "{left:?}");
 
-    // A permission request is urgent: it goes to the orchestrator as a message.
-    send(&mut ws, ClientMsg::AgentSend { req: Some(97), agent: mine.clone(), text: "permission".into() }).await;
-    let mut seen = String::new();
-    for _ in 0..80 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let mut peek = connect(&url).await;
-        let events = attach(&mut peek, &orchestrator, 500).await;
-        seen = format!("{events:?}");
-        if seen.contains("Event: ") && seen.contains("needs permission") {
+    // An ack of an id that names no item is refused.
+    send(&mut ws, ClientMsg::InboxAck { req: Some(102), scope: space_id.clone(), ids: vec![999] }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(102), message, .. } = recv(&mut ws).await {
+            assert_eq!(message, "no inbox item 999");
             break;
         }
     }
-    assert!(seen.contains(&format!("Event: {mine} needs permission")), "{seen}");
 }

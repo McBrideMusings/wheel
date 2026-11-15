@@ -2,5 +2,5 @@
 /// is older than this app: the app hides what needs the newer server and asks for a restart
 /// (ADR-0020). `PROTOCOL_VERSION` in `proto/src/lib.rs` is the server's side.
 public enum ServerProtocol {
-    public static let current: UInt32 = 41  // 41: plugin_source and feeds for agent panes, the built-in agent plugin
+    public static let current: UInt32 = 42  // 42: the orchestrator inbox (inbox_list, inbox_ack, inbox_reply)
 }
