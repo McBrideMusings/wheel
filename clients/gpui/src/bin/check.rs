@@ -3116,6 +3116,22 @@ async fn space_drag_to_popover_and_tabs(run: Run, dragged: String, f1: Vec<f32>,
     let tab_from = tab_from.ok_or_else(|| anyhow::anyhow!("window 1 shows no tab for {dragged}: {:?}", window.update(cx, |c, _, _| c.title_row().chips.iter().map(|ch| ch.label.clone()).collect::<Vec<_>>()).ok()))?;
     let tabs2 = second.update(cx, |c, _, _| c.title_row().tabs)?;
     let first_tab2 = tabs2.first().copied().ok_or_else(|| anyhow::anyhow!("window 2 shows no tabs"))?;
+    // Every tab window 2 lays out paints its name inside its own rectangle: the label's pixels are
+    // the only ones there brighter than the track and the active fill.
+    let shown2: Vec<(String, Rect)> = second.update(cx, |c, _, _| c.title_row().chips.into_iter().filter(|ch| matches!(ch.hit, Hit::Space(_))).map(|ch| (ch.label, ch.rect)).collect())?;
+    ensure!(shown2.len() >= 2, "window 2 lays out {} tabs, the check needs two: {shown2:?}", shown2.len());
+    let any2: gpui::AnyWindowHandle = second.into();
+    let unlabelled = any2.update(cx, |_, w, cx| -> Result<Vec<String>> {
+        w.draw(cx).clear();
+        let image = w.render_to_image()?;
+        let scale = image.width() as f32 / f32::from(w.viewport_size().width);
+        Ok(shown2.iter().filter(|(_, r)| {
+            let [x0, x1] = [r.x, r.x + r.w].map(|v| ((v * scale) as u32).min(image.width()));
+            let [y0, y1] = [r.y, r.y + r.h].map(|v| ((v * scale) as u32).min(image.height()));
+            !(y0..y1).any(|y| (x0..x1).any(|x| image.get_pixel(x, y)[1] > 0x60))
+        }).map(|(label, r)| format!("{label} at {r:?}")).collect())
+    })??;
+    ensure!(unlabelled.is_empty(), "window 2's tabs painted no label inside their rectangles: {unlabelled:?}");
     // Just past the first tab's middle: the bar goes between the first and the second tab.
     let on_tabs = (f2[0] + first_tab2.x + first_tab2.w * 0.75, f2[1] + first_tab2.y + first_tab2.h / 2.);
     let local_tabs = [f64::from(on_tabs.0 - f1[0]), f64::from(on_tabs.1 - f1[1])];

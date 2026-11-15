@@ -334,7 +334,7 @@ impl Client {
                     let held = dragged.as_deref() == Some(id.as_str());
                     // A pane held over the tab outlines it in a layer of its own, so nothing in the tab moves.
                     let pane_over = self.pane_is_over(id);
-                    el = el.relative().when(pane_over, |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(7.)).border_2().border_color(rgb(super::sidebar::ACCENT)))).when(held, |d| d.opacity(0.4)).when(away && !held, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
+                    el = el.when(pane_over, |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(7.)).border_2().border_color(rgb(super::sidebar::ACCENT)))).when(held, |d| d.opacity(0.4)).when(away && !held, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
                         .text_color(rgb(if chip.active { TEXT } else { DIM }))
                         .child(div().overflow_hidden().whitespace_nowrap().child(chip.label.clone())).children(dots);
                 }
