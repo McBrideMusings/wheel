@@ -82,6 +82,16 @@ const RED: u32 = 0xff453a;
 const BLUE: u32 = 0x0a84ff;
 const GREEN: u32 = 0x30d158;
 
+/// The colour of `status`'s mark: needs you orange, stopped red, working and done blue, idle green.
+pub fn colour(status: &PaneStatus) -> u32 {
+    match status {
+        PaneStatus::NeedsYou { .. } => ORANGE,
+        PaneStatus::Stopped => RED,
+        PaneStatus::Working | PaneStatus::Done => BLUE,
+        PaneStatus::Idle => GREEN,
+    }
+}
+
 /// The mark for `status`, or none for a rank `shown` leaves out, its tooltip the status's
 /// `label`. `id` keeps the arc's turn going from frame to frame; a working mark takes the arc's 12 px slot, every other a 9 px dot
 /// centred in the same slot so a mark never moves its neighbours when its rank changes.

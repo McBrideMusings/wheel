@@ -97,6 +97,20 @@ pub fn port_of(ws: &str) -> &str {
     host.rsplit_once(':').map_or("default", |(_, p)| p)
 }
 
+/// The file `name` this client keeps for the daemon at `ws`, under its Application Support folder:
+/// pane ids are a daemon's own, so each daemon (by port) gets its file.
+pub fn client_file(name: &str, ws: &str) -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(format!("Library/Application Support/wheel-gpui/{name}-{}.json", port_of(ws)))
+}
+
+/// Write `value` to `file` as JSON, making its folder first.
+pub fn write_json(file: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(file, serde_json::to_vec(value).map_err(std::io::Error::other)?)
+}
+
 /// The frames cards were left at, by pane id, in grid coordinates; saved to `file` when there is one.
 #[derive(Default)]
 pub struct Frames {
@@ -116,15 +130,25 @@ impl Frames {
     /// The file this client keeps them in for the daemon at `ws`: pane ids are a daemon's own, so
     /// each daemon (by port) gets its file.
     pub fn default_file(ws: &str) -> PathBuf {
-        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(format!("Library/Application Support/wheel-gpui/popped-frames-{}.json", port_of(ws)))
+        client_file("popped-frames", ws)
     }
     /// The one map every window of this process reads and writes for `file` (none: kept in memory
     /// only), as the Swift app keeps one in its model.
     pub fn shared(file: Option<PathBuf>) -> Rc<RefCell<Frames>> {
+        Self::with_shared(|s| s.entry(file.clone()).or_insert_with(|| Rc::new(RefCell::new(Frames::load(file)))).clone())
+    }
+    /// The map for `file` read again from the disk, as a launch reads it, replacing the one every
+    /// window shares.
+    pub fn reload(file: PathBuf) -> Rc<RefCell<Frames>> {
+        let fresh = Rc::new(RefCell::new(Frames::load(Some(file.clone()))));
+        Self::with_shared(|s| s.insert(Some(file), fresh.clone()));
+        fresh
+    }
+    fn with_shared<T>(f: impl FnOnce(&mut HashMap<Option<PathBuf>, Rc<RefCell<Frames>>>) -> T) -> T {
         thread_local! {
             static SHARED: RefCell<HashMap<Option<PathBuf>, Rc<RefCell<Frames>>>> = RefCell::default();
         }
-        SHARED.with(|s| s.borrow_mut().entry(file.clone()).or_insert_with(|| Rc::new(RefCell::new(Frames::load(file)))).clone())
+        SHARED.with(|s| f(&mut s.borrow_mut()))
     }
     /// Where one of `tree`'s panes was left.
     pub fn remembered(&self, tree: &Tree) -> Option<Rect> {
@@ -135,15 +159,23 @@ impl Frames {
         for leaf in leaves_of(tree) {
             self.by_pane.insert(leaf.id.clone(), frame);
         }
+        self.save();
+    }
+    /// Where `pane`'s card was left, in the coordinates its owner put it in (the Agents surface
+    /// keeps its own file, in surface points).
+    pub fn get(&self, pane: &str) -> Option<Rect> {
+        self.by_pane.get(pane).copied()
+    }
+    /// `pane`'s card was left at `frame`.
+    pub fn put(&mut self, pane: &str, frame: Rect) {
+        self.by_pane.insert(pane.to_owned(), frame);
+        self.save();
+    }
+    fn save(&self) {
         let Some(file) = &self.file else { return };
         let raw: HashMap<&String, [f32; 4]> = self.by_pane.iter().map(|(id, r)| (id, [r.x, r.y, r.w, r.h])).collect();
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(bytes) = serde_json::to_vec(&raw)
-            && let Err(error) = std::fs::write(file, bytes)
-        {
-            eprintln!("wheel-gpui: the popped frames were not saved to {}: {error}", file.display());
+        if let Err(error) = write_json(file, &raw) {
+            eprintln!("wheel-gpui: the card frames were not saved to {}: {error}", file.display());
         }
     }
 }

@@ -436,12 +436,11 @@ impl Client {
         Some(card)
     }
 
-    /// The body of a mode other than Spaces: a placeholder until Agents draws its cards
-    /// (wheel-0but.3) and Orchestrator its chat (wheel-eg4e.8).
+    /// The Orchestrator mode's body: a placeholder until it draws its chat (wheel-eg4e.8).
     pub(super) fn mode_element(&self) -> gpui::Div {
         let r = self.grid_area();
         let (_, title, icon) = header::MODES.iter().find(|m| m.0 == self.mode).copied().unwrap_or(header::MODES[0]);
-        let line = if self.mode == "orchestrator" { "The orchestrator's chat will be here." } else { "Every agent will be a card here." };
+        let line = "The orchestrator's chat will be here.";
         div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).flex().flex_col().items_center().justify_center().gap(px(6.))
             .children(self.symbol(icon, 28., 0x5a7266))
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(title))

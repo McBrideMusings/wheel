@@ -3,6 +3,7 @@
 //! panes and draggable dividers, and the real Ghostty and WKWebView views on the first
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
+mod agents;
 mod commands;
 mod composer;
 mod conversations;
@@ -258,6 +259,8 @@ pub struct Client {
     pub title_menu: Option<TitleMenu>,
     /// What the body draws: one of `header::MODES`' ids (`WindowMode`).
     pub mode: String,
+    /// The Agents mode's surface: its camera, the drag on it and its menu.
+    pub surface: agents::Surface,
     /// The title row's pin: the window floats over every other.
     pub pinned: bool,
     /// The Usage window is over the grid; a Refresh All is on its way.
@@ -426,6 +429,7 @@ impl Client {
     pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
         let toast_sources = crate::toasts::Sources { server_restart_available: server::with(|s| s.control.available()).unwrap_or(false), ..Default::default() };
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
+        let surface = agents::Surface::new(hidden, &endpoint.ws);
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
@@ -436,7 +440,7 @@ impl Client {
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
-            posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), pinned: false, usage_open: false, usage_refreshing: false,
+            posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), surface, pinned: false, usage_open: false, usage_refreshing: false,
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_protocol: None, server_source_logged: None, server_started: None,
@@ -474,7 +478,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_conversations_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
+                    if self.on_conversations_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_surface_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -1911,6 +1915,15 @@ impl Client {
             }
             cx.notify();
         }
+        if self.surface_holds_pointer() {
+            // A release GPUI never saw ends the drag where it is.
+            if e.pressed_button.is_none() {
+                self.surface_release();
+            } else {
+                self.surface_move(x, y);
+            }
+            cx.notify();
+        }
         if self.pending_down.is_some() || self.selection.as_ref().is_some_and(|s| s.dragging) {
             self.pending_move = Some(e.position);
             cx.notify();
@@ -1920,6 +1933,7 @@ impl Client {
     pub(super) fn window_mouse_up(&mut self, e: &MouseUpEvent, cx: &mut Context<Self>) {
         self.end_drag();
         self.end_card_drag();
+        self.surface_release();
         self.tray_release(f32::from(e.position.x), f32::from(e.position.y));
         self.pointer_up(cx);
         self.refresh_for_space_hover(cx);
@@ -2061,6 +2075,13 @@ impl Client {
                     let (id, label, origin) = (p.leaf.id.clone(), self.pane_label(&p.leaf), (r.x, r.y));
                     move |this, e: &MouseDownEvent, _, cx| {
                         let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+                        // On the Agents surface the header moves the card.
+                        if this.mode == "agents" && !e.modifiers.control {
+                            cx.stop_propagation();
+                            this.surface_card_press(&id, false, x, y);
+                            cx.notify();
+                            return;
+                        }
                         // A control-click asks for the pane menu, as a right press does.
                         if e.modifiers.control {
                             cx.stop_propagation();
@@ -2102,6 +2123,7 @@ impl Client {
                     title.child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
                         ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
                         ("plugin", _) => format!("{} · {}", p.leaf.label, p.leaf.id),
+                        ("agent", _) if self.mode == "agents" => format!("{} · {}", self.pane_label(&p.leaf), self.spaces.iter().find(|s| s.site_of(&p.leaf.id).is_some()).map(|s| s.name.as_str()).unwrap_or_default()),
                         _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
                     }).child(recorded(&p.leaf.id, "pane-title", &self.controls))
                 })
@@ -2109,7 +2131,7 @@ impl Client {
                     div().id(gpui::ElementId::Name(format!("plugin-error-{}", p.leaf.id).into())).relative().ml_2().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
                         .text_color(rgb(0xe0715f)).tooltip(crate::tooltip::tip(&error)).child(error).child(recorded(&p.leaf.id, "plugin-error", &self.controls))
                 }))
-                .child(self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx))
+                .child(if self.mode == "agents" { self.card_header_buttons(&p.leaf.id, cx) } else { self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx) })
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
             .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
@@ -2196,7 +2218,10 @@ impl Render for Client {
         self.hold_resizes();
         self.sync_native(&layers);
         self.release_resizes();
+        // On the Agents surface every agent of the session is drawn, so each is attached.
+        let cards = if self.mode == "agents" && !space_held && !server_stopped { self.agent_cards() } else { vec![] };
         self.sync_agents(&leaves);
+        self.sync_agents(&cards.iter().map(|c| Placed { leaf: c.leaf.clone(), rect: c.rect }).collect::<Vec<_>>());
         self.frames += 1;
         self.settle_selection();
         self.sync_columns();
@@ -2232,7 +2257,7 @@ impl Render for Client {
         if server_stopped {
             root = root.child(self.server_stopped_element());
         } else if !little && grid_off && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
-            root = root.child(self.mode_element());
+            root = root.child(if self.mode == "agents" { self.surface_element(&cards, window, cx) } else { self.mode_element() });
         }
         // While the grid moves or a pane is zoomed, panes slide past the grid's edge: they draw
         // clipped to it, in window coordinates inside a layer the grid's size.
@@ -2296,7 +2321,7 @@ impl Render for Client {
         root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.message_menu_overlay(cx)).children(self.space_drop_outline()).children(self.drag_chip()).children(self.space_drag_capture(cx));
         // While a card, a divider or a pane is dragged, a layer over the whole window takes the
         // pointer: a card's backdrop occludes the root, whose listeners hear only a pointer over nothing else.
-        if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() || self.tray_drag.is_some() {
+        if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() || self.tray_drag.is_some() || self.surface_holds_pointer() {
             let resize = self.card_drag.as_ref().is_some_and(|d| d.resize);
             let layer = div().absolute().left_0().top_0().size_full().occlude()
                 .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| this.window_mouse_move(e, cx)))
