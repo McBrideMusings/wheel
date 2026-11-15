@@ -955,12 +955,16 @@ impl AppState {
 
     /// Send every log line waiting to the log store, as the daemon's timer does. Blocking.
     pub fn ship_now(&self) {
-        let retry = self
-            .setting(crate::settings::LOGS_RETRY_S, None)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .map_or(crate::logship::SHIP_EVERY, Duration::from_secs);
-        self.logship.ship(&self.push_url(), retry);
+        self.logship.ship(|| {
+            // The URL first: a pass that sees a URL also sees any retry set before it.
+            let url = self.push_url();
+            let retry = self
+                .setting(crate::settings::LOGS_RETRY_S, None)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .map_or(crate::logship::SHIP_EVERY, Duration::from_secs);
+            (url, retry)
+        });
     }
 }
 
@@ -1185,7 +1189,14 @@ async fn connection(
         match ClientMsg::deserialize(&raw) {
             Ok(msg) => {
                 let started = Instant::now();
-                let outcome = handle(&state, msg, &out, &mut forwards, peer, &caller).await;
+                let reply = handle(&state, msg, &out, &mut forwards, peer, &caller).await;
+                // What the journal records: an error reply is a failure, any other reply a
+                // success, and no reply here (one sent later by a task of its own) is neither.
+                let outcome = match &reply {
+                    Some(ServerMsg::Error { message, .. }) => Some(Err(message.clone())),
+                    Some(_) => Some(Ok(())),
+                    None => None,
+                };
                 let device = match &caller {
                     Caller::Device(id) => state.devices.name(id),
                     Caller::Local => None,
@@ -1220,6 +1231,9 @@ async fn connection(
                         .and_then(|o| o.as_ref().err())
                         .map(String::as_str),
                 });
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
             }
             Err(e) => {
                 tracing::warn!(%peer, error = %e, "bad client message");
@@ -1262,6 +1276,9 @@ async fn connection(
     }
 }
 
+/// Carry out one request and return its reply, or None when a task of its own sends the reply
+/// later. The caller journals the request before sending the reply, so a client holding the
+/// reply finds its request in the journal.
 async fn handle(
     state: &Arc<AppState>,
     msg: ClientMsg,
@@ -1269,7 +1286,7 @@ async fn handle(
     forwards: &mut HashMap<String, JoinHandle<()>>,
     peer: SocketAddr,
     caller: &Caller,
-) -> Option<Result<(), String>> {
+) -> Option<ServerMsg> {
     let reply = match msg {
         ClientMsg::PairingIssue { .. }
         | ClientMsg::PairingCancel { .. }
@@ -3010,17 +3027,7 @@ async fn handle(
             term_done(req, &id, result.map_err(|e| e.to_string()))
         }
     };
-    // What the journal records: an error reply is a failure, any other reply a success, and no
-    // reply here (one sent later by a task of its own) is neither.
-    let outcome = match &reply {
-        Some(ServerMsg::Error { message, .. }) => Some(Err(message.clone())),
-        Some(_) => Some(Ok(())),
-        None => None,
-    };
-    if let Some(reply) = reply {
-        let _ = out.send(reply).await;
-    }
-    outcome
+    reply
 }
 
 /// Move an agent into another conversation — a fresh one, or the past one `load` names — off the

@@ -385,9 +385,11 @@ async fn a_batch_the_store_refuses_is_skipped_shown_as_failing_and_not_asked_aga
     refusing.answer.store(400, Ordering::SeqCst);
     let base = dir("refused");
     let (mut ws, daemon) = start_daemon(base.join("instance"), "/dev/null").await;
-    set_push_url(&mut ws, &refusing.url).await;
+    // The daemon's timer may push as soon as a URL is set, so the back-off and the space come
+    // first: whichever pass pushes first, the timer's or ours, waits 300 s and refuses the space.
     set_retry(&mut ws, "300").await;
     new_space(&mut ws, &base).await;
+    set_push_url(&mut ws, &refusing.url).await;
     ship(&daemon).await;
     ship(&daemon).await;
     // One refused push, then the pass stops and waits out its back-off, which no load on the

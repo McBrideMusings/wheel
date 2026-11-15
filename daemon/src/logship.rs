@@ -427,16 +427,19 @@ impl Logship {
         }
     }
 
-    /// Send everything waiting to `url`, a batch per file at a time. Blocking: run it off the async
-    /// runtime's threads. Returns early while a failure's back-off lasts; the first failure's
-    /// back-off is `retry`, and each further one doubles it.
-    pub(crate) fn ship(&self, url: &str, retry: Duration) {
+    /// Send everything waiting to the push URL `settings` returns, a batch per file at a time.
+    /// Blocking: run it off the async runtime's threads. Returns early while a failure's back-off
+    /// lasts; the first failure's back-off is the `retry` `settings` returns, and each further one
+    /// doubles it. `settings` is read once this pass holds the push, so a pass that waited behind
+    /// another never ships with settings changed while it waited.
+    pub(crate) fn ship(&self, settings: impl FnOnce() -> (String, Duration)) {
         let _pushing = self.pushing.lock().unwrap();
         // Every line sent before this pass is on disk before it reads the files.
         let (tx, rx) = mpsc::channel();
         self.send(Line::Drained(tx));
         let _ = rx.recv_timeout(Duration::from_secs(5));
-        self.ship_locked(url, retry);
+        let (url, retry) = settings();
+        self.ship_locked(&url, retry);
         self.waiting.store(self.count_waiting(), Ordering::Relaxed);
     }
 
