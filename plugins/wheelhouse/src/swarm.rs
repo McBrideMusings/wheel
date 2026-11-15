@@ -268,7 +268,10 @@ pub fn workers(events: &[Event]) -> Vec<Worker> {
 pub fn run_log(home: &Path, dir: &str) -> Result<PathBuf, String> {
     let tool = home.join(".claude/skills/swarm/swarm");
     let path = crate::core::run::text(&tool.to_string_lossy(), dir, &["log-path"])?;
-    Ok(PathBuf::from(path.trim()))
+    match path.trim() {
+        "" => Err(format!("{} log-path named no run log", tool.display())),
+        p => Ok(PathBuf::from(p)),
+    }
 }
 
 /// The run's value, given its events, the agents of the project, the clock and how to find a worker's
@@ -455,11 +458,19 @@ mod tests {
         let home = std::env::temp_dir().join(format!("wheelhouse-swarm-home-{}", std::process::id()));
         let tool = home.join(".claude/skills/swarm/swarm");
         std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
-        std::fs::write(&tool, "#!/bin/sh\n[ \"$1\" = log-path ] && echo \"/elsewhere$PWD/run.tsv\"\n").unwrap();
-        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         let dir = std::fs::canonicalize("/tmp").unwrap();
-        let got = run_log(&home, &dir.to_string_lossy());
+        let dir = dir.to_string_lossy();
+        let with = |script: &str| {
+            std::fs::write(&tool, format!("#!/bin/sh\n[ \"$1\" = log-path ] || exit 2\n{script}\n")).unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            run_log(&home, &dir)
+        };
+        let moved = with("echo \"/elsewhere$PWD/run.tsv\"");
+        let failed = with("echo 'swarm: not here' >&2; exit 1");
+        let empty = with("exit 0");
         std::fs::remove_dir_all(&home).unwrap();
-        assert_eq!(got, Ok(PathBuf::from(format!("/elsewhere{}/run.tsv", dir.display()))));
+        assert_eq!(moved, Ok(PathBuf::from(format!("/elsewhere{dir}/run.tsv"))));
+        assert!(failed.unwrap_err().contains("swarm: not here"));
+        assert!(empty.unwrap_err().contains("named no run log"));
     }
 }

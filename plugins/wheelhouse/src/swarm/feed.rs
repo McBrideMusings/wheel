@@ -63,8 +63,8 @@ mod tests {
     fn a_directory_in_no_repository_says_so_and_has_no_run() {
         let v = value("/", &[], true, None);
         assert_eq!((v["state"].as_str(), v["log"].clone()), (Some("no-run"), Value::Null));
-        // The error is the `swarm` tool's own (`swarm log-path` run in `/`), whatever its wording.
-        assert!(!v["error"].as_str().unwrap().trim().is_empty());
+        // The error is the `swarm` tool's own, from `swarm log-path` run in `/`.
+        assert!(v["error"].as_str().unwrap().contains("not in a git repo"));
         assert_eq!(v["workers"], json!([]));
     }
 

@@ -200,7 +200,7 @@ fn watches(feed: &str, dir: &str, real: &std::path::Path) -> Watches {
     match feed {
         "work" | "issues" => return Watches::default(),
         "swarm" => {
-            // The run log's directory, or its nearest ancestor that exists, so the log's creation is an
+            // The run log's directory (as `swarm log-path` names it; no watch when it names none), or its nearest ancestor that exists, so the log's creation is an
             // event; `files` holds the log and its directory, the paths whose change is a hit.
             let Some(log) = swarm_feed::log_path(dir) else { return Default::default() };
             let log = real_of(&log);
