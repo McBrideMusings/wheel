@@ -156,7 +156,7 @@ struct WheelCommands: Commands {
         CommandGroup(after: .sidebar) {
             item("toggle-sidebar")
             item("mode-spaces")
-            item("mode-desk")
+            item("mode-agents")
             item("command-palette")
             item("shortcuts")
         }

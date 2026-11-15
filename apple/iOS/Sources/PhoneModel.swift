@@ -35,6 +35,27 @@ final class PhoneModel {
     /// The session and space this phone shows. The daemon keeps no view (ADR-0022): switching here
     /// draws from the layout already held, moves no other client, and the phone reports it with `view`.
     private(set) var view = SessionView()
+    /// What the phone's body shows, a `WindowMode` id: the space's pages, or another mode in their
+    /// place. The phone holds it alone and saves it across launches; wheeld never hears of it (ADR-0022).
+    private(set) var mode: String = {
+        let saved = UserDefaults.standard.string(forKey: PhoneModel.modeKey) ?? WindowMode.spaces
+        let mode = WindowMode.builtIn.contains(saved) ? saved : WindowMode.spaces
+        Log.info("mode restored: \(mode)")
+        return mode
+    }()
+    private static let modeKey = "phoneMode"
+
+    /// Show another mode, as the mode menu's row does.
+    func setMode(_ new: String) {
+        guard WindowMode.builtIn.contains(new) else {
+            Log.info("mode \(new): no such mode")
+            return
+        }
+        guard new != mode else { return }
+        Log.info("mode \(mode) -> \(new)")
+        mode = new
+        UserDefaults.standard.set(new, forKey: Self.modeKey)
+    }
     /// The space this phone shows; nil while the shown session holds none.
     var active: String? { view.space }
     private var reportedView: String?
@@ -815,8 +836,10 @@ final class PhoneModel {
     // MARK: Ops. Each one asks the daemon; the layout it broadcasts back is what changes the screen.
 
     /// Show `pane` of `space` on this phone. Nothing is sent but the `view` report.
+    /// Showing a pane shows Spaces, whichever mode was shown.
     func focus(space: String, pane: String) {
         Log.info("focus pane \(pane) in \(space)")
+        setMode(WindowMode.spaces)
         guard let i = spaces.firstIndex(where: { $0.id == space && $0.allPanes.contains { $0.id == pane } }) else {
             pendingShow = (space, pane)
             return
@@ -827,9 +850,10 @@ final class PhoneModel {
         showTerm()
     }
 
-    /// Show `space` on this phone: no other client moves.
+    /// Show `space` on this phone: no other client moves. Showing a space shows Spaces, whichever mode was shown.
     func select(space: String) {
         Log.info("switch to space \(space)")
+        setMode(WindowMode.spaces)
         guard spaces.contains(where: { $0.id == space }) else {
             pendingShow = (space, nil)
             return

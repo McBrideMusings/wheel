@@ -282,15 +282,15 @@ struct WindowLayoutTests {
     /// saved with no mode shows spaces.
     @Test func modeBelongsToOneWindowAndDefaultsToSpaces() throws {
         var (saved, first, second) = layout()
-        saved.setMode(WindowMode.desk, in: first)
-        #expect(saved.window(first)?.mode == "desk")
+        saved.setMode(WindowMode.agents, in: first)
+        #expect(saved.window(first)?.mode == "agents")
         #expect(saved.window(second)?.mode == "spaces")
         let back = try JSONDecoder().decode(WindowLayout.self, from: JSONEncoder().encode(saved))
-        #expect(back.window(first)?.mode == "desk")
+        #expect(back.window(first)?.mode == "agents")
         let old = #"{"windows":[{"id":"w","session":"n1","sidebar":true}],"littles":[]}"#
         let legacy = try JSONDecoder().decode(WindowLayout.self, from: Data(old.utf8))
         #expect(legacy.windows[0].mode == "spaces")
-        #expect(WindowMode.builtIn == ["spaces", "desk"])
+        #expect(WindowMode.builtIn == ["spaces", "agents", "orchestrator"])
     }
 
     /// A pin on a window or a little window is saved with the layout; a layout saved before pins existed reads as unpinned.

@@ -25,19 +25,19 @@ eq "it sits right of the session menu and left of the processes button" \
 BEFORE="$(others)"
 MODE_RECT="$(rects | jq -c '.mode')"
 if [ -n "${WHEEL_SHOTS:-}" ]; then mkdir -p "$WHEEL_SHOTS"; app_post "/window/snapshot?window=$A&frame=1&path=$WHEEL_SHOTS/mode-spaces.png" >/dev/null && echo "     shot $WHEEL_SHOTS/mode-spaces.png"; fi
-app_post "/windows?action=mode&window=$A&mode=desk" >/dev/null
-wait_st '.windows[0].mode == "desk"' 6
-eq "the debug call sets the window's mode to desk" "$(w_mode)" "desk"
+app_post "/windows?action=mode&window=$A&mode=agents" >/dev/null
+wait_st '.windows[0].mode == "agents"' 6
+eq "the debug call sets the window's mode to agents" "$(w_mode)" "agents"
 eq "no other title-row button moved" "$(others)" "$BEFORE"
 eq "the mode button kept its own rect" "$(rects | jq -c '.mode')" "$MODE_RECT"
-if [ -n "${WHEEL_SHOTS:-}" ]; then app_post "/window/snapshot?window=$A&frame=1&path=$WHEEL_SHOTS/mode-desk.png" >/dev/null && echo "     shot $WHEEL_SHOTS/mode-desk.png"; fi
+if [ -n "${WHEEL_SHOTS:-}" ]; then app_post "/window/snapshot?window=$A&frame=1&path=$WHEEL_SHOTS/mode-agents.png" >/dev/null && echo "     shot $WHEEL_SHOTS/mode-agents.png"; fi
 app_post "/key?keys=opt%2Bcmd%2B1" >/dev/null
 wait_st '.windows[0].mode == "spaces"' 6
 eq "opt+cmd+1 returns to spaces" "$(w_mode)" "spaces"
 app_post "/key?keys=opt%2Bcmd%2B2" >/dev/null
-wait_st '.windows[0].mode == "desk"' 6
-eq "opt+cmd+2 shows the Desk" "$(w_mode)" "desk"
-check "the Mac log records both changes" sh -c "grep -q 'mode desk' '$INST/WheelMac.log' && grep -q 'mode spaces' '$INST/WheelMac.log'"
+wait_st '.windows[0].mode == "agents"' 6
+eq "opt+cmd+2 shows Agents" "$(w_mode)" "agents"
+check "the Mac log records both changes" sh -c "grep -q 'mode agents' '$INST/WheelMac.log' && grep -q 'mode spaces' '$INST/WheelMac.log'"
 cat >"$INST/wheel.toml" <<'TOML'
 [[title.button]]
 id = "mode"
