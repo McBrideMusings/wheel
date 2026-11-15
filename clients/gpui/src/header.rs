@@ -57,7 +57,11 @@ pub fn session_name(taken: &[&str]) -> String {
 }
 
 /// The modes a window's body draws (`WindowMode`), with the title and icon the menu shows.
-pub const MODES: [(&str, &str, &str); 2] = [("spaces", "Spaces", "square.grid.2x2"), ("desk", "Desk", "rectangle.3.group")];
+pub const MODES: [(&str, &str, &str); 3] = [
+    ("spaces", "Spaces", "square.grid.2x2"),
+    ("agents", "Agents", "rectangle.3.group"),
+    ("orchestrator", "Orchestrator", "bubble.left.and.text.bubble.right"),
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
@@ -154,7 +158,7 @@ fn plugin(info: &TitleButtonInfo, x: f32) -> Chip {
 
 /// The row for a window `width` points wide. `plugins` are the space's merged entries;
 /// `spaces` are (id, name) of the session shown; `space` is the one shown and `space_name` its
-/// name; `mode` is `spaces` or `desk`.
+/// name; `mode` is one of `MODES`' ids.
 #[allow(clippy::too_many_arguments)]
 pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: &[(String, String)], space: Option<&str>, space_name: &str, pinned: bool, mode: &str) -> Row {
     let hidden = |id: &str| plugins.iter().any(|p| p.hidden && p.id == id);
@@ -317,13 +321,22 @@ mod tests {
         badged.tint = Some("green".into());
         badged.icon = "lock.fill".into();
         badged.enabled = false;
-        let with = row(1200., true, &[badged], &named("s", 1), Some("s1"), "s 1", true, "desk");
+        let with = row(1200., true, &[badged], &named("s", 1), Some("s1"), "s 1", true, "agents");
         let rects = |r: &Row| r.chips.iter().map(|c| (frame_id(&c.hit), c.rect)).collect::<Vec<_>>();
         assert_eq!(rects(&plain), rects(&with));
         assert_eq!(with.chips[3].badge.as_deref(), Some("12"));
         assert!(!with.chips[3].enabled);
         assert_eq!(with.chips[2].icon, "rectangle.3.group");
         assert_eq!(with.chips.iter().find(|c| c.hit == Hit::Pin).unwrap().icon, "pin.fill");
+    }
+
+    #[test]
+    fn every_mode_keeps_every_button_in_place() {
+        let rects = |mode: &str| row(1200., true, &[entry("vpn", TitleSide::Left, true)], &named("s", 2), Some("s1"), "s 1", false, mode).chips.iter().map(|c| (frame_id(&c.hit), c.rect)).collect::<Vec<_>>();
+        for (id, _, icon) in MODES {
+            assert_eq!(rects(id), rects("spaces"), "{id}");
+            assert_eq!(row(1200., true, &[], &named("s", 1), Some("s1"), "s 1", false, id).chips[2].icon, icon);
+        }
     }
 
     #[test]

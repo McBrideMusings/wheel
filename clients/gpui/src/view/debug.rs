@@ -541,7 +541,7 @@ impl Client {
             "/mode" => {
                 let Some(mode) = q("mode") else { return refuse(BAD, "mode= is required") };
                 if !header::MODES.iter().any(|m| m.0 == mode) {
-                    return refuse(BAD, "mode is spaces or desk");
+                    return refuse(BAD, "mode is spaces, agents or orchestrator");
                 }
                 self.set_mode(&mode);
                 None

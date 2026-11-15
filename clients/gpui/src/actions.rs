@@ -33,7 +33,8 @@ pub fn fixed() -> Vec<Action> {
         action("shortcuts", "Keyboard Shortcuts", Some("cmd+slash")),
         action("toggle-sidebar", "Toggle Sidebar", Some("ctrl+cmd+s")),
         action("mode-spaces", "Show Spaces", Some("opt+cmd+1")),
-        action("mode-desk", "Show Desk", Some("opt+cmd+2")),
+        action("mode-agents", "Show Agents", Some("opt+cmd+2")),
+        action("mode-orchestrator", "Show Orchestrator", Some("opt+cmd+3")),
         action("split-right", "Split Right", Some("cmd+d")),
         action("split-down", "Split Down", Some("shift+cmd+d")),
         action("focus-previous", "Previous Pane", Some("cmd+bracket_left")),
@@ -87,7 +88,7 @@ pub fn shortcut_groups() -> Vec<(&'static str, Vec<String>)> {
         ("Panes", ["split-right", "split-down", "close-pane", "focus-previous", "focus-next", "focus-left", "focus-right", "focus-up", "focus-down",
             "resize-left", "resize-right", "resize-up", "resize-down", "equalize-splits", "zoom-pane"].map(String::from).to_vec()),
         ("Spaces", spaces),
-        ("Windows", ["new-window", "close-window", "rename-window", "open-folder", "toggle-sidebar", "mode-spaces", "mode-desk", "settings", "command-palette", "shortcuts"].map(String::from).to_vec()),
+        ("Windows", ["new-window", "close-window", "rename-window", "open-folder", "toggle-sidebar", "mode-spaces", "mode-agents", "mode-orchestrator", "settings", "command-palette", "shortcuts"].map(String::from).to_vec()),
         ("Agent", vec!["switch-view".into()]),
     ]
 }
@@ -119,7 +120,7 @@ mod tests {
     #[test]
     fn the_registry_matches_the_swift_one() {
         let all = fixed();
-        assert_eq!(all.len(), 43);
+        assert_eq!(all.len(), 44);
         assert!(all.iter().all(|a| a.keys.as_deref().is_none_or(|k| crate::keymap::KeyChord::parse(k).is_some())), "every built-in key is in wheeld's spelling");
         let ids: Vec<&str> = all.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids[..3], ["open-folder", "new-window", "new-space"]);
@@ -132,6 +133,7 @@ mod tests {
         assert_eq!(sheet[0].0, "Panes");
         assert_eq!(sheet[0].1[0], ShortcutRow { id: "split-right".into(), title: "Split Right".into(), keys: "⌘E".into() });
         assert_eq!(sheet[1].1.len(), 13);
+        assert_eq!(sheet[2].1.iter().filter(|r| r.id.starts_with("mode-")).map(|r| (r.title.as_str(), r.keys.as_str())).collect::<Vec<_>>(), [("Show Spaces", "⌥⌘1"), ("Show Agents", "⌥⌘2"), ("Show Orchestrator", "⌥⌘3")]);
         assert_eq!(runner_actions(&["build".into()])[0].id, "run-build");
         assert_eq!(agent_actions(&[("claude".into(), "Claude".into())])[0].title, "Start Claude in This Pane");
     }

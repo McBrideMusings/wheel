@@ -256,7 +256,7 @@ pub struct Client {
     title_asked: HashSet<String>,
     /// The menu open under a title-row button.
     pub title_menu: Option<TitleMenu>,
-    /// What the body draws: `spaces` or `desk` (`WindowMode`).
+    /// What the body draws: one of `header::MODES`' ids (`WindowMode`).
     pub mode: String,
     /// The title row's pin: the window floats over every other.
     pub pinned: bool,
@@ -2185,10 +2185,11 @@ impl Render for Client {
         crate::crash_guard::mark_space(self.space_id.as_deref().unwrap_or(""));
         let space_held = self.space_id.as_deref().is_some_and(|s| self.quarantine.isolates_space(s));
         // A quarantined space opens none of its views and draws its card in place of its panes.
-        let desk = self.mode == "desk";
+        // Every mode but Spaces draws its own body in place of the grid.
+        let grid_off = self.mode != "spaces";
         // While the server is stopped from the menu, the window says so in place of the grid.
         let server_stopped = !self.is_little() && self.server_stopped_notice();
-        let layers = if space_held || desk || server_stopped { vec![] } else { layers };
+        let layers = if space_held || grid_off || server_stopped { vec![] } else { layers };
         let leaves: Vec<Placed> = layers.iter().flat_map(|l| l.leaves.iter().cloned()).collect();
         self.grid_drawn = layers.first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default();
         let moving = self.tick_motion(window);
@@ -2230,8 +2231,8 @@ impl Render for Client {
         root = root.children(self.little_placeholder(cx));
         if server_stopped {
             root = root.child(self.server_stopped_element());
-        } else if !little && desk && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
-            root = root.child(self.desk_element());
+        } else if !little && grid_off && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
+            root = root.child(self.mode_element());
         }
         // While the grid moves or a pane is zoomed, panes slide past the grid's edge: they draw
         // clipped to it, in window coordinates inside a layer the grid's size.
@@ -2286,7 +2287,7 @@ impl Render for Client {
         if self.tray_drag.is_some() && self.tray_panes().is_empty() {
             self.tray_drag = None;
         }
-        if !space_held && !desk {
+        if !space_held && !grid_off {
             root = root.children(self.tray_elements(cx));
         }
         if !little && self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {

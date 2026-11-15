@@ -112,7 +112,7 @@ impl Client {
             "previous-space" | "next-space" => spaces() > 1,
             "last-space" => spaces() > 0,
             "settings" => true,
-            "toggle-sidebar" | "usage" | "mode-spaces" | "mode-desk" => true,
+            "toggle-sidebar" | "usage" | "mode-spaces" | "mode-agents" | "mode-orchestrator" => true,
             "zoom-pane" => self.zoom_enabled(),
             "switch-view" => self.focused_leaf().is_some_and(|l| self.other_view(&l).is_some()),
             other => {
@@ -192,7 +192,8 @@ impl Client {
             "toggle-sidebar" => self.toggle_sidebar(),
             "usage" => self.toggle_usage(),
             "mode-spaces" => self.set_mode("spaces"),
-            "mode-desk" => self.set_mode("desk"),
+            "mode-agents" => self.set_mode("agents"),
+            "mode-orchestrator" => self.set_mode("orchestrator"),
             "command-palette" => self.open_command_palette(Mode::Root),
             "shortcuts" => self.toggle_shortcuts(),
             "settings" => self.toggle_settings(),

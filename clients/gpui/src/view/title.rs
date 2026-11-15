@@ -188,7 +188,7 @@ impl Client {
         self.log(format!("title button {id} pressed in space {space}"));
         self.send(&ClientMsg::TitleButtonPress { req: None, space, id: id.to_owned() });
     }
-    /// What the window's body draws: `spaces` (the grid) or `desk` (`WindowMode`).
+    /// What the window's body draws: `spaces` (the grid), `agents` or `orchestrator` (`WindowMode`).
     pub fn set_mode(&mut self, mode: &str) {
         self.close_title_menu();
         if !header::MODES.iter().any(|m| m.0 == mode) {
@@ -436,13 +436,16 @@ impl Client {
         Some(card)
     }
 
-    /// The Desk mode's body: the Swift placeholder until the agent cards are drawn (DeskView.swift).
-    pub(super) fn desk_element(&self) -> gpui::Div {
+    /// The body of a mode other than Spaces: a placeholder until Agents draws its cards
+    /// (wheel-0but.3) and Orchestrator its chat (wheel-eg4e.8).
+    pub(super) fn mode_element(&self) -> gpui::Div {
         let r = self.grid_area();
+        let (_, title, icon) = header::MODES.iter().find(|m| m.0 == self.mode).copied().unwrap_or(header::MODES[0]);
+        let line = if self.mode == "orchestrator" { "The orchestrator's chat will be here." } else { "Every agent will be a card here." };
         div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).flex().flex_col().items_center().justify_center().gap(px(6.))
-            .children(self.symbol("rectangle.3.group", 28., 0x5a7266))
-            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child("Desk"))
-            .child(div().text_color(rgb(DIM)).child("Every agent will be a card here."))
+            .children(self.symbol(icon, 28., 0x5a7266))
+            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(title))
+            .child(div().text_color(rgb(DIM)).child(line))
     }
 
     /// Whether the window shows the Server stopped notice in place of its grid: Stop Server ran

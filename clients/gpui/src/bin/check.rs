@@ -123,6 +123,21 @@ async fn click_chip(window: gpui::WindowHandle<Client>, hit: Hit, cx: &mut Async
     }
     Ok(())
 }
+/// Switch the window to `mode` the way a person does: a real click on the title row's mode
+/// button, then one on the mode's row.
+async fn pick_mode(window: gpui::WindowHandle<Client>, mode: &str, cx: &mut AsyncApp) -> Result<()> {
+    click_chip(window, Hit::Mode, cx).await?;
+    let (native, row) = window.update(cx, |c, _, _| (c.native(), c.title_menu_placed().and_then(|(_, rows)| rows.into_iter().find(|(r, _)| r.id == format!("mode:{mode}")).map(|(_, r)| r))))?;
+    let row = row.ok_or_else(|| anyhow::anyhow!("the mode menu lists no {mode}"))?;
+    let at = [f64::from(row.x + row.w / 2.), f64::from(row.y + row.h / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    for _ in 0..3 {
+        tick(cx, 100).await;
+        draw(window, None, cx)?;
+    }
+    Ok(())
+}
 /// Switch the window to `session` the way a person does: a real click on the title row's session
 /// menu button, then one on the session's row.
 async fn switch_session(window: gpui::WindowHandle<Client>, session: &str, cx: &mut AsyncApp) -> Result<()> {
@@ -2707,19 +2722,39 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
     window.update(cx, |c, _, _| c.press_plugin("deploy"))?;
     let log_has = |cx: &mut AsyncApp, needle: &str| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.state_json()["log"].as_array().is_some_and(|l| l.iter().any(|e| e.as_str().is_some_and(|e| e.contains(needle)))))?) };
     ensure!(log_has(cx, "title button deploy: an indicator")?, "a press on deploy should be ignored and logged");
-    // The mode menu, opened by a real click: Desk hides every pane and draws the placeholder.
+    // The mode menu, opened by a real click, then a real click on each row: every mode but
+    // Spaces hides every pane and draws its placeholder, and no title-row button moves.
     click_chip(window, Hit::Mode, cx).await?;
     let menu = title_state(cx)?["menu"].clone();
-    ensure!(menu["kind"] == "mode" && menu["rows"][0]["id"] == "mode:spaces" && menu["rows"][0]["checked"] == true && menu["rows"][1]["id"] == "mode:desk", "the mode menu: {menu}");
-    window.update(cx, |c, _, _| c.run_title_menu("mode:desk"))?;
+    let mode_ids: Vec<String> = menu["rows"].as_array().into_iter().flatten().filter_map(|r| r["id"].as_str().map(str::to_owned)).collect();
+    ensure!(menu["kind"] == "mode" && mode_ids == ["mode:spaces", "mode:agents", "mode:orchestrator"] && menu["rows"][0]["checked"] == true, "the mode menu: {menu}");
+    let row_frames = |cx: &mut AsyncApp| -> Result<Vec<(String, Value)>> {
+        Ok(title_state(cx)?["row"].as_array().unwrap_or(&vec![]).iter().map(|c| (c["id"].as_str().unwrap_or_default().to_owned(), c["frame"].clone())).collect())
+    };
+    window.update(cx, |c, _, _| c.close_title_menu())?;
     draw(window, None, cx)?;
-    wait(&native, "every pane hidden in desk mode", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == true), cx).await?;
-    draw(window, Some(output.join("client-desk.png")), cx)?;
-    let mode_after = title_state(cx)?["mode"].clone();
-    ensure!(mode_after == "desk" && title_state(cx)?["menu"].is_null(), "desk mode did not take: {mode_after}");
-    window.update(cx, |c, _, _| c.set_mode("spaces"))?;
-    draw(window, None, cx)?;
-    wait(&native, "the panes shown again in spaces mode", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
+    let spaces_row = row_frames(cx)?;
+    let mut modes_seen = vec![];
+    for mode in ["agents", "orchestrator", "spaces"] {
+        pick_mode(window, mode, cx).await?;
+        let state = title_state(cx)?;
+        ensure!(state["mode"] == mode && state["menu"].is_null(), "{mode} mode did not take: {}", state["mode"]);
+        modes_seen.push(state["mode"].clone());
+        let hidden = mode != "spaces";
+        wait(&native, &format!("every pane hidden={hidden} in {mode} mode"), |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == hidden), cx).await?;
+        draw(window, Some(output.join(format!("client-mode-{mode}.png"))), cx)?;
+        let frames = row_frames(cx)?;
+        ensure!(frames == spaces_row, "a title-row button moved in {mode} mode: {frames:?} against {spaces_row:?}");
+        let icon = wheel_gpui::header::MODES.iter().find(|m| m.0 == mode).map(|m| m.2).unwrap_or_default();
+        ensure!(title_state(cx)?["row"].as_array().is_some_and(|r| r.iter().any(|c| c["id"] == "mode" && c["icon"] == icon)), "the mode button does not show {icon} in {mode} mode: {}", title_state(cx)?["row"]);
+    }
+    // The actions ⌥⌘1–3 run take the window to each mode too.
+    for (action, mode) in [("mode-orchestrator", "orchestrator"), ("mode-agents", "agents"), ("mode-spaces", "spaces")] {
+        ensure!(window.update(cx, |c, _, _| c.action_enabled(action))?, "{action} is disabled");
+        window.update(cx, |c, _, cx| c.run_action(action, cx))?;
+        draw(window, None, cx)?;
+        ensure!(title_state(cx)?["mode"] == mode, "{action} left the mode at {}", title_state(cx)?["mode"]);
+    }
     // The pin (its button is hidden by the fixture's entry, so through the action the button runs).
     window.update(cx, |c, _, _| c.set_pinned(true))?;
     ensure!(title_state(cx)?["pinned"] == true && log_has(cx, " pinned")?, "the pin did not take");
@@ -2774,7 +2809,7 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
     window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: wheel_gpui::keymap::KeyChord::parse("escape").unwrap().keystroke(), is_held: false, prefer_character_input: false }, cx))?;
     draw(window, None, cx)?;
     ensure!(!window.update(cx, |c, _, _| c.usage_open)?, "Esc did not close the Usage window");
-    let title_report = json!({"order": order, "build": build, "vpn": vpn, "pressed": pressed, "mode_after": mode_after, "session_menu": menu_ids, "tabs": tab_ids, "tab_width": tabs["tabs"]["tab_width"],
+    let title_report = json!({"order": order, "build": build, "vpn": vpn, "pressed": pressed, "modes": modes_seen, "mode_menu": mode_ids, "session_menu": menu_ids, "tabs": tab_ids, "tab_width": tabs["tabs"]["tab_width"],
         "badge": tabs["connection_badge"], "strip": summary, "meters_after_full": meters, "full_row": full_row});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, title_report))
 }
