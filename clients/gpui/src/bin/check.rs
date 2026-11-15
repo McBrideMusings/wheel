@@ -897,7 +897,11 @@ async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_pa
     // Markdown: a message sent through the CLI comes back echoed as the reply, so its fenced
     // block is drawn as a code block with its language label and syntax colours; the first line
     // of that reply is selected with the pointer and copied with Command-C.
-    let markdown_message = "Here is code:\n\n```rust\nfn main() { println!(\"hi\"); }\n```";
+    // A long paragraph and a long list item follow it: each wraps inside the pane, in the echoed
+    // person's message as in the reply.
+    let long = "Bazzite's two entries got IDs 3289286809 and 4100235141, the ones the art was filed under, and the Deck's match too. ".repeat(3);
+    let markdown_message = format!("Here is code:\n\n```rust\nfn main() {{ println!(\"hi\"); }}\n```\n\n{long}\n\n- {long}");
+    let markdown_message = markdown_message.as_str();
     let sent = std::process::Command::new(&cli_path)
         .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, markdown_message, "--timeout", "30"])
         .output()?;
@@ -921,6 +925,17 @@ async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_pa
     let code_blocks: Vec<&Drawn> = drawn.iter().filter(|d| d.kind == "code").collect();
     ensure!(code_blocks.len() == 1 && code_blocks[0].language.as_deref() == Some("rust") && code_blocks[0].highlighted,
         "code blocks drawn: {:?}", code_blocks.iter().map(|d| (d.language.clone(), d.highlighted, d.text.clone())).collect::<Vec<_>>());
+    // The reply's long paragraph and list item, and the echoed message when it is on screen, end
+    // inside the pane and wrap onto more than one line.
+    let pane_frame = window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["frame"].clone())?;
+    let pane_right = pane_frame[0].as_f64().unwrap_or(0.) + pane_frame[2].as_f64().unwrap_or(0.);
+    let wraps: Vec<Value> = drawn.iter().filter(|d| d.text.contains("Bazzite")).map(|d| {
+        let b = d.layout.bounds();
+        let lines = (f32::from(b.size.height) / f32::from(d.layout.line_height())).round();
+        json!({"row": d.row, "kind": d.kind, "right": f32::from(b.origin.x + b.size.width), "lines": lines})
+    }).collect();
+    ensure!(wraps.iter().filter(|w| w["row"] == json!(md_row)).count() == 2 && wraps.iter().all(|w| w["right"].as_f64().unwrap_or(f64::MAX) <= pane_right + 0.5 && w["lines"].as_f64().unwrap_or(0.) > 1.),
+        "long texts must wrap inside the pane (right edge {pane_right}): {wraps:?}");
     let para = drawn.iter().find(|d| d.row == md_row && d.kind == "reply").ok_or_else(|| anyhow::anyhow!("the Markdown reply drew no paragraph"))?;
     let first_line_len = para.text.find('\n').unwrap_or(para.text.len());
     let (from, to) = window.update(cx, |c, _, _| (c.text_point(&agent_name, md_row, para.block, 0), c.text_point(&agent_name, md_row, para.block, first_line_len)))?;
@@ -948,7 +963,7 @@ async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_pa
     let clipboard = cx.update(|app| app.read_from_clipboard().and_then(|i| i.text()));
     ensure!(clipboard.as_deref() == Some(expected_line.as_str()), "clipboard after Command-C: {clipboard:?}");
     let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
-        "reply_row": md_row, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
+        "reply_row": md_row, "wraps": wraps, "pane_right": pane_right, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, markdown_report))
 }
 
