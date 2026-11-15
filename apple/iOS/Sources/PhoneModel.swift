@@ -54,8 +54,6 @@ final class PhoneModel {
     private var startWhenMade: [UInt64: String] = [:]
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]
-    /// The A2UI model of each web pane, drawn natively when its MCP server links an A2UI layout.
-    private(set) var a2uiPanes: [String: A2UIPane] = [:]
     /// The script, state and feeds of each plugin pane in the layout (ADR-0041), kept across swipes and layout changes.
     private(set) var pluginPanes: [String: PluginPaneLink] = [:]
     /// What `phone.log` last said about each plugin pane, so a line is written only when it changes.
@@ -355,7 +353,6 @@ final class PhoneModel {
 
     private func handle(_ msg: ServerMsg) {
         if links.received(msg) { return }
-        if a2uiPanes.values.contains(where: { $0.handle(msg) }) { return }
         if pluginPanes.values.contains(where: { $0.handle(msg) }) { return }
         switch msg {
         case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, protocolVersion, sessions):
@@ -566,7 +563,6 @@ final class PhoneModel {
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
             webPanes[pane] = nil
-            a2uiPanes[pane] = nil
             Log.info("web pane \(pane) left the layout")
         }
         for (pane, shown) in wanted where webPanes[pane] == nil {
@@ -574,12 +570,6 @@ final class PhoneModel {
             let web = WebPane(pane: pane, artifact: shown.artifact, store: shown.store, daemon: pageDaemon)
             webPanes[pane] = web
             web.load(url)
-            if let client {
-                let space = spaces.first { $0.allPanes.contains { $0.id == pane } }?.id
-                let a2ui = A2UIPane(pane: pane, artifact: shown.artifact, space: space, send: { client.send($0) }, nextReq: { client.req() })
-                a2uiPanes[pane] = a2ui
-                a2ui.start()
-            }
         }
     }
 

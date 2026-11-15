@@ -207,3 +207,23 @@ func a2uiPath(of instance: ComponentInstance, in surface: SurfaceModel) -> Strin
     if let p = surface.components[instance.id]?.properties["value"]?.dictionaryValue?["path"]?.stringValue { return p }
     return "/" + instance.id
 }
+
+extension SurfaceModel {
+    /// A Table or a vertical List with no `frame` modifier fills the pane, so the page around it stays put and that
+    /// component scrolls itself; any other page scrolls as a whole. Only a component the page now shows counts: the
+    /// surface keeps every component it was ever sent.
+    var fillsPane: Bool {
+        func scrollsItself(_ n: ComponentNode) -> Bool {
+            switch n.instance.type {
+            case "Table": true
+            case "List": n.instance.properties["direction"]?.stringValue != "horizontal"
+            default: false
+            }
+        }
+        func shows(_ n: ComponentNode) -> Bool {
+            (scrollsItself(n) && !(n.instance.properties["modifiers"]?.arrayValue ?? []).contains { $0.dictionaryValue?["frame"] != nil })
+                || n.children.contains(where: shows)
+        }
+        return root.map(shows) ?? false
+    }
+}

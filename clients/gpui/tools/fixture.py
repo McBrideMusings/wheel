@@ -10,9 +10,8 @@ import contextlib, json, os, pathlib, shlex, shutil, socket, subprocess, tempfil
 REPO = pathlib.Path(__file__).resolve().parents[3]
 # The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
 TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
-# `-p wheeld` builds every binary of that package, `wheel-fake-agent` included, and the
-# `mcp_a2ui_test_server` example serves the project's A2UI page artifact.
-BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse --bins --example mcp_a2ui_test_server'
+# `-p wheeld` builds every binary of that package, `wheel-fake-agent` included.
+BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse --bins'
 # The plugin panes the check opens in the GPUI client, one after another in one pane, as `<plugin>/<pane>`:
 # the Wheelhouse views and the component gallery whole.
 PLUGIN_PANES = ['wheelhouse/beads', 'wheelhouse/issues', 'wheelhouse/repo', 'wheelhouse/graph', 'gallery/gallery']
@@ -161,8 +160,7 @@ def fixture():
         pages.mkdir()
         (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
-        notes = shlex.quote(str(built('examples/mcp_a2ui_test_server')))
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="exec {notes} stdio"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
         (root / 'machine.toml').write_text(machine_file())
         # The Wheelhouse and gallery packages, installed the way a machine installs one: a folder beside the machine file.
         (root / 'plugins').mkdir()
@@ -254,8 +252,6 @@ def fixture():
             cli('pane', 'kind', browser, 'browser', '--page', 'about:blank')
             term2_pane = cli('pane', 'split', web, 'down').splitlines()[-1]
             cli('pane', 'kind', term2_pane, 'terminal')
-            web2 = cli('pane', 'split', term2_pane, 'down').splitlines()[-1]
-            cli('pane', 'kind', web2, 'web', '--artifact', 'fixture-page')
             cli('config', 'set', 'agent.claude.command', str(built('wheel-fake-agent')), '--machine')
             # The stand-in keeps its conversations where Claude Code would, so it gets a home of its own
             # and nothing the check writes reaches ~/.claude/projects.
@@ -293,7 +289,7 @@ def fixture():
             env.update(WHEEL_CLIENT_PLUGINS_SESSION=plugins_session, WHEEL_CLIENT_PLUGINS_PANE=tree(plugins_space)['root']['id'], WHEEL_CLIENT_PLUGIN_PANES=json.dumps(PLUGIN_PANES), WHEEL_CLIENT_TALL_ROWS=str(TALL_ROWS))
             env.update(WHEEL_URL=url, WHEEL_TOKEN_FILE=str(token), WHEEL_CLIENT_SPACE=space, WHEEL_CLIENT_CLI=str(root / 'wheel'), WHEEL_CLIENT_MARKERS=json.dumps(markers),
                        WHEEL_CLIENT_AGENT_PANE=agent_pane, WHEEL_CLIENT_AGENT=started['agent'], WHEEL_CLIENT_HTML=str(page), WHEEL_CLIENT_PAGES=str(pages))
-            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, web2=web2, agent=agent_pane),
+            info = dict(space=space, daemon_pid=daemon.pid, port=port, panes=dict(web=web, terminal=term_pane, browser=browser, terminal2=term2_pane, agent=agent_pane),
                         root=root, claude_home=claude_home, saved_tree=lambda: tree(space)['root'], daemon_alive=lambda: running[-1].poll() is None, restart=restart)
             yield env, info
         finally:

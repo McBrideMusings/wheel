@@ -100,37 +100,6 @@ pub struct PostFile {
     pub from: String,
 }
 
-/// One artifact as the daemon reads it: the `wheel.toml` entry that defines it, where its page
-/// resolved to, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
-/// everything else is reported whether or not there are problems, so a pane on a broken artifact
-/// still says what it is.
-/// One tool an MCP server offers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct McpTool {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// The JSON Schema of the tool's arguments.
-    pub input_schema: serde_json::Value,
-    /// The tool's `_meta` as the server sent it: where `ui.resourceUri` names the tool's view.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<serde_json::Value>,
-}
-
-/// What an MCP tool call returned.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct McpToolResult {
-    /// The content blocks as the server sent them (`{"type":"text","text":...}` and others).
-    pub content: Vec<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub structured: Option<serde_json::Value>,
-    /// The tool reported a failure of its own; `content` says what.
-    pub is_error: bool,
-    /// The result's `_meta` as the server sent it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<serde_json::Value>,
-}
-
 /// Where a plugin package lives (ADR-0041): `project` (`<project>/.wheel/plugins/<id>/`),
 /// `machine` (`~/.wheel/plugins/<id>/`) or `builtin` (compiled into wheeld).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,6 +210,10 @@ pub struct PluginPaneInfo {
     pub actions: Vec<String>,
 }
 
+/// One artifact as the daemon reads it: the `wheel.toml` entry that defines it, where its page
+/// resolved to, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
+/// everything else is reported whether or not there are problems, so a pane on a broken artifact
+/// still says what it is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArtifactInfo {
     pub scope: ArtifactScope,
@@ -417,98 +390,6 @@ pub struct RefreshInfo {
     /// The last run, or None before the first has finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<RunInfo>,
-}
-
-/// What an app artifact's process is doing, as `artifact app status` reports it.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AppState {
-    /// Started; no port announced yet.
-    Starting,
-    /// Running, and its port announced when it announces one.
-    Running,
-    /// Exited and waiting out the delay before the restart policy starts it again.
-    Waiting,
-    /// Stopped by `artifact app stop`, or ended and not restarted by its policy.
-    Stopped,
-}
-
-/// When an app artifact's process is started again after it ends.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AppRestart {
-    /// After a non-zero exit or a signal; a clean exit leaves it stopped.
-    #[default]
-    OnFailure,
-    /// After every exit.
-    Always,
-    /// Never.
-    Never,
-}
-
-impl AppRestart {
-    pub fn name(self) -> &'static str {
-        match self {
-            AppRestart::OnFailure => "on-failure",
-            AppRestart::Always => "always",
-            AppRestart::Never => "never",
-        }
-    }
-}
-
-/// How one run of an app's process ended.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AppExit {
-    /// The exit status; None when a signal ended it or it never started.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit: Option<i32>,
-    /// Why there is no exit status: the signal that ended it, or why it would not start.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-/// One pane's app: the process the daemon runs for the app artifact the pane shows.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AppInfo {
-    pub pane: String,
-    pub scope: ArtifactScope,
-    /// The artifact's name.
-    pub name: String,
-    /// The command as the entry declares it now.
-    pub command: String,
-    /// The space directory the command runs in.
-    pub cwd: String,
-    pub restart: AppRestart,
-    pub state: AppState,
-    /// The running process's id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-    /// The port the program last announced on its announcement descriptor (`WHEEL_APP_PORT_FD`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    /// How many times the process has been started.
-    pub runs: u64,
-    /// When the current or last run started, in milliseconds since the Unix epoch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_ms: Option<u64>,
-    /// How the last finished run ended.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_exit: Option<AppExit>,
-    /// The seconds until the restart, while `state` is `waiting`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restart_in_secs: Option<u64>,
-    /// The file holding the current or last run's output.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub log: Option<String>,
-}
-
-/// What `artifact_app_control` asks of a pane's app.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AppAction {
-    Start,
-    Stop,
-    Restart,
 }
 
 /// What a pane's refresh timer would do now — read when this record is made, not remembered from
@@ -1763,52 +1644,6 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
-    /// List the tools of the MCP server artifact `name` names (an entry with `mcp` or `mcp_url`),
-    /// connecting to it first when the daemon holds no session. Replies `tools`.
-    ArtifactTools {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scope: Option<ArtifactScope>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// The pane asking, so a server shared by many panes can keep each one's state.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane: Option<String>,
-    },
-    /// Call `tool` of the MCP server artifact `name` names, with `arguments` (a JSON object, none
-    /// for a tool that takes nothing). Replies `tool_result`; a tool that fails is a result with
-    /// `is_error`, a call that cannot be made is an `error`.
-    ArtifactCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scope: Option<ArtifactScope>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// The pane asking, so a server shared by many panes can keep each one's state.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane: Option<String>,
-        tool: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        arguments: Option<serde_json::Value>,
-    },
-    /// `resources/read` of `uri` on the MCP server artifact `name` names. Replies `resource`.
-    ArtifactRead {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scope: Option<ArtifactScope>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// The pane asking, so a server shared by many panes can keep each one's state.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane: Option<String>,
-        uri: String,
-    },
     /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run and
     /// replies `refresh` with the runner and that run. Refused when the pane shows no
     /// artifact, or its entry declares no command.
@@ -1816,32 +1651,6 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
-    },
-    /// Read the app web pane `pane` runs for its artifact: its process, port and restarts. Replies
-    /// `app`. Refused when the pane's artifact is not an app.
-    ArtifactAppStatus {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-    },
-    /// Read the output of the current (or, with `run`, that numbered) run of pane `pane`'s app,
-    /// the last `tail` lines when given. Replies `app_logs`.
-    ArtifactAppLogs {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tail: Option<usize>,
-    },
-    /// Start, stop or restart pane `pane`'s app process. Replies `app` once the request is
-    /// carried out (a started process has its pid by then).
-    ArtifactAppControl {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        action: AppAction,
     },
     /// Read the values the page of web pane `pane` has written to its state store (key to JSON
     /// value): the one `key` names, or all of them. With `wait_ms`, waits up to that long for
@@ -2433,12 +2242,6 @@ pub enum ServerMsg {
     PaneReload {
         pane: String,
     },
-    /// Sent to every connection: the MCP server behind web pane `pane` announced that a resource
-    /// changed (`notifications/resources/updated`), so a client drawing the server's A2UI layout
-    /// asks for its data again.
-    McpUpdated {
-        pane: String,
-    },
     /// Sent to every connection when an artifact's entry is deleted (`artifact_remove`, or the
     /// sweep of an artifact whose lifetime is over). `cwd` is the directory of the space whose
     /// `wheel.toml` held a `project` entry, and absent for a `machine` one: with `scope` and
@@ -2453,22 +2256,6 @@ pub enum ServerMsg {
     Artifact {
         req: u64,
         artifact: ArtifactInfo,
-    },
-    /// The tools of an MCP server, in reply to `artifact_tools`.
-    Tools {
-        req: u64,
-        tools: Vec<McpTool>,
-    },
-    /// What an MCP tool returned, in reply to `artifact_call`.
-    ToolResult {
-        req: u64,
-        result: McpToolResult,
-    },
-    /// What an MCP server returned for `resources/read`, in reply to `artifact_read`: its
-    /// `contents` as the server sent them.
-    Resource {
-        req: u64,
-        contents: Vec<serde_json::Value>,
     },
     /// Every built-in artifact as it is now, in reply to `builtin_ls`, `builtin_install`,
     /// `builtin_update` and `builtin_remove`.
@@ -2565,17 +2352,6 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
         settings: Vec<SettingInfo>,
-    },
-    /// One pane's app, in reply to `artifact_app_status` and `artifact_app_control`.
-    App {
-        req: u64,
-        app: AppInfo,
-    },
-    /// The text of a run's output, in reply to `artifact_app_logs`.
-    AppLogs {
-        req: u64,
-        run: u64,
-        text: String,
     },
     /// One pane's refresh runner, in reply to `artifact_refresh`: `last` is the run it just made.
     Refresh {
@@ -2858,14 +2634,9 @@ impl ServerMsg {
             | ServerMsg::Plugins { req, .. }
             | ServerMsg::PluginLogs { req, .. }
             | ServerMsg::PluginAction { req, .. }
-            | ServerMsg::Tools { req, .. }
-            | ServerMsg::ToolResult { req, .. }
-            | ServerMsg::Resource { req, .. }
             | ServerMsg::Builtins { req, .. }
             | ServerMsg::BuiltinEdited { req, .. }
             | ServerMsg::Refresh { req, .. }
-            | ServerMsg::App { req, .. }
-            | ServerMsg::AppLogs { req, .. }
             | ServerMsg::PageState { req, .. }
             | ServerMsg::SpaceRecent { req, .. }
             | ServerMsg::DirList { req, .. }
@@ -2919,7 +2690,6 @@ impl ServerMsg {
             | ServerMsg::Spaces { .. }
             | ServerMsg::SpaceFocused { .. }
             | ServerMsg::PaneReload { .. }
-            | ServerMsg::McpUpdated { .. }
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }
             | ServerMsg::InspectPane { .. }

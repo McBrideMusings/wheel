@@ -64,8 +64,7 @@ public enum WebPanes {
     }
 
     /// Whether a frame inside the page may load `target`: its own inline document (`about:srcdoc`,
-    /// `about:blank`), which is how the page shows an MCP app's HTML in a sandboxed frame. The
-    /// page's own address and every other address are the navigation rules' to judge, and the
+    /// `about:blank`). The page's own address and every other address are the navigation rules' to judge, and the
     /// pane's main frame never navigates to `about:`.
     public static func allowsInlineFrame(_ target: URL, isMainFrame: Bool) -> Bool {
         !isMainFrame && target.scheme == "about" && ["srcdoc", "blank"].contains(target.absoluteString.dropFirst("about:".count))

@@ -154,8 +154,6 @@ struct SpaceCarousel: View {
                 .background(SwipeArea.tint)
         } else if let link = model.pluginPanes[pane.id] {
             PluginPage(model: model, pane: link.pane, plugin: link.plugin)
-        } else if let a2ui = model.a2uiPanes[pane.id], a2ui.isNative {
-            A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
         } else {

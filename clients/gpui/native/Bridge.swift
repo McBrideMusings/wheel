@@ -71,15 +71,10 @@ final class Slot: NSView {
     var status: Int?
     var store: UUID?
     var text: String?
-    /// A web pane on an artifact whose MCP server speaks A2UI draws that page natively (ADR-0031,
-    /// ADR-0038): the same `A2UIPane` and `A2UIPaneView` the Swift Mac app uses.
-    var page: A2UIPane?
     /// The artifact the page belongs to, as `<scope>/<name>`, and the space directory it was opened
     /// for: its store and scheme handler are bound to both, so another of either is another view.
     var artifact: String?
     var cwd: String?
-    var pageView: NSHostingView<A2UIPaneView>?
-    var pageShown: Bool { page?.isNative == true }
     /// A plugin pane (ADR-0041): its Luau script drawn as A2UI components, and the plugin and pane it runs, as wheeld names them.
     var plugin: PluginPane?
     var pluginView: NSHostingView<AnyView>?
@@ -100,7 +95,7 @@ final class Slot: NSView {
     var lagged = 0
     var writes: [String] = []
     init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
-    var content: NSView { pluginView ?? (pageShown ? pageView : nil) ?? web ?? terminal! }
+    var content: NSView { pluginView ?? web ?? terminal! }
 }
 
 /// A pane's terminal drawn inside a plugin pane's page (`ui.Terminal{pane}`, ADR-0042): its own session and
@@ -450,7 +445,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var agentReqs: [UInt64: String] = [:]
     let embedPerms = EmbedPermissions()
     var socket: URLSessionWebSocketTask?
-    /// The connection the A2UI pages talk over, started with the first page and dropped with `disconnect`.
+    /// The connection embedded agents and plugin panes talk over, started on first use and dropped with `disconnect`.
     var pageClient: DaemonClient?
     /// Where the daemon is and the token it wants, for every artifact page's scheme handler.
     let pageDaemon = PageDaemon()
@@ -924,17 +919,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 host.url = page.absoluteString
                 web.load(URLRequest(url: page))
             } else if let url = value["url"] as? String { host.url = url; web.load(URLRequest(url: URL(string: url)!)) }
-            if let artifact, let client = pages(value["ws"] as! String) {
-                let (name, scope) = (artifact.name, artifact.scope)
-                let page = A2UIPane(pane: id, artifact: ArtifactRef(scope: scope, name: name), space: value["space"] as? String,
-                                    send: { [weak client] in client?.send($0) }, nextReq: { [weak client] in client?.req() ?? 0 })
-                let view = NSHostingView(rootView: A2UIPaneView(pane: page))
-                view.isHidden = true
-                host.page = page
-                host.pageView = view
-                host.slot.addSubview(view)
-                if client.connection == .connected { page.start() }
-            }
         } else {
             let term = value["term"] as! String
             connect(value["ws"] as! String)
@@ -989,12 +973,12 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
     /// `render_pane` relayed by the Rust side: the pane as a PNG, answered through `emit` with
     /// `rendered` or `refused`. A web or browser pane is WebKit's own render of the page (under
-    /// `full`, the whole document); a native A2UI page and a terminal are their views' pixels.
+    /// `full`, the whole document); a plugin pane and a terminal are their views' pixels.
     func render(_ value: [String: Any]) {
         let id = value["id"] as! UInt64
         let pane = value["pane"] as! String
         guard let host = panes[pane] else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
-        if let view = host.pluginView ?? (host.pageShown ? host.pageView : nil), let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+        if let view = host.pluginView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
             // cacheDisplay draws only what AppKit draws (a scroll view's document); SwiftUI content outside one lives in
             // the layer tree alone, so the layers are rendered over it.
@@ -1252,7 +1236,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let client = DaemonClient(endpoint: DaemonEndpoint(url: url, token: { token }))
         client.onConnect = { [weak self] status in
             guard let self else { return }
-            panes.values.forEach { $0.page?.start() }
             // A fresh connection holds no attach: every embedded agent attaches again, and the status names the waiting requests.
             agentReqs = [:]; attachReqs = []; refusedAttach = []; taskOutputAsks = [:]
             agentMessage(status)
@@ -1261,21 +1244,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         client.onMessage = { [weak self] message in
             guard let self else { return }
             agentMessage(message)
-            for host in panes.values { host.page?.handle(message) }
-            showPages()
         }
         client.log = { [weak self] in self?.errors.append("pages: " + $0) }
         client.start()
         pageClient = client
         return client
-    }
-    /// Show each page's native view once its server has answered with an A2UI layout, its web page until then.
-    func showPages() {
-        for host in panes.values {
-            guard let view = host.pageView else { continue }
-            view.isHidden = !host.pageShown
-            host.web?.isHidden = host.pageShown
-        }
     }
     /// While the GPUI view moves the panes (`hold_resizes`: the grid animates or a divider is
     /// dragged) or a window edge is dragged, a terminal's resizes wait: only the grid it ends at
@@ -1353,7 +1326,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         host.holesTop = (value["holes"] as? [[Double]]) ?? []
         host.slot.frame = frame
         host.content.frame = host.slot.bounds
-        host.pageView?.frame = host.slot.bounds
         host.web?.frame = host.slot.bounds
         host.terminal?.setSurfaceVisible(!host.slot.isHidden)
         host.slot.cut(cuts(host))
@@ -1466,13 +1438,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                     + agentEmbeds.values.filter { $0.hostPane == pane }.map { embed in
                         ["pane": embed.pane, "agent": embed.chat?.name ?? NSNull(), "note": embed.note, "state": embed.chat?.state.map { "\($0)" } ?? NSNull(),
                          "items": embed.chat?.displayItems.count ?? 0, "draft": embed.chat?.draft ?? "", "error": embed.chat?.error ?? NSNull()] as [String: Any] }]
-        case "page_set":
-            // A value written into a native page's data model at `path`, as one of its controls
-            // would write it (a picker's choice, a field's text), for a check that has no pointer.
-            guard let pane = value["pane"] as? String, let surface = panes[pane]?.page?.surface, let path = value["path"] as? String,
-                  let data = try? JSONSerialization.data(withJSONObject: value["value"] ?? NSNull(), options: .fragmentsAllowed),
-                  let written = try? JSONDecoder().decode(WheelUI.AnyCodable.self, from: data) else { return ["ok": false] }
-            surface.set(path, written)
         case "plugin_endpoint":
             if let ws = value["ws"] as? String { pluginEndpoint(ws) }
         case "disconnect":
@@ -1731,10 +1696,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                     }
                 }
                 if let terminal = host.terminal { _ = png(terminalPixels(terminal), "\(directory)/\(host.id)-terminal.png") }
-                if host.pageShown, let view = host.pageView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                    view.cacheDisplay(in: view.bounds, to: rep)
-                    if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: "\(directory)/\(host.id)-page.png")) }
-                }
             }
         default: break
         }
@@ -1767,11 +1728,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             } else if host.kind == "web" {
                 entry["loads"] = host.loads; entry["url"] = host.url ?? ""; entry["reloads"] = host.reloads
                 entry["status"] = host.status ?? NSNull(); entry["store"] = host.store?.uuidString ?? ""; entry["text"] = host.text ?? ""
-                if let page = host.page {
-                    entry["page"] = ["state": page.stateName, "native": host.pageShown, "notice": page.notice ?? "", "unsupported": page.unsupported,
-                                     "artifact": host.artifact ?? "", "types": Set(page.surface?.components.values.map(\.type) ?? []).sorted(),
-                                     "components": page.surface?.components.count ?? 0, "diagnostics": page.diagnostics]
-                }
             } else if let p = host.plugin {
                 entry["plugin"] = ["agent_view": host.agentTarget != nil, "permission": waitingPermission(for: host).map { ["id": $0.id, "title": $0.title, "options": $0.options.map(\.id)] as [String: Any] } ?? NSNull(), "state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
             }

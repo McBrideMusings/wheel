@@ -611,49 +611,6 @@ enum ArtifactCommand {
     /// Built-in artifacts: pages wheeld carries and installs for every project on this machine.
     #[command(subcommand)]
     Builtin(BuiltinCommand),
-    /// The process of an app artifact (an entry with `app = "<command>"`): read its status and
-    /// output, start, stop or restart it.
-    #[command(subcommand)]
-    App(AppCommand),
-    /// List the tools of the MCP server an artifact entry names (`mcp` or `mcp_url`).
-    Tools {
-        name: String,
-        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
-        scope: Option<ArtifactScope>,
-        #[arg(long)]
-        space: Option<String>,
-        /// Print the tools as JSON, input schemas whole.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Read a resource of the MCP server an artifact entry names (`resources/read`), printing its
-    /// contents as JSON.
-    Read {
-        name: String,
-        uri: String,
-        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
-        scope: Option<ArtifactScope>,
-        #[arg(long)]
-        space: Option<String>,
-    },
-    /// Call a tool of the MCP server an artifact entry names, with a JSON object for arguments.
-    /// A tool that fails prints its message and exits 1.
-    Call {
-        name: String,
-        tool: String,
-        /// The arguments, a JSON object; none for a tool that takes nothing.
-        arguments: Option<String>,
-        #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
-        scope: Option<ArtifactScope>,
-        #[arg(long)]
-        space: Option<String>,
-        /// The pane the call is for, so a server that keeps each pane's own state changes that pane's.
-        #[arg(long)]
-        pane: Option<String>,
-        /// Print the result as JSON.
-        #[arg(long)]
-        json: bool,
-    },
     /// Print one artifact's record.
     Show {
         name: String,
@@ -663,46 +620,6 @@ enum ArtifactCommand {
         #[arg(long)]
         space: Option<String>,
         /// Print the record as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum AppCommand {
-    /// Print the app a web pane runs: its state, pid, announced port, restarts and the log file.
-    Status {
-        /// The web pane showing the app artifact.
-        pane: String,
-        /// Print the record as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Print the output of the app's current run, or of run `--run`.
-    Logs {
-        pane: String,
-        /// The run to read; the current or last when absent.
-        #[arg(long)]
-        run: Option<u64>,
-        /// Only the last N lines.
-        #[arg(long)]
-        tail: Option<usize>,
-    },
-    /// Start the app's process if it is stopped.
-    Start {
-        pane: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Stop the app's process and keep it stopped until `start`.
-    Stop {
-        pane: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// End the app's process and start it again now.
-    Restart {
-        pane: String,
         #[arg(long)]
         json: bool,
     },
@@ -3893,86 +3810,6 @@ fn print_builtins(builtins: &[wheel_proto::BuiltinInfo]) {
     }
 }
 
-/// One pane's app for a person to read.
-fn print_app(a: &wheel_proto::AppInfo) {
-    use wheel_proto::AppState;
-    println!("{} {} {} — {}", a.pane, a.scope.name(), a.name, a.command);
-    let state = match a.state {
-        AppState::Starting => "starting",
-        AppState::Running => "running",
-        AppState::Waiting => "waiting to restart",
-        AppState::Stopped => "stopped",
-    };
-    println!("  {state}; restart {}", a.restart.name());
-    if let Some(pid) = a.pid {
-        println!("  pid {pid}");
-    }
-    match a.port {
-        Some(port) => println!("  port {port}"),
-        None => println!("  no port announced"),
-    }
-    if let Some(secs) = a.restart_in_secs {
-        println!("  restarts in {secs}s");
-    }
-    println!("  in {}", a.cwd);
-    println!("  runs: {}", a.runs);
-    if let Some(exit) = &a.last_exit {
-        match (exit.exit, &exit.error) {
-            (Some(code), _) => println!("  last run ended: exit {code}"),
-            (None, Some(why)) => println!("  last run ended: {why}"),
-            (None, None) => println!("  last run ended: no result"),
-        }
-    }
-    if let Some(log) = &a.log {
-        println!("  log {log}");
-    }
-}
-
-async fn artifact_app(conn: &mut Conn, command: AppCommand) -> Result<(), Fail> {
-    let req = conn.req();
-    let (msg, json) = match command {
-        AppCommand::Status { pane, json } => (
-            ClientMsg::ArtifactAppStatus { req: Some(req), pane },
-            json,
-        ),
-        AppCommand::Logs { pane, run, tail } => {
-            let reply = conn
-                .call(
-                    ClientMsg::ArtifactAppLogs { req: Some(req), pane, run, tail },
-                    req,
-                )
-                .await?;
-            let ServerMsg::AppLogs { text, .. } = reply else {
-                return Err(Fail::Other("unexpected reply to artifact_app_logs".into()));
-            };
-            print!("{text}");
-            return Ok(());
-        }
-        AppCommand::Start { pane, json } => (
-            ClientMsg::ArtifactAppControl { req: Some(req), pane, action: wheel_proto::AppAction::Start },
-            json,
-        ),
-        AppCommand::Stop { pane, json } => (
-            ClientMsg::ArtifactAppControl { req: Some(req), pane, action: wheel_proto::AppAction::Stop },
-            json,
-        ),
-        AppCommand::Restart { pane, json } => (
-            ClientMsg::ArtifactAppControl { req: Some(req), pane, action: wheel_proto::AppAction::Restart },
-            json,
-        ),
-    };
-    let reply = conn.call(msg, req).await?;
-    let ServerMsg::App { app, .. } = reply else {
-        return Err(Fail::Other("unexpected reply to an artifact app request".into()));
-    };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&app).map_err(other)?);
-    } else {
-        print_app(&app);
-    }
-    Ok(())
-}
-
 /// Run one built-in request and print every built-in as it now stands. An update that found
 /// edited files and was given no choice prints their diffs and exits 1.
 async fn builtin(conn: &mut Conn, command: BuiltinCommand) -> Result<(), Fail> {
@@ -4474,111 +4311,6 @@ async fn artifact_ls(
     println!("a bare name resolves to:");
     for (name, scope) in &resolves {
         println!("  {name} -> {}", scope.name());
-    }
-    Ok(())
-}
-
-async fn artifact_tools(
-    conn: &mut Conn,
-    name: String,
-    scope: Option<ArtifactScope>,
-    space: Option<String>,
-    json: bool,
-) -> Result<(), Fail> {
-    let req = conn.req();
-    let msg = ClientMsg::ArtifactTools {
-        req: Some(req),
-        name,
-        scope,
-        pane: None,
-        space,
-    };
-    let ServerMsg::Tools { tools, .. } = conn.call(msg, req).await? else {
-        return Err(Fail::Other("unexpected reply to artifact tools".into()));
-    };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&tools).map_err(other)?);
-        return Ok(());
-    }
-    if tools.is_empty() {
-        eprintln!("[the server offers no tools]");
-    }
-    for tool in &tools {
-        println!("{}", tool.name);
-        if let Some(description) = &tool.description {
-            println!("  {}", description.trim().replace('\n', "\n  "));
-        }
-        println!("  input: {}", tool.input_schema);
-    }
-    Ok(())
-}
-
-async fn artifact_read(
-    conn: &mut Conn,
-    name: String,
-    uri: String,
-    scope: Option<ArtifactScope>,
-    space: Option<String>,
-) -> Result<(), Fail> {
-    let req = conn.req();
-    let msg = ClientMsg::ArtifactRead {
-        req: Some(req),
-        name,
-        scope,
-        pane: None,
-        space,
-        uri,
-    };
-    let ServerMsg::Resource { contents, .. } = conn.call(msg, req).await? else {
-        return Err(Fail::Other("unexpected reply to artifact read".into()));
-    };
-    println!("{}", serde_json::to_string_pretty(&contents).map_err(other)?);
-    Ok(())
-}
-
-async fn artifact_call(
-    conn: &mut Conn,
-    name: String,
-    tool: String,
-    arguments: Option<String>,
-    scope: Option<ArtifactScope>,
-    space: Option<String>,
-    pane: Option<String>,
-    json: bool,
-) -> Result<(), Fail> {
-    let arguments = arguments
-        .map(|text| {
-            serde_json::from_str::<serde_json::Value>(&text)
-                .map_err(|e| Fail::Other(format!("the arguments are not JSON: {e}")))
-        })
-        .transpose()?;
-    let req = conn.req();
-    let msg = ClientMsg::ArtifactCall {
-        req: Some(req),
-        name,
-        scope,
-        pane,
-        space,
-        tool,
-        arguments,
-    };
-    let ServerMsg::ToolResult { result, .. } = conn.call(msg, req).await? else {
-        return Err(Fail::Other("unexpected reply to artifact call".into()));
-    };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&result).map_err(other)?);
-    } else {
-        for block in &result.content {
-            match block.get("text").and_then(|t| t.as_str()) {
-                Some(text) if result.is_error => eprintln!("{text}"),
-                Some(text) => println!("{text}"),
-                None if result.is_error => eprintln!("{block}"),
-                None => println!("{block}"),
-            }
-        }
-    }
-    if result.is_error {
-        return Err(Fail::Other("the tool reported an error".into()));
     }
     Ok(())
 }
@@ -6513,37 +6245,6 @@ async fn main() -> ExitCode {
                 artifact_data(&mut conn, pane, file).await
             }
             Command::Artifact(ArtifactCommand::Builtin(command)) => builtin(&mut conn, command).await,
-            Command::Artifact(ArtifactCommand::App(command)) => artifact_app(&mut conn, command).await,
-            Command::Artifact(ArtifactCommand::Tools {
-                name,
-                scope,
-                space,
-                json,
-            }) => {
-                let space = default_space(&mut conn, space).await?;
-                artifact_tools(&mut conn, name, scope, space, json).await
-            }
-            Command::Artifact(ArtifactCommand::Read {
-                name,
-                uri,
-                scope,
-                space,
-            }) => {
-                let space = default_space(&mut conn, space).await?;
-                artifact_read(&mut conn, name, uri, scope, space).await
-            }
-            Command::Artifact(ArtifactCommand::Call {
-                name,
-                tool,
-                arguments,
-                scope,
-                space,
-                pane,
-                json,
-            }) => {
-                let space = default_space(&mut conn, space).await?;
-                artifact_call(&mut conn, name, tool, arguments, scope, space, pane, json).await
-            }
             Command::Artifact(ArtifactCommand::Show {
                 name,
                 scope,

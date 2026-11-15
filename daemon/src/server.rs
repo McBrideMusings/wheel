@@ -211,10 +211,6 @@ pub struct AppState {
     pub(crate) pages: Mutex<HashMap<String, Arc<crate::page::Page>>>,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
-    /// The app process of each web pane whose artifact declares one, keyed by pane id.
-    pub(crate) apps: Mutex<crate::app::Apps>,
-    /// The MCP session of each artifact entry that names a server.
-    pub(crate) mcp: crate::mcp::Sessions,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
     /// Each space's title-row buttons: the `state` output seen and the list clients were told (ADR-0037).
@@ -371,8 +367,6 @@ impl AppState {
             watchers: Mutex::new(HashMap::new()),
             pages: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
-            apps: Mutex::new(crate::app::Apps::new()),
-            mcp: Default::default(),
             runner_feeds: Mutex::new(HashMap::new()),
             title_buttons: Mutex::new(crate::title_buttons::Buttons::default()),
             streams: Default::default(),
@@ -2447,80 +2441,6 @@ async fn handle(
             state.artifact_show(&name, scope, space.as_deref()),
             "artifact show",
         ),
-        // On a task of its own: connecting starts a process, and a tool call can run long, while
-        // this connection has to keep reading frames.
-        ClientMsg::ArtifactTools {
-            req,
-            name,
-            scope,
-            space,
-            pane,
-        } => {
-            let (state, out) = (state.clone(), out.clone());
-            tokio::spawn(async move {
-                let reply = match state.mcp_tools(&name, scope, space.as_deref(), pane.as_deref()).await {
-                    Ok(tools) => req.map(|req| ServerMsg::Tools { req, tools }),
-                    Err(message) => {
-                        tracing::warn!(%name, %message, "artifact tools refused");
-                        Some(failed(req, message))
-                    }
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::ArtifactRead {
-            req,
-            name,
-            scope,
-            space,
-            pane,
-            uri,
-        } => {
-            let (state, out) = (state.clone(), out.clone());
-            tokio::spawn(async move {
-                let reply = match state.mcp_resource(&name, scope, space.as_deref(), pane.as_deref(), &uri).await {
-                    Ok(contents) => req.map(|req| ServerMsg::Resource { req, contents }),
-                    Err(message) => {
-                        tracing::warn!(%name, %uri, %message, "artifact read refused");
-                        Some(failed(req, message))
-                    }
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::ArtifactCall {
-            req,
-            name,
-            scope,
-            space,
-            pane,
-            tool,
-            arguments,
-        } => {
-            let (state, out) = (state.clone(), out.clone());
-            tokio::spawn(async move {
-                let called = state
-                    .mcp_call(&name, scope, space.as_deref(), pane.as_deref(), &tool, arguments)
-                    .await;
-                let reply = match called {
-                    Ok(result) => req.map(|req| ServerMsg::ToolResult { req, result }),
-                    Err(message) => {
-                        tracing::warn!(%name, %tool, %message, "artifact call refused");
-                        Some(failed(req, message))
-                    }
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
         ClientMsg::RunnerLs { req, space } => match state.runner_ls(space.as_deref()) {
             Ok(runners) => req.map(|req| ServerMsg::Runners { req, runners }),
             Err(message) => Some(failed(req, message)),
@@ -2869,45 +2789,6 @@ async fn handle(
                     Ok(refresh) => req.map(|req| ServerMsg::Refresh { req, refresh }),
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %message, "artifact refresh refused");
-                        Some(failed(req, message))
-                    }
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::ArtifactAppStatus { req, pane } => match state.app_of(&pane) {
-            Ok(app) => req.map(|req| ServerMsg::App { req, app: app.info() }),
-            Err(message) => {
-                tracing::warn!(%peer, %pane, %message, "artifact app status refused");
-                Some(failed(req, message))
-            }
-        },
-        ClientMsg::ArtifactAppLogs { req, pane, run, tail } => {
-            match state.app_of(&pane).and_then(|app| app.logs(run, tail)) {
-                Ok((run, text)) => req.map(|req| ServerMsg::AppLogs { req, run, text }),
-                Err(message) => {
-                    tracing::warn!(%peer, %pane, %message, "artifact app logs refused");
-                    Some(failed(req, message))
-                }
-            }
-        }
-        // On a task of its own: the request waits for the process to start or stop, and this
-        // connection has to keep reading frames meanwhile.
-        ClientMsg::ArtifactAppControl { req, pane, action } => {
-            let out = out.clone();
-            let app = state.app_of(&pane);
-            tokio::spawn(async move {
-                let result = match app {
-                    Ok(app) => app.control(action).await,
-                    Err(message) => Err(message),
-                };
-                let reply = match result {
-                    Ok(app) => req.map(|req| ServerMsg::App { req, app }),
-                    Err(message) => {
-                        tracing::warn!(%peer, %pane, %message, "artifact app control refused");
                         Some(failed(req, message))
                     }
                 };

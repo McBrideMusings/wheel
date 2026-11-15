@@ -56,23 +56,6 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   (`--wait` blocks until the key is written: post a question, wait for the answer);
   `wheel artifact data <pane> <file|->` pushes a JSON value into the running page (its
   `wheel.onData(fn)`), no reload. A page loads the helper with `<script src=".wheel/client.js">`.
-- `wheel artifact app status | logs | start | stop | restart <pane>`: the process of an app artifact, an
-  entry with `app = "<command>"` (and `restart = "on-failure" | "always" | "never"`) in a wheel.toml.
-  The daemon starts the command when a web pane shows the artifact, restarts it by the policy, and
-  ends it and its children with the pane. The program announces its port by writing it as a line to
-  file descriptor 3 (`$WHEEL_APP_PORT_FD`); `status` prints the pid and that port, `logs` the output of
-  the current run (`--run N`, `--tail N`).
-- `wheel artifact tools <name>` and `wheel artifact call <name> <tool> [<json>]`: an entry with
-  `mcp = "<command>"` (run through `sh -c` in the space's directory, speaking MCP on stdin and stdout) or
-  `mcp_url = "<http(s) URL>"` (streamable HTTP) names an MCP server. The daemon connects on the first use
-  and keeps the session until the entry's definition changes. `tools` lists each tool's name, description
-  and input schema (`--json` for the schemas whole); `call` passes the JSON object (none for a tool with no
-  arguments) and prints the result; a tool that fails prints its message and exits 1. Both take `--scope`
-  and `--space` like `artifact show`. An mcp entry takes no `path`, and neither `app` nor the other mcp key.
-  `wheel artifact read <name> <uri>` prints a resource the server lists (`resources/read`). A server that
-  links a tool to an `a2ui://` resource (`_meta.ui.resourceUri`, MIME `application/a2ui+json`) gets a native
-  pane on the Mac and iPhone: the resource is the layout, a tool's result carries `updateDataModel`
-  messages, and a button's action calls the tool named by the action event with its context as arguments.
 - `wheel config ls | get | set | unset | watch`: settings, for the machine or one space.
 - `wheel guidance show | path [--agent <name>]`: the text an agent is given and the path of the person's own guidance file for every agent or one agent (made empty if missing).
 - `wheel run [<name>]`: the `[runner]` table of wheel.toml maps names you choose to shell commands

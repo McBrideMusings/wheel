@@ -497,8 +497,8 @@ public struct PluginPaneView: View {
         let palette = WheelPalette(dark: scheme == .dark)
         GeometryReader { geo in
             Group {
-                // The same decision as A2UIPaneView: a frame-less Table or vertical List takes the pane's height and
-                // scrolls itself; any other surface scrolls as a whole.
+                // A frame-less Table or vertical List takes the pane's height and scrolls itself; any other surface
+                // scrolls as a whole.
                 if pane.surface.fillsPane {
                     A2UISurfaceView(surface: pane.surface)
                         .frame(width: geo.size.width, height: geo.size.height, alignment: .top)

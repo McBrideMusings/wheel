@@ -326,16 +326,13 @@ impl AppState {
                 // A refresh writes there and nowhere else, so a pane with no data directory to
                 // name gets no runner either rather than a command with nowhere to put its work.
                 if post_dir.is_none() {
-                    self.start_app(pane, artifact, cwd, dir.clone());
                     self.start_refresh(pane, artifact, cwd, dir);
                 } else {
-                    self.stop_app(pane);
                     self.stop_refresh(pane);
                 }
             }
             Err(e) => {
                 tracing::warn!(%pane, error = %e, "no data directory for this pane; it serves nothing under data/ and nothing refreshes it");
-                self.stop_app(pane);
                 self.stop_refresh(pane);
             }
         }
@@ -554,7 +551,6 @@ impl AppState {
     pub(crate) fn drop_artifact(&self, pane: &str) {
         // Before the directory goes: dropping the runner cancels every run of this pane in flight,
         // which kills its command, so nothing is still writing what is about to be removed.
-        self.stop_app(pane);
         self.stop_refresh(pane);
         self.stop_runner_feed(pane);
         self.drop_page(pane);
@@ -1102,123 +1098,6 @@ async fn page_events(
         .into_response()
 }
 
-/// The page a pane shows for an MCP server artifact: the host of the server's MCP Apps view, or
-/// its tools when it has none.
-const MCP_HOST: &str = include_str!("mcp_host.html");
-
-/// The MCP server a pane's page makes a request of, once the caller is let in.
-fn mcp_for(
-    state: &AppState,
-    listener: Listener,
-    pane: &str,
-    via: &str,
-    headers: &HeaderMap,
-) -> Result<(String, wheel_proto::ArtifactScope, String), Response> {
-    authorize(state, listener, via, headers, None).map_err(|status| status.into_response())?;
-    state.mcp_pane(pane).ok_or_else(|| {
-        let why = format!("{pane} shows no MCP server");
-        tracing::warn!(via, %why, "MCP request refused");
-        (StatusCode::NOT_FOUND, why).into_response()
-    })
-}
-
-/// `GET /artifacts/<pane>/.wheel/mcp/view`: the server's tools and its MCP Apps view.
-async fn mcp_view(
-    State(state): State<Arc<AppState>>,
-    Extension(listener): Extension<Listener>,
-    UrlPath(pane): UrlPath<String>,
-    headers: HeaderMap,
-) -> Response {
-    let via = format!("artifacts {pane}/.wheel/mcp/view");
-    let (name, scope, space) = match mcp_for(&state, listener, &pane, &via, &headers) {
-        Ok(found) => found,
-        Err(r) => return r,
-    };
-    match state.mcp_view(&name, Some(scope), Some(&space)).await {
-        Ok(view) => axum::Json(view).into_response(),
-        Err(why) => {
-            tracing::warn!(via, %why, "MCP view failed");
-            (StatusCode::BAD_GATEWAY, why).into_response()
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct McpCall {
-    tool: String,
-    #[serde(default)]
-    arguments: Option<serde_json::Value>,
-    /// The host running the tool that links the view, not the view.
-    #[serde(default)]
-    initial: bool,
-    /// The person calling a tool from the pane's own tool list.
-    #[serde(default)]
-    person: bool,
-}
-
-/// `POST /artifacts/<pane>/.wheel/mcp/call`: `{tool, arguments}`, answered with the server's result.
-async fn mcp_call(
-    State(state): State<Arc<AppState>>,
-    Extension(listener): Extension<Listener>,
-    UrlPath(pane): UrlPath<String>,
-    headers: HeaderMap,
-    axum::Json(call): axum::Json<McpCall>,
-) -> Response {
-    let via = format!("artifacts {pane}/.wheel/mcp/call");
-    let (name, scope, space) = match mcp_for(&state, listener, &pane, &via, &headers) {
-        Ok(found) => found,
-        Err(r) => return r,
-    };
-    match state
-        .mcp_app_call(
-            &name,
-            Some(scope),
-            Some(&space),
-            &call.tool,
-            call.arguments,
-            call.initial,
-            call.person,
-        )
-        .await
-    {
-        Ok(result) => axum::Json(result).into_response(),
-        Err(why) => {
-            tracing::warn!(via, tool = call.tool, %why, "MCP call refused");
-            (StatusCode::BAD_REQUEST, why).into_response()
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct McpRead {
-    uri: String,
-}
-
-/// `POST /artifacts/<pane>/.wheel/mcp/read`: `{uri}`, answered with the server's `resources/read`.
-async fn mcp_read(
-    State(state): State<Arc<AppState>>,
-    Extension(listener): Extension<Listener>,
-    UrlPath(pane): UrlPath<String>,
-    headers: HeaderMap,
-    axum::Json(read): axum::Json<McpRead>,
-) -> Response {
-    let via = format!("artifacts {pane}/.wheel/mcp/read");
-    let (name, scope, space) = match mcp_for(&state, listener, &pane, &via, &headers) {
-        Ok(found) => found,
-        Err(r) => return r,
-    };
-    match state
-        .mcp_app_read(&name, Some(scope), Some(&space), &read.uri)
-        .await
-    {
-        Ok(result) => axum::Json(result).into_response(),
-        Err(why) => {
-            tracing::warn!(via, uri = read.uri, %why, "MCP read refused");
-            (StatusCode::BAD_REQUEST, why).into_response()
-        }
-    }
-}
-
 /// `GET /artifacts/<pane>/<path>`: a file from web pane `pane`'s artifact folder, or from the
 /// pane's own data directory for a path under `data/`.
 pub fn router(state: Arc<AppState>) -> Router {
@@ -1234,9 +1113,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/artifacts/{pane}/.wheel/review-flag",
             post(page_review_flag),
         )
-        .route("/artifacts/{pane}/.wheel/mcp/view", get(mcp_view))
-        .route("/artifacts/{pane}/.wheel/mcp/call", post(mcp_call))
-        .route("/artifacts/{pane}/.wheel/mcp/read", post(mcp_read))
         .route("/artifacts/{pane}/", any(artifact))
         .route("/artifacts/{pane}/{*path}", any(artifact))
         .with_state(state)
@@ -1368,31 +1244,6 @@ async fn artifact(
     let from_query = from_query_token(&query);
     if let Err(status) = authorize(&state, listener, &via, &headers, from_query) {
         return status.into_response();
-    }
-    // A pane showing an app serves no folder: the program's own page comes through the proxy
-    // (ADR-0026), the token traded for a cookie first as for any pane.
-    if let Ok(app) = state.app_of(pane) {
-        if let Some(token) = from_query {
-            return token_for_cookie(&via, pane, token, &uri);
-        }
-        return crate::proxy::forward(&app, pane, COOKIE, req).await;
-    }
-    // A pane showing an MCP server has the one page that hosts the server's view.
-    if state.mcp_pane(pane).is_some() {
-        if let Some(token) = from_query {
-            return token_for_cookie(&via, pane, token, &uri);
-        }
-        if req.method() != axum::http::Method::GET || !matches!(path, "" | "index.html") {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        return (
-            [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            MCP_HOST,
-        )
-            .into_response();
     }
     if req.method() != axum::http::Method::GET {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();

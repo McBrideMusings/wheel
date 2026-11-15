@@ -29,7 +29,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 17] = [
+const KEYS: [&str; 12] = [
     "path",
     "url",
     "title",
@@ -42,12 +42,11 @@ const KEYS: [&str; 17] = [
     "renderer",
     "reply_to",
     "webhook",
-    "app",
-    "restart",
-    "mcp",
-    "mcp_url",
-    "shared",
 ];
+
+/// The keys that named a process for an artifact to run; a process behind a pane is a plugin's
+/// backend, so each is refused with a message that says so.
+const PROCESS_KEYS: [&str; 5] = ["app", "restart", "mcp", "mcp_url", "shared"];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
 /// person changes by hand is in force at the next read.
@@ -80,18 +79,6 @@ pub(crate) struct Entry {
     pub(crate) reply_to: Option<String>,
     /// The URL the daemon POSTs a page's Send to.
     pub(crate) webhook: Option<String>,
-    /// The command of an app artifact: a process the daemon runs for the pane showing it. Set,
-    /// the entry needs no page, since the page is the program's.
-    pub(crate) app: Option<String>,
-    /// When an app's process is started again after it ends; absent means `on-failure`.
-    pub(crate) restart: Option<wheel_proto::AppRestart>,
-    /// The command of an MCP server the daemon runs and talks to over its stdin and stdout.
-    pub(crate) mcp: Option<String>,
-    /// The URL of an MCP server that speaks streamable HTTP.
-    pub(crate) mcp_url: Option<String>,
-    /// The MCP server declares it serves every project at once: one process for every space,
-    /// told the open projects as roots (ADR-0028). Absent means one process per space.
-    pub(crate) shared: bool,
     problems: Vec<String>,
 }
 
@@ -243,11 +230,6 @@ impl Entry {
             renderer: None,
             reply_to: None,
             webhook: None,
-            app: None,
-            restart: None,
-            mcp: None,
-            mcp_url: None,
-            shared: false,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -256,6 +238,13 @@ impl Entry {
             return e;
         };
         for (key, value) in &table {
+            if PROCESS_KEYS.contains(&key.as_str()) {
+                e.problems.push(format!(
+                    "{key} names a process, and an artifact runs none: a process behind a pane is \
+                     a plugin's [backend] in its wheel-plugin.toml (docs/plugin-runtime.md)"
+                ));
+                continue;
+            }
             if !KEYS.contains(&key.as_str()) {
                 e.problems
                     .push(format!("unknown key {key}, which nothing reads"));
@@ -267,8 +256,7 @@ impl Entry {
                 // path would be the directory the file is in.
                 (
                     key @ ("path" | "url" | "title" | "description" | "command" | "ends_with_pane"
-                    | "renderer" | "reply_to" | "webhook" | "app" | "mcp"
-                    | "mcp_url"),
+                    | "renderer" | "reply_to" | "webhook"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
@@ -303,22 +291,6 @@ impl Entry {
                     e.description = Some(text.trim().to_string())
                 }
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
-                ("app", toml::Value::String(command)) => e.app = Some(command.clone()),
-                ("mcp", toml::Value::String(command)) => e.mcp = Some(command.clone()),
-                ("shared", toml::Value::Boolean(on)) => e.shared = *on,
-                ("shared", _) => e.problems.push("shared is true or false".into()),
-                ("mcp_url", toml::Value::String(url)) => match mcp_url(url.trim()) {
-                    Ok(()) => e.mcp_url = Some(url.trim().to_string()),
-                    Err(why) => e.problems.push(why),
-                },
-                ("restart", toml::Value::String(policy)) => match policy.trim() {
-                    "on-failure" => e.restart = Some(wheel_proto::AppRestart::OnFailure),
-                    "always" => e.restart = Some(wheel_proto::AppRestart::Always),
-                    "never" => e.restart = Some(wheel_proto::AppRestart::Never),
-                    other => e.problems.push(format!(
-                        "restart is {other:?}, not on-failure, always or never"
-                    )),
-                },
                 ("every", toml::Value::Integer(secs)) if *secs > 0 => e.every = Some(*secs as u64),
                 ("every", _) => e
                     .problems
@@ -338,8 +310,6 @@ impl Entry {
             }
         }
         match (table.contains_key("path"), table.contains_key("url")) {
-            // An app's page is its program's, so it names none of its own.
-            (false, false) if e.app.is_some() || e.mcp.is_some() || e.mcp_url.is_some() => {}
             (false, false) => e
                 .problems
                 .push("no path, so there is no page to show".into()),
@@ -368,43 +338,7 @@ impl Entry {
                 "every asks for a refresh on a timer, but no command says what to run".into(),
             );
         }
-        if table.contains_key("url") && e.app.is_some() {
-            e.problems.push(
-                "a url entry opens a browser pane, which has no process of ours to run for app"
-                    .into(),
-            );
-        }
-        if e.renderer.is_some() && e.app.is_some() {
-            e.problems.push("a post carries no app".into());
-        }
-        if e.mcp.is_some() && e.mcp_url.is_some() {
-            e.problems
-                .push("mcp and mcp_url both name the server; keep one".into());
-        }
-        if (e.mcp.is_some() || e.mcp_url.is_some()) && e.app.is_some() {
-            e.problems
-                .push("an entry names one process: app or an MCP server, not both".into());
-        }
-        if (e.mcp.is_some() || e.mcp_url.is_some())
-            && (table.contains_key("url") || e.renderer.is_some())
-        {
-            e.problems
-                .push("an MCP server entry is neither a url entry nor a post".into());
-        }
-        if e.shared && e.mcp.is_none() && e.mcp_url.is_none() {
-            e.problems
-                .push("shared says an MCP server serves every project, but no mcp or mcp_url names one".into());
-        }
-        if e.restart.is_some() && e.app.is_none() {
-            e.problems
-                .push("restart says when an app starts again, but no app says what to run".into());
-        }
         e
-    }
-
-    /// What is wrong with the entry as written, before anything on disk is looked at.
-    pub(crate) fn problems(&self) -> &[String] {
-        &self.problems
     }
 
     /// Where `text`, an entry's `path`, points: a leading `~` from the home directory, and a
@@ -1258,12 +1192,6 @@ impl AppState {
     /// Tell every connection that artifact `name` has no entry any more, so a client can drop the
     /// browser storage its page kept. Only a `project` entry belongs to a space's directory.
     pub(crate) fn announce_gone(&self, scope: ArtifactScope, cwd: &str, name: &str) {
-        if scope == ArtifactScope::Machine {
-            if let (Some(me), Ok(runtime)) = (self.me.upgrade(), tokio::runtime::Handle::try_current()) {
-                let owner = format!("{}\0{name}", scope.name());
-                runtime.spawn(async move { me.mcp_release(&owner).await });
-            }
-        }
         let cwd = (scope == ArtifactScope::Project).then(|| cwd.to_string());
         tracing::info!(scope = scope.name(), %name, ?cwd, "artifact gone announced");
         let _ = self.global.send(wheel_proto::ServerMsg::ArtifactGone {
@@ -1692,10 +1620,6 @@ fn renderer_reads(located: &Located) -> Option<String> {
 }
 
 /// A webhook is an `http://` or `https://` URL with a host and no whitespace.
-fn mcp_url(url: &str) -> Result<(), String> {
-    webhook_url(url).map_err(|e| e.replacen("webhook", "mcp_url", 1))
-}
-
 fn webhook_url(url: &str) -> Result<(), String> {
     let rest = url
         .strip_prefix("https://")
@@ -1878,6 +1802,15 @@ mod tests {
                 "no path, so there is no page to show",
                 "every asks for a refresh on a timer, but no command says what to run"
             ]
+        );
+
+        // A key that named a process for the artifact to run is refused, and the refusal says
+        // where a process behind a pane goes instead.
+        let e = read(&dir, "[artifacts.x]\npath = \"site\"\nmcp = \"notes-server\"\n", "x");
+        assert_eq!(
+            e.problems,
+            ["mcp names a process, and an artifact runs none: a process behind a pane is a \
+              plugin's [backend] in its wheel-plugin.toml (docs/plugin-runtime.md)"]
         );
 
         // A key with nothing in it: none of the three values is taken.

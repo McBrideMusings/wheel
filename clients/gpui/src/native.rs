@@ -112,8 +112,7 @@ impl Native {
     pub fn open_web(&self, pane: &str, url: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"web","url":url}));
     }
-    /// Show an artifact for `pane`: the bridge draws its A2UI page when the artifact's MCP server
-    /// speaks A2UI (ADR-0031, ADR-0038), and otherwise its page in a WKWebView under the client's
+    /// Show an artifact for `pane`: the bridge draws its page in a WKWebView under the client's
     /// own `wheel-page` scheme, fetched from the daemon at `ws` and kept in the store of the
     /// artifact in the space at `cwd`.
     pub fn open_artifact(&self, pane: &str, name: &str, scope: &str, space: Option<&str>, cwd: &str, ws: &str) {

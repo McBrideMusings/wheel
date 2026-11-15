@@ -21,8 +21,6 @@ clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 h2 = "0.4"
 http = "1"
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
 ring = "0.17"
 webpki-roots = "1"
 libc = "0.2"
@@ -47,7 +45,6 @@ tracing.workspace = true
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ureq = "3"
-rmcp = { version = "3.8", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider"] }
 wheel-proto = { path = "../proto" }
 similar = "3.2.0"
 tokio-tungstenite = "0.28"
@@ -56,5 +53,3 @@ jiff = { version = "0.2", default-features = false, features = ["std", "tz-syste
 [build-dependencies]
 sha2 = "0.10"
 
-[dev-dependencies]
-rmcp = { version = "3.8", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }

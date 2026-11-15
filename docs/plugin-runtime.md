@@ -30,7 +30,7 @@ Candidates checked:
 | `jsonrpsee` | 0.26.1 | Its client makes requests but takes none, and its transports are HTTP and WebSocket; no peer that is client and server on one stream |
 | `json-rpc-rs` | 0.3.0 | Serves inbound calls only (`call()` returns a response); no outbound requests |
 | `jsoncall` | 0.0.3 | Pre-release, 11% of the crate documented |
-| `rmcp` | 3.8.0 (in the tree) | MCP's message set only; the protocol replaces MCP |
+| `rmcp` | 3.8.0 | MCP's message set only; the protocol replaces MCP |
 | Hand-written newline-delimited JSON over `tokio-util`'s `LinesCodec` | — | A request/response correlator and dispatcher that `async-lsp` already ships |
 
 Throwaway check (`async-lsp` 0.2.4, one `tokio::net::UnixStream`): `wheeld`'s side called `initialize`; while answering, the backend called `wheel/call` back and got `{"ok":true}`; then `action/invoke` made the backend send one `feed/update` with `value` and one with `patch`:
