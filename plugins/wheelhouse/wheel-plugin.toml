@@ -63,5 +63,5 @@ actions = ["wheelhouse.agent_start"]
 id = "swarm"
 title = "Swarm"
 script = "panes/swarm.luau"
-reads = ["wheelhouse.work"]
+reads = ["wheelhouse.work", "wheelhouse.swarm"]
 actions = ["wheelhouse.agent_start"]

@@ -3,12 +3,14 @@
 //! `docs/plugin-runtime.md`, "Plugin backends") as the server side.
 //!
 //! One process serves every project: a feed's params name the project (`{dir}`). The `beads`, `beads_graph` (the Focus or Graph scene of the beads, params `{dir, view, sel, depth, width, more, list}`, read again exactly when `beads` is), `project`,
-//! `work`, `repo`, `diff`, `prs`, `pr_detail` and `issues` feeds send the whole value on every subscribe and a JSON Patch on each
+//! `work`, `swarm`, `repo`, `diff`, `prs`, `pr_detail` and `issues` feeds send the whole value on every subscribe and a JSON Patch on each
 //! later change, found by watching the files that can change it: `beads` the project's `.beads`, `project`
 //! the project directory, its `.beads` and its `docs` directory (a `docs` directory created later is an
 //! event in the project directory, and the next read watches it), `work` no file but the agents
 //! `wheel agent watch` lists (followed while a `work` subscription exists, and every change of the list
-//! reads each subscribed project again), `issues` no file at all (it is read on subscribe, on the clock and after each
+//! reads each subscribed project again), `swarm` the swarm run log of the project's repo (`run.tsv`,
+//! its directory watched, or the nearest one that exists until it does) and the agent list as `work`
+//! does, and is read again every 15 s for its workers' transcripts and the stuck check, `issues` no file at all (it is read on subscribe, on the clock and after each
 //! issue action or list script), `repo`,
 //! `prs` and `pr_detail` the git refs, and `diff` the checkout itself (every file under its top except `.git` and what git
 //! ignores) plus HEAD, the index, the refs and `info/exclude`. One path is watched once, recursively
@@ -45,6 +47,7 @@ use crate::issues::feed as issues_feed;
 use crate::prs::feed as prs_feed;
 use crate::repo::feed as repo_feed;
 use crate::status::feed as status_feed;
+use crate::swarm::feed as swarm_feed;
 use crate::work::feed as work_feed;
 
 /// The lock that orders the reads of one (feed, params).
@@ -52,11 +55,19 @@ type ReadLock = Arc<tokio::sync::Mutex<()>>;
 
 /// The feeds that hold what `bd` and the bead panes' records say: a press and a change of `bead-panes.json` refresh each.
 const BEAD_FEEDS: [&str; 2] = ["beads", "beads_graph"];
-const FEEDS: [&str; 9] = ["beads", "beads_graph", "project", "work", "repo", "diff", "prs", "pr_detail", "issues"];
+const FEEDS: [&str; 10] = ["beads", "beads_graph", "project", "work", "swarm", "repo", "diff", "prs", "pr_detail", "issues"];
 const ACTIONS: [&str; 14] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
 /// How often a `repo`, `prs`, `pr_detail` or `issues` subscription is read again whatever the files do: GitHub has no event.
 const REPO_EVERY: Duration = Duration::from_secs(120);
+/// How often a `swarm` subscription is read again: a worker's transcript is written many times a
+/// minute and its silence (the stuck check) is no file event at all.
+const SWARM_EVERY: Duration = Duration::from_secs(15);
+
+/// The feeds that follow the agents `wheel agent watch` lists.
+fn follows_agents(feed: &str) -> bool {
+    matches!(feed, "work" | "swarm")
+}
 
 /// How long file events must stop before the changed projects are read again.
 const QUIET: Duration = Duration::from_millis(150);
@@ -188,6 +199,15 @@ fn real_of(p: &std::path::Path) -> PathBuf {
 fn watches(feed: &str, dir: &str, real: &std::path::Path) -> Watches {
     match feed {
         "work" | "issues" => return Watches::default(),
+        "swarm" => {
+            // The run log's directory, or its nearest ancestor that exists, so the log's creation is an
+            // event; `files` holds the log and its directory, the paths whose change is a hit.
+            let Some(log) = swarm_feed::log_path(dir) else { return Default::default() };
+            let log = real_of(&log);
+            let Some(run_dir) = log.parent().map(|d| d.to_path_buf()) else { return Default::default() };
+            let watch = run_dir.ancestors().find(|a| a.is_dir()).map(|a| vec![(a.to_path_buf(), false)]).unwrap_or_default();
+            return Watches { watch, files: vec![log, run_dir], ..Default::default() };
+        }
         "project" => return Watches { watch: vec![(real.to_path_buf(), false), (real.join(".beads"), false), (real.join("docs"), false)], ..Default::default() },
         _ if !reads_git(feed) => return Watches { watch: vec![(real.to_path_buf(), false), (real.join(".beads"), false)], ..Default::default() },
         _ => {}
@@ -332,15 +352,16 @@ impl Core {
             // Watching happens while the subscription is added, so an unsubscribe never runs between them.
             // A `repo` or `diff` subscription's paths come from git, so its first refresh finds them.
             let mut subs = self.subs.lock().unwrap();
-            let w = if reads_git(&feed) { Watches::default() } else { watches(&feed, &dir, &real) };
+            // A `swarm` subscription's run log is named by running `repo-slug`, kept out of this lock too.
+            let w = if reads_git(&feed) || feed == "swarm" { Watches::default() } else { watches(&feed, &dir, &real) };
             for (p, rec) in &w.watch {
                 self.watch(p.clone(), *rec);
             }
             let k = key(&r);
             let sub = Sub { feed: feed.clone(), pkey: pkey.clone(), params: r.params, dir: dir.clone(), real, watch: w.watch, files: w.files, trees: w.trees, top: w.top, ignored: w.ignored, last: None };
             let old = subs.insert(k, sub);
-            // One acquire per `work` subscription: a re-subscribe of the same key replaces the old one.
-            if feed == "work" && old.is_none() {
+            // One acquire per `work` or `swarm` subscription: a re-subscribe of the same key replaces the old one.
+            if follows_agents(&feed) && old.is_none() {
                 self.agents.acquire();
             }
             if let Some(old) = old {
@@ -354,7 +375,7 @@ impl Core {
     fn unsubscribe(&self, r: FeedRef) {
         let mut subs = self.subs.lock().unwrap();
         if let Some(sub) = subs.remove(&key(&r)) {
-            if sub.feed == "work" {
+            if follows_agents(&sub.feed) {
                 self.agents.release();
             }
             self.unwatch_unused(&subs, &sub.watch);
@@ -409,6 +430,7 @@ impl Core {
         let read = tokio::task::spawn_blocking(move || match f.as_str() {
             "project" => status_feed::value(&d),
             "work" => work_feed::value(&d, &agents.all(), agents.loaded(), agents.error()),
+            "swarm" => swarm_feed::value(&d, &agents.all(), agents.loaded(), agents.error()),
             "repo" => repo_feed::value(&d),
             "diff" => diff_feed::value(&d),
             "prs" => prs_feed::value(&d),
@@ -448,6 +470,8 @@ impl Core {
             for s in subs.values() {
                 let hit = if s.feed == "work" || s.feed == "issues" {
                     false
+                } else if s.feed == "swarm" {
+                    s.files.iter().any(|f| f == p)
                 } else if reads_git(&s.feed) {
                     git_hit(&s.files, &s.trees, s.top.as_ref(), &s.ignored, p)
                 } else if BEAD_FEEDS.contains(&s.feed.as_str()) && name == "bead-panes.json" && records.as_deref() == Some(parent) {
@@ -657,13 +681,14 @@ async fn events(core: Arc<Core>, mut rx: UnboundedReceiver<Msg>) {
     }
 }
 
-/// Ask for every `work` subscription's project to be read again whenever the agent list changes.
+/// Ask for every `work` and `swarm` subscription's project to be read again whenever the agent list changes.
 async fn work_changes(core: Arc<Core>) {
     let mut changes = core.agents.changes();
     while changes.changed().await.is_ok() {
-        let dirs: BTreeSet<String> = core.subs.lock().unwrap().values().filter(|s| s.feed == "work").map(|s| s.dir.clone()).collect();
-        for dir in dirs {
-            let _ = core.tx.send(Msg::RefreshFeed("work".into(), dir));
+        let units: BTreeSet<(String, String)> =
+            core.subs.lock().unwrap().values().filter(|s| follows_agents(&s.feed)).map(|s| (s.feed.clone(), s.dir.clone())).collect();
+        for (feed, dir) in units {
+            let _ = core.tx.send(Msg::RefreshFeed(feed, dir));
         }
     }
 }
@@ -676,6 +701,18 @@ async fn repo_clock(core: Arc<Core>) {
         let units: BTreeSet<(String, String)> = core.subs.lock().unwrap().values().filter(|s| on_clock(&s.feed)).map(|s| (s.feed.clone(), s.dir.clone())).collect();
         for (feed, dir) in units {
             let _ = core.tx.send(Msg::RefreshFeed(feed, dir));
+        }
+    }
+}
+
+/// Ask for every `swarm` subscription to be read again each `SWARM_EVERY`.
+async fn swarm_clock(core: Arc<Core>) {
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + SWARM_EVERY, SWARM_EVERY);
+    loop {
+        tick.tick().await;
+        let dirs: BTreeSet<String> = core.subs.lock().unwrap().values().filter(|s| s.feed == "swarm").map(|s| s.dir.clone()).collect();
+        for dir in dirs {
+            let _ = core.tx.send(Msg::RefreshFeed("swarm".into(), dir));
         }
     }
 }
@@ -709,6 +746,7 @@ pub async fn run() -> anyhow::Result<()> {
         tokio::spawn(events(core.clone(), rx));
         tokio::spawn(repo_clock(core.clone()));
         tokio::spawn(work_changes(core.clone()));
+        tokio::spawn(swarm_clock(core.clone()));
         let mut router = Router::new(core);
         router
             .request::<Initialize, _>(|_, _| async {

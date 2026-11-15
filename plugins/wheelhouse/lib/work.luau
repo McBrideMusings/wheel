@@ -1,8 +1,9 @@
 -- The Implement and Swarm panes: the agent panes of the project the space opened, as passes by item and stage
 -- (Implement) or as workers by state (Swarm), and starting an agent. The data is
--- the `wheelhouse.work` feed; `wheelhouse.agent_start` starts an agent from the brief typed so far. `update` cannot
+-- the `wheelhouse.work` feed (and for Swarm the `wheelhouse.swarm` feed, drawn by lib/swarm.luau above the agents); `wheelhouse.agent_start` starts an agent from the brief typed so far. `update` cannot
 -- read feeds, so `view` stores the directory in `state`.
 local kit = require("lib/ui")
+local swarm_run = require("lib/swarm")
 
 local M = {}
 
@@ -207,13 +208,16 @@ function M.pane(mode)
         else
             body = kit.label("Loading agents…", { symbol = "spinner", tone = "muted" })
         end
-        return ui.Column{ align = "stretch", kit.box("v", {
-            head,
-            kpis(mode, if loaded then agents else NONE),
-            notice,
-            starter,
-            kit.box("v", { body }, { padding = { 12, 0, 0, 0 } }),
-        }, { align = "start", spacing = 0, padding = { 18, 16, 48, 16 } }) }
+        local kids = { head }
+        if mode == "swarm" then
+            table.insert(kids, swarm_run.section(data.feed("wheelhouse.swarm", { dir = data.cwd })))
+            table.insert(kids, kit.box("h", { kit.label("Agent panes", { size = 15, weight = "semibold" }) }, { padding = { 18, 0, 6, 0 } }))
+        end
+        table.insert(kids, kpis(mode, if loaded then agents else NONE))
+        table.insert(kids, notice)
+        table.insert(kids, starter)
+        table.insert(kids, kit.box("v", { body }, { padding = { 12, 0, 0, 0 } }))
+        return ui.Column{ align = "stretch", kit.box("v", kids, { align = "start", spacing = 0, padding = { 18, 16, 48, 16 } }) }
     end
 
     local function init(previous)

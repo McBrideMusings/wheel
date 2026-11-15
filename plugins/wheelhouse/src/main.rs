@@ -9,6 +9,7 @@ mod prs;
 mod diff;
 mod issues;
 mod status;
+mod swarm;
 mod repo;
 mod work;
 
