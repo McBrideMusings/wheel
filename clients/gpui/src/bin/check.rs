@@ -1605,6 +1605,39 @@ async fn composer_and_queue(run: Run, agent_pane: String, agent_name: String, cl
     let kept = draft_now(cx)?;
     ensure!(esc_stopped && kept == "abc", "Esc with `abc` typed during a slow turn: stopped {esc_stopped}, state {:?}, draft {kept:?}", rows(cx)?.0);
     erase(&native, 3, cx).await;
+    // Control-C and the stop button at the composer's end stop a running turn too, and the draft
+    // stays. The button's slot is empty while no turn runs.
+    let idle_stop = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "stop"))?;
+    ensure!(idle_stop.is_none(), "the stop button drew with no turn running: {idle_stop:?}");
+    for (how, typed) in [("control-c", "def"), ("button", "ghi")] {
+        type_line(&native, "work slowly 20", cx).await;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            if rows(cx)?.0 == "busy" {
+                break;
+            }
+        }
+        type_text(&native, typed, cx).await;
+        if how == "control-c" {
+            native.call(json!({"op":"post_key","text":"c","code":8,"control":true}));
+        } else {
+            draw(window, Some(output.join("client-composer-stop.png")), cx)?;
+            let button = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "stop"))?.ok_or_else(|| anyhow::anyhow!("no stop button drawn during the slow turn"))?;
+            press(&native, button);
+        }
+        let mut stopped = false;
+        for _ in 0..80 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            if rows(cx)?.0 == "ready" {
+                stopped = true;
+                break;
+            }
+        }
+        let kept = draft_now(cx)?;
+        ensure!(stopped && kept == typed, "{how} with `{typed}` typed during a slow turn: stopped {stopped}, state {:?}, draft {kept:?}", rows(cx)?.0);
+        println!("stop by {how}: stopped, draft kept {kept:?}");
+        erase(&native, typed.len(), cx).await;
+    }
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped))
 }
 

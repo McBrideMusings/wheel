@@ -20,9 +20,11 @@ pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
 const COMPOSER_LINES: usize = 10;
 /// The composer box around its lines: `py_1` above and below, and the 1 px border.
 const COMPOSER_INSET: f32 = 10.;
+/// The paperclip at the start of the composer row and the stop button at its end, each this wide.
+const ROW_BUTTON: f32 = 18.;
 /// The room in a composer row that is not the draft: the pane's 1 px border and `p_2`, the box's
-/// border and `px_2`, the paperclip and the gap after it.
-const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 18. + 8.;
+/// border and `px_2`, the paperclip and the stop button with the gap after and before them.
+const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 2. * (ROW_BUTTON + 8.);
 /// The draft's text size, `text_sm`'s 0.875 rem.
 pub(super) const COMPOSER_TEXT_REMS: f32 = 0.875;
 /// The widest a refusal under the composer's text gets, and the gap before it.
@@ -181,10 +183,16 @@ impl Client {
         }
     }
 
+    /// Stop `agent`'s running turn; the draft stays in the box.
+    pub(super) fn stop_turn(&mut self, agent: &str) {
+        self.press(format!("stop {agent}"));
+        self.send(&ClientMsg::AgentCancel { req: None, agent: agent.to_owned() });
+    }
+
     /// A key in the focused composer that is about the turn and its queue, after a waiting
     /// request had its chance: Esc or Up with nothing typed takes back the unanswered message,
-    /// Esc otherwise stops a running turn, and Control-Return while a turn runs sends the draft
-    /// to go first.
+    /// Esc otherwise stops a running turn, as Control-C does, and Control-Return while a turn
+    /// runs sends the draft to go first.
     pub(super) fn queue_key(&mut self, e: &KeyDownEvent) -> bool {
         let k = &e.keystroke;
         if k.modifiers.platform || k.modifiers.alt || self.link != Link::Up {
@@ -197,8 +205,11 @@ impl Client {
         match k.key.as_str() {
             "escape" | "up" if plain && empty && self.take_back(&agent) => true,
             "escape" if plain && busy => {
-                self.press(format!("stop {agent}"));
-                self.send(&ClientMsg::AgentCancel { req: None, agent });
+                self.stop_turn(&agent);
+                true
+            }
+            "c" if k.modifiers.control && !k.modifiers.shift && !e.is_held && busy => {
+                self.stop_turn(&agent);
                 true
             }
             "enter" if k.modifiers.control && busy => {
@@ -475,13 +486,33 @@ pub(super) fn drop_target(agent: Option<&str>, over: bool, el: gpui::Div, cx: &m
 pub(super) fn paperclip(agent: &str, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
     let a = agent.to_owned();
     div().id(gpui::ElementId::Name(format!("attach-{agent}").into())).tooltip(crate::tooltip::tip("Attach files"))
-        .relative().flex_none().w(px(18.)).h(px(18.)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
+        .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
             this.pick_files(&a, cx);
             cx.stop_propagation();
         }))
         .child(icon.unwrap_or_else(|| div().child("+").into_any_element()))
         .child(recorded(agent, "attach", controls))
+}
+
+/// The stop button at the end of the composer row, `icon` the SF Symbol the bridge drew ("■"
+/// until it has). It stops the running turn, as Esc and Control-C do. Its slot is there while no
+/// turn runs too, empty, so the text never rewraps when a turn starts or ends.
+pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    let slot = div().id(gpui::ElementId::Name(format!("stop-{agent}").into())).relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON));
+    if !busy {
+        return slot;
+    }
+    let a = agent.to_owned();
+    slot.tooltip(crate::tooltip::tip("Stop (Esc or ⌃C)")).flex().items_center().justify_center().rounded_sm().cursor_pointer()
+        .bg(rgb(0x31483e)).text_color(rgb(0xd9e8e1))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.stop_turn(&a);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .child(icon.unwrap_or_else(|| div().text_xs().child("■").into_any_element()))
+        .child(recorded(agent, "stop", controls))
 }
 
 /// The chips above the composer's text (`AttachmentChips`): a thumbnail for an image or the

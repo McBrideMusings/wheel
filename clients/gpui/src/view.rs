@@ -1989,8 +1989,10 @@ impl Client {
                 let chips_h = composer::chips_height(agent.and_then(|a| self.attachments.get(a)));
                 let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
                 let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
+                let busy = t.is_some_and(Transcript::busy);
+                let stop = agent.map(|a| composer::stop_button(a, busy, title::symbol(&self.native, &self.symbols, "stop.fill", 10., 0xd9e8e1), &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, scroll, error }, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, scroll, error, stop }, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2512,6 +2514,8 @@ struct Composer<'a> {
     fit: composer::ComposerFit,
     scroll: Option<ScrollHandle>,
     error: Option<&'a str>,
+    /// The stop button at the row's end (`composer::stop_button`).
+    stop: Option<gpui::Stateful<gpui::Div>>,
 }
 
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
@@ -2548,6 +2552,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
                     .when_some(composer.scroll, |d, scroll| d.overflow_y_scroll().track_scroll(&scroll))
                     .child(div().w_full().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).child(composer::shown_draft(draft, focused))))
                 .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))
+                .children(composer.stop)
                 .children(agent.map(|a| recorded(a, "composer", controls)))), cx))
         .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls, cx))
 }
