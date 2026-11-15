@@ -90,6 +90,8 @@ pub struct Client {
     card_drag: Option<CardDrag>,
     /// Where the tray chip sits (shared by every window), the space whose tray list is open, and a press on the chip.
     tray_store: Rc<RefCell<crate::tray::Store>>,
+    /// Where each toast drew in the last frame, so they are cut out of every native view.
+    pub(super) toast_frames: Rc<RefCell<Vec<Rect>>>,
     /// Where each kind of pane's header puts each control, shared by every window.
     header_layout: Rc<RefCell<crate::pane_header::Store>>,
     /// The kind Settings › General › Pane header shows.
@@ -426,7 +428,7 @@ impl Client {
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
-            popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
+            popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), composer_scrolls: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
@@ -1785,11 +1787,11 @@ impl Client {
         self.ask_plugins(false);
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
         let at = |r: Rect| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)];
-        // The tray chip and its list draw over every layer.
-        let tray: Vec<Rect> = self.tray_holes().into_iter().chain(self.edge_bar()).collect();
+        // The tray chip and its list, the edge bar and the toasts draw over every layer.
+        let over_all: Vec<Rect> = self.tray_holes().into_iter().chain(self.edge_bar()).chain(self.toast_frames.borrow().iter().copied()).collect();
         let area = self.grid_area();
         for (n, layer) in layers.iter().enumerate() {
-            let over: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).chain(tray.iter().copied()).map(at).collect();
+            let over: Vec<[f64; 4]> = layers[n + 1..].iter().filter_map(|l| l.card.as_ref().map(|c| c.frame)).chain(layer.card.as_ref().map(|c| c.grip)).chain(over_all.iter().copied()).map(at).collect();
             for p in &layer.leaves {
                 // A grid view sliding past the grid's edge, or under the zoomed pane, has those parts cut out too.
                 let (cuts, gone) = if n == 0 { (self.grid_cuts(&p.leaf.id, area, &layer.leaves), crate::motion::apart(p.rect, area)) } else { (vec![], false) };

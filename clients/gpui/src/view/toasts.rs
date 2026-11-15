@@ -326,7 +326,22 @@ impl Client {
     /// The notices, bottom right over the window. They overlay the grid, so one coming or going
     /// moves nothing under it.
     pub(super) fn toast_stack(&self, width: f32, height: f32, cx: &mut Context<Self>) -> gpui::Div {
-        let mut column = div().absolute().left_0().top_0().w(px(width)).h(px(height)).flex().flex_col().items_end().justify_end().gap_2().p(px(14.));
+        // Each toast's frame, known only once it is laid out, is kept for the native views' holes.
+        // A change draws the window again, after this frame (a refresh during prepaint does nothing),
+        // so the next frame cuts it.
+        let frames = self.toast_frames.clone();
+        let client = cx.entity().downgrade();
+        let mut column = div().absolute().left_0().top_0().w(px(width)).h(px(height)).flex().flex_col().items_end().justify_end().gap_2().p(px(14.))
+            .on_children_prepainted(move |bounds, _, cx| {
+                let now: Vec<Rect> = bounds.iter().map(|b| Rect { x: b.origin.x.as_f32(), y: b.origin.y.as_f32(), w: b.size.width.as_f32(), h: b.size.height.as_f32() }).collect();
+                if *frames.borrow() != now {
+                    *frames.borrow_mut() = now;
+                    let client = client.clone();
+                    cx.defer(move |cx| {
+                        let _ = client.update(cx, |_, cx| cx.notify());
+                    });
+                }
+            });
         for toast in self.toasts().into_iter().take(LIMIT) {
             column = column.child(toast_view(toast, width, cx));
         }

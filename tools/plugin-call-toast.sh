@@ -83,6 +83,28 @@ echo "toasts after: $(toasts)"
 [ "$OUT" = '{"result":{}}' ] && pass "1a the call answered {}" || fail "1a call answered: $OUT"
 [ "$FOUND" = yes ] && pass "1b the app's /state holds toast notify:plugin:clock:pct-1, warning, \"build finished\"" \
   || fail "1b the toast never showed in the app's /state"
+# The toast draws over the plugin pane's native view only when its frame is a hole cut in that view,
+# within a frame or two of the toast being laid out (0.5 s), not whenever something else repaints.
+for _ in $(seq 1 40); do
+  state
+  python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("toast_frames") else 1)' "$T/state.json" 2>/dev/null && break
+  sleep 0.05
+done
+CUT=no
+for _ in $(seq 1 3); do
+  state
+  if python3 - "$T/state.json" "$PANE" > "$T/cut.txt" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+frames, holes = s.get("toast_frames", []), (s.get("panes", {}).get(sys.argv[2]) or {}).get("holes") or []
+print(f"toast frames {frames}, pane holes {holes}")
+sys.exit(0 if frames and all(any(all(abs(a - b) < 0.5 for a, b in zip(f, h)) for h in holes) for f in frames) else 1)
+PY
+  then CUT=yes; break; fi
+  sleep 0.25
+done
+[ "$CUT" = yes ] && pass "1d every toast frame is a hole in $PANE's native view: $(cat "$T/cut.txt")" \
+  || fail "1d the toast is not cut out of $PANE's native view: $(cat "$T/cut.txt")"
 curl -s -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/window/snapshot?path=$T/toast.png" > "$T/snapshot.json"
 echo "snapshot: $T/toast.png ($(stat -f %z "$T/toast.png" 2>/dev/null || echo missing) bytes)"
 [ -s "$T/toast.png" ] && pass "1c the window drew with the toast: $T/toast.png" || fail "1c no snapshot: $(cat "$T/snapshot.json")"
