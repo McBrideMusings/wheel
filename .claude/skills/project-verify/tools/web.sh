@@ -21,6 +21,10 @@ start_daemon --state-file "$STATE"
 http() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 w space new "$PROJ" >/dev/null
+# The artifact verbs resolve a project artifact against a space, and the daemon has no active one
+# (ADR-0022): outside a pane the CLI takes the space from WHEEL_SPACE, as a page's run does.
+export WHEEL_SPACE="$(w space ls | jget spaces.0.id)"
+[ -n "$WHEEL_SPACE" ] || { echo "space ls named no space" >&2; exit 2; }
 P="$(w space ls | jget spaces.0.root.id)"
 B="$(BASE)/artifacts/$P"
 TOK="$(TOKEN)"

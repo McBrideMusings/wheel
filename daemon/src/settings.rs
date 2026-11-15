@@ -1031,13 +1031,14 @@ fn file(path: &Path) -> Layer {
         };
         let Some(text) = written.as_deref() else {
             tracing::warn!(path = %path.display(), key = k.id, kind = value.type_str(), "a wheel.toml sets a key to something of the wrong type; it is ignored");
+            let kind = value.type_str();
+            let article = if kind.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
             layer.problems.insert(
                 k.id,
                 format!(
-                    "{} sets {} to a {}, which that key does not take; it is ignored",
+                    "{} sets {} to {article} {kind}, which that key does not take; it is ignored",
                     path.display(),
                     k.id,
-                    value.type_str()
                 ),
             );
             continue;

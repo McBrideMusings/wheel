@@ -7,10 +7,10 @@ start_daemon
 # alive_of <term>: "true" or "false" from `status`, "absent" when status lists no such terminal,
 # "error" when status itself failed.
 alive_of() {
-  local s
-  s="$(w status 2>/dev/null | plutil -convert json -o - - 2>/dev/null | tr -d ' \n')" || { echo error; return; }
-  [ -n "$s" ] || { echo error; return; }
-  printf %s "$s" | grep -o "\"id\":\"$1\"[^}]*" | grep -o '"alive":[a-z]*' | cut -d: -f2 | grep . || echo absent
+  w status 2>/dev/null | python3 -c '
+import json, sys
+t = [t for t in json.load(sys.stdin).get("terms", []) if t["id"] == sys.argv[1]]
+print(str(t[0]["alive"]).lower() if t else "absent")' "$1" 2>/dev/null || echo error
 }
 
 T="$(w term open --cwd /tmp)"

@@ -64,7 +64,7 @@ eq "...origin machine" "$(origin_of s1)" "machine"
 expect_out 'problem' "...and plain config ls reports a problem" w config ls --space s1
 check "the problem names the file" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' config ls --space s1 --json | grep -q 'proj1/wheel.toml'"
 printf '[browser]\nhomepage = 5\n' >"$P1/wheel.toml"
-expect_out 'not a string' "homepage = 5 is reported as not a string" w config ls --space s1
+expect_out 'sets browser.homepage to an integer, which that key does not take' "homepage = 5 is reported as an integer the key does not take" w config ls --space s1
 printf 'browser = 1\n' >"$P1/wheel.toml"
 BEFORE="$(cat "$P1/wheel.toml")"
 expect_exit_out 6 'is not a table' "a key whose parent is not a table exits 6" w config set browser.homepage https://x.example --space s1

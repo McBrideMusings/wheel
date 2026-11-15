@@ -48,10 +48,11 @@ LS="$(cd "$SCR/proj" && "$HOUSE" agents ls)"
 eq "ls lists the project's agent" "$(printf %s "$LS" | jq -r '.[0].pane')" "$NEW"
 eq "ls reports it waiting" "$(printf %s "$LS" | jq -r '.[0].status')" needs_you
 
-# An answer changes the state and the watcher hears it.
+# An answer changes the state and the watcher hears it: the turn ends, and with no client showing
+# the pane its status is done, not idle.
 w perm answer "$NEW" allow >/dev/null
-idle() { tail -1 "$LISTS" | jq -e --arg p "$NEW" '.[] | select(.pane==$p and .status=="idle")' >/dev/null; }
-check "answering the permission shows the agent idle" poll 10 idle
+turn_done() { tail -1 "$LISTS" | jq -e --arg p "$NEW" '.[] | select(.pane==$p and .status=="done")' >/dev/null; }
+check "answering the permission ends the turn: the agent shows done" poll 10 turn_done
 
 # A spawn that cannot start the agent leaves no empty pane behind.
 BEFORE="$(panes_of "$SP")"
