@@ -69,9 +69,9 @@ pub async fn run() -> anyhow::Result<i32> {
         let (folder, ran, action) = (folder.clone(), ran.clone(), Arc::new(action));
         backend.action(&name, move |call| invoke(call, action.clone(), folder.clone(), ran.clone()));
     }
-    let status = backend.run().await;
-    crate::check::kill_running();
-    Ok(status)
+    // The guard ends every command still running once this process is gone, however it went.
+    crate::check::guard().map_err(|e| anyhow::anyhow!(e))?;
+    Ok(backend.run().await)
 }
 
 /// `params.dir` (or `args.dir`) when it is an absolute directory, else the package folder.

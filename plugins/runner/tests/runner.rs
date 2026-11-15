@@ -2,6 +2,7 @@
 //! ran them is gone, ask before a command that says so, end what a command started, and end it
 //! when the runner itself is killed.
 
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -326,4 +327,31 @@ fn a_malformed_requires_refuses_the_command_instead_of_dropping_the_guard() {
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("requires must be a list of guard names"), "{name}");
     }
+}
+
+/// Send one Content-Length framed JSON-RPC message.
+fn frame(to: &mut impl std::io::Write, body: &str) {
+    write!(to, "Content-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    to.flush().unwrap();
+}
+
+#[test]
+fn a_command_backend_killed_with_its_group_takes_its_running_commands_with_it() {
+    let p = Project::new("guard", "");
+    let pkg = p.root.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("wheel-plugin.toml"), "[plugin]\nid = \"guardtest\"\nversion = \"0.1.0\"\n\n[commands.actions.stuck]\nrun = \"sleep 31447\"\ntimeout = 600\n").unwrap();
+    kill_all("sleep 31447");
+    // wheeld starts a backend as its own process group and kills that group when it gives up on it.
+    let mut backend = Command::new(env!("CARGO_BIN_EXE_wheel-runner"))
+        .arg("commands").current_dir(&pkg).process_group(0)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut to = backend.stdin.take().unwrap();
+    frame(&mut to, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
+    frame(&mut to, r#"{"jsonrpc":"2.0","id":2,"method":"action/invoke","params":{"action":"stuck","args":{}}}"#);
+    poll("the action's command starts", || alive("sleep 31447"));
+    // SAFETY: killing the group of the backend this test started.
+    unsafe { libc::killpg(backend.id() as i32, libc::SIGKILL) };
+    backend.wait().unwrap();
+    poll("the guard ends the command", || !alive("sleep 31447"));
 }

@@ -66,6 +66,8 @@ enum Command {
     Status,
     #[command(name = "__watch", hide = true)]
     Watch { id: String, folder: String },
+    #[command(name = "__guard", hide = true)]
+    Guard,
 }
 
 /// Seconds since the Unix epoch.
@@ -111,6 +113,7 @@ fn main() -> anyhow::Result<()> {
     let project = Runs::new(&dir);
     match cli.command {
         Command::Watch { id, folder } => runs::watch(&id, std::path::Path::new(&folder)),
+        Command::Guard => check::hold(std::io::stdin().lock()),
         Command::Backend => tokio::runtime::Runtime::new()?.block_on(backend::run())?,
         Command::Commands => {
             let status = tokio::runtime::Runtime::new()?.block_on(commands::run())?;

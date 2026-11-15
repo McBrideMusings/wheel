@@ -1,11 +1,14 @@
 //! Per-command status checks: the readout `status = { kind = … }` on a `[runner]` entry names.
 //! Every check is bounded by [`TIMEOUT`], so a hung host or script delays one readout only.
 
-use std::io::Read;
+use std::fs::File;
+use std::io::{BufRead, Read};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::config::StatusCheck;
@@ -121,8 +124,9 @@ fn drain(mut from: impl Read + Send + 'static) -> std::thread::JoinHandle<(Strin
 /// once. Both streams are read on threads, so a command that fills a pipe cannot block, and the
 /// exit is awaited by a thread blocked in `waitid`, so no poll runs. The command's whole process
 /// group is killed before the command is reaped, so the group id cannot belong to another process
-/// yet, and a background child holding a pipe cannot outlast the command. Git never asks for
-/// credentials.
+/// yet, and a background child holding a pipe cannot outlast the command. When [`guard`] started a
+/// guard, the group is named to it from the command's own process before `sh` runs, and struck
+/// from it before the command is reaped. Git never asks for credentials.
 pub fn bounded_with(
     run: &str,
     cwd: &Path,
@@ -130,12 +134,18 @@ pub fn bounded_with(
     limit: Duration,
     wake: (Sender<Wake>, Receiver<Wake>),
 ) -> Result<Bounded, String> {
-    let mut child = Command::new("sh").arg("-c").arg(run).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0")
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(run).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0")
         .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn().map_err(|e| format!("sh: {e}"))?;
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    if let Some(fd) = GUARD.get().map(|g| g.as_raw_fd()) {
+        // SAFETY: runs between fork and exec, after the child has its own group, and only calls
+        // getpid and write on the guard's pipe, which exec then closes (it is close-on-exec).
+        unsafe { command.pre_exec(move || { tell(fd, b'+', libc::getpid()); Ok(()) }) };
+    }
+    let mut child = command.spawn().map_err(|e| format!("sh: {e}"))?;
     let pid = child.id();
     let pgid = pid as i32;
-    RUNNING.lock().unwrap().insert(pgid);
     let out = drain(child.stdout.take().expect("piped"));
     let err = drain(child.stderr.take().expect("piped"));
     let (tx, rx) = wake;
@@ -152,7 +162,9 @@ pub fn bounded_with(
     };
     // SAFETY: killpg only signals the group the child leads; the child is not reaped yet.
     unsafe { libc::killpg(pgid, libc::SIGKILL) };
-    RUNNING.lock().unwrap().remove(&pgid);
+    if let Some(fd) = GUARD.get().map(|g| g.as_raw_fd()) {
+        tell(fd, b'-', pgid);
+    }
     let status = child.wait();
     let code = if timed_out || cancelled { None } else { status.ok().and_then(|s| s.code()) };
     let (stdout, cut) = out.join().unwrap_or_default();
@@ -165,18 +177,71 @@ pub fn bounded(run: &str, cwd: &Path, limit: Duration) -> Result<Bounded, String
     bounded_with(run, cwd, &[], limit, channel())
 }
 
-/// The process groups of the bounded commands running now.
-static RUNNING: std::sync::Mutex<std::collections::BTreeSet<i32>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// The write end of the pipe the guard reads, once [`guard`] started it.
+static GUARD: OnceLock<File> = OnceLock::new();
 
-/// End every bounded command still running, for a process about to exit: their groups are their
-/// own, so nothing else ends them.
-pub fn kill_running() {
-    for pgid in std::mem::take(&mut *RUNNING.lock().unwrap()) {
-        // SAFETY: killpg only signals the group the command leads.
-        unsafe { libc::killpg(pgid, libc::SIGKILL) };
-    }
+/// Start the guard, `wheel-runner __guard`, for a process that serves bounded commands. Each
+/// command runs in its own process group, outside this process's group, so when `wheeld` kills
+/// that group, or this process dies any other way, nothing here can end the commands. The guard
+/// runs in its own session and reads a pipe only this process writes: it learns each command's
+/// group as the command starts and forgets it as the command ends, and once the pipe closes it
+/// kills every group it still holds.
+pub fn guard() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("the guard's program: {e}"))?;
+    let mut guard = Command::new(&exe);
+    guard.arg("__guard").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    // SAFETY: setsid runs between fork and exec and touches no memory of this process.
+    unsafe { guard.pre_exec(|| { libc::setsid(); Ok(()) }) };
+    let mut child = guard.spawn().map_err(|e| format!("guard {}: {e}", exe.display()))?;
+    let pipe = File::from(OwnedFd::from(child.stdin.take().expect("piped")));
+    GUARD.set(pipe).map_err(|_| "the guard is already running".to_string())
 }
 
+/// Write `+<group>` or `-<group>` and a newline to the guard's pipe in one `write`, which is
+/// atomic at this size. Allocates nothing and takes no lock, so a child may call it before exec.
+fn tell(fd: RawFd, sign: u8, group: i32) {
+    let mut line = [0u8; 16];
+    let mut digits = [0u8; 12];
+    let (mut n, mut at) = (group.unsigned_abs(), 0);
+    loop {
+        digits[at] = b'0' + (n % 10) as u8;
+        at += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    line[0] = sign;
+    for k in 0..at {
+        line[1 + k] = digits[at - 1 - k];
+    }
+    line[1 + at] = b'\n';
+    // SAFETY: writes from a buffer on this stack to a descriptor this process holds open.
+    unsafe { libc::write(fd, line.as_ptr().cast(), 2 + at) };
+}
+
+/// `wheel-runner __guard`: hold the groups standard input names (`+<group>` adds, `-<group>`
+/// removes) until it closes, then kill each group still held.
+pub fn hold(from: impl BufRead) {
+    let mut groups = std::collections::BTreeSet::new();
+    for line in from.lines() {
+        let Ok(line) = line else { break };
+        let (sign, group) = line.split_at(line.len().min(1));
+        match (sign, group.parse::<i32>()) {
+            ("+", Ok(g)) if g > 1 => {
+                groups.insert(g);
+            }
+            ("-", Ok(g)) => {
+                groups.remove(&g);
+            }
+            _ => {}
+        }
+    }
+    for g in groups {
+        // SAFETY: killpg only signals the group a command of the closed process led.
+        unsafe { libc::killpg(g, libc::SIGKILL) };
+    }
+}
 
 fn command(run: &str, cwd: &Path) -> Reading {
     match bounded(run, cwd, TIMEOUT) {
@@ -224,6 +289,23 @@ mod tests {
         let t = Instant::now();
         let b = bounded_with("sleep 30", &tmp, &[], Duration::from_secs(20), (tx, rx)).unwrap();
         assert!(b.cancelled && b.code.is_none() && t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn the_guard_kills_the_groups_still_held_when_its_pipe_closes() {
+        let spawn = |secs: &str| Command::new("sleep").arg(secs).process_group(0).spawn().unwrap();
+        let (mut held, mut struck) = (spawn("31451"), spawn("31452"));
+        let (r, w) = std::io::pipe().unwrap();
+        let w = File::from(OwnedFd::from(w));
+        tell(w.as_raw_fd(), b'+', held.id() as i32);
+        tell(w.as_raw_fd(), b'+', struck.id() as i32);
+        tell(w.as_raw_fd(), b'-', struck.id() as i32);
+        drop(w);
+        hold(std::io::BufReader::new(r));
+        assert_eq!(held.wait().unwrap().code(), None, "the held group is killed");
+        assert!(struck.try_wait().unwrap().is_none(), "the struck group runs on");
+        struck.kill().unwrap();
+        struck.wait().unwrap();
     }
 
     #[test]

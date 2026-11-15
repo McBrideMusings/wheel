@@ -438,6 +438,9 @@ async fn events(core: Arc<Core>, mut rx: UnboundedReceiver<Msg>) {
 }
 
 pub async fn run() -> anyhow::Result<()> {
+    // Status checks and guards are bounded commands; the guard ends one still running once this
+    // process is gone.
+    crate::check::guard().map_err(|e| anyhow::anyhow!(e))?;
     let (tx, rx) = unbounded_channel::<Msg>();
     let (main_loop, _) = MainLoop::new_server(|client| {
         let events_tx = tx.clone();
