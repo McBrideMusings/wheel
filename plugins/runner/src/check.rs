@@ -140,8 +140,17 @@ pub fn bounded_with(
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     if let Some(fd) = GUARD.get().map(|g| g.as_raw_fd()) {
         // SAFETY: runs between fork and exec, after the child has its own group, and only calls
-        // getpid and write on the guard's pipe, which exec then closes (it is close-on-exec).
-        unsafe { command.pre_exec(move || { tell(fd, b'+', libc::getpid()); Ok(()) }) };
+        // signal, getpid and write on the guard's pipe, which exec then closes (it is
+        // close-on-exec). A guard that died leaves no reader: SIGPIPE is ignored for the write, so
+        // the command still runs, and set back to its default, since exec keeps an ignored signal.
+        unsafe {
+            command.pre_exec(move || {
+                libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+                tell(fd, b'+', libc::getpid());
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+                Ok(())
+            })
+        };
     }
     let mut child = command.spawn().map_err(|e| format!("sh: {e}"))?;
     let pid = child.id();

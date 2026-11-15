@@ -355,3 +355,51 @@ fn a_command_backend_killed_with_its_group_takes_its_running_commands_with_it() 
     backend.wait().unwrap();
     poll("the guard ends the command", || !alive("sleep 31447"));
 }
+
+/// Read one Content-Length framed message.
+fn read_frame(from: &mut impl std::io::BufRead) -> String {
+    let mut len = 0;
+    loop {
+        let mut line = String::new();
+        assert!(from.read_line(&mut line).unwrap() > 0, "the backend closed its output");
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some(n) = line.strip_prefix("Content-Length: ") {
+            len = n.parse().unwrap();
+        }
+    }
+    let mut body = vec![0; len];
+    from.read_exact(&mut body).unwrap();
+    String::from_utf8(body).unwrap()
+}
+
+#[test]
+fn a_command_backend_whose_guard_died_still_runs_commands() {
+    let p = Project::new("guard-dead", "");
+    let pkg = p.root.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("wheel-plugin.toml"), "[plugin]\nid = \"guarddead\"\nversion = \"0.1.0\"\n\n[commands.actions.hello]\nrun = \"echo hi\"\n").unwrap();
+    let mut backend = Command::new(env!("CARGO_BIN_EXE_wheel-runner"))
+        .arg("commands").current_dir(&pkg)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut to = backend.stdin.take().unwrap();
+    let mut from = std::io::BufReader::new(backend.stdout.take().unwrap());
+    frame(&mut to, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
+    read_frame(&mut from);
+    let out = Command::new("pgrep").args(["-P", &backend.id().to_string(), "-f", "__guard"]).output().unwrap();
+    let guard: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("the backend's guard");
+    // SAFETY: killing the guard of the backend this test started.
+    unsafe { libc::kill(guard, libc::SIGKILL) };
+    // The backend never waits for its guard, so a killed one stays a zombie until the backend exits.
+    poll("the guard is dead", || {
+        let ps = Command::new("ps").args(["-o", "stat=", "-p", &guard.to_string()]).output().unwrap();
+        String::from_utf8_lossy(&ps.stdout).trim().chars().next().is_none_or(|c| c == 'Z')
+    });
+    frame(&mut to, r#"{"jsonrpc":"2.0","id":2,"method":"action/invoke","params":{"action":"hello","args":{}}}"#);
+    let answer = std::iter::repeat_with(|| read_frame(&mut from)).find(|m| m.contains(r#""id":2"#)).unwrap();
+    assert!(answer.contains(r#""code":0"#) && answer.contains(r#""stdout":"hi\n""#), "{answer}");
+    backend.kill().unwrap();
+    backend.wait().unwrap();
+}
