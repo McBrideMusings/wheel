@@ -4,6 +4,7 @@
 
 mod backend;
 mod check;
+mod commands;
 mod config;
 mod guards;
 mod runs;
@@ -33,6 +34,9 @@ enum Command {
     /// Serve the runner's feeds and actions to `wheeld` as a plugin backend: JSON-RPC 2.0 on
     /// standard input and output.
     Backend,
+    /// Serve the `[commands]` table of the plugin package in the current directory to `wheeld`:
+    /// each feed and action a shell command (docs/plugin-runtime.md, "Command backend").
+    Commands,
     /// The commands the project's [runner] table names, and this machine's.
     Ls,
     /// Run a [runner] command here, showing its output; exits with the command's exit code.
@@ -108,6 +112,10 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Watch { id, folder } => runs::watch(&id, std::path::Path::new(&folder)),
         Command::Backend => tokio::runtime::Runtime::new()?.block_on(backend::run())?,
+        Command::Commands => {
+            let status = tokio::runtime::Runtime::new()?.block_on(commands::run())?;
+            std::process::exit(status);
+        }
         Command::Ls => {
             for r in config::list(&config::machine_file(), &dir) {
                 let ask = r.confirm.as_deref().map(|q| format!("  (asks: {q})")).unwrap_or_default();

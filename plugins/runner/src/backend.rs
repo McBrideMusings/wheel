@@ -199,7 +199,7 @@ fn log_value(dir: &str, id: &str) -> Value {
 /// An RFC 6902 patch that takes `old` to `new`. A log's `lines` slide: lines leave at the front and
 /// arrive at the end, which the patch says as removes of index 0 and adds at `/lines/-` rather than a
 /// replace of every index. None when the two are the same.
-fn patch(old: &Value, new: &Value) -> Option<Value> {
+pub(crate) fn patch(old: &Value, new: &Value) -> Option<Value> {
     if old == new {
         return None;
     }

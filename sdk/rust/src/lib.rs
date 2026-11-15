@@ -23,6 +23,7 @@
 //! `run` talks to `wheeld` over the unix socket named by `WHEEL_PLUGIN_SOCKET` when it is set,
 //! else over standard input and output, with Content-Length framing.
 
+pub mod commands;
 pub mod wire;
 
 use std::collections::HashMap;

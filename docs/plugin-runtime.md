@@ -437,3 +437,53 @@ No button command gets `WHEEL_DATA_DIR`: a plugin pane has no data directory.
 **Actions.** `runner.run {dir, name, confirmed?, worktree?}` answers `{started: true, id, log}`; `{started: false, confirm, command}` for a command with a `confirm` question until it is sent again with `confirmed` set to that `command` text (an entry edited since asks again); or `{started: false, guard}` with the message of a failing `requires` guard; a command that does not exist, a worktree that is not one and a start that failed are errors. `runner.stop {dir, id}` ends a running run and everything it started and answers `{stopping: id}`; a run that is over is an error. A run belongs to the backend process: it goes on while no pane reads it, and ends, marked `lost`, when the process does.
 
 **The pane.** The list is a search field, a fixed line for the last problem, the Running section (a row per run that goes with Open and Stop, above the list), and the commands as a tree: each level's commands, then its groups, a group a button that folds it (a search shows every group that holds a match, folded or not). A row is the command, its description, its latest run's state (`running 2:14`, `exit 65 · 17:40:12`), its status check's reading, Open (when it has a run) and Run. Run on a command with `confirm` shows the question in its row with Cancel and a Run whose hover text is `Run <command>: <question>`, and starts nothing until that Run. The log view fills the pane with the run's last 300 lines, following the newest, with Back, a Stop for a running run and a button for each other command that goes. The pane keeps its query, folded groups, open run and asking command in its state. `swift test --package-path apple/WheelLuau --filter RunnerPaneTests` runs the script against fake feeds; `tools/runner-plugin.sh` checks the backend through a throwaway `wheeld` (the checks it prints).
+
+## Command backend
+
+A package whose `wheel-plugin.toml` has a `[commands]` table gets Wheel's command backend, so a tool with a command line gets a Luau pane with a manifest and a script and no backend of its own. `wheeld` gives such a package the backend `wheel-runner commands` (`daemon/src/plugins.rs`, `command_backend`), run in the package folder with `watch = ["wheel-plugin.toml"]` and `restart = "on-failure"`, so an edit to the manifest starts the backend again with the new table. A package has a `[backend]` or a `[commands]` table, never both. `wheel-runner` is the runner plugin's program, found on the `PATH` a backend gets (Runner plugin, above).
+
+```toml
+[plugin]
+id = "cmd"
+version = "0.1.0"
+
+[commands.feeds.now]
+run = 'printf "{\"now\": %s}" "$(date +%s)"'
+every = 1
+
+[commands.feeds.note]
+run = 'cat note.txt'
+watch = ["note.txt"]
+output = "lines"
+
+[commands.actions.write]
+run = 'printf "%s\n" "$ARG_TEXT" >> note.txt'
+
+[[pane]]
+id = "main"
+title = "Commands"
+script = "main.luau"
+reads = ["cmd.*"]
+actions = ["cmd.*"]
+```
+
+| Key | Meaning |
+| --- | --- |
+| `[commands.feeds.<name>] run` | The command, run with `/bin/sh -c`. |
+| `every` | Seconds between runs while a pane reads the feed (0.1 to 86,400); without it the feed runs on subscribe, after an action and on a watched change only. A run that outlasts the interval is followed by one run, not a burst. |
+| `watch` | Paths whose change runs the feed again 150 ms after the last event (at most 1 s after the first, however long events keep coming): absolute, `~/…`, or relative to where the feed runs. A directory is watched recursively; a file through its folder, so a save that replaces it and a file made later are seen. |
+| `output` | `auto` (the default: JSON when the whole output parses as JSON, else its lines), `json` (output that does not parse is the feed's error), `lines` (an array of the lines) or `text` (one string). A tool whose text output may be one number or `true` sets `lines`. |
+| `timeout` | Seconds a run may take, default 10 for a feed and 30 for an action; the command's process group is killed at the limit. |
+| `[commands.actions.<name>] run`, `timeout` | An action's command. |
+
+The names are letters, digits, `_` and `-`. An unknown key, a bad `output`, an empty `run`, a table with no feed and no action or an `every` or `timeout` outside 0.1 to 86,400 seconds is refused by `wheeld`, and `plugin ls` shows the package's `error` (`wheel-plugin.toml: [commands]: unknown field `evry`, ...`). `wheel_plugin_sdk::commands` (`sdk/rust/src/commands.rs`) is the one parser of the table; `wheeld` and the backend both use it.
+
+**Where and with what a command runs.** In `params.dir` (a feed) or `args.dir` (an action) when it is an absolute directory, else the package folder; one backend serves every space, so a pane that wants its project passes `dir = data.cwd`. The feed's params, or the action's args, are in the environment, never in the command text: `WHEEL_PARAMS` / `WHEEL_ARGS` holds them as JSON, and each top-level key is `PARAM_<KEY>` / `ARG_<KEY>` (upper case, any character but a letter or digit as `_`; a string as it is, null as empty, anything else as JSON; two keys that come to the same name, the later in key order wins). A command reads them as `"$ARG_TEXT"`, so a quote in an arg is data. The rest of the environment is the backend's (Plugin backends, Start).
+
+**A feed's value** is `{value, error}`. After a run that exits 0 and whose output reads as `output` says, `value` is that output and `error` null. After any other run `error` says why (`exit 4: <the last 20 lines of stderr, or of stdout when stderr is empty>`, `ended by a signal`, `timed out after 10 s`, `the output is not JSON: ...`) and `value` stays the last good value (null before one), so a pane keeps drawing what it had and shows the error. Each (feed, params) a pane reads runs on its own: the first run sends the whole value, later runs a JSON Patch, and a run whose value is unchanged sends nothing. Every action of the package, whether it succeeded or not, runs every subscribed feed again; actions and events that arrive while a run goes make one more run. A failure that differs from the last is written to the plugin's log as `feed <name> <params>: <error>`, and `feed <name> <params>: ran clean again` when it clears.
+
+**An action** answers `{code, stdout, stderr}` whatever its exit code, so a pane can tell exit 1 from exit 2 and show a failing tool's output; a run killed at its timeout, or one that could not start, is the action's error (`<action> failed: timed out after 30 s`). A non-zero exit is logged as `action <name> <args>: exit 7: <stderr tail>`. Each stream is kept up to 4 MB; a feed whose standard output passes that is the error `the output passed 4 MB and was cut`.
+
+**Runs end with their reason.** A run belongs to its subscription: when the last pane leaves a feed, or `wheeld` sends `shutdown`, a command still running is killed with its process group. Each command is its own process group, killed before the command is reaped, so its background children end with it. Events on a watched path that arrive while a feed's command runs, and in the 150 ms after (at most 1 s), are dropped, so a command that touches what it watches (a `git status` refreshing `.git/index` under a watched checkout) does not run itself again; a change someone else makes in that time is seen at the feed's next run.
+
+The fixture `tools/fixtures/plugins/commands` (feeds `now`, JSON every second, and `note`, the lines of `note.txt`, watched, failing while a flag file exists; actions `write`, `break`, `mend` and `refuse`) shows them in a pane. `tools/plugin-commands.sh` checks it through a throwaway `wheeld` (13 checks): the backend `plugin ls` names, `now` changing as patches, `note` empty, then the line `write` wrote with a quote in it, no update after an action that changes nothing, a hand edit of the watched file, the error with the last value kept and its clearing, a failing action's code and stderr, the log lines, a manifest edit taking effect and a bad table refused. `cargo test -p wheel-runner commands` and `cargo test -p wheel-plugin-sdk` cover the output forms, the environment, the failure text, the directory rule and the table's parser.

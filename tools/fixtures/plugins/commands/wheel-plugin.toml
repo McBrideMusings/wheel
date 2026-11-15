@@ -1,0 +1,35 @@
+[plugin]
+id = "cmd"
+version = "0.1.0"
+
+# No [backend]: the [commands] table gives the package Wheel's command backend.
+
+# JSON every second.
+[commands.feeds.now]
+run = 'printf "{\"now\": %s}" "$(date +%s)"'
+every = 1
+
+# The lines of note.txt, read again when it or the flag file changes; fails while the flag is there.
+[commands.feeds.note]
+run = 'if [ -f fail ]; then echo "note is broken: $(cat fail)" >&2; exit 4; fi; cat note.txt 2>/dev/null || true'
+watch = ["note.txt", "fail"]
+output = "lines"
+
+[commands.actions.write]
+run = 'printf "%s\n" "$ARG_TEXT" >> note.txt; echo "wrote $ARG_TEXT"'
+
+[commands.actions.break]
+run = 'printf "%s\n" "$ARG_WHY" > fail'
+
+[commands.actions.mend]
+run = 'rm -f fail'
+
+[commands.actions.refuse]
+run = 'echo "refused: $ARG_WHY" >&2; exit 7'
+
+[[pane]]
+id = "main"
+title = "Commands"
+script = "main.luau"
+reads = ["cmd.*"]
+actions = ["cmd.*"]

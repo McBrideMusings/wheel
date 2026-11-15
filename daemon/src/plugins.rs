@@ -128,6 +128,8 @@ struct RawManifest {
     #[serde(default)]
     pane: Vec<RawPane>,
     backend: Option<RawBackend>,
+    /// Read again by `wheel_plugin_sdk::commands`, which owns the table's shape.
+    commands: Option<toml::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -220,6 +222,19 @@ fn parse_backend(raw: RawBackend) -> Result<BackendInfo, String> {
     })
 }
 
+/// The backend a `[commands]` table gives its package: Wheel's command backend, run in the package
+/// folder, which reads the table from the manifest and starts again when the manifest changes.
+fn command_backend() -> BackendInfo {
+    BackendInfo {
+        command: wheel_plugin_sdk::commands::BACKEND_COMMAND.to_string(),
+        transport: BackendTransport::Stdio,
+        restart: "on-failure".to_string(),
+        watch: vec![MANIFEST.to_string()],
+        state: BackendState::Stopped,
+        ..BackendInfo::default()
+    }
+}
+
 /// Read a manifest's text: its id, version, panes and backend. Unknown tables are tolerated and
 /// ignored.
 pub(crate) fn parse_manifest(text: &str) -> Result<Manifest, String> {
@@ -256,7 +271,19 @@ pub(crate) fn parse_manifest(text: &str) -> Result<Manifest, String> {
             actions: pane.actions,
         });
     }
-    let backend = raw.backend.map(parse_backend).transpose()?;
+    let backend = match (raw.backend, raw.commands.is_some()) {
+        (Some(_), true) => {
+            return Err(format!(
+                "{MANIFEST}: a package has a [backend] or a [commands] table, not both"
+            ))
+        }
+        (Some(b), false) => Some(parse_backend(b)?),
+        (None, true) => {
+            wheel_plugin_sdk::commands::from_manifest(text).map_err(|e| format!("{MANIFEST}: {e}"))?;
+            Some(command_backend())
+        }
+        (None, false) => None,
+    };
     Ok(Manifest {
         id: raw.plugin.id,
         version: raw.plugin.version,
@@ -967,6 +994,18 @@ actions = ["go"]
         ] {
             assert!(parse_manifest(&format!("{head}{bad}")).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_commands_table_gives_the_command_backend() {
+        let head = "[plugin]\nid=\"x\"\nversion=\"1\"\n";
+        let m = parse_manifest(&format!("{head}[commands.feeds.now]\nrun=\"date +%s\"\nevery=1\n")).unwrap();
+        let b = m.backend.unwrap();
+        assert_eq!((b.command.as_str(), b.watch.as_slice()), ("wheel-runner commands", &[MANIFEST.to_string()][..]));
+        let e = parse_manifest(&format!("{head}[commands.feeds.now]\nrun=\"x\"\nevry=1\n")).unwrap_err();
+        assert!(e.contains("evry"), "{e}");
+        let e = parse_manifest(&format!("{head}[backend]\ncommand=\"a\"\n[commands.actions.go]\nrun=\"x\"\n")).unwrap_err();
+        assert!(e.contains("not both"), "{e}");
     }
 
     #[test]
