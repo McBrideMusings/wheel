@@ -321,6 +321,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "question_options": question_options, "buttons_inside_short_pane": buttons_inside_short_pane, "question_answer": question_answer, "questions_clicked": clicked.len(), "card": perm_card, "question_card": question_card});
     let (run, first_session_id, fixture_space, sidebar_report) = sidebar(run, click.clone(), cx).await?;
     let (run, title_report) = title_and_bottom_rows(run, first_session_id.clone(), fixture_space.clone(), native_panes.clone(), cx).await?;
+    let (run, agents_report) = agents_surface(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, restore, first_session, first_space, both, distinct, hidden_native, second, second_session, native2, id1, id2, f1, f2, dragged, drag_dir, from2, over_window, window2_sees, after_window, desk, little_id, little_owner, little_frame, over_desk_floats, aim, chip_expect, chip_over_window) = second_window_and_space_drags(run, saved_file.clone(), native_panes.clone(), webs.clone(), cx).await?;
     let (run, card, card_hint, onto_tabs_after, over_card, over_tabs, window2_tabs) = space_drag_to_popover_and_tabs(run, dragged.clone(), f1.clone(), f2.clone(), first_session.clone(), from2.clone(), id2.clone(), native2.clone(), second.clone(), second_session.clone(), cx).await?;
     let (run, pane_away) = pane_drag_out_of_window(run, f1.clone(), f2.clone(), id1.clone(), id2.clone(), second.clone(), native2.clone(), second_session.clone(), first_space.clone(), dragged.clone(), drag_dir.clone(), native_panes.clone(), cx).await?;
@@ -390,6 +391,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "debug": debug_report,
         "sidebar": sidebar_report,
         "title_row": title_report,
+        "agents_mode": agents_report,
         "pane_grid": pane_grid_report,
         "windows": windows_report,
         "little_windows": little_report,
@@ -2812,6 +2814,252 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
     let title_report = json!({"order": order, "build": build, "vpn": vpn, "pressed": pressed, "modes": modes_seen, "mode_menu": mode_ids, "session_menu": menu_ids, "tabs": tab_ids, "tab_width": tabs["tabs"]["tab_width"],
         "badge": tabs["connection_badge"], "strip": summary, "meters_after_full": meters, "full_row": full_row});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, title_report))
+}
+
+/// The Agents mode's surface (wheel-0but.3), driven with real pointer events: every agent of the
+/// session is a full-chat card in the default order; a card dragged by its header and resized by
+/// its corner keeps its frame across a relaunch (the card files read again from disk); the surface
+/// pans; below 50% zoom a card is its dot and its name; a waiting card answers its permission
+/// inline; "+ Agent" starts an agent in a new pane, which appears as a card with no reload, and
+/// shows a closed card; closing a card leaves its agent running; a card drawn as one line; and the
+/// "+ Agent" button and the zoom readout never move.
+async fn agents_surface(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let frames_file = output.join("agent-card-frames.json");
+    let prefs_file = output.join("agent-card-prefs.json");
+    for f in [&frames_file, &prefs_file] {
+        if let Err(e) = std::fs::remove_file(f) && e.kind() != std::io::ErrorKind::NotFound {
+            anyhow::bail!("could not clear {}: {e}", f.display());
+        }
+    }
+    window.update(cx, |c, _, _| c.reload_card_files(frames_file.clone(), prefs_file.clone()))?;
+    let state = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.agents_json());
+    let card_of = |s: &Value, pane: &str| s["cards"].as_array().and_then(|cs| cs.iter().find(|c| c["pane"] == pane).cloned()).unwrap_or(Value::Null);
+    let rect_of = |v: &Value| -> Rect { let n = |i: usize| v[i].as_f64().unwrap_or(0.) as f32; Rect { x: n(0), y: n(1), w: n(2), h: n(3) } };
+    let click = |native: &Native, at: [f64; 2]| {
+        native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    };
+    let centre = |r: Rect| [f64::from(r.x + r.w / 2.), f64::from(r.y + r.h / 2.)];
+    // A press, a drag in steps and a release, each followed by a frame, as a person's hand makes them.
+    async fn drag(native: &Native, window: gpui::WindowHandle<Client>, from: [f64; 2], by: (f64, f64), cx: &mut AsyncApp) -> Result<()> {
+        native.call(json!({"op":"post_mouse","kind":"down","point":from}));
+        draw(window, None, cx)?;
+        for step in 1..=4 {
+            let f = f64::from(step) / 4.;
+            native.call(json!({"op":"post_mouse","kind":"drag","point":[from[0] + by.0 * f, from[1] + by.1 * f]}));
+            tick(cx, 30).await;
+            draw(window, None, cx)?;
+        }
+        native.call(json!({"op":"post_mouse","kind":"up","point":[from[0] + by.0, from[1] + by.1]}));
+        tick(cx, 50).await;
+        draw(window, None, cx)?;
+        Ok(())
+    }
+    let status_agents = |cli: &str| -> Result<Vec<String>> {
+        let out = std::process::Command::new(cli).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "status", "--json"]).output()?;
+        ensure!(out.status.success(), "wheel status: {}", String::from_utf8_lossy(&out.stderr));
+        let v: Value = serde_json::from_slice(&out.stdout)?;
+        let mut names = vec![];
+        fn walk(v: &Value, names: &mut Vec<String>) {
+            match v {
+                Value::Object(m) => {
+                    if m.get("kind").and_then(Value::as_str) == Some("agent") && let Some(a) = m.get("agent").and_then(Value::as_str) {
+                        names.push(a.to_owned());
+                    }
+                    m.values().for_each(|x| walk(x, names));
+                }
+                Value::Array(a) => a.iter().for_each(|x| walk(x, names)),
+                _ => {}
+            }
+        }
+        walk(&v, &mut names);
+        Ok(names)
+    };
+
+    // Every agent of the session is a full-chat card.
+    pick_mode(window, "agents", cx).await?;
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    draw(window, None, cx)?;
+    let session: Vec<String> = window.update(cx, |c, _, _| c.session_agents().into_iter().map(|(l, _, _)| l.id).collect())?;
+    let s = state(cx)?;
+    let mut drawn: Vec<String> = s["cards"].as_array().into_iter().flatten().filter_map(|c| c["pane"].as_str().map(str::to_owned)).collect();
+    drawn.sort();
+    let mut want = session.clone();
+    want.sort();
+    ensure!(!want.is_empty() && drawn == want && s["cards"].as_array().is_some_and(|cs| cs.iter().all(|c| c["dot"] == false && c["summary"] == false)), "the cards {drawn:?} are not every agent of the session {want:?}: {s}");
+    ensure!(window.update(cx, |c, _, _| !c.drawn_texts(&agent_name).is_empty())?, "the card drew no chat for {agent_name}");
+    let control = s["control"].clone();
+    let readout = s["readout"].clone();
+    draw(window, Some(output.join("client-agents-overview.png")), cx)?;
+    // Where "+ Agent" and the readout were drawn; every later state must draw them there.
+    let drawn_controls = |cx: &mut AsyncApp| -> Result<(Option<(f32, f32, f32, f32)>, Option<(f32, f32, f32, f32)>)> { Ok(window.update(cx, |c, _, _| (c.control_bounds("surface", "agents-control"), c.control_bounds("surface", "zoom-readout")))?) };
+    let controls_at = drawn_controls(cx)?;
+    ensure!(controls_at.0.is_some() && controls_at.1.is_some(), "+ Agent or the readout drew nowhere: {controls_at:?}");
+    let mut controls_seen = vec![("overview", controls_at)];
+    // The default order: the cards in their slots (row by row) rank needs you, stopped, working, done, idle.
+    let mut slots: Vec<(f64, f64, u64)> = s["cards"].as_array().into_iter().flatten().filter(|c| c["stored"] == false).map(|c| (c["world"][1].as_f64().unwrap_or(0.), c["world"][0].as_f64().unwrap_or(0.), c["rank"].as_u64().unwrap_or(9))).collect();
+    slots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let ranks: Vec<u64> = slots.iter().map(|s| s.2).collect();
+    ensure!(ranks.windows(2).all(|w| w[0] <= w[1]), "the default slots are not in the order needs you, stopped, working, done, idle: {ranks:?}");
+
+    // A real drag on the header moves the card; one on its corner resizes it.
+    let before = rect_of(&card_of(&s, &agent_pane)["world"]);
+    let at = rect_of(&card_of(&s, &agent_pane)["rect"]);
+    drag(&native, window, [f64::from(at.x + 40.), f64::from(at.y + TITLE / 2.)], (60., 40.), cx).await?;
+    let moved = rect_of(&card_of(&state(cx)?, &agent_pane)["world"]);
+    ensure!((moved.x - before.x - 60.).abs() < 1. && (moved.y - before.y - 40.).abs() < 1. && card_of(&state(cx)?, &agent_pane)["stored"] == true, "the header drag moved the card from {before:?} to {moved:?}");
+    draw(window, Some(output.join("client-agents-dragged.png")), cx)?;
+    let at = rect_of(&card_of(&state(cx)?, &agent_pane)["rect"]);
+    drag(&native, window, [f64::from(at.x + at.w - 6.), f64::from(at.y + at.h - 6.)], (80., 240.), cx).await?;
+    let resized = rect_of(&card_of(&state(cx)?, &agent_pane)["world"]);
+    ensure!((resized.w - moved.w - 80.).abs() < 1. && (resized.h - moved.h - 240.).abs() < 1. && (resized.x - moved.x).abs() < 1., "the corner drag resized the card from {moved:?} to {resized:?}");
+    draw(window, Some(output.join("client-agents-resized.png")), cx)?;
+    // A relaunch reads the frames back from the disk.
+    window.update(cx, |c, _, _| c.reload_card_files(frames_file.clone(), prefs_file.clone()))?;
+    draw(window, None, cx)?;
+    let relaunched = rect_of(&card_of(&state(cx)?, &agent_pane)["world"]);
+    ensure!(relaunched == resized, "after a relaunch the card is at {relaunched:?}, not {resized:?} (file {})", std::fs::read_to_string(&frames_file).unwrap_or_default());
+
+    // A real drag on the empty surface pans it.
+    let area = window.update(cx, |c, _, _| c.grid_area())?;
+    let pan_before = state(cx)?["camera"]["pan"].clone();
+    let empty = (0..40).flat_map(|i| (0..20).map(move |j| (area.x + 20. + i as f32 * area.w / 40., area.y + 20. + j as f32 * area.h / 20.)))
+        .find(|&(x, y)| { let s = state(cx).unwrap_or(Value::Null); !s["cards"].as_array().into_iter().flatten().any(|c| wheel_gpui::sidebar::contains(rect_of(&c["hit"]), x, y)) && !wheel_gpui::sidebar::contains(rect_of(&s["control"]), x, y) && !wheel_gpui::sidebar::contains(rect_of(&s["readout"]), x, y) })
+        .ok_or_else(|| anyhow::anyhow!("no empty point on the surface"))?;
+    drag(&native, window, [f64::from(empty.0), f64::from(empty.1)], (-30., -20.), cx).await?;
+    let pan_after = state(cx)?["camera"]["pan"].clone();
+    ensure!((pan_after[0].as_f64().unwrap_or(0.) - pan_before[0].as_f64().unwrap_or(0.) + 30.).abs() < 1. && (pan_after[1].as_f64().unwrap_or(0.) - pan_before[1].as_f64().unwrap_or(0.) + 20.).abs() < 1., "the surface drag panned from {pan_before} to {pan_after}");
+
+    // At 50% a card is still its chat; below it, its dot and its name, coloured by its state.
+    let middle = (area.x + area.w / 2., area.y + area.h / 2.);
+    window.update(cx, |c, _, _| c.surface_zoom(middle, 0.5))?;
+    draw(window, None, cx)?;
+    let half = state(cx)?;
+    ensure!(half["camera"]["readout"] == "50%" && half["cards"].as_array().is_some_and(|cs| cs.iter().all(|c| c["dot"] == false)), "at 50% the cards should be full: {half}");
+    draw(window, Some(output.join("client-agents-half.png")), cx)?;
+    window.update(cx, |c, _, _| c.surface_zoom(middle, 0.8))?;
+    draw(window, None, cx)?;
+    let dots = state(cx)?;
+    ensure!(dots["camera"]["readout"] == "40%" && dots["cards"].as_array().is_some_and(|cs| cs.iter().all(|c| c["dot"] == true)), "at 40% every card should be a dot: {dots}");
+    ensure!(window.update(cx, |c, _, _| c.control_bounds(&agent_pane, "card-dot").is_some())?, "the dot card drew nowhere");
+    let hits: Vec<Rect> = dots["cards"].as_array().into_iter().flatten().map(|c| rect_of(&c["hit"])).collect();
+    let apart = |a: &Rect, b: &Rect| a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+    ensure!(hits.iter().enumerate().all(|(i, a)| hits[i + 1..].iter().all(|b| apart(a, b))), "dot cards overlap at 40%: {hits:?}");
+    let colours: Vec<(String, String)> = dots["cards"].as_array().into_iter().flatten().map(|c| (c["status"].as_str().unwrap_or("none").to_owned(), c["colour"].as_str().unwrap_or("none").to_owned())).collect();
+    ensure!(colours.iter().all(|(s, c)| match s.as_str() { "needs_you" => c == "#ff9f0a", "stopped" => c == "#ff453a", "idle" => c == "#30d158", "working" | "done" => c == "#0a84ff", _ => true }), "the dots' colours: {colours:?}");
+    draw(window, Some(output.join("client-agents-dots.png")), cx)?;
+    controls_seen.push(("dots", drawn_controls(cx)?));
+    // A real click on the readout puts the zoom back to 100%.
+    click(&native, centre(rect_of(&readout)));
+    draw(window, None, cx)?;
+    ensure!(state(cx)?["camera"]["readout"] == "100%", "the readout's click left the zoom at {}", state(cx)?["camera"]["readout"]);
+
+    // A waiting card answers its permission on the card: a real click on Allow.
+    let at = rect_of(&card_of(&state(cx)?, &agent_pane)["rect"]);
+    click(&native, [f64::from(at.x + 40.), f64::from(at.y + TITLE / 2.)]);
+    draw(window, None, cx)?;
+    ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(agent_pane.as_str()), "a press on the card's header did not give it the keyboard");
+    let replies = |cx: &mut AsyncApp| -> Result<String> { Ok(window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| t.rows.iter().filter_map(|r| match &r.kind { Kind::Reply(x) => Some(x.clone()), _ => None }).collect::<Vec<_>>().join("\n")).unwrap_or_default())?) };
+    let replies_before = replies(cx)?.matches("permission: allow").count();
+    type_line(&native, "permission described", cx).await;
+    let mut perm = Value::Null;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        perm = window.update(cx, |c, _, _| c.perm_card_json(&agent_pane))?;
+        if !perm.is_null() && !perm["tool"].is_null() {
+            break;
+        }
+    }
+    ensure!(!perm.is_null(), "the card drew no permission request");
+    draw(window, None, cx)?;
+    let waiting = card_of(&state(cx)?, &agent_pane);
+    ensure!(waiting["status"] == "needs_you" && waiting["colour"] == "#ff9f0a", "a waiting card should read needs you in orange: {waiting}");
+    draw(window, Some(output.join("client-agents-permission.png")), cx)?;
+    let allow_id = perm["buttons"].as_array().and_then(|b| b.iter().find(|b| b["prominent"] == true)).and_then(|b| b["id"].as_str()).unwrap_or_default().to_owned();
+    let allow = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("perm:{allow_id}")))?.ok_or_else(|| anyhow::anyhow!("the card drew no Allow button: {perm}"))?;
+    let card_rect = rect_of(&card_of(&state(cx)?, &agent_pane)["rect"]);
+    ensure!(wheel_gpui::sidebar::contains(card_rect, allow.0 + allow.2 / 2., allow.1 + allow.3 / 2.), "Allow at {allow:?} is outside the card {card_rect:?}");
+    click(&native, [f64::from(allow.0 + allow.2 / 2.), f64::from(allow.1 + allow.3 / 2.)]);
+    let mut allowed = false;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if window.update(cx, |c, _, _| c.perm_card_json(&agent_pane).is_null())? && replies(cx)?.matches("permission: allow").count() > replies_before {
+            allowed = true;
+            break;
+        }
+    }
+    ensure!(allowed, "the click on Allow did not answer the request: {}", replies(cx)?);
+
+    // Closing a card hides it; its agent keeps running.
+    draw(window, None, cx)?;
+    let close = window.update(cx, |c, _, _| c.control_bounds(&agent_pane, "card-close"))?.ok_or_else(|| anyhow::anyhow!("the card drew no close button"))?;
+    click(&native, [f64::from(close.0 + close.2 / 2.), f64::from(close.1 + close.3 / 2.)]);
+    draw(window, None, cx)?;
+    let closed = state(cx)?;
+    ensure!(card_of(&closed, &agent_pane).is_null() && closed["closed"].as_array().is_some_and(|c| c.iter().any(|p| p == agent_pane.as_str())), "the close button left the card: {closed}");
+    pump(&mut connection, 300, &mut layouts, window, cx).await?;
+    let listed = status_agents(&cli_path)?;
+    ensure!(listed.contains(&agent_name), "wheel status no longer lists {agent_name} after its card closed: {listed:?}");
+    // The control shows it again: a real click on "+ Agent", then on its row, which is unchecked.
+    click(&native, centre(rect_of(&control)));
+    draw(window, None, cx)?;
+    let menu = state(cx)?["menu"].clone();
+    let row = menu["rows"].as_array().and_then(|r| r.iter().find(|r| r["id"] == format!("show:{agent_pane}")).cloned()).ok_or_else(|| anyhow::anyhow!("the menu has no show row for {agent_pane}: {menu}"))?;
+    ensure!(row["checked"] == false, "a closed card's row is checked: {row}");
+    draw(window, Some(output.join("client-agents-menu.png")), cx)?;
+    controls_seen.push(("menu", drawn_controls(cx)?));
+    click(&native, centre(rect_of(&row["frame"])));
+    draw(window, None, cx)?;
+    ensure!(!card_of(&state(cx)?, &agent_pane).is_null() && state(cx)?["menu"].is_null(), "the show row did not bring the card back: {}", state(cx)?);
+
+    // One line, and back.
+    let line = window.update(cx, |c, _, _| c.control_bounds(&agent_pane, "card-summary"))?.ok_or_else(|| anyhow::anyhow!("the card drew no one-line button"))?;
+    click(&native, [f64::from(line.0 + line.2 / 2.), f64::from(line.1 + line.3 / 2.)]);
+    draw(window, None, cx)?;
+    let one = card_of(&state(cx)?, &agent_pane);
+    ensure!(one["summary"] == true && (rect_of(&one["world"]).h - wheel_gpui::cards::SUMMARY_H).abs() < 0.5, "the one-line button left the card at {one}");
+    draw(window, Some(output.join("client-agents-summary.png")), cx)?;
+    controls_seen.push(("summary", drawn_controls(cx)?));
+    let back = window.update(cx, |c, _, _| c.control_bounds(&agent_pane, "card-summary"))?.ok_or_else(|| anyhow::anyhow!("the one-line card drew no full button"))?;
+    click(&native, [f64::from(back.0 + back.2 / 2.), f64::from(back.1 + back.3 / 2.)]);
+    draw(window, None, cx)?;
+    let full = card_of(&state(cx)?, &agent_pane);
+    ensure!(full["summary"] == false && rect_of(&full["world"]) == relaunched, "the full chat came back at {full}, not {relaunched:?}");
+
+    // "+ Agent" starts an agent in a new pane, which becomes a card with no reload.
+    click(&native, centre(rect_of(&control)));
+    draw(window, None, cx)?;
+    let menu = state(cx)?["menu"].clone();
+    let start = menu["rows"].as_array().and_then(|r| r.iter().find(|r| r["id"].as_str().is_some_and(|id| id.starts_with("start:"))).cloned()).ok_or_else(|| anyhow::anyhow!("the menu offers no agent to start: {menu}"))?;
+    let frames_before = layouts;
+    click(&native, centre(rect_of(&start["frame"])));
+    let mut new_pane = None;
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let now = state(cx)?;
+        if let Some(c) = now["cards"].as_array().and_then(|cs| cs.iter().find(|c| c["pane"].as_str().is_some_and(|p| !session.iter().any(|s| s == p)) && c["agent"].is_string())) {
+            new_pane = c["pane"].as_str().map(str::to_owned);
+            break;
+        }
+    }
+    let new_pane = new_pane.ok_or_else(|| anyhow::anyhow!("no card appeared for the started agent ({} layouts since): {}", layouts - frames_before, state(cx).unwrap_or_default()))?;
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-agents-started.png")), cx)?;
+    controls_seen.push(("started", drawn_controls(cx)?));
+    ensure!(controls_seen.iter().all(|(_, c)| *c == controls_at), "+ Agent or the readout moved: {controls_seen:?}");
+    let log: Vec<String> = window.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.starts_with("agent card") || l.starts_with("agents surface")).cloned().collect())?;
+    // The started agent's pane goes, so later steps see the fixture's panes only.
+    let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "close", &new_pane]).output()?;
+    ensure!(out.status.success(), "pane close {new_pane}: {}", String::from_utf8_lossy(&out.stderr));
+    pump(&mut connection, 500, &mut layouts, window, cx).await?;
+    pick_mode(window, "spaces", cx).await?;
+    let report = json!({"cards": drawn, "default_ranks": ranks, "moved": [moved.x, moved.y], "resized": [resized.w, resized.h], "relaunched": [relaunched.x, relaunched.y, relaunched.w, relaunched.h],
+        "pan": [pan_before, pan_after], "dot_colours": colours, "allow": allow_id, "closed_still_listed": listed.contains(&agent_name), "started": new_pane, "control": control, "readout": readout, "controls_drawn": controls_seen.iter().map(|(state, c)| json!({"state": state, "control": c.0.map(|b| [b.0, b.1, b.2, b.3]), "readout": c.1.map(|b| [b.0, b.1, b.2, b.3])})).collect::<Vec<_>>(), "log": log});
+    // Written now, so the step's proof survives a later step's failure.
+    std::fs::write(output.join("agents-report.json"), serde_json::to_vec_pretty(&report)?)?;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
 
 /// A second window with its own connection, restored windows, and a space dragged between
