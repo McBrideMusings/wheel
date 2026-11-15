@@ -219,7 +219,7 @@ pub fn create_window(
     Ok(window)
 }
 
-/// How long the snapshot waits for the bridge to draw one native pane.
+/// How long the snapshot waits for the bridge to draw every native pane it asked for.
 const NATIVE_RENDER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The native views over the window (terminals, pages, plugin panes), each drawn by the bridge and
@@ -238,12 +238,22 @@ async fn paste_native_panes(window: WindowHandle<view::Client>, frame: &mut imag
     };
     let overlay = rect(&status["overlay"]);
     let mut outcomes = serde_json::Map::new();
-    for (pane, answer) in asked {
-        let timer = cx.background_executor().timer(NATIVE_RENDER_WAIT);
+    // Every render was asked at once, so they share one deadline.
+    let deadline = std::time::Instant::now() + NATIVE_RENDER_WAIT;
+    let mut unanswered = vec![];
+    for (pane, render) in asked {
+        let Some((id, answer)) = render else {
+            outcomes.insert(pane, serde_json::json!("not shown"));
+            continue;
+        };
+        let timer = cx.background_executor().timer(deadline.saturating_duration_since(std::time::Instant::now()));
         let drawn: Result<Vec<u8>, String> = match futures::future::select(answer, timer).await {
             futures::future::Either::Left((Ok(result), _)) => result,
             futures::future::Either::Left((Err(_), _)) => Err("the render was dropped".into()),
-            futures::future::Either::Right(_) => Err(format!("the bridge did not draw it within {}s", NATIVE_RENDER_WAIT.as_secs())),
+            futures::future::Either::Right(_) => {
+                unanswered.push(id);
+                Err(format!("the bridge did not draw it within {}s", NATIVE_RENDER_WAIT.as_secs()))
+            }
         };
         let entry = &status["panes"][pane.as_str()];
         let outcome = drawn.and_then(|png| {
@@ -276,6 +286,9 @@ async fn paste_native_panes(window: WindowHandle<view::Client>, frame: &mut imag
             Ok(()) => serde_json::json!("drawn"),
             Err(why) => serde_json::json!(why),
         });
+    }
+    if !unanswered.is_empty() {
+        window.update(cx, |client, _, _| client.forget_snapshot_renders(&unanswered))?;
     }
     Ok(serde_json::Value::Object(outcomes))
 }

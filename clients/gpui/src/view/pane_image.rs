@@ -13,6 +13,8 @@ const NOTICE_MS: u64 = 3000;
 /// The bit that marks a render request as this client's own, so its answer never goes to wheeld
 /// as the answer to a `render_pane` of the same number.
 const OWN: u64 = 1 << 63;
+/// A render the debug window snapshot asked for: its id and the channel its PNG comes down.
+pub type SnapshotRender = (u64, futures::channel::oneshot::Receiver<Result<Vec<u8>, String>>);
 
 /// The renders asked for the clipboard, their answers, and when the notice goes.
 #[derive(Default)]
@@ -44,22 +46,29 @@ impl PaneImages {
 
 impl Client {
     /// For the debug window snapshot: the bridge's status (where each native view is and what is
-    /// cut from it), and a render asked of every native view it shows, each PNG down its channel.
-    pub fn render_native_for_snapshot(&mut self) -> (serde_json::Value, Vec<(String, futures::channel::oneshot::Receiver<Result<Vec<u8>, String>>)>) {
+    /// cut from it), and per native pane either a render asked of it (its id, its PNG down the
+    /// channel) or None when the window does not show it (hidden or faded out).
+    pub fn render_native_for_snapshot(&mut self) -> (serde_json::Value, Vec<(String, Option<SnapshotRender>)>) {
         let status = self.native.status();
-        let shown: Vec<String> = self.native_panes.iter().filter(|p| {
-            let entry = &status["panes"][p.as_str()];
-            entry["hidden"] != true && entry["alpha"].as_f64().unwrap_or(1.) > 0.
-        }).cloned().collect();
-        let renders = shown.into_iter().map(|pane| {
+        let renders = self.native_panes.clone().into_iter().map(|pane| {
+            let entry = &status["panes"][pane.as_str()];
+            if entry["hidden"] == true || entry["alpha"].as_f64().unwrap_or(1.) <= 0. {
+                return (pane, None);
+            }
             let (send, receive) = futures::channel::oneshot::channel();
             let id = OWN | self.pane_images.next;
             self.pane_images.next += 1;
             self.pane_images.snapshots.insert(id, send);
             self.native.render(id, &pane, false);
-            (pane, receive)
+            (pane, Some((id, receive)))
         }).collect();
         (status, renders)
+    }
+    /// Stop waiting for snapshot renders the bridge never answered.
+    pub fn forget_snapshot_renders(&mut self, ids: &[u64]) {
+        for id in ids {
+            self.pane_images.snapshots.remove(id);
+        }
     }
     /// Draw `pane` and put its PNG on the clipboard once the bridge answers.
     pub fn copy_pane_image(&mut self, pane: &str) {
