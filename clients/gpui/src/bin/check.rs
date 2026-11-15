@@ -3930,6 +3930,66 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     ensure!(ok && eval_out == "3", "pane eval 1 + 2: {eval_out}{eval_err}");
     let (ok, eval_title, _) = run_pumped(&["pane", "eval", &browser_pane, "document.title"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok && eval_title == "\"Fixture page one\"", "pane eval document.title: {eval_title}");
+    // Arrow keys in a textarea the web view holds the keyboard for: each reaches the page as
+    // keydown and keyup only and moves the caret; none types text (0x1C-0x1F, wheel-81ml).
+    let setup = "(() => { const t = document.createElement('textarea'); t.id = 'arrows'; t.value = 'abc'; document.body.append(t); window.arrowEvents = [];
+        for (const k of ['keydown', 'keyup', 'keypress', 'beforeinput', 'textInput', 'input']) t.addEventListener(k, e => arrowEvents.push(k + ':' + (e.key ?? e.data ?? '')));
+        t.focus(); t.setSelectionRange(3, 3); return document.activeElement.id; })()";
+    let (ok, focused, focus_err) = run_pumped(&["pane", "eval", &browser_pane, setup], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && focused == "\"arrows\"", "the textarea did not take focus: {focused}{focus_err}");
+    native.focus(&browser_pane);
+    tick(cx, 100).await;
+    let mut caret_after = Vec::new();
+    for (key, text, code) in [("ArrowLeft", "\u{F702}", 123), ("ArrowRight", "\u{F703}", 124), ("ArrowUp", "\u{F700}", 126), ("ArrowDown", "\u{F701}", 125)] {
+        native.call(json!({"op":"post_key","text":text,"code":code,"function":true}));
+        tick(cx, 100).await;
+        let (_, caret, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').selectionStart"], &mut connection, &mut layouts, window, cx).await?;
+        caret_after.push((key, caret));
+    }
+    let (_, arrow_value, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').value"], &mut connection, &mut layouts, window, cx).await?;
+    let (_, arrow_events, _) = run_pumped(&["pane", "eval", &browser_pane, "arrowEvents.join(' ')"], &mut connection, &mut layouts, window, cx).await?;
+    let carets: Vec<&str> = caret_after.iter().map(|(_, c)| c.as_str()).collect();
+    let arrows_report = json!({"value": arrow_value, "events": arrow_events, "caret": caret_after.iter().map(|(k, c)| json!([k, c])).collect::<Vec<_>>()});
+    // Cut, copy and paste in the same textarea: ⌘C, ⌘X and ⌘V fire the page's copy, cut and paste
+    // events and move the text through the pasteboard (wheel-dxzg). The pasteboard's items are put back.
+    native.call(json!({"op":"pasteboard","save":true}));
+    let clip_setup = "(() => { const t = document.getElementById('arrows'); t.value = 'hello world'; window.clipEvents = [];
+        for (const k of ['copy', 'cut', 'paste']) t.addEventListener(k, () => clipEvents.push(k));
+        t.focus(); t.setSelectionRange(0, 5); return document.activeElement.id; })()";
+    let (_, clip_focused, _) = run_pumped(&["pane", "eval", &browser_pane, clip_setup], &mut connection, &mut layouts, window, cx).await?;
+    let pasteboard = |native: &wheel_gpui::native::Native| native.call(json!({"op":"pasteboard"}))["text"].as_str().map(str::to_owned);
+    native.call(json!({"op":"pasteboard","set":""}));
+    let copy_claim = native.call(json!({"op":"post_key","text":"c","code":8,"command":true}))["claimed_by"].clone();
+    let copy_path = native.call(json!({"op":"menu_key","key":"c"}));
+    tick(cx, 200).await;
+    let after_copy = pasteboard(&native);
+    run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').setSelectionRange(6, 11)"], &mut connection, &mut layouts, window, cx).await?;
+    let cut_claim = native.call(json!({"op":"post_key","text":"x","code":7,"command":true}))["claimed_by"].clone();
+    let cut_path = native.call(json!({"op":"menu_key","key":"x"}));
+    tick(cx, 200).await;
+    let after_cut = pasteboard(&native);
+    let (_, value_after_cut, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').value"], &mut connection, &mut layouts, window, cx).await?;
+    run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').setSelectionRange(6, 6)"], &mut connection, &mut layouts, window, cx).await?;
+    let paste_claim = native.call(json!({"op":"post_key","text":"v","code":9,"command":true}))["claimed_by"].clone();
+    let paste_path = native.call(json!({"op":"menu_key","key":"v"}));
+    tick(cx, 200).await;
+    let (_, value_after_paste, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').value"], &mut connection, &mut layouts, window, cx).await?;
+    let (_, clip_events, _) = run_pumped(&["pane", "eval", &browser_pane, "clipEvents.join(' ')"], &mut connection, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"pasteboard","restore":true}));
+    let clipboard_report = json!({"claimed_by": [copy_claim, cut_claim, paste_claim], "menu": [copy_path, cut_path, paste_path], "focused": clip_focused, "after_copy": after_copy, "after_cut": after_cut, "value_after_cut": value_after_cut, "value_after_paste": value_after_paste, "events": clip_events});
+    eprintln!("keys report: arrows {arrows_report} clipboard {clipboard_report}");
+    ensure!(arrow_value == "\"abc\"", "arrow keys typed into the textarea: value {arrow_value}, events {arrow_events}");
+    ensure!(arrow_events == "\"keydown:ArrowLeft keyup:ArrowLeft keydown:ArrowRight keyup:ArrowRight keydown:ArrowUp keyup:ArrowUp keydown:ArrowDown keyup:ArrowDown\"", "arrow keys reached the page as: {arrow_events}");
+    ensure!(carets == ["2", "3", "0", "3"], "the caret after left, right, up, down: {caret_after:?}");
+    // WebKit takes ⌘C, ⌘X and ⌘V as key equivalents (and hands each to the menu when the page
+    // leaves it); GPUI's view answering them instead means the menu never hears of them.
+    ensure!([&copy_claim, &cut_claim, &paste_claim].iter().all(|c| **c == json!("WKWebView")), "⌘C, ⌘X and ⌘V were claimed by {copy_claim}, {cut_claim}, {paste_claim}, not the web view");
+    let sent: Vec<(Value, Value, Value)> =[&copy_path, &cut_path, &paste_path].iter().map(|m| (m["item"].clone(), m["sent"].clone(), m["target"].clone())).collect();
+    ensure!(sent == [("Copy", "WKWebView"), ("Cut", "WKWebView"), ("Paste", "WKWebView")].map(|(i, t)| (json!(i), json!(true), json!(t))), "the Edit menu's ⌘C, ⌘X and ⌘V: {sent:?}");
+    ensure!(clip_events == "\"copy cut paste\"" && after_copy.as_deref() == Some("hello") && after_cut.as_deref() == Some("world")
+        && value_after_cut == "\"hello \"" && value_after_paste == "\"hello world\"", "cut, copy and paste in the browser pane: {clipboard_report}");
+    let (ok, _, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').remove()"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "the arrows textarea could not be removed");
     let (ok, eval_throw, eval_throw_err) = run_pumped(&["pane", "eval", &browser_pane, "throw new Error('nope')"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(!ok && eval_throw_err.contains("nope"), "a throwing eval should fail with its message: ok={ok} {eval_throw} {eval_throw_err}");
     let (ok, dom_out, dom_err) = run_pumped(&["pane", "dom", &browser_pane, "h1"], &mut connection, &mut layouts, window, cx).await?;
@@ -4037,7 +4097,7 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     shot(&native, &output.join("browser"), cx).await?;
     let browser_logs = native.status()["logs"].clone();
     let browser_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == browser_pane).map(|p| [p.rect.x, p.rect.y, p.rect.w, p.rect.h]))?;
-    let browser_report = json!({"pane": browser_pane, "rect": browser_rect, "page_printed": page_out, "state_on_one": on_one, "title_shown": title_shown, "console": console_out,
+    let browser_report = json!({"arrows": arrows_report, "clipboard": clipboard_report, "pane": browser_pane, "rect": browser_rect, "page_printed": page_out, "state_on_one": on_one, "title_shown": title_shown, "console": console_out,
         "eval": {"sum": eval_out, "title": eval_title, "throw_error": eval_throw_err}, "dom_h1": dom_out, "dom_bytes": dom_all.len(),
         "shot_bytes": shot_bytes.len(), "shot_h1_bytes": element_bytes.len(), "shot_none_error": none_err, "record": {"bytes": movie_bytes, "printed": record_out},
         "typed": {"draft": typed_draft, "moved_to_two": on_two, "back_to_one": back_on_one}, "failure": failure, "cleared": cleared, "logs": browser_logs});
