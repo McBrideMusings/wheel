@@ -8218,8 +8218,8 @@ async fn a_plugin_pane_resolves_serves_its_script_and_pushes_a_save() {
     };
     let in_a = ids(call(&mut ws, ClientMsg::PluginLs { req: Some(41), space: Some(a.id.clone()) }).await);
     let in_b = ids(call(&mut ws, ClientMsg::PluginLs { req: Some(42), space: Some(b.id.clone()) }).await);
-    assert_eq!(in_a, ["demo", "sample"]);
-    assert_eq!(in_b, ["sample"]);
+    assert_eq!(in_a, ["demo", "sample", "agent", "runner"]);
+    assert_eq!(in_b, ["sample", "agent", "runner"]);
 
     // Setting the kind is checked against the pane's own space.
     let pane_a = first_pane(&a.root);
