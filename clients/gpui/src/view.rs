@@ -2576,8 +2576,8 @@ impl Client {
         let el = match &row.kind {
             Kind::User { text, queued } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
-                    .child(div().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
-                    .child(div().child(texts.plain("user", text, 0xe0b070))))
+                    .child(div().flex_none().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
+                    .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
                 .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, queue, &self.controls, cx))),
             Kind::Reply(x) => {
                 let blocks = {
@@ -2612,12 +2612,13 @@ impl Client {
             Kind::Tool { id, title, kind, status, content, detail } => {
                 let info = ToolRow::new(title, kind, status, content, detail.as_deref());
                 let mut line = div().flex().gap_2().items_center().text_color(rgb(0x8fa89b))
-                    .child(div().w(px(18.)).text_color(rgb(0x6f8a7c)).child(info.glyph))
-                    .child(div().child(texts.plain("tool", &info.label, 0x8fa89b)));
+                    .child(div().w(px(18.)).flex_none().text_color(rgb(0x6f8a7c)).child(info.glyph))
+                    // One line, clipped at the pane's edge, as ToolViews.swift limits it; the figures after it keep their room.
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(texts.plain("tool", &info.label, 0x8fa89b)));
                 if let (Some(a), Some(r)) = (info.added, info.removed) {
-                    line = line.child(div().text_xs().text_color(rgb(0x7fb89a)).child(format!("+{a} −{r}")));
+                    line = line.child(div().flex_none().text_xs().text_color(rgb(0x7fb89a)).child(format!("+{a} −{r}")));
                 }
-                line = line.child(div().text_xs().text_color(rgb(match status.as_str() { "failed" => 0xe07070, "completed" => 0x4f6a5c, _ => 0xe0b070 })).child(status.clone()));
+                line = line.child(div().flex_none().text_xs().text_color(rgb(match status.as_str() { "failed" => 0xe07070, "completed" => 0x4f6a5c, _ => 0xe0b070 })).child(status.clone()));
                 if let Some(reason) = info.reason {
                     line = line.child(div().text_xs().text_color(rgb(0xe07070)).child(reason));
                 }
@@ -2648,8 +2649,10 @@ impl Client {
         } else {
             el
         };
-        // The gap between rows.
-        el.pb_1()
+        // The gap between rows. The list lays each row out as a root with the column's width
+        // available; a flex root takes its content's width unless told, so the row is as wide as
+        // the column and its texts wrap there.
+        el.w_full().pb_1()
     }
 }
 
@@ -2897,8 +2900,8 @@ fn block_el(block: &Block, texts: &mut Texts, highlights: &Highlights, cx: &mut 
                 let line = div().flex().gap_1().pl(px(16. * item.depth as f32))
                     .child(div().w(px(20.)).flex_none().text_color(rgb(0x8fa89b)).child(item.marker.clone()));
                 list = list.child(match &item.block {
-                    Some(b) => line.child(div().flex_1().child(block_el(b, texts, highlights, cx))),
-                    None => line.child(div().child(texts.inline("list", &item.text, 0xd9e8e1))),
+                    Some(b) => line.child(div().flex_1().min_w_0().child(block_el(b, texts, highlights, cx))),
+                    None => line.child(div().flex_1().min_w_0().child(texts.inline("list", &item.text, 0xd9e8e1))),
                 });
             }
             list
@@ -2928,7 +2931,7 @@ fn block_el(block: &Block, texts: &mut Texts, highlights: &Highlights, cx: &mut 
         Block::Quote(t) => div().pl_2().border_l_2().border_color(rgb(0x3d5247)).text_color(rgb(0x8fa89b)).child(texts.inline("quote", t, 0x8fa89b)),
         Block::Table { header, rows } => {
             let cell = |texts: &mut Texts, t: &Text, bold: bool| {
-                let c = div().flex_1().px_1().py_0p5().border_1().border_color(rgb(0x2c3d34)).child(texts.inline("table", t, 0xd9e8e1));
+                let c = div().flex_1().min_w_0().px_1().py_0p5().border_1().border_color(rgb(0x2c3d34)).child(texts.inline("table", t, 0xd9e8e1));
                 if bold { c.font_weight(FontWeight::BOLD).bg(rgb(0x1a2621)) } else { c }
             };
             let mut table = div().flex().flex_col();
