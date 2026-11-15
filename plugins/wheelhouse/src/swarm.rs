@@ -1,5 +1,5 @@
 //! The Swarm pane's run: the latest swarm run of a project, read from the run log the `swarm` tool
-//! writes (`<repo-slug dir>/swarm/run.tsv`, one `<utc time>\t<event>\t<bead>\t<detail>` line per
+//! writes (wherever `swarm log-path` names it, one `<utc time>\t<event>\t<bead>\t<detail>` line per
 //! event), each launched worker's agent pane (the agent whose space is the worker's worktree) and
 //! each worker's Claude transcript (`<config dir>/projects/<encoded worktree>/*.jsonl`): its latest
 //! actions and when it was last written. A worker in flight whose transcript has not been written
@@ -263,22 +263,12 @@ pub fn workers(events: &[Event]) -> Vec<Worker> {
     out
 }
 
-/// The run log of the repo holding `dir`: `/private/tmp/claude/<repo-slug of its main checkout>/swarm/run.tsv`,
-/// the main checkout found as the `swarm` tool finds it (the parent of the common `.git`) and the slug
-/// from `repo-slug` (`~/.claude/tools/repo-slug`, the one definition the tool uses; without `--path`,
-/// which would create the directory on every read).
+/// The run log of the repo holding `dir`, as the `swarm` tool names it (`swarm log-path`, run in `dir`): the
+/// tool owns where its run log lives, and the feed reads wherever it says.
 pub fn run_log(home: &Path, dir: &str) -> Result<PathBuf, String> {
-    let (_, common) = crate::core::git::dirs(dir).ok_or_else(|| format!("{dir} is in no git repository"))?;
-    let common = PathBuf::from(common);
-    let main = common
-        .parent()
-        .filter(|_| common.file_name().is_some_and(|n| n == ".git"))
-        .ok_or_else(|| format!("{dir} has no main checkout (its git dir is {})", common.display()))?
-        .to_string_lossy()
-        .into_owned();
-    let tool = home.join(".claude/tools/repo-slug");
-    let slug = crate::core::run::text(&tool.to_string_lossy(), &main, &[&main])?;
-    Ok(PathBuf::from("/private/tmp/claude").join(slug.trim()).join("swarm").join("run.tsv"))
+    let tool = home.join(".claude/skills/swarm/swarm");
+    let path = crate::core::run::text(&tool.to_string_lossy(), dir, &["log-path"])?;
+    Ok(PathBuf::from(path.trim()))
 }
 
 /// The run's value, given its events, the agents of the project, the clock and how to find a worker's
@@ -457,5 +447,19 @@ mod tests {
         let ws = r#"{"type":"assistant","timestamp":"2026-11-14T21:25:00Z","message":{"content":[{"type":"tool_use","id":"w","name":"mcp__work-board__work_set","input":{"items":[{"kind":"bead","id":"a","stage":"build","note":"cargo test"}]}}]}}"#;
         let a = actions(ws, "/wt");
         assert_eq!((a[0].tool.as_str(), a[0].text.as_str()), ("work_set", "build cargo test"));
+    }
+
+    #[test]
+    fn the_run_log_is_wherever_the_swarm_tool_says() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("wheelhouse-swarm-home-{}", std::process::id()));
+        let tool = home.join(".claude/skills/swarm/swarm");
+        std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+        std::fs::write(&tool, "#!/bin/sh\n[ \"$1\" = log-path ] && echo \"/elsewhere$PWD/run.tsv\"\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = std::fs::canonicalize("/tmp").unwrap();
+        let got = run_log(&home, &dir.to_string_lossy());
+        std::fs::remove_dir_all(&home).unwrap();
+        assert_eq!(got, Ok(PathBuf::from(format!("/elsewhere{}/run.tsv", dir.display()))));
     }
 }

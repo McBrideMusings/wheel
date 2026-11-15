@@ -352,7 +352,7 @@ impl Core {
             // Watching happens while the subscription is added, so an unsubscribe never runs between them.
             // A `repo` or `diff` subscription's paths come from git, so its first refresh finds them.
             let mut subs = self.subs.lock().unwrap();
-            // A `swarm` subscription's run log is named by running `repo-slug`, kept out of this lock too.
+            // A `swarm` subscription's run log is named by running `swarm log-path`, kept out of this lock too.
             let w = if reads_git(&feed) || feed == "swarm" { Watches::default() } else { watches(&feed, &dir, &real) };
             for (p, rec) in &w.watch {
                 self.watch(p.clone(), *rec);
