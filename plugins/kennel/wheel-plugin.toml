@@ -40,6 +40,39 @@ run = 'kennel route rm "$ARG_PATH"'
 [commands.actions.route_prune]
 run = 'kennel route prune'
 
+# The vault's write commands and file history. Each runs `gate.sh` first, which asks kennel again whether the item or
+# path is one it lists (the vault, a skills page, a section's files) in global or a space's folder, and refuses anything
+# else. Each refuses a `dir` first: without one a command runs in this folder, so `sh gate.sh` is this package's gate,
+# never a file in a folder the caller named. Every path they take is absolute.
+
+[commands.feeds.file_log]
+run = 'jq -en "env.WHEEL_PARAMS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this feed takes no dir" >&2; exit 2; }; sh gate.sh file "$PARAM_PATH" "$PARAM_SECTION" "$PARAM_SCOPE" "$PARAM_HARNESS" "" && kennel file log "$PARAM_PATH" --json'
+output = "json"
+timeout = 20
+
+[commands.feeds.file_show]
+run = 'jq -en "env.WHEEL_PARAMS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this feed takes no dir" >&2; exit 2; }; sh gate.sh file "$PARAM_PATH" "$PARAM_SECTION" "$PARAM_SCOPE" "$PARAM_HARNESS" "$PARAM_REV" && if [ -n "$PARAM_REV" ]; then kennel file show "$PARAM_PATH@$PARAM_REV"; else kennel file show "$PARAM_PATH"; fi'
+output = "text"
+timeout = 20
+
+[commands.actions.vault_add]
+run = 'jq -en "env.WHEEL_ARGS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this action takes no dir" >&2; exit 2; }; sh gate.sh listed "$ARG_PATH" "$ARG_SCOPE" "$ARG_HARNESS" && kennel vault add "$ARG_PATH"'
+
+[commands.actions.vault_unlink]
+run = 'jq -en "env.WHEEL_ARGS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this action takes no dir" >&2; exit 2; }; sh gate.sh linked "$ARG_PATH" "$ARG_SCOPE" "$ARG_HARNESS" && kennel vault unlink "$ARG_PATH"'
+
+[commands.actions.vault_install]
+run = 'jq -en "env.WHEEL_ARGS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this action takes no dir" >&2; exit 2; }; sh gate.sh skill "$ARG_ITEM" && sh gate.sh harness "$ARG_HARNESS" && if [ -n "$ARG_PROJECT" ]; then sh gate.sh project "$ARG_PROJECT" && kennel vault install "$ARG_ITEM" "$ARG_HARNESS" --project "$ARG_PROJECT"; else kennel vault install "$ARG_ITEM" "$ARG_HARNESS"; fi'
+
+[commands.actions.vault_copy]
+run = 'jq -en "env.WHEEL_ARGS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this action takes no dir" >&2; exit 2; }; sh gate.sh skill "$ARG_ITEM" && sh gate.sh new "$ARG_PATH" "$ARG_SCOPE" "$ARG_HARNESS" && kennel vault copy "$ARG_ITEM" "$ARG_PATH"'
+
+[commands.actions.vault_update]
+run = 'jq -en "env.WHEEL_ARGS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this action takes no dir" >&2; exit 2; }; sh gate.sh copy "$ARG_PATH" && kennel vault update "$ARG_PATH"'
+
+[commands.actions.vault_rm]
+run = 'jq -en "env.WHEEL_ARGS | fromjson | has(\"dir\") | not" > /dev/null || { echo "this action takes no dir" >&2; exit 2; }; sh gate.sh item "$ARG_ITEM" && kennel vault rm "$ARG_ITEM"'
+
 [[pane]]
 id = "kennel"
 title = "Harness"

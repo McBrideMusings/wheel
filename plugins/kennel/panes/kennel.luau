@@ -1,9 +1,12 @@
 -- The kennel pane: the routes kennel keeps (add, remove, prune), the profile this space's folder gets, and what a
 -- harness (Claude, Codex or pi) gets in this project or globally: skills, guidance, permissions, hooks, MCP servers,
--- the vault and kennel doctor's checks.
+-- the vault and kennel doctor's checks. A row's menu runs the vault's write commands on what it lists (move a skill into
+-- the vault, unlink it, install, copy, update, remove) and opens a listed file's history: its commits, and its text now
+-- or at one of them.
 --
 -- Every value is a kennel command's output through Wheel's command backend (wheel-plugin.toml): `routes`, `which`
--- and `doctor` are kennel's text lines, `harness` and `vault` its JSON. Each feed's value is {value, error}.
+-- and `doctor` are kennel's text lines, `harness`, `vault` and `file_log` its JSON, `file_show` its text. Each feed's
+-- value is {value, error}.
 
 local NONE = {}
 
@@ -24,6 +27,8 @@ local function init(previous)
     s.permanent = s.permanent or false
     s.out = s.out or ""
     s.out_tone = s.out_tone or "muted"
+    -- s.file is the file whose history shows ({path, section, scope, harness}, nil for none), s.rev the commit whose
+    -- text shows ("" for the file now, nil for the list of commits), s.confirm the vault write waiting on its answer.
     return s
 end
 
@@ -46,9 +51,10 @@ local function update(s, msg)
     if msg.action ~= nil then
         s.out, s.out_tone = said(msg)
         if msg.action == "kennel.route_add" and msg.result and msg.result.code == 0 then s.path = "" end
-    elseif msg.type == "view" then s.view = first(msg.value) or s.view
-    elseif msg.type == "harness" then s.harness = first(msg.value) or s.harness
-    elseif msg.type == "scope" then s.scope = first(msg.value) or s.scope
+    -- A change of view, harness or scope drops a waiting confirmation, which named the old one's rows.
+    elseif msg.type == "view" then s.view, s.file, s.rev, s.confirm = first(msg.value) or s.view, nil, nil, nil
+    elseif msg.type == "harness" then s.harness, s.confirm = first(msg.value) or s.harness, nil
+    elseif msg.type == "scope" then s.scope, s.confirm = first(msg.value) or s.scope, nil
     elseif msg.type == "path" then s.path = msg.value
     elseif msg.type == "profile" then s.profile = first(msg.value) or ""
     elseif msg.type == "permanent" then s.permanent = msg.value == true
@@ -59,6 +65,18 @@ local function update(s, msg)
         wheel.action("kennel.route_rm", { path = msg.path, dir = msg.dir })
     elseif msg.type == "prune" then
         wheel.action("kennel.route_prune", { dir = msg.dir })
+    elseif msg.type == "vault" then
+        -- A vault write from a row's menu; one that moves something to the Trash asks first.
+        if msg.ask then s.confirm = msg else wheel.action("kennel." .. msg.name, msg.args) end
+    elseif msg.type == "confirmed" then
+        if s.confirm then wheel.action("kennel." .. s.confirm.name, s.confirm.args) end
+        s.confirm = nil
+    elseif msg.type == "unconfirmed" then s.confirm = nil
+    elseif msg.type == "history" then s.file, s.rev = msg.file, nil
+    elseif msg.type == "commit" then s.rev = msg.id
+    elseif msg.type == "now" then s.rev = ""
+    elseif msg.type == "commits" then s.rev = nil
+    elseif msg.type == "close_history" then s.file, s.rev = nil, nil
     end
 end
 
@@ -131,6 +149,43 @@ local function table_node(columns, sections, empty)
         component = "Table", columns = columns, sections = sections, empty = empty,
         rowAction = { type = "noop" },
     }
+end
+
+-- A menu item that runs a vault write; `ask` is the question a confirmation puts first.
+local function vault_item(label, name, args, ask)
+    return { label = label, action = { type = "vault", name = name, args = args, ask = ask, label = label } }
+end
+
+-- Menu items opening the history of each listed file: `paths` are absolute, `where` is {section, scope, harness}, the
+-- listing the gate looks the path up in.
+local function history_items(paths, where)
+    local items = {}
+    for _, p in paths do
+        if p and p ~= "" then
+            table.insert(items, { label = "History of " .. leaf(p), action = { type = "history", file = {
+                path = p, section = where.section, scope = where.scope, harness = where.harness,
+            } } })
+        end
+    end
+    return items
+end
+
+local function append(list, more)
+    for _, v in more do table.insert(list, v) end
+    return list
+end
+
+-- The absolute paths of the files one harness entry lists, as the gate reads them.
+local function entry_files(e)
+    local out = {}
+    if e.files then
+        for _, f in e.files do table.insert(out, e.path .. "/" .. f) end
+    elseif e.path then
+        table.insert(out, e.path)
+    end
+    if e.file then table.insert(out, e.file) end
+    if e.script then table.insert(out, e.script) end
+    return out
 end
 
 -- ───────────────────────────── the views ─────────────────────────────
@@ -212,7 +267,18 @@ local function harness_view(s, data, dir)
         local rows = {}
         for i, e in b.entries or NONE do
             local id = bi .. ":" .. i
-            table.insert(rows, { id = id, path = id, depth = 0, menu = {}, cells = entry_cells(s.view, e) })
+            local menu = {}
+            if s.view == "skills" then
+                local args = { path = e.path, scope = scope, harness = s.harness }
+                if e.vault then
+                    table.insert(menu, vault_item("Unlink: keep a recorded copy here", "vault_unlink", args))
+                else
+                    table.insert(menu, vault_item("Move into the vault", "vault_add", args,
+                        "Move " .. e.path .. " into the vault? kennel links it back and moves the original folder to the Trash."))
+                end
+            end
+            append(menu, history_items(entry_files(e), { section = s.view, scope = scope, harness = s.harness }))
+            table.insert(rows, { id = id, path = id, depth = 0, menu = menu, cells = entry_cells(s.view, e) })
         end
         -- The block's folder is in each row's Where cell, so the title names the scope and the folder's last part.
         table.insert(sections, { title = (b.scope or "") .. "  " .. leaf(b.path), count = #rows, rows = rows })
@@ -232,16 +298,48 @@ local function harness_view(s, data, dir)
     }
 end
 
-local function vault_view(data, dir)
+local function vault_view(s, data, dir)
     local f = data.feed("kennel.vault", { dir = dir }) or NONE
     local v = f.value or NONE
+    -- Where Copy puts a skill: the first skills folder of this project's block for the chosen harness.
+    local into = nil
+    if dir then
+        local h = data.feed("kennel.harness", { section = "skills", scope = dir, harness = s.harness, dir = dir }) or NONE
+        for _, b in (h.value or NONE).blocks or NONE do
+            if b.scope == "project" and b.dirs and b.dirs[1] then into = b.dirs[1]; break end
+        end
+    end
+    local hname = s.harness
+    for _, o in HARNESSES do if o[1] == s.harness then hname = o[2] end end
+    local function menu_for(kind, e)
+        local m = {}
+        if kind == "skill" then
+            table.insert(m, vault_item("Install for " .. hname .. " globally", "vault_install", { item = e.item, harness = s.harness, project = "" }))
+            if dir then
+                table.insert(m, vault_item("Install for " .. hname .. " in this project", "vault_install", { item = e.item, harness = s.harness, project = dir }))
+            end
+            if into then
+                table.insert(m, vault_item("Copy into this project's " .. hname .. " skills", "vault_copy",
+                    { item = e.item, path = into .. "/" .. leaf(e.item), scope = dir, harness = s.harness }))
+            end
+        end
+        table.insert(m, vault_item("Remove from the vault", "vault_rm", { item = e.item },
+            "Remove " .. e.item .. " from the vault? kennel moves it to the Trash, and refuses while a link points at it."))
+        local paths = {}
+        if kind == "skill" then
+            for _, p in e.files or NONE do table.insert(paths, e.path .. "/" .. p) end
+        else
+            table.insert(paths, e.path)
+        end
+        return append(m, history_items(paths, { section = "vault", scope = "", harness = "" }))
+    end
     -- `kennel vault ls --json`: skills and snippets are {name, item, path, files}; copies are {path, item, rev, head,
     -- behind}, a copy behind when the vault has a newer commit of its item.
     local function items(list, kind)
         local rows = {}
         for i, e in list or NONE do
             local id = kind .. ":" .. i
-            table.insert(rows, { id = id, path = id, depth = 0, menu = {}, cells = {
+            table.insert(rows, { id = id, path = id, depth = 0, menu = menu_for(kind, e), cells = {
                 cell("name", e.name or e.item), cell("detail", if e.files then #e.files .. " files" else ""),
                 cell("where", e.path, { mono = true, tone = "muted" }),
             } })
@@ -255,7 +353,11 @@ local function vault_view(data, dir)
             local state, tone = "current", "ok"
             if e.head == nil or e.head == "" then state, tone = "item gone from the vault", "bad"
             elseif e.behind then state, tone = "behind " .. string.sub(e.head, 1, 7), "warn" end
-            table.insert(rows, { id = id, path = id, depth = 0, menu = {}, cells = {
+            local menu = {}
+            if e.behind then
+                table.insert(menu, vault_item("Update to the vault's commit", "vault_update", { path = e.path }))
+            end
+            table.insert(rows, { id = id, path = id, depth = 0, menu = menu, cells = {
                 cell("name", e.item), cell("detail", state, { tone = tone }), cell("where", e.path, { mono = true, tone = "muted" }),
             } })
         end
@@ -263,7 +365,10 @@ local function vault_view(data, dir)
     end
     local skills, snippets, copies = items(v.skills, "skill"), items(v.snippets, "snippet"), copies_of(v.copies)
     return {
-        ui.Text{ text = "Vault " .. (v.dir or ""), modifiers = { { lineLimit = 1 } } },
+        ui.Row{
+            picker(HARNESSES, s.harness, { type = "harness" }),
+            ui.Text{ text = "Vault " .. (v.dir or ""), modifiers = { { lineLimit = 1 } } },
+        },
         feed_error(f),
         table_node(
             { col("name", "Item", 260), col("detail", "State", 160), col("where", "Where", nil) },
@@ -309,11 +414,62 @@ local function doctor_view(data, dir)
     }
 end
 
+-- One file's history: its commits (a row shows the file at that commit), or its text now or at a commit.
+local function history_view(s, data)
+    local file = s.file
+    local params = { path = file.path, section = file.section, scope = file.scope, harness = file.harness }
+    local head = ui.Row{
+        ui.Button{ child = ui.Text("Back"), action = { type = "close_history" } },
+        ui.Text{ text = "History of " .. file.path, modifiers = { { lineLimit = 1 } } },
+    }
+    if s.rev == nil then
+        local f = data.feed("kennel.file_log", params) or NONE
+        local rows = {}
+        for _, c in f.value or NONE do
+            table.insert(rows, { id = c.commit, path = c.commit, depth = 0, menu = {}, cells = {
+                cell("commit", c.short, { mono = true }), cell("date", (string.gsub(string.sub(c.date or "", 1, 16), "T", " "))), cell("subject", c.subject),
+            } })
+        end
+        return {
+            head,
+            ui.Row{ ui.Button{ child = ui.Text("Show the file now"), action = { type = "now" } } },
+            feed_error(f),
+            {
+                component = "Table", empty = "No commit touched this file.", rowAction = { type = "commit" },
+                columns = { col("commit", "Commit", 90), col("date", "Date", 140), col("subject", "Subject", nil) },
+                sections = { { title = "Commits", count = #rows, rows = rows } },
+            },
+        }
+    end
+    params.rev = s.rev
+    local f = data.feed("kennel.file_show", params) or NONE
+    return {
+        head,
+        ui.Row{
+            ui.Button{ child = ui.Text("Commits"), action = { type = "commits" } },
+            ui.Text{ text = if s.rev == "" then "now" else "at " .. string.sub(s.rev, 1, 8), modifiers = { { lineLimit = 1 } } },
+        },
+        feed_error(f),
+        ui.Text{ text = f.value or "", modifiers = { { font = { size = 12, design = "monospaced" } }, { textSelection = true } } },
+    }
+end
+
+-- The confirmation a write that moves something to the Trash waits on; always in the tree, presented when one waits.
+local function confirm_dialog(s)
+    local c = s.confirm
+    return ui.ConfirmationDialog{
+        title = if c then c.ask else "", presented = c ~= nil,
+        buttons = { { title = if c then c.label else "", role = "destructive", action = { type = "confirmed" } } },
+        dismissAction = { type = "unconfirmed" },
+    }
+end
+
 local function view(s, data)
     local dir = data.cwd
     local body
-    if s.view == "routes" then body = routes_view(s, data, dir)
-    elseif s.view == "vault" then body = vault_view(data, dir)
+    if s.file then body = history_view(s, data)
+    elseif s.view == "routes" then body = routes_view(s, data, dir)
+    elseif s.view == "vault" then body = vault_view(s, data, dir)
     elseif s.view == "doctor" then body = doctor_view(data, dir)
     else body = harness_view(s, data, dir) end
     local opts = {}
@@ -330,6 +486,7 @@ local function view(s, data)
         if body[i] then table.insert(root, body[i]) end
     end
     table.insert(root, ui.Text{ text = s.out, modifiers = { { lineLimit = 2 } } })
+    table.insert(root, confirm_dialog(s))
     return ui.Column(root)
 end
 
