@@ -1423,6 +1423,34 @@ async fn composer_and_queue(run: Run, agent_pane: String, agent_name: String, cl
     let shut = pane_now(cx)?;
     ensure!(shut["draft"] == "/" && shut["composer"]["listed"] == json!([]), "Esc on the open list: {}", shut["composer"]);
     erase(&native, 1, cx).await;
+    // Shift-Return starts a new line, and the box grows a line at a time up to ten, then holds
+    // its height while the text scrolls.
+    let box_h = |cx: &mut AsyncApp| -> Result<f32> {
+        draw(window, None, cx)?;
+        Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, "composer"))?.ok_or_else(|| anyhow::anyhow!("no composer drawn"))?.3)
+    };
+    let shift_return = |native: &Native| native.call(json!({"op":"post_key","text":"\r","code":36,"shift":true}));
+    let one_line = box_h(cx)?;
+    type_text(&native, "one", cx).await;
+    shift_return(&native);
+    tick(cx, 100).await;
+    type_text(&native, "two", cx).await;
+    let two_lines = box_h(cx)?;
+    ensure!(draft_now(cx)? == "one\ntwo", "Shift-Return left the draft {:?}", draft_now(cx)?);
+    ensure!(two_lines > one_line, "two lines left the composer {two_lines} tall, one line {one_line}");
+    for _ in 0..12 {
+        shift_return(&native);
+        tick(cx, 30).await;
+    }
+    tick(cx, 100).await;
+    let capped = box_h(cx)?;
+    shift_return(&native);
+    tick(cx, 100).await;
+    ensure!(box_h(cx)? == capped && capped > two_lines, "fourteen lines: {capped}, fifteen: {}, two: {two_lines}", box_h(cx)?);
+    draw(window, Some(output.join("client-composer-lines.png")), cx)?;
+    println!("composer heights: one line {one_line}, two lines {two_lines}, fourteen lines {capped}");
+    erase(&native, draft_now(cx)?.chars().count(), cx).await;
+    ensure!(box_h(cx)? == one_line, "the emptied composer is {} tall, one line {one_line}", box_h(cx)?);
     // The queue: a slow turn runs while two messages wait behind it.
     let queued_now = |cx: &mut AsyncApp| -> Result<Vec<u64>> { Ok(serde_json::from_value(pane_now(cx)?["composer"]["queued"].clone()).unwrap_or_default()) };
     // Scrolled to the first row, the column stops following; sending takes it back to its end and

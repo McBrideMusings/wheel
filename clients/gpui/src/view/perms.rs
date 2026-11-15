@@ -22,10 +22,11 @@ impl Client {
         let leaf = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane && l.kind == "agent")?;
         perms::waiting(&self.perms, leaf.agent.as_deref()?)
     }
-    /// The height `agent`'s card takes in an agent pane body `body` tall (`perms::fitted`), zero
-    /// when its agent waits on nothing. The transcript keeps two lines at least.
-    pub(super) fn card_height(&self, agent: Option<&str>, body: f32) -> f32 {
-        let room = body - LABEL - COMPOSER - FOOTER - 8. - 2. * LINE;
+    /// The height `agent`'s card takes in an agent pane body `body` tall over a composer
+    /// `composer` tall (`perms::fitted`), zero when its agent waits on nothing. The transcript
+    /// keeps two lines at least.
+    pub(super) fn card_height(&self, agent: Option<&str>, body: f32, composer: f32) -> f32 {
+        let room = body - LABEL - composer - FOOTER - 8. - 2. * LINE;
         agent.and_then(|a| perms::waiting(&self.perms, a)).map_or(0., |(_, perm)| perms::fitted(perm, self.perm_tool(perm).as_ref(), room))
     }
     /// The asking agent's tool line for `perm` (`perms::tool_line`), read from its transcript on

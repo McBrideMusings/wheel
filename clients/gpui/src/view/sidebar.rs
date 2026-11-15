@@ -1006,7 +1006,7 @@ impl Client {
             "enter" => self.commit_rename(),
             _ => {
                 let draft = &mut self.rename.as_mut().unwrap().draft;
-                if let Typed::Nothing = type_into(draft, key, text, command) {
+                if let Typed::Nothing = type_into(draft, key, text, command, false) {
                     return !command;
                 }
             }

@@ -145,6 +145,8 @@ pub struct Client {
     pane_images: pane_image::PaneImages,
     /// wheeld's last refusal of a request about an agent's messages, shown under its composer.
     composer_errors: HashMap<String, String>,
+    /// Each agent's composer text scroll, for a draft taller than the box grows.
+    composer_scrolls: HashMap<String, ScrollHandle>,
     /// GPUI delivers keys only to a focused element: the root holds this for good, while the
     /// keyboard itself moves between the window's views by AppKit's first responder.
     handle: FocusHandle,
@@ -425,7 +427,7 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), composer_scrolls: HashMap::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
@@ -1633,7 +1635,7 @@ impl Client {
             return true;
         }
         let draft = self.drafts.entry(agent.clone()).or_default();
-        match type_into(draft, &k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
+        match type_into(draft, &k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control, k.modifiers.shift) {
             Typed::Nothing => false,
             Typed::Edited => {
                 self.draft_edited(&agent);
@@ -1931,6 +1933,8 @@ impl Client {
         let native = self.native_panes.contains(&p.leaf.id);
         let id = p.leaf.id.clone();
         crate::crash_guard::mark_pane(&p.leaf.id);
+        // The agent composer's height, measured once for the body and the selection band below.
+        let mut composer_h = COMPOSER;
         let body = if self.quarantine.isolates_pane(&p.leaf.id) { self.quarantine_card(&p.leaf.id, &p.leaf.kind, cx) } else { match p.leaf.kind.as_str() {
             "browser" if native => {
                 let state = self.browsers.get(&p.leaf.id).cloned().unwrap_or_default();
@@ -1956,6 +1960,9 @@ impl Client {
                     }
                     None => None,
                 };
+                let fit = self.composer_fit_for(window, &p.leaf.id, agent, r.w);
+                composer_h = fit.height;
+                let scroll = agent.map(|a| self.composer_scroll(a));
                 let t = agent.and_then(|a| self.transcripts.get(a));
                 let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
                 let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
@@ -1971,7 +1978,7 @@ impl Client {
                 let menu = self.menu.clone().filter(|(a, _)| Some(a.as_str()) == agent).map(|(_, o)| o);
                 // Directly above the composer, where a person answering has their hands: this agent's oldest waiting request.
                 let body = r.h - TITLE - 2. * PAD;
-                let card_h = self.card_height(agent, body);
+                let card_h = self.card_height(agent, body, fit.height);
                 let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, self.perm_tool(perm).as_ref(), position, self.perms.len(), focused, card_h, &self.controls, cx));
                 let (rows, at, prefix) = agent.map(|a| self.command_matches(a, harness)).unwrap_or_default();
                 let list_h = composer::command_list_height(rows.len());
@@ -1983,7 +1990,7 @@ impl Client {
                 let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
                 let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, error, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, scroll, error }, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2023,9 +2030,9 @@ impl Client {
                 // A press in an agent pane's transcript band starts a pointer selection.
                 let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
                 let listed = agent.as_deref().map_or(0, |a| self.command_matches(a, p.leaf.harness.as_deref().unwrap_or("")).0.len());
-                let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD) + composer::command_list_height(listed)
+                let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD, composer_h) + composer::command_list_height(listed)
                     + composer::chips_height(agent.as_deref().and_then(|a| self.attachments.get(a)));
-                let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - COMPOSER - FOOTER - 8. - card_h);
+                let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - composer_h - FOOTER - 8. - card_h);
                 move |this, e: &MouseDownEvent, _, cx| {
                     this.press(format!("pane {id} at {:?}", e.position));
                     this.focus_pane(&id);
@@ -2467,7 +2474,8 @@ fn palette_overlay(pane: &str, palette: &Palette, width: f32, height: f32, cx: &
         .child(card)
 }
 
-/// The composer's height, so the transcript column above it never moves.
+/// The composer's height while its draft fits on one line; a longer draft grows it
+/// (`composer::composer_fit`).
 const COMPOSER: f32 = 44.;
 /// The status line under the composer: the footer's items at the left, the config controls at
 /// the right.
@@ -2498,14 +2506,22 @@ struct Attach {
     over: bool,
 }
 
+/// The composer's text box: how it is laid out for the draft, the text's scroll once the draft is
+/// taller than the box grows, and wheeld's last refusal beside the text.
+struct Composer<'a> {
+    fit: composer::ComposerFit,
+    scroll: Option<ScrollHandle>,
+    error: Option<&'a str>,
+}
+
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
 /// rows, or `empty` while it has none), and the composer with the draft. Files dropped on the composer or its chips attach.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, tasks: running::TaskParts, attach: Attach, error: Option<&str>,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, tasks: running::TaskParts, attach: Attach, composer: Composer,
     footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
-        .flex_none().overflow_hidden().h(px((height - LABEL - COMPOSER - FOOTER - 8. - card_h).max(1.)));
+        .flex_none().overflow_hidden().h(px((height - LABEL - composer.fit.height - FOOTER - 8. - card_h).max(1.)));
     let col = match (tasks.full, empty) {
         (Some(full), _) => col.child(full),
         (None, Some(empty)) => col.child(empty),
@@ -2522,13 +2538,17 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
         .children(list)
         .child(composer::drop_target(agent, attach.over, div().flex_none().flex().flex_col()
             .children(attach.chips)
-            .child(div().flex_none().h(px(COMPOSER)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
+            .child(div().relative().flex_none().h(px(composer.fit.height)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
                 .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
                 .text_color(rgb(0xd9e8e1)).overflow_hidden()
                 .flex().gap_2()
                 .children(attach.clip)
-                .child(div().flex_1().min_w_0().overflow_hidden().child(format!("{draft}{}", if focused { "▏" } else { "" })))
-                .children(error.map(|e| div().flex_none().max_w(px(260.)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))), cx))
+                // As wide as `composer_fit` wrapped it, so the box is as tall as its lines.
+                .child(div().id(gpui::ElementId::Name(format!("composer-text-{pane}").into())).flex_none().w(px(composer.fit.text_w)).h(px(composer.fit.lines_h))
+                    .when_some(composer.scroll, |d, scroll| d.overflow_y_scroll().track_scroll(&scroll))
+                    .child(div().w_full().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).child(composer::shown_draft(draft, focused))))
+                .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))
+                .children(agent.map(|a| recorded(a, "composer", controls)))), cx))
         .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls, cx))
 }
 

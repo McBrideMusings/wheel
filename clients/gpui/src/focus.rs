@@ -34,11 +34,16 @@ pub enum Typed {
 }
 
 /// Apply a key, named as GPUI names it, to `draft`. `text` is the character it types, if any.
-pub fn type_into(draft: &mut String, key: &str, text: Option<&str>, command: bool) -> Typed {
+/// Return sends; Shift-Return starts a new line.
+pub fn type_into(draft: &mut String, key: &str, text: Option<&str>, command: bool, shift: bool) -> Typed {
     if command {
         return Typed::Nothing;
     }
     match key {
+        "enter" if shift => {
+            draft.push('\n');
+            Typed::Edited
+        }
         "enter" => {
             let sent = std::mem::take(draft);
             if sent.trim().is_empty() { Typed::Nothing } else { Typed::Send(sent) }
@@ -81,20 +86,29 @@ mod tests {
     #[test]
     fn typing_builds_a_draft_and_enter_sends_it() {
         let mut d = String::new();
-        assert_eq!(type_into(&mut d, "h", Some("h"), false), Typed::Edited);
-        assert_eq!(type_into(&mut d, "i", Some("i"), false), Typed::Edited);
-        assert_eq!(type_into(&mut d, "x", Some("x"), false), Typed::Edited);
-        assert_eq!(type_into(&mut d, "backspace", None, false), Typed::Edited);
-        assert_eq!(type_into(&mut d, "enter", None, false), Typed::Send("hi".into()));
+        assert_eq!(type_into(&mut d, "h", Some("h"), false, false), Typed::Edited);
+        assert_eq!(type_into(&mut d, "i", Some("i"), false, false), Typed::Edited);
+        assert_eq!(type_into(&mut d, "x", Some("x"), false, false), Typed::Edited);
+        assert_eq!(type_into(&mut d, "backspace", None, false, false), Typed::Edited);
+        assert_eq!(type_into(&mut d, "enter", None, false, false), Typed::Send("hi".into()));
         assert_eq!(d, "");
-        assert_eq!(type_into(&mut d, "enter", None, false), Typed::Nothing);
+        assert_eq!(type_into(&mut d, "enter", None, false, false), Typed::Nothing);
+    }
+
+    #[test]
+    fn shift_return_starts_a_new_line_and_return_sends_both() {
+        let mut d = String::from("one");
+        assert_eq!(type_into(&mut d, "enter", None, false, true), Typed::Edited);
+        assert_eq!(type_into(&mut d, "t", Some("t"), false, false), Typed::Edited);
+        assert_eq!(d, "one\nt");
+        assert_eq!(type_into(&mut d, "enter", None, false, false), Typed::Send("one\nt".into()));
     }
 
     #[test]
     fn command_keys_and_control_characters_type_nothing() {
         let mut d = String::new();
-        assert_eq!(type_into(&mut d, "]", Some("]"), true), Typed::Nothing);
-        assert_eq!(type_into(&mut d, "escape", Some("\u{1b}"), false), Typed::Nothing);
+        assert_eq!(type_into(&mut d, "]", Some("]"), true, false), Typed::Nothing);
+        assert_eq!(type_into(&mut d, "escape", Some("\u{1b}"), false, false), Typed::Nothing);
         assert_eq!(d, "");
     }
 }
