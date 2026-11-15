@@ -504,7 +504,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         self.emitter = emit
         super.init()
         Self.keyEquivalentsFollowTheKeyboard(root)
-        Self.installEditMenu()
         // Test mode: no Dock icon, activation, ordering or key-window call, deaf to the pointer.
         if hidden {
             NSApp.setActivationPolicy(.prohibited)
@@ -609,31 +608,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             return gpui(view, sel, event)
         }
         method_setImplementation(own, imp_implementationWithBlock(block))
-    }
-
-    /// The Edit menu every Mac app has: Cut, Copy and Paste send `cut:`, `copy:` and `paste:` to
-    /// whatever holds the keyboard, so ⌘X, ⌘C and ⌘V work in a web page as in Safari. While GPUI's
-    /// view holds it, nothing before GPUI's app delegate answers them, and the delegate's validation
-    /// finds no GPUI menu action for them (the client sets no GPUI menus), so the items are disabled
-    /// and the key goes on to GPUI's view. A GPUI `set_menus` call would replace this menu.
-    static func installEditMenu() {
-        let main = NSApp.mainMenu ?? NSMenu()
-        let copy = #selector(NSText.copy(_:))
-        guard !main.items.contains(where: { $0.submenu?.items.contains { $0.action == copy } == true }) else { return }
-        if main.items.isEmpty {
-            // The main menu's first item is always the app menu.
-            let app = NSMenuItem()
-            app.submenu = NSMenu(title: ProcessInfo.processInfo.processName)
-            main.addItem(app)
-        }
-        let edit = NSMenu(title: "Edit")
-        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "Copy", action: copy, keyEquivalent: "c")
-        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        let item = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
-        item.submenu = edit
-        main.addItem(item)
-        NSApp.mainMenu = main
     }
 
     /// The object a nil-targeted action reaches from `window`, as AppKit looks for it: the first

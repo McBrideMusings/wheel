@@ -1733,10 +1733,16 @@ async fn attachments(run: Run, agent_pane: String, agent_name: String, cli_path:
     let removed_copy = !first_image.parent().is_some_and(std::path::Path::exists) && attachments_now(cx)?.len() == 1;
     ensure!(removed_copy, "× on {image_name}: folder still there {}, chips {:?}", first_image.parent().is_some_and(std::path::Path::exists), attachments_now(cx)?);
     paste_image(&png, cx);
-    native.call(json!({"op":"post_key","text":"v","code":9,"command":true}));
+    // Edit › Paste, validated as AppKit validates it while GPUI's view holds the keyboard: GPUI's
+    // app delegate answers `paste:`, and an item whose tag names no GPUI action locked it for good.
+    // The hidden window is never active, so the delegate leaves the item disabled; the menu's
+    // action, dispatched as the delegate dispatches it, pastes.
+    let menu_paste = native.call(json!({"op":"menu_key","key":"v"}));
+    ensure!(menu_paste["item"] == "Paste", "Edit › Paste while the composer holds the keyboard: {menu_paste}");
+    window.update(cx, |_, w, cx| w.dispatch_action(Box::new(wheel_gpui::edit_menu::Paste), cx))?;
     tick(cx, 300).await;
     let image_path = attachments_now(cx)?.get(1).and_then(|c| c["path"].as_str()).unwrap_or_default().to_owned();
-    ensure!(!image_path.is_empty(), "the second paste attached nothing: {:?}", attachments_now(cx)?);
+    ensure!(!image_path.is_empty(), "the Edit menu's Paste attached nothing: {:?}", attachments_now(cx)?);
     cleanup.0.extend(std::path::Path::new(&image_path).parent().map(std::path::Path::to_owned));
     if let Some(item) = clipboard_before {
         cx.update(|app| app.write_to_clipboard(item));
@@ -1777,7 +1783,7 @@ async fn attachments(run: Run, agent_pane: String, agent_name: String, cli_path:
     }
     ensure!(alone_sent && attachments_now(cx)?.is_empty(), "Return with only a folder attached: sent {alone_sent}, chips {:?}", attachments_now(cx)?);
     drop(cleanup);
-    let attachments_report = json!({"dropped": dropped[0]["name"], "dropped_detail": dropped[0]["detail"], "pasted_image": image_name, "removed_copy": removed_copy,
+    let attachments_report = json!({"menu_paste": menu_paste, "dropped": dropped[0]["name"], "dropped_detail": dropped[0]["detail"], "pasted_image": image_name, "removed_copy": removed_copy,
         "message": expected_message, "attachment_path_in_message": attachment_path_in_message, "folder_alone_sent": alone_sent});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, attachments_report))
 }

@@ -8,6 +8,7 @@ pub mod conversations;
 pub mod crash_guard;
 pub mod daemon;
 pub mod debug;
+pub mod edit_menu;
 pub mod focus;
 pub mod footer;
 pub mod grid_drop;
@@ -121,6 +122,7 @@ pub fn create_window(
     // The app's one server control, made by the first window or the menu bar.
     view::server::ensure(cx, endpoint.service.clone(), hidden);
     view::ensure_pairing_copy(cx);
+    edit_menu::install(cx);
     let native = native::Native::new(bridge);
     let (b, n) = (bridge.clone(), native.clone());
     let window_id = format!("gpui-{}-{}", std::process::id(), WINDOWS.fetch_add(1, Ordering::Relaxed));

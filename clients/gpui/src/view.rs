@@ -1490,6 +1490,18 @@ impl Client {
         self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
         self.sync_view();
     }
+    /// An Edit menu action (`edit_menu`), run as the ⌘ key it stands for. When `key` does not take
+    /// that key, the action goes on along the window as the key would.
+    fn edit_command(&mut self, action: &dyn gpui::Action, cx: &mut Context<Self>) {
+        let Some(key) = crate::edit_menu::key(action) else { return };
+        let keystroke = gpui::Keystroke { modifiers: gpui::Modifiers { platform: true, ..Default::default() }, key: key.to_owned(), key_char: None };
+        if self.key(&KeyDownEvent { keystroke, is_held: false, prefer_character_input: false }, cx) {
+            cx.notify();
+        } else {
+            cx.propagate();
+        }
+    }
+
     pub fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
         // A name field takes every key while it is up.
@@ -2236,7 +2248,11 @@ impl Render for Client {
                 if this.key(e, cx) {
                     cx.notify();
                 }
-            })).size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
+            }))
+            .on_action(cx.listener(|this, a: &crate::edit_menu::Cut, _, cx| this.edit_command(a, cx)))
+            .on_action(cx.listener(|this, a: &crate::edit_menu::Copy, _, cx| this.edit_command(a, cx)))
+            .on_action(cx.listener(|this, a: &crate::edit_menu::Paste, _, cx| this.edit_command(a, cx)))
+            .size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
             .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
                 if this.press_away(f32::from(e.position.x), f32::from(e.position.y)) {
                     cx.notify();
