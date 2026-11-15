@@ -1,6 +1,6 @@
 ---
 name: project-perf
-description: "wheel: the cost scenarios (chat, live, spaces, hidden turns, layout, project artifact, build) a diff must run after project-verify, and the limits that fail it."
+description: "wheel: the cost scenarios (chat, live, spaces, hidden turns, layout, build) a diff must run after project-verify, and the limits that fail it."
 ---
 
 # Performance
@@ -22,7 +22,6 @@ keeps each table.
 | spaces | `bash .claude/skills/project-verify/tools/perf-spaces.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to how spaces, the sidebar or a window draw |
 | hidden turns | `bash .claude/skills/project-verify/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
 | layout | `bash .claude/skills/project-verify/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
-| project | `bash .claude/skills/project-verify/tools/project-artifact.sh` | anything under `artifacts/project/` |
 | build | `bash .claude/skills/project-verify/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
 
 ## chat
@@ -92,18 +91,6 @@ send one `termResize` each, and a divider drag and a window resize each send non
 and at most 4 after (one per terminal of the grid), at any machine load. `settle` waits while a
 divider is under the pointer or a window resize runs, and while a surface's pixels are not its
 pane's; each wait ends 1 s after the surface's last report.
-
-## project
-
-`project-artifact.sh` ends by collecting this repo's own beads the way the project artifact does
-every 30 s per open pane, and prints the snapshot's size and the time it took. The snapshot grows
-with every bead a person files; a closed bead travels without its long fields, which is what holds
-it down.
-
-| Measure | Limit | Now | Broken |
-| --- | --- | --- | --- |
-| snapshot of this repo (657 beads) | 800 KB | 449 KB | 1,323 KB (closed beads keep description, notes, design, acceptance) |
-| `collect.py` on this repo | 10 s | 3.9 s | |
 
 ## build
 
