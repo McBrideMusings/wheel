@@ -31,9 +31,12 @@ struct SpaceCarousel: View {
             let pages = Pages(model.activeSpace)
             let panes = pages.panes
             let dots = Dots(kinds: pages.dotKinds, current: pages.index(of: page), trayNeedsYou: trayNeedsYou(pages.tray))
+            let spacesMode = model.mode == WindowMode.spaces
             VStack(spacing: 0) {
                 topBar(pages: pages, dots: dots, landscape: landscape)
-                if panes.isEmpty {
+                if !spacesMode {
+                    ModeBody(mode: model.mode)
+                } else if panes.isEmpty {
                     ContentUnavailableView(connectionText, systemImage: "rectangle.on.rectangle")
                         .accessibilityIdentifier("no panes")
                 } else {
@@ -49,7 +52,7 @@ struct SpaceCarousel: View {
                     .tabViewStyle(.page(indexDisplayMode: .never))
                 }
                 if !landscape {
-                    pageHandle(pages: pages, dots: dots)
+                    pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
                 }
             }
             .onChange(of: trayIDs) { _, ids in trayChanged(ids) }
@@ -185,6 +188,7 @@ struct SpaceCarousel: View {
 
     private func topBar(pages: Pages, dots: Dots, landscape: Bool) -> some View {
         let panes = pages.panes
+        let spacesMode = model.mode == WindowMode.spaces
         return HStack {
             TitleButton(model: model, open: $titleOpen)
                 // A sheet, not a popover: a popover is as tall as its content and clips it, so a
@@ -200,9 +204,12 @@ struct SpaceCarousel: View {
                 // Leaves the bar's buttons on the right uncovered.
                 .frame(maxWidth: 240, alignment: .leading)
             Spacer()
-            if landscape && dots.kinds.count > 1 {
+            // Left of the mode button, so the dots going in another mode move no control.
+            if landscape && spacesMode && dots.kinds.count > 1 {
                 dots
             }
+            // Leftmost of the right-hand group, so every control that was there keeps its place.
+            ModeButton(mode: model.mode) { model.setMode($0) }
             AgentsButton(needsYou: model.sessionNeedsYou > 0) {
                 Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
                 agentsOpen = true
@@ -216,8 +223,9 @@ struct SpaceCarousel: View {
                 .accessibilityLabel("Search")
                 .accessibilityIdentifier("search")
             // One ⋯ holds the pane's actions and Settings. The pane's logo and status dot are in the
-            // agent header below, once. With no pane to act on, the ⋯ holds Settings alone.
-            if let current = panes.first(where: { $0.id == page }) ?? panes.first {
+            // agent header below, once. With no pane to act on (none in the space, or another mode
+            // in place of the pages), the ⋯ holds Settings alone.
+            if spacesMode, let current = panes.first(where: { $0.id == page }) ?? panes.first {
                 PaneMenu(model: model, pane: current.id, kind: current.kind) { openSettings(.global) }
             } else {
                 Menu {
@@ -238,9 +246,10 @@ struct SpaceCarousel: View {
     /// its drag: a drag across it changes page, and a swipe up opens the sheet on the tab last
     /// used, a long one on Agents. The composer above wears the same tint, since a swipe there
     /// changes page too.
-    private func pageHandle(pages: Pages, dots: Dots) -> some View {
-        let ids = pages.pageIDs
-        let index = pages.index(of: page)
+    /// In a mode other than Spaces the bar keeps its place and its swipe up, with no dots and no page to change.
+    private func pageHandle(pages: Pages, dots: Dots, spacesMode: Bool) -> some View {
+        let ids = spacesMode ? pages.pageIDs : []
+        let index = spacesMode ? pages.index(of: page) : 0
         let prev = index > 0 ? index - 1 : nil
         let next = index + 1 < ids.count ? index + 1 : nil
         return Group {
@@ -437,6 +446,55 @@ private struct AgentsButton: View {
         .accessibilityLabel("Agents")
         .accessibilityValue(needsYou ? "needs you" : "")
         .accessibilityIdentifier("agents")
+    }
+}
+
+/// The mode menu's button, at the left of the bar's right-hand group: the shown mode's symbol in a
+/// 28 pt square. A tap opens the Mac's mode menu, a check on the shown mode.
+private struct ModeButton: View {
+    let mode: String
+    let pick: (String) -> Void
+
+    var body: some View {
+        let shown = WindowMode.entry(mode)
+        Menu {
+            Picker("Mode", selection: Binding(get: { mode }, set: { new in
+                Log.info("mode menu: picked \(new)")
+                pick(new)
+            })) {
+                ForEach(WindowMode.menu, id: \.id) { entry in
+                    Label(entry.title, systemImage: entry.symbol).tag(entry.id)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: shown.symbol)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Mode")
+        .accessibilityValue(shown.title)
+        .accessibilityIdentifier("mode")
+    }
+}
+
+/// What a mode other than Spaces shows in place of the pages, as the Mac's title row mode does
+/// until that mode draws its own surface.
+private struct ModeBody: View {
+    let mode: String
+
+    var body: some View {
+        let entry = WindowMode.entry(mode)
+        VStack(spacing: 6) {
+            Image(systemName: entry.symbol).font(.system(size: 28)).foregroundStyle(.secondary)
+            Text(entry.title).font(.headline)
+            Text(mode == WindowMode.orchestrator ? "The orchestrator's chat will be here." : "Every agent of the session will be here.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("mode body")
     }
 }
 

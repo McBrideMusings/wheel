@@ -120,7 +120,7 @@ struct ModeMenu: View {
 
     static let modes: [(id: String, title: String, icon: String)] = [
         (WindowMode.spaces, "Spaces", "square.grid.2x2"),
-        (WindowMode.desk, "Desk", "rectangle.3.group"),
+        (WindowMode.agents, "Agents", "rectangle.3.group"),
     ]
 }
 

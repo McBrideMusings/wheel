@@ -16,7 +16,7 @@ public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
     public var sidebar: Bool
     /// The window stacks above every unpinned window of any app, on every desktop.
     public var pinned: Bool
-    /// What the window's body shows: `WindowMode.spaces`, `WindowMode.desk` or a plugin mode's id. The
+    /// What the window's body shows: a `WindowMode` id or a plugin mode's id. The
     /// client holds it for this window only; wheeld never hears of it (ADR-0022).
     public var mode: String
 
@@ -48,14 +48,33 @@ public struct WindowRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// The built-in modes a window's body can show; any other id is a plugin's mode.
+/// The built-in modes a window's body can show, the same three the Mac's title row offers
+/// (`clients/gpui/src/header.rs` `MODES`); any other id is a plugin's mode.
 public enum WindowMode {
     /// The sidebar of spaces and the grid of panes.
     public static let spaces = "spaces"
-    /// Every agent as a card on one surface.
-    public static let desk = "desk"
-    /// Every mode this client draws, in menu order.
-    public static let builtIn = [spaces, desk]
+    /// Every agent of the session as a card on one surface.
+    public static let agents = "agents"
+    /// The orchestrator's chat.
+    public static let orchestrator = "orchestrator"
+
+    /// One row of the mode menu: the mode's id, its title and its SF Symbol.
+    public struct Entry: Equatable, Sendable {
+        public let id: String
+        public let title: String
+        public let symbol: String
+    }
+
+    /// The mode menu's rows, in order.
+    public static let menu = [
+        Entry(id: spaces, title: "Spaces", symbol: "square.grid.2x2"),
+        Entry(id: agents, title: "Agents", symbol: "rectangle.3.group"),
+        Entry(id: orchestrator, title: "Orchestrator", symbol: "bubble.left.and.text.bubble.right"),
+    ]
+    /// Every built-in mode's id, in menu order.
+    public static let builtIn = menu.map(\.id)
+    /// The menu row of a built-in mode; Spaces for any other id.
+    public static func entry(_ id: String) -> Entry { menu.first { $0.id == id } ?? menu[0] }
 }
 
 /// One little window: a Mac window showing a single space's pane grid under a header strip, with no

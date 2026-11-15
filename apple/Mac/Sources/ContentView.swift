@@ -22,7 +22,7 @@ struct ContentView: View {
                     if model.serverStoppedByMenu {
                         ServerStoppedNotice()
                     } else {
-                        if model.mode(in: windowID) == WindowMode.desk {
+                        if model.mode(in: windowID) == WindowMode.agents {
                             DeskView()
                         } else {
                             SpacesView(model: model, windowID: windowID)
