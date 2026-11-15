@@ -15,7 +15,8 @@ const READOUT_W: f32 = 56.;
 const INSET: f32 = 12.;
 const MENU_W: f32 = 280.;
 const MENU_ROW_H: f32 = 24.;
-/// The hit area of a dot card, centred on its frame.
+/// The hit area of a dot card, centred on its frame: at most this wide, and never wider than the
+/// gap between two default slots at the zoom drawn, so neighbouring dots never overlap.
 const DOT_AREA: (f32, f32) = (180., 64.);
 
 /// The surface's state in one window: the camera, the drag on it, and the "+ Agent" menu. Frames
@@ -111,7 +112,8 @@ impl Client {
     fn card_hit(&self, c: &AgentCard) -> Rect {
         if self.surface.camera.dots() {
             let (cx_, cy_) = (c.rect.x + c.rect.w / 2., c.rect.y + c.rect.h / 2.);
-            Rect { x: cx_ - DOT_AREA.0 / 2., y: cy_ - DOT_AREA.1 / 2., w: DOT_AREA.0, h: DOT_AREA.1 }
+            let w = DOT_AREA.0.min((cards::CARD.0 + cards::GAP) * self.surface.camera.zoom - 4.).max(1.);
+            Rect { x: cx_ - w / 2., y: cy_ - DOT_AREA.1 / 2., w, h: DOT_AREA.1 }
         } else {
             c.rect
         }
@@ -423,8 +425,8 @@ impl Client {
         let harness = card.leaf.harness.clone().unwrap_or_else(|| "agent".into());
         div().absolute().left(px(hit.x)).top(px(hit.y)).w(px(hit.w)).h(px(hit.h)).flex().flex_col().items_center().justify_center().gap(px(3.)).cursor_pointer()
             .child(div().w(px(14.)).h(px(14.)).rounded_full().bg(rgb(colour)))
-            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(if needs { 0xff9f0a } else { TEXT })).child(format!("{harness} · {}", card.space_name)))
-            .child(div().text_xs().text_color(rgb(DIM)).whitespace_nowrap().child(self.pane_label(&card.leaf)))
+            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(if needs { 0xff9f0a } else { TEXT })).max_w_full().whitespace_nowrap().overflow_hidden().text_ellipsis().child(format!("{harness} · {}", card.space_name)))
+            .child(div().text_xs().text_color(rgb(DIM)).max_w_full().whitespace_nowrap().overflow_hidden().text_ellipsis().child(self.pane_label(&card.leaf)))
             .child(recorded(&id, "card-dot", &self.controls))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();

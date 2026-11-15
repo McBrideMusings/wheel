@@ -2944,6 +2944,9 @@ async fn agents_surface(run: Run, agent_pane: String, agent_name: String, cli_pa
     let dots = state(cx)?;
     ensure!(dots["camera"]["readout"] == "40%" && dots["cards"].as_array().is_some_and(|cs| cs.iter().all(|c| c["dot"] == true)), "at 40% every card should be a dot: {dots}");
     ensure!(window.update(cx, |c, _, _| c.control_bounds(&agent_pane, "card-dot").is_some())?, "the dot card drew nowhere");
+    let hits: Vec<Rect> = dots["cards"].as_array().into_iter().flatten().map(|c| rect_of(&c["hit"])).collect();
+    let apart = |a: &Rect, b: &Rect| a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+    ensure!(hits.iter().enumerate().all(|(i, a)| hits[i + 1..].iter().all(|b| apart(a, b))), "dot cards overlap at 40%: {hits:?}");
     let colours: Vec<(String, String)> = dots["cards"].as_array().into_iter().flatten().map(|c| (c["status"].as_str().unwrap_or("none").to_owned(), c["colour"].as_str().unwrap_or("none").to_owned())).collect();
     ensure!(colours.iter().all(|(s, c)| match s.as_str() { "needs_you" => c == "#ff9f0a", "stopped" => c == "#ff453a", "idle" => c == "#30d158", "working" | "done" => c == "#0a84ff", _ => true }), "the dots' colours: {colours:?}");
     draw(window, Some(output.join("client-agents-dots.png")), cx)?;
