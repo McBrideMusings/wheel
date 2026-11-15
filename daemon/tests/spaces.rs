@@ -8383,6 +8383,37 @@ async fn a_source_request_inside_the_debounce_does_not_stop_the_push() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_save_reaches_clients_while_another_file_in_the_package_keeps_changing() {
+    let dir = std::env::temp_dir().join(format!("wheel-plugin-churn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let package = dir.join("a/.wheel/plugins/demo");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("wheel-plugin.toml"), plugin_manifest("demo")).unwrap();
+    std::fs::write(package.join("main.luau"), "-- one").unwrap();
+    let (mut ws, _daemon, pane) = plugin_space(&dir, ("demo", "main")).await;
+
+    // A backend writes its log under the package faster than the folder can go quiet.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let churn = {
+        let (stop, log) = (stop.clone(), package.join("backend.log"));
+        std::thread::spawn(move || {
+            let mut n = 0u64;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                n += 1;
+                std::fs::write(&log, n.to_string()).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })
+    };
+    std::fs::write(package.join("main.luau"), "-- two").unwrap();
+    let pushed = next_push(&mut ws, &pane).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    churn.join().unwrap();
+    assert_eq!(pushed, "-- two", "the save is read though the folder never goes quiet");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_folder_made_after_the_pane_opened_is_watched() {
     let dir = std::env::temp_dir().join(format!("wheel-plugin-late-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

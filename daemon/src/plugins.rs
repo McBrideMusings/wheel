@@ -632,6 +632,9 @@ impl Drop for Watch {
 /// How long a burst of file events is gathered before the scripts are read.
 const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// The longest the scripts wait for the folders to go quiet after an event before they are read.
+const QUIET_MAX: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// The largest script wheeld sends: 1 MB.
 const MAX_SCRIPT: u64 = 1024 * 1024;
 
@@ -769,8 +772,9 @@ impl AppState {
     }
 
     /// Forget closed panes, remember the script each new plugin pane shows, and restart the watch
-    /// when the folders to watch are not the ones being watched. Blocking.
-    fn plugin_sync(&self) {
+    /// when the folders to watch are not the ones being watched. Blocking. Returns whether a new
+    /// watch started, which reads every script once the folders are quiet.
+    fn plugin_sync(&self) -> bool {
         // One sync at a time; the guard also serializes the swap of the watch.
         let mut watch = self.plugin_watch.lock().unwrap();
         // The layout or a plugin folder changed: a pane may be gone, of another kind, or no
@@ -794,7 +798,7 @@ impl AppState {
             }
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
+            return false;
         };
         let mut wanted: Vec<PathBuf> = Vec::new();
         if !panes.is_empty() {
@@ -805,41 +809,55 @@ impl AppState {
         wanted.dedup();
         let targets = watch_targets(&wanted);
         if watch.as_ref().map_or(targets.is_empty(), |w| w.targets == targets) {
-            return;
+            return false;
         }
         if targets.is_empty() {
             *watch = None;
-            return;
+            return false;
         }
         let (mut watchers, mut rx) = match watch_targets_start(&targets, wanted) {
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(error = %e, "could not watch the plugin folders; a saved script shows only after the pane reopens");
-                return;
+                return false;
             }
         };
         tracing::info!(folders = targets.len(), "plugin watch started");
         let me = self.me.clone();
         let task = runtime.spawn(async move {
             let _watchers = &mut watchers;
-            while rx.recv().await.is_some() {
-                // A save is often several events; one read covers them.
-                tokio::time::sleep(DEBOUNCE).await;
-                while rx.try_recv().is_ok() {}
+            // The first read takes no event: a save between the last read and this watch raised
+            // none.
+            let mut first = true;
+            loop {
+                if !first && rx.recv().await.is_none() {
+                    return;
+                }
+                first = false;
+                // Read once the folders have been quiet for DEBOUNCE: a save is often several
+                // events, and a read inside one can find a file truncated and not yet written. A
+                // folder that is never quiet (a backend's log under it) is read after QUIET_MAX.
+                let deadline = tokio::time::Instant::now() + QUIET_MAX;
+                loop {
+                    let wait = DEBOUNCE.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+                    if wait.is_zero() || !matches!(tokio::time::timeout(wait, rx.recv()).await, Ok(Some(()))) {
+                        break;
+                    }
+                }
                 let Some(state) = me.upgrade() else { return };
                 let _ = tokio::task::spawn_blocking(move || state.plugin_files_changed()).await;
             }
         });
         *watch = Some(Watch { targets, task });
-        // A save between the last read and the new watch raised no event: read once more.
-        self.plugin_broadcast_changes();
+        true
     }
 
     /// Something under a watched folder changed: re-point the watch (a folder may have appeared,
-    /// or been removed and made again), then send what changed.
+    /// or been removed and made again), then send what changed. A new watch does the read itself.
     fn plugin_files_changed(&self) {
-        self.plugin_sync();
-        self.plugin_broadcast_changes();
+        if !self.plugin_sync() {
+            self.plugin_broadcast_changes();
+        }
     }
 
     /// Read each plugin pane's script and modules and send every client the ones that now differ
