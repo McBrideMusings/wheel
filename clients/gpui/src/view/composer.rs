@@ -16,6 +16,53 @@ pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
     if tray.is_some_and(|t| !t.is_empty()) { CHIPS } else { 0. }
 }
 
+/// The lines the composer grows to before a longer draft scrolls inside it.
+const COMPOSER_LINES: usize = 10;
+/// The composer box around its lines: `py_1` above and below, and the 1 px border.
+const COMPOSER_INSET: f32 = 10.;
+/// The room in a composer row that is not the draft: the pane's 1 px border and `p_2`, the box's
+/// border and `px_2`, the paperclip and the gap after it.
+const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 18. + 8.;
+/// The draft's text size, `text_sm`'s 0.875 rem.
+pub(super) const COMPOSER_TEXT_REMS: f32 = 0.875;
+/// The widest a refusal under the composer's text gets, and the gap before it.
+const ERROR_W: f32 = 260.;
+const ERROR_GAP: f32 = 8.;
+
+/// How the composer of an agent pane is laid out for its draft: the text's width (it wraps there),
+/// the refusal's width beside it, the visible lines' height, and the box's height.
+#[derive(Clone, Copy)]
+pub(super) struct ComposerFit {
+    pub text_w: f32,
+    pub error_w: f32,
+    pub lines_h: f32,
+    pub height: f32,
+}
+
+/// The draft as the composer draws it: the caret after the text while the pane has the keyboard.
+pub(super) fn shown_draft(draft: &str, focused: bool) -> String {
+    format!("{draft}{}", if focused { "▏" } else { "" })
+}
+
+/// Lay out `draft` in a composer `pane_w` wide: the text wraps at the room the paperclip and a
+/// refusal leave, and the box grows a line at a time from its one-line `COMPOSER` height up to
+/// `COMPOSER_LINES`, past which the text scrolls.
+pub(super) fn composer_fit(window: &Window, draft: &str, focused: bool, error: Option<&str>, pane_w: f32) -> ComposerFit {
+    let error_w = error.map_or(0., |e| (title::text_width(window, e, 12.).ceil()).min(ERROR_W));
+    let text_w = (pane_w - COMPOSER_CHROME - if error.is_some() { error_w + ERROR_GAP } else { 0. }).max(20.);
+    // At the size the text div sets (`text_sm`), not the window's default.
+    let mut style = window.text_style();
+    style.font_size = gpui::rems(COMPOSER_TEXT_REMS).into();
+    let size = style.font_size.to_pixels(window.rem_size());
+    let line_h = f32::from(style.line_height_in_pixels(window.rem_size()));
+    let text = shown_draft(draft, focused);
+    let run = gpui::TextRun { len: text.len(), font: style.font(), color: gpui::black(), background_color: None, underline: None, strikethrough: None };
+    let lines = window.text_system().shape_text(text.into(), size, &[run], Some(px(text_w)), None)
+        .map_or(1, |shaped| shaped.iter().map(|l| l.wrap_boundaries().len() + 1).sum::<usize>());
+    let lines_h = lines.clamp(1, COMPOSER_LINES) as f32 * line_h;
+    ComposerFit { text_w, error_w, lines_h, height: (lines_h + COMPOSER_INSET).max(super::COMPOSER) }
+}
+
 /// One row of the command list, and how many rows it shows at most before the rest wait for
 /// the arrows (`SkillList`'s 150 pt).
 const COMMAND_ROW: f32 = 20.;
@@ -81,6 +128,20 @@ impl Client {
         if let Some(picker) = self.pickers.get_mut(agent) {
             picker.edited();
         }
+        // The caret is at the draft's end, so an edit shows the last line.
+        self.composer_scroll(agent).scroll_to_bottom();
+    }
+
+    /// `composer_fit` for the composer of `agent` in `pane`, `pane_w` wide.
+    pub(super) fn composer_fit_for(&self, window: &Window, pane: &str, agent: Option<&str>, pane_w: f32) -> ComposerFit {
+        let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
+        let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
+        composer_fit(window, draft, self.focus.current.as_deref() == Some(pane), error, pane_w)
+    }
+
+    /// The scroll position of `agent`'s composer text, once it holds more lines than it shows.
+    pub(super) fn composer_scroll(&mut self, agent: &str) -> gpui::ScrollHandle {
+        self.composer_scrolls.entry(agent.to_owned()).or_insert_with(gpui::ScrollHandle::new).clone()
     }
 
     /// A key while the focused composer's list is open: Up and Down move the highlight, Tab takes
@@ -102,8 +163,8 @@ impl Client {
             "down" | "up" => picker.step(rows.len(), k.key == "down"),
             "escape" => picker.dismiss(&draft),
             "tab" | "enter" if k.key == "tab" || (!k.modifiers.shift && picker.chosen()) => {
-                picker.edited();
-                self.drafts.insert(agent, composer::accepted(prefix, &rows[at]));
+                self.drafts.insert(agent.clone(), composer::accepted(prefix, &rows[at]));
+                self.draft_edited(&agent);
             }
             _ => return false,
         }
