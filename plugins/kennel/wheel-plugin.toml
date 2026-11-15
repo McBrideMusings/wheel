@@ -1,0 +1,48 @@
+[plugin]
+id = "kennel"
+version = "0.1.0"
+
+# kennel's own commands, run by Wheel's command backend (docs/plugin-runtime.md, Command backend). kennel prints text
+# for routes, which and doctor, and JSON for harness show and vault ls. A pane passes `dir` (its space's directory), so
+# `kennel which` and a project scope read that project.
+
+[commands.feeds.routes]
+run = 'kennel route list'
+output = "lines"
+watch = ["~/.config/kennel"]
+
+[commands.feeds.which]
+run = 'kennel which'
+output = "lines"
+watch = ["~/.config/kennel"]
+
+[commands.feeds.doctor]
+# doctor exits non-zero when a check fails; its lines say which, so they are the value either way.
+run = 'kennel doctor 2>&1; true'
+output = "lines"
+timeout = 20
+
+[commands.feeds.harness]
+run = 'kennel harness show "$PARAM_SECTION" --scope "$PARAM_SCOPE" --harness "$PARAM_HARNESS" --json'
+output = "json"
+timeout = 20
+
+[commands.feeds.vault]
+run = 'kennel vault ls --json'
+output = "json"
+
+[commands.actions.route_add]
+run = 'if [ "$ARG_PERMANENT" = true ]; then kennel route add "$ARG_PATH" "$ARG_PROFILE" --permanent; else kennel route add "$ARG_PATH" "$ARG_PROFILE"; fi'
+
+[commands.actions.route_rm]
+run = 'kennel route rm "$ARG_PATH"'
+
+[commands.actions.route_prune]
+run = 'kennel route prune'
+
+[[pane]]
+id = "kennel"
+title = "Harness"
+script = "panes/kennel.luau"
+reads = ["kennel.*"]
+actions = ["kennel.*"]

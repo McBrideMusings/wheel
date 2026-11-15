@@ -487,3 +487,22 @@ The names are letters, digits, `_` and `-`. An unknown key, a bad `output`, an e
 **Runs end with their reason.** A run belongs to its subscription: when the last pane leaves a feed, or `wheeld` sends `shutdown`, a command still running is killed with its process group. Each command is its own process group, killed before the command is reaped, so its background children end with it. Events on a watched path that arrive while a feed's command runs, and in the 150 ms after (at most 1 s), are dropped, so a command that touches what it watches (a `git status` refreshing `.git/index` under a watched checkout) does not run itself again; a change someone else makes in that time is seen at the feed's next run.
 
 The fixture `tools/fixtures/plugins/commands` (feeds `now`, JSON every second, and `note`, the lines of `note.txt`, watched, failing while a flag file exists; actions `write`, `break`, `mend` and `refuse`) shows them in a pane. `tools/plugin-commands.sh` checks it through a throwaway `wheeld` (13 checks): the backend `plugin ls` names, `now` changing as patches, `note` empty, then the line `write` wrote with a quote in it, no update after an action that changes nothing, a hand edit of the watched file, the error with the last value kept and its clearing, a failing action's code and stderr, the log lines, a manifest edit taking effect and a bad table refused. `cargo test -p wheel-runner commands` and `cargo test -p wheel-plugin-sdk` cover the output forms, the environment, the failure text, the directory rule and the table's parser.
+
+## Kennel plugin
+
+`plugins/kennel/` is a plugin package (id `kennel`) with no backend of its own: its `[commands]` table runs kennel's own commands through the command backend (above), and `panes/kennel.luau` draws them. It is installed for every project as the symlink `~/.wheel/plugins/kennel` to the primary checkout's `plugins/kennel`. kennel itself is unchanged; `kennel` must be on the `PATH` a backend gets.
+
+| Name | Runs | Output |
+| --- | --- | --- |
+| feed `routes` | `kennel route list` (watches `~/.config/kennel`) | `lines` |
+| feed `which` | `kennel which` in the pane's `dir` (watches `~/.config/kennel`) | `lines` |
+| feed `doctor` | `kennel doctor 2>&1; true`, so a failing check is a line, not a feed error | `lines` |
+| feed `harness`, params `{section, scope, harness}` | `kennel harness show <section> --scope <scope> --harness <harness> --json` | `json` |
+| feed `vault` | `kennel vault ls --json` | `json` |
+| action `route_add {path, profile, permanent}` | `kennel route add <path> <profile> [--permanent]` (without `--permanent` the route lasts until tomorrow) | |
+| action `route_rm {path}` | `kennel route rm <path>` | |
+| action `route_prune` | `kennel route prune` | |
+
+The pane (title Harness) picks a view with chips: Routes (the profile this space's folder gets, a path field defaulting to the folder, a profile menu, Permanent, Add route, Prune expired, and the routes and profiles as a table whose rows' menu has Remove route), Skills, Guidance, Permissions, Hooks and MCP (each with a harness menu, Claude, Codex or pi, and a scope menu, this project or global; one table section per block kennel prints), Vault and Doctor. The line at the bottom is the last action's stdout and stderr with kennel's `kennel: ` prefix dropped, after `exit <code>: ` when it failed. A copy's state in Vault is current, behind (the vault has a newer commit of its item) or gone from the vault. The vault's write commands (add, install, copy, unlink, update, rm) and file history are not in the pane.
+
+`tools/kennel-plugin.sh` checks the package against a throwaway `wheeld` with a copy of kennel's config in `KENNEL_CONFIG_DIR`, so the machine's routes are not touched (10 checks): the backend, each feed's value, `route_add` writing the route and `which` then naming its profile, an unknown profile's exit 1 and message, `route_rm` and `route_prune`.
