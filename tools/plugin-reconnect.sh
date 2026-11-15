@@ -88,7 +88,13 @@ wait_for() {
 wait_for 30 'e == "None" and t.startswith("Tick")' && pass "0a the pane loaded its script: $(snap)" || fail "0a the pane never loaded: $(snap)"
 dbg --data-urlencode action=press --data-urlencode component=root.4 > "$T/press.json"
 wait_for 20 'o == "result: 1"' && pass "0b Echo pressed: $(snap)" || fail "0b Echo did not set the state: $(snap) $(cat "$T/press.json")"
-curl -s -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/window/snapshot?path=$T/before.png" > /dev/null
+# The window snapshot pastes the bridge's own drawing of each native pane over GPUI's frame; the reply says which it drew.
+shot() {
+  curl -s -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/window/snapshot?path=$T/$1.png" > "$T/$1.json"
+  python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("native_panes", {}).get(sys.argv[2]) == "drawn" else 1)' "$T/$1.json" "$PANE" \
+    && pass "$2 the $1 snapshot drew the plugin pane's body: $T/$1.png" || fail "$2 the $1 snapshot did not draw the pane: $(cat "$T/$1.json")"
+}
+shot before 0c
 IFS='|' read -r E0 R0 O0 T0 <<< "$(snap)"
 
 # Case 1: wheeld stops.
@@ -100,7 +106,7 @@ IFS='|' read -r E1 R1 O1 T1 <<< "$(snap)"
 echo "after kill: error=$E1 reloads=$R1 out=$O1 view=$T1"
 case "$E1" in *"lost the connection to wheeld"*"retrying"*) pass "1a the pane's error reads: $E1" ;; *) fail "1a error after the kill: $E1" ;; esac
 [ "$O1" = "result: 1" ] && [ -n "$T1" ] && pass "1b the last view stays: \"$T1\", \"$O1\"" || fail "1b view changed: \"$T1\" \"$O1\" (was \"$T0\" \"$O0\")"
-curl -s -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/window/snapshot?path=$T/lost.png" > /dev/null
+shot lost 1c
 
 # Case 2: wheeld comes back.
 start_wheeld
@@ -110,6 +116,6 @@ echo "after restart: error=$E2 reloads=$R2 (was $R0) out=$O2 view=$T2"
 [ "$R2" -gt "$R0" ] 2>/dev/null && pass "2a the script reloaded: reloads $R0 -> $R2" || fail "2a reloads $R0 -> $R2"
 [ "$E2" = None ] && pass "2b the error cleared" || fail "2b error still: $E2"
 [ "$O2" = "result: 1" ] && pass "2c the pane's state is kept: \"$O2\"" || fail "2c state after reconnect: \"$O2\""
-curl -s -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/window/snapshot?path=$T/after.png" > /dev/null
+shot after 2d
 echo "snapshots: $T/before.png $T/lost.png $T/after.png"
 exit $FAILS

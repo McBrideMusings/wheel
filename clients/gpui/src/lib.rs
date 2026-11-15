@@ -219,9 +219,70 @@ pub fn create_window(
     Ok(window)
 }
 
+/// How long the snapshot waits for the bridge to draw one native pane.
+const NATIVE_RENDER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The native views over the window (terminals, pages, plugin panes), each drawn by the bridge and
+/// pasted over `frame` at its place, except where the window cuts it (a card over it, the
+/// palette): the window's own drawing has only empty slots there. Answers each pane's outcome.
+async fn paste_native_panes(window: WindowHandle<view::Client>, frame: &mut image::RgbaImage, cx: &mut gpui::AsyncApp) -> Result<serde_json::Value> {
+    let (status, asked, width) = window.update(cx, |client, w, _| {
+        let (status, asked) = client.render_native_for_snapshot();
+        (status, asked, f32::from(w.viewport_size().width))
+    })?;
+    let scale = frame.width() as f32 / width.max(1.);
+    let rect = |v: &serde_json::Value| -> Option<[f32; 4]> {
+        let a = v.as_array()?;
+        let n = |i: usize| a.get(i).and_then(|x| x.as_f64()).map(|x| x as f32 * scale);
+        Some([n(0)?, n(1)?, n(2)?, n(3)?])
+    };
+    let overlay = rect(&status["overlay"]);
+    let mut outcomes = serde_json::Map::new();
+    for (pane, answer) in asked {
+        let timer = cx.background_executor().timer(NATIVE_RENDER_WAIT);
+        let drawn: Result<Vec<u8>, String> = match futures::future::select(answer, timer).await {
+            futures::future::Either::Left((Ok(result), _)) => result,
+            futures::future::Either::Left((Err(_), _)) => Err("the render was dropped".into()),
+            futures::future::Either::Right(_) => Err(format!("the bridge did not draw it within {}s", NATIVE_RENDER_WAIT.as_secs())),
+        };
+        let entry = &status["panes"][pane.as_str()];
+        let outcome = drawn.and_then(|png| {
+            let at = rect(&entry["frame_top"]).ok_or("the bridge did not report where it is")?;
+            let image = image::load_from_memory(&png).map_err(|e| format!("the picture was not a PNG ({e})"))?.to_rgba8();
+            let (w, h) = (at[2].round().max(1.) as u32, at[3].round().max(1.) as u32);
+            let image = if image.dimensions() == (w, h) { image } else { image::imageops::resize(&image, w, h, image::imageops::FilterType::Triangle) };
+            let cuts: Vec<[f32; 4]> = entry["holes"].as_array().into_iter().flatten().filter_map(&rect).chain(overlay).collect();
+            let alpha = entry["alpha"].as_f64().unwrap_or(1.) as f32;
+            let (x0, y0) = (at[0].round() as i64, at[1].round() as i64);
+            for (x, y, px) in image.enumerate_pixels() {
+                let (fx, fy) = (x0 + i64::from(x), y0 + i64::from(y));
+                if fx < 0 || fy < 0 || fx >= i64::from(frame.width()) || fy >= i64::from(frame.height()) {
+                    continue;
+                }
+                let (cx_, cy_) = (fx as f32 + 0.5, fy as f32 + 0.5);
+                if cuts.iter().any(|c| cx_ >= c[0] && cx_ < c[0] + c[2] && cy_ >= c[1] && cy_ < c[1] + c[3]) {
+                    continue;
+                }
+                let a = f32::from(px[3]) / 255. * alpha;
+                let under = frame.get_pixel_mut(fx as u32, fy as u32);
+                for i in 0..3 {
+                    under[i] = (f32::from(px[i]) * a + f32::from(under[i]) * (1. - a)).round() as u8;
+                }
+                under[3] = under[3].max((a * 255.).round() as u8);
+            }
+            Ok(())
+        });
+        outcomes.insert(pane, match outcome {
+            Ok(()) => serde_json::json!("drawn"),
+            Err(why) => serde_json::json!(why),
+        });
+    }
+    Ok(serde_json::Value::Object(outcomes))
+}
+
 /// Answer one debug request against `window`: the view runs the route, then a snapshot is drawn
-/// with the view free again. Err when the window is gone.
-pub fn answer_debug(window: WindowHandle<view::Client>, request: &debug::Request, cx: &mut gpui::AsyncApp) -> Result<(String, serde_json::Value)> {
+/// with the view free again, the native views pasted in. Err when the window is gone.
+pub async fn answer_debug(window: WindowHandle<view::Client>, request: &debug::Request, cx: &mut gpui::AsyncApp) -> Result<(String, serde_json::Value)> {
     if request.expired() {
         anyhow::bail!("the request's connection stopped waiting");
     }
@@ -234,16 +295,21 @@ pub fn answer_debug(window: WindowHandle<view::Client>, request: &debug::Request
         view::DebugAnswer::Done(status, body) => Ok((status, body)),
         view::DebugAnswer::Snapshot(target) => {
             let any: gpui::AnyWindowHandle = window.into();
-            let drawn = any.update(cx, |_, window, cx| -> Result<(u32, u32)> {
+            let frame = any.update(cx, |_, window, cx| {
                 window.draw(cx).clear();
-                let image = window.render_to_image()?;
-                image.save(&target)?;
-                Ok((image.width(), image.height()))
+                window.render_to_image()
             })?;
+            let drawn: Result<(u32, u32, serde_json::Value)> = async {
+                let mut frame = frame?;
+                let panes = paste_native_panes(window, &mut frame, cx).await?;
+                frame.save(&target)?;
+                Ok((frame.width(), frame.height(), panes))
+            }
+            .await;
             match drawn {
-                Ok((w, h)) => {
-                    let _ = window.update(cx, |client, _, _| client.log(format!("debug: window snapshot saved to {target}, {w}x{h}")));
-                    Ok(("200 OK".to_owned(), serde_json::json!({"path": target, "width": w, "height": h})))
+                Ok((w, h, panes)) => {
+                    let _ = window.update(cx, |client, _, _| client.log(format!("debug: window snapshot saved to {target}, {w}x{h}, native panes {panes}")));
+                    Ok(("200 OK".to_owned(), serde_json::json!({"path": target, "width": w, "height": h, "native_panes": panes})))
                 }
                 Err(e) => Ok(("500 Internal Server Error".to_owned(), debug::error(&format!("the window could not be rendered to {target}: {e}")))),
             }
@@ -304,7 +370,7 @@ pub fn serve_debug(cx: &mut App, window: WindowHandle<view::Client>, mut server:
                 request.respond(("200 OK".to_owned(), report));
                 continue;
             }
-            match answer_debug(window, &request, cx) {
+            match answer_debug(window, &request, cx).await {
                 Ok(answer) => request.respond(answer),
                 Err(_) if request.expired() => {}
                 Err(_) => return,

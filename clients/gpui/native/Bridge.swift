@@ -1786,6 +1786,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             panesOut[id] = entry
         }
         out["panes"] = panesOut
+        // The rect cut out of every pane's view while the palette or a sheet is open, top-left coordinates.
+        out["overlay"] = overlay.map { r -> [Double] in [r.minX, root.isFlipped ? r.minY : root.bounds.height - r.maxY, r.width, r.height] } ?? NSNull()
         return out
     }
 }

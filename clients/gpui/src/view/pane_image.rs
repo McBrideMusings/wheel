@@ -24,19 +24,43 @@ pub struct PaneImages {
     /// Answers waiting for a render: the pane and its PNG or the reason it was refused.
     ready: Vec<(String, Result<Vec<u8>, String>)>,
     until: Option<u64>,
+    /// Renders the debug window snapshot waits on, each answered down its channel.
+    snapshots: HashMap<u64, futures::channel::oneshot::Sender<Result<Vec<u8>, String>>>,
 }
 
 impl PaneImages {
     /// Keep the answer to render `id` when it was asked here; false when it is wheeld's.
     pub fn answered(&mut self, id: u64, result: Result<String, String>) -> bool {
+        let decode = |result: Result<String, String>| result.and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("the picture was not a PNG ({e})")));
+        if let Some(waiter) = self.snapshots.remove(&id) {
+            let _ = waiter.send(decode(result));
+            return true;
+        }
         let Some(pane) = self.asked.remove(&id) else { return false };
-        let png = result.and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("the picture was not a PNG ({e})")));
-        self.ready.push((pane, png));
+        self.ready.push((pane, decode(result)));
         true
     }
 }
 
 impl Client {
+    /// For the debug window snapshot: the bridge's status (where each native view is and what is
+    /// cut from it), and a render asked of every native view it shows, each PNG down its channel.
+    pub fn render_native_for_snapshot(&mut self) -> (serde_json::Value, Vec<(String, futures::channel::oneshot::Receiver<Result<Vec<u8>, String>>)>) {
+        let status = self.native.status();
+        let shown: Vec<String> = self.native_panes.iter().filter(|p| {
+            let entry = &status["panes"][p.as_str()];
+            entry["hidden"] != true && entry["alpha"].as_f64().unwrap_or(1.) > 0.
+        }).cloned().collect();
+        let renders = shown.into_iter().map(|pane| {
+            let (send, receive) = futures::channel::oneshot::channel();
+            let id = OWN | self.pane_images.next;
+            self.pane_images.next += 1;
+            self.pane_images.snapshots.insert(id, send);
+            self.native.render(id, &pane, false);
+            (pane, receive)
+        }).collect();
+        (status, renders)
+    }
     /// Draw `pane` and put its PNG on the clipboard once the bridge answers.
     pub fn copy_pane_image(&mut self, pane: &str) {
         self.log(format!("pane {pane}: copy image asked"));

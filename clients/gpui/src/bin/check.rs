@@ -200,7 +200,7 @@ async fn http(debug: &mut wheel_gpui::debug::Server, method: &str, target: &str,
     let raw = loop {
         pump(connection, 50, layouts, window, cx).await?;
         while let Ok(req) = debug.requests.try_recv() {
-            req.respond(wheel_gpui::answer_debug(window, &req, cx)?);
+            req.respond(wheel_gpui::answer_debug(window, &req, cx).await?);
         }
         if let Ok(result) = rx.try_recv() {
             break result?;
