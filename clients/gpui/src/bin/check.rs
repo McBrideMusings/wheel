@@ -8,9 +8,7 @@
 //! pointer and copied with Command-C, and surviving
 //! a browser pane sent to a file page by `wheel pane page`, serving `wheel pane console`, `eval`,
 //! `dom`, `shot` and `record`, its address field typed into and its back button pressed with
-//! wheeld's layout following, a failed load shown and cleared, every MCP page (the
-//! whole component gallery) drawn by WheelUI's A2UI
-//! renderer in one pane of a session on this repository, and surviving
+//! wheeld's layout following, a failed load shown and cleared, and surviving
 //! an older wheeld (the fixture daemon behind a proxy that lowers the protocol number in its
 //! `status`): a second window shows only "The server was updated." with Restart Server, whose
 //! click runs the stop and start commands, and surviving
@@ -227,21 +225,6 @@ async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window:
     Ok(())
 }
 
-/// Wait until a page's component count has held for a second: its data replies can follow its layout.
-async fn settle(page_of: &impl Fn(&Value) -> Value, native: &Native, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
-    let (mut last, mut held) = (u64::MAX, 0);
-    for _ in 0..150 {
-        pump(connection, 200, layouts, window, cx).await?;
-        let count = page_of(&native.status())["components"].as_u64().unwrap_or(0);
-        held = if count == last { held + 1 } else { 0 };
-        if held >= 5 {
-            return Ok(());
-        }
-        last = count;
-    }
-    anyhow::bail!("the page's components never settled: {}", page_of(&native.status()))
-}
-
 /// What every step of the check shares: the bridge, the first window's connection and views, the
 /// count of layouts it received, the fixture's terminal markers and the output folder.
 struct Run {
@@ -341,9 +324,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, windows_report) = window_commands(run, first_session.clone(), id1.clone(), cx).await?;
     let (run, little_report) = little_windows(run, id1.clone(), cx).await?;
     let (run, plugin_panes_report) = plugin_panes(run, first_session.clone(), first_space.clone(), native_panes.clone(), cx).await?;
-    let (run, page_names, web_report) = web_panes(run, webs.clone(), cli_path.clone(), before.clone(), cx).await?;
+    let (run, web_report) = web_panes(run, webs.clone(), cli_path.clone(), before.clone(), cx).await?;
     let (run, browser_report) = browser_pane(run, native_panes.clone(), cx).await?;
-    let (run, pages_report) = mcp_pages(run, page_names.clone(), first_session.clone(), first_space.clone(), native_panes.clone(), cx).await?;
     let (run, commands_report) = command_palette(run, cli_path.clone(), terms.clone(), cx).await?;
     let (run, settings_report) = settings_window(run, cli_path.clone(), cx).await?;
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
@@ -387,7 +369,6 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "status": status_report,
         "web": web_report,
         "browser": browser_report,
-        "pages": pages_report,
         "commands": commands_report,
         "settings": settings_report,
         "notices": notices_report,
@@ -3698,7 +3679,7 @@ async fn little_windows(run: Run, id1: String, cx: &mut AsyncApp) -> Result<(Run
 }
 
 /// Web panes: artifacts under the `wheel-page` scheme, reloads, and the palette's artifacts.
-async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value, cx: &mut AsyncApp) -> Result<(Run, Vec<String>, Value)> {
+async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // Web panes: an artifact's page opens under the client's own `wheel-page` scheme, fetched from
@@ -3768,11 +3749,8 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
         }
     }
     let failure = window.update(cx, |c, _, _| c.palette(&new_pane).and_then(|p| p.failure().map(str::to_owned)))?;
-    // The project's two artifacts, then the fixture's machine artifacts by name.
-    let page_names: Vec<String> = serde_json::from_str(&std::env::var("WHEEL_CLIENT_PAGE_NAMES")?)?;
-    let mut machine_names = page_names.clone();
-    machine_names.sort();
-    let want: Vec<String> = ["project/fixture-html", "project/fixture-page"].map(String::from).into_iter().chain(machine_names.iter().map(|n| format!("machine/{n}"))).collect();
+    // The project's two artifacts; the fixture's machine file names none.
+    let want: Vec<String> = ["project/fixture-html", "project/fixture-page"].map(String::from).into();
     ensure!(listed == want, "the palette listed {listed:?} (failure {failure:?})");
     for ch in "html".chars() {
         native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
@@ -3804,7 +3782,7 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     let web_report = json!({"pane": html_pane, "address": address, "http_status": http_status, "store": store, "client_state": seen_text.trim(),
         "loads_before_change": loads_before, "reloads": reloads, "title_after_change": title_after,
         "palette": {"pane": new_pane, "listed": listed, "query": query, "filtered": filtered, "footer": footer_text, "kind_after": kind_after, "opened_address": opened_address}});
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, page_names, web_report))
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, web_report))
 }
 
 /// The browser pane: `wheel pane page`, console, eval, dom, shot and record, the address
@@ -3967,64 +3945,17 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, browser_report))
 }
 
-/// Every MCP page drawn by the A2UI renderer in one pane of a session on this repository.
-async fn mcp_pages(run: Run, page_names: Vec<String>, first_session: Option<String>, first_space: Option<String>, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
-    #[allow(unused_variables, unused_mut)]
-    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
-    // MCP pages: a session on this repository holds one web pane, moved by `wheel pane kind`
-    // through every machine artifact the fixture serves. Each is drawn by WheelUI's A2UI renderer
-    // (the Swift app's own view), reaches `ready` with every component in the catalog, and is
-    // pictured from the view's pixels.
-    let (pages_session, pages_pane) = (std::env::var("WHEEL_CLIENT_PAGES_SESSION")?, std::env::var("WHEEL_CLIENT_PAGES_PANE")?);
-    switch_session(window, &pages_session, cx).await?;
-    ensure!(shown(window, cx)?.0.as_deref() == Some(pages_session.as_str()), "clicking the Pages session shows {:?}", shown(window, cx)?);
-    let pages_dir = output.join("pages");
-    let mut pages_report = serde_json::Map::new();
-    let page_of = |s: &Value| s["panes"][pages_pane.as_str()]["page"].clone();
-    for (n, name) in page_names.iter().enumerate() {
-        if n > 0 {
-            let (ok, _, err) = run_pumped(&["pane", "kind", &pages_pane, "web", "--artifact", name, "--scope", "machine"], &mut connection, &mut layouts, window, cx).await?;
-            ensure!(ok, "pane kind {name}: {err}");
-        }
-        let artifact = format!("machine/{name}");
-        let drew_natively = |page: &Value| page["artifact"] == artifact.as_str() && page["native"] == true && page["state"] == "ready";
-        let mut page = Value::Null;
-        for _ in 0..300 {
-            pump(&mut connection, 100, &mut layouts, window, cx).await?;
-            page = page_of(&native.status());
-            if drew_natively(&page) && page["components"].as_u64().unwrap_or(0) > 0 {
-                break;
-            }
-        }
-        ensure!(drew_natively(&page), "the {name} page never drew natively: {page}");
-        ensure!(page["unsupported"].as_array().is_some_and(|u| u.is_empty()), "the {name} page asked for components the client lacks: {page}");
-        settle(&page_of, &native, &mut connection, &mut layouts, window, cx).await?;
-        draw(window, Some(output.join(format!("client-page-{name}.png"))), cx)?;
-        shot(&native, &pages_dir.join(name), cx).await?;
-        let png = pages_dir.join(name).join(format!("{pages_pane}-page.png"));
-        let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
-        ensure!(bytes > 5000, "the {name} page's picture is missing or blank: {} ({bytes} bytes)", png.display());
-        let page = page_of(&native.status());
-        pages_report.insert(name.clone(), json!({"state": page["state"], "components": page["components"], "types": page["types"], "notice": page["notice"],
-            "png_bytes": bytes}));
-    }
-    let pages_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == pages_pane).map(|p| [p.rect.x, p.rect.y, p.rect.w, p.rect.h]))?;
-    let pages_report = json!({"pane": pages_pane, "rect": pages_rect, "pages": pages_report});
-    switch_session(window, first_session.as_deref().unwrap(), cx).await?;
-    ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the pages did not come back");
-    wait(&native, "the first space's views shown after the pages", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, pages_report))
-}
-
-/// The Wheelhouse plugin panes (Luau scripts fed by the wheelhouse backend), opened one after another
-/// in one pane of a session on the fixture's Wheelhouse project: each reaches a drawn state with no
-/// error and no unsupported component, shows its own content, and the Beads pane's Graph view draws a
+/// The Wheelhouse plugin panes (Luau scripts fed by the wheelhouse backend) and the component gallery
+/// (the `gallery` plugin, every component, option and modifier the client draws), opened one after
+/// another in one pane of a session on the fixture's Wheelhouse project: each reaches a drawn state with
+/// no error and no unsupported component, shows its own content, and the Beads pane's Graph view draws a
 /// Canvas. A hidden snapshot draws a native plugin view blank, so the assertions read the pane's
 /// components through the `plugin` op (`/plugin?action=state`), and the picture is the window's own draw.
 async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Option<String>, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let (session, pane) = (std::env::var("WHEEL_CLIENT_PLUGINS_SESSION")?, std::env::var("WHEEL_CLIENT_PLUGINS_PANE")?);
+    // Each entry is `<plugin>/<pane>`.
     let names: Vec<String> = serde_json::from_str(&std::env::var("WHEEL_CLIENT_PLUGIN_PANES")?)?;
     switch_session(window, &session, cx).await?;
     ensure!(shown(window, cx)?.0.as_deref() == Some(session.as_str()), "clicking the Plugins session shows {:?}", shown(window, cx)?);
@@ -4032,13 +3963,17 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     let components = |s: &Value| s["components"].as_array().cloned().unwrap_or_default();
     let texts = |s: &Value| components(s).iter().filter_map(|c| c["text"].as_str().map(str::to_owned)).collect::<Vec<_>>();
     let mut report = serde_json::Map::new();
-    for name in &names {
-        let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "wheelhouse", "--plugin-pane", name], &mut connection, &mut layouts, window, cx).await?;
-        ensure!(ok, "pane kind plugin wheelhouse/{name}: {err}");
-        // What each pane shows once its feed has arrived: Beads and Issues a `N listed` count, Repo anything but its loading line.
+    for entry in &names {
+        let (plugin, name) = entry.split_once('/').ok_or_else(|| anyhow::anyhow!("plugin pane {entry:?} is not <plugin>/<pane>"))?;
+        let name = name.to_owned();
+        let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", plugin, "--plugin-pane", &name], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "pane kind plugin {entry}: {err}");
+        // What each pane shows once its feed has arrived: Beads and Issues a `N listed` count, Repo anything but its loading line,
+        // the gallery its last class's heading.
         let want = |t: &str| match name.as_str() {
             "beads" | "issues" => t.contains(" listed"),
             "graph" => t.contains(" open issues"),
+            "gallery" => t == "Wheel's own component",
             _ => !t.starts_with("Reading"),
         };
         let mut seen = Value::Null;

@@ -1,0 +1,8 @@
+[plugin]
+id = "gallery"
+version = "0.1.0"
+
+[[pane]]
+id = "gallery"
+title = "A2UI gallery"
+script = "panes/gallery.luau"

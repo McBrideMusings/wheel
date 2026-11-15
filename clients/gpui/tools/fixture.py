@@ -10,14 +10,12 @@ import contextlib, json, os, pathlib, shlex, shutil, socket, subprocess, tempfil
 REPO = pathlib.Path(__file__).resolve().parents[3]
 # The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
 TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
-# `-p wheeld` builds every binary of that package, `wheel-fake-agent` included.
-BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse'
-# The MCP pages the check opens in the GPUI client, served as the machine artifacts they are on a
-# real machine: the component gallery whole. They read the space they are opened in, which is this
-# repository.
-PAGES = ['gallery']
-# The Wheelhouse plugin panes the check opens in the GPUI client, one after another in one pane.
-PLUGIN_PANES = ['beads', 'issues', 'repo', 'graph']
+# `-p wheeld` builds every binary of that package, `wheel-fake-agent` included, and the
+# `mcp_a2ui_test_server` example serves the project's A2UI page artifact.
+BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse --bins --example mcp_a2ui_test_server'
+# The plugin panes the check opens in the GPUI client, one after another in one pane, as `<plugin>/<pane>`:
+# the Wheelhouse views and the component gallery whole.
+PLUGIN_PANES = ['wheelhouse/beads', 'wheelhouse/issues', 'wheelhouse/repo', 'wheelhouse/graph', 'gallery/gallery']
 # The rows of the `tall` plugin's one pane.
 TALL_ROWS = 80
 
@@ -37,11 +35,10 @@ def built(name):
     return path
 
 
-def machine_artifacts(gallery):
-    """The machine file's artifact entries for `PAGES`, each a shared MCP server pane."""
-    serve = dict(gallery=f'python3 {shlex.quote(str(gallery))} v17')
-    # Remote access on an ephemeral loopback port: the Devices page and the pairing window get a code to show.
-    return '[remote]\nlisten = "127.0.0.1:0"\n\n' + TITLE_MACHINE + ''.join(f'[artifacts.{name}]\nmcp = {json.dumps(serve[name])}\nshared = true\npane = true\ntitle = {json.dumps(name.title())}\n\n' for name in PAGES)
+def machine_file():
+    """The machine file: remote access on an ephemeral loopback port (the Devices page and the
+    pairing window get a code to show) and the title buttons."""
+    return '[remote]\nlisten = "127.0.0.1:0"\n\n' + TITLE_MACHINE
 
 
 # The machine's `[[title.button]]` entries (ADR-0037): `build` with a state command that recolours
@@ -164,12 +161,13 @@ def fixture():
         pages.mkdir()
         (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
-        gallery = pathlib.Path(__file__).resolve().parents[3] / 'tools/gallery/server.py'
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="python3 {gallery} v17 filters-form"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
-        (root / 'machine.toml').write_text(machine_artifacts(gallery))
-        # The Wheelhouse package, installed the way a machine installs one: a folder beside the machine file.
+        notes = shlex.quote(str(built('examples/mcp_a2ui_test_server')))
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="exec {notes} stdio"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
+        (root / 'machine.toml').write_text(machine_file())
+        # The Wheelhouse and gallery packages, installed the way a machine installs one: a folder beside the machine file.
         (root / 'plugins').mkdir()
         (root / 'plugins/wheelhouse').symlink_to(REPO / 'plugins/wheelhouse')
+        (root / 'plugins/gallery').symlink_to(REPO / 'plugins/gallery')
         # A plugin whose one pane is `TALL_ROWS` Text rows and nothing that fills the pane, so the pane scrolls as a whole.
         (root / 'plugins/tall/panes').mkdir(parents=True)
         (root / 'plugins/tall/wheel-plugin.toml').write_text('[plugin]\nid = "tall"\nversion = "0.1.0"\n\n[[pane]]\nid = "tall"\ntitle = "Tall"\nscript = "panes/tall.luau"\n')
@@ -288,14 +286,7 @@ def fixture():
             second_session = cli('session', 'new', 'Second').splitlines()[-1]
             second_space = cli('space', 'new', str(second_dir), '--name', 'other', '--session', second_session).splitlines()[-1]
             env.update(WHEEL_CLIENT_SECOND_SESSION=second_session, WHEEL_CLIENT_SECOND_SPACE=second_space)
-            # A third session holds one space on this repository with one web pane, which the check
-            # moves through every page in `PAGES`.
-            pages_session = cli('session', 'new', 'Pages').splitlines()[-1]
-            pages_space = cli('space', 'new', os.environ.get('WHEEL_FIXTURE_PAGES_DIR', str(REPO)), '--name', 'pages', '--session', pages_session).splitlines()[-1]
-            pages_pane = tree(pages_space)['root']['id']
-            cli('pane', 'kind', pages_pane, 'web', '--artifact', PAGES[0], '--scope', 'machine')
-            env.update(WHEEL_CLIENT_PAGES_SESSION=pages_session, WHEEL_CLIENT_PAGES_PANE=pages_pane, WHEEL_CLIENT_PAGE_NAMES=json.dumps(PAGES))
-            # A fourth session holds one space on the Wheelhouse project with one empty pane, which the check
+            # A third session holds one space on the Wheelhouse project with one empty pane, which the check
             # moves through each of `PLUGIN_PANES` as a plugin pane.
             plugins_session = cli('session', 'new', 'Plugins').splitlines()[-1]
             plugins_space = cli('space', 'new', str(wheelhouse), '--name', 'wheelhouse', '--session', plugins_session).splitlines()[-1]

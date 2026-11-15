@@ -218,6 +218,22 @@ private func text(_ node: PaneNode) -> String? {
         ])
     }
 
+    @Test func liftsANodeInATableOfAList() throws {
+        let pane = try PaneRuntime(source: """
+        return { view = function()
+            return ui.Tabs{ tabs = { { title = "One", child = ui.Text("First") }, { title = "Two" } } }
+        end }
+        """)
+        let components = try pane.view().a2uiComponents()
+        #expect(components == [
+            .object(["id": .string("root"), "component": .string("Tabs"), "tabs": .array([
+                .object(["title": .string("One"), "child": .string("root@tabs.0@child")]),
+                .object(["title": .string("Two")]),
+            ])]),
+            .object(["id": .string("root@tabs.0@child"), "component": .string("Text"), "text": .string("First")]),
+        ])
+    }
+
     @Test func generatedIDsWinOverScriptProps() throws {
         let pane = try PaneRuntime(source: """
         return { view = function() return ui.VStack{ ui.Text{ id = "root", text = "a" } } end }

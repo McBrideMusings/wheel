@@ -65,15 +65,27 @@ public struct PaneNode: Equatable, Sendable {
         out[slot] = .object(fields)
     }
 
-    /// A property's value with every node in it, at the top or in a list, replaced by its id.
+    /// A property's value with every node in it replaced by its id: the value itself, each item
+    /// of a list of nodes, or a field of a table in a list (a Tabs tab's `child`, `<id>.<i>@child`).
     private static func lift(_ value: JSONValue, id: String, into out: inout [JSONValue]) -> JSONValue {
         if let node = PaneNode(value) {
             node.flatten(id: id, into: &out)
             return .string(id)
         }
-        if case let .array(list) = value, !list.isEmpty, list.allSatisfy({ PaneNode($0) != nil }) {
+        guard case let .array(list) = value, !list.isEmpty else { return value }
+        if list.allSatisfy({ PaneNode($0) != nil }) {
             return .array(list.enumerated().map { i, item in lift(item, id: "\(id).\(i)", into: &out) })
         }
-        return value
+        guard case .object = list[0] else { return value }
+        return .array(list.enumerated().map { i, item in
+            guard case var .object(fields) = item else { return item }
+            for (key, field) in fields.sorted(by: { $0.key < $1.key }) {
+                guard let node = PaneNode(field) else { continue }
+                let fieldID = "\(id).\(i)@\(key)"
+                node.flatten(id: fieldID, into: &out)
+                fields[key] = .string(fieldID)
+            }
+            return .object(fields)
+        })
     }
 }
