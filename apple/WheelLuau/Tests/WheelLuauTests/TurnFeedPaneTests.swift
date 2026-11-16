@@ -110,6 +110,35 @@ import WheelKit
         #expect(buttons.count == 3 && buttons.allSatisfy { $0.disabled })
     }
 
+    @Test func anUndeliveredAnswerCanBeSentAgainAndADeliveredOneCannot() throws {
+        var calls: [(String, JSONValue)] = []
+        let stored = #""answer":{"pick":"1A","at":"2026-11-16T16:41:00.000Z","by_pane":"p5","text":"Turn feed: picked 1A","delivered":false}"#
+        let undelivered = Self.open.replacingOccurrences(of: #""answer":null"#, with: stored)
+        let runtime = try Self.pane(posts: undelivered, agents: Self.agents, actions: { calls.append(($0, $1)) })
+        var tree = try runtime.view(Self.data)
+        #expect(Self.texts(tree).contains("Saved, but the agent did not get it"))
+        #expect(!Self.buttons(tree).contains { $0.help == "Send the reply" })
+        let again = try #require(Self.buttons(tree).first { $0.help == "Send the saved answer to the agent again" })
+        #expect(!again.disabled)
+        #expect(Self.texts(tree).contains("Send again"))
+        #expect(Self.buttons(tree).filter { !$0.disabled }.count == 1)
+        try runtime.send(again.action)
+        #expect(calls.count == 1 && calls[0].0 == "wheel.agent.send")
+        #expect(calls[0].1 == .object(["agent": .string("p1"), "text": .string("Turn feed: picked 1A")]))
+        try runtime.send(try Self.json(#"{"action":"wheel.agent.send","result":{}}"#))
+        #expect(calls.count == 2 && calls[1].0 == "turn-feed.delivered")
+        #expect(calls[1].1 == .object(["post": .string("t2")]))
+
+        let gone = try Self.pane(posts: undelivered, agents: "[]").view(Self.data)
+        #expect(Self.buttons(gone).allSatisfy { $0.disabled })
+
+        let done = Self.open.replacingOccurrences(of: #""answer":null"#, with: stored.replacingOccurrences(of: "false", with: "true"))
+        tree = try Self.pane(posts: done, agents: Self.agents).view(Self.data)
+        #expect(Self.texts(tree).contains("Picked 1A · 16:41 UTC"))
+        let send = try #require(Self.buttons(tree).first { $0.help == "Send the reply" })
+        #expect(send.disabled && Self.buttons(tree).allSatisfy { $0.disabled })
+    }
+
     @Test func aPostsPageIsTheArtifactEmbedded() throws {
         let paged = Self.open.replacingOccurrences(of: #""question":"1. Which?""#, with: #""page":"mockup","question":"1. Which?""#)
         let tree = try Self.pane(posts: paged, agents: Self.agents).view(Self.data)

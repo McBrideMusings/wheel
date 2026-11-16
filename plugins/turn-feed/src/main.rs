@@ -66,5 +66,8 @@ async fn main() {
     backend.action("answer", |call| async move {
         Store::from_env().answer(&call.args, &call.caller).map_err(ActionError::new)
     });
+    backend.action("delivered", |call| async move {
+        Store::from_env().delivered(&call.args).map_err(ActionError::new)
+    });
     std::process::exit(backend.run().await);
 }

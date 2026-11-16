@@ -2,13 +2,14 @@
 --
 -- `turn-feed.posts` {dir} holds the project's posts; `wheel.agents` says which pane still runs an agent.
 -- A pick or a reply calls `turn-feed.answer`, which records it and returns the text to send; the pane then
--- calls `wheel.agent.send` with it. Both answers arrive in `update` as `{action, result | error}` in the order
+-- calls `wheel.agent.send` with it, then `turn-feed.delivered`. An answer stored with `delivered == false` can be
+-- sent again from its Send button. All three answers arrive in `update` as `{action, result | error}` in the order
 -- the calls were made, so each action keeps a queue of the post ids it was called for.
 local NONE = {}
 
 local COLOUR = { fg = "primary", muted = "secondary", ok = "green", warn = "orange", bad = "red" }
 
-local ANSWER, SEND = "turn-feed.answer", "wheel.agent.send"
+local ANSWER, SEND, DELIVERED = "turn-feed.answer", "wheel.agent.send", "turn-feed.delivered"
 
 -- The last value drawn per project: a read that answers nil draws this meanwhile, so the pane keeps its list.
 local LAST_POSTS, LAST_AGENTS = {}, nil
@@ -81,6 +82,7 @@ end
 local function status_line(post, gone)
     local a = post.answer
     if type(a) == "table" then
+        if a.delivered == false then return "Saved, but the agent did not get it", "warn" end
         if a.pick then return "Picked " .. a.pick .. " · " .. clock(a.at), "ok" end
         return "Replied · " .. clock(a.at) .. ": " .. tostring(a.reply), "ok"
     end
@@ -92,6 +94,7 @@ local function post_view(state, post, running)
     local answered = type(post.answer) == "table"
     local gone = running ~= nil and not running[post.agent_pane]
     local locked = answered or gone
+    local undelivered = answered and post.answer.delivered == false and type(post.answer.text) == "string"
     local posted = clock(post.at) .. " · " .. tostring(post.agent_pane)
     if post.updated_at then posted = posted .. " · edited " .. clock(post.updated_at) end
     local c = {
@@ -117,10 +120,13 @@ local function post_view(state, post, running)
     local line, tone = status_line(post, gone)
     local problem = state.problems[post.post]
     if problem then line, tone = problem, "bad" end
-    table.insert(c, row({
-        button("Send", { type = "send", post = post.post }, "Send the reply", locked),
-        text(line, { size = 12, tone = tone, flex = true }),
-    }))
+    local send
+    if undelivered then
+        send = button("Send again", { type = "resend", post = post.post, agent = post.agent_pane, text = post.answer.text }, "Send the saved answer to the agent again", gone)
+    else
+        send = button("Send", { type = "send", post = post.post }, "Send the reply", locked)
+    end
+    table.insert(c, row({ send, text(line, { size = 12, tone = tone, flex = true }) }))
     table.insert(c, ui.Divider{})
     return ui.Column{
         spacing = 8,
@@ -132,7 +138,7 @@ end
 -- ───────────────────────────── the module ─────────────────────────────
 
 local function init(previous)
-    return previous or { drafts = {}, problems = {}, inflight = { [ANSWER] = {}, [SEND] = {} } }
+    return previous or { drafts = {}, problems = {}, inflight = { [ANSWER] = {}, [SEND] = {}, [DELIVERED] = {} } }
 end
 
 local function push(state, action, post)
@@ -161,9 +167,21 @@ local function update(state, msg)
         wheel.action(SEND, { agent = r.agent_pane, text = r.text })
     elseif msg.action == SEND then
         local post = pop(state, SEND)
-        if msg.error and post then
-            state.problems[post] = "Answer saved, but the agent did not get it: " .. tostring(msg.error)
+        if msg.error then
+            if post then state.problems[post] = "Answer saved, but the agent did not get it: " .. tostring(msg.error) end
+        elseif post then
+            push(state, DELIVERED, post)
+            wheel.action(DELIVERED, { post = post })
         end
+    elseif msg.action == DELIVERED then
+        local post = pop(state, DELIVERED)
+        if msg.error and post then
+            state.problems[post] = "Sent, but the answer could not be marked delivered: " .. tostring(msg.error)
+        end
+    elseif msg.type == "resend" then
+        state.problems[msg.post] = nil
+        push(state, SEND, msg.post)
+        wheel.action(SEND, { agent = msg.agent, text = msg.text })
     elseif msg.type == "draft" then
         state.drafts[msg.post] = if type(msg.value) == "string" then msg.value else ""
     elseif msg.type == "pick" then

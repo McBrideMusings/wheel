@@ -200,14 +200,39 @@ impl Store {
                 let ids: Vec<&str> = post["options"].as_array().into_iter().flatten().filter_map(|o| o["id"].as_str()).collect();
                 return Err(format!("answer refused: post {id} has no option {pick}; its options: {}", if ids.is_empty() { "none".into() } else { ids.join(", ") }));
             }
-            (json!({ "pick": pick, "at": now, "by_pane": by }), format!("Turn feed, \"{title}\": picked {pick}"))
+            let text = format!("Turn feed, \"{title}\": picked {pick}");
+            (json!({ "pick": pick, "at": now, "by_pane": by, "text": text, "delivered": false }), text)
         } else {
             let reply = reply.and_then(Value::as_str).unwrap_or("");
-            (json!({ "reply": reply, "at": now, "by_pane": by }), format!("Turn feed, \"{title}\": {reply}"))
+            let text = format!("Turn feed, \"{title}\": {reply}");
+            (json!({ "reply": reply, "at": now, "by_pane": by, "text": text, "delivered": false }), text)
         };
         post["answer"] = answer;
         self.write(&post)?;
         Ok(json!({ "post": id, "agent_pane": post["agent_pane"], "text": text }))
+    }
+
+    /// Marks a post's answer as received by the agent; the pane calls it after `wheel.agent.send` succeeds.
+    pub fn delivered(&self, args: &Value) -> Result<Value, String> {
+        let Some(obj) = args.as_object() else {
+            return Err("delivered refused: args must be an object".into());
+        };
+        let problems = unknown_keys(obj, &["post"], "");
+        let id = obj.get("post").and_then(Value::as_str).unwrap_or("");
+        if !problems.is_empty() {
+            return Err(format!("delivered refused: {}", problems.join("; ")));
+        }
+        if !id_ok(id) {
+            return Err(format!("delivered refused: post {id:?} is not a post id"));
+        }
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut post = self.read(id).ok_or_else(|| format!("delivered refused: post {id} does not exist"))?;
+        if post["answer"].is_null() {
+            return Err(format!("delivered refused: post {id} has no answer"));
+        }
+        post["answer"]["delivered"] = json!(true);
+        self.write(&post)?;
+        Ok(json!({ "post": id }))
     }
 }
 
@@ -468,8 +493,27 @@ mod tests {
         let stored = s.read(&id).unwrap();
         assert_eq!(stored["answer"]["pick"], "1A");
         assert_eq!(stored["answer"]["by_pane"], "p7");
+        assert_eq!(stored["answer"]["text"], "Turn feed, \"Which?\": picked 1A");
+        assert_eq!(stored["answer"]["delivered"], false);
         let e = s.answer(&json!({ "post": id, "reply": "later" }), &by).unwrap_err();
         assert!(e.starts_with(&format!("post {id} was already answered: 1A at ")), "{e}");
+    }
+
+    #[test]
+    fn delivered_marks_an_answer_received_and_refuses_an_unanswered_post() {
+        let s = store(KEEP);
+        let id = s.post(&simple(), &agent("p1", "/p")).unwrap()["post"].as_str().unwrap().to_string();
+        let e = s.delivered(&json!({ "post": id })).unwrap_err();
+        assert!(e.contains("has no answer"), "{e}");
+        assert!(s.delivered(&json!({ "post": "tnone" })).unwrap_err().contains("does not exist"));
+        let r = s.answer(&json!({ "post": id, "reply": "ship it" }), &json!({ "pane": "p7" })).unwrap();
+        let stored = s.read(&id).unwrap();
+        assert_eq!(stored["answer"]["text"], r["text"]);
+        assert_eq!(stored["answer"]["delivered"], false);
+        s.delivered(&json!({ "post": id })).unwrap();
+        let stored = s.read(&id).unwrap();
+        assert_eq!(stored["answer"]["delivered"], true);
+        assert_eq!(stored["answer"]["reply"], "ship it");
     }
 
     #[test]
