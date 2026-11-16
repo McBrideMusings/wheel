@@ -45,6 +45,7 @@ fn main() -> Result<()> {
     let app = gpui::Application::with_platform(gpui_platform::current_platform(hidden));
     app.on_reopen(wheel_gpui::view::reopen);
     app.run(move |cx| {
+        wheel_gpui::init(cx);
         let result: Result<()> = (|| {
             if let Some(crash) = wheel_gpui::crash_guard::start(&wheel_gpui::crash_guard::default_marks_file(), &wheel_gpui::crash_guard::default_reports()) {
                 eprintln!("wheel-gpui: the last run quit while drawing {:?} / {:?}; holding it out", crash.space, crash.pane);

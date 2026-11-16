@@ -34,6 +34,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 uuid = { version = "1", features = ["v4"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy", "parsing"] }
 gpui = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", default-features = false, features = ["test-support"] }
+gpui-component = { path = "vendor/gpui-component", default-features = false }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", branch = "gpui-embedded-in-gpui", features = ["font-kit", "test-support"] }
 
 # The same profiles as the daemon's workspace (../../Cargo.toml), which this workspace does not
@@ -53,3 +54,6 @@ opt-level = 0
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
 calloop = { git = "https://github.com/zed-industries/calloop" }
+
+[patch."https://github.com/zed-industries/zed.git"]
+gpui_macos = { path = "vendor/gpui_macos" }

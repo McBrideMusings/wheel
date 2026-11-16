@@ -8,11 +8,14 @@ use super::*;
 use crate::debug::{Request, error};
 use serde_json::{Value, json};
 
-/// What a request came to: an answer, or a snapshot the caller draws once the view is free
-/// (drawing re-enters the view, which cannot happen while it is being updated).
+/// What a request came to: an answer, a snapshot the caller draws once the view is free
+/// (drawing re-enters the view, which cannot happen while it is being updated), or keystrokes the
+/// caller sends through the window as a real key goes, so they reach whatever holds the keyboard
+/// (the composer's input among them).
 pub enum Answer {
     Done(String, Value),
     Snapshot(String),
+    Keys(Vec<gpui::Keystroke>),
 }
 
 fn ok(body: Value) -> Answer {
@@ -57,18 +60,15 @@ impl Client {
             "/key" => {
                 let Some(keys) = q("keys") else { return refuse(BAD, "keys=<chord> is required") };
                 let Some(chord) = crate::keymap::KeyChord::parse(&keys) else { return refuse(BAD, "keys must be a chord such as shift+cmd+d or escape") };
-                let taken = self.key(&KeyDownEvent { keystroke: chord.keystroke(), is_held: false, prefer_character_input: false }, cx);
-                Some(json!({"taken": taken}))
+                return Answer::Keys(vec![chord.keystroke()]);
             }
             "/type" => {
                 let Some(text) = q("text") else { return refuse(BAD, "text= is required") };
-                for ch in text.chars() {
-                    // The event a key typing `ch` delivers: GPUI names the space bar `space`.
+                // The event a key typing `ch` delivers: GPUI names the space bar `space`.
+                return Answer::Keys(text.chars().map(|ch| {
                     let key = if ch == ' ' { "space".to_owned() } else { ch.to_lowercase().to_string() };
-                    let keystroke = gpui::Keystroke { modifiers: gpui::Modifiers::default(), key, key_char: Some(ch.to_string()) };
-                    self.key(&KeyDownEvent { keystroke, is_held: false, prefer_character_input: true }, cx);
-                }
-                None
+                    gpui::Keystroke { modifiers: gpui::Modifiers::default(), key, key_char: Some(ch.to_string()) }
+                }).collect());
             }
             "/action" => {
                 let Some(id) = q("id") else { return refuse(BAD, "id= is required") };
@@ -96,12 +96,11 @@ impl Client {
                 };
                 match path {
                     "/agent" => {
-                        self.drafts.insert(agent.clone(), String::new());
+                        self.set_draft(&agent, String::new());
                         self.send(&ClientMsg::AgentSend { req: None, agent: agent.clone(), text: request.body.clone() });
                     }
                     "/agent/draft" => {
-                        self.drafts.insert(agent.clone(), request.body.clone());
-                        self.draft_edited(&agent.clone());
+                        self.set_draft(&agent, request.body.clone());
                     }
                     _ => self.focus_pane(&pane),
                 }

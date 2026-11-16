@@ -5,7 +5,7 @@
 use super::*;
 use crate::composer::{self, Command, Picker, Tray};
 use serde_json::{Value, json};
-use gpui::{ExternalPaths, img};
+use gpui::{ExternalPaths, Focusable as _, img};
 use std::path::PathBuf;
 
 /// The row of chips above the composer's text, while it holds any.
@@ -41,15 +41,10 @@ pub(super) struct ComposerFit {
     pub height: f32,
 }
 
-/// The draft as the composer draws it: the caret after the text while the pane has the keyboard.
-pub(super) fn shown_draft(draft: &str, focused: bool) -> String {
-    format!("{draft}{}", if focused { "▏" } else { "" })
-}
-
 /// Lay out `draft` in a composer `pane_w` wide: the text wraps at the room the paperclip and a
 /// refusal leave, and the box grows a line at a time from its one-line `COMPOSER` height up to
 /// `COMPOSER_LINES`, past which the text scrolls.
-pub(super) fn composer_fit(window: &Window, draft: &str, focused: bool, error: Option<&str>, pane_w: f32) -> ComposerFit {
+pub(super) fn composer_fit(window: &Window, draft: &str, error: Option<&str>, pane_w: f32) -> ComposerFit {
     let error_w = error.map_or(0., |e| (title::text_width(window, e, 12.).ceil()).min(ERROR_W));
     let text_w = (pane_w - COMPOSER_CHROME - if error.is_some() { error_w + ERROR_GAP } else { 0. }).max(20.);
     // At the size the text div sets (`text_sm`), not the window's default.
@@ -57,9 +52,8 @@ pub(super) fn composer_fit(window: &Window, draft: &str, focused: bool, error: O
     style.font_size = gpui::rems(COMPOSER_TEXT_REMS).into();
     let size = style.font_size.to_pixels(window.rem_size());
     let line_h = f32::from(style.line_height_in_pixels(window.rem_size()));
-    let text = shown_draft(draft, focused);
-    let run = gpui::TextRun { len: text.len(), font: style.font(), color: gpui::black(), background_color: None, underline: None, strikethrough: None };
-    let lines = window.text_system().shape_text(text.into(), size, &[run], Some(px(text_w)), None)
+    let run = gpui::TextRun { len: draft.len(), font: style.font(), color: gpui::black(), background_color: None, underline: None, strikethrough: None };
+    let lines = window.text_system().shape_text(draft.to_owned().into(), size, &[run], Some(px(text_w)), None)
         .map_or(1, |shaped| shaped.iter().map(|l| l.wrap_boundaries().len() + 1).sum::<usize>());
     let lines_h = lines.clamp(1, COMPOSER_LINES) as f32 * line_h;
     ComposerFit { text_w, error_w, lines_h, height: (lines_h + COMPOSER_INSET).max(super::COMPOSER) }
@@ -125,25 +119,98 @@ impl Client {
         (rows, at, prefix)
     }
 
-    /// `agent`'s draft changed by typing: the highlight and the arrows' choice start over.
+    /// `agent`'s draft changed: the highlight and the arrows' choice start over.
     pub(super) fn draft_edited(&mut self, agent: &str) {
         if let Some(picker) = self.pickers.get_mut(agent) {
             picker.edited();
         }
-        // The caret is at the draft's end, so an edit shows the last line.
-        self.composer_scroll(agent).scroll_to_bottom();
+    }
+
+    /// The client changes `agent`'s draft (a picked command, a restored message, a send, a debug
+    /// request): `drafts` takes it now and the input takes it, caret at the end, when its
+    /// composer is next drawn (`composer_input`).
+    pub(super) fn set_draft(&mut self, agent: &str, text: String) {
+        self.drafts.insert(agent.to_owned(), text);
+        self.stale_inputs.insert(agent.to_owned());
+        self.draft_edited(agent);
+    }
+
+    /// `agent`'s composer input, made on first use holding its draft, and given any text the
+    /// client set since it was drawn last. An edit in it copies into `drafts`.
+    pub(super) fn composer_input(&mut self, agent: &str, window: &mut Window, cx: &mut Context<Self>) -> gpui::Entity<InputState> {
+        let draft = self.drafts.get(agent).cloned().unwrap_or_default();
+        let input = match self.inputs.get(agent) {
+            Some(input) => input.clone(),
+            None => {
+                let input = cx.new(|cx| InputState::new(window, cx).multi_line(true));
+                let name = agent.to_owned();
+                cx.subscribe_in(&input, window, move |this: &mut Self, input, event: &InputEvent, _, cx| {
+                    if let InputEvent::Change = event {
+                        let value = input.read(cx).value().to_string();
+                        if this.drafts.get(&name).map(String::as_str).unwrap_or("") != value {
+                            this.drafts.insert(name.clone(), value);
+                            this.draft_edited(&name);
+                            cx.notify();
+                        }
+                    }
+                })
+                .detach();
+                self.inputs.insert(agent.to_owned(), input.clone());
+                self.stale_inputs.insert(agent.to_owned());
+                input
+            }
+        };
+        if self.stale_inputs.remove(agent) && input.read(cx).value() != draft.as_str() {
+            input.update(cx, |state, cx| {
+                // Text goes in by `insert`, which leaves the caret after it.
+                state.set_value("", window, cx);
+                state.insert(draft, window, cx);
+            });
+        }
+        input
+    }
+
+    /// The composer input that holds the keyboard, if one does.
+    pub fn focused_input(&self, window: &Window, cx: &App) -> Option<gpui::Entity<InputState>> {
+        self.inputs.values().find(|i| i.read(cx).focus_handle(cx).is_focused(window)).cloned()
+    }
+
+    /// Whether a composer input holds the keyboard.
+    pub fn composer_focused(&self, window: &Window, cx: &App) -> bool {
+        self.focused_input(window, cx).is_some()
+    }
+
+    /// The agent whose composer takes typed keys: the focused pane's, while nothing else that
+    /// reads typed keys is open over it.
+    pub fn composer_agent(&self) -> Option<String> {
+        let typing_elsewhere = self.name_edit.is_some() || self.rename.is_some() || self.command_palette.is_some() || self.settings_open
+            || self.procs.open.is_some() || self.conversations.open.is_some() || self.confirmation.is_some() || self.shortcuts_open;
+        if typing_elsewhere {
+            return None;
+        }
+        self.focused_agent().map(|(agent, _)| agent)
+    }
+
+    /// Put the keyboard where `composer_agent` says: the agent's input, else the root.
+    pub(super) fn sync_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.composer_agent().and_then(|a| self.inputs.get(&a).cloned());
+        match input {
+            Some(input) => {
+                let handle = input.read(cx).focus_handle(cx);
+                if !handle.is_focused(window) {
+                    handle.focus(window, cx);
+                }
+            }
+            None if !self.handle.is_focused(window) => window.focus(&self.handle, cx),
+            None => {}
+        }
     }
 
     /// `composer_fit` for the composer of `agent` in `pane`, `pane_w` wide.
-    pub(super) fn composer_fit_for(&self, window: &Window, pane: &str, agent: Option<&str>, pane_w: f32) -> ComposerFit {
+    pub(super) fn composer_fit_for(&self, window: &Window, agent: Option<&str>, pane_w: f32) -> ComposerFit {
         let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
         let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
-        composer_fit(window, draft, self.focus.current.as_deref() == Some(pane), error, pane_w)
-    }
-
-    /// The scroll position of `agent`'s composer text, once it holds more lines than it shows.
-    pub(super) fn composer_scroll(&mut self, agent: &str) -> gpui::ScrollHandle {
-        self.composer_scrolls.entry(agent.to_owned()).or_insert_with(gpui::ScrollHandle::new).clone()
+        composer_fit(window, draft, error, pane_w)
     }
 
     /// A key while the focused composer's list is open: Up and Down move the highlight, Tab takes
@@ -165,8 +232,7 @@ impl Client {
             "down" | "up" => picker.step(rows.len(), k.key == "down"),
             "escape" => picker.dismiss(&draft),
             "tab" | "enter" if k.key == "tab" || (!k.modifiers.shift && picker.chosen()) => {
-                self.drafts.insert(agent.clone(), composer::accepted(prefix, &rows[at]));
-                self.draft_edited(&agent);
+                self.set_draft(&agent, composer::accepted(prefix, &rows[at]));
             }
             _ => return false,
         }
@@ -178,8 +244,7 @@ impl Client {
         let (rows, _, prefix) = self.command_matches(agent, harness);
         if let (Some(command), Some(prefix)) = (rows.iter().find(|c| c.name == name), prefix) {
             self.press(format!("command {name}"));
-            self.drafts.insert(agent.to_owned(), composer::accepted(prefix, command));
-            self.draft_edited(agent);
+            self.set_draft(agent, composer::accepted(prefix, command));
         }
     }
 
@@ -241,12 +306,11 @@ impl Client {
             self.composer_errors.insert(agent.to_owned(), "Not connected to wheeld; your message is still in the box.".into());
             return;
         }
-        self.drafts.insert(agent.to_owned(), String::new());
+        self.set_draft(agent, String::new());
         if let Some(tray) = self.attachments.get_mut(agent) {
             tray.sent();
         }
         self.log(format!("send to {agent}, {} chars, {} attachments", text.chars().count(), paths.len()));
-        self.draft_edited(agent);
         // Sending is going back to the conversation's end: the person wants to see what they sent
         // and what comes back, wherever they had scrolled.
         self.follow_end(agent);
@@ -309,9 +373,8 @@ impl Client {
     pub(super) fn on_retract(&mut self, agent: &str, turn: u64) {
         self.sending_now.remove(&(agent.to_owned(), turn));
         let Some(text) = self.editing.remove(&(agent.to_owned(), turn)) else { return };
-        let draft = self.drafts.entry(agent.to_owned()).or_default();
-        *draft = composer::restored(draft, &text);
-        self.draft_edited(agent);
+        let restored = composer::restored(self.drafts.get(agent).map(String::as_str).unwrap_or(""), &text);
+        self.set_draft(agent, restored);
         let pane = self.scene().0.into_iter().find(|p| p.leaf.kind == "agent" && p.leaf.agent.as_deref() == Some(agent)).map(|p| p.leaf.id);
         if let Some(pane) = pane {
             self.focus_pane(&pane);
@@ -396,9 +459,10 @@ impl Client {
     }
 
     /// ⌘V in `agent`'s composer (`AppModel.pasteAttachments`): files on the pasteboard become
-    /// chips, an image with no text becomes a PNG chip, and text goes into the draft.
-    pub(super) fn paste_into_composer(&mut self, agent: &str, cx: &mut App) {
-        let Some(item) = cx.read_from_clipboard() else { return };
+    /// chips and an image with no text becomes a PNG chip. True when it attached; text is
+    /// the input's to paste.
+    pub(super) fn attach_pasted(&mut self, agent: &str, cx: &mut App) -> bool {
+        let Some(item) = cx.read_from_clipboard() else { return false };
         let mut paths = vec![];
         let mut image = None;
         for entry in item.entries() {
@@ -410,16 +474,17 @@ impl Client {
         }
         if !paths.is_empty() {
             self.attach_paths(agent, &paths);
-        } else if let Some(text) = item.text() {
-            // As typed text is: no control characters but the line breaks and tabs a text box keeps.
-            let text: String = text.replace("\r\n", "\n").chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').collect();
-            self.drafts.entry(agent.to_owned()).or_default().push_str(&text);
-            self.draft_edited(agent);
+            true
+        } else if item.text().is_some() {
+            false
         } else if let Some(bytes) = image {
             let tray = self.attachments.entry(agent.to_owned()).or_default();
             tray.add_image(&bytes, &composer::attachments_folder(), &composer::stamp_now());
             self.composer_errors.remove(agent);
             self.log(format!("attach a pasted image to {agent}: {} bytes", bytes.len()));
+            true
+        } else {
+            false
         }
     }
 

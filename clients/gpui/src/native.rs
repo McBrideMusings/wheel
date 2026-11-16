@@ -60,6 +60,24 @@ impl Bridge {
     }
 }
 
+#[cfg(test)]
+impl Bridge {
+    /// A bridge that answers every command with `{}`, for a test that draws a client with no Swift side.
+    pub fn stub() -> Rc<Self> {
+        unsafe extern "C" fn attach(_: *mut c_void, _: i32, _: Emit) -> i32 {
+            1
+        }
+        unsafe extern "C" fn app_attach(_: i32, _: Emit) {}
+        unsafe extern "C" fn command(_: *const c_char) -> *mut c_char {
+            unsafe { libc::strdup(c"{}".as_ptr()) }
+        }
+        unsafe extern "C" fn free(p: *mut c_void) {
+            unsafe { libc::free(p) }
+        }
+        Rc::new(Self { _library: libloading::os::unix::Library::this().into(), attach, app_attach, command, free })
+    }
+}
+
 /// The bridge's window id for what the app holds outside every window: the menu bar item.
 pub const APP: i32 = -1;
 

@@ -20,7 +20,7 @@ use gpui::AsyncApp;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
 use wheel_proto::{ClientMsg, ServerMsg};
-use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, Drawn, Link, TITLE}};
+use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, ClientWindow, Drawn, Link, TITLE}};
 
 /// The CPU time this thread has used, in milliseconds.
 fn thread_cpu_ms() -> f64 {
@@ -49,7 +49,7 @@ async fn wait(native: &Native, what: &str, pred: impl Fn(&Value) -> bool, cx: &m
     }
     anyhow::bail!("timed out waiting for {what}: {}", native.status())
 }
-fn draw(window: gpui::WindowHandle<Client>, path: Option<PathBuf>, cx: &mut AsyncApp) -> Result<()> {
+fn draw(window: ClientWindow, path: Option<PathBuf>, cx: &mut AsyncApp) -> Result<()> {
     let window: gpui::AnyWindowHandle = window.into();
     window.update(cx, |_, window, cx| {
         window.draw(cx).clear();
@@ -111,7 +111,7 @@ async fn reported(window: &str, what: &str, want: impl Fn(&(String, Option<Strin
     anyhow::bail!("wheeld never reported {what} for {window}: {:?}", reported_views()?)
 }
 /// Click a header chip with a real NSEvent pair on the window's own views, then draw.
-async fn click_chip(window: gpui::WindowHandle<Client>, hit: Hit, cx: &mut AsyncApp) -> Result<()> {
+async fn click_chip(window: ClientWindow, hit: Hit, cx: &mut AsyncApp) -> Result<()> {
     let (native, chip): (_, Option<Chip>) = window.update(cx, |c, _, _| (c.native(), c.header_chips().into_iter().find(|chip| chip.hit == hit)))?;
     let chip = chip.ok_or_else(|| anyhow::anyhow!("no header chip {hit:?}"))?;
     let at = [f64::from(chip.rect.x + chip.rect.w / 2.), f64::from(chip.rect.y + chip.rect.h / 2.)];
@@ -125,7 +125,7 @@ async fn click_chip(window: gpui::WindowHandle<Client>, hit: Hit, cx: &mut Async
 }
 /// Switch the window to `mode` the way a person does: a real click on the title row's mode
 /// button, then one on the mode's row.
-async fn pick_mode(window: gpui::WindowHandle<Client>, mode: &str, cx: &mut AsyncApp) -> Result<()> {
+async fn pick_mode(window: ClientWindow, mode: &str, cx: &mut AsyncApp) -> Result<()> {
     click_chip(window, Hit::Mode, cx).await?;
     let (native, row) = window.update(cx, |c, _, _| (c.native(), c.title_menu_placed().and_then(|(_, rows)| rows.into_iter().find(|(r, _)| r.id == format!("mode:{mode}")).map(|(_, r)| r))))?;
     let row = row.ok_or_else(|| anyhow::anyhow!("the mode menu lists no {mode}"))?;
@@ -140,7 +140,7 @@ async fn pick_mode(window: gpui::WindowHandle<Client>, mode: &str, cx: &mut Asyn
 }
 /// Switch the window to `session` the way a person does: a real click on the title row's session
 /// menu button, then one on the session's row.
-async fn switch_session(window: gpui::WindowHandle<Client>, session: &str, cx: &mut AsyncApp) -> Result<()> {
+async fn switch_session(window: ClientWindow, session: &str, cx: &mut AsyncApp) -> Result<()> {
     click_chip(window, Hit::SessionMenu, cx).await?;
     let (native, row) = window.update(cx, |c, _, _| (c.native(), c.title_menu_placed().and_then(|(_, rows)| rows.into_iter().find(|(r, _)| r.id == format!("session:{session}")).map(|(_, r)| r))))?;
     let row = row.ok_or_else(|| anyhow::anyhow!("the session menu lists no {session}"))?;
@@ -154,13 +154,13 @@ async fn switch_session(window: gpui::WindowHandle<Client>, session: &str, cx: &
     ensure!(window.update(cx, |c, _, _| c.title_menu.is_none())?, "the session menu stayed open after the row was clicked");
     Ok(())
 }
-fn shown(window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(Option<String>, Option<String>)> {
+fn shown(window: ClientWindow, cx: &mut AsyncApp) -> Result<(Option<String>, Option<String>)> {
     Ok(window.update(cx, |c, _, _| (c.session_id().map(str::to_owned), c.space_id().map(str::to_owned)))?)
 }
 
 /// Run `wheel` with `args` while the connection is pumped: a `pane page`, `shot` or `eval` waits on
 /// wheeld, which waits on this client's answer, so the frames must flow while the command runs.
-async fn run_pumped(args: &[&str], connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(bool, String, String)> {
+async fn run_pumped(args: &[&str], connection: &mut Connection, layouts: &mut usize, window: ClientWindow, cx: &mut AsyncApp) -> Result<(bool, String, String)> {
     let cli = std::env::var("WHEEL_CLIENT_CLI")?;
     let mut child = std::process::Command::new(&cli)
         .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args)
@@ -184,7 +184,7 @@ async fn run_pumped(args: &[&str], connection: &mut Connection, layouts: &mut us
 /// `claude-fake <session> ready`: wheeld samples the terminal for a running agent when asked to
 /// show it as a chat, and refuses until it finds one. The conversation the pane remembers is no
 /// signal, since the switch to the terminal sets it before the resume command starts.
-async fn until_stand_in_ready(pane: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
+async fn until_stand_in_ready(pane: &str, connection: &mut Connection, layouts: &mut usize, window: ClientWindow, cx: &mut AsyncApp) -> Result<()> {
     let (ok, out, err) = run_pumped(&["term", "read", pane, "--until", " ready", "--timeout", "40"], connection, layouts, window, cx).await?;
     ensure!(ok, "the Claude Code stand-in never started in {pane}'s terminal: {err} {}", out.lines().rev().take(5).collect::<Vec<_>>().join(" | "));
     Ok(())
@@ -193,7 +193,7 @@ async fn until_stand_in_ready(pane: &str, connection: &mut Connection, layouts: 
 /// One request to the client's debug server from a thread, answered while this check keeps
 /// pumping the connection and handing the server's requests to the window, as `serve_debug` does
 /// in the real binary. Returns the status code and the JSON body.
-async fn http(debug: &mut wheel_gpui::debug::Server, method: &str, target: &str, headers: &[(&str, &str)], connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<(u16, Value)> {
+async fn http(debug: &mut wheel_gpui::debug::Server, method: &str, target: &str, headers: &[(&str, &str)], connection: &mut Connection, layouts: &mut usize, window: ClientWindow, cx: &mut AsyncApp) -> Result<(u16, Value)> {
     use std::io::{Read as _, Write as _};
     let port = debug.port;
     let mut head = format!("{method} {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\n");
@@ -227,7 +227,7 @@ async fn http(debug: &mut wheel_gpui::debug::Server, method: &str, target: &str,
     Ok((code, serde_json::from_str(body).unwrap_or(Value::String(body.to_owned()))))
 }
 
-async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Result<()> {
+async fn pump(connection: &mut Connection, ms: u64, layouts: &mut usize, window: ClientWindow, cx: &mut AsyncApp) -> Result<()> {
     let end = std::time::Instant::now() + Duration::from_millis(ms);
     while std::time::Instant::now() < end {
         while let Ok(event) = connection.incoming.try_recv() {
@@ -246,7 +246,7 @@ struct Run {
     bridge: std::rc::Rc<Bridge>,
     connection: Connection,
     layouts: usize,
-    window: gpui::WindowHandle<Client>,
+    window: ClientWindow,
     native: std::rc::Rc<Native>,
     markers: Value,
     output: PathBuf,
@@ -753,12 +753,12 @@ async fn agent_turns(run: Run, rects: Vec<(String, Rect)>, cx: &mut AsyncApp) ->
 }
 
 /// The agent pane's pane state as `/state` reports it.
-fn pane_state(window: gpui::WindowHandle<Client>, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+fn pane_state(window: ClientWindow, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
     Ok(window.update(cx, |c, _, _| c.state_json()["panes"][pane].clone())?)
 }
 
 /// Press a control the last frame drew, by its recorded name, with real mouse events.
-async fn press_named(native: &Native, window: gpui::WindowHandle<Client>, agent: &str, name: &str, cx: &mut AsyncApp) -> Result<()> {
+async fn press_named(native: &Native, window: ClientWindow, agent: &str, name: &str, cx: &mut AsyncApp) -> Result<()> {
     let b = window.update(cx, |c, _, _| c.control_bounds(agent, name))?.ok_or_else(|| anyhow::anyhow!("{name} was not drawn"))?;
     let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
     native.call(json!({"op":"post_mouse","kind":"down","point":p}));
@@ -1436,6 +1436,19 @@ async fn composer_and_queue(run: Run, agent_pane: String, agent_name: String, cl
     let shut = pane_now(cx)?;
     ensure!(shut["draft"] == "/" && shut["composer"]["listed"] == json!([]), "Esc on the open list: {}", shut["composer"]);
     erase(&native, 1, cx).await;
+    // The composer is a text input: the caret moves with the arrows and typing goes where it is, and
+    // Command-A selects the whole draft so the next character replaces it.
+    type_text(&native, "ab", cx).await;
+    native.call(json!({"op":"post_key","text":"\u{f702}","code":123,"function":true}));
+    tick(cx, 100).await;
+    type_text(&native, "X", cx).await;
+    ensure!(draft_now(cx)? == "aXb", "`ab`, Left, `X` left the draft {:?}", draft_now(cx)?);
+    native.call(json!({"op":"post_key","text":"a","code":0,"command":true}));
+    tick(cx, 100).await;
+    type_text(&native, "Z", cx).await;
+    ensure!(draft_now(cx)? == "Z", "Command-A then `Z` left the draft {:?}", draft_now(cx)?);
+    erase(&native, 1, cx).await;
+    ensure!(draft_now(cx)?.is_empty(), "the composer holds {:?} after the editing check", draft_now(cx)?);
     // Shift-Return starts a new line, and the box grows a line at a time up to ten, then holds
     // its height while the text scrolls.
     let box_h = |cx: &mut AsyncApp| -> Result<f32> {
@@ -2843,7 +2856,7 @@ async fn agents_surface(run: Run, agent_pane: String, agent_name: String, cli_pa
     };
     let centre = |r: Rect| [f64::from(r.x + r.w / 2.), f64::from(r.y + r.h / 2.)];
     // A press, a drag in steps and a release, each followed by a frame, as a person's hand makes them.
-    async fn drag(native: &Native, window: gpui::WindowHandle<Client>, from: [f64; 2], by: (f64, f64), cx: &mut AsyncApp) -> Result<()> {
+    async fn drag(native: &Native, window: ClientWindow, from: [f64; 2], by: (f64, f64), cx: &mut AsyncApp) -> Result<()> {
         native.call(json!({"op":"post_mouse","kind":"down","point":from}));
         draw(window, None, cx)?;
         for step in 1..=4 {
@@ -3064,7 +3077,7 @@ async fn agents_surface(run: Run, agent_pane: String, agent_name: String, cli_pa
 
 /// A second window with its own connection, restored windows, and a space dragged between
 /// windows and onto the desktop.
-async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_panes: Vec<(String, String)>, webs: Vec<&String>, cx: &mut AsyncApp) -> Result<(Run, Value, Option<String>, Option<String>, Vec<(String, Option<String>, Option<String>, Option<String>)>, bool, Value, gpui::WindowHandle<Client>, String, std::rc::Rc<Native>, String, String, Vec<f32>, Vec<f32>, String, PathBuf, [f64; 2], Value, Value, (Vec<String>, Vec<String>), (f32, f32), String, Option<String>, Vec<f32>, Value, (f32, f32), (f32, f32), Value)> {
+async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_panes: Vec<(String, String)>, webs: Vec<&String>, cx: &mut AsyncApp) -> Result<(Run, Value, Option<String>, Option<String>, Vec<(String, Option<String>, Option<String>, Option<String>)>, bool, Value, ClientWindow, String, std::rc::Rc<Native>, String, String, Vec<f32>, Vec<f32>, String, PathBuf, [f64; 2], Value, Value, (Vec<String>, Vec<String>), (f32, f32), String, Option<String>, Vec<f32>, Value, (f32, f32), (f32, f32), Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let row_frame = |state: &Value, id: &str| -> Option<[f64; 4]> {
@@ -3095,7 +3108,7 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
         tick(cx, 100).await;
         draw(window, None, cx)?;
     }
-    let windows: Vec<gpui::WindowHandle<Client>> = cx.update(|app| app.windows().into_iter().filter_map(|w| w.downcast::<Client>()).collect());
+    let windows: Vec<ClientWindow> = cx.update(|app| app.windows().into_iter().filter_map(ClientWindow::from_any).collect());
     ensure!(windows.len() == before_windows + 1, "New Window opened no window: {before_windows} -> {}", windows.len());
     let second = *windows.iter().find(|w| w.window_id() != window.window_id()).unwrap();
     let id2 = second.update(cx, |c, _, _| c.window_id().to_owned())?;
@@ -3237,7 +3250,7 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
         }
     }
     let after_window = window.update(cx, |c, _, _| (spaces_of(c, &second_session), spaces_of(c, first_session.as_deref().unwrap_or_default())))?;
-    let drag_lines = |h: gpui::WindowHandle<Client>, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("space drag") || l.contains("little window") || l.contains("layout")).rev().take(12).cloned().collect())?) };
+    let drag_lines = |h: ClientWindow, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("space drag") || l.contains("little window") || l.contains("layout")).rev().take(12).cloned().collect())?) };
     ensure!(moved_over && !after_window.1.contains(&dragged), "the drop on window 2's sidebar left {dragged} in {after_window:?}; window 2 shows {:?} and its layout holds {:?}; window 1 logged {:?}; window 2 logged {:?}",
         shown(second, cx)?, second.update(cx, |c, _, _| (spaces_of(c, &second_session), spaces_of(c, first_session.as_deref().unwrap_or_default())))?, drag_lines(window, cx)?, drag_lines(second, cx)?);
     ensure!(window.update(cx, |c, _, _| c.sidebar_json()["hovered"].is_null())? && second.update(cx, |c, _, _| c.sidebar_json())?["hovered"].is_null(), "the drag stayed drawn after the drop");
@@ -3318,11 +3331,11 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
 }
 
 /// A space dragged onto the menu bar popover's session card and between title-row tabs.
-async fn space_drag_to_popover_and_tabs(run: Run, dragged: String, f1: Vec<f32>, f2: Vec<f32>, first_session: Option<String>, from2: [f64; 2], id2: String, native2: std::rc::Rc<Native>, second: gpui::WindowHandle<Client>, second_session: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::sidebar::DropCard, Value, Vec<String>, Value, Value, Value)> {
+async fn space_drag_to_popover_and_tabs(run: Run, dragged: String, f1: Vec<f32>, f2: Vec<f32>, first_session: Option<String>, from2: [f64; 2], id2: String, native2: std::rc::Rc<Native>, second: ClientWindow, second_session: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::sidebar::DropCard, Value, Vec<String>, Value, Value, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let spaces_of = |c: &Client, session: &str| -> Vec<String> { c.layout_lists().0.into_iter().find(|s| s.id == session).map(|s| s.spaces).unwrap_or_default() };
-    let drag_lines = |h: gpui::WindowHandle<Client>, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("space drag") || l.contains("little window") || l.contains("layout")).rev().take(12).cloned().collect())?) };
+    let drag_lines = |h: ClientWindow, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("space drag") || l.contains("little window") || l.contains("layout")).rev().take(12).cloned().collect())?) };
     // From window 2 onto the first session's card in the menu bar popover, which is in front of
     // window 1: the space goes first in that session.
     let menu = app_menu_bar(&bridge, cx)?;
@@ -3453,7 +3466,7 @@ async fn space_drag_to_popover_and_tabs(run: Run, dragged: String, f1: Vec<f32>,
 }
 
 /// A pane dragged by its header out of its window, and the second window closing.
-async fn pane_drag_out_of_window(run: Run, f1: Vec<f32>, f2: Vec<f32>, id1: String, id2: String, second: gpui::WindowHandle<Client>, native2: std::rc::Rc<Native>, second_session: String, first_space: Option<String>, dragged: String, drag_dir: PathBuf, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+async fn pane_drag_out_of_window(run: Run, f1: Vec<f32>, f2: Vec<f32>, id1: String, id2: String, second: ClientWindow, native2: std::rc::Rc<Native>, second_session: String, first_space: Option<String>, dragged: String, drag_dir: PathBuf, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let row_frame = |state: &Value, id: &str| -> Option<[f64; 4]> {
@@ -3470,7 +3483,7 @@ async fn pane_drag_out_of_window(run: Run, f1: Vec<f32>, f2: Vec<f32>, id1: Stri
     let mut pane_away = {
         let grid_of = |c: &Client| -> Vec<(String, wheel_gpui::layout::Rect)> { c.layers().first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default() };
         let holding = |c: &Client, pane: &str| -> Option<String> { c.layout_lists().1.into_iter().find(|s| s.site_of(pane).is_some()).map(|s| s.id) };
-        let pane_lines = |h: gpui::WindowHandle<Client>, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("pane drag") || l.contains("little window")).rev().take(12).cloned().collect())?) };
+        let pane_lines = |h: ClientWindow, cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("pane drag") || l.contains("little window")).rev().take(12).cloned().collect())?) };
         let pane_dir = std::env::temp_dir().join(format!("wheel-gpui-pane-away-{}", std::process::id()));
         std::fs::create_dir_all(&pane_dir)?;
         let (ok, out, err) = run_pumped(&["space", "new", &pane_dir.to_string_lossy(), "--name", "paneaway"], &mut connection, &mut layouts, window, cx).await?;
@@ -3912,7 +3925,7 @@ async fn little_windows(run: Run, id1: String, cx: &mut AsyncApp) -> Result<(Run
         Ok(window.update(cx, |c, _, _| c.space_menu_items(&little_space).into_iter().find(|i| i.id == "little").map(|i| i.title))?)
     };
     ensure!(menu_title(cx)?.as_deref() == Some("Open in Little Window"), "the space menu offers {:?}", menu_title(cx)?);
-    let open_little = |cx: &mut AsyncApp| -> Result<gpui::WindowHandle<Client>> {
+    let open_little = |cx: &mut AsyncApp| -> Result<ClientWindow> {
         window.update(cx, |c, _, cx| {
             c.run_space_menu("little", &little_space, cx);
             cx.notify();
@@ -6368,7 +6381,7 @@ fn app_menu_bar(bridge: &std::rc::Rc<Bridge>, cx: &mut AsyncApp) -> Result<gpui:
 /// counts a fixture permission where it waits, its popover draws the cards, New Window opens a
 /// window, and closing every window leaves the app running with the item.
 #[allow(clippy::type_complexity)]
-async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), sessions: (&Option<String>, &String), handles: (gpui::WindowHandle<Client>, gpui::WindowHandle<Client>), little_space: Option<&str>, cx: &mut AsyncApp) -> Result<Value> {
+async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), sessions: (&Option<String>, &String), handles: (ClientWindow, ClientWindow), little_space: Option<&str>, cx: &mut AsyncApp) -> Result<Value> {
     use wheel_gpui::saved::Saved;
     let file = file.to_path_buf();
     // A little window on window 1's space, saved and restored with the two main windows.
@@ -6391,7 +6404,7 @@ async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), session
     ensure!(little_saved.frame.is_some(), "the little window was saved with no frame: {little_saved:?}");
     let (bridge, endpoint, hidden) = handles.0.update(cx, |c, _, _| c.opener())?;
     // Every handle `open_saved` returned, measured until each shows its session at its frame.
-    async fn settle(opened: &[gpui::WindowHandle<Client>], want: &[(Option<String>, Option<String>, Option<Vec<f32>>)], cx: &mut AsyncApp) -> Result<Vec<Value>> {
+    async fn settle(opened: &[ClientWindow], want: &[(Option<String>, Option<String>, Option<Vec<f32>>)], cx: &mut AsyncApp) -> Result<Vec<Value>> {
         let near = |a: &[f32], b: &[f32]| a.len() == 4 && b.len() == 4 && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.);
         let mut seen = vec![];
         for _ in 0..80 {
@@ -6412,7 +6425,7 @@ async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), session
         }
         anyhow::bail!("the reopened windows never settled: want {want:?}, saw {seen:?}")
     }
-    let close_all = |opened: &[gpui::WindowHandle<Client>], cx: &mut AsyncApp| -> Result<()> {
+    let close_all = |opened: &[ClientWindow], cx: &mut AsyncApp| -> Result<()> {
         for handle in opened {
             handle.update(cx, |_, w, _| w.remove_window())?;
         }
@@ -6453,7 +6466,7 @@ async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), session
         "reopened": reopened, "off": {"restore": off.restore, "focused_session": focused_session, "opened": collapsed}, "file_after": after.windows.len(),
     }))
 }
-async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &mut Connection, layouts: &mut usize, window: gpui::WindowHandle<Client>, output: &std::path::Path, cx: &mut AsyncApp) -> Result<Value> {
+async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &mut Connection, layouts: &mut usize, window: ClientWindow, output: &std::path::Path, cx: &mut AsyncApp) -> Result<Value> {
     let menu = app_menu_bar(bridge, cx)?;
     let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
     let mut menu_state = Value::Null;
@@ -6950,7 +6963,7 @@ fn popover_picture(popover: gpui::AnyWindowHandle, path: &std::path::Path, cx: &
 /// file and leaves wheeld running): the word, the details opened, Stop Server's question cancelled
 /// and then answered, Start Server, the right-click menu stopped and running, Stop Server… asking
 /// in an alert that is cancelled, and Restart Server from the menu running both commands.
-async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<wheel_gpui::view::MenuBar>, window: gpui::WindowHandle<Client>, output: &std::path::Path, closed_height: f64, cx: &mut AsyncApp) -> Result<Value> {
+async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<wheel_gpui::view::MenuBar>, window: ClientWindow, output: &std::path::Path, closed_height: f64, cx: &mut AsyncApp) -> Result<Value> {
     let server_log = || wheel_gpui::view::server::with(|s| s.log.clone()).unwrap_or_default();
     let bridge_state = |cx: &mut AsyncApp| menu.update(cx, |m, _| m.bridge_call(json!({"op": "state"})));
     let (stop_file, start_file) = (output.join("server.stop"), output.join("server.start"));
@@ -7167,6 +7180,7 @@ fn main() -> Result<()> {
     let passed = std::sync::Arc::new(std::sync::Mutex::new(false));
     let done = passed.clone();
     gpui::Application::with_platform(gpui_platform::current_platform(true)).run(move |cx| {
+        wheel_gpui::init(cx);
         cx.spawn(async move |cx| {
             match experiment(output.clone(), cx).await {
                 Ok(report) => {
@@ -7189,7 +7203,7 @@ fn main() -> Result<()> {
 /// A window as the pane drag steps drive it: its handle, bridge half, screen frame and id.
 #[derive(Clone)]
 struct Side {
-    h: gpui::WindowHandle<Client>,
+    h: ClientWindow,
     native: std::rc::Rc<Native>,
     f: Vec<f32>,
     id: String,
@@ -7214,7 +7228,7 @@ fn away_holding(c: &Client, pane: &str) -> Option<String> {
     c.layout_lists().1.into_iter().find(|s| s.site_of(pane).is_some()).map(|s| s.id)
 }
 
-fn away_lines(h: gpui::WindowHandle<Client>, cx: &mut AsyncApp) -> Vec<String> {
+fn away_lines(h: ClientWindow, cx: &mut AsyncApp) -> Vec<String> {
     h.update(cx, |c, _, _| c.toast_log.iter().filter(|l| l.contains("pane drag") || l.contains("little window")).rev().take(12).cloned().collect()).unwrap_or_default()
 }
 
@@ -7228,7 +7242,7 @@ fn local_to(from: &Side, to: (f32, f32)) -> [f64; 2] {
 }
 
 /// A space of its own in `side`'s session with one pane, shown in `side`.
-async fn pane_rig_open(side: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<PaneRig> {
+async fn pane_rig_open(side: &Side, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<PaneRig> {
     let back = side.h.update(cx, |c, _, _| c.space_id().map(str::to_owned))?;
     let dir = std::env::temp_dir().join(format!("wheel-gpui-pane-rig-{}-{}", std::process::id(), side.id));
     std::fs::create_dir_all(&dir)?;
@@ -7256,7 +7270,7 @@ async fn pane_rig_open(side: &Side, pumper: gpui::WindowHandle<Client>, connecti
 }
 
 /// Close the rig's space when it is still there (a pane that left it may have taken it along).
-async fn pane_rig_close(side: &Side, rig: PaneRig, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<()> {
+async fn pane_rig_close(side: &Side, rig: PaneRig, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<()> {
     pump(connection, 300, layouts, pumper, cx).await?;
     if side.h.update(cx, |c, _, _| c.layout_lists().1.iter().any(|s| s.id == rig.space)).unwrap_or(false) {
         let (ok, _, err) = run_pumped(&["space", "close", &rig.space], connection, layouts, pumper, cx).await?;
@@ -7278,7 +7292,7 @@ async fn pane_rig_close(side: &Side, rig: PaneRig, pumper: gpui::WindowHandle<Cl
 
 /// A second space in `side`'s session, so its sidebar and tabs have one it does not show for the
 /// pane to be held over; the space's id.
-async fn pane_spare_open(side: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<(String, PathBuf)> {
+async fn pane_spare_open(side: &Side, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<(String, PathBuf)> {
     let dir = std::env::temp_dir().join(format!("wheel-gpui-pane-spare-{}-{}", std::process::id(), side.id));
     std::fs::create_dir_all(&dir)?;
     let (ok, out, err) = run_pumped(&["space", "new", &dir.to_string_lossy(), "--name", "panespare"], connection, layouts, pumper, cx).await?;
@@ -7359,7 +7373,7 @@ async fn pane_wait_shows(src: &Side, dst: &Side, space: Option<&str>, cx: &mut A
 
 /// A hold switched a window, then the pane is released over nothing (its own place in the grid):
 /// the window shows what it showed before (AppModel.endAway).
-async fn pane_hold_then_release(src: &Side, dst: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+async fn pane_hold_then_release(src: &Side, dst: &Side, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     let rig = pane_rig_open(src, pumper, connection, layouts, cx).await?;
     let (held, row) = other_row(dst, cx)?;
     let before = pane_hold_over_row(src, dst, &rig, &held, row, cx).await?;
@@ -7380,7 +7394,7 @@ async fn pane_hold_then_release(src: &Side, dst: &Side, pumper: gpui::WindowHand
 
 /// Escape after a hold with the pointer still: the cancel puts the window back at the next redraw
 /// (Client::cancel_pane_drag's restore).
-async fn pane_hold_then_escape(src: &Side, dst: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+async fn pane_hold_then_escape(src: &Side, dst: &Side, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     let rig = pane_rig_open(src, pumper, connection, layouts, cx).await?;
     let (held, row) = other_row(dst, cx)?;
     let before = pane_hold_over_row(src, dst, &rig, &held, row, cx).await?;
@@ -7396,7 +7410,7 @@ async fn pane_hold_then_escape(src: &Side, dst: &Side, pumper: gpui::WindowHandl
 
 /// With both sidebars hidden the tab strip takes the sidebar's place: a hold over a tab shows its
 /// space, the tab outlines, and the strip's room past the tabs is a new space.
-async fn pane_drag_over_tabs(src: &Side, dst: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+async fn pane_drag_over_tabs(src: &Side, dst: &Side, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     for s in [src, dst] {
         s.h.update(cx, |c, _, cx| {
             c.set_sidebar(false);
@@ -7445,7 +7459,7 @@ async fn pane_drag_over_tabs(src: &Side, dst: &Side, pumper: gpui::WindowHandle<
 }
 
 /// The menu bar popover's rows are End targets for a pane, and nothing is held over them.
-async fn pane_drag_onto_popover_row(src: &Side, pumper: gpui::WindowHandle<Client>, bridge: &std::rc::Rc<Bridge>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+async fn pane_drag_onto_popover_row(src: &Side, pumper: ClientWindow, bridge: &std::rc::Rc<Bridge>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     let rig = pane_rig_open(src, pumper, connection, layouts, cx).await?;
     let menu = app_menu_bar(bridge, cx)?;
     cx.update(|cx| menu.update(cx, |m, _| m.press_item()));
@@ -7492,7 +7506,7 @@ async fn pane_drag_onto_popover_row(src: &Side, pumper: gpui::WindowHandle<Clien
 
 /// A drag inside a little window showing the pane's space docks in that window's own grid
 /// (PaneTarget::Home for a little window).
-async fn pane_drag_in_little_window(owner: &Side, peer: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+async fn pane_drag_in_little_window(owner: &Side, peer: &Side, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     let rig = pane_rig_open(owner, pumper, connection, layouts, cx).await?;
     let (ok, out, err) = run_pumped(&["pane", "split", &rig.pane, "right"], connection, layouts, pumper, cx).await?;
     ensure!(ok, "wheel pane split for the little window failed: {err}");
@@ -7584,7 +7598,7 @@ async fn pane_drag_in_little_window(owner: &Side, peer: &Side, pumper: gpui::Win
 
 /// The source window closing in the middle of a pane drag puts the windows a hold switched back
 /// (wheel-ynjo.8.8): `src` drags over `dst`'s row until `dst` shows that space, then `src` closes.
-async fn pane_drag_source_closes(src: &Side, dst: &Side, pumper: gpui::WindowHandle<Client>, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+async fn pane_drag_source_closes(src: &Side, dst: &Side, pumper: ClientWindow, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
     let rig = pane_rig_open(src, pumper, connection, layouts, cx).await?;
     let (held, row) = other_row(dst, cx)?;
     let before = pane_hold_over_row(src, dst, &rig, &held, row, cx).await?;

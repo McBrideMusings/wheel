@@ -81,9 +81,8 @@ impl Client {
             }
             MessageAction::CopyMarkdown => cx.write_to_clipboard(ClipboardItem::new_string(markdown)),
             MessageAction::Attach => {
-                let draft = self.drafts.entry(agent.to_owned()).or_default();
-                *draft = crate::composer::attach_as_context(draft, &markdown);
-                self.draft_edited(agent);
+                let quoted = crate::composer::attach_as_context(self.drafts.get(agent).map(String::as_str).unwrap_or(""), &markdown);
+                self.set_draft(agent, quoted);
                 // The composer takes the keyboard, so the next keys type under the quote.
                 let pane = self.spaces.iter().flat_map(|s| s.all()).find(|l| l.agent.as_deref() == Some(agent)).map(|l| l.id.clone());
                 if let Some(pane) = pane {

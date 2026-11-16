@@ -40,7 +40,7 @@ pub mod windows;
 
 use anyhow::Result;
 use futures::StreamExt as _;
-use gpui::{App, Bounds, WindowBounds, WindowHandle, WindowOptions, point, prelude::*, px, size};
+use gpui::{App, Bounds, KeyDownEvent, KeyBinding, KeystrokeEvent, NoAction, Window, WindowBounds, WindowOptions, point, prelude::*, px, rgb, rgba, size};
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::atomic::{AtomicU32, Ordering}};
 use wheel_proto::{ServerMsg, WindowCommand};
@@ -49,16 +49,16 @@ static WINDOWS: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     /// Every open window by id, for a window command or a debug request that names another window.
-    static HANDLES: RefCell<HashMap<String, WindowHandle<view::Client>>> = RefCell::default();
+    static HANDLES: RefCell<HashMap<String, view::ClientWindow>> = RefCell::default();
 }
 
 /// The open window `id`, if it is open.
-pub fn window_handle(id: &str) -> Option<WindowHandle<view::Client>> {
+pub fn window_handle(id: &str) -> Option<view::ClientWindow> {
     HANDLES.with(|h| h.borrow().get(id).copied())
 }
 
 /// Every open window by id, main and little.
-pub fn window_handles() -> Vec<(String, WindowHandle<view::Client>)> {
+pub fn window_handles() -> Vec<(String, view::ClientWindow)> {
     HANDLES.with(|h| h.borrow().iter().map(|(id, w)| (id.clone(), *w)).collect())
 }
 
@@ -88,11 +88,57 @@ pub fn forget_window(id: &str) {
 /// opened or closed, so its owner's tab, row and grid change.
 pub fn refresh_windows(cx: &mut App) {
     cx.defer(|cx| {
-        let handles: Vec<WindowHandle<view::Client>> = HANDLES.with(|h| h.borrow().values().copied().collect());
+        let handles: Vec<view::ClientWindow> = HANDLES.with(|h| h.borrow().values().copied().collect());
         for handle in handles {
             let _ = handle.update(cx, |_, _, cx| cx.notify());
         }
     });
+}
+
+/// Set up before the first window opens: gpui-component's bindings and theme (its text inputs
+/// draw from it) in the client's palette, and the hook that gives the composer's keys to the
+/// client before the input's own bindings.
+pub fn init(cx: &mut App) {
+    gpui_component::init(cx);
+    let colors = &mut gpui_component::Theme::global_mut(cx).colors;
+    colors.foreground = rgb(0xd9e8e1).into();
+    colors.background = rgb(0x0e1311).into();
+    colors.caret = rgb(0x7fb89a).into();
+    colors.selection = rgba(0x7fb89a55).into();
+    colors.muted_foreground = rgb(0x6f8a7d).into();
+    // Root binds Tab to the next focus stop; the client's keys read Tab themselves.
+    cx.bind_keys([KeyBinding::new("tab", NoAction, Some("Root")), KeyBinding::new("shift-tab", NoAction, Some("Root"))]);
+    cx.intercept_keystrokes(composer_key).detach();
+}
+
+/// A keystroke in a window whose composer input is focused, before GPUI resolves it against
+/// the input's bindings: the client's own handling of the key (the command list, the queue,
+/// Return to send, files pasted as chips, its commands) goes first, and a key it takes goes no
+/// further. ⇧Return starts a new line, which the input leaves unbound. Every other key is the
+/// input's: caret, selection, clipboard, undo, word and line moves, IME.
+fn composer_key(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
+    let Some(client) = view::ClientWindow::client_of(window, cx) else { return };
+    let Some(input) = client.read(cx).focused_input(window, cx) else { return };
+    let k = &event.keystroke;
+    // GPUI's interceptor event has no repeat flag: the same key again with no key-up between
+    // (the root's `on_key_up` clears it) is the platform's auto-repeat, as `isARepeat` is.
+    let is_held = client.update(cx, |client, _| client.key_down.replace(k.clone()).as_ref() == Some(k));
+    let down = KeyDownEvent { keystroke: k.clone(), is_held, prefer_character_input: false };
+    // The keyboard is about to leave the input (the pane changed, an overlay opened; the next
+    // frame moves it): the client takes the key and the input gets none.
+    let leaving = client.read(cx).composer_agent().is_none();
+    if client.update(cx, |client, cx| {
+        let handled = client.key(&down, cx);
+        if handled {
+            cx.notify();
+        }
+        handled
+    }) || leaving {
+        cx.stop_propagation();
+    } else if k.key == "enter" && k.modifiers.shift && !k.modifiers.platform && !k.modifiers.control {
+        input.update(cx, |input, cx| input.replace("\n", window, cx));
+        cx.stop_propagation();
+    }
 }
 
 /// What kind of window to open: a main one, or a little one showing a single space.
@@ -117,7 +163,7 @@ pub fn create_window(
     hidden: bool,
     opening: Opening,
     frame: Option<saved::Frame>,
-) -> Result<WindowHandle<view::Client>> {
+) -> Result<view::ClientWindow> {
     // The app's one server control, made by the first window or the menu bar.
     view::server::ensure(cx, endpoint.service.clone(), hidden);
     view::ensure_pairing_copy(cx);
@@ -143,7 +189,8 @@ pub fn create_window(
     if let Some([x, y, w, h]) = frame {
         bounds = Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) };
     }
-    let window = cx.open_window(
+    let window = view::ClientWindow::open(
+        cx,
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: min_size,
@@ -226,7 +273,7 @@ const NATIVE_RENDER_WAIT: std::time::Duration = std::time::Duration::from_secs(5
 /// The native views over the window (terminals, pages, plugin panes), each drawn by the bridge and
 /// pasted over `frame` at its place, except where the window cuts it (a card over it, the
 /// palette): the window's own drawing has only empty slots there. Answers each pane's outcome.
-async fn paste_native_panes(window: WindowHandle<view::Client>, frame: &mut image::RgbaImage, cx: &mut gpui::AsyncApp) -> Result<serde_json::Value> {
+async fn paste_native_panes(window: view::ClientWindow, frame: &mut image::RgbaImage, cx: &mut gpui::AsyncApp) -> Result<serde_json::Value> {
     let (status, asked, width) = window.update(cx, |client, w, _| {
         let (status, asked) = client.render_native_for_snapshot();
         (status, asked, f32::from(w.viewport_size().width))
@@ -296,7 +343,7 @@ async fn paste_native_panes(window: WindowHandle<view::Client>, frame: &mut imag
 
 /// Answer one debug request against `window`: the view runs the route, then a snapshot is drawn
 /// with the view free again, the native views pasted in. Err when the window is gone.
-pub async fn answer_debug(window: WindowHandle<view::Client>, request: &debug::Request, cx: &mut gpui::AsyncApp) -> Result<(String, serde_json::Value)> {
+pub async fn answer_debug(window: view::ClientWindow, request: &debug::Request, cx: &mut gpui::AsyncApp) -> Result<(String, serde_json::Value)> {
     if request.expired() {
         anyhow::bail!("the request's connection stopped waiting");
     }
@@ -307,6 +354,19 @@ pub async fn answer_debug(window: WindowHandle<view::Client>, request: &debug::R
     };
     match window.update(cx, |client, _, cx| client.debug_request(request, cx))? {
         view::DebugAnswer::Done(status, body) => Ok((status, body)),
+        view::DebugAnswer::Keys(keys) => {
+            let any: gpui::AnyWindowHandle = window.into();
+            let taken = any.update(cx, |_, window, cx| keys.into_iter().map(|k| window.dispatch_keystroke(k, cx)).fold(false, |a, b| a | b))?;
+            let state = window.update(cx, |client, _, cx| {
+                // A dispatched keystroke has no key-up: the next one is a new press, never a repeat.
+                client.key_down = None;
+                cx.notify();
+                client.state_json()
+            })?;
+            let mut body = state;
+            body["taken"] = serde_json::Value::Bool(taken);
+            Ok(("200 OK".to_owned(), body))
+        }
         view::DebugAnswer::Snapshot(target) => {
             let any: gpui::AnyWindowHandle = window.into();
             let frame = any.update(cx, |_, window, cx| {
@@ -335,7 +395,7 @@ pub async fn answer_debug(window: WindowHandle<view::Client>, request: &debug::R
 /// where it starts, twice, for `seconds`, as the Swift app's `POST /windows?action=sweep`
 /// does, one step due every 1/60 s. Each step resizes the window and draws one frame (`Window::draw`, the call the hidden
 /// check uses, since a window never shown has no display link); the reply is the draw times.
-async fn measure_sweep(window: WindowHandle<view::Client>, request: &debug::Request, cx: &mut gpui::AsyncApp) -> serde_json::Value {
+async fn measure_sweep(window: view::ClientWindow, request: &debug::Request, cx: &mut gpui::AsyncApp) -> serde_json::Value {
     let num = |name: &str, default: f64| request.query.get(name).and_then(|v| v.parse::<f64>().ok()).unwrap_or(default);
     let (seconds, by) = (num("seconds", 2.5), num("by", 300.));
     let any: gpui::AnyWindowHandle = window.into();
@@ -375,7 +435,7 @@ async fn measure_sweep(window: WindowHandle<view::Client>, request: &debug::Requ
 }
 
 /// Answer the debug server's requests against `window` until the window closes or the server stops.
-pub fn serve_debug(cx: &mut App, window: WindowHandle<view::Client>, mut server: debug::Server) {
+pub fn serve_debug(cx: &mut App, window: view::ClientWindow, mut server: debug::Server) {
     cx.spawn(async move |cx| {
         while let Some(request) = server.requests.next().await {
             // Measure mode (wheel-ynjo.19): a resize sweep that times every frame's draw.
@@ -403,7 +463,7 @@ pub fn open_window(
     prefer_session: Option<String>,
     prefer_space: Option<String>,
     hidden: bool,
-) -> Result<WindowHandle<view::Client>> {
+) -> Result<view::ClientWindow> {
     open_window_as(cx, bridge, endpoint, prefer_session, prefer_space, hidden, Opening::Main, None)
 }
 
@@ -418,7 +478,7 @@ pub fn open_window_as(
     hidden: bool,
     opening: Opening,
     frame: Option<saved::Frame>,
-) -> Result<WindowHandle<view::Client>> {
+) -> Result<view::ClientWindow> {
     // The window holds the only sender: when it closes, the socket closes with it, and wheeld
     // forgets its view and its offer to run window commands at once.
     let daemon::Connection { send, mut incoming } = daemon::Connection::open(endpoint.clone());
@@ -438,7 +498,7 @@ pub fn open_window_as(
 /// too, so it runs with the app rather than inside the window. Ok(true) for a layout; Err when the
 /// window is gone, and then a window command it carried goes unanswered: there is no connection
 /// left to answer on, and wheeld gives up on it after its wait.
-pub fn deliver(cx: &mut App, window: WindowHandle<view::Client>, event: daemon::Event) -> Result<bool> {
+pub fn deliver(cx: &mut App, window: view::ClientWindow, event: daemon::Event) -> Result<bool> {
     if let daemon::Event::Message(message) = &event
         && let ServerMsg::WindowRequest { id, command } = message.as_ref()
     {
@@ -513,7 +573,7 @@ pub fn deliver(cx: &mut App, window: WindowHandle<view::Client>, event: daemon::
 
 /// Answer a window command wheeld forwarded to `via` (AppModel.answerWindowCommand): run it on
 /// the app's windows and send what it came to back through `via`'s connection.
-pub fn answer_window_command(cx: &mut App, via: WindowHandle<view::Client>, id: u64, command: WindowCommand) {
+pub fn answer_window_command(cx: &mut App, via: view::ClientWindow, id: u64, command: WindowCommand) {
     let result = run_window_command(cx, via, &command);
     let _ = via.update(cx, |client, _, cx| {
         client.window_answer(id, &command, result);
@@ -521,10 +581,10 @@ pub fn answer_window_command(cx: &mut App, via: WindowHandle<view::Client>, id: 
     });
 }
 
-fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &WindowCommand) -> Result<serde_json::Value, String> {
+fn run_window_command(cx: &mut App, via: view::ClientWindow, command: &WindowCommand) -> Result<serde_json::Value, String> {
     let gone = |_| "the window wheeld asked has closed".to_owned();
     let (sessions, spaces) = via.read(cx).map(|c| c.layout_lists()).map_err(gone)?;
-    let target = |text: &str| -> Result<(String, WindowHandle<view::Client>), String> {
+    let target = |text: &str| -> Result<(String, view::ClientWindow), String> {
         let id = windows::with(|r| windows::window_id(r, text, &spaces))?;
         window_handle(&id).map(|h| (id.clone(), h)).ok_or_else(|| format!("window {id} has closed"))
     };
@@ -582,7 +642,7 @@ fn run_window_command(cx: &mut App, via: WindowHandle<view::Client>, command: &W
 /// At launch (AppModel.openLaunchWindows): open what `file` saved, per `saved::Saved::launch_plan`,
 /// and keep writing the windows to it. `space` (`--space`) shows that space in the first window.
 /// The handles in the order they opened; the focused window is the last main one.
-pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, file: Option<std::path::PathBuf>) -> Result<Vec<WindowHandle<view::Client>>> {
+pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, file: Option<std::path::PathBuf>) -> Result<Vec<view::ClientWindow>> {
     let saved = saved::Saved::load(file.as_ref());
     saved::start(cx, file, saved.restore);
     let opened = open_saved(cx, bridge, endpoint, space, hidden, &saved);
@@ -593,7 +653,7 @@ pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpo
 }
 
 /// Open the windows `saved` says launch opens.
-pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, saved: &saved::Saved) -> Result<Vec<WindowHandle<view::Client>>> {
+pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, saved: &saved::Saved) -> Result<Vec<view::ClientWindow>> {
     let plan = saved.launch_plan();
     eprintln!("wheel-gpui: launch opens {} window(s), restore windows at launch {}", plan.len(), if saved.restore { "on" } else { "off" });
     let mut handles = vec![];
@@ -630,7 +690,7 @@ pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
 /// New Window, `wheel window new` and the Dock icon (AppModel.newWindow): a main window on
 /// `session`, else the focused window's, showing `space` when one is named, with the focused
 /// window's sidebar and `name`, brought front.
-pub fn new_window(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, hidden: bool, session: Option<String>, space: Option<String>, name: Option<String>) -> Result<WindowHandle<view::Client>> {
+pub fn new_window(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, hidden: bool, session: Option<String>, space: Option<String>, name: Option<String>) -> Result<view::ClientWindow> {
     let (focused, sidebar) = windows::with(|r| (r.focused().and_then(|w| w.session.clone()), r.focused().map(|w| w.sidebar).unwrap_or(true)));
     let handle = open_window(cx, bridge, endpoint, session.or(focused), space, hidden)?;
     let _ = handle.update(cx, |client, _, cx| {
@@ -645,14 +705,14 @@ pub fn new_window(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
 /// The red light: the window closes at once, and a session no other window shows stays in the
 /// background.
 pub fn red_light(window: &mut gpui::Window, cx: &mut App) -> bool {
-    if let Some(Some(client)) = window.root::<view::Client>() {
+    if let Some(client) = view::ClientWindow::client_of(window, cx) {
         client.update(cx, |client, _| client.log_close());
     }
     true
 }
 
 /// Bring a window front and make it key, unless the app runs hidden for a check.
-pub fn bring_front(cx: &mut App, handle: WindowHandle<view::Client>) {
+pub fn bring_front(cx: &mut App, handle: view::ClientWindow) {
     if handle.read(cx).is_ok_and(|c| !c.is_hidden()) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
     }

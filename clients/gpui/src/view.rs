@@ -6,6 +6,8 @@
 mod agents;
 mod commands;
 mod composer;
+#[cfg(test)]
+mod composer_tests;
 mod conversations;
 mod debug;
 pub mod float;
@@ -40,7 +42,50 @@ pub use settings::{SettingsEdit, SettingsReqs};
 use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, popped::{Card, CardDrag, GRIP, Layer}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FollowMode, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, list, prelude::*, px, rgb, rgba};
 use wheel_proto::{PluginInfo, TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
+use gpui_component::{Root, input::{Input, InputEvent, InputState}};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
+
+/// A client window: GPUI's `Root` (gpui-component's inputs read it) wrapping a `Client`. It
+/// updates the client as a `WindowHandle<Client>` would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientWindow(gpui::WindowHandle<Root>);
+
+impl ClientWindow {
+    /// Open a window whose root is `Root` over `client`.
+    pub fn open(cx: &mut App, options: gpui::WindowOptions, client: impl FnOnce(&mut Window, &mut App) -> gpui::Entity<Client>) -> anyhow::Result<Self> {
+        let handle = cx.open_window(options, |window, cx| {
+            let client = client(window, cx);
+            cx.new(|cx| Root::new(client, window, cx))
+        })?;
+        Ok(Self(handle))
+    }
+    /// The window `any` is, when it is a client window.
+    pub fn from_any(any: gpui::AnyWindowHandle) -> Option<Self> {
+        any.downcast::<Root>().map(Self)
+    }
+    fn client(root: &Root) -> gpui::Entity<Client> {
+        root.view().clone().downcast::<Client>().unwrap_or_else(|_| unreachable!("a client window's root wraps a Client"))
+    }
+    /// The client of the window whose root is `window`'s, if it is a client window.
+    pub fn client_of(window: &Window, cx: &App) -> Option<gpui::Entity<Client>> {
+        window.root::<Root>().flatten().and_then(|root| root.read(cx).view().clone().downcast::<Client>().ok())
+    }
+    pub fn update<C: gpui::AppContext, R>(&self, cx: &mut C, f: impl FnOnce(&mut Client, &mut Window, &mut Context<Client>) -> R) -> anyhow::Result<R> {
+        self.0.update(cx, |root, window, cx| Self::client(root).update(cx, |client, cx| f(client, window, cx)))
+    }
+    pub fn window_id(&self) -> gpui::WindowId {
+        self.0.window_id()
+    }
+    pub fn read<'a>(&self, cx: &'a App) -> anyhow::Result<&'a Client> {
+        Ok(Self::client(self.0.read(cx)?).read(cx))
+    }
+}
+
+impl From<ClientWindow> for gpui::AnyWindowHandle {
+    fn from(w: ClientWindow) -> Self {
+        w.0.into()
+    }
+}
 
 pub const TITLE: f32 = 22.0;
 /// Where a native view was last put: its rect, whether it was hidden, and the holes cut in it.
@@ -53,6 +98,9 @@ pub struct Client {
     bridge: Rc<Bridge>,
     /// The test mode the window was opened in; a window this one opens is opened the same way.
     hidden: bool,
+    /// The key last pressed in this window with no key-up since: the same key pressed again is
+    /// an auto-repeat, which GPUI's keystroke interceptor does not flag (`composer_key`).
+    pub(crate) key_down: Option<gpui::Keystroke>,
     /// Names this window to wheeld in `view` reports (ADR-0022).
     window_id: String,
     sessions: Vec<Session>,
@@ -148,8 +196,12 @@ pub struct Client {
     pane_images: pane_image::PaneImages,
     /// wheeld's last refusal of a request about an agent's messages, shown under its composer.
     composer_errors: HashMap<String, String>,
-    /// Each agent's composer text scroll, for a draft taller than the box grows.
-    composer_scrolls: HashMap<String, ScrollHandle>,
+    /// Each agent's composer text input, made when its composer is first drawn. `drafts` stays
+    /// the model every other piece reads; an edit in the input copies into it.
+    inputs: HashMap<String, gpui::Entity<InputState>>,
+    /// Agents whose draft changed by the client (a picked command, a restored message, a send)
+    /// and whose input has not taken the new text yet.
+    stale_inputs: HashSet<String>,
     /// GPUI delivers keys only to a focused element: the root holds this for good, while the
     /// keyboard itself moves between the window's views by AppKit's first responder.
     handle: FocusHandle,
@@ -433,7 +485,7 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), composer_scrolls: HashMap::new(), handle, link: Link::Connecting,
+            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
@@ -1632,28 +1684,19 @@ impl Client {
         }
         let agent = focused.filter(|l| l.kind == "agent").and_then(|l| l.agent);
         let Some(agent) = agent else { return false };
+        // Files or an image on the pasteboard attach as chips; text pastes in the input.
         if k.modifiers.platform && !k.modifiers.control && !k.modifiers.alt && !k.modifiers.shift && k.key == "v" {
-            self.paste_into_composer(&agent, cx);
-            return true;
+            return self.attach_pasted(&agent, cx);
         }
-        if k.key == "enter" && !k.modifiers.shift && !k.modifiers.platform && !k.modifiers.control && self.holds_attachments(&agent) {
-            self.send_draft(&agent, false);
-            return true;
-        }
-        let draft = self.drafts.entry(agent.clone()).or_default();
-        match type_into(draft, &k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control, k.modifiers.shift) {
-            Typed::Nothing => false,
-            Typed::Edited => {
-                self.draft_edited(&agent);
-                true
-            }
-            // `send_draft` keeps the text in the box when wheeld is out of reach.
-            Typed::Send(text) => {
-                self.drafts.insert(agent.clone(), text);
+        // Return sends (a message of attachments alone may go); ⇧Return starts a new line in the
+        // input; ⌘Return and ⌃Return, which `queue_key` took while a turn runs, do nothing.
+        if k.key == "enter" && !k.modifiers.shift {
+            if !k.modifiers.platform && !k.modifiers.control {
                 self.send_draft(&agent, false);
-                true
             }
+            return true;
         }
+        false
     }
     /// Ask wheeld for the plugins the shown space can use while it has an empty pane (the pane's buttons list their panes), at most
     /// every 2 s on a layout change, so a plugin added to the project shows up, and once when the space is first shown.
@@ -1976,11 +2019,10 @@ impl Client {
                     }
                     None => None,
                 };
-                let fit = self.composer_fit_for(window, &p.leaf.id, agent, r.w);
+                let fit = self.composer_fit_for(window, agent, r.w);
                 composer_h = fit.height;
-                let scroll = agent.map(|a| self.composer_scroll(a));
+                let input = agent.map(|a| self.composer_input(a, window, cx));
                 let t = agent.and_then(|a| self.transcripts.get(a));
-                let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
                 let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
                     list(state, cx.processor(move |this, ix, _, cx| this.row_el(&a, ix, cx).into_any_element())).size_full()
                 });
@@ -2008,7 +2050,7 @@ impl Client {
                 let busy = t.is_some_and(Transcript::busy);
                 let stop = agent.map(|a| composer::stop_button(a, busy, title::symbol(&self.native, &self.symbols, "stop.fill", 10., 0xd9e8e1), &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, draft, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, scroll, error, stop }, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, input, error, stop }, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2181,9 +2223,6 @@ impl Render for Client {
             self.file_drag = None;
         }
         let layers = self.layers();
-        if !self.handle.is_focused(window) {
-            window.focus(&self.handle, cx);
-        }
         if std::mem::take(&mut self.close_window_requested) {
             window.remove_window();
         }
@@ -2232,11 +2271,15 @@ impl Render for Client {
         self.tick_procs(cx);
         self.tick_preview(cx);
         let mut root = div().relative().track_focus(&self.handle)
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
-                if this.key(e, cx) {
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                // A key with the composer's input focused went through `composer_key` before the
+                // input's own bindings.
+                if !this.composer_focused(window, cx) && this.key(e, cx) {
                     cx.notify();
                 }
-            })).size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
+            }))
+            .on_key_up(cx.listener(|this, _: &gpui::KeyUpEvent, _, _| this.key_down = None))
+            .size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
             .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
                 if this.press_away(f32::from(e.position.x), f32::from(e.position.y)) {
                     cx.notify();
@@ -2383,6 +2426,7 @@ impl Render for Client {
         }
         root = root.child(self.toast_stack(w, h, cx));
         crate::crash_guard::clear();
+        self.sync_focus(window, cx);
         root
     }
 }
@@ -2540,7 +2584,7 @@ struct Attach {
 /// taller than the box grows, and wheeld's last refusal beside the text.
 struct Composer<'a> {
     fit: composer::ComposerFit,
-    scroll: Option<ScrollHandle>,
+    input: Option<gpui::Entity<InputState>>,
     error: Option<&'a str>,
     /// The stop button at the row's end (`composer::stop_button`).
     stop: Option<gpui::Stateful<gpui::Div>>,
@@ -2549,7 +2593,7 @@ struct Composer<'a> {
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
 /// rows, or `empty` while it has none), and the composer with the draft. Files dropped on the composer or its chips attach.
 #[allow(clippy::too_many_arguments)]
-fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, draft: &str, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, tasks: running::TaskParts, attach: Attach, composer: Composer,
+fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcript>, focused: bool, column: Option<gpui::List>, empty: Option<gpui::Div>, height: f32, card: Option<gpui::Div>, card_h: f32, list: Option<gpui::Div>, tasks: running::TaskParts, attach: Attach, composer: Composer,
     footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let state = t.map(|t| t.state.as_str()).unwrap_or("connecting");
     let col = div().id(gpui::ElementId::Name(format!("transcript-{pane}").into()))
@@ -2577,8 +2621,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
                 .children(attach.clip)
                 // As wide as `composer_fit` wrapped it, so the box is as tall as its lines.
                 .child(div().id(gpui::ElementId::Name(format!("composer-text-{pane}").into())).flex_none().w(px(composer.fit.text_w)).h(px(composer.fit.lines_h))
-                    .when_some(composer.scroll, |d, scroll| d.overflow_y_scroll().track_scroll(&scroll))
-                    .child(div().w_full().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).child(composer::shown_draft(draft, focused))))
+                    .children(composer.input.map(|input| Input::new(&input).appearance(false).p_0().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).h(px(composer.fit.lines_h)))))
                 .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))
                 .children(composer.stop)
                 .children(agent.map(|a| recorded(a, "composer", controls)))), cx))

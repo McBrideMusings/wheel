@@ -127,7 +127,7 @@ impl Client {
             "escape" => self.cancel_name_edit(),
             "enter" => self.commit_name_edit(),
             _ => {
-                if let Typed::Nothing = type_into(&mut edit.draft, key, text, command, false) {
+                if let Typed::Nothing = type_into(&mut edit.draft, key, text, command) {
                     return !command;
                 }
             }

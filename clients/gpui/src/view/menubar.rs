@@ -29,7 +29,7 @@ pub fn menu_bar() -> Option<Entity<MenuBar>> {
 
 /// The main window that was key last, else the newest (Registry::focused), as its Client: where
 /// the popover's pairing row and Settings… act.
-pub fn focused_client(_: &App) -> Option<WindowHandle<Client>> {
+pub fn focused_client(_: &App) -> Option<ClientWindow> {
     crate::windows::with(|r| r.focused().map(|w| w.id.clone())).and_then(|id| crate::window_handle(&id))
 }
 
