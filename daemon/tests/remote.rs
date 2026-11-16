@@ -939,3 +939,237 @@ async fn a_phone_with_a_token_is_pushed_when_an_agent_needs_the_person() {
     let gone = local_req(&mut cli, serde_json::json!({"op":"push_test","req":13,"event":"failed"})).await;
     assert!(gone["message"].as_str().unwrap().contains("no phone has registered"), "{gone}");
 }
+
+/// A GET over the remote listener's pinned TLS, with `token` as a bearer when given: the status
+/// line, the headers lowercased, and the body.
+async fn remote_get(
+    port: u16,
+    fingerprint: &str,
+    path: &str,
+    token: Option<&str>,
+) -> (String, String, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(Pinned(fingerprint.to_string())))
+    .with_no_client_auth();
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut tls = TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+    let auth = token
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\n{auth}Connection: close\r\n\r\n");
+    tls.write_all(request.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    let _ = tls.read_to_end(&mut raw).await;
+    let raw = String::from_utf8_lossy(&raw).into_owned();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((&raw, ""));
+    let (status, headers) = head.split_once("\r\n").unwrap_or((head, ""));
+    (status.to_string(), headers.to_lowercase(), body.to_string())
+}
+
+/// A program on this machine's loopback that answers `/page` with a body naming the path it saw,
+/// and `/away` and `/far` with redirects written as a path and as its own loopback address. The
+/// counter holds how many requests reached it.
+async fn loopback_program() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = hits.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let line = text.lines().next().unwrap_or_default().to_string();
+                let path = line.split(' ').nth(1).unwrap_or("/").to_string();
+                let authorized = text.to_lowercase().contains("authorization:");
+                let reply = match path.as_str() {
+                    "/away" => "HTTP/1.1 302 Found\r\nLocation: /page\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    "/far" => format!("HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/page?x=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                    _ => {
+                        let body = format!("saw {path} authorization={authorized}");
+                        format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                    }
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    (port, hits)
+}
+
+#[tokio::test]
+async fn a_phone_reaches_the_macs_loopback_pages_through_wheeld() {
+    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-loopback-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!("[remote]\nlisten = \"127.0.0.1:{remote}\"\n"),
+    )
+    .unwrap();
+    let _daemon = start(&dir.0, local);
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let token = token.trim();
+    let fingerprint = remote_info(local, token).await["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
+    let pairing = issued["token"].as_str().unwrap();
+    let mut phone = remote_ws(remote, &fingerprint, &format!("pair={pairing}&name=Phone"))
+        .await
+        .unwrap();
+    let credential = next_event(&mut phone, "paired").await.unwrap()["credential"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (program, hits) = loopback_program().await;
+    let hit_count = || hits.load(std::sync::atomic::Ordering::SeqCst);
+
+    // No browser pane is on the program's port yet: refused, and nothing reaches it.
+    let (status, _, body) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/page"),
+        Some(&credential),
+    )
+    .await;
+    assert!(status.contains(" 403 "), "{status} {body}");
+    assert_eq!(body, format!("no browser pane is on localhost:{program}"));
+    assert_eq!(hit_count(), 0);
+
+    // A browser pane goes to the program's page.
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let (mut cli, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{local}/ws?token={token}"))
+            .await
+            .unwrap();
+    let space = local_req(
+        &mut cli,
+        serde_json::json!({"op":"space_create","req":1,"cwd":project.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(space["ev"], "created", "{space}");
+    let status = local_req(&mut cli, serde_json::json!({"op":"status","req":2})).await;
+    let status: wheel_proto::ServerMsg = serde_json::from_value(status).unwrap();
+    let wheel_proto::ServerMsg::Status { spaces, .. } = status else {
+        panic!("expected status");
+    };
+    let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
+    let set = local_req(
+        &mut cli,
+        serde_json::json!({"op":"pane_set_kind","req":3,"pane":pane,"kind":"browser","url":format!("http://localhost:{program}/")}),
+    )
+    .await;
+    assert_eq!(set["ev"], "ok", "{set}");
+
+    // A port written with a leading zero is not the pane's port.
+    let (status, _, _) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/0{program}/page"),
+        Some(&credential),
+    )
+    .await;
+    assert!(status.contains(" 404 "), "{status}");
+    assert_eq!(hit_count(), 0);
+
+    // The program's page, at the path it would serve without the prefix, with the token kept from it.
+    let (status, _, body) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/page?q=1"),
+        Some(&credential),
+    )
+    .await;
+    assert!(status.contains(" 200 "), "{status} {body}");
+    assert_eq!(body, "saw /page?q=1 authorization=false");
+
+    // Its redirects, as a path and as its own loopback address, stay under the prefix.
+    let (status, headers, _) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/away"),
+        Some(&credential),
+    )
+    .await;
+    assert!(status.contains(" 302 "), "{status}");
+    assert!(
+        headers.contains(&format!("location: /loopback/{program}/page\r\n"))
+            || headers.ends_with(&format!("location: /loopback/{program}/page")),
+        "{headers}"
+    );
+    let (_, headers, _) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/far"),
+        Some(&credential),
+    )
+    .await;
+    assert!(
+        headers.contains(&format!("location: /loopback/{program}/page?x=1\r\n"))
+            || headers.ends_with(&format!("location: /loopback/{program}/page?x=1")),
+        "{headers}"
+    );
+    let reached = hit_count();
+    assert_eq!(reached, 3);
+
+    // No token, a wrong one, or the Mac's own local token on the remote listener: refused, and
+    // nothing reaches the program.
+    let (status, _, _) =
+        remote_get(remote, &fingerprint, &format!("/loopback/{program}/page"), None).await;
+    assert!(status.contains(" 401 "), "{status}");
+    let (status, _, _) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/page"),
+        Some("not-a-credential"),
+    )
+    .await;
+    assert!(status.contains(" 401 "), "{status}");
+    let (status, _, _) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/page"),
+        Some(token),
+    )
+    .await;
+    assert!(status.contains(" 401 "), "{status}");
+    assert_eq!(hit_count(), reached);
+
+    // A pane's port nothing listens on says so, naming the port.
+    let closed = free_port();
+    let set = local_req(
+        &mut cli,
+        serde_json::json!({"op":"pane_set_kind","req":4,"pane":pane,"kind":"browser","url":format!("http://127.0.0.1:{closed}/")}),
+    )
+    .await;
+    assert_eq!(set["ev"], "ok", "{set}");
+    let (status, _, body) = remote_get(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{closed}/"),
+        Some(&credential),
+    )
+    .await;
+    assert!(status.contains(" 502 "), "{status}");
+    assert!(body.contains(&format!("localhost:{closed} on the Mac")), "{body}");
+}

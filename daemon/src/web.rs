@@ -1231,7 +1231,69 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/artifacts/{pane}/.wheel/mcp/read", post(mcp_read))
         .route("/artifacts/{pane}/", any(artifact))
         .route("/artifacts/{pane}/{*path}", any(artifact))
+        .route("/loopback/{port}", any(loopback))
+        .route("/loopback/{port}/", any(loopback))
+        .route("/loopback/{port}/{*path}", any(loopback))
         .with_state(state)
+}
+
+/// `/loopback/<port>/<path>`: `/<path>` on this machine's loopback at `<port>`, for a client that
+/// draws a browser pane's `http://localhost:<port>` page itself, such as a phone (ADR-0005). Only
+/// a port some browser pane is on is reached. The token comes in a header, as for any other
+/// request, and goes no further; the program sees the request as its own, with redirects to its
+/// own paths kept under `/loopback/<port>`.
+async fn loopback(
+    State(state): State<Arc<AppState>>,
+    Extension(listener): Extension<Listener>,
+    UrlPath(params): UrlPath<HashMap<String, String>>,
+    req: axum::extract::Request,
+) -> Response {
+    let raw = params.get("port").map(String::as_str).unwrap_or_default();
+    let via = format!("loopback {raw}");
+    let caller = match authorize(&state, listener, &via, req.headers(), None) {
+        Ok(caller) => caller,
+        Err(status) => return status.into_response(),
+    };
+    let Some(port) = raw
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p != 0 && p.to_string() == raw)
+    else {
+        tracing::warn!(via, ?caller, "loopback refused: not a port");
+        return (StatusCode::NOT_FOUND, "not a port").into_response();
+    };
+    if !state.browser_on_loopback(port) {
+        tracing::warn!(via, ?caller, port, "loopback refused: no browser pane is on this port");
+        return (
+            StatusCode::FORBIDDEN,
+            format!("no browser pane is on localhost:{port}"),
+        )
+            .into_response();
+    }
+    let (method, path) = (req.method().clone(), req.uri().path().to_string());
+    let prefix = format!("/loopback/{port}");
+    let label = format!("loopback:{port}");
+    let resp = match crate::proxy::forward_port(port, &prefix, &label, COOKIE, req).await {
+        Ok(resp) => resp,
+        Err(down) => {
+            let why = match down {
+                crate::proxy::Down::Refused(e) => format!("nothing accepted a connection: {e}"),
+                crate::proxy::Down::NoAnswer(e) => format!("it did not answer: {e}"),
+            };
+            tracing::info!(via, ?caller, port, %why, "loopback: port down");
+            return (
+                StatusCode::BAD_GATEWAY,
+                [
+                    (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                format!("localhost:{port} on the Mac: {why}"),
+            )
+                .into_response();
+        }
+    };
+    tracing::info!(?caller, port, %method, path, status = resp.status().as_u16(), "loopback forwarded");
+    resp
 }
 
 /// The file the folder `name` under `root` serves for `path` — `index.html` for a folder — or None
@@ -1305,7 +1367,7 @@ fn authorize(
     via: &str,
     headers: &HeaderMap,
     from_query: Option<&str>,
-) -> Result<(), StatusCode> {
+) -> Result<crate::server::Caller, StatusCode> {
     if let Some(origin) = headers.get(header::ORIGIN) {
         let own = headers
             .get(header::HOST)
@@ -1321,7 +1383,7 @@ fn authorize(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     let token = from_query.or(bearer).or_else(|| cookie_token(headers));
-    state.check_token(via, token, listener).map(|_| ())
+    state.check_token(via, token, listener)
 }
 
 /// A token in the URL is traded for a cookie only this pane's address gets, and the page loads

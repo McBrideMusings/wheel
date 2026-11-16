@@ -93,12 +93,12 @@ fn wants_upgrade(headers: &HeaderMap) -> bool {
 }
 
 /// Send `req` (already authorized, for pane `pane`) to the program behind `app` and return its
-/// answer. `prefix` is the pane's address, `/artifacts/<pane>`, which the program never sees.
+/// answer. The program never sees the pane's address, `/artifacts/<pane>`, in a path.
 pub(crate) async fn forward(
     app: &Arc<App>,
     pane: &str,
     daemon_cookie: &str,
-    mut req: Request,
+    req: Request,
 ) -> Response {
     let port = match app.upstream() {
         Ok(port) => port,
@@ -107,34 +107,65 @@ pub(crate) async fn forward(
             return not_running(pane, "Nothing is serving this pane's page right now.", &why);
         }
     };
+    let prefix = format!("/artifacts/{pane}");
+    match forward_port(port, &prefix, pane, daemon_cookie, req).await {
+        Ok(resp) => resp,
+        Err(Down::Refused(e)) => not_running(
+            pane,
+            "Nothing is serving this pane's page right now.",
+            &format!("Port {port} did not accept a connection: {e}."),
+        ),
+        Err(Down::NoAnswer(e)) => not_running(
+            pane,
+            "The app is running but did not answer.",
+            &format!("Port {port}: {e}."),
+        ),
+    }
+}
+
+/// Why a port could not answer: nothing accepted the connection, or what did never replied.
+pub(crate) enum Down {
+    Refused(std::io::Error),
+    NoAnswer(hyper::Error),
+}
+
+/// Send `req` to `127.0.0.1:<port>` with `prefix` taken off its path, and return the answer with
+/// a redirect to the program's own paths put back under `prefix`. `label` names the caller in
+/// log lines. The port is tried on IPv4 and then IPv6, since a program may listen on only one. A
+/// handshake that fails is answered here; a port that is down is the caller's to describe.
+pub(crate) async fn forward_port(
+    port: u16,
+    prefix: &str,
+    label: &str,
+    daemon_cookie: &str,
+    mut req: Request,
+) -> Result<Response, Down> {
     let stream = match TcpStream::connect(("127.0.0.1", port)).await {
         Ok(stream) => stream,
-        Err(e) => {
-            tracing::info!(%pane, port, error = %e, "app proxy: the announced port refused");
-            return not_running(
-                pane,
-                "Nothing is serving this pane's page right now.",
-                &format!("Port {port} did not accept a connection: {e}."),
-            );
-        }
+        Err(v4) => match TcpStream::connect(("::1", port)).await {
+            Ok(stream) => stream,
+            Err(_) => {
+                tracing::info!(%label, port, error = %v4, "proxy: the port refused");
+                return Err(Down::Refused(v4));
+            }
+        },
     };
     let (mut sender, connection) =
         match hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(stream)).await {
             Ok(pair) => pair,
             Err(e) => {
-                tracing::warn!(%pane, port, error = %e, "app proxy: handshake failed");
-                return (StatusCode::BAD_GATEWAY, "the app did not speak HTTP").into_response();
+                tracing::warn!(%label, port, error = %e, "proxy: handshake failed");
+                return Ok((StatusCode::BAD_GATEWAY, "the program did not speak HTTP").into_response());
             }
         };
     tokio::spawn(async move {
         let _ = connection.with_upgrades().await;
     });
 
-    let prefix = format!("/artifacts/{pane}");
     let path = req
         .uri()
         .path()
-        .strip_prefix(&prefix)
+        .strip_prefix(prefix)
         .filter(|p| !p.is_empty())
         .unwrap_or("/")
         .to_string();
@@ -185,27 +216,23 @@ pub(crate) async fn forward(
     let out = match out.body(body) {
         Ok(out) => out,
         Err(e) => {
-            tracing::warn!(%pane, error = %e, "app proxy: could not build the request");
-            return StatusCode::BAD_REQUEST.into_response();
+            tracing::warn!(%label, error = %e, "proxy: could not build the request");
+            return Ok(StatusCode::BAD_REQUEST.into_response());
         }
     };
 
     let mut resp = match sender.send_request(out).await {
         Ok(resp) => resp,
         Err(e) => {
-            tracing::warn!(%pane, port, error = %e, "app proxy: the program did not answer");
-            return not_running(
-                pane,
-                "The app is running but did not answer.",
-                &format!("Port {port}: {e}."),
-            );
+            tracing::warn!(%label, port, error = %e, "proxy: the program did not answer");
+            return Err(Down::NoAnswer(e));
         }
     };
 
     if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
         if let Some(client_upgrade) = client_upgrade {
             let program_upgrade = hyper::upgrade::on(&mut resp);
-            let pane = pane.to_string();
+            let label = label.to_string();
             tokio::spawn(async move {
                 let (Ok(client), Ok(program)) = tokio::join!(client_upgrade, program_upgrade)
                 else {
@@ -214,10 +241,10 @@ pub(crate) async fn forward(
                 let (mut client, mut program) = (TokioIo::new(client), TokioIo::new(program));
                 match tokio::io::copy_bidirectional(&mut client, &mut program).await {
                     Ok((up, down)) => {
-                        tracing::debug!(%pane, up, down, "app proxy: upgraded connection closed")
+                        tracing::debug!(%label, up, down, "proxy: upgraded connection closed")
                     }
                     Err(e) => {
-                        tracing::debug!(%pane, error = %e, "app proxy: upgraded connection ended")
+                        tracing::debug!(%label, error = %e, "proxy: upgraded connection ended")
                     }
                 }
             });
@@ -230,17 +257,92 @@ pub(crate) async fn forward(
             parts.headers.remove(name);
         }
     }
-    // A redirect to a path of the program's own stays inside the pane's address.
+    // A redirect to a path of the program's own, written as a path or as the program's own
+    // loopback address, stays under `prefix`.
     if let Some(location) = parts
         .headers
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok())
     {
-        if location.starts_with('/') && !location.starts_with("//") {
-            if let Ok(value) = HeaderValue::from_str(&format!("{prefix}{location}")) {
+        if let Some(path) = own_path(location, port) {
+            if let Ok(value) = HeaderValue::from_str(&format!("{prefix}{path}")) {
                 parts.headers.insert(header::LOCATION, value);
             }
         }
     }
-    Response::from_parts(parts, Body::new(body))
+    Ok(Response::from_parts(parts, Body::new(body)))
+}
+
+/// The hosts that name this machine's loopback in an address.
+const LOOPBACK_HOSTS: [&str; 4] = ["localhost", "127.0.0.1", "[::1]", "0.0.0.0"];
+
+/// An `http` address on this machine's loopback, split into its port (80 when unwritten) and the
+/// rest (`/…`, `?…`, `#…` or empty); the host is compared without case.
+fn loopback_parts(address: &str) -> Option<(u16, &str)> {
+    let scheme = address.get(..7)?;
+    if !scheme.eq_ignore_ascii_case("http://") {
+        return None;
+    }
+    let rest = &address[7..];
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.contains(']') => (host, port.parse::<u16>().ok()?),
+        _ => (authority, 80),
+    };
+    LOOPBACK_HOSTS
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(host))
+        .then_some((port, tail))
+}
+
+/// The port of a browser page on this machine's loopback, such as `http://localhost:5173/`.
+pub(crate) fn loopback_port(page: &str) -> Option<u16> {
+    loopback_parts(page).map(|(port, _)| port)
+}
+
+/// The path a redirect's `location` names on the program at `port` itself: a root-relative path,
+/// or an `http` address on this machine's loopback at that port. None for anywhere else, which is
+/// left as the program wrote it.
+fn own_path(location: &str, port: u16) -> Option<&str> {
+    if location.starts_with('/') && !location.starts_with("//") {
+        return Some(location);
+    }
+    match loopback_parts(location)? {
+        (at, "") if at == port => Some("/"),
+        (at, tail) if at == port && tail.starts_with('/') => Some(tail),
+        (at, tail) if at == port && tail.starts_with('?') => Some(tail),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{loopback_port, own_path};
+
+    #[test]
+    fn a_redirect_to_the_programs_own_address_stays_under_the_prefix() {
+        assert_eq!(own_path("/next", 5173), Some("/next"));
+        assert_eq!(own_path("//evil.test/x", 5173), None);
+        assert_eq!(own_path("http://localhost:5173/a?b=1", 5173), Some("/a?b=1"));
+        assert_eq!(own_path("http://127.0.0.1:5173", 5173), Some("/"));
+        assert_eq!(own_path("http://[::1]:5173/x", 5173), Some("/x"));
+        assert_eq!(own_path("http://localhost:51730/x", 5173), None);
+        assert_eq!(own_path("http://localhost:8080/x", 5173), None);
+        assert_eq!(own_path("https://example.com/", 5173), None);
+        assert_eq!(own_path("HTTP://LOCALHOST:5173/up", 5173), Some("/up"));
+        assert_eq!(own_path("http://0.0.0.0:5173/z", 5173), Some("/z"));
+    }
+
+    #[test]
+    fn a_loopback_page_names_its_port() {
+        assert_eq!(loopback_port("http://localhost:5173/"), Some(5173));
+        assert_eq!(loopback_port("http://127.0.0.1:8080"), Some(8080));
+        assert_eq!(loopback_port("http://[::1]:3000/a#b"), Some(3000));
+        assert_eq!(loopback_port("http://localhost/"), Some(80));
+        assert_eq!(loopback_port("http://localhost.example.com:5173/"), None);
+        assert_eq!(loopback_port("https://localhost:5173/"), None);
+        assert_eq!(loopback_port("https://example.com/"), None);
+        assert_eq!(loopback_port("about:blank"), None);
+    }
 }

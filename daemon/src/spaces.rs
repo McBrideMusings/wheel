@@ -2126,6 +2126,26 @@ impl AppState {
         }
     }
 
+    /// Whether some browser pane, in any space, is on a page of this machine's loopback at `port`
+    /// (`http://localhost:<port>/…` and the like), which is what `/loopback/<port>` may reach.
+    pub(crate) fn browser_on_loopback(&self, port: u16) -> bool {
+        fn walk(node: &Node, port: u16) -> bool {
+            match node {
+                Node::Pane {
+                    kind: PaneKind::Browser { url, .. },
+                    ..
+                } => crate::proxy::loopback_port(url) == Some(port),
+                Node::Pane { .. } => false,
+                Node::Split { a, b, .. } => walk(a, port) || walk(b, port),
+            }
+        }
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .any(|space| space.trees().any(|tree| walk(tree, port)))
+    }
+
     /// Record what the agent in terminal pane `pane` says it is doing, and tell clients if the
     /// pane's status changed.
     pub fn pane_report(
