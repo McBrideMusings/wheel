@@ -85,7 +85,7 @@ local function tie(a, b)
     return sorting.cmp(a.number, b.number)
 end
 
--- Whether a project button wants this PR: any of its `on` entries matches.
+-- Whether a PR button wants this PR: any of its `on` entries matches.
 local function wants(button, pr)
     for _, on in button.on or NONE do
         if on == "any" then return true end
@@ -104,7 +104,7 @@ end
 
 -- ───────────────────────────── the table ─────────────────────────────
 
--- The row's right-click menu: Open, then each project button whose `on` takes this PR.
+-- The row's right-click menu: Open, then each PR button whose `on` takes this PR.
 local function row_menu(p, buttons)
     local menu = { { label = "Open", action = { type = "open_pr", number = p.number } } }
     for _, b in buttons do
@@ -556,7 +556,7 @@ local function page(st, data, snap)
             counted(prs, "checks", { { "failing", "failing" }, { "pending", "pending" }, { "passing", "passing" }, { "none", "none" } }),
             list.counted(prs, function(p) return { p.author } end),
         }
-        -- Each project button over the taken PRs its `on` takes; `update` runs it once per PR in st.applies[name].
+        -- Each PR button over the taken PRs its `on` takes; `update` runs it once per PR in st.applies[name].
         local by = {}
         for _, p in shown do by[tostring(p.number)] = p end
         local more, applies = {}, {}
@@ -623,7 +623,7 @@ local function oneof(v, options)
     return false
 end
 
--- Run project button `name` once per PR in `numbers`, counting the answers in `state.batch` so `update` reports them
+-- Run PR button `name` once per PR in `numbers`, counting the answers in `state.batch` so `update` reports them
 -- together. The label is the button's, as the view last listed it.
 local function run_batch(state, dir, name, numbers)
     state.batch = { label = (state.labels or NONE)[name] or name, numbers = numbers, left = #numbers, failed = 0 }

@@ -1,6 +1,8 @@
-//! A bead's button: one slot whose state the host decides. The project writes the commands and
-//! labels in its wheel.toml; the host keeps a record of the pane and conversation each press
-//! started, and reads the state from that record and the panes that exist now.
+//! A bead's button: one slot whose state the host decides. The machine's and the project's
+//! wheel.toml write the commands and labels, the project's `[beads.task]`, `[beads.epic]` or
+//! `[beads.disabled]` replacing the machine's whole (`core::buttons`); the host keeps a record of
+//! the pane and conversation each press started, and reads the state from that record and the
+//! panes that exist now.
 //!
 //! ```toml
 //! [beads.task]                    # a leaf bead; `[beads.epic]` is the same for an epic
@@ -19,6 +21,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+
+use crate::core::buttons::File;
 
 /// What a verb is called and what it runs; `focus` has no command, the host focuses.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -80,33 +84,28 @@ fn verb(t: &toml_edit::Item, name: &str) -> Verb {
     Verb { label: get("label"), run: get("run") }
 }
 
-fn group(beads: &toml_edit::Item, kind: &str) -> Option<Group> {
-    let t = beads.get(kind)?;
+fn group(files: &[File], kind: &str) -> Option<Group> {
+    let t = crate::core::buttons::table(files, &["beads", kind])?;
     Some(Group { start: verb(t, "start"), resume: verb(t, "resume"), focus: verb(t, "focus") })
 }
 
-/// The buttons the project's wheel.toml in `dir` writes, and what is wrong with the file.
-pub fn read(dir: &str) -> (Buttons, Vec<String>) {
-    let file = PathBuf::from(dir).join("wheel.toml");
-    let Ok(text) = std::fs::read_to_string(&file) else { return (Buttons::default(), vec![]) };
-    let doc: toml_edit::DocumentMut = match text.parse() {
-        Ok(t) => t,
-        Err(e) => return (Buttons::default(), vec![format!("{}: {e}", file.display())]),
-    };
-    let Some(beads) = doc.get("beads") else { return (Buttons::default(), vec![]) };
-    let mut problems = vec![];
-    if beads.get("buttons").is_some() {
-        problems.push(format!(
-            "{}: [beads.buttons.*] is gone; write [beads.task] and [beads.epic] with start, resume and focus",
-            file.display()
-        ));
-    }
-    let closed = beads.get("disabled").and_then(|d| d.get("closed")).and_then(|v| v.as_str()).map(String::from);
-    (Buttons { task: group(beads, "task"), epic: group(beads, "epic"), closed }, problems)
+/// The buttons `files` write, the project's tables replacing the machine's.
+pub fn read_of(files: &[File]) -> Buttons {
+    let closed = crate::core::buttons::table(files, &["beads", "disabled"]).and_then(|d| d.get("closed")).and_then(|v| v.as_str()).map(String::from);
+    Buttons { task: group(files, "task"), epic: group(files, "epic"), closed }
+}
+
+/// A line for each of `files` that still writes `[beads.buttons.*]`.
+pub fn stale(files: &[File]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|f| f.doc.get("beads").and_then(|b| b.get("buttons")).is_some())
+        .map(|f| format!("{}: [beads.buttons.*] is gone; write [beads.task] and [beads.epic] with start, resume and focus", f.path.display()))
+        .collect()
 }
 
 /// The button of a bead whose kind is `epic` (a parent) or not, in the state its record and the
-/// panes open now put it in. A kind the project wrote no group for has no button.
+/// panes open now put it in. A kind neither wheel.toml wrote a group for has no button.
 pub fn decide(b: &Buttons, status: &str, epic: bool, record: Option<&Record>, panes: &HashSet<String>) -> Option<Act> {
     if status == "closed" {
         let label = b.closed.clone().unwrap_or_else(|| "Closed".into());
@@ -310,14 +309,13 @@ mod tests {
 
     #[test]
     fn the_toml_reads_into_groups_and_flags_the_old_tables() {
-        let dir = std::env::temp_dir().join(format!("wheel-buttons-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("wheel.toml"),
+        let (root, machine, dir) = crate::core::buttons::tests::fixture(
+            "beads-buttons",
+            "",
             "[beads.task]\nstart.label = \"Implement\"\nstart.run = 'echo p1'\nfocus.label = \"Focus\"\n\n[beads.disabled]\nclosed = \"Closed\"\n\n[beads.buttons.old]\nrun = 'x'\n",
-        )
-        .unwrap();
-        let (b, problems) = read(dir.to_str().unwrap());
+        );
+        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
+        let (b, problems) = (read_of(&files), stale(&files));
         let t = b.task.unwrap();
         assert_eq!(t.start, Verb { label: Some("Implement".into()), run: Some("echo p1".into()) });
         assert_eq!(t.resume, Verb::default());
@@ -326,7 +324,24 @@ mod tests {
         assert_eq!(b.closed.as_deref(), Some("Closed"));
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("[beads.buttons.*] is gone"));
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_machines_bead_groups_apply_and_a_project_group_replaces_one_whole() {
+        let (root, machine, dir) = crate::core::buttons::tests::fixture(
+            "beads-machine",
+            "[beads.task]\nstart.label = \"Implement\"\nstart.run = 'm-start'\nresume.run = 'm-resume'\n[beads.epic]\nstart.run = 'm-epic'\n[beads.disabled]\nclosed = \"Done\"\n",
+            "[beads.task]\nstart.run = 'p-start'\n[beads.epic]\nenabled = false\n",
+        );
+        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
+        let b = read_of(&files);
+        let t = b.task.unwrap();
+        assert_eq!(t.start, Verb { label: None, run: Some("p-start".into()) });
+        assert_eq!(t.resume, Verb::default(), "the machine's resume does not carry into the project's [beads.task]");
+        assert_eq!(b.epic, None, "enabled = false drops the machine's [beads.epic]");
+        assert_eq!(b.closed.as_deref(), Some("Done"), "[beads.disabled] the project did not write is the machine's");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -190,7 +190,7 @@ local function verb_label(v)
 end
 
 -- The button of a bead whose kind is an epic (`epic`) or not, in the state its record and the panes open now put it in;
--- nil when the project wrote no group for its kind.
+-- nil when neither wheel.toml wrote a group for its kind.
 local function decide(buttons, status, epic, record, live)
     if status == "closed" then
         return { state = "closed", label = buttons.closed or "Closed", disabled = true, help = "This bead is closed" }

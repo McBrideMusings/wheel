@@ -270,6 +270,11 @@ struct Core {
     agents: Agents,
 }
 
+/// The machine's `wheel.toml`, its symlinks resolved, as file events name it.
+fn machine_toml() -> PathBuf {
+    real_of(&crate::core::buttons::machine_file())
+}
+
 fn records_dir() -> Option<PathBuf> {
     crate::beads::buttons::records_file().parent().map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
 }
@@ -463,7 +468,7 @@ impl Core {
 
     /// The (feed, params key) pairs a batch of file events changes.
     fn affected(&self, paths: &[PathBuf], out: &mut BTreeSet<(String, String)>) {
-        let records = records_dir();
+        let (records, machine) = (records_dir(), machine_toml());
         let subs = self.subs.lock().unwrap();
         for p in paths {
             let (Some(name), Some(parent)) = (p.file_name().and_then(|n| n.to_str()), p.parent()) else { continue };
@@ -475,6 +480,9 @@ impl Core {
                 } else if reads_git(&s.feed) {
                     git_hit(&s.files, &s.trees, s.top.as_ref(), &s.ignored, p)
                 } else if BEAD_FEEDS.contains(&s.feed.as_str()) && name == "bead-panes.json" && records.as_deref() == Some(parent) {
+                    true
+                } else if p == &machine {
+                    // The machine's file, whatever `--machine-file` named it: it writes every project's buttons.
                     true
                 } else {
                     match name {
@@ -742,6 +750,10 @@ pub async fn run() -> anyhow::Result<()> {
         });
         if let Some(dir) = records_dir() {
             core.watch(dir, false);
+        }
+        // The machine's buttons are in its wheel.toml: an edit there reads every project's feed again.
+        if let Some(dir) = machine_toml().parent() {
+            core.watch(dir.to_path_buf(), false);
         }
         tokio::spawn(events(core.clone(), rx));
         tokio::spawn(repo_clock(core.clone()));

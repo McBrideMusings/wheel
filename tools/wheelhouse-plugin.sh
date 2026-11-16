@@ -441,6 +441,25 @@ sed -i '' 's/label = "Mark list"/label = "Mark all"/' "$A/wheel.toml"
 poll 10 grep -q 'Mark all' "$FA"
 grep -q 'Mark all' "$FA" && pass "an edit of wheel.toml reaches the feed" || fail "an edit of wheel.toml reaches the feed"
 
+# 11a a list button in the machine's wheel.toml (wheeld's --machine-file, not $HOME/.wheel) reaches
+# the feed, runs in the project's directory, and a project table with enabled = false drops it.
+cat >> "$T/machine.toml" <<TOML
+
+[beads.list.machine]
+label = "Machine mark"
+run = 'pwd > "$T/marker-machine"'
+TOML
+poll 10 grep -q 'Machine mark' "$FA"
+grep -q 'Machine mark' "$FA" && pass "a list button in the machine's wheel.toml reaches the feed" || fail "a machine list button reaches the feed"
+w plugin action "$PANE" wheelhouse.run_list --args "{\"dir\":\"$A\",\"script\":\"machine\",\"ids\":[\"$C1\"]}" > "$T/mlist.json" 2> "$T/mlist.err"
+poll 5 has_file "$T/marker-machine"
+[ "$(cat "$T/marker-machine" 2>/dev/null)" = "$(cd "$A" && pwd -P)" ] && pass "a machine list button runs in the project's directory" \
+  || fail "machine list button: $(cat "$T/mlist.json") $(cat "$T/mlist.err") pwd=$(cat "$T/marker-machine" 2>/dev/null)"
+printf '\n[beads.list.machine]\nenabled = false\n' >> "$A/wheel.toml"
+w plugin action "$PANE" wheelhouse.run_list --args "{\"dir\":\"$A\",\"script\":\"machine\",\"ids\":[\"$C1\"]}" > /dev/null 2> "$T/mgone.err"
+grep -q 'no list button machine' "$T/mgone.err" && pass "a project's enabled = false drops the machine's button" \
+  || fail "enabled = false: $(cat "$T/mgone.err")"
+
 # 11b the repo feed and its actions (wheel-pmf2.4.10): a fixture repo with an origin whose HEAD is
 # main, a branch at main's tip (merged), a branch with a local-only commit, and one stash.
 R="$T/proj-r"

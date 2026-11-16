@@ -27,7 +27,7 @@ pub struct Snapshot {
     pub name: String,
     pub issues: Vec<Issue>,
     pub error: Option<String>,
-    /// The list buttons the project writes under `[issues.list]` in its wheel.toml.
+    /// The list buttons under `[issues.list]` in the machine's and the project's wheel.toml.
     pub scripts: Vec<crate::core::buttons::Script>,
     /// What was wrong with the wheel.toml, shown on the page without hiding the issues.
     pub problems: Vec<String>,

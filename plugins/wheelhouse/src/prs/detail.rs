@@ -1,7 +1,7 @@
 //! One PR in full: what GitHub holds about it (description, images, comments, reviews, checks,
 //! commits, files) and what a pane's buttons do with it: merge, check the branch out in the
-//! project's checkout, open it in a worktree with an agent, and the project's own buttons from
-//! `[prs.buttons.<name>]` in its wheel.toml.
+//! project's checkout, open it in a worktree with an agent, and the buttons `[prs.buttons.<name>]`
+//! in the machine's and the project's wheel.toml write.
 
 use std::path::PathBuf;
 
@@ -39,7 +39,7 @@ pub(super) fn fetch(dir: &str, repo: &str, number: i64) -> Result<Value, String>
     Ok(pr)
 }
 
-/// A project button: a shell command the project writes in its wheel.toml.
+/// A PR button: a shell command the machine's or the project's wheel.toml writes, run in the project.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Button {
     pub name: String,
@@ -51,27 +51,18 @@ pub struct Button {
     pub worktree: bool,
 }
 
-/// The buttons under `[prs.buttons]` in `<dir>/wheel.toml`, and what could not be read.
-pub fn buttons(dir: &str) -> (Vec<Button>, Option<String>) {
-    let file = PathBuf::from(dir).join("wheel.toml");
-    let Ok(text) = std::fs::read_to_string(&file) else { return (vec![], None) };
-    let doc: toml_edit::DocumentMut = match text.parse() {
-        Ok(t) => t,
-        Err(e) => return (vec![], Some(format!("{}: {e}", file.display()))),
-    };
-    let mut out = vec![];
-    if let Some(t) = doc.get("prs").and_then(|b| b.get("buttons")).and_then(|b| b.as_table_like()) {
-        for (name, s) in t.iter() {
-            out.push(Button {
-                name: name.to_string(),
-                label: s.get("label").and_then(|v| v.as_str()).map(String::from),
-                on: s.get("on").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
-                run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                worktree: s.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false),
-            });
-        }
-    }
-    (out, None)
+/// The buttons under `[prs.buttons]` in `files`, the machine's first.
+pub fn buttons_of(files: &[crate::core::buttons::File]) -> Vec<Button> {
+    crate::core::buttons::named(files, &["prs", "buttons"])
+        .into_iter()
+        .map(|(name, s)| Button {
+            name,
+            label: s.get("label").and_then(|v| v.as_str()).map(String::from),
+            on: s.get("on").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+            run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            worktree: s.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false),
+        })
+        .collect()
 }
 
 /// A button's label: its `label`, else its name.
@@ -286,7 +277,7 @@ pub fn start_agent(origin: &Origin, pr: &Pr, wt: &str, agent: &str) -> Result<St
     Agents::new("wheel").start(origin, &brief(pr, wt), Some(agent).filter(|a| *a != "default"), None).or_else(fail)
 }
 
-/// Run project button `b` for `pr`, in a worktree first when the button asks for one.
+/// Run PR button `b` for `pr`, in a worktree first when the button asks for one.
 pub fn run_button(origin: &Origin, repo: &str, pr: &Pr, cross: bool, b: &Button) -> Result<(), String> {
     let wt = if b.worktree { Some(worktree(&origin.dir, pr.number, &pr.branch, cross)?) } else { None };
     let (number, title, branch, url) = (pr.number.to_string(), pr.title.clone(), pr.branch.clone(), pr.url.clone());
@@ -312,15 +303,29 @@ mod tests {
 
     #[test]
     fn a_button_is_read_from_wheel_toml_and_chosen_by_its_on_list() {
-        let dir = std::env::temp_dir().join(format!("wheelhouse-prs-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("wheel.toml"), "[prs.buttons.fix]\nlabel = \"Make mergeable\"\non = [\"fix\"]\nworktree = true\nrun = \"true\"\n[prs.buttons.all]\non = [\"any\"]\nrun = \"true\"\n").unwrap();
-        let (b, problem) = buttons(dir.to_str().unwrap());
-        assert!(problem.is_none());
+        let (root, machine, dir) = crate::core::buttons::tests::fixture("prs", "", "[prs.buttons.fix]\nlabel = \"Make mergeable\"\non = [\"fix\"]\nworktree = true\nrun = \"true\"\n[prs.buttons.all]\non = [\"any\"]\nrun = \"true\"\n");
+        let (files, problems) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
+        assert!(problems.is_empty());
+        let b = buttons_of(&files);
         assert_eq!(b.len(), 2);
         let fix = b.iter().find(|x| x.name == "fix").unwrap();
         assert!(fix.worktree && label(fix) == "Make mergeable");
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_machines_pr_buttons_apply_in_a_project_that_writes_none_and_a_project_overrides_by_name() {
+        let machine = "[prs.buttons.review]\nlabel = \"Review\"\non = [\"needs-me\"]\nrun = \"/bin/bash ~/.wheel/lib/pr-agent.sh review\"\n[prs.buttons.mergeable]\nlabel = \"Make mergeable\"\non = [\"fix\"]\nworktree = true\nrun = \"/bin/bash ~/.wheel/lib/pr-agent.sh mergeable\"\n";
+        let (root, machine, dir) = crate::core::buttons::tests::fixture("prs-machine", machine, "");
+        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
+        assert_eq!(buttons_of(&files).iter().map(label).collect::<Vec<_>>(), ["Review", "Make mergeable"], "a project with no wheel.toml gets the machine's buttons");
+        std::fs::write(dir.join("wheel.toml"), "[prs.buttons.review]\nenabled = false\n[prs.buttons.mergeable]\non = [\"any\"]\nrun = \"make fix\"\n").unwrap();
+        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
+        let b = buttons_of(&files);
+        assert_eq!(b.len(), 1, "review is dropped");
+        assert_eq!((b[0].name.as_str(), label(&b[0]), b[0].on.clone(), b[0].run.as_str(), b[0].worktree), ("mergeable", "mergeable", vec!["any".to_string()], "make fix", false),
+            "the project's table replaces the machine's whole: no label, worktree or on carry over");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

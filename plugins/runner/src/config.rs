@@ -1,5 +1,5 @@
-//! The `[runner]` tables of the machine's and the project's `wheel.toml` (ADR-0025): the runner
-//! ships no commands of its own, it runs what a project wrote out in full.
+//! The `[runner]` tables of the machine's and the project's `wheel.toml` (ADR-0043): the runner
+//! ships no commands of its own, it runs what the machine's or the project's file wrote out in full.
 
 use std::path::{Path, PathBuf};
 
