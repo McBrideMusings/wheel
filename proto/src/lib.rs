@@ -3347,7 +3347,8 @@ pub enum ToolContent {
 
 /// What a `card` transcript item shows. wheeld checks the name when the card is posted and
 /// writes the artifact's scope and space beside it, so a client opens the same page the agent
-/// named; the pane or the artifact may close later, and a client then says it is gone.
+/// named. The pane may close later, and a client then says so. An artifact card's page ends
+/// with its agent or once the agent has 8 newer artifact cards, and then answers 404.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CardRef {
