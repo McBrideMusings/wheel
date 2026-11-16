@@ -751,7 +751,8 @@ pub async fn run() -> anyhow::Result<()> {
         if let Some(dir) = records_dir() {
             core.watch(dir, false);
         }
-        // The machine's buttons are in its wheel.toml: an edit there reads every project's feed again.
+        // The machine's buttons are in its wheel.toml: an edit there reads again every feed an edit of a
+        // project's own wheel.toml does (`beads`, `beads_graph`, `project`).
         if let Some(dir) = machine_toml().parent() {
             core.watch(dir.to_path_buf(), false);
         }

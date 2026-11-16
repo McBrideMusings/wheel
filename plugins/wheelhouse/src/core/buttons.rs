@@ -25,7 +25,7 @@ pub fn machine_file() -> PathBuf {
 }
 
 /// The machine's `wheel.toml` and then `<dir>/wheel.toml`, each that exists and parses, and a line
-/// for each that does not parse.
+/// for each that exists and cannot be read or does not parse.
 pub fn files(dir: &str) -> (Vec<File>, Vec<String>) {
     files_from(&machine_file(), dir)
 }
@@ -34,7 +34,14 @@ pub fn files(dir: &str) -> (Vec<File>, Vec<String>) {
 pub fn files_from(machine: &Path, dir: &str) -> (Vec<File>, Vec<String>) {
     let (mut out, mut problems) = (vec![], vec![]);
     for path in [machine.to_path_buf(), PathBuf::from(dir).join("wheel.toml")] {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                problems.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
         match text.parse::<DocumentMut>() {
             Ok(doc) => out.push(File { path, doc }),
             Err(e) => problems.push(format!("{}: {e}", path.display())),
