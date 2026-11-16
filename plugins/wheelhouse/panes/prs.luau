@@ -572,6 +572,9 @@ local function page(st, data, snap)
                 help = label .. " on each of the " .. #numbers .. " PRs it applies to: runs wheel.toml [prs.buttons." .. b.name .. "] once per PR" })
         end
         st.applies = applies
+        local labels = {}
+        for _, b in snap.buttons or NONE do labels[b.name] = b.label or b.name end
+        st.labels = labels
         local actions = list.actions(snap.scripts or NONE, took, #shown, "PR numbers", "PRs", nil, more)
         table.insert(children, list.bar(SPEC, st.list, options, actions))
         table.insert(children, kit.box("v", { prs_table(st, snap, shown, now) }, {}))
@@ -620,6 +623,15 @@ local function oneof(v, options)
     return false
 end
 
+-- Run project button `name` once per PR in `numbers`, counting the answers in `state.batch` so `update` reports them
+-- together. The label is the button's, as the view last listed it.
+local function run_batch(state, dir, name, numbers)
+    state.batch = { label = (state.labels or NONE)[name] or name, numbers = numbers, left = #numbers, failed = 0 }
+    for _, n in numbers do
+        wheel.action("wheelhouse.pr_button", { dir = dir, number = n, name = name })
+    end
+end
+
 local function update(state, msg)
     if msg.action then
         local failed = msg.error ~= nil
@@ -628,9 +640,29 @@ local function update(state, msg)
             state.said, state.said_bad = text, failed
         elseif msg.action == "wheelhouse.pr_refresh" then
             if failed then state.said, state.said_bad = text, true end
+        elseif msg.action == "wheelhouse.pr_button" and state.batch then
+            -- A button run from the row menu or the Actions list reports in the page's box once every PR it ran on has
+            -- answered: one PR's result named by its number, or how many of several failed and the first error.
+            local b = state.batch
+            b.left -= 1
+            if failed then
+                b.failed += 1
+                b.first = b.first or text
+            end
+            b.last = text
+            if b.left <= 0 then
+                state.batch = nil
+                if #b.numbers == 1 then
+                    state.said = "#" .. b.numbers[1] .. ": " .. text
+                elseif b.failed == 0 then
+                    state.said = b.label .. " ran on " .. #b.numbers .. " PRs: #" .. table.concat(b.numbers, ", #")
+                else
+                    state.said = b.label .. ": " .. b.failed .. " of " .. #b.numbers .. " failed. First error: " .. b.first
+                end
+                state.said_bad = b.failed > 0
+            end
         elseif MODAL_ACTIONS[msg.action] then
-            -- A button run from the row menu or the Actions list, with no modal open, says so in the page's box.
-            if state.sel then state.ran = { text = text, bad = failed } else state.said, state.said_bad = text, failed end
+            state.ran = { text = text, bad = failed }
         end
         return
     end
@@ -671,12 +703,12 @@ local function update(state, msg)
         end
     elseif t == "row_button" then
         if msg.name and tonumber(msg.number) then
-            wheel.action("wheelhouse.pr_button", { dir = dir, number = math.floor(tonumber(msg.number)), name = msg.name })
+            run_batch(state, dir, msg.name, { math.floor(tonumber(msg.number)) })
         end
     elseif t == "list_button" then
-        for _, n in (state.applies or NONE)[msg.name] or NONE do
-            wheel.action("wheelhouse.pr_button", { dir = dir, number = math.floor(n), name = msg.name })
-        end
+        local numbers = {}
+        for _, n in (state.applies or NONE)[msg.name] or NONE do table.insert(numbers, math.floor(n)) end
+        if #numbers > 0 then run_batch(state, dir, msg.name, numbers) end
     elseif number then
         state.ran = nil
         if t == "pr_merge" then
