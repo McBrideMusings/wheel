@@ -1142,6 +1142,7 @@ async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
         .envs((spec.env)())
         .env("WHEEL_PLUGIN_ID", &spec.plugin)
         .env("WHEEL_SPACE_DIR", &spec.space_dir)
+        .env("WHEEL_MACHINE_FILE", &spec.machine_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)

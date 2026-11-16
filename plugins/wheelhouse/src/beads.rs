@@ -54,7 +54,7 @@ fn bd(path: &str, args: &[&str]) -> Result<Vec<Value>, String> {
 }
 
 /// The beads of the project in `path`: what `bd` lists, which are ready, and the buttons the
-/// project writes in its wheel.toml.
+/// machine's and the project's wheel.toml write.
 fn collect(path: &str) -> Snapshot {
     let path = path.to_string();
     let name = crate::core::project::name_of(&path);
@@ -64,12 +64,11 @@ fn collect(path: &str) -> Snapshot {
     }
     snap.has_repo = true;
     // The per-bead button (`[beads.task]`, `[beads.epic]`) and the list buttons (`[beads.list.<name>]`).
-    let (b, problems) = buttons::read(&path);
-    snap.buttons = b;
-    let (s, more) = crate::core::buttons::scripts(&path, "beads");
-    snap.scripts = s;
+    let (files, problems) = crate::core::buttons::files(&path);
+    snap.buttons = buttons::read_of(&files);
+    snap.scripts = crate::core::buttons::scripts_of(&files, "beads");
     snap.problems = problems;
-    snap.problems.extend(more);
+    snap.problems.extend(buttons::stale(&files));
     let load = || -> Result<Vec<Bead>, String> {
         let all = bd(&path, &["list", "--all"])?;
         let ready: HashSet<String> =
