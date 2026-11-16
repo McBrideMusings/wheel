@@ -2,7 +2,8 @@ import SwiftUI
 
 // MARK: Table — SwiftUI's Table of rows under section titles (ADR-0029: it knows nothing of what the rows are)
 // column {key, label, width|null, tree, wide}; section {title, count, rows}; row {id, path, depth, kids, collapsed, dim, sel,
-// cells [{key, text, sort, tone, mono, chip}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
+// cells [{key, text, sort, tone, mono, chip, view}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
+// A cell with a `view` (a component's id) draws that component instead of its text; its `text` and `sort` still sort the column.
 // A column with `sortable: true` sorts the rows of each section when its header is clicked, by each cell's `sort` (a number or a
 // string) or its `text`; the rows stay in the page's order until a header is clicked, and a column without it never sorts.
 // Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
@@ -202,11 +203,15 @@ struct A2UITableView: View {
                         .buttonStyle(.borderless).frame(width: 16)
                     } else { Color.clear.frame(width: 16, height: 1) }
                 }
-                Text(cell["text"]?.text ?? "")
-                    // Point sizes, not text styles: a text style is 17 pt on a phone and 13 pt on a Mac.
-                    .font(cell["mono"]?.boolValue == true ? .system(size: 11, design: .monospaced) : cell["chip"]?.boolValue == true ? .system(size: 12, weight: .semibold) : .system(size: 13))
-                    .foregroundStyle(cellColor(cell, dim: line.row["dim"]?.boolValue == true))
-                    .lineLimit(1).truncationMode(.tail)
+                if let view = cell["view"]?.stringValue.flatMap({ surface.node($0) }) {
+                    A2UIChildView(node: view, surface: surface)
+                } else {
+                    Text(cell["text"]?.text ?? "")
+                        // Point sizes, not text styles: a text style is 17 pt on a phone and 13 pt on a Mac.
+                        .font(cell["mono"]?.boolValue == true ? .system(size: 11, design: .monospaced) : cell["chip"]?.boolValue == true ? .system(size: 12, weight: .semibold) : .system(size: 13))
+                        .foregroundStyle(cellColor(cell, dim: line.row["dim"]?.boolValue == true))
+                        .lineLimit(1).truncationMode(.tail)
+                }
             }
         }
     }
