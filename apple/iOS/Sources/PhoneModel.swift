@@ -2,6 +2,7 @@ import Foundation
 import GhosttyTerminal
 import Observation
 import Security
+import SwiftUI
 import UIKit
 import WheelKit
 import WheelUI
@@ -82,6 +83,8 @@ final class PhoneModel {
     /// What `phone.log` last said about each plugin pane, so a line is written only when it changes.
     private var pluginLogged: [String: String] = [:]
     private let pageDaemon = PageDaemon()
+    /// The artifacts plugin pages embed (`WebView{artifact}`, ADR-0046), made with the first one.
+    @ObservationIgnored private var artifactEmbeds: ArtifactEmbeds?
     /// One conversation per agent pane in the layout, keyed by agent name.
     private(set) var chats: [String: AgentChat] = [:]
     /// The files each agent pane's composer holds for its next message, keyed by pane id.
@@ -378,6 +381,7 @@ final class PhoneModel {
         if links.received(msg) { return }
         if a2uiPanes.values.contains(where: { $0.handle(msg) }) { return }
         if pluginPanes.values.contains(where: { $0.handle(msg) }) { return }
+        if artifactEmbeds?.handle(msg) == true { return }
         switch msg {
         case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, protocolVersion, sessions):
             if serverProtocol != protocolVersion {
@@ -393,6 +397,7 @@ final class PhoneModel {
             layoutArrived(spaces, sessions: sessions)
             // A new connection holds no feeds: each plugin pane kept from the last one asks for its script and feeds again.
             for link in heldPlugins where pluginPanes[link.pane] === link { link.start() }
+            artifactEmbeds?.connected()
             // A fresh connection starts with its first status: attach the page that is showing, and its embeds, again.
             attachedTerms = []
             syncAttachments()
@@ -1085,6 +1090,15 @@ final class PhoneModel {
             next.size = nil
             settle(next)
         }
+    }
+
+    /// Artifact `name` shown inside plugin pane `host`'s page, its page asked of wheeld over this connection.
+    func artifactEmbed(host: String, name: String) -> AnyView {
+        let embeds = artifactEmbeds ?? ArtifactEmbeds(daemon: pageDaemon, send: { [weak self] in self?.client?.send($0) },
+                                                      nextReq: { [weak self] in self?.client?.req() ?? 0 })
+        artifactEmbeds = embeds
+        let cwd = spaces.first { $0.allPanes.contains { $0.id == host } }?.cwd ?? ""
+        return embeds.view(pane: host, name: name, cwd: cwd)
     }
 
     /// What pane `pane` shows, in any space; nil when it is gone.

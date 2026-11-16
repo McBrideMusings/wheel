@@ -3047,6 +3047,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "turn-feed"
+version = "0.1.0"
+dependencies = [
+ "notify",
+ "serde_json",
+ "tokio",
+ "wheel-plugin-sdk",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

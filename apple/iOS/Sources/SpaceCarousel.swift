@@ -528,7 +528,8 @@ private struct PluginPage: View {
 }
 
 /// A pane a plugin pane's view shows inside itself (`Terminal{pane}` or `AgentChat{pane}`, ADR-0042), drawn as its own
-/// page draws it, at the height the script gave. A pane that is gone or holds the other kind says so.
+/// page draws it, at the height the script gave, or an artifact (`WebView{artifact}`, ADR-0046) as a web pane draws it. A
+/// pane that is gone or holds the other kind says so.
 private struct PluginEmbed: View {
     let model: PhoneModel
     /// The plugin pane whose page this is.
@@ -539,6 +540,8 @@ private struct PluginEmbed: View {
         let kind = model.kind(ofPane: embed.pane)
         Group {
             switch (embed.kind, kind) {
+            case (.artifact, _):
+                model.artifactEmbed(host: host, name: embed.pane)
             case let (.agentChat, .agent(agent, harness, _)?) where model.chats[agent] != nil:
                 AgentPane(model: model, pane: embed.pane, agent: agent, harness: harness, chat: model.chats[agent]!)
             case let (.terminal, .terminal(term, _)?):

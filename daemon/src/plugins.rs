@@ -128,8 +128,17 @@ struct RawManifest {
     #[serde(default)]
     pane: Vec<RawPane>,
     backend: Option<RawBackend>,
+    agent: Option<RawAgent>,
     /// Read again by `wheel_plugin_sdk::commands`, which owns the table's shape.
     commands: Option<toml::Value>,
+}
+
+/// `[agent]`: the actions of this plugin an agent pane may invoke (ADR-0044).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAgent {
+    #[serde(default)]
+    actions: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -150,6 +159,8 @@ pub(crate) struct Manifest {
     pub version: String,
     pub panes: Vec<PluginPaneInfo>,
     pub backend: Option<BackendInfo>,
+    /// `[agent] actions`: the actions, by their own names, any agent pane may invoke.
+    pub agent_actions: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -284,11 +295,21 @@ pub(crate) fn parse_manifest(text: &str) -> Result<Manifest, String> {
         }
         (None, false) => None,
     };
+    let agent_actions = raw.agent.map(|a| a.actions).unwrap_or_default();
+    if let Some(bad) = agent_actions.iter().find(|a| a.is_empty() || a.contains('.')) {
+        return Err(format!(
+            "{MANIFEST}: [agent] action {bad:?} is not one action name (no plugin prefix, no dot)"
+        ));
+    }
+    if !agent_actions.is_empty() && backend.is_none() {
+        return Err(format!("{MANIFEST}: [agent] actions need a [backend] or a [commands] table"));
+    }
     Ok(Manifest {
         id: raw.plugin.id,
         version: raw.plugin.version,
         panes,
         backend,
+        agent_actions,
     })
 }
 
@@ -307,6 +328,7 @@ fn package(text: Result<String, String>, fallback_id: &str, scope: PluginScope, 
             dir,
             panes: manifest.panes,
             backend: manifest.backend,
+            agent_actions: manifest.agent_actions,
             error: None,
         },
         Err(error) => PluginInfo {
@@ -316,6 +338,7 @@ fn package(text: Result<String, String>, fallback_id: &str, scope: PluginScope, 
             dir,
             panes: Vec::new(),
             backend: None,
+            agent_actions: Vec::new(),
             error: Some(error),
         },
     };
@@ -725,6 +748,7 @@ impl AppState {
                     dir: Some(ext.file.display().to_string()),
                     panes: Vec::new(),
                     backend: Some(self.backends.external_info(ext)),
+                    agent_actions: Vec::new(),
                     error: None,
                 });
             }
@@ -1045,6 +1069,19 @@ actions = ["go"]
         assert!(parse_manifest("not toml [").is_err());
         assert!(parse_manifest("[plugin]\nid=\"x\"\n").is_err(), "no version");
         assert!(parse_manifest("[plugin]\nid=\"a/b\"\nversion=\"1\"\n").is_err());
+    }
+
+    #[test]
+    fn agent_actions_are_read_and_checked() {
+        let base = "[plugin]\nid=\"x\"\nversion=\"1\"\n[backend]\ncommand=\"b\"\n";
+        let m = parse_manifest(&format!("{base}[agent]\nactions=[\"post\"]\n")).unwrap();
+        assert_eq!(m.agent_actions, vec!["post".to_string()]);
+        assert!(parse_manifest(base).unwrap().agent_actions.is_empty());
+        let dotted = parse_manifest(&format!("{base}[agent]\nactions=[\"x.post\"]\n")).unwrap_err();
+        assert!(dotted.contains("not one action name"), "{dotted}");
+        assert!(parse_manifest(&format!("{base}[agent]\nactoins=[\"post\"]\n")).is_err(), "unknown key");
+        let no_backend = parse_manifest("[plugin]\nid=\"x\"\nversion=\"1\"\n[agent]\nactions=[\"post\"]\n").unwrap_err();
+        assert!(no_backend.contains("need a [backend]"), "{no_backend}");
     }
 
     #[test]

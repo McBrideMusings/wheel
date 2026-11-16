@@ -1,0 +1,16 @@
+[plugin]
+id = "turn-feed"
+version = "0.1.0"
+
+[backend]
+command = "../../target/debug/turn-feed backend"
+
+[agent]
+actions = ["post"]
+
+[[pane]]
+id = "feed"
+title = "Turn feed"
+script = "panes/feed.luau"
+reads = ["turn-feed.posts", "wheel.agents"]
+actions = ["turn-feed.answer", "wheel.agent.send"]

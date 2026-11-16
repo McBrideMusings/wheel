@@ -454,6 +454,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var pageClient: DaemonClient?
     /// Where the daemon is and the token it wants, for every artifact page's scheme handler.
     let pageDaemon = PageDaemon()
+    /// The artifacts plugin pages embed (`WebView{artifact}`), over the page connection.
+    var artifactEmbeds: ArtifactEmbeds?
     /// The plugin panes' own connection to wheeld: it asks for each pane's script and hears every change to one. Unlike the
     /// terminal socket it is opened again when it drops, and asks for every script again, as long as a plugin pane exists;
     /// the last plugin pane closing closes it.
@@ -1143,6 +1145,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         switch embed.kind {
         case .terminal: return AnyView(EmbeddedTerminal(native: self, hostPane: hostPane, pane: embed.pane))
         case .agentChat: return AnyView(EmbeddedAgentChat(native: self, hostPane: hostPane, pane: embed.pane))
+        case .artifact:
+            guard let ws = pluginURL, let client = pages(ws) else { return nil }
+            daemonAddress(ws)
+            let embeds = artifactEmbeds ?? ArtifactEmbeds(daemon: pageDaemon, send: { [weak client] in client?.send($0) },
+                                                          nextReq: { [weak client] in client?.req() ?? 0 })
+            artifactEmbeds = embeds
+            var cwd = ""
+            if case let .string(dir)? = panes[hostPane]?.plugin?.context["cwd"] { cwd = dir }
+            return embeds.view(pane: hostPane, name: embed.pane, cwd: cwd)
         }
     }
     /// `agent`'s chat, attached over the page connection the first time an embed asks for it.
@@ -1317,10 +1328,12 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             agentReqs = [:]; attachReqs = []; refusedAttach = []; taskOutputAsks = [:]
             agentMessage(status)
             for (agent, chat) in chats { chat.error = nil; attachAgent(agent) }
+            artifactEmbeds?.connected()
         }
         client.onMessage = { [weak self] message in
             guard let self else { return }
             agentMessage(message)
+            artifactEmbeds?.handle(message)
             for host in panes.values { host.page?.handle(message) }
             showPages()
         }
@@ -1525,7 +1538,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 "embeds": embeds.values.filter { $0.hostPane == pane }.map { ["pane": $0.pane, "term": $0.termID ?? NSNull(), "bytes": $0.bytes] as [String: Any] }
                     + agentEmbeds.values.filter { $0.hostPane == pane }.map { embed in
                         ["pane": embed.pane, "agent": embed.chat?.name ?? NSNull(), "note": embed.note, "state": embed.chat?.state.map { "\($0)" } ?? NSNull(),
-                         "items": embed.chat?.displayItems.count ?? 0, "draft": embed.chat?.draft ?? "", "error": embed.chat?.error ?? NSNull()] as [String: Any] }]
+                         "items": embed.chat?.displayItems.count ?? 0, "draft": embed.chat?.draft ?? "", "error": embed.chat?.error ?? NSNull()] as [String: Any] }
+                    + (artifactEmbeds?.state(pane: pane) ?? [])]
         case "page_set":
             // A value written into a native page's data model at `path`, as one of its controls
             // would write it (a picker's choice, a field's text), for a check that has no pointer.

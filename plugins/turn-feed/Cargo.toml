@@ -1,0 +1,15 @@
+[package]
+name = "turn-feed"
+version.workspace = true
+edition.workspace = true
+description = "Turn feed: a feed of posts from agents, one per turn, with options to pick and a reply box; the backend of Wheel's turn-feed plugin"
+
+[[bin]]
+name = "turn-feed"
+path = "src/main.rs"
+
+[dependencies]
+notify = "7.0.0"
+serde_json.workspace = true
+tokio.workspace = true
+wheel-plugin-sdk = { path = "../../sdk/rust" }

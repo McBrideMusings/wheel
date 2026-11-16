@@ -138,16 +138,16 @@ A pane script names three more components, which the `ui` prelude writes as node
 | --- | --- | --- |
 | `Terminal` | `pane` (a terminal pane's id), `height` (points, default 320) | that pane's live terminal, as wide as it is offered |
 | `AgentChat` | `pane` (an agent pane's id), `height` (default 320) | that agent pane's conversation |
-| `WebView` | `url` (http or https), `height` (default 320) | a WebKit view; any other scheme shows a dashed note in place |
+| `WebView` | `url` (http or https), or `artifact` (an artifact's name), `height` (default 320) | a WebKit view of the address, or of the artifact's page as a web pane shows it; any other scheme, or both props, shows a dashed note in place |
 
 WheelUI draws `Terminal` and `AgentChat` through the environment value `a2uiPaneEmbed` (`apple/WheelUI/Sources/WheelUI/A2UI/A2UIEmbed.swift`), a closure `(A2UIPaneEmbed) -> AnyView?` where `A2UIPaneEmbed` is `{ kind: terminal | agent_chat, pane }`. The host returns a view for every pane of a kind it supports (its own message for a pane that is gone or is not a terminal) and nil for a kind it cannot show, which draws "This client cannot show an agent chat inside a page" (or the terminal form). WheelUI frames the result to `height` and the full width and clips it. `WebView` needs no host.
 
 What each client hosts today:
 
-| Client | Terminal | WebView | AgentChat |
-| --- | --- | --- | --- |
-| GPUI Mac (`clients/gpui/native/Bridge.swift`) | yes | yes | yes |
-| iOS (`apple/iOS/Sources/SpaceCarousel.swift` `PluginEmbed`) | no (wheel-pmf2.15) | yes | yes |
+| Client | Terminal | WebView | WebView{artifact} | AgentChat |
+| --- | --- | --- | --- | --- |
+| GPUI Mac (`clients/gpui/native/Bridge.swift`) | yes | yes | yes | yes |
+| iOS (`apple/iOS/Sources/SpaceCarousel.swift` `PluginEmbed`) | no (wheel-pmf2.15) | yes | yes | yes |
 
 The GPUI Mac host resolves a pane id to its terminal through `pane_targets`, a bridge command the Rust client builds from the layout when it changes and sends when the map differs from the one last sent: `{"op":"pane_targets","panes":{"p2":{"term":"t1"},"p5":{"term":"t2","agent":"codex-1"},"p9":{"agent":"claude-3"}}}`, one entry for every pane of every space the client knows. An embed attaches to the term (`term_attach`), writes as `term_input` and reports its size as `term_resize`. `wheeld` sizes a term to the newest `term_resize`, so the same pane's grid view reflows to the embed's size while the embed is open. The bridge sends `term_detach` only when no pane host and no other embed still uses the term. When an embed lets go of a term a grid pane still holds, that pane sends its own size again, so the term returns to the grid's size. An embed whose `pane` prop changes attaches to the new pane's term and releases the old one.
 
@@ -158,6 +158,8 @@ Every `term_attach` makes `wheeld` answer `term_attached` and replay the whole s
 The iOS host resolves an `AgentChat` embed's pane through the layout it holds and draws the phone's agent pane for its agent (header, transcript, permission card, composer), sharing the `AgentChat` the phone keeps attached for every agent pane in the layout. A pane that is gone shows "Pane <id> is gone", one without an agent "Pane <id> holds no agent". It answers nil for a `Terminal`, so WheelUI draws its note.
 
 A `WebView` follows a link in place and only to http, https or about; any other scheme is refused.
+
+`WebView{artifact = name}` shows an artifact's page (ADR-0046). WheelUI asks the host through `a2uiPaneEmbed` with kind `artifact` and the name in `pane`; both hosts answer with `ArtifactEmbeds` (`apple/WheelUI/Sources/WheelUI/ArtifactEmbed.swift`), which sends `plugin_embed {pane: <the plugin pane>, artifact: <name>}` over the client's connection to `wheeld` and loads the page id it gets back at `wheel-page://pages/artifacts/<id>/` through `PageSchemeHandler`, in the browser storage a web pane of that artifact uses. `wheeld` refuses a pane that shows no plugin (`p3 shows no plugin, so it embeds no artifact`) and a name the space cannot resolve, which the embed shows in place; it resolves the name as `wheel artifact` does, keeps the page as an artifact card's (served at `/artifacts/<id>/` behind the token, watched, refreshed, `pane_reload` naming the id) and gives the same pane and artifact the same id. A plugin pane keeps the 16 pages it asked for last, and its pages end when it closes or shows something else. A link to anywhere outside the page's folder opens in the system browser. The embed asks again on each new connection, since a restarted `wheeld` has forgotten the id. The bridge's debug `plugin` state lists each as `{"artifact", "id", "loads", "status", "error"}` in `embeds`. `PROTOCOL_VERSION` 44.
 
 The bridge's debug `plugin` state lists a plugin pane's live embeds as `"embeds": [{"pane": "p12", "term": "t1" | null, "bytes": <bytes received>}]` for a terminal and `{"pane", "agent": <name> | null, "note", "state", "items": <transcript rows>, "draft", "error"}` for an agent chat, so a check sees an embed attached and receiving. Its action `agent_send` with `component=<embedded pane>` and `value=<text>` sends the text through that agent chat's composer.
 
@@ -228,6 +230,8 @@ A malformed `feed/update`, or a patch that does not apply, is written to the log
 | `wheel.agents` | `[{pane, space, kind, agent, status}]`, every pane running an agent: an agent pane (`agent` is its harness) or a terminal running one; `status` is `working`, `idle`, `needs_you`, ... or null |
 
 `wheeld` publishes the three whenever the layout or a status changes, and only when a pane reads them and the value differs from the last one.
+
+**Actions granted to agents.** A manifest's `[agent] actions = ["post"]` lets any agent pane invoke those actions of the package's own backend (ADR-0044): `wheel plugin action "$WHEEL_PANE" turn-feed.post --args-file post.json` (`--args-file -` reads standard input). `wheeld` resolves the action's package in the agent pane's space and allows the call when the name is listed there; a refused call names both grants (`pane p8 (agent.view) may not invoke clock.x; its actions: ...; actions granted to agents: clock.post`). The backend's `caller` is then `{pane, space, cwd, agent: true}`, `cwd` the space's directory. An entry with a dot, an unknown key in `[agent]`, or `[agent]` in a package with no `[backend]` or `[commands]` is the package's `error` in `plugin ls`, and `plugin ls` lists the grant as `agent_actions`.
 
 **Agent feeds and actions.** Three more `wheel.*` feeds follow one agent, named in `params` as `{agent: <agent pane id or agent name>}`; a read without it is refused (`wheel.agent.status takes params {agent: <agent pane id or agent name>}; agent is missing`), as is one naming no agent (`no agent nobody`, `p8 is not an agent pane; its kind is plugin`). `PROTOCOL_VERSION` 40.
 

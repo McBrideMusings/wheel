@@ -166,6 +166,9 @@ public enum ClientMsg: Sendable, Equatable {
     case feedUnsubscribe(req: UInt64?, pane: String, feed: String, params: JSONValue)
     /// Plugin pane `pane`'s script invokes `action` with `args`; replies `pluginAction` or `error`.
     case pluginAction(req: UInt64?, pane: String, action: String, args: JSONValue)
+    /// Plugin pane `pane` shows artifact `artifact` inside its page (`WebView{artifact}`); replies `pluginEmbed` with the page id
+    /// to load, or `error`.
+    case pluginEmbed(req: UInt64?, pane: String, artifact: String)
     /// Every built-in artifact wheeld carries; replies `builtins`.
     case builtinLs(req: UInt64?)
     /// Install a built-in at machine scope; replies `builtins`.
@@ -401,6 +404,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "feed_unsubscribe", "pane": pane, "feed": feed, "params": params.foundation]; put(req)
         case let .pluginAction(req, pane, action, args):
             o = ["op": "plugin_action", "pane": pane, "action": action, "args": args.foundation]; put(req)
+        case let .pluginEmbed(req, pane, artifact):
+            o = ["op": "plugin_embed", "pane": pane, "artifact": artifact]; put(req)
         case let .builtinLs(req):
             o = ["op": "builtin_ls"]; put(req)
         case let .builtinInstall(req, name):
@@ -1350,6 +1355,8 @@ public enum ServerMsg: Sendable {
     case feedUpdate(req: UInt64?, pane: String, feed: String, params: JSONValue, value: JSONValue?, patch: JSONValue?, stale: Bool)
     /// The backend's answer to `pluginAction`.
     case pluginAction(req: UInt64, pane: String, action: String, result: JSONValue)
+    /// The page a plugin pane embeds, in reply to `pluginEmbed`: load `/artifacts/<id>/`; `scope` is where the name resolved.
+    case pluginEmbed(req: UInt64, pane: String, artifact: String, scope: ArtifactScope, id: String)
     /// Every built-in as it now stands, in reply to any built-in request.
     case builtins(req: UInt64, builtins: [BuiltinInfo])
     /// `builtinUpdate` with `ask` found files a person edited and changed nothing.
@@ -1407,7 +1414,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane
+        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, artifact
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1537,6 +1544,10 @@ extension ServerMsg: Decodable {
                                value: c.contains(.value) ? try c.decode(JSONValue.self, forKey: .value) : nil,
                                patch: try c.decodeIfPresent(JSONValue.self, forKey: .patch),
                                stale: try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false)
+        case "plugin_embed":
+            self = .pluginEmbed(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
+                                artifact: try c.decode(String.self, forKey: .artifact), scope: try c.decode(ArtifactScope.self, forKey: .scope),
+                                id: try c.decode(String.self, forKey: .id))
         case "plugin_action":
             self = .pluginAction(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
                                  action: try c.decode(String.self, forKey: .action), result: try c.decodeIfPresent(JSONValue.self, forKey: .result) ?? .null)

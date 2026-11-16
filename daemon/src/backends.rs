@@ -2019,6 +2019,9 @@ pub(crate) struct PaneCtx {
     cwd: String,
     plugin: String,
     plugin_pane: String,
+    /// Whether the pane is an agent pane, which may also invoke the actions a package's
+    /// `[agent] actions` grant (ADR-0044).
+    agent: bool,
 }
 
 /// `items` joined by commas, or `none`.
@@ -2067,6 +2070,7 @@ impl AppState {
             cwd: space.cwd.clone(),
             plugin,
             plugin_pane,
+            agent: matches!(kind, PaneKind::Agent { .. }),
         })
     }
 
@@ -2177,18 +2181,36 @@ impl AppState {
         Ok(hub.subscribe(&source.key(), name, params, None))
     }
 
-    /// Whether the package of plugin pane `pane` lists `action` under its `actions` now.
-    async fn action_grant(&self, ctx: &PaneCtx, pane: &str, action: &str) -> Result<(), String> {
+    /// Whether pane `pane` may invoke `action` now: its package's `[[pane]]` entry lists it under
+    /// `actions`, or the pane is an agent pane and the action's own package (resolved in the pane's
+    /// space) lists the action's name under `[agent] actions` (ADR-0044). Returns whether the
+    /// agent grant is the one that allowed it.
+    async fn action_grant(&self, ctx: &PaneCtx, pane: &str, action: &str) -> Result<bool, String> {
         let entry = self.pane_entry(ctx).await?;
-        if !entry.actions.iter().any(|a| crate::plugins::glob_match(a, action)) {
-            return Err(format!(
-                "pane {pane} ({}.{}) may not invoke {action}; its actions: {}",
-                ctx.plugin,
-                ctx.plugin_pane,
-                list_or_none(&entry.actions)
-            ));
+        if entry.actions.iter().any(|a| crate::plugins::glob_match(a, action)) {
+            return Ok(false);
         }
-        Ok(())
+        let mut granted_to_agents = Vec::new();
+        if ctx.agent {
+            if let Some((plugin, name)) = action.split_once('.').filter(|(p, _)| *p != "wheel") {
+                if let Ok(package) = self.resolve_plugin(&ctx.cwd, plugin).await {
+                    if package.info.agent_actions.iter().any(|a| a == name) {
+                        return Ok(true);
+                    }
+                    granted_to_agents = package.info.agent_actions.iter().map(|a| format!("{plugin}.{a}")).collect();
+                }
+            }
+        }
+        let mut err = format!(
+            "pane {pane} ({}.{}) may not invoke {action}; its actions: {}",
+            ctx.plugin,
+            ctx.plugin_pane,
+            list_or_none(&entry.actions)
+        );
+        if ctx.agent {
+            err.push_str(&format!("; actions granted to agents: {}", list_or_none(&granted_to_agents)));
+        }
+        Err(err)
     }
 
     /// Run action `action` (`<plugin>.<name>`) with `args` for plugin pane `pane`: refused unless
@@ -2216,7 +2238,7 @@ impl AppState {
         // The backend may have taken seconds to start: the grant is checked again right before
         // the call.
         let ctx = self.plugin_pane_ctx(pane)?;
-        self.action_grant(&ctx, pane, action).await?;
+        let as_agent = self.action_grant(&ctx, pane, action).await?;
         let actions = backend.info.lock().unwrap().actions.clone();
         if !actions.iter().any(|a| a == name) {
             return Err(format!(
@@ -2233,12 +2255,16 @@ impl AppState {
         let params = ActionInvokeParams {
             action: name.to_string(),
             args,
-            caller: json!({
-                "pane": pane,
-                "space": ctx.space,
-                "plugin": ctx.plugin,
-                "plugin_pane": ctx.plugin_pane,
-            }),
+            caller: if as_agent {
+                json!({ "pane": pane, "space": ctx.space, "cwd": ctx.cwd, "agent": true })
+            } else {
+                json!({
+                    "pane": pane,
+                    "space": ctx.space,
+                    "plugin": ctx.plugin,
+                    "plugin_pane": ctx.plugin_pane,
+                })
+            },
         };
         match tokio::time::timeout(ACTION_TIMEOUT, socket.request::<ActionInvoke>(params)).await {
             Err(_) => Err(format!("{action} did not answer in {} s", ACTION_TIMEOUT.as_secs())),

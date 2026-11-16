@@ -1,11 +1,12 @@
 import SwiftUI
 import WebKit
 
-/// A pane a page asks to show inside its own layout (ADR-0042): `Terminal{pane}` or `AgentChat{pane}`.
+/// What a page asks to show inside its own layout: a pane (ADR-0042, `Terminal{pane}` or `AgentChat{pane}`) or an artifact
+/// (ADR-0046, `WebView{artifact}`).
 public struct A2UIPaneEmbed: Hashable, Sendable {
-    public enum Kind: String, Sendable { case terminal, agentChat = "agent_chat" }
+    public enum Kind: String, Sendable { case terminal, agentChat = "agent_chat", artifact }
     public let kind: Kind
-    /// The pane's id as wheeld names it (`p12`).
+    /// The pane's id as wheeld names it (`p12`); for `artifact`, the artifact's name as `wheel artifact` takes it.
     public let pane: String
     public init(kind: Kind, pane: String) { self.kind = kind; self.pane = pane }
 }
@@ -45,12 +46,19 @@ struct A2UIPaneEmbedView: View {
 /// navigate in place and only to http or https; another `url` loads that address.
 struct A2UIWebViewView: View {
     let node: ComponentNode
+    @Environment(\.a2uiPaneEmbed) private var embed
     var body: some View {
         let p = node.instance.properties
         let raw = p["url"]?.stringValue ?? ""
+        let artifact = p["artifact"]?.stringValue ?? ""
         let height = p["height"]?.numberValue ?? 320
         Group {
-            if let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            if !artifact.isEmpty && !raw.isEmpty {
+                A2UIEmbedNote(text: "WebView names both a url and an artifact")
+            } else if !artifact.isEmpty {
+                if let view = embed?(A2UIPaneEmbed(kind: .artifact, pane: artifact)) { view }
+                else { A2UIEmbedNote(text: "This client cannot show an artifact inside a page") }
+            } else if let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
                 EmbeddedWebView(url: url)
             } else {
                 A2UIEmbedNote(text: raw.isEmpty ? "WebView names no url" : "WebView shows only http and https addresses, not \(raw)")

@@ -438,15 +438,19 @@ enum PluginCommand {
         count: Option<usize>,
     },
     /// Invoke an action as plugin pane PANE does and print the backend's result as one JSON
-    /// line. Starts the plugin's backend if it is not running.
+    /// line. Starts the plugin's backend if it is not running. An agent pane may invoke the
+    /// actions a plugin's `[agent] actions` grant: `wheel plugin action "$WHEEL_PANE" <plugin>.<name>`.
     Action {
-        /// A plugin pane, which names the space the action's plugin is resolved in.
+        /// A plugin pane, or an agent pane; it names the space the action's plugin is resolved in.
         pane: String,
         /// The action: `<plugin>.<name>`.
         action: String,
         /// The action's arguments, as JSON.
-        #[arg(long, default_value = "null")]
+        #[arg(long, default_value = "null", conflicts_with = "args_file")]
         args: String,
+        /// Read the action's arguments, as JSON, from this file (`-` for standard input).
+        #[arg(long, value_name = "FILE")]
+        args_file: Option<String>,
     },
 }
 
@@ -4505,7 +4509,7 @@ async fn plugin_feed(
 /// Invoke `action` as plugin pane `pane` and print the backend's result as one JSON line.
 async fn plugin_action(conn: &mut Conn, pane: String, action: String, args: String) -> Result<(), Fail> {
     let args: serde_json::Value =
-        serde_json::from_str(&args).map_err(|e| Fail::Other(format!("--args is not JSON: {e}")))?;
+        serde_json::from_str(&args).map_err(|e| Fail::Other(format!("the action's arguments are not JSON: {e}")))?;
     let req = conn.req();
     let ServerMsg::PluginAction { result, .. } = conn
         .call(
@@ -6471,7 +6475,18 @@ async fn main() -> ExitCode {
                 params,
                 count,
             }) => plugin_feed(&mut conn, pane, feed, params, count).await,
-            Command::Plugin(PluginCommand::Action { pane, action, args }) => {
+            Command::Plugin(PluginCommand::Action { pane, action, args, args_file }) => {
+                let args = match args_file.as_deref() {
+                    None => args,
+                    Some("-") => {
+                        let mut text = String::new();
+                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                            .map_err(|e| Fail::Other(format!("cannot read the arguments from standard input: {e}")))?;
+                        text
+                    }
+                    Some(path) => std::fs::read_to_string(path)
+                        .map_err(|e| Fail::Other(format!("cannot read {path}: {e}")))?,
+                };
                 plugin_action(&mut conn, pane, action, args).await
             }
             Command::Stream(command) => stream(&mut conn, command).await,

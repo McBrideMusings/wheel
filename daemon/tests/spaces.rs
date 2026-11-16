@@ -8459,3 +8459,89 @@ async fn a_plugin_folder_made_after_the_pane_opened_is_watched() {
     assert_eq!(next_push(&mut ws, &pane).await, "-- project three");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What `plugin_embed` answered: the page id and the scope the name resolved in, or the error.
+async fn embed(ws: &mut Ws, pane: &str, artifact: &str) -> Result<(String, wheel_proto::ArtifactScope), String> {
+    match call(ws, ClientMsg::PluginEmbed { req: Some(60), pane: pane.into(), artifact: artifact.into() }).await {
+        ServerMsg::PluginEmbed { id, scope, .. } => Ok((id, scope)),
+        ServerMsg::Error { message, .. } => Err(message),
+        other => panic!("expected plugin_embed, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_pane_embeds_an_artifact_served_as_a_web_panes_page() {
+    let dir = std::env::temp_dir().join(format!("wheel-embed-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>embedded</p>").unwrap();
+    register(&dir, "site", std::path::Path::new("site"), "");
+    let inst = dir.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let (url, _daemon) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let addr = url.trim_start_matches("ws://").split('/').next().unwrap().to_string();
+    let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+
+    // Only a pane that shows a plugin embeds.
+    let refused = embed(&mut ws, &pane, "site").await.unwrap_err();
+    assert!(refused.contains("shows no plugin"), "{refused}");
+    assert_eq!(embed(&mut ws, "p999999", "site").await.unwrap_err(), "no pane p999999");
+
+    ok(&mut ws, set_plugin(&pane, Some(("sample", "counter")))).await;
+    // A name the space cannot resolve, or that is no plain name, is refused.
+    for bad in ["nosuch", "../site", ""] {
+        assert!(embed(&mut ws, &pane, bad).await.is_err(), "{bad:?} resolved");
+    }
+    let (id, scope) = embed(&mut ws, &pane, "site").await.unwrap();
+    assert_eq!(scope, wheel_proto::ArtifactScope::Project);
+    assert_eq!(embed(&mut ws, &pane, "site").await.unwrap().0, id, "the same artifact gets the same page");
+    let (status, body) = http_get(&addr, &format!("/artifacts/{id}/"), &bearer).await;
+    assert_eq!(status, 200);
+    assert!(body.ends_with("<p>embedded</p>"), "{body}");
+    for asset in ["wheel.css", "lightbox.js", "client.js"] {
+        let (status, _) = http_get(&addr, &format!("/artifacts/{id}/.wheel/{asset}"), &bearer).await;
+        assert_eq!(status, 200, ".wheel/{asset}");
+    }
+    // Watched as a web pane's page: a change reloads it under its id.
+    std::fs::write(site.join("index.html"), "<p>changed</p>").unwrap();
+    let reloaded = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ServerMsg::PaneReload { pane } = recv(&mut ws).await {
+                if pane == id {
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(reloaded.is_ok(), "no pane_reload for embed page {id}");
+
+    // A plugin pane keeps the 16 pages it asked for last; the 17th ends the least recent.
+    for n in 0..16 {
+        register(&dir, &format!("site{n}"), std::path::Path::new("site"), "");
+    }
+    let mut last = String::new();
+    for n in 0..16 {
+        last = embed(&mut ws, &pane, &format!("site{n}")).await.unwrap().0;
+    }
+    let (status, _) = http_get(&addr, &format!("/artifacts/{id}/"), &bearer).await;
+    assert_eq!(status, 404, "the 17th embed ends the least recently used page");
+    let (status, _) = http_get(&addr, &format!("/artifacts/{last}/"), &bearer).await;
+    assert_eq!(status, 200);
+    let id = last;
+
+    // The page ends with the plugin pane's content.
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind { req: Some(61), pane: pane.clone(), kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None, plugin: None },
+    )
+    .await;
+    let (status, _) = http_get(&addr, &format!("/artifacts/{id}/"), &bearer).await;
+    assert_eq!(status, 404, "the embed page outlived its plugin pane");
+    let _ = std::fs::remove_dir_all(&dir);
+}

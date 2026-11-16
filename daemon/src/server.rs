@@ -215,6 +215,11 @@ pub struct AppState {
     /// The page of each artifact card (`agent_card`), keyed by its page id: the newest
     /// `cards::CARDS_KEPT` of each running agent. A card's page is served like a web pane's.
     pub(crate) card_pages: Mutex<HashMap<String, crate::cards::CardPage>>,
+    /// The page of each artifact a plugin pane embeds (`plugin_embed`), keyed by its page id: the
+    /// `cards::EMBEDS_KEPT` each plugin pane used last. Served like a web pane's.
+    pub(crate) embed_pages: Mutex<HashMap<String, crate::cards::EmbedPage>>,
+    /// Orders the uses of embed pages, so a pane past its limit drops the one it used least lately.
+    pub(crate) embed_seq: std::sync::atomic::AtomicU64,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
     /// The app process of each web pane whose artifact declares one, keyed by pane id.
@@ -378,6 +383,8 @@ impl AppState {
             watchers: Mutex::new(HashMap::new()),
             pages: Mutex::new(HashMap::new()),
             card_pages: Mutex::new(HashMap::new()),
+            embed_pages: Mutex::new(HashMap::new()),
+            embed_seq: std::sync::atomic::AtomicU64::new(0),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             apps: Mutex::new(crate::app::Apps::new()),
             mcp: Default::default(),
@@ -2800,6 +2807,16 @@ async fn handle(
             }
             None
         }
+        ClientMsg::PluginEmbed { req, pane, artifact } => match state.plugin_embed(&pane, &artifact) {
+            Ok((found, id)) => {
+                tracing::info!(%peer, %pane, %artifact, page = %id, "plugin embed");
+                req.map(|req| ServerMsg::PluginEmbed { req, pane, artifact, scope: found.scope(), id })
+            }
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %artifact, %message, "plugin embed refused");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::PluginAction {
             req,
             pane,

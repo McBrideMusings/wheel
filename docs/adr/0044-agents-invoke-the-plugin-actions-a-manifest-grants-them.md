@@ -1,0 +1,7 @@
+# ADR-0044: Agents invoke the plugin actions a manifest grants them
+
+A plugin's `wheel-plugin.toml` may hold `[agent] actions = ["<name>", ...]`: the actions of its own backend, by their own names, that any agent pane may invoke. An agent runs them through the same op a plugin pane uses, `plugin_action`, naming its own pane: `wheel plugin action "$WHEEL_PANE" <plugin>.<name> --args-file <file>`. `wheeld` allows the call when the pane is an agent pane and the action's package, resolved in that pane's space as a pane's plugin is, lists the name under `[agent] actions`; the `[[pane]]` grant of ADR-0041 still applies to plugin panes unchanged. The backend's `action/invoke` then gets `caller {pane, space, cwd, agent: true}`, `cwd` the space's directory, so a plugin learns which agent called and for which project from `wheeld`, never from the arguments the agent wrote. A plugin refuses what it will not take by answering with a JSON-RPC error, which the command prints and exits non-zero on.
+
+`[agent] actions` names only actions of the package's own backend: an entry with a dot, an unknown key in `[agent]`, or `[agent]` in a package with no `[backend]` or `[commands]` is refused, and `plugin ls` shows the package's error. No `wheel.*` action and no other plugin's action can be granted to agents this way.
+
+This is the base capability the turn feed (`plugins/turn-feed`) needs to take posts from agents, added for every plugin under ADR-0043: a runner, a tracker or a review plugin takes input from agents the same way, and a plugin that wants none declares none.

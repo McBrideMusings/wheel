@@ -2,6 +2,9 @@
 //! client draws it live where the card sits in the conversation. wheeld checks the name when the
 //! card is posted and writes what a client needs to open it; the work it shows stays in its own
 //! pane or page.
+//!
+//! A plugin pane's embedded artifacts (`plugin_embed`) are pages of the same kind, kept per plugin
+//! pane instead of per agent.
 
 use wheel_proto::{AgentEvent, ArtifactRef, ArtifactScope, CardRef};
 
@@ -100,5 +103,75 @@ impl AppState {
             _ => None,
         });
         pane.or_else(|| self.card_pages.lock().unwrap().get(id).map(|p| (p.artifact.clone(), p.cwd.clone())))
+            .or_else(|| self.embed_pages.lock().unwrap().get(id).map(|p| (p.artifact.clone(), p.cwd.clone())))
     }
+
+    /// The page plugin pane `pane` shows artifact `name` in (`plugin_embed`, ADR-0046): the name
+    /// resolved in the pane's space, project then machine, and a page for it kept and served as an
+    /// artifact card's is. The same pane and artifact get the page they already have, which counts
+    /// as its newest use; past `EMBEDS_KEPT` the least recently asked for ends.
+    pub(crate) fn plugin_embed(&self, pane: &str, name: &str) -> Result<(ArtifactRef, String), String> {
+        let cwd = {
+            let spaces = self.spaces.lock().unwrap();
+            let (space, kind) = spaces
+                .spaces
+                .iter()
+                .find_map(|s| crate::spaces::space_find(s, pane).map(|k| (s, k)))
+                .ok_or_else(|| format!("no pane {pane}"))?;
+            if crate::plugins::shown_plugin(kind).is_none() {
+                return Err(format!("{pane} shows no plugin, so it embeds no artifact"));
+            }
+            space.cwd.clone()
+        };
+        let artifact = self.artifact_ref(None, name, &cwd)?;
+        let seq = self.embed_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (id, fresh) = {
+            let mut pages = self.embed_pages.lock().unwrap();
+            match pages.iter_mut().find(|(_, p)| p.pane == pane && p.artifact == artifact) {
+                Some((id, page)) => {
+                    page.used = seq;
+                    (id.clone(), false)
+                }
+                None => {
+                    let id = self.new_id('e');
+                    pages.insert(id.clone(), EmbedPage { artifact: artifact.clone(), cwd: cwd.clone(), pane: pane.to_string(), used: seq });
+                    (id, true)
+                }
+            }
+        };
+        if fresh {
+            tracing::info!(%pane, page = %id, scope = artifact.scope().name(), name = artifact.name(), "embed page opened");
+            self.show_artifact(&id, &artifact, &cwd);
+            self.drop_embed_pages(pane, EMBEDS_KEPT);
+        }
+        Ok((artifact, id))
+    }
+
+    /// End the pages plugin pane `pane` embeds past the `keep` it used last, as a closed web
+    /// pane's page ends. 0 ends them all, for a pane that closed or shows something else now.
+    pub(crate) fn drop_embed_pages(&self, pane: &str, keep: usize) {
+        let dropped: Vec<String> = {
+            let mut pages = self.embed_pages.lock().unwrap();
+            let mut ids: Vec<(u64, String)> = pages.iter().filter(|(_, p)| p.pane == pane).map(|(id, p)| (p.used, id.clone())).collect();
+            ids.sort();
+            let over = ids.len().saturating_sub(keep);
+            ids.into_iter().take(over).map(|(_, id)| id).inspect(|id| { pages.remove(id); }).collect()
+        };
+        for id in dropped {
+            tracing::info!(%pane, page = %id, "embed page dropped");
+            self.drop_artifact(&id);
+        }
+    }
+}
+
+/// How many pages one plugin pane keeps embedded; each holds two folder watches.
+pub(crate) const EMBEDS_KEPT: usize = 16;
+
+/// A page a plugin pane embeds: the artifact, its space's directory, the plugin pane, and when the
+/// pane last asked for it.
+pub(crate) struct EmbedPage {
+    pub artifact: ArtifactRef,
+    pub cwd: String,
+    pub pane: String,
+    pub used: u64,
 }

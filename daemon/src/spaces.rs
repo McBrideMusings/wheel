@@ -827,6 +827,7 @@ impl AppState {
     /// conversation keeps its files.
     fn drop_content(&self, pane: &str, kind: &PaneKind) {
         self.drop_uploads(pane);
+        self.drop_embed_pages(pane, 0);
         match kind {
             PaneKind::Terminal { term, .. } => {
                 if let Some(held) = self.terms.lock().unwrap().remove(term) {

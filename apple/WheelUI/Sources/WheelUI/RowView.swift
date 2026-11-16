@@ -438,17 +438,7 @@ struct AgentText: View {
             // a row that grows chunk by chunk.
             StructuredText(markdown: shown, syntaxExtensions: rich.syntax)
                 .font(look.body)
-                .textual.paragraphStyle(ChatParagraphStyle(
-                    lineSpacing: look.lineSpacing(for: look.size) / look.size,
-                    spacing: look.blockGap(look.paragraphSpacing)))
-                .textual.headingStyle(ChatHeadingStyle(spacing: look.paragraphSpacing, lead: look.lineSpacing(for: look.size)))
-                .textual.inlineStyle(.chat(look))
-                .textual.unorderedListMarker(ChatListMarker(bullet: look.listBullet))
-                .textual.listItemSpacing(.fontScaled(top: look.blockGap(look.listSpacing) / look.size))
-                .textual.blockQuoteStyle(ChatBlockQuoteStyle(style: look.quoteStyle))
-                .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, agent: chat.name))
-                .textual.highlighterTheme(look.codeTheme.highlighter)
-                .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
+                .chatMarkdownStyle(look, agent: chat.name)
                 .textual.imageAttachmentLoader(
                     ChatImageLoader(agent: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
                 .textual.emojiAttachmentLoader(SwatchLoader(side: (look.size * 0.85).rounded()))
@@ -553,6 +543,25 @@ struct AgentText: View {
 private struct TimeStamp: Identifiable {
     let iso: String
     var id: String { iso }
+}
+
+extension View {
+    /// The block styles a reply's Markdown draws with: paragraphs, headings, inline code and links,
+    /// list bullets and spacing, quotes and code blocks as the `chat.*` settings in `look` give them.
+    /// `agent` names whose code blocks these are in `CodeBlockRegistry`.
+    func chatMarkdownStyle(_ look: ChatAppearance, agent: String) -> some View {
+        textual.paragraphStyle(ChatParagraphStyle(
+            lineSpacing: look.lineSpacing(for: look.size) / look.size,
+            spacing: look.blockGap(look.paragraphSpacing)))
+            .textual.headingStyle(ChatHeadingStyle(spacing: look.paragraphSpacing, lead: look.lineSpacing(for: look.size)))
+            .textual.inlineStyle(.chat(look))
+            .textual.unorderedListMarker(ChatListMarker(bullet: look.listBullet))
+            .textual.listItemSpacing(.fontScaled(top: look.blockGap(look.listSpacing) / look.size))
+            .textual.blockQuoteStyle(ChatBlockQuoteStyle(style: look.quoteStyle))
+            .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, agent: agent))
+            .textual.highlighterTheme(look.codeTheme.highlighter)
+            .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
+    }
 }
 
 /// Headings one step above body at most: in a narrow card a 30pt `#` pushes the reply off screen.

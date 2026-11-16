@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 43;
+pub const PROTOCOL_VERSION: u32 = 44;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -161,6 +161,10 @@ pub struct PluginInfo {
     /// The manifest's `[backend]` and the state of its process; None for a package without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendInfo>,
+    /// The manifest's `[agent] actions`: the actions, by their own names, any agent pane may
+    /// invoke with `plugin_action` (ADR-0044).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_actions: Vec<String>,
     /// Why the manifest could not be read; the package then lists no panes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -1667,6 +1671,19 @@ pub enum ClientMsg {
         #[serde(default)]
         args: serde_json::Value,
     },
+    /// Plugin pane `pane`'s script shows artifact `artifact` inside its page (`WebView{artifact}`,
+    /// ADR-0046). wheeld resolves the name in the pane's space as `wheel artifact` does (project,
+    /// then machine), keeps a page for it served at `/artifacts/<id>/` as a web pane's is (watched,
+    /// refreshed, `pane_reload` with `pane` the id), and replies `plugin_embed` with its id. The
+    /// same pane and artifact get the same id. A plugin pane keeps its newest 16 pages, and they
+    /// end with the pane. Refused for a pane that shows no plugin and for a name the space cannot
+    /// resolve. `PROTOCOL_VERSION` 44.
+    PluginEmbed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        artifact: String,
+    },
     /// Restart plugin `plugin`'s backend (as resolved in `space`): wheeld stops its process (sends
     /// `shutdown`, kills its process group after 1 s), starts a new one, or starts one when none
     /// runs, and replays every feed a pane reads. Replies `ok` once the new process answered
@@ -2579,6 +2596,15 @@ pub enum ServerMsg {
         #[serde(default)]
         result: serde_json::Value,
     },
+    /// The page a plugin pane embeds, in reply to `plugin_embed`: `id` is the page id to load at
+    /// `/artifacts/<id>/`, `scope` where the name resolved.
+    PluginEmbed {
+        req: u64,
+        pane: String,
+        artifact: String,
+        scope: ArtifactScope,
+        id: String,
+    },
     /// A plugin backend's log, in reply to `plugin_logs`: `path` is the file, `text` its last lines.
     PluginLogs {
         req: u64,
@@ -2900,6 +2926,7 @@ impl ServerMsg {
             | ServerMsg::Plugins { req, .. }
             | ServerMsg::PluginLogs { req, .. }
             | ServerMsg::PluginAction { req, .. }
+            | ServerMsg::PluginEmbed { req, .. }
             | ServerMsg::Tools { req, .. }
             | ServerMsg::ToolResult { req, .. }
             | ServerMsg::Resource { req, .. }
