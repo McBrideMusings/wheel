@@ -1,4 +1,4 @@
-//! The buttons wheelhouse's views draw, read from two `wheel.toml` files (ADR-0043): this machine's
+//! The buttons wheelhouse's views draw, read from two `wheel.toml` files (ADR-0044): this machine's
 //! (`$WHEEL_MACHINE_FILE`, which wheeld sets to its own, else `~/.wheel/wheel.toml`) and then the
 //! project's. A project table with the same name replaces the machine's, and one holding
 //! `enabled = false` drops it. Every `run` runs in the project's directory, wherever it was written.

@@ -1,4 +1,4 @@
-# ADR-0043: A plugin's buttons come from the machine's wheel.toml and the project's
+# ADR-0044: A plugin's buttons come from the machine's wheel.toml and the project's
 
 A plugin's buttons are written in two `wheel.toml` files: this machine's (`~/.wheel/wheel.toml`, or the file `wheeld` was started with `--machine-file`) and the project's. A button the machine's file writes applies in every project. This supersedes ADR-0025 for plugin buttons.
 

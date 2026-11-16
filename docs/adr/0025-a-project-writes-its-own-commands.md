@@ -1,6 +1,6 @@
 # ADR-0025: A project writes its own commands
 
-Superseded by ADR-0043 for plugin buttons: the machine's `wheel.toml` may write a button for every project, and a project replaces or drops it by name.
+Superseded by ADR-0044 for plugin buttons: the machine's `wheel.toml` may write a button for every project, and a project replaces or drops it by name.
 
 There are two kinds of artifact. A project artifact, in a project's own `wheel.toml`, serves that one project: it may be permanent or live a few minutes to answer one question, and it is as bespoke as the project wants. A machine artifact, in `~/.wheel/wheel.toml`, is one page every project can show (ADR-0019).
 
