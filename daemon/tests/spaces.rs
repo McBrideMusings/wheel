@@ -90,7 +90,6 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
             ServerMsg::Spaces { .. }
             | ServerMsg::SpaceFocused { .. }
             | ServerMsg::PaneReload { .. }
-            | ServerMsg::PaneUrl { .. }
             | ServerMsg::PaneConsoleAppended { .. }
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::PermRequested { .. }
@@ -2557,8 +2556,8 @@ async fn a_refresh_runs_for_a_pane_without_asking() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// A browser pane carries the page it is on: it opens the homepage setting or a URL a caller
-/// gives, follows the person as the client reports navigation, comes back on that page after a
+/// A browser pane carries the page it opens at: the homepage setting or a page a caller gives,
+/// read as an address field reads typed text; it comes back on that page after a
 /// restart, and refuses anything that is not an `http` or `https` URL. None of the artifact
 /// machinery applies to it — no data directory, no watch, no refresh.
 #[tokio::test(flavor = "multi_thread")]
@@ -2588,13 +2587,6 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         url: url.map(str::to_string),
         plugin: None,
     };
-    // What a client sends as the person navigates.
-    let goto = |url: &str| ClientMsg::PaneBrowserUrl {
-        req: Some(21),
-        pane: pane.clone(),
-        url: url.to_string(),
-    };
-
     // With no URL, it opens the homepage as that space resolves it.
     ok(&mut ws, browser(None)).await;
     let (spaces, _) = layout(&mut ws).await;
@@ -2602,7 +2594,6 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://home.example/start".into(),
-            share_session: None,
             extra: Default::default()
         })
     );
@@ -2620,36 +2611,35 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         "no data directory for a browser pane"
     );
 
-    // A URL given at open is used as given, and a client reporting navigation moves the pane.
-    ok(&mut ws, browser(Some("https://example.com/one"))).await;
-    ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
+    // A URL given at open is used as given.
+    ok(&mut ws, browser(Some("https://example.com/two?q=1#x"))).await;
     let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://example.com/two?q=1#x".into(),
-            share_session: None,
             extra: Default::default()
         })
     );
 
-    // A file on this machine is a page too, on both paths.
-    ok(&mut ws, browser(Some("file:///tmp/notes/index.html"))).await;
-    ok(&mut ws, goto("file:///Users/me/a%20b.html")).await;
+    // A file on this machine is a page too.
+    ok(&mut ws, browser(Some("file:///Users/me/a%20b.html"))).await;
     let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
         browser_url(&spaces[0], &pane),
         "file:///Users/me/a%20b.html"
     );
-    ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
+    // A bare host is read as typed into the address field: https.
+    ok(&mut ws, browser(Some("example.com"))).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(browser_url(&spaces[0], &pane), "https://example.com");
+    ok(&mut ws, browser(Some("https://example.com/two?q=1#x"))).await;
 
-    // Everything that is not a page a pane may open is refused, by both the opening and the
-    // navigating path, and the pane stays where it was.
+    // Everything that is not a page a pane may open is refused, and the pane stays where it was.
     for bad in [
         "file://otherhost/etc/passwd",
         "data:text/html,<p>x",
         "javascript:alert(1)",
-        "example.com",
         "https://",
         "",
     ] {
@@ -2660,10 +2650,6 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
             ),
             "opening {bad:?}"
         );
-        assert!(
-            matches!(call(&mut ws, goto(bad)).await, ServerMsg::Error { .. }),
-            "navigating to {bad:?}"
-        );
     }
     let (spaces, _) = layout(&mut ws).await;
     assert_eq!(
@@ -2672,12 +2658,14 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         "a refusal leaves the pane on its page"
     );
 
-    // Text typed into the address field is read by the daemon: it moves the pane, and the reply
-    // names the page, even when the pane is already on it, so the asking client goes there again.
+    // Text typed into the address field is read by the daemon, which moves no pane and saves
+    // nothing: the reply names the page, and the asking client goes there itself.
     let typed = |text: &str| ClientMsg::PaneBrowserOpen {
         req: Some(22),
         pane: pane.clone(),
         text: text.to_string(),
+        on: None,
+        from: None,
     };
     for _ in 0..2 {
         let reply = call(&mut ws, typed("example.com/a b")).await;
@@ -2691,8 +2679,11 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     };
     assert!(message.contains("mailto:a@b.com"), "{message}");
     let (spaces, _) = layout(&mut ws).await;
-    assert_eq!(browser_url(&spaces[0], &pane), "https://example.com/a%20b");
-    ok(&mut ws, goto("https://example.com/two?q=1#x")).await;
+    assert_eq!(
+        browser_url(&spaces[0], &pane),
+        "https://example.com/two?q=1#x",
+        "typing into the address field moved nothing in the layout"
+    );
 
     // `url` belongs to a browser pane and nothing else; a pane that is not one cannot navigate.
     let msg = ClientMsg::PaneSetKind {
@@ -2710,8 +2701,8 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     );
     ok(&mut ws, terminal(&pane)).await;
     assert!(
-        matches!(call(&mut ws, goto("https://example.com")).await, ServerMsg::Error { message, .. } if message.contains("is not a browser pane")),
-        "a terminal pane does not navigate"
+        matches!(call(&mut ws, typed("example.com")).await, ServerMsg::Error { message, .. } if message.contains("is not a browser pane")),
+        "a terminal pane has no address field"
     );
 
     // A pane that was showing an artifact and becomes a browser gives up everything the artifact
@@ -2773,18 +2764,6 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
     let mut ws = connect(&url).await;
     let (spaces, _) = layout(&mut ws).await;
     assert_eq!(browser_url(&spaces[0], &pane), "https://after.example");
-    // Navigating keeps a field this build does not read — it changes the page, not the pane's
-    // kind — so a newer build's own field survives this one driving the pane. (Changing the kind
-    // drops it, with everything else the old kind held.)
-    ok(&mut ws, goto("https://after.example/two")).await;
-    // A navigation's save is coalesced (wheel-a8v), so this waits for the write rather than
-    // assuming it has happened.
-    let after = saved_when(&state_file, "https://after.example/two").await;
-    assert!(
-        after.contains("zoom"),
-        "a field this build does not read is written back: {after}"
-    );
-
     // The page survives a restart: it is in the layout, and nothing has to be started again for it.
     ok(&mut ws, browser(Some("https://kept.example/page"))).await;
     serving.abort();
@@ -2795,97 +2774,9 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://kept.example/page".into(),
-            share_session: None,
             extra: Default::default()
         }),
-        "a restored browser pane comes back on its page"
-    );
-    let _ = std::fs::remove_dir_all(&base);
-}
-
-/// A browser pane's page changes as often as a person loads one, so a navigation tells clients
-/// the one field rather than the whole layout, and the state file is written once per burst with
-/// the last page in it.
-#[tokio::test(flavor = "multi_thread")]
-async fn browsing_tells_clients_one_field_and_writes_the_file_once_per_burst() {
-    let base = std::env::temp_dir().join(format!("wheel-browsing-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let project = base.join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-    let state_file = base.join("spaces.json");
-    let (url, serving) = start_daemon(Some(state_file.clone())).await;
-    let mut ws = connect(&url).await;
-    let mut other = connect(&url).await;
-    created(&mut ws, new_space(&project.to_string_lossy())).await;
-    let (spaces, _) = layout(&mut ws).await;
-    let pane = first_pane(&spaces[0].root);
-    ok(
-        &mut ws,
-        ClientMsg::PaneSetKind {
-            req: Some(30),
-            pane: pane.clone(),
-            kind: NewPaneKind::Browser,
-            artifact: None,
-            scope: None,
-            url: Some("https://example.com/0".into()),
-            plugin: None,
-        },
-    )
-    .await;
-    // The second connection has seen the layout up to here; what follows is only navigation.
-    settled(&mut other).await;
-    // The daemon counts its own writes, which is what makes "once per burst" an assertion rather
-    // than a guess about how fast this machine is.
-    let before = saves(&mut ws).await;
-
-    // Twenty pages in quick succession, as a person clicking through a site reports them.
-    for i in 1..=20 {
-        ok(
-            &mut ws,
-            ClientMsg::PaneBrowserUrl {
-                req: Some(31),
-                pane: pane.clone(),
-                url: format!("https://example.com/{i}"),
-            },
-        )
-        .await;
-    }
-    // Each one told the other client the field, and nothing was told the whole layout for it.
-    let mut told = Vec::new();
-    for _ in 1..=20 {
-        match recv(&mut other).await {
-            ServerMsg::PaneUrl { pane: which, url } => {
-                assert_eq!(which, pane);
-                told.push(url);
-            }
-            ServerMsg::Spaces { .. } => panic!("a navigation sent the whole layout"),
-            _ => {}
-        }
-    }
-    assert_eq!(told.len(), 20, "every navigation reached the other client");
-    assert_eq!(told.last().unwrap(), "https://example.com/20");
-
-    // Twenty navigations are one write, and the page in the file is the last one reported rather
-    // than the one that scheduled the write.
-    let saved = saved_when(&state_file, "https://example.com/20").await;
-    assert!(!saved.contains("example.com/19"), "{saved}");
-    let after = saves(&mut ws).await;
-    assert_eq!(
-        after - before,
-        1,
-        "twenty navigations wrote the layout {} times",
-        after - before
-    );
-
-    // And a restart comes back on it.
-    serving.abort();
-    let (url, _) = start_daemon(Some(state_file.clone())).await;
-    let mut ws = connect(&url).await;
-    let (spaces, _) = layout(&mut ws).await;
-    assert_eq!(
-        browser_url(&spaces[0], &pane),
-        "https://example.com/20",
-        "a restored pane comes back on the last page reported"
+        "a restored browser pane opens at its page"
     );
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -2996,23 +2887,6 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
     };
     assert!(message.contains("no such pane"), "{message}");
     let _ = std::fs::remove_dir_all(&base);
-}
-
-/// The state file once it holds `needle`, or a panic saying what it held instead. A browser
-/// pane's page is written a moment after it changes, so a reader has to wait for it.
-async fn saved_when(path: &std::path::Path, needle: &str) -> String {
-    for _ in 0..60 {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
-        if text.contains(needle) {
-            return text;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!(
-        "{} never held {needle:?}: {}",
-        path.display(),
-        std::fs::read_to_string(path).unwrap_or_default()
-    );
 }
 
 /// `status` counts every client message the daemon handled by client and op, which is how a check
@@ -6521,7 +6395,6 @@ async fn a_url_artifact_opens_a_browser_pane() {
         find_kind(&spaces[0].root, &pane),
         Some(&PaneKind::Browser {
             url: "http://127.0.0.1:3100/".into(),
-            share_session: None,
             extra: Default::default()
         })
     );

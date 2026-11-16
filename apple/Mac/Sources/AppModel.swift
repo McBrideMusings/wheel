@@ -717,12 +717,11 @@ final class AppModel {
         }
         for (pane, url) in pages {
             if let browser = browserPanes[pane] {
-                browser.daemonSays(url)
+                browser.layoutSays(url)
             } else {
                 Log.info("browser pane \(pane) opening \(url)")
                 browserPanes[pane] = BrowserPane(
                     pane: pane, url: url, daemonIsRemote: !endpoint.isLoopback, log: { Log.info($0) },
-                    report: { [weak self] in self?.reportPage(pane, $0) },
                     ask: { [weak self] in self?.openTyped(pane, $0) },
                     console: { [weak self] reset, entries in
                         self?.client.send(.paneConsole(req: nil, pane: pane, reset: reset, entries: entries))
@@ -875,17 +874,6 @@ final class AppModel {
             let store = storeReaper.gone(scope: scope, name: name, cwd: cwd)
             Log.info("artifact \(scope.rawValue) \(name) is gone; its page store \(store.uuidString) goes once no pane shows it")
             reapGoneStores(shown: Set(WebPanes.panes(spaces).values.map(\.store)))
-        case let .paneUrl(pane, url):
-            // One field of one pane, so the layout is patched in place rather than replaced: the
-            // daemon sends this instead of the whole layout because a person browsing changes it
-            // on every page load. A pane this client does not hold is not an error — the next
-            // `spaces` or `status` carries the truth.
-            spaces = spaces.map { space in
-                var space = space
-                space.root = space.root.replacing(pane: pane, with: .browser(url: url, share: space.root.panes.first { $0.id == pane }?.kind.browserShare))
-                return space
-            }
-            browserPanes[pane]?.daemonSays(url)
         case let .settings(req, space, list):
             received(settings: list, for: space, req: req)
         case let .artifacts(req, list):
@@ -1290,7 +1278,7 @@ final class AppModel {
         case .empty: "Empty pane"
         case let .terminal(_, agent): agent.map { AgentInfo.title(of: $0.name) } ?? "Terminal"
         case let .web(artifact): artifact.name
-        case let .browser(url, _): URL(string: url)?.host ?? url
+        case let .browser(url): URL(string: url)?.host ?? url
         case let .agent(_, harness, _): AgentInfo.title(of: harness)
         case .unknown: "Pane"
         }
@@ -2252,12 +2240,6 @@ final class AppModel {
     }
 
     // MARK: Browser panes
-
-    /// A browser pane landed on a new page: the saved layout follows it. The report carries no
-    /// request, so the daemon refusing a page no pane may be on (a `data:` document) only logs.
-    private func reportPage(_ pane: String, _ url: String) {
-        client.send(.paneBrowserUrl(req: nil, pane: pane, url: url))
-    }
 
     /// Ask the daemon what text typed into a browser pane's address field means.
     private func openTyped(_ pane: String, _ text: String) {

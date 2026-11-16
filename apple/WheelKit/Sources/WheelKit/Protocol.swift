@@ -112,28 +112,11 @@ public enum ClientMsg: Sendable, Equatable {
     case spaceProcs(req: UInt64?, space: String)
     /// Ask one of those processes to quit (SIGKILL with `force`). Replies `ok`.
     case procStop(req: UInt64?, space: String, pid: UInt32, force: Bool)
-    /// A browser pane is showing `url` now: sent as the person navigates, so the saved layout
-    /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
-    /// http, https, a file on this machine or about:blank.
-    case paneBrowserUrl(req: UInt64?, pane: String, url: String)
-    /// A phone says which side draws browser pane `pane` for it: `mac` or `phone`. Page commands
-    /// sent `--on phone` reach it only for a pane it draws itself. Refused for a pane that is not a
-    /// browser pane and from a connection that is not a paired device that offered rendering.
-    case paneBrowserMode(req: UInt64?, pane: String, mode: String)
-    /// A phone asks for the Mac's session of `origin` (cookies, and the storage of a Mac page on
-    /// it) before its own page of browser pane `pane` loads there. Replies `paneSession`, or an
-    /// error when sharing is off for the pane (`browser.share_session` or its own choice).
-    case paneSessionGet(req: UInt64?, pane: String, origin: String)
-    /// A phone hands the session of its own page of `pane` back to the Mac, which installs it.
-    /// Refused, as `paneSessionGet` is, when sharing is off for the pane.
-    case paneSessionPut(req: UInt64?, pane: String, session: PageSession)
-    /// Set whether browser pane `pane`'s session follows it between the Mac and a phone: true,
-    /// false, or nil to follow the `browser.share_session` setting.
-    case paneShareSession(req: UInt64?, pane: String, share: Bool?)
-    /// Send a browser pane to what the person typed into its address field. The daemon reads the
+    /// Read what the person typed into a browser pane's address field. The daemon reads the
     /// text — a URL, `example.com`, a path — and replies `opened` with the page, or refuses it
-    /// saying why.
-    case paneBrowserOpen(req: UInt64?, pane: String, text: String)
+    /// saying why; it moves no browser. With `on` (`mac` or `phone`) it also asks that browser to
+    /// go there (`inspectPane` action `open`) and replies once it has.
+    case paneBrowserOpen(req: UInt64?, pane: String, text: String, on: String? = nil, from: String? = nil)
     /// What a browser pane's page wrote to its console. `reset` says the page just loaded, so the
     /// daemon drops what it kept for the pane before it appends `entries`.
     case paneConsole(req: UInt64?, pane: String, reset: Bool, entries: [ConsoleEntry])
@@ -223,8 +206,6 @@ public enum ClientMsg: Sendable, Equatable {
     /// This connection draws any pane it shows as a PNG, so the daemon may send it `renderPane`.
     /// Sent once per connection.
     case renderOffer
-    /// The answer to `sessionRequest` `id` (the session read) or `sessionInstall` `id` (nil).
-    case sessionAnswer(id: UInt64, session: PageSession?)
     /// The answer to `renderPane` `id`: the pane drawn as a PNG.
     case rendered(id: UInt64, png: Data)
     /// The answer to `inspectPane` `id` for `record`: the movie and the frames and milliseconds it holds.
@@ -362,19 +343,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_start", "pane": pane, "kind": kind.rawValue]; put(req)
             if let message { o["message"] = message }
             if let agent { o["agent"] = agent }
-        case let .paneBrowserUrl(req, pane, url):
-            o = ["op": "pane_browser_url", "pane": pane, "url": url]; put(req)
-        case let .paneBrowserMode(req, pane, mode):
-            o = ["op": "pane_browser_mode", "pane": pane, "mode": mode]; put(req)
-        case let .paneSessionGet(req, pane, origin):
-            o = ["op": "pane_session_get", "pane": pane, "origin": origin]; put(req)
-        case let .paneSessionPut(req, pane, session):
-            o = ["op": "pane_session_put", "pane": pane, "session": session.json]; put(req)
-        case let .paneShareSession(req, pane, share):
-            o = ["op": "pane_share_session", "pane": pane]; put(req)
-            if let share { o["share"] = share }
-        case let .paneBrowserOpen(req, pane, text):
+        case let .paneBrowserOpen(req, pane, text, on, from):
             o = ["op": "pane_browser_open", "pane": pane, "text": text]; put(req)
+            if let on { o["on"] = on }
+            if let from { o["from"] = from }
         case let .paneConsole(req, pane, reset, entries):
             o = ["op": "pane_console", "pane": pane, "reset": reset, "entries": entries.map(\.json)]; put(req)
         case let .splitRatio(req, split, ratio):
@@ -499,9 +471,6 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "inspected", "id": id, "text": text]
         case let .renderRefused(id, message):
             o = ["op": "render_refused", "id": id, "message": message]
-        case let .sessionAnswer(id, session):
-            o = ["op": "session_answer", "id": id]
-            if let session { o["session"] = session.json }
         }
         let data = try JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
@@ -1355,10 +1324,6 @@ public enum ServerMsg: Sendable {
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
     /// space directory of a `project` artifact, nil for a `machine` one.
     case artifactGone(scope: ArtifactScope, name: String, cwd: String?)
-    /// Browser pane `pane` is showing `url` now — the one field that changed, because a person
-    /// browsing changes it far too often to resend the whole layout for. Apply it to the pane
-    /// already held; a client with no such pane ignores it.
-    case paneUrl(pane: String, url: String)
     /// Wheel's settings resolved for `space` (nil: no space, the machine-wide view), in reply to
     /// `settingsLs` or `settingSet`, and to every connection after a write. A client showing
     /// another space's settings asks again for that space rather than taking this list for it.
@@ -1418,23 +1383,16 @@ public enum ServerMsg: Sendable {
     /// What `paneView` left the pane showing: its view (nil for a pane that is neither) and the
     /// Claude Code conversation it shows.
     case paneView(req: UInt64, pane: String, view: ConversationView?, conversation: String?)
-    /// `pane_browser_open` sent `pane` to `url`.
+    /// `pane_browser_open` read its text as `url`: the client that asked goes there itself, or,
+    /// with `on`, the browser it named went there.
     case opened(req: UInt64, pane: String, url: String)
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
     /// a connection that sent `renderOffer`.
     case renderPane(id: UInt64, pane: String, full: Bool, by: String? = nil)
-    /// Run `op` (`eval`, `dom`, `shot` or `record`) on browser pane `pane` with `arg` and answer with
-    /// `inspected` (`eval`, `dom`), `rendered` (`shot`), `recorded` (`record`) or `renderRefused`, naming `id`.
+    /// Run `op` (`eval`, `dom`, `shot`, `record` or `open`) on browser pane `pane` with `arg` and answer with
+    /// `inspected` (`eval`, `dom`, and `open` with no text), `rendered` (`shot`), `recorded` (`record`) or `renderRefused`, naming `id`.
     /// `by` names who ran it when the request said (an agent pane's agent, else the pane's id).
     case inspectPane(id: UInt64, pane: String, op: String, arg: String?, by: String?)
-    /// Read the session of `origin` for a phone's page of browser pane `pane` and answer with
-    /// `sessionAnswer` or `renderRefused`, naming `id`. Sent only to a client that offered rendering.
-    case sessionRequest(id: UInt64, pane: String, origin: String)
-    /// Install `session`, which a phone's page of browser pane `pane` handed back, and answer
-    /// with `sessionAnswer` (no session) or `renderRefused`, naming `id`.
-    case sessionInstall(id: UInt64, pane: String, session: PageSession)
-    /// The answer to `paneSessionGet` `req`: the Mac's session of the origin asked for.
-    case paneSession(req: UInt64, pane: String, session: PageSession)
     /// Run `command` on the windows this client owns and answer with `windowAnswer` naming `id`.
     /// Sent only to a connection that sent `windowOffer`.
     case windowRequest(id: UInt64, command: WindowCommand)
@@ -1560,8 +1518,6 @@ extension ServerMsg: Decodable {
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
                                  cwd: try c.decodeIfPresent(String.self, forKey: .cwd))
-        case "pane_url":
-            self = .paneUrl(pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "settings":
             self = .settings(req: req, space: try c.decodeIfPresent(String.self, forKey: .space),
                              settings: try c.decode([SettingInfo].self, forKey: .settings))
@@ -1633,9 +1589,6 @@ extension ServerMsg: Decodable {
             default: self = .unknown("window_request \(command)")
             }
         case "inspect_pane": self = .inspectPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), op: try c.decode(String.self, forKey: .action), arg: try c.decodeIfPresent(String.self, forKey: .arg), by: try c.decodeIfPresent(String.self, forKey: .by))
-        case "session_request": self = .sessionRequest(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), origin: try c.decode(String.self, forKey: .origin))
-        case "session_install": self = .sessionInstall(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), session: try c.decode(PageSession.self, forKey: .session))
-        case "pane_session": self = .paneSession(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), session: try c.decode(PageSession.self, forKey: .session))
         case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), full: try c.decodeIfPresent(Bool.self, forKey: .full) ?? false, by: try c.decodeIfPresent(String.self, forKey: .by))
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))

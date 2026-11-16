@@ -1491,7 +1491,6 @@ impl AppState {
                 {
                     Some(url) => PaneKind::Browser {
                         url: page(&url)?,
-                        share_session: None,
                         extra: Extra::default(),
                     },
                     None => {
@@ -1526,30 +1525,22 @@ impl AppState {
                 }
             }
             (NewPaneKind::Browser, _) => {
-                // A browser pane sent to another page keeps its own choice about sharing its
-                // session: going somewhere new must not turn on what the person turned off.
-                let (space, share_session) = {
-                    let mut spaces = self.spaces.lock().unwrap();
-                    let space = spaces.spaces[spaces.holding(pane)?].id.clone();
-                    let share = spaces
-                        .spaces
-                        .iter_mut()
-                        .find_map(|s| space_find_mut(s, pane))
-                        .and_then(|k| match k {
-                            PaneKind::Browser { share_session, .. } => *share_session,
-                            _ => None,
-                        });
-                    (space, share)
+                let space = {
+                    let spaces = self.spaces.lock().unwrap();
+                    spaces.spaces[spaces.holding(pane)?].id.clone()
                 };
                 // The homepage is read for this pane's own space, so a project that sets its own
-                // opens that and every other project opens the machine's.
+                // opens that and every other project opens the machine's. A page given is read
+                // as an address field reads typed text, so `example.com` opens https.
                 let url = match url {
-                    Some(url) => url,
+                    Some(url) => {
+                        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+                        wheel_proto::page_typed(&url, &home)?
+                    }
                     None => self.setting(HOMEPAGE, Some(&space))?,
                 };
                 PaneKind::Browser {
                     url: page(&url)?,
-                    share_session,
                     extra: Extra::default(),
                 }
             }
@@ -2048,86 +2039,6 @@ impl AppState {
         Ok((name, live.state()))
     }
 
-    /// A browser pane is showing `url` now: store it, so the saved layout follows where the person
-    /// went and a restored pane comes back there. The client sends this as it navigates; anything
-    /// else sending it moves that pane, since every client draws what the layout says.
-    ///
-    /// Refused for a pane that is not a browser pane, and for a URL no pane may point at — the
-    /// same rule the pane's kind went through, so navigation cannot reach a page opening one could
-    /// not.
-    pub fn pane_browser_url(&self, pane: &str, url: &str) -> Result<PaneKind, String> {
-        let url = page(url)?;
-        let mut spaces = self.spaces.lock().unwrap();
-        let slot = spaces
-            .spaces
-            .iter_mut()
-            .find_map(|s| space_find_mut(s, pane))
-            .ok_or_else(|| format!("no pane {pane}"))?;
-        let PaneKind::Browser { url: at, .. } = slot else {
-            return Err(format!("{pane} is not a browser pane"));
-        };
-        if *at == url {
-            // Nothing changed, so nothing is saved and nothing is broadcast: a client reporting
-            // the page it was already on must not make every other client redraw.
-            return Ok(slot.clone());
-        }
-        tracing::info!(%pane, from = %at, to = %url, "browser pane navigated");
-        *at = url.clone();
-        let now = slot.clone();
-        // Not `changed`: this one field changes as often as a person loads a page, so clients are
-        // told the field rather than the whole layout, and the file is written once per burst.
-        let _ = self.global.send(ServerMsg::PaneUrl {
-            pane: pane.to_string(),
-            url,
-        });
-        self.save_soon();
-        Ok(now)
-    }
-
-    /// Set browser pane `pane`'s own choice whether its session follows it between the Mac and a
-    /// phone: `Some` overrides the `browser.share_session` setting, `None` follows it. Saved with
-    /// the pane and broadcast in the layout.
-    pub fn pane_share_session(&self, pane: &str, share: Option<bool>) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().unwrap();
-        let slot = spaces
-            .spaces
-            .iter_mut()
-            .find_map(|s| space_find_mut(s, pane))
-            .ok_or_else(|| format!("no pane {pane}"))?;
-        let PaneKind::Browser { share_session, .. } = slot else {
-            return Err(format!("{pane} is not a browser pane"));
-        };
-        tracing::info!(%pane, ?share, "browser pane session sharing set");
-        *share_session = share;
-        self.changed(&spaces);
-        Ok(())
-    }
-
-    /// Whether browser pane `pane`'s session follows it, and what decided it: the pane's own
-    /// choice, else the `browser.share_session` setting of its space.
-    pub fn pane_shares_session(&self, pane: &str) -> Result<(bool, &'static str), String> {
-        let (space, own) = {
-            let spaces = self.spaces.lock().unwrap();
-            let at = spaces.holding(pane)?;
-            let own = spaces
-                .spaces
-                .get(at)
-                .and_then(|s| space_find(s, pane))
-                .ok_or_else(|| format!("no pane {pane}"))?;
-            let PaneKind::Browser { share_session, .. } = own else {
-                return Err(format!("{pane} is not a browser pane"));
-            };
-            (spaces.spaces[at].id.clone(), *share_session)
-        };
-        match own {
-            Some(own) => Ok((own, "set on this pane")),
-            None => Ok((
-                self.setting(crate::settings::SHARE_SESSION, Some(&space))? == "true",
-                "browser.share_session",
-            )),
-        }
-    }
-
     /// The copy of browser pane `pane`'s page that `side` draws wrote `entries` to its console.
     /// `reset` means that copy just loaded, so what was kept for it goes first; the other side's
     /// messages stay. Every message is logged.
@@ -2384,14 +2295,15 @@ impl AppState {
         Ok(())
     }
 
-    /// Send a browser pane to the page a person means by `text`, typed into its address field:
-    /// read by [`wheel_proto::page_typed`] against this daemon's home, then stored as any page is.
-    /// Gives back the page.
+    /// The page a person means by `text`, typed into browser pane `pane`'s address field: read by
+    /// [`wheel_proto::page_typed`] against this daemon's home and checked by [`page`]. Moves no
+    /// browser and stores nothing; the caller sends the page where it should go.
     pub fn pane_browser_open(&self, pane: &str, text: &str) -> Result<String, String> {
+        self.browser_pane(pane)?;
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        let url = wheel_proto::page_typed(text, &home)?;
-        tracing::info!(%pane, typed = %text, %url, "browser pane opening typed text");
-        self.pane_browser_url(pane, &url).map(|_| url)
+        let url = page(&wheel_proto::page_typed(text, &home)?)?;
+        tracing::info!(%pane, typed = %text, %url, "browser pane resolved typed text");
+        Ok(url)
     }
 
     pub fn split_ratio(&self, split: &str, ratio: f64) -> Result<(), String> {

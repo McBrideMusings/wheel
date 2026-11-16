@@ -15,16 +15,12 @@ use std::time::Duration;
 
 use base64::Engine;
 use tokio::sync::{mpsc, oneshot};
-use wheel_proto::{PageSession, ServerMsg};
+use wheel_proto::ServerMsg;
 
 use crate::server::AppState;
 
 /// How long one client has to draw a pane before the daemon asks the next.
 const RENDER_WAIT: Duration = Duration::from_secs(15);
-
-/// How long the Mac app has to read or install a browser pane's session; a phone waits on it
-/// before its page loads.
-const SESSION_WAIT: Duration = Duration::from_secs(6);
 
 /// What a client says when it does not show the pane it was asked for.
 pub const NOT_SHOWN: &str = "not shown";
@@ -65,8 +61,6 @@ struct Offer {
     out: mpsc::Sender<ServerMsg>,
     /// The paired device's name when this connection is a phone.
     phone: Option<String>,
-    /// For a phone: `mac` or `phone` for each browser pane it reported a mode for.
-    modes: HashMap<String, String>,
 }
 
 /// The connections that offered to draw panes, and the requests waiting on one of them.
@@ -83,58 +77,9 @@ pub(crate) struct Renderers {
 impl Renderers {
     pub(crate) fn offer(&self, peer: SocketAddr, out: mpsc::Sender<ServerMsg>, phone: Option<String>) {
         let mut offered = self.offered.lock().unwrap();
-        let modes = offered
-            .iter()
-            .find(|o| o.peer == peer)
-            .map(|o| o.modes.clone())
-            .unwrap_or_default();
         offered.retain(|o| o.peer != peer);
-        offered.push(Offer {
-            peer,
-            out,
-            phone,
-            modes,
-        });
+        offered.push(Offer { peer, out, phone });
         tracing::info!(%peer, offered = offered.len(), "client offers to render panes");
-    }
-
-    /// A phone says which side draws browser pane `pane` for it.
-    pub(crate) fn set_mode(&self, peer: SocketAddr, pane: &str, mode: &str) -> Result<(), String> {
-        if mode != "mac" && mode != "phone" {
-            return Err(format!("a browser mode is mac or phone, not {mode}"));
-        }
-        let mut offered = self.offered.lock().unwrap();
-        match offered.iter_mut().find(|o| o.peer == peer && o.phone.is_some()) {
-            Some(offer) => {
-                offer.modes.insert(pane.to_string(), mode.to_string());
-                Ok(())
-            }
-            None => Err("only a phone that offered rendering reports a browser mode".into()),
-        }
-    }
-
-    /// Whether the phone at `peer` draws browser pane `pane` itself (it reported `phone`).
-    pub(crate) fn draws(&self, peer: SocketAddr, pane: &str) -> bool {
-        self.offered
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|o| o.peer == peer && o.phone.is_some() && o.modes.get(pane).is_some_and(|m| m == "phone"))
-    }
-
-    /// The attached phones' names and what each shows browser pane `pane` from (`mac` unless it
-    /// reported `phone`).
-    pub(crate) fn phone_modes(&self, pane: &str) -> Vec<(String, String)> {
-        self.offered
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|o| {
-                let name = o.phone.clone()?;
-                let mode = o.modes.get(pane).cloned().unwrap_or_else(|| "mac".into());
-                Some((name, mode))
-            })
-            .collect()
     }
 
     /// A connection closed: it no longer renders, and what waited on it is refused.
@@ -206,7 +151,7 @@ impl AppState {
     }
 
     /// Run `op` with `arg` on browser pane `pane` through a client that shows it. `eval` and `dom`
-    /// return the page's text; `shot` writes the PNG of the first element `arg` matches to `path`
+    /// return the page's text; `open` sends that client's browser to the page `arg` and returns no text; `shot` writes the PNG of the first element `arg` matches to `path`
     /// and returns no text.
     pub async fn pane_inspect(
         &self,
@@ -220,6 +165,12 @@ impl AppState {
         self.browser_pane(pane)?;
         let target = match (op, path) {
             ("eval" | "dom", _) => None,
+            ("open", _) => {
+                if arg.as_deref().is_none_or(str::is_empty) {
+                    return Err("open needs a page".into());
+                }
+                None
+            }
             ("shot", Some(path)) => {
                 let target = PathBuf::from(&path);
                 if !target.is_absolute() {
@@ -314,64 +265,6 @@ impl AppState {
         })
     }
 
-    /// The Mac's session of `origin` for a phone's page of browser pane `pane`: asked of the Mac
-    /// app, relayed whole and kept nowhere. Refused when the pane does not share its session.
-    pub async fn pane_session_get(&self, pane: &str, origin: &str) -> Result<PageSession, String> {
-        self.browser_pane(pane)?;
-        self.session_shared(pane)?;
-        let bytes = self
-            .ask_clients(pane, Side::Mac, Some("cannot read the session for"), false, SESSION_WAIT, |id| {
-                ServerMsg::SessionRequest {
-                    id,
-                    pane: pane.to_string(),
-                    origin: origin.to_string(),
-                }
-            })
-            .await?;
-        let session: PageSession = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("the Mac's session for pane {pane} is not one wheeld reads: {e}"))?;
-        tracing::info!(
-            pane,
-            origin,
-            cookies = session.cookies.len(),
-            stored = session.local.len() + session.session.len(),
-            "browser pane session passed to a phone"
-        );
-        Ok(session)
-    }
-
-    /// Hand `session`, from a phone's page of browser pane `pane`, to the Mac app to install.
-    /// Refused when the pane does not share its session.
-    pub async fn pane_session_put(&self, pane: &str, session: PageSession) -> Result<(), String> {
-        self.browser_pane(pane)?;
-        self.session_shared(pane)?;
-        let (origin, cookies, stored) = (
-            session.origin.clone(),
-            session.cookies.len(),
-            session.local.len() + session.session.len(),
-        );
-        self.ask_clients(pane, Side::Mac, Some("cannot install the session for"), false, SESSION_WAIT, |id| {
-            ServerMsg::SessionInstall {
-                id,
-                pane: pane.to_string(),
-                session: session.clone(),
-            }
-        })
-        .await?;
-        tracing::info!(pane, %origin, cookies, stored, "browser pane session handed back to the Mac");
-        Ok(())
-    }
-
-    /// Refuses, naming what turned it off, when browser pane `pane`'s session stays on each device.
-    fn session_shared(&self, pane: &str) -> Result<(), String> {
-        let (on, by) = self.pane_shares_session(pane)?;
-        if on {
-            return Ok(());
-        }
-        tracing::info!(pane, by, "browser pane session not passed on: sharing is off");
-        Err(format!("pane {pane} does not share its session (off: {by})"))
-    }
-
     fn write_png(&self, pane: &str, target: &Path, png: &[u8]) -> Result<u64, String> {
         let bytes = write_whole(target, png)?;
         tracing::info!(pane, bytes, path = %target.display(), "pane shot written");
@@ -401,27 +294,15 @@ impl AppState {
             .iter()
             .rev()
             .filter(|o| o.phone.is_some() == (side == Side::Phone))
-            .filter(|o| {
-                let showing_own = side == Side::Mac || o.modes.get(pane).is_some_and(|m| m == "phone");
-                if !showing_own {
-                    refusals.push(format!(
-                        "the phone shows pane {pane} from the Mac, not its own page"
-                    ));
-                }
-                showing_own
-            })
             .map(|o| (o.peer, o.out.clone()))
             .collect();
-        if clients.is_empty() && refusals.is_empty() {
+        if clients.is_empty() {
             return Err(match side {
                 Side::Phone => "the phone is not attached".to_string(),
                 Side::Mac => format!(
                     "no client is connected that can draw pane {pane} (is the Mac app running?)"
                 ),
             });
-        }
-        if clients.is_empty() {
-            return Err(refusals.join("; "));
         }
         for (peer, out) in clients {
             let id = self.renderers.next.fetch_add(1, Ordering::SeqCst) + 1;

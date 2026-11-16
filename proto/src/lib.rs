@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1214,22 +1214,11 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sandbox: Option<String>,
     },
-    /// A browser pane is showing `url` now. The client sends this as the person navigates, so the
-    /// saved layout follows them and a restored pane comes back on the page they were on; anything
-    /// else sending it asks that pane to go there, since the client draws whatever the layout says.
-    /// Refused for a pane that is not a browser, and for a URL [`page_allowed`] refuses.
-    PaneBrowserUrl {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        url: String,
-    },
     /// A client reports what its copy of a browser pane's page wrote to its console: `entries`,
     /// oldest first. With `reset`, that copy was just loaded, so the daemon drops what it kept for
     /// it before it appends `entries`. The daemon keeps the Mac's copy and the phone's apart and
-    /// tells them by the connection: a paired phone's report is the phone's, and is refused
-    /// unless that phone draws the pane's page itself. Refused for a pane that is not a browser
-    /// pane.
+    /// tells them by the connection: a paired phone's report is the phone's. Refused for a
+    /// pane that is not a browser pane.
     PaneConsole {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -1300,17 +1289,26 @@ pub enum ClientMsg {
         /// tool in that pane started.
         pid: u32,
     },
-    /// Send a browser pane to what a person typed into its address field, read by
-    /// [`page_typed`]: `example.com`, `~/notes.html` and a full URL all name a page. The pane
-    /// moves as for [`ClientMsg::PaneBrowserUrl`], and every client goes there. Replies `opened`
-    /// with the page, even when the pane was already on it, so the client that asked goes there
-    /// again as a browser does. Refused, with what is wrong with the text, when it names no page
-    /// a pane may open.
+    /// Read what a person typed into a browser pane's address field with [`page_typed`]:
+    /// `example.com`, `~/notes.html` and a full URL all name a page. wheeld moves no browser and
+    /// saves nothing. Replies `opened` with the page, so the client that asked goes there itself
+    /// in its own browser. With `on` (`mac` or `phone`) wheeld also asks that one browser to go
+    /// there, over the same `inspect_pane` an agent's `eval` uses (action `open`, the page as
+    /// `arg`), and replies `opened` once it has; with no phone attached that fails with "the
+    /// phone is not attached". Refused, with what is wrong with the text, when it names no page a
+    /// pane may open. `PROTOCOL_VERSION` 47.
     PaneBrowserOpen {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
         text: String,
+        /// Which browser moves: `mac` or `phone`. Absent, none is asked and the asking client goes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on: Option<String>,
+        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
+        /// in the `by` of the `inspect_pane` a phone gets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
     },
     /// Write a PNG of what a client draws for `pane` to `path` on the daemon's machine. The daemon
     /// asks a connected client that offered rendering (`render_offer`) and showed the pane, waits
@@ -1345,6 +1343,10 @@ pub enum ClientMsg {
     /// `action` `record` films the pane: `arg` is the number of seconds (1 to 60), the client takes
     /// the web view's own snapshots for that long, and the daemon writes them as a QuickTime movie
     /// to `path` (absolute). Replies `pane_recorded`.
+    ///
+    /// `action` `open` sends that client's browser to the page `arg` names (the CLI's
+    /// `wheel pane page` sends it after `pane_browser_open` resolves the text); the reply
+    /// `inspected` text is empty.
     PaneInspect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -1363,54 +1365,6 @@ pub enum ClientMsg {
         /// in the `by` of the `inspect_pane` a phone gets.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<String>,
-    },
-    /// A phone reports which side draws browser pane `pane` for it: `mode` is `mac` or `phone`.
-    /// `pane_info` lists each attached phone's mode. Refused for a pane that is not a browser
-    /// pane and for a connection that is not a paired device.
-    PaneBrowserMode {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        mode: String,
-    },
-    /// A phone asks for the Mac's session of `origin` (`https://example.com`,
-    /// `http://localhost:5173`) before its own page of browser pane `pane` first loads there: the
-    /// cookies a request to that host carries and the storage of a Mac page open on it. wheeld
-    /// asks the Mac (`session_request`) and replies `pane_session`. Refused when sharing is off
-    /// for the pane (its `share_session`, else the `browser.share_session` setting), for a
-    /// connection that is not a paired device, and when no Mac app is attached.
-    /// `PROTOCOL_VERSION` 44.
-    PaneSessionGet {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        origin: String,
-    },
-    /// A phone hands the session of its own page of browser pane `pane` back to the Mac, which
-    /// installs it (`session_install`). Replies `ok`; refused as `pane_session_get` is.
-    /// `PROTOCOL_VERSION` 44.
-    PaneSessionPut {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        session: PageSession,
-    },
-    /// Set browser pane `pane`'s own choice whether its session follows it between the Mac and a
-    /// phone: `true`, `false`, or absent to follow the `browser.share_session` setting. Saved
-    /// with the pane and sent in the layout. Replies `ok`. `PROTOCOL_VERSION` 44.
-    PaneShareSession {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        share: Option<bool>,
-    },
-    /// The answer to `session_request` `id` (the session read) or `session_install` `id` (none).
-    /// A client that cannot answer sends `render_refused`.
-    SessionAnswer {
-        id: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        session: Option<PageSession>,
     },
     /// This connection can draw any pane it shows as a PNG, so the daemon may send it
     /// `render_pane`. Sent once after connecting; it lasts until the connection closes.
@@ -2437,17 +2391,6 @@ pub enum ServerMsg {
         status: Option<PaneStatus>,
         space_status: Option<PaneStatus>,
     },
-    /// A browser pane is showing a new page: the one field that changed, rather than every space.
-    ///
-    /// A person browsing changes this on every page load, every redirect and every in-page
-    /// navigation their client reports, so this is the one layout change frequent enough that
-    /// resending the whole layout for it would be most of what the daemon says. A client applies
-    /// it to the pane it already holds; a client that has no such pane ignores it and will see the
-    /// truth in the next `spaces` or `status` it is sent.
-    PaneUrl {
-        pane: String,
-        url: String,
-    },
     /// Sent to every connection whenever an agent's config options change: when the agent takes a
     /// `agent_config_set`, when it changes one itself, and once when a new agent process names
     /// them. Replaces the whole list for that agent.
@@ -2873,7 +2816,8 @@ pub enum ServerMsg {
         on: String,
         entries: Vec<ConsoleEntry>,
     },
-    /// `pane_browser_open` sent `pane` to `url`.
+    /// `pane_browser_open` read its text as `url`: the client that asked goes there itself, or,
+    /// with `on`, the browser it named went there.
     Opened {
         req: u64,
         pane: String,
@@ -2908,7 +2852,7 @@ pub enum ServerMsg {
         frames: u64,
         millis: u64,
     },
-    /// Sent to one connection that sent `render_offer`: run `action` (`eval`, `dom`, `shot` or `record`, see
+    /// Sent to one connection that sent `render_offer`: run `action` (`eval`, `dom`, `shot`, `record` or `open`, see
     /// `pane_inspect`) on browser pane `pane` with `arg`, and answer with `inspected` (`eval`,
     /// `dom`), `recorded` (`record`), `rendered` (`shot`) or `render_refused`, naming this `id`.
     InspectPane {
@@ -2921,27 +2865,6 @@ pub enum ServerMsg {
         /// the pane's id. A phone drawing its own page shows it ("claude ran dom h1 on this page").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<String>,
-    },
-    /// Sent to the Mac app's connection (one that sent `render_offer` and is not a paired device):
-    /// read its session of `origin` for a phone's page of browser pane `pane` and answer with
-    /// `session_answer` or `render_refused`, naming `id`.
-    SessionRequest {
-        id: u64,
-        pane: String,
-        origin: String,
-    },
-    /// Sent to the Mac app's connection: install `session`, which a phone's page of browser pane
-    /// `pane` handed back, and answer with `session_answer` (no session) or `render_refused`.
-    SessionInstall {
-        id: u64,
-        pane: String,
-        session: PageSession,
-    },
-    /// The answer to `pane_session_get`: the Mac's session of the origin asked for.
-    PaneSession {
-        req: u64,
-        pane: String,
-        session: PageSession,
     },
     /// `pane_inspect` `eval` or `dom` finished: `text` is the result.
     Inspected {
@@ -3038,7 +2961,6 @@ impl ServerMsg {
             | ServerMsg::Opened { req, .. }
             | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }
-            | ServerMsg::PaneSession { req, .. }
             | ServerMsg::OrchestratorStarted { req, .. }
             | ServerMsg::OrchestratorClaimed { req, .. }
             | ServerMsg::InboxItems { req, .. }
@@ -3055,7 +2977,6 @@ impl ServerMsg {
             | ServerMsg::Agent { .. }
             | ServerMsg::AgentStateChanged { .. }
             | ServerMsg::StatusChanged { .. }
-            | ServerMsg::PaneUrl { .. }
             | ServerMsg::PaneConsoleAppended { .. }
             | ServerMsg::AgentConfig { .. }
             | ServerMsg::AgentContext { .. }
@@ -3076,9 +2997,7 @@ impl ServerMsg {
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }
             | ServerMsg::InspectPane { .. }
-            | ServerMsg::RenderPane { .. }
-            | ServerMsg::SessionRequest { .. }
-            | ServerMsg::SessionInstall { .. } => None,
+            | ServerMsg::RenderPane { .. } => None,
         }
     }
 }
@@ -3090,44 +3009,6 @@ pub enum NoticeLevel {
     Notice,
     Warning,
     Error,
-}
-
-/// A site's stored data, which follows a browser pane between the Mac and a phone: the cookies a
-/// request to `origin` carries and a page's localStorage (`local`) and sessionStorage
-/// (`session`). `origin` is the page's origin as the Mac opens it (`http://localhost:5173`).
-/// wheeld relays it and keeps none of it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct PageSession {
-    pub origin: String,
-    #[serde(default)]
-    pub cookies: Vec<PageCookie>,
-    #[serde(default)]
-    pub local: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    pub session: std::collections::BTreeMap<String, String>,
-}
-
-/// One cookie of a [`PageSession`]. `expires` is seconds since 1970, absent for a cookie that
-/// ends with the browser session; `same_site` is `Lax`, `Strict` or `None` as the site set it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PageCookie {
-    pub name: String,
-    pub value: String,
-    pub domain: String,
-    #[serde(default = "root_path")]
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires: Option<f64>,
-    #[serde(default)]
-    pub secure: bool,
-    #[serde(default)]
-    pub http_only: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub same_site: Option<String>,
-}
-
-fn root_path() -> String {
-    "/".into()
 }
 
 /// One line a browser pane's page wrote to its console, or an uncaught error or unhandled
@@ -4570,18 +4451,11 @@ pub enum PaneKind {
     /// its folder changes. The daemon resolves the folder from the scope and the name every time
     /// it needs one, so no path is held here and none crosses the API.
     Web { artifact: ArtifactRef, extra: Extra },
-    /// An ordinary browser on `url`: the page the person navigated to, which the client reports
-    /// back as they go, so a restored pane comes back where they left it. Nothing about an
+    /// An ordinary browser opened at `url`. Each client's browser is its own: wheeld is never told
+    /// where either one navigates, so `url` is where a pane opens, not the page in view. Nothing about an
     /// artifact applies — no folder, no data directory, no token — because this is the open
     /// internet rather than something a project ships.
-    ///
-    /// `share_session` is the pane's own choice whether its session (cookies, site storage)
-    /// follows it between the Mac and a phone; `None` follows the `browser.share_session` setting.
-    Browser {
-        url: String,
-        share_session: Option<bool>,
-        extra: Extra,
-    },
+    Browser { url: String, extra: Extra },
     /// A pane of a plugin package (ADR-0041): the `[[pane]]` `pane` of the plugin `plugin`,
     /// whose Luau script each client runs and draws itself. wheeld sends the script's source
     /// (`plugin_source`), never what it draws. The plugin is found by id every time, in the
@@ -4717,8 +4591,6 @@ enum KnownPaneKind {
     },
     Browser {
         url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        share_session: Option<bool>,
     },
     Plugin {
         plugin: String,
@@ -4774,15 +4646,8 @@ impl Serialize for PaneKind {
                 },
                 extra,
             ),
-            PaneKind::Browser {
-                url,
-                share_session,
-                extra,
-            } => (
-                KnownPaneKind::Browser {
-                    url: url.clone(),
-                    share_session: *share_session,
-                },
+            PaneKind::Browser { url, extra } => (
+                KnownPaneKind::Browser { url: url.clone() },
                 extra,
             ),
             PaneKind::Plugin {
@@ -4887,12 +4752,8 @@ impl<'de> Deserialize<'de> for PaneKind {
             // A page this build would refuse to open is not a browser pane it can draw: a layout
             // only reaches here by hand or by damage, and the rule about what a pane may point at
             // holds against the file as well as against a caller.
-            KnownPaneKind::Browser { url, share_session } => match page_allowed(&url) {
-                true => PaneKind::Browser {
-                    url,
-                    share_session,
-                    extra,
-                },
+            KnownPaneKind::Browser { url } => match page_allowed(&url) {
+                true => PaneKind::Browser { url, extra },
                 false => PaneKind::Unknown(UnknownPane(raw)),
             },
             KnownPaneKind::Plugin { plugin, pane } => PaneKind::Plugin {

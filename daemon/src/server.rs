@@ -2101,13 +2101,6 @@ async fn handle(
             });
             None
         }
-        ClientMsg::PaneBrowserUrl { req, pane, url } => match state.pane_browser_url(&pane, &url) {
-            Ok(_) => req.map(|req| ServerMsg::Ok { req }),
-            Err(message) => {
-                tracing::warn!(%peer, %pane, %message, "pane browser url failed");
-                Some(failed(req, message))
-            }
-        },
         ClientMsg::PaneReport {
             req,
             pane,
@@ -2160,14 +2153,12 @@ async fn handle(
             reset,
             entries,
         } => {
-            // Whose copy of the page wrote it is the connection's to say, never the message's: a
-            // paired phone reports only the page it draws itself.
+            // Whose copy of the page wrote it is the connection's to say, never the message's.
             let side = match caller {
-                Caller::Local => Ok(Side::Mac),
-                Caller::Device(_) if state.renderers.draws(peer, &pane) => Ok(Side::Phone),
-                Caller::Device(_) => Err(format!("this phone does not draw pane {pane}'s page")),
+                Caller::Local => Side::Mac,
+                Caller::Device(_) => Side::Phone,
             };
-            match side.and_then(|side| state.pane_console(&pane, side, reset, entries)) {
+            match state.pane_console(&pane, side, reset, entries) {
                 Ok(()) => req.map(|req| ServerMsg::Ok { req }),
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane console report failed");
@@ -2189,14 +2180,48 @@ async fn handle(
                 }
             }
         }
-        ClientMsg::PaneBrowserOpen { req, pane, text } => {
-            match state.pane_browser_open(&pane, &text) {
-                Ok(url) => req.map(|req| ServerMsg::Opened { req, pane, url }),
+        ClientMsg::PaneBrowserOpen {
+            req,
+            pane,
+            text,
+            on,
+            from,
+        } => {
+            let side = match on.as_deref().map(|on| crate::render::Side::parse(Some(on))).transpose() {
+                Ok(side) => side,
+                Err(message) => return Some(failed(req, message)),
+            };
+            let url = match state.pane_browser_open(&pane, &text) {
+                Ok(url) => url,
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane browser open failed");
-                    Some(failed(req, message))
+                    return Some(failed(req, message));
                 }
-            }
+            };
+            let Some(side) = side else {
+                return req.map(|req| ServerMsg::Opened { req, pane, url });
+            };
+            // Asking that browser to go takes as long as the client takes to answer.
+            let by = from.as_deref().map(|p| state.asking_agent(p));
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let moved = state
+                    .pane_inspect(&pane, "open", Some(url.clone()), None, side, by)
+                    .await
+                    .map(|_| ());
+                let reply = match moved {
+                    Ok(()) => req.map(|req| ServerMsg::Opened { req, pane, url }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, on = side.as_str(), %message, "pane browser open failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
         }
         ClientMsg::View {
             req,
@@ -2259,81 +2284,6 @@ async fn handle(
                 Caller::Local => None,
             };
             state.renderers.offer(peer, out.clone(), phone);
-            None
-        }
-        ClientMsg::PaneBrowserMode { req, pane, mode } => {
-            let set = state
-                .browser_pane(&pane)
-                .and_then(|()| state.renderers.set_mode(peer, &pane, &mode));
-            match set {
-                Ok(()) => {
-                    // The phone dropped its own page: what that page wrote describes no page now.
-                    if mode == "mac" {
-                        state.console.lock().unwrap().clear(&pane, Side::Phone);
-                    }
-                    req.map(|req| ServerMsg::Ok { req })
-                }
-                Err(message) => {
-                    tracing::warn!(%peer, %pane, %message, "pane browser mode failed");
-                    Some(failed(req, message))
-                }
-            }
-        }
-        ClientMsg::PaneShareSession { req, pane, share } => {
-            done(req, state.pane_share_session(&pane, share))
-        }
-        ClientMsg::PaneSessionGet { req, pane, origin } => {
-            if !matches!(caller, Caller::Device(_)) {
-                return Some(failed(req, "only a paired phone asks for a browser pane's session".into()));
-            }
-            // Only for a page the phone draws itself: a phone showing the Mac's page has no
-            // session of its own, and none to take.
-            if !state.renderers.draws(peer, &pane) {
-                return Some(failed(req, format!("this phone does not draw pane {pane}'s page")));
-            }
-            // On a task of its own: the Mac app answers when it has read its cookie store.
-            let state = state.clone();
-            let out = out.clone();
-            tokio::spawn(async move {
-                let reply = match state.pane_session_get(&pane, &origin).await {
-                    Ok(session) => req.map(|req| ServerMsg::PaneSession { req, pane, session }),
-                    Err(message) => Some(failed(req, message)),
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::PaneSessionPut { req, pane, session } => {
-            if !matches!(caller, Caller::Device(_)) {
-                return Some(failed(req, "only a paired phone hands back a browser pane's session".into()));
-            }
-            // Only for a page the phone draws itself: a phone showing the Mac's page has no
-            // session of its own, and none to take.
-            if !state.renderers.draws(peer, &pane) {
-                return Some(failed(req, format!("this phone does not draw pane {pane}'s page")));
-            }
-            let state = state.clone();
-            let out = out.clone();
-            tokio::spawn(async move {
-                let reply = match state.pane_session_put(&pane, session).await {
-                    Ok(()) => req.map(|req| ServerMsg::Ok { req }),
-                    Err(message) => Some(failed(req, message)),
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::SessionAnswer { id, session } => {
-            tracing::info!(%peer, id, has_session = session.is_some(), "session answered");
-            let bytes = match session {
-                Some(session) => serde_json::to_vec(&session).map_err(|e| e.to_string()),
-                None => Ok(Vec::new()),
-            };
-            state.renderers.answer(peer, id, bytes);
             None
         }
         ClientMsg::Rendered { id, png } => {

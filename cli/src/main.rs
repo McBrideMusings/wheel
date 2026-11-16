@@ -1083,12 +1083,16 @@ enum PaneCommand {
         #[arg(long, requires = "plugin")]
         plugin_pane: Option<String>,
     },
-    /// Move a browser pane to a page, as typing it into the pane's address field does; print the
-    /// page the text named.
+    /// Send one browser of a browser pane to a page, as typing it into its address field does;
+    /// print the page the text named. The other browser stays where it is.
     Page {
         pane: String,
         /// Whatever the address field takes: a URL, `example.com`, a path, or about:blank.
         page: String,
+        /// Which browser goes there: the Mac app's (default) or the phone's own web view. `phone`
+        /// fails with "the phone is not attached" while the app is suspended.
+        #[arg(long, value_parser = ["mac", "phone"], default_value = "mac")]
+        on: String,
     },
     /// Say what the coding agent in a terminal pane is doing: needs_you, working or idle. The
     /// hooks Wheel's `claude` and `pi` wrappers add call this. Exits 0 and does nothing
@@ -1147,14 +1151,6 @@ enum PaneCommand {
         /// Seconds to wait (0 to 3600); exit 3 if no change arrives.
         #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
         timeout: f64,
-    },
-    /// Choose whether a browser pane's logins and site storage follow it between the Mac and a
-    /// phone: `on`, `off`, or `follow` for the `browser.share_session` setting. `wheel pane info`
-    /// shows what is in force and what decided it.
-    ShareSession {
-        pane: String,
-        #[arg(value_parser = ["on", "off", "follow"])]
-        share: String,
     },
     /// Print a browser pane's console messages since its last page load, one per line:
     /// `<UTC time> <level> <text>`, with `(<url>:<line>)` when the page said where. Uncaught
@@ -5912,14 +5908,16 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
-        PaneCommand::Page { pane, page } => {
+        PaneCommand::Page { pane, page, on } => {
             let req = conn.req();
             let msg = ClientMsg::PaneBrowserOpen {
                 req: Some(req),
                 pane,
                 text: page,
+                on: Some(on),
+                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
-            match conn.call(msg, req).await? {
+            match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Opened { url, .. } => {
                     println!("{url}");
                     Ok(())
@@ -5991,18 +5989,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Statusline { .. } => unreachable!("handled before connecting"),
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
-        PaneCommand::ShareSession { pane, share } => {
-            simple(conn, |req| ClientMsg::PaneShareSession {
-                req: Some(req),
-                pane,
-                share: match share.as_str() {
-                    "on" => Some(true),
-                    "off" => Some(false),
-                    _ => None,
-                },
-            })
-            .await
-        }
         PaneCommand::Console {
             pane,
             follow,

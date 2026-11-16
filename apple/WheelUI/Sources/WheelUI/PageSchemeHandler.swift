@@ -140,12 +140,12 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
         var next = request
         for _ in 0..<6 {
             if let jar, let url = next.url, let page = jar.mac(url) {
-                next.setValue(await PageSessionStore.cookieHeader(for: page, store: jar.store), forHTTPHeaderField: "Cookie")
+                next.setValue(await LoopbackCookies.cookieHeader(for: page, store: jar.store), forHTTPHeaderField: "Cookie")
             }
             let head = try await open(next, over: transport, streaming: streaming, follow: false)
             if let jar, let url = next.url, let page = jar.mac(url),
                let set = head.headers.first(where: { $0.key.lowercased() == "set-cookie" })?.value {
-                await PageSessionStore.keepCookies([set], for: page, store: jar.store)
+                await LoopbackCookies.keepCookies([set], for: page, store: jar.store)
             }
             guard [301, 302, 303, 307, 308].contains(head.status),
                   let location = head.headers.first(where: { $0.key.lowercased() == "location" })?.value,

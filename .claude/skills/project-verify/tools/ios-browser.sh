@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # § iOS browser pane (wheel-zpa4.2.10.3): the phone draws a browser pane's page itself. A page on
 # the Mac's loopback loads through wheeld's /loopback/<port>/, agents reach it with --on phone,
-# navigation on either side moves the other, the page's console is the phone's own
+# the phone and the Mac browse independently, the page's console is the phone's own
 # (wheel-zpa4.2.10.5: `pane console --on phone`, apart from the Mac's), and a suspended app is
 # "the phone is not attached".
 #
@@ -15,9 +15,11 @@ HOST="${WHEEL_IOS_HOST:-$(ifconfig | awk '/inet / && $2 != "127.0.0.1" { print $
 UDID=""
 SITE_PID=""
 FOLLOWS=""
-ios_cleanup() { [ -n "$FOLLOWS" ] && kill $FOLLOWS 2>/dev/null; [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
+MAC_PID=""
+ios_cleanup() { [ -n "$MAC_PID" ] && kill "$MAC_PID" 2>/dev/null; [ -n "$FOLLOWS" ] && kill $FOLLOWS 2>/dev/null; [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
 trap ios_cleanup EXIT
 
+command -v node >/dev/null || { echo "this check plays the Mac's browser with node" >&2; exit 2; }
 [ -d "${WHEEL_IOS_APP:-}" ] || { echo "set WHEEL_IOS_APP to the built Wheel.app (WheelPhone, iphonesimulator)" >&2; exit 2; }
 [ -n "$HOST" ] || { echo "no non-loopback address; set WHEEL_IOS_HOST" >&2; exit 2; }
 
@@ -37,6 +39,25 @@ printf '#styled { color: rgb(1, 2, 3) }\n' >"$SITE/assets/s.css"
 python3 -m http.server "$SPORT" --bind 127.0.0.1 --directory "$SITE" >"$SCR/site.log" 2>&1 &
 SITE_PID=$!
 check "the loopback page serves on 127.0.0.1:$SPORT" poll 20 curl -sf "http://127.0.0.1:$SPORT/"
+
+# The Mac's own browser, played by node: a local connection that offers to render, holds a page
+# (the pane's first page until told to go elsewhere) and answers `eval location.href` with it.
+cat >"$SCR/mac.js" <<'EOF'
+// usage: node mac.js <ws url> <first page>
+let page = process.argv[3];
+const ws = new WebSocket(process.argv[2]);
+ws.onopen = () => ws.send(JSON.stringify({ op: 'render_offer' }));
+ws.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.ev !== 'inspect_pane') return;
+  if (m.action === 'open') page = m.arg;
+  const text = m.action === 'eval' ? JSON.stringify(page) : '';
+  ws.send(JSON.stringify({ op: 'inspected', id: m.id, text }));
+};
+ws.onerror = () => { console.error('connection refused'); process.exit(1); };
+EOF
+node "$SCR/mac.js" "ws://127.0.0.1:$PORT/ws?token=$(cat "$INST/token")" "http://localhost:$SPORT/" >"$SCR/mac.log" 2>&1 &
+MAC_PID=$!
 
 PROJ="$SCR/proj"
 mkdir -p "$PROJ"
@@ -60,7 +81,6 @@ check "the phone pairs at $HOST" poll 40 plog "connected to wss://$HOST:$RPORT/w
 check "the phone loads the pane's loopback page under its own scheme" poll 30 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/"
 check "the page arrives through wheeld's /loopback" poll 30 plog "browser pane $PANE loaded"
 check "wheeld logs the forwarded request with the device and port" poll 10 grep -q "loopback forwarded.*port=$SPORT" "$(LOG)"
-check "wheel pane info lists the phone drawing its own page" poll 10 sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane info '$PANE' | grep -qi 'phone'"
 check "dom h1 --on phone returns the phone's heading" poll 20 dom_is h1 '<h1>Bicycle</h1>'
 check "the page's root-relative stylesheet loaded (the styled color is applied)" \
   sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'getComputedStyle(document.getElementById(\"styled\")).color' --on phone)\" = '\"rgb(1, 2, 3)\"' ]"
@@ -73,15 +93,22 @@ check "the phone shows which agent ran the command" poll 10 plog "browser pane $
   xcrun simctl io "$UDID" screenshot "$WHEEL_SHOTS/ios-browser-phone-page-$look.png" >/dev/null 2>&1
 done; xcrun simctl ui "$UDID" appearance light; }
 
-# The phone moves: wheeld's page follows.
+# The phone moves on its own: the Mac's browser stays where it was, and the layout keeps the page
+# the pane opened at.
 w pane eval "$PANE" 'location.href = "/two.html"; 1' --on phone >/dev/null 2>&1
-check "a page the phone moves to becomes the pane's page" poll 20 page_is "http://localhost:$SPORT/two.html"
-check "the phone reports where it landed" poll 10 plog "browser pane $PANE landed on http://localhost:$SPORT/two.html"
+check "the phone moved to /two.html (dom h1 --on phone returns its heading)" poll 20 dom_is h1 '<h1>Tandem</h1>'
+check "the Mac's browser (eval location.href) still names the first page" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'location.href')\" = '\"http://localhost:$SPORT/\"' ]"
+layout_holds_first_page() { local ls; ls="$(w pane info "$PANE" 2>&1)"; echo "$ls" | grep -q "localhost:$SPORT/" && ! echo "$ls" | grep -q "two.html"; }
+check "the layout still holds the page the pane opened at" layout_holds_first_page
 
-# Someone else moves the pane: the phone follows.
-w pane kind "$PANE" browser --page "http://localhost:$SPORT/three.html" >/dev/null
-check "a page wheeld sends the pane to loads on the phone" poll 20 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/three.html"
+# `pane page --on phone` moves the phone alone; `--on mac` moves the Mac alone.
+w pane page "$PANE" "http://localhost:$SPORT/three.html" --on phone >/dev/null
+check "pane page --on phone loads the page on the phone" poll 20 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/three.html"
 check "dom h1 --on phone returns the new heading" poll 20 dom_is h1 '<h1>Unicycle</h1>'
+check "the Mac's browser did not move" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'location.href')\" = '\"http://localhost:$SPORT/\"' ]"
+w pane page "$PANE" "http://localhost:$SPORT/two.html" --on mac >/dev/null
+check "pane page --on mac moves the Mac's browser" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'location.href')\" = '\"http://localhost:$SPORT/two.html\"' ]"
+check "and the phone is still on the third page" dom_is h1 '<h1>Unicycle</h1>'
 
 # The phone's page writes to its console: wheeld keeps it as the phone's, apart from the Mac's.
 console_has() { local want="$1"; shift; w pane console "$PANE" "$@" 2>&1 | grep -q -- "$want"; }
@@ -102,7 +129,7 @@ check "a script on the Mac's loopback is named as the Mac names it" console_has 
 echo "--- pane console $PANE --on phone"; w pane console "$PANE" --on phone 2>&1 | tail -5
 echo "--- pane console $PANE"; w pane console "$PANE" 2>&1 | tail -5
 check "wheeld logs each phone message with on=phone" poll 10 grep -q 'on=phone.*text=from phone' "$(LOG)"
-w pane kind "$PANE" browser --page "http://localhost:$SPORT/" >/dev/null
+w pane eval "$PANE" 'location.reload(); 1' --on phone >/dev/null 2>&1
 check "a page load on the phone clears the phone's list" poll 20 console_lacks "from phone" --on phone
 kill $FOLLOWS 2>/dev/null; FOLLOWS=""
 

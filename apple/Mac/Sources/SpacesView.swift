@@ -866,7 +866,7 @@ struct PaneHeader: View {
             }
         case let .web(artifact):
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
-        case let .browser(url, _):
+        case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
         case let .agent(agent, harness, _):
             if let chat = model.chats[agent] {

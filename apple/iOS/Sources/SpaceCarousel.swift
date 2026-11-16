@@ -161,7 +161,7 @@ struct SpaceCarousel: View {
             A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
-        } else if case let .browser(url, _) = pane.kind {
+        } else if case let .browser(url) = pane.kind {
             BrowserPage(model: model, pane: pane.id, url: url)
         } else {
             PanePlaceholder(id: pane.id, kind: pane.kind)
