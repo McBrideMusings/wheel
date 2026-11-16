@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 44;
+pub const PROTOCOL_VERSION: u32 = 45;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1220,9 +1220,12 @@ pub enum ClientMsg {
         pane: String,
         url: String,
     },
-    /// A client reports what a browser pane's page wrote to its console: `entries`, oldest first.
-    /// With `reset`, the page was just loaded, so the daemon drops what it kept for the pane
-    /// before it appends `entries`. Refused for a pane that is not a browser pane.
+    /// A client reports what its copy of a browser pane's page wrote to its console: `entries`,
+    /// oldest first. With `reset`, that copy was just loaded, so the daemon drops what it kept for
+    /// it before it appends `entries`. The daemon keeps the Mac's copy and the phone's apart and
+    /// tells them by the connection: a paired phone's report is the phone's, and is refused
+    /// unless that phone draws the pane's page itself. Refused for a pane that is not a browser
+    /// pane.
     PaneConsole {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -1240,6 +1243,9 @@ pub enum ClientMsg {
         pane: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<u64>,
+        /// Whose copy of the page: `mac` (the default) or `phone`, the page a phone draws itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on: Option<String>,
     },
     /// The coding agent in a terminal pane says what it is doing, through the hooks Wheel's
     /// wrappers add to that one launch. The pane shows it as its status while the agent runs there
@@ -2834,9 +2840,11 @@ pub enum ServerMsg {
         entries: Vec<ConsoleEntry>,
     },
     /// Sent to every connection when a browser pane's page writes to its console: the new
-    /// entries only. A client following a pane's console prints them.
+    /// entries only, and whose copy of the page wrote them (`mac` or `phone`). A client
+    /// following a pane's console prints those of the copy it follows.
     PaneConsoleAppended {
         pane: String,
+        on: String,
         entries: Vec<ConsoleEntry>,
     },
     /// `pane_browser_open` sent `pane` to `url`.

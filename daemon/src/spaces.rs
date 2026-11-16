@@ -16,6 +16,7 @@ use wheel_proto::{
 };
 
 use crate::pty::Term;
+use crate::render::Side;
 use crate::resume::Harness;
 use crate::server::{AgentStart, AppState, Owner};
 use crate::settings::{page, HOMEPAGE, PLACEMENT, SESSIONS_CLOSE_EMPTY};
@@ -835,7 +836,7 @@ impl AppState {
                 }
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
-            PaneKind::Browser { .. } => self.console.lock().unwrap().clear(pane),
+            PaneKind::Browser { .. } => self.console.lock().unwrap().forget(pane),
             PaneKind::Agent { agent, .. } => {
                 self.end_agent(agent);
                 // The caller holds the spaces lock, so the sweep that deletes this agent's
@@ -2126,18 +2127,21 @@ impl AppState {
         }
     }
 
-    /// The page in browser pane `pane` wrote `entries` to its console. `reset` means the page
-    /// just loaded, so what was kept for the pane goes first. Every message is logged.
+    /// The copy of browser pane `pane`'s page that `side` draws wrote `entries` to its console.
+    /// `reset` means that copy just loaded, so what was kept for it goes first; the other side's
+    /// messages stay. Every message is logged.
     pub fn pane_console(
         &self,
         pane: &str,
+        side: Side,
         reset: bool,
         mut entries: Vec<wheel_proto::ConsoleEntry>,
     ) -> Result<(), String> {
         self.browser_pane(pane)?;
+        let on = side.as_str();
         if reset {
-            self.console.lock().unwrap().clear(pane);
-            tracing::info!(%pane, "browser pane console cleared by a page load");
+            self.console.lock().unwrap().clear(pane, side);
+            tracing::info!(%pane, %on, "browser pane console cleared by a page load");
         }
         if entries.is_empty() {
             return Ok(());
@@ -2150,24 +2154,26 @@ impl AppState {
             }
         }
         for e in &entries {
-            tracing::info!(%pane, time = e.time, level = %e.level, text = %e.text, url = ?e.url, line = ?e.line, "browser pane console");
+            tracing::info!(%pane, %on, time = e.time, level = %e.level, text = %e.text, url = ?e.url, line = ?e.line, "browser pane console");
         }
-        self.console.lock().unwrap().append(pane, entries.clone());
+        self.console.lock().unwrap().append(pane, side, entries.clone());
         let _ = self.global.send(ServerMsg::PaneConsoleAppended {
             pane: pane.to_string(),
+            on: on.to_string(),
             entries,
         });
         Ok(())
     }
 
-    /// The console messages kept for browser pane `pane` since its last load.
+    /// The console messages `side`'s copy of browser pane `pane`'s page wrote since its last load.
     pub fn pane_console_read(
         &self,
         pane: &str,
+        side: Side,
         since: Option<u64>,
     ) -> Result<Vec<wheel_proto::ConsoleEntry>, String> {
         self.browser_pane(pane)?;
-        Ok(self.console.lock().unwrap().read(pane, since))
+        Ok(self.console.lock().unwrap().read(pane, side, since))
     }
 
     pub(crate) fn browser_pane(&self, pane: &str) -> Result<(), String> {

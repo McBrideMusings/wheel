@@ -706,6 +706,15 @@ async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
     phone.send(mode("mac")).await.unwrap();
     next_event(&mut phone, "ok").await.unwrap();
 
+    // A phone showing the Mac's page has no console of its own to report.
+    let console = |req: u64, reset: bool, text: &str| {
+        serde_json::json!({"op":"pane_console","req":req,"pane":pane,"reset":reset,
+            "entries":[{"time":req,"level":"log","text":text}]})
+    };
+    phone.send(Message::text(console(6, true, "not drawn").to_string())).await.unwrap();
+    let refused = next_event(&mut phone, "error").await.unwrap();
+    assert!(refused["message"].as_str().unwrap().contains("does not draw pane"), "{refused}");
+
     let refused = local_req(&mut cli, inspect(12, "phone")).await;
     assert!(
         refused["message"].as_str().unwrap().contains("from the Mac, not its own page"),
@@ -737,6 +746,33 @@ async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
 
     let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":16,"pane":pane})).await;
     assert!(info.to_string().contains("own page"), "{info}");
+
+    // Each side's page keeps its own console: the Mac app's connection reports the Mac's, the
+    // phone's the phone's, and a page load on one leaves the other's.
+    let read = |req: u64, on: &str| serde_json::json!({"op":"pane_console_read","req":req,"pane":pane,"on":on});
+    let texts = |reply: &serde_json::Value| -> Vec<String> {
+        reply["entries"].as_array().unwrap().iter().map(|e| e["text"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(local_req(&mut cli, console(20, true, "from mac")).await["ev"], "ok");
+    phone.send(Message::text(console(21, true, "from phone").to_string())).await.unwrap();
+    next_event(&mut phone, "ok").await.unwrap();
+    assert_eq!(texts(&local_req(&mut cli, read(22, "phone")).await), ["from phone"]);
+    assert_eq!(texts(&local_req(&mut cli, read(23, "mac")).await), ["from mac"]);
+    assert_eq!(
+        texts(&local_req(&mut cli, serde_json::json!({"op":"pane_console_read","req":24,"pane":pane})).await),
+        ["from mac"],
+        "no `on` reads the Mac's"
+    );
+    assert_eq!(local_req(&mut cli, console(25, true, "mac reloaded")).await["ev"], "ok");
+    assert_eq!(texts(&local_req(&mut cli, read(26, "phone")).await), ["from phone"]);
+    let bad = local_req(&mut cli, read(27, "tablet")).await;
+    assert!(bad["message"].as_str().unwrap().contains("mac or phone"), "{bad}");
+
+    // The phone goes back to the Mac's page: what its own page wrote is gone with it.
+    phone.send(mode("mac")).await.unwrap();
+    next_event(&mut phone, "ok").await.unwrap();
+    assert!(texts(&local_req(&mut cli, read(28, "phone")).await).is_empty());
+    assert_eq!(texts(&local_req(&mut cli, read(29, "mac")).await), ["mac reloaded"]);
 
     // The app suspends: the connection closes and the command fails at once.
     drop(phone);

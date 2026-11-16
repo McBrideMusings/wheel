@@ -750,6 +750,8 @@ final class PhoneModel {
                     self?.client?.send(.paneBrowserUrl(req: nil, pane: pane, url: page))
                 }, fetchSession: { [weak self] origin in
                     await self?.fetchSession(pane, origin: origin) ?? .failure(PageSessionRefusal("the phone is not connected"))
+                }, console: { [weak self] reset, entries in
+                    self?.client?.send(.paneConsole(req: nil, pane: pane, reset: reset, entries: entries))
                 })
                 browsers[pane] = made
                 return made

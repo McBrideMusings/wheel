@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # § iOS browser pane (wheel-zpa4.2.10.3): the phone draws a browser pane's page itself. A page on
 # the Mac's loopback loads through wheeld's /loopback/<port>/, agents reach it with --on phone,
-# navigation on either side moves the other, and a suspended app is "the phone is not attached".
+# navigation on either side moves the other, the page's console is the phone's own
+# (wheel-zpa4.2.10.5: `pane console --on phone`, apart from the Mac's), and a suspended app is
+# "the phone is not attached".
 #
 # Needs WHEEL_IOS_APP: the built Wheel.app for the simulator (WheelPhone scheme), and a pool
 # simulator. WHEEL_IOS_HOST (default: the Mac's first non-loopback IPv4 address) is the address the
@@ -12,7 +14,8 @@ BUNDLE=com.piercemakes.wheel.phone
 HOST="${WHEEL_IOS_HOST:-$(ifconfig | awk '/inet / && $2 != "127.0.0.1" { print $2; exit }')}"
 UDID=""
 SITE_PID=""
-ios_cleanup() { [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
+FOLLOWS=""
+ios_cleanup() { [ -n "$FOLLOWS" ] && kill $FOLLOWS 2>/dev/null; [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
 trap ios_cleanup EXIT
 
 [ -d "${WHEEL_IOS_APP:-}" ] || { echo "set WHEEL_IOS_APP to the built Wheel.app (WheelPhone, iphonesimulator)" >&2; exit 2; }
@@ -79,6 +82,29 @@ check "the phone reports where it landed" poll 10 plog "browser pane $PANE lande
 w pane kind "$PANE" browser --page "http://localhost:$SPORT/three.html" >/dev/null
 check "a page wheeld sends the pane to loads on the phone" poll 20 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/three.html"
 check "dom h1 --on phone returns the new heading" poll 20 dom_is h1 '<h1>Unicycle</h1>'
+
+# The phone's page writes to its console: wheeld keeps it as the phone's, apart from the Mac's.
+console_has() { local want="$1"; shift; w pane console "$PANE" "$@" 2>&1 | grep -q -- "$want"; }
+console_lacks() { local want="$1"; shift; ! w pane console "$PANE" "$@" 2>&1 | grep -q -- "$want"; }
+w pane console "$PANE" --on phone --follow >"$SCR/follow-phone.txt" 2>&1 &
+FOLLOWS="$!"
+w pane console "$PANE" --follow >"$SCR/follow-mac.txt" 2>&1 &
+FOLLOWS="$FOLLOWS $!"
+sleep 1
+w pane eval "$PANE" 'console.log("from phone"); 1' --on phone >/dev/null 2>&1
+check "pane console --on phone prints what the phone's page logged" poll 20 console_has " log  *from phone" --on phone
+check "pane console (the Mac's) does not" console_lacks "from phone"
+check "pane console --on phone --follow printed it as it came" poll 10 grep -q " log  *from phone" "$SCR/follow-phone.txt"
+check "pane console --follow (the Mac's) did not" sh -c "! grep -q 'from phone' '$SCR/follow-mac.txt'"
+w pane eval "$PANE" 'setTimeout(function () { throw new Error("phone boom") }); 1' --on phone >/dev/null 2>&1
+check "an uncaught error on the phone's page reaches --on phone as error" poll 20 console_has " error Uncaught Error: phone boom" --on phone
+check "a script on the Mac's loopback is named as the Mac names it" console_has "(http://localhost:$SPORT/three.html:1)" --on phone
+echo "--- pane console $PANE --on phone"; w pane console "$PANE" --on phone 2>&1 | tail -5
+echo "--- pane console $PANE"; w pane console "$PANE" 2>&1 | tail -5
+check "wheeld logs each phone message with on=phone" poll 10 grep -q 'on=phone.*text=from phone' "$(LOG)"
+w pane kind "$PANE" browser --page "http://localhost:$SPORT/" >/dev/null
+check "a page load on the phone clears the phone's list" poll 20 console_lacks "from phone" --on phone
+kill $FOLLOWS 2>/dev/null; FOLLOWS=""
 
 # The app suspended: page commands say so instead of waiting.
 xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1

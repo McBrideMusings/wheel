@@ -20,6 +20,7 @@ use wheel_proto::{decode_bytes, encode_bytes, AgentPermissions, ClientMsg, Conte
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
+use crate::render::Side;
 use crate::resume::Harness;
 use crate::agent::{Restart, Agent, AgentAttachment, AgentConfig};
 use crate::shell::{Control, Launch, Seat};
@@ -2151,15 +2152,29 @@ async fn handle(
             pane,
             reset,
             entries,
-        } => match state.pane_console(&pane, reset, entries) {
-            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
-            Err(message) => {
-                tracing::warn!(%peer, %pane, %message, "pane console report failed");
-                Some(failed(req, message))
+        } => {
+            // Whose copy of the page wrote it is the connection's to say, never the message's: a
+            // paired phone reports only the page it draws itself.
+            let side = match caller {
+                Caller::Local => Ok(Side::Mac),
+                Caller::Device(_) if state.renderers.draws(peer, &pane) => Ok(Side::Phone),
+                Caller::Device(_) => Err(format!("this phone does not draw pane {pane}'s page")),
+            };
+            match side.and_then(|side| state.pane_console(&pane, side, reset, entries)) {
+                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "pane console report failed");
+                    Some(failed(req, message))
+                }
             }
-        },
-        ClientMsg::PaneConsoleRead { req, pane, since } => {
-            match state.pane_console_read(&pane, since) {
+        }
+        ClientMsg::PaneConsoleRead {
+            req,
+            pane,
+            since,
+            on,
+        } => {
+            match Side::parse(on.as_deref()).and_then(|side| state.pane_console_read(&pane, side, since)) {
                 Ok(entries) => req.map(|req| ServerMsg::Console { req, pane, entries }),
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane console read failed");
@@ -2244,7 +2259,13 @@ async fn handle(
                 .browser_pane(&pane)
                 .and_then(|()| state.renderers.set_mode(peer, &pane, &mode));
             match set {
-                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Ok(()) => {
+                    // The phone dropped its own page: what that page wrote describes no page now.
+                    if mode == "mac" {
+                        state.console.lock().unwrap().clear(&pane, Side::Phone);
+                    }
+                    req.map(|req| ServerMsg::Ok { req })
+                }
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane browser mode failed");
                     Some(failed(req, message))

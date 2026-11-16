@@ -10,7 +10,8 @@ import WheelUI
 /// Agents reach the page with `--on phone`; each command they run shows in `banner` for a moment.
 /// Before the page first lands on a site, the phone asks wheeld for the Mac's session of it
 /// (cookies, and the storage of a Mac page on it) and installs it, unless sharing is off for the
-/// pane; `session()` reads the phone's own for handing it back.
+/// pane; `session()` reads the phone's own for handing it back. What the page writes to its
+/// console goes to wheeld as the phone's own (`wheel pane console --on phone`).
 @MainActor
 @Observable
 final class PhoneBrowser: NSObject, WKNavigationDelegate {
@@ -26,6 +27,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     @ObservationIgnored private var echoes = BrowserPanes.Echoes()
     @ObservationIgnored private var reported: String?
     @ObservationIgnored private let report: (String) -> Void
+    @ObservationIgnored private let relay = ConsoleRelay()
     @ObservationIgnored private let fetchSession: (String) async -> Result<PageSession, PageSessionRefusal>
     /// The origins whose session the phone asked for since this page was made: once each.
     @ObservationIgnored private var asked: Set<String> = []
@@ -59,7 +61,8 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     private(set) var failure: String?
 
     init(pane: String, daemon: PageDaemon, report: @escaping (String) -> Void,
-         fetchSession: @escaping (String) async -> Result<PageSession, PageSessionRefusal>) {
+         fetchSession: @escaping (String) async -> Result<PageSession, PageSessionRefusal>,
+         console: @escaping (Bool, [ConsoleEntry]) -> Void) {
         self.pane = pane
         self.report = report
         self.fetchSession = fetchSession
@@ -73,6 +76,16 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         view = WKWebView(frame: .zero, configuration: config)
         super.init()
         config.userContentController.add(CookieMessages(self), name: PageSessionStore.cookieHandler)
+        // The relay holds no reference to this browser, so the content controller, which retains
+        // its handlers, keeps neither alive.
+        config.userContentController.add(relay, name: BrowserConsole.handlerName)
+        // A script on the Mac's loopback is named by the page it stands for, as the Mac names it.
+        relay.onMessage = { reset, entry in
+            console(reset, entry.map { e in
+                [ConsoleEntry(time: e.time, level: e.level, text: e.text,
+                              url: e.url.map { URL(string: $0).map(BrowserPanes.macPage) ?? $0 }, line: e.line)]
+            } ?? [])
+        }
         handler.onCookies = { [weak self] in self?.cookiesChanged() }
         view.navigationDelegate = self
         view.allowsBackForwardNavigationGestures = true
@@ -185,9 +198,9 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         return .allow
     }
 
-    /// The user scripts the page about to load at `url` starts with: the storage of each session
-    /// taken, and on the Mac's loopback a `document.cookie` from the store, which WebKit gives a
-    /// custom scheme none of.
+    /// The user scripts the page about to load at `url` starts with: the console relay, the
+    /// storage of each session taken, and on the Mac's loopback a `document.cookie` from the
+    /// store, which WebKit gives a custom scheme none of.
     /// This controller holds no other script: every one it runs is added here.
     private func prepareScripts(for url: URL) async {
         scriptGeneration += 1
@@ -199,6 +212,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         guard generation == scriptGeneration else { return }
         let scripts = view.configuration.userContentController
         scripts.removeAllUserScripts()
+        scripts.addUserScript(WKUserScript(source: BrowserConsole.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         storageScripts.forEach(scripts.addUserScript)
         if let cookies { scripts.addUserScript(PageSessionStore.cookieScript(cookies)) }
     }

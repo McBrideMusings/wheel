@@ -34,7 +34,7 @@ const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 type Answer = Result<Vec<u8>, String>;
 
 /// Which kind of client a request goes to: the Mac app, or a paired device's connection (the phone).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Side {
     Mac,
     Phone,
@@ -47,6 +47,14 @@ impl Side {
             None | Some("mac") => Ok(Side::Mac),
             Some("phone") => Ok(Side::Phone),
             Some(other) => Err(format!("--on takes mac or phone, not {other}")),
+        }
+    }
+
+    /// `mac` or `phone`, as `on` says it on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Side::Mac => "mac",
+            Side::Phone => "phone",
         }
     }
 }

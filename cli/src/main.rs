@@ -1167,6 +1167,9 @@ enum PaneCommand {
         /// Print one JSON object per line: {time, level, text, url, line}.
         #[arg(long)]
         json: bool,
+        /// Whose copy of the page: the Mac app's (default) or the one the phone draws itself.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
     },
     /// Write a PNG of what a pane shows to a file and print the absolute path written.
     ///
@@ -6001,12 +6004,15 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             follow,
             since,
             json,
+            on,
         } => {
             let req = conn.req();
+            let side = on.clone().unwrap_or_else(|| "mac".into());
             let msg = ClientMsg::PaneConsoleRead {
                 req: Some(req),
                 pane: pane.clone(),
                 since,
+                on,
             };
             let ServerMsg::Console { entries, .. } = conn.call(msg, req).await? else {
                 return Err(Fail::Other("unexpected reply to pane console".into()));
@@ -6023,8 +6029,9 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 match conn.recv(Duration::from_secs(3600)).await? {
                     Some(ServerMsg::PaneConsoleAppended {
                         pane: changed,
+                        on: written_on,
                         entries,
-                    }) if changed == pane => {
+                    }) if changed == pane && written_on == side => {
                         for entry in entries
                             .iter()
                             .filter(|e| since.is_none_or(|t| e.time > t) && !printed.contains(e))

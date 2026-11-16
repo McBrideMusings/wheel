@@ -2922,6 +2922,7 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
         req: Some(41),
         pane: pane.clone(),
         since,
+        on: None,
     };
 
     // An empty pane is not a browser pane.
@@ -2962,10 +2963,12 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
     while told.len() < 2 {
         if let ServerMsg::PaneConsoleAppended {
             pane: which,
+            on,
             entries,
         } = recv(&mut other).await
         {
             assert_eq!(which, pane);
+            assert_eq!(on, "mac", "the Mac app's connection reports the Mac's page");
             told.extend(entries);
         }
     }
@@ -2984,6 +2987,7 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
             req: Some(42),
             pane: "p999".into(),
             since: None,
+            on: None,
         },
     )
     .await
