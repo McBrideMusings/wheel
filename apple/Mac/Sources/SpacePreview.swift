@@ -137,7 +137,7 @@ extension AppModel {
             return nil
         case let .terminal(term, _):
             return terminals[term]?.viewportText.flatMap(Self.lastLine(of:))
-        case let .browser(url): return url
+        case let .browser(url, _): return url
         case let .web(artifact): return artifact.name
         case .unknown: return nil
         }

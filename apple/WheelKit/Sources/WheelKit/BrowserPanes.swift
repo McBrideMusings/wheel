@@ -9,7 +9,7 @@ public enum BrowserPanes {
         var out: [String: String] = [:]
         for space in spaces {
             for pane in space.allPanes {
-                if case let .browser(url) = pane.kind { out[pane.id] = url }
+                if case let .browser(url, _) = pane.kind { out[pane.id] = url }
             }
         }
         return out
@@ -46,11 +46,21 @@ public enum BrowserPanes {
         return c.url?.absoluteString ?? url.absoluteString
     }
 
+    /// Whether a request for `url` comes from a page the loopback handler may serve: one under
+    /// `loopbackScheme` on the same host and port (`document` is the request's main document). A
+    /// page from anywhere else (a public site the phone browsed to) never reaches the Mac's
+    /// loopback, so it cannot send requests there that its own origin would not allow.
+    public static func loopbackRequestAllowed(_ url: URL, document: URL?) -> Bool {
+        guard let document, document.scheme == loopbackScheme, url.scheme == loopbackScheme else { return false }
+        return document.host?.lowercased() == url.host?.lowercased() && document.port == url.port
+    }
+
     /// The daemon's address for a request under `loopbackScheme`: `/loopback/<port><path>` with
     /// the same query on the daemon's HTTP side (`ws` becomes `http`, `wss` becomes `https`). Nil
-    /// for any other address.
+    /// for any other address, a host that is not the Mac's loopback included.
     public static func loopbackDaemonURL(for page: URL, daemon: URL) -> URL? {
         guard page.scheme == loopbackScheme, let port = page.port,
+              let host = page.host?.lowercased(), loopbackHosts.contains(host),
               var c = URLComponents(url: daemon, resolvingAgainstBaseURL: false),
               let from = URLComponents(url: page, resolvingAgainstBaseURL: false) else { return nil }
         c.scheme = c.scheme == "wss" ? "https" : "http"

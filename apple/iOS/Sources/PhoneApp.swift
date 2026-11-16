@@ -22,7 +22,14 @@ struct PhoneApp: App {
                 model.start()
                 PushCenter.shared.listen { space, pane in model.focus(space: space, pane: pane) }
                 PushCenter.shared.onToken = { model.pushToken($0) }
-                PushCenter.shared.start()
+                // Debug builds launched with `WHEEL_NOTIFICATIONS=off` never ask, so a check's
+                // screenshots carry no permission alert.
+                #if DEBUG
+                let ask = ProcessInfo.processInfo.environment["WHEEL_NOTIFICATIONS"] != "off"
+                #else
+                let ask = true
+                #endif
+                if ask { PushCenter.shared.start() }
             }
         }
     }

@@ -861,7 +861,7 @@ final class AppModel {
         case let .statusChanged(space, pane, status, spaceStatus):
             spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
-        case let .renderPane(id, pane, full):
+        case let .renderPane(id, pane, full, _):
             renderPane(id: id, pane: pane, full: full)
         case let .inspectPane(id, pane, op, arg, _):
             inspectPane(id: id, pane: pane, op: op, arg: arg)
@@ -882,7 +882,7 @@ final class AppModel {
             // `spaces` or `status` carries the truth.
             spaces = spaces.map { space in
                 var space = space
-                space.root = space.root.replacing(pane: pane, with: .browser(url: url))
+                space.root = space.root.replacing(pane: pane, with: .browser(url: url, share: space.root.panes.first { $0.id == pane }?.kind.browserShare))
                 return space
             }
             browserPanes[pane]?.daemonSays(url)
@@ -1290,7 +1290,7 @@ final class AppModel {
         case .empty: "Empty pane"
         case let .terminal(_, agent): agent.map { AgentInfo.title(of: $0.name) } ?? "Terminal"
         case let .web(artifact): artifact.name
-        case let .browser(url): URL(string: url)?.host ?? url
+        case let .browser(url, _): URL(string: url)?.host ?? url
         case let .agent(_, harness, _): AgentInfo.title(of: harness)
         case .unknown: "Pane"
         }

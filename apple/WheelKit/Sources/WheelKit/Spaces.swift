@@ -235,7 +235,9 @@ public enum PaneKind: Sendable, Equatable {
     case web(artifact: ArtifactRef)
     /// An ordinary browser on `url`: the open internet, with chrome, where a web pane is one page
     /// a project ships with none. The client reports navigation back so the layout follows it.
-    case browser(url: String)
+    /// `share` is the pane's own choice whether its logins and site storage follow it between the
+    /// Mac and a phone; nil follows the `browser.share_session` setting.
+    case browser(url: String, share: Bool? = nil)
     /// An agent the pane owns, running the program named `harness`: it ends when the pane
     /// closes or changes kind. `home` is the configuration directory the pane saved for its own
     /// agent; nil when the pane runs under the agent's `agent.<name>.home` setting.
@@ -252,6 +254,12 @@ public enum PaneKind: Sendable, Equatable {
         case .terminal, .agent: true
         default: false
         }
+    }
+
+    /// A browser pane's own choice whether its session follows it (`share_session`); nil for a pane
+    /// that follows the setting, and for any other kind.
+    public var browserShare: Bool? {
+        if case let .browser(_, share) = self { share } else { nil }
     }
 
     public var name: String {
@@ -355,7 +363,9 @@ extension Node: Decodable {
                 }
             case (.string("browser"), _, _, _):
                 if case let .string(url) = raw["url"] ?? .null {
-                    self = .pane(id: id, kind: .browser(url: url))
+                    var share: Bool?
+                    if case let .bool(given)? = raw["share_session"] { share = given }
+                    self = .pane(id: id, kind: .browser(url: url, share: share))
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw))
                 }

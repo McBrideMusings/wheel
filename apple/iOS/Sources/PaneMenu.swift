@@ -33,6 +33,17 @@ struct PaneMenu: View {
                     model.switchView(pane, to: view)
                 }
             }
+            if case let .browser(_, share) = kind, model.sharesSessions {
+                Picker(selection: Binding(get: { share.map { $0 ? "on" : "off" } ?? "follow" },
+                                          set: { model.setShareSession(pane, $0 == "follow" ? nil : $0 == "on") })) {
+                    Text("Follow wheel.toml").tag("follow")
+                    Text("On").tag("on")
+                    Text("Off").tag("off")
+                } label: {
+                    Label("Share logins with the Mac", systemImage: "person.badge.key")
+                }
+                .pickerStyle(.menu)
+            }
             Menu("Change kind", systemImage: "arrow.triangle.2.circlepath") {
                 Button("Empty", systemImage: "square.dashed") { changeKind { model.setKind(pane, .empty) } }
                 Button("Terminal", systemImage: "terminal") { changeKind { model.setKind(pane, .terminal) } }
@@ -110,7 +121,8 @@ struct PaneMenu: View {
     /// Runs one menu item without the confirmation a finger would answer, for the debug launch
     /// variable `WHEEL_MENU`: `split-right`, `split-down`, `close`, `view-chat`, `view-terminal`,
     /// `kind-empty`, `kind-terminal`, `kind-agent:<name>`, `kind-web:<artifact name>`,
-    /// `kind-browser[:<url>]`.
+    /// `kind-browser[:<url>]`, `share-on`, `share-off`, `share-follow`, `mode-mac`, `mode-phone` (the
+    /// browser page's Drawn by switch).
     @MainActor static func drive(_ item: String, model: PhoneModel, pane: String, kind: PaneKind) async {
         Log.info("menu item \(item) on \(pane)")
         let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
@@ -125,6 +137,11 @@ struct PaneMenu: View {
         case "kind-terminal": model.setKind(pane, .terminal)
         case "kind-agent": model.startPane(pane, .agent, agent: arg)
         case "kind-browser": model.openBrowser(pane, arg ?? "")
+        case "share-on": model.setShareSession(pane, true)
+        case "share-off": model.setShareSession(pane, false)
+        case "share-follow": model.setShareSession(pane, nil)
+        case "mode-mac": model.setBrowserMode(pane, "mac")
+        case "mode-phone": model.setBrowserMode(pane, "phone")
         case "kind-web":
             model.listArtifacts()
             for _ in 0 ..< 20 where model.artifacts == nil { try? await Task.sleep(for: .milliseconds(250)) }

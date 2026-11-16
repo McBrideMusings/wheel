@@ -85,6 +85,7 @@ async fn shot(ws: &mut Ws, pane: &str, path: &str) {
             path: path.into(),
             on: None,
             full: false,
+            from: None,
         },
     )
     .await;

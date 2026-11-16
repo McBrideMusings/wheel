@@ -1144,6 +1144,14 @@ enum PaneCommand {
         #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// Choose whether a browser pane's logins and site storage follow it between the Mac and a
+    /// phone: `on`, `off`, or `follow` for the `browser.share_session` setting. `wheel pane info`
+    /// shows what is in force and what decided it.
+    ShareSession {
+        pane: String,
+        #[arg(value_parser = ["on", "off", "follow"])]
+        share: String,
+    },
     /// Print a browser pane's console messages since its last page load, one per line:
     /// `<UTC time> <level> <text>`, with `(<url>:<line>)` when the page said where. Uncaught
     /// errors and unhandled promise rejections are `error`. Exits 6 when the pane is not a
@@ -5976,6 +5984,18 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Statusline { .. } => unreachable!("handled before connecting"),
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
+        PaneCommand::ShareSession { pane, share } => {
+            simple(conn, |req| ClientMsg::PaneShareSession {
+                req: Some(req),
+                pane,
+                share: match share.as_str() {
+                    "on" => Some(true),
+                    "off" => Some(false),
+                    _ => None,
+                },
+            })
+            .await
+        }
         PaneCommand::Console {
             pane,
             follow,
@@ -6080,6 +6100,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     path,
                     on,
                     full,
+                    from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
                 },
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {

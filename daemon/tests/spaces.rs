@@ -2602,6 +2602,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://home.example/start".into(),
+            share_session: None,
             extra: Default::default()
         })
     );
@@ -2627,6 +2628,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://example.com/two?q=1#x".into(),
+            share_session: None,
             extra: Default::default()
         })
     );
@@ -2793,6 +2795,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://kept.example/page".into(),
+            share_session: None,
             extra: Default::default()
         }),
         "a restored browser pane comes back on its page"
@@ -6514,6 +6517,7 @@ async fn a_url_artifact_opens_a_browser_pane() {
         find_kind(&spaces[0].root, &pane),
         Some(&PaneKind::Browser {
             url: "http://127.0.0.1:3100/".into(),
+            share_session: None,
             extra: Default::default()
         })
     );

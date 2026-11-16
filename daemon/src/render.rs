@@ -15,12 +15,16 @@ use std::time::Duration;
 
 use base64::Engine;
 use tokio::sync::{mpsc, oneshot};
-use wheel_proto::ServerMsg;
+use wheel_proto::{PageSession, ServerMsg};
 
 use crate::server::AppState;
 
 /// How long one client has to draw a pane before the daemon asks the next.
 const RENDER_WAIT: Duration = Duration::from_secs(15);
+
+/// How long the Mac app has to read or install a browser pane's session; a phone waits on it
+/// before its page loads.
+const SESSION_WAIT: Duration = Duration::from_secs(6);
 
 /// What a client says when it does not show the pane it was asked for.
 pub const NOT_SHOWN: &str = "not shown";
@@ -101,6 +105,15 @@ impl Renderers {
         }
     }
 
+    /// Whether the phone at `peer` draws browser pane `pane` itself (it reported `phone`).
+    pub(crate) fn draws(&self, peer: SocketAddr, pane: &str) -> bool {
+        self.offered
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|o| o.peer == peer && o.phone.is_some() && o.modes.get(pane).is_some_and(|m| m == "phone"))
+    }
+
     /// The attached phones' names and what each shows browser pane `pane` from (`mac` unless it
     /// reported `phone`).
     pub(crate) fn phone_modes(&self, pane: &str) -> Vec<(String, String)> {
@@ -164,6 +177,7 @@ impl AppState {
         path: &str,
         side: Side,
         full: bool,
+        by: Option<String>,
     ) -> Result<u64, String> {
         let target = PathBuf::from(path);
         if !target.is_absolute() {
@@ -176,6 +190,7 @@ impl AppState {
                     id,
                     pane: pane.to_string(),
                     full,
+                    by: by.clone(),
                 }
             })
             .await?;
@@ -289,6 +304,64 @@ impl AppState {
             frames,
             millis,
         })
+    }
+
+    /// The Mac's session of `origin` for a phone's page of browser pane `pane`: asked of the Mac
+    /// app, relayed whole and kept nowhere. Refused when the pane does not share its session.
+    pub async fn pane_session_get(&self, pane: &str, origin: &str) -> Result<PageSession, String> {
+        self.browser_pane(pane)?;
+        self.session_shared(pane)?;
+        let bytes = self
+            .ask_clients(pane, Side::Mac, Some("cannot read the session for"), false, SESSION_WAIT, |id| {
+                ServerMsg::SessionRequest {
+                    id,
+                    pane: pane.to_string(),
+                    origin: origin.to_string(),
+                }
+            })
+            .await?;
+        let session: PageSession = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("the Mac's session for pane {pane} is not one wheeld reads: {e}"))?;
+        tracing::info!(
+            pane,
+            origin,
+            cookies = session.cookies.len(),
+            stored = session.local.len() + session.session.len(),
+            "browser pane session passed to a phone"
+        );
+        Ok(session)
+    }
+
+    /// Hand `session`, from a phone's page of browser pane `pane`, to the Mac app to install.
+    /// Refused when the pane does not share its session.
+    pub async fn pane_session_put(&self, pane: &str, session: PageSession) -> Result<(), String> {
+        self.browser_pane(pane)?;
+        self.session_shared(pane)?;
+        let (origin, cookies, stored) = (
+            session.origin.clone(),
+            session.cookies.len(),
+            session.local.len() + session.session.len(),
+        );
+        self.ask_clients(pane, Side::Mac, Some("cannot install the session for"), false, SESSION_WAIT, |id| {
+            ServerMsg::SessionInstall {
+                id,
+                pane: pane.to_string(),
+                session: session.clone(),
+            }
+        })
+        .await?;
+        tracing::info!(pane, %origin, cookies, stored, "browser pane session handed back to the Mac");
+        Ok(())
+    }
+
+    /// Refuses, naming what turned it off, when browser pane `pane`'s session stays on each device.
+    fn session_shared(&self, pane: &str) -> Result<(), String> {
+        let (on, by) = self.pane_shares_session(pane)?;
+        if on {
+            return Ok(());
+        }
+        tracing::info!(pane, by, "browser pane session not passed on: sharing is off");
+        Err(format!("pane {pane} does not share its session (off: {by})"))
     }
 
     fn write_png(&self, pane: &str, target: &Path, png: &[u8]) -> Result<u64, String> {

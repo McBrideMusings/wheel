@@ -52,7 +52,7 @@ page_is() { w pane info "$PANE" 2>/dev/null | grep -q -- "$1"; }
 dom_is() { [ "$(w pane dom "$PANE" "$1" --on phone 2>&1)" = "$2" ]; }
 
 code="$(w remote pair --address "$HOST")"
-SIMCTL_CHILD_WHEEL_PAIR_JSON="$code" xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
+SIMCTL_CHILD_WHEEL_PAIR_JSON="$code" SIMCTL_CHILD_WHEEL_NOTIFICATIONS=off xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
 check "the phone pairs at $HOST" poll 40 plog "connected to wss://$HOST:$RPORT/ws"
 check "the phone loads the pane's loopback page under its own scheme" poll 30 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/"
 check "the page arrives through wheeld's /loopback" poll 30 plog "browser pane $PANE loaded"

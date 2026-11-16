@@ -2114,7 +2114,7 @@ final class DebugServer {
             case let .terminal(term, agent):
                 ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "conversation": $0.conversation, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
-            case let .browser(url): ["kind": "browser", "url": url]
+            case let .browser(url, _): ["kind": "browser", "url": url]
             case let .agent(agent, harness, _): ["kind": "agent", "agent": agent, "harness": harness]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
@@ -2214,7 +2214,7 @@ final class DebugServer {
                             let opened = model.spaces.flatMap(\.allPanes).first { pane in
                                 guard !click.before.contains(pane.id) else { return false }
                                 switch pane.kind {
-                                case let .browser(url): return click.page == url
+                                case let .browser(url, _): return click.page == url
                                 case let .web(artifact): return click.artifact == artifact.name
                                 default: return false
                                 }
@@ -2318,7 +2318,7 @@ final class DebugServer {
                                      "unsupported": a2ui.unsupported, "data": data] as [String: Any]
                     }
                 }
-                if case let .browser(daemonURL) = pane.kind, let browser = model.browserPanes[pane.id] {
+                if case let .browser(daemonURL, _) = pane.kind, let browser = model.browserPanes[pane.id] {
                     let time = { (date: Date?) -> Any in date.map { Self.iso8601.string(from: $0) } ?? NSNull() }
                     o["daemon_url"] = daemonURL
                     o["url"] = browser.url

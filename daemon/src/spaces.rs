@@ -1489,6 +1489,7 @@ impl AppState {
                 {
                     Some(url) => PaneKind::Browser {
                         url: page(&url)?,
+                        share_session: None,
                         extra: Extra::default(),
                     },
                     None => {
@@ -1523,9 +1524,20 @@ impl AppState {
                 }
             }
             (NewPaneKind::Browser, _) => {
-                let space = {
-                    let spaces = self.spaces.lock().unwrap();
-                    spaces.spaces[spaces.holding(pane)?].id.clone()
+                // A browser pane sent to another page keeps its own choice about sharing its
+                // session: going somewhere new must not turn on what the person turned off.
+                let (space, share_session) = {
+                    let mut spaces = self.spaces.lock().unwrap();
+                    let space = spaces.spaces[spaces.holding(pane)?].id.clone();
+                    let share = spaces
+                        .spaces
+                        .iter_mut()
+                        .find_map(|s| space_find_mut(s, pane))
+                        .and_then(|k| match k {
+                            PaneKind::Browser { share_session, .. } => *share_session,
+                            _ => None,
+                        });
+                    (space, share)
                 };
                 // The homepage is read for this pane's own space, so a project that sets its own
                 // opens that and every other project opens the machine's.
@@ -1535,6 +1547,7 @@ impl AppState {
                 };
                 PaneKind::Browser {
                     url: page(&url)?,
+                    share_session,
                     extra: Extra::default(),
                 }
             }
@@ -2067,6 +2080,50 @@ impl AppState {
         });
         self.save_soon();
         Ok(now)
+    }
+
+    /// Set browser pane `pane`'s own choice whether its session follows it between the Mac and a
+    /// phone: `Some` overrides the `browser.share_session` setting, `None` follows it. Saved with
+    /// the pane and broadcast in the layout.
+    pub fn pane_share_session(&self, pane: &str, share: Option<bool>) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let slot = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| space_find_mut(s, pane))
+            .ok_or_else(|| format!("no pane {pane}"))?;
+        let PaneKind::Browser { share_session, .. } = slot else {
+            return Err(format!("{pane} is not a browser pane"));
+        };
+        tracing::info!(%pane, ?share, "browser pane session sharing set");
+        *share_session = share;
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Whether browser pane `pane`'s session follows it, and what decided it: the pane's own
+    /// choice, else the `browser.share_session` setting of its space.
+    pub fn pane_shares_session(&self, pane: &str) -> Result<(bool, &'static str), String> {
+        let (space, own) = {
+            let spaces = self.spaces.lock().unwrap();
+            let at = spaces.holding(pane)?;
+            let own = spaces
+                .spaces
+                .get(at)
+                .and_then(|s| space_find(s, pane))
+                .ok_or_else(|| format!("no pane {pane}"))?;
+            let PaneKind::Browser { share_session, .. } = own else {
+                return Err(format!("{pane} is not a browser pane"));
+            };
+            (spaces.spaces[at].id.clone(), *share_session)
+        };
+        match own {
+            Some(own) => Ok((own, "set on this pane")),
+            None => Ok((
+                self.setting(crate::settings::SHARE_SESSION, Some(&space))? == "true",
+                "browser.share_session",
+            )),
+        }
     }
 
     /// The page in browser pane `pane` wrote `entries` to its console. `reset` means the page

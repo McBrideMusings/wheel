@@ -54,6 +54,26 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     static let gate = RequestGate(limit: 4)
     /// Told the status of each page the pane's main frame loads.
     public var onDocument: ((Int) -> Void)?
+    /// A loopback response came back (it may have set cookies): its owner refreshes the page's
+    /// `document.cookie` from the store.
+    public var onCookies: (() -> Void)?
+
+    /// The Mac's page a wheeld `/loopback/<port>/<path>?<query>` URL stands for, on the host
+    /// `page` (a `wheel-loopback` page) names.
+    static func macPage(of page: URL) -> @Sendable (URL) -> URL? {
+        let host = page.host?.lowercased() ?? "localhost"
+        return { url in
+            var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            let parts = (c?.percentEncodedPath ?? "").split(separator: "/", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count >= 3, parts[1] == "loopback", let port = Int(parts[2].split(separator: "/").first ?? "") else { return nil }
+            let rest = parts[2].drop(while: { $0 != "/" })
+            c?.scheme = "http"
+            c?.host = host
+            c?.port = port
+            c?.percentEncodedPath = rest.isEmpty ? "/" : String(rest)
+            return c?.url
+        }
+    }
 
     public init(pane: String, daemon: PageDaemon, loopback: Bool = false) {
         self.pane = pane
@@ -100,34 +120,60 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
         let body: AsyncThrowingStream<Data, Error>
     }
 
+    /// The cookies of a loopback page's requests: `store` holds them as the Mac's page would
+    /// (http, its own host and path), and `mac` turns a wheeld `/loopback/<port>/…` URL into the
+    /// Mac's page it stands for.
+    struct Jar {
+        let store: WKWebsiteDataStore
+        let mac: @Sendable (URL) -> URL?
+    }
+
     /// Sends `request` and returns its head with the body as a stream. A streaming response
-    /// (the page's event stream) arrives a line at a time; any other body whole.
-    private static func fetch(_ request: URLRequest, over transport: Transport, streaming: Bool) async throws -> Reply {
+    /// (the page's event stream) arrives a line at a time; any other body whole. With `jar` (a
+    /// loopback page) every hop of a redirect carries the store's cookies for its page and keeps
+    /// the ones it sets, as a browser does, so a login that answers 302 with its cookie stays.
+    @MainActor
+    private static func fetch(_ request: URLRequest, over transport: Transport, streaming: Bool, jar: Jar?) async throws -> Reply {
+        if jar == nil, case .plain = transport { return try await open(request, over: transport, streaming: streaming, follow: true) }
+        // URLSession follows redirects itself unless told not to (the daemon sends a 308 for a
+        // folder without its trailing slash); here they are followed to the same host only.
+        var next = request
+        for _ in 0..<6 {
+            if let jar, let url = next.url, let page = jar.mac(url) {
+                next.setValue(await PageSessionStore.cookieHeader(for: page, store: jar.store), forHTTPHeaderField: "Cookie")
+            }
+            let head = try await open(next, over: transport, streaming: streaming, follow: false)
+            if let jar, let url = next.url, let page = jar.mac(url),
+               let set = head.headers.first(where: { $0.key.lowercased() == "set-cookie" })?.value {
+                await PageSessionStore.keepCookies([set], for: page, store: jar.store)
+            }
+            guard [301, 302, 303, 307, 308].contains(head.status),
+                  let location = head.headers.first(where: { $0.key.lowercased() == "location" })?.value,
+                  let from = next.url, let target = URL(string: location, relativeTo: from)?.absoluteURL,
+                  target.host() == from.host(), target.port == from.port else {
+                return head
+            }
+            next.url = target
+            if head.status == 303 || ((head.status == 301 || head.status == 302) && next.httpMethod == "POST") {
+                next.httpMethod = "GET"
+                next.httpBody = nil
+            }
+        }
+        throw URLError(.httpTooManyRedirects)
+    }
+
+    /// One request and its answer, a redirect included unless `follow` (URLSession only).
+    private static func open(_ request: URLRequest, over transport: Transport, streaming: Bool, follow: Bool) async throws -> Reply {
         switch transport {
         case let .pinned(client):
-            // URLSession follows redirects (the daemon sends a 308 for a folder without its
-            // trailing slash); the pinned connection does, to the same host only.
-            var next = request
-            for _ in 0..<5 {
-                let (head, body) = try await client.open(next)
-                guard [301, 302, 303, 307, 308].contains(head.status),
-                      let location = head.headers.first(where: { $0.key.lowercased() == "location" })?.value,
-                      let from = next.url, let target = URL(string: location, relativeTo: from)?.absoluteURL,
-                      target.host() == from.host(), target.port == from.port else {
-                    return Reply(status: head.status, headers: head.headers, body: body)
-                }
-                next.url = target
-                if head.status == 303 || ((head.status == 301 || head.status == 302) && next.httpMethod == "POST") {
-                    next.httpMethod = "GET"
-                    next.httpBody = nil
-                }
-            }
-            throw URLError(.httpTooManyRedirects)
+            let (head, body) = try await client.open(request)
+            return Reply(status: head.status, headers: head.headers, body: body)
         case let .plain(session):
+            let delegate: URLSessionTaskDelegate? = follow ? nil : Unredirected()
             let response: URLResponse
             let body: AsyncThrowingStream<Data, Error>
             if streaming {
-                let (bytes, answered) = try await session.bytes(for: request)
+                let (bytes, answered) = try await session.bytes(for: request, delegate: delegate)
                 response = answered
                 body = AsyncThrowingStream { continuation in
                     let work = Task {
@@ -149,7 +195,7 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                     continuation.onTermination = { _ in work.cancel() }
                 }
             } else {
-                let (data, answered) = try await session.data(for: request)
+                let (data, answered) = try await session.data(for: request, delegate: delegate)
                 response = answered
                 body = AsyncThrowingStream { continuation in
                     continuation.yield(data)
@@ -193,6 +239,11 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
             task.didFailWithError(URLError(.cannotConnectToHost))
             return
         }
+        if loopback, !BrowserPanes.loopbackRequestAllowed(page, document: task.request.mainDocumentURL) {
+            UILog.info("browser pane \(pane) request refused: \(WebPanes.withoutQuery(page)) asked by a page that is not on it")
+            task.didFailWithError(URLError(.noPermissionsToReadFile))
+            return
+        }
         // An artifact's page reaches its own folder and its pane's data directory; a loopback page
         // reaches the Mac's loopback port it is on. Nothing else the token opens.
         let target = loopback
@@ -214,6 +265,10 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
         let pane = pane
         let transport = currentTransport()
         let sent = request
+        // A loopback page's cookies live in the web view's store as the Mac's page would hold them
+        // (http, same host and path); WebKit adds none to a custom scheme's request nor keeps the
+        // ones its response sets, so the handler does both.
+        let jar = loopback && target.path.hasPrefix("/loopback/") ? Jar(store: webView.configuration.websiteDataStore, mac: Self.macPage(of: page)) : nil
         serial += 1
         let mine = serial
         let work = Task { @MainActor [weak self] in
@@ -228,13 +283,14 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                 defer { if !streaming { Self.gate.leave() } }
                 guard !Task.isCancelled else { return }
                 UILog.info("web pane \(pane) page \(shown) requested \(transport.isPinned ? "through the pinned connection" : "over URLSession")")
-                let reply = try await Self.fetch(sent, over: transport, streaming: streaming)
+                let reply = try await Self.fetch(sent, over: transport, streaming: streaming, jar: jar)
                 var held = Data()
                 if !streaming {
                     for try await chunk in reply.body { held.append(chunk) }
                 }
                 guard !Task.isCancelled else { return }
                 var headers = reply.headers
+                if jar != nil { self?.onCookies?() }
                 // The body is delivered inflated and unframed, so its encoding and framing no longer apply.
                 for name in headers.keys where ["content-encoding", "transfer-encoding", "connection"].contains(name.lowercased()) {
                     headers.removeValue(forKey: name)
@@ -277,4 +333,10 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     public func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
         running.removeValue(forKey: ObjectIdentifier(task))?.work.cancel()
     }
+}
+
+/// Hands a redirect back instead of following it, so the scheme handler sees each hop's cookies.
+private final class Unredirected: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? { nil }
 }

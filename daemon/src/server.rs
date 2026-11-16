@@ -2251,6 +2251,63 @@ async fn handle(
                 }
             }
         }
+        ClientMsg::PaneShareSession { req, pane, share } => {
+            done(req, state.pane_share_session(&pane, share))
+        }
+        ClientMsg::PaneSessionGet { req, pane, origin } => {
+            if !matches!(caller, Caller::Device(_)) {
+                return Some(failed(req, "only a paired phone asks for a browser pane's session".into()));
+            }
+            // Only for a page the phone draws itself: a phone showing the Mac's page has no
+            // session of its own, and none to take.
+            if !state.renderers.draws(peer, &pane) {
+                return Some(failed(req, format!("this phone does not draw pane {pane}'s page")));
+            }
+            // On a task of its own: the Mac app answers when it has read its cookie store.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.pane_session_get(&pane, &origin).await {
+                    Ok(session) => req.map(|req| ServerMsg::PaneSession { req, pane, session }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::PaneSessionPut { req, pane, session } => {
+            if !matches!(caller, Caller::Device(_)) {
+                return Some(failed(req, "only a paired phone hands back a browser pane's session".into()));
+            }
+            // Only for a page the phone draws itself: a phone showing the Mac's page has no
+            // session of its own, and none to take.
+            if !state.renderers.draws(peer, &pane) {
+                return Some(failed(req, format!("this phone does not draw pane {pane}'s page")));
+            }
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.pane_session_put(&pane, session).await {
+                    Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::SessionAnswer { id, session } => {
+            tracing::info!(%peer, id, has_session = session.is_some(), "session answered");
+            let bytes = match session {
+                Some(session) => serde_json::to_vec(&session).map_err(|e| e.to_string()),
+                None => Ok(Vec::new()),
+            };
+            state.renderers.answer(peer, id, bytes);
+            None
+        }
         ClientMsg::Rendered { id, png } => {
             tracing::info!(%peer, id, base64_chars = png.len(), "rendered");
             state
@@ -2360,7 +2417,9 @@ async fn handle(
             path,
             on,
             full,
+            from,
         } => {
+            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to draw.
             let state = state.clone();
             let out = out.clone();
@@ -2372,7 +2431,7 @@ async fn handle(
                         return;
                     }
                 };
-                let reply = match state.pane_shot(&pane, &path, side, full).await {
+                let reply = match state.pane_shot(&pane, &path, side, full, by).await {
                     Ok(bytes) => req.map(|req| ServerMsg::PaneShot {
                         req,
                         pane,
