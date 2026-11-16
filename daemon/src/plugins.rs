@@ -652,6 +652,17 @@ fn real_path(path: &Path) -> PathBuf {
     ancestor.canonicalize().unwrap_or_else(|_| ancestor.to_path_buf()).join(rest)
 }
 
+/// The real folders the package links in `plugins` point to.
+fn linked_packages(plugins: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(plugins) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()))
+        .filter_map(|e| e.path().canonicalize().ok())
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
 /// What to watch for the wanted folders: each one that exists, recursively; one that does not,
 /// through its nearest existing ancestor, non-recursively, which sees the next folder on the way
 /// appear. The watched folder's parent is watched too, non-recursively: a watch on a folder
@@ -805,6 +816,9 @@ impl AppState {
             wanted.extend(panes.iter().map(|p| project_plugins(&p.cwd)));
             wanted.push(self.machine_plugins());
         }
+        // A package that is a symlink is watched where it lives: a file watch does not follow a link.
+        let linked: Vec<PathBuf> = wanted.iter().flat_map(|d| linked_packages(d)).collect();
+        wanted.extend(linked);
         wanted.sort();
         wanted.dedup();
         let targets = watch_targets(&wanted);

@@ -8414,6 +8414,28 @@ async fn a_save_reaches_clients_while_another_file_in_the_package_keeps_changing
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_save_in_a_symlinked_package_reaches_clients() {
+    let dir = std::env::temp_dir().join(format!("wheel-plugin-linked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // The package lives in a repo; the plugins folder holds only a link to it.
+    let repo = dir.join("repo/demo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("wheel-plugin.toml"), plugin_manifest("demo")).unwrap();
+    std::fs::write(repo.join("main.luau"), "-- one").unwrap();
+    std::fs::create_dir_all(dir.join("a/.wheel/plugins")).unwrap();
+    std::os::unix::fs::symlink(&repo, dir.join("a/.wheel/plugins/demo")).unwrap();
+    let (mut ws, _daemon, pane) = plugin_space(&dir, ("demo", "main")).await;
+
+    std::fs::write(repo.join("main.luau"), "-- two").unwrap();
+    // The watch's first read can carry the first save without any event; the second needs one.
+    let first = next_push(&mut ws, &pane).await;
+    assert_eq!(first, "-- two");
+    std::fs::write(repo.join("main.luau"), "-- three").unwrap();
+    assert_eq!(next_push(&mut ws, &pane).await, "-- three", "a save in the link's target is pushed");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_plugin_folder_made_after_the_pane_opened_is_watched() {
     let dir = std::env::temp_dir().join(format!("wheel-plugin-late-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
