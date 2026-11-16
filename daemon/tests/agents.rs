@@ -5770,3 +5770,73 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
         }
     }
 }
+
+/// What `agent_card` answered: Ok, or the error's message.
+async fn card_reply(ws: &mut Ws, req: u64, agent: &str, pane: Option<&str>, artifact: Option<&str>) -> Result<(), String> {
+    send(ws, ClientMsg::AgentCard { req: Some(req), agent: agent.into(), pane: pane.map(String::from), artifact: artifact.map(String::from) }).await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Ok { req: r } if r == req => return Ok(()),
+            ServerMsg::Error { req: Some(r), message, .. } if r == req => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_card_names_a_pane_or_an_artifact_and_lands_in_the_transcript() {
+    let (url, addr, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    let dir = std::env::temp_dir().join(format!("wheel-card-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (space_id, pane) = space(&url, &dir.to_string_lossy()).await;
+    let agent = start_agent(&url, &pane, None).await;
+    let (_, other) = space(&url, "/tmp").await;
+    let mut ws = connect(&url).await;
+    artifact_reply(&mut ws, lived("board", None, None)).await.unwrap();
+
+    card_reply(&mut ws, 801, &pane, Some(&other), None).await.unwrap();
+    card_reply(&mut ws, 802, &agent, None, Some("board")).await.unwrap();
+    let events = transcript_when(&mut ws, &agent, |events| events.iter().filter(|e| matches!(e, AgentEvent::Card { .. })).count() == 2).await;
+    let cards: Vec<_> = events.into_iter().filter_map(|e| match e { AgentEvent::Card { card } => Some(card), _ => None }).collect();
+    assert_eq!(cards[0], wheel_proto::CardRef::Pane { pane: other.clone() });
+    let wheel_proto::CardRef::Artifact { id, name, scope, space } = &cards[1] else { panic!("{cards:?}") };
+    assert_eq!((name.as_str(), *scope, space.as_deref()), ("board", wheel_proto::ArtifactScope::Project, Some(space_id.as_str())));
+    // The card's page is served under its own id, as a web pane's is.
+    std::fs::write(dir.join(".wheel/artifacts/board/index.html"), "<p>card page</p>").unwrap();
+    let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
+    let (status, body) = http(addr, "GET", &format!("/artifacts/{id}/"), &bearer, b"").await;
+    assert_eq!((status, body.as_str()), (200, "<p>card page</p>"));
+    let (status, _) = http(addr, "GET", &format!("/artifacts/{id}/.wheel/wheel.css"), &bearer, b"").await;
+    assert_eq!(status, 200);
+    let (status, _) = http(addr, "GET", "/artifacts/k999999/", &bearer, b"").await;
+    assert_eq!(status, 404);
+    // The card's page is watched as a web pane's is: a change to its files reloads it.
+    std::fs::write(dir.join(".wheel/artifacts/board/index.html"), "<p>changed</p>").unwrap();
+    let reloaded = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let ServerMsg::PaneReload { pane } = recv(&mut ws).await {
+                if pane == *id {
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(reloaded.is_ok(), "no pane_reload for card page {id}");
+    // An agent keeps the pages of its newest 8 artifact cards; the oldest ends.
+    for n in 0..8 {
+        card_reply(&mut ws, 810 + n, &agent, None, Some("board")).await.unwrap();
+    }
+    let (status, _) = http(addr, "GET", &format!("/artifacts/{id}/"), &bearer, b"").await;
+    assert_eq!(status, 404, "the ninth card ends the first card's page");
+
+    assert_eq!(card_reply(&mut ws, 803, &agent, Some("p999999"), None).await, Err("no pane p999999".into()));
+    let missing = card_reply(&mut ws, 804, &agent, None, Some("nowhere")).await.unwrap_err();
+    assert!(missing.starts_with("no artifact nowhere"), "{missing}");
+    let both = card_reply(&mut ws, 805, &agent, Some(&other), Some("board")).await.unwrap_err();
+    assert_eq!(both, "a card names exactly one of a pane and an artifact");
+    assert!(card_reply(&mut ws, 806, &agent, None, None).await.is_err());
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}

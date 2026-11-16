@@ -1169,6 +1169,14 @@ impl Client {
         self.spaces.iter().find(|s| s.id == space).map(|s| leaves_of(&s.root).into_iter()
             .map(|l| (l.id.clone(), l.kind.clone(), l.status.as_ref().map(status::rank), self.last_line(l))).collect()).unwrap_or_default()
     }
+    /// Where the open footer menu was drawn in the last frame; none while no menu is open.
+    pub(super) fn footer_menu_rect(&self) -> Option<Rect> {
+        let (agent, option) = self.menu.as_ref()?;
+        let id = format!("menu:{option}");
+        self.controls.borrow().iter().find(|c| &c.agent == agent && c.id == id).map(|c| Rect {
+            x: f32::from(c.bounds.origin.x), y: f32::from(c.bounds.origin.y), w: f32::from(c.bounds.size.width), h: f32::from(c.bounds.size.height),
+        })
+    }
     /// The bridge's hole for the menu or the preview, which sit over the grid's native views.
     pub(super) fn sync_sidebar_overlay(&mut self) {
         if self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() {
@@ -1182,6 +1190,8 @@ impl Client {
             Some(Rect { x, y, w: super::panes::MENU_W, h: self.pane_menu_height(&pane, level) })
         } else if let Some(m) = self.message_menu.as_ref() {
             Some(Rect { x: m.x, y: m.y, w: super::messages::MENU_W, h: Self::message_menu_height() })
+        } else if let Some(r) = self.footer_menu_rect() {
+            Some(r)
         } else if let Some(h) = self.grid_drop_highlight() {
             Some(h)
         } else {

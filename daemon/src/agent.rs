@@ -1323,6 +1323,12 @@ impl Agent {
         self.push_locked(&mut self.inner.lock().unwrap(), event);
     }
 
+    /// Put an event that did not come from the agent program in the transcript, stamped and
+    /// broadcast like the agent's own (a card the agent posted through `wheel`).
+    pub(crate) fn post(&self, event: AgentEvent) {
+        self.push(event);
+    }
+
     /// The build or test command `event` reports failing, if it does: a command call that ends
     /// `failed`, its command read from the call already in the transcript.
     fn failed_build(&self, event: &AgentEvent) -> Option<String> {
@@ -2230,6 +2236,7 @@ fn event_bytes(event: &AgentEvent) -> usize {
         | AgentEvent::TextRevised { .. }
         | AgentEvent::ThoughtRevised { .. }
         | AgentEvent::Mode { .. }
+        | AgentEvent::Card { .. }
         | AgentEvent::Unknown(_) => 0,
     }
 }

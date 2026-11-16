@@ -738,6 +738,7 @@ impl Client {
             "quarantine": {"spaces": self.quarantine.spaces, "panes": self.quarantine.panes},
             "bridge": {"visible": native["visible"], "key_window": native["key_window"], "app_active": native["app_active"], "root_focused": native["root_focused"], "errors": native["errors"]},
         });
+        out["card_views"] = self.card_views_json();
         out["agents"] = self.agents_json();
         // The plugin panes each space's empty panes offer, as `<plugin>/<pane>` (the buttons' own list), and each plugin pane's header error.
         out["plugins"] = self.plugins.iter().map(|(space, list)| (space.clone(), serde_json::json!(list.iter().flat_map(|p| p.panes.iter().map(move |pane| format!("{}/{}", p.id, pane.id))).collect::<Vec<_>>()))).collect::<serde_json::Map<_, _>>().into();

@@ -161,17 +161,11 @@ impl Page {
 }
 
 impl AppState {
-    /// The page store of web pane `pane`, opened from its data directory on first use. An error
-    /// when `pane` is not a web pane.
+    /// The page store of web pane or artifact card `pane`, opened from its data directory on first
+    /// use. An error when `pane` is neither.
     pub(crate) fn page(&self, pane: &str) -> Result<Arc<Page>, String> {
-        let is_web = self.spaces.lock().unwrap().spaces.iter().any(|s| {
-            matches!(
-                crate::spaces::space_find(s, pane),
-                Some(wheel_proto::PaneKind::Web { .. })
-            )
-        });
-        if !is_web {
-            return Err(format!("{pane} is not a web pane"));
+        if self.page_artifact(pane).is_none() {
+            return Err(format!("{pane} is not a web pane or an artifact card"));
         }
         let dir = self.pane_data_dir(pane)?;
         let mut pages = self.pages.lock().unwrap();

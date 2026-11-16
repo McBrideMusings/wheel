@@ -1287,6 +1287,22 @@ enum AgentCommand {
         /// The message's turn id.
         turn: u64,
     },
+    /// Put a card in an agent's transcript: a pane or an artifact that a client draws live where
+    /// the card sits in the conversation. An artifact name is looked for in the agent's space's
+    /// project, then the machine's. Fails when the pane or artifact does not exist.
+    #[command(group(clap::ArgGroup::new("card").required(true).args(["pane", "artifact"])))]
+    Card {
+        /// A pane's id, in any space.
+        #[arg(long)]
+        pane: Option<String>,
+        /// An artifact's name.
+        #[arg(long)]
+        artifact: Option<String>,
+        /// The agent whose transcript gets the card: an agent pane's id or its agent name; with
+        /// none, the agent in this pane.
+        #[arg(long, env = "WHEEL_PANE")]
+        agent: Option<String>,
+    },
     /// Take back every queued message; the running turn is untouched. Fails when none is queued.
     ClearQueue {
         /// An agent pane's id or its agent name.
@@ -3096,6 +3112,13 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
                 print_tool_content(&content);
             }
             AgentEvent::Mode { mode } => println!("[mode] {mode}"),
+            AgentEvent::Card { card } => match card {
+                wheel_proto::CardRef::Pane { pane } => println!("[card] pane {pane}"),
+                wheel_proto::CardRef::Artifact { name, scope, .. } => {
+                    println!("[card] artifact {name} ({})", scope.name())
+                }
+                wheel_proto::CardRef::Unknown => println!("[card] of a kind this wheel does not know"),
+            },
             AgentEvent::Error { message, .. } => println!("[error] {message}"),
             _ => {}
         }
@@ -6331,6 +6354,12 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Unsend { agent, turn }) => {
                 agent_unsend(&mut conn, agent, turn).await
+            }
+            Command::Agent(AgentCommand::Card { pane, artifact, agent }) => {
+                let Some(agent) = agent else {
+                    return Err(Fail::Other("no agent: give --agent, or run this in a Wheel pane".into()));
+                };
+                simple(&mut conn, |req| ClientMsg::AgentCard { req: Some(req), agent, pane, artifact }).await
             }
             Command::Agent(AgentCommand::SendNow { agent, turn }) => {
                 agent_send_now(&mut conn, agent, turn).await

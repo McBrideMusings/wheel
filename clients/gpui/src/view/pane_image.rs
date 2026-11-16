@@ -50,7 +50,8 @@ impl Client {
     /// channel) or None when the window does not show it (hidden or faded out).
     pub fn render_native_for_snapshot(&mut self) -> (serde_json::Value, Vec<(String, Option<SnapshotRender>)>) {
         let status = self.native.status();
-        let renders = self.native_panes.clone().into_iter().map(|pane| {
+        // The artifact cards' page views in agent transcripts are pasted as the panes' are.
+        let renders = self.native_panes.clone().into_iter().chain(self.card_views.keys().cloned()).map(|pane| {
             let entry = &status["panes"][pane.as_str()];
             if entry["hidden"] == true || entry["alpha"].as_f64().unwrap_or(1.) <= 0. {
                 return (pane, None);

@@ -10,6 +10,7 @@ mod backends;
 mod external_backends;
 mod brief;
 mod builtins;
+mod cards;
 mod claude;
 mod clients;
 mod codex;

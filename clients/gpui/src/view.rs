@@ -4,6 +4,8 @@
 //! terminal, web and browser pane. An agent pane draws its transcript, an empty pane offers
 //! what it can become; only a kind this build does not know is drawn as unimplemented.
 mod agents;
+mod card_rows;
+pub use card_rows::PAGE_H as CARD_PAGE_H;
 mod commands;
 mod composer;
 #[cfg(test)]
@@ -238,6 +240,15 @@ pub struct Client {
     footer_shown: RefCell<HashMap<String, (Vec<(String, String)>, bool)>>,
     /// Where the footer's controls were drawn in the last frame, so a check can press them.
     controls: Rc<RefCell<Vec<Control>>>,
+    /// The artifact card slots painted in the frame being drawn, the bounds and clip each had when
+    /// their views were last placed, each open card view's placement, and the panes cards name
+    /// (`card_rows`).
+    card_slots: Rc<RefCell<Vec<card_rows::CardSlot>>>,
+    card_last: Rc<RefCell<HashMap<String, (Bounds<Pixels>, Bounds<Pixels>)>>>,
+    card_views: HashMap<String, card_rows::CardPlacement>,
+    card_panes: HashSet<String>,
+    /// The bridge's overlay is the open footer menu's rect (`sync_sidebar_overlay`).
+    footer_overlay: bool,
     /// The last presses the window's listeners took, in order, for a failing check to read.
     pub presses: Vec<String>,
     /// The artifact palette open inside a pane, by pane id: at most one per pane, drawn over
@@ -487,7 +498,7 @@ impl Client {
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
-            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), presses: vec![], palettes: HashMap::new(), next_req: 100_000,
+            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
@@ -664,7 +675,9 @@ impl Client {
                             if let wheel_proto::AgentEvent::Retract { turn } = event.event {
                                 self.on_retract(agent, turn);
                             }
+                            self.note_cards([&event.event]);
                         }
+                        ServerMsg::AgentAttached { events, .. } => self.note_cards(events.iter().map(|e| &e.event)),
                         _ => {}
                     }
                     for (agent, t) in &mut self.transcripts {
@@ -775,6 +788,7 @@ impl Client {
         self.spaces = layout.spaces;
         self.awaiting_layout = false;
         self.pane_targets = pane_targets(&self.spaces);
+        self.sync_card_agents();
         self.sessions = layout.sessions;
         let dragged = std::mem::take(&mut self.overrides);
         self.animate_layout(old_root, &dragged);
@@ -1542,6 +1556,27 @@ impl Client {
         self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
         self.sync_view();
     }
+    /// An Edit menu action (`edit_menu`), run as the ⌘ key it stands for. When `key` does not take
+    /// that key and a composer input holds the keyboard, the input's own Cut, Copy or Paste runs;
+    /// otherwise the action goes on along the window as the key would.
+    fn edit_command(&mut self, action: &dyn gpui::Action, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = crate::edit_menu::key(action) else { return };
+        let keystroke = gpui::Keystroke { modifiers: gpui::Modifiers { platform: true, ..Default::default() }, key: key.to_owned(), key_char: None };
+        if self.key(&KeyDownEvent { keystroke, is_held: false, prefer_character_input: false }, cx) {
+            cx.notify();
+        } else if self.focused_input(window, cx).is_some() {
+            use gpui_component::input::{Copy, Cut, Paste};
+            let input_action: Box<dyn gpui::Action> = match key {
+                "x" => Box::new(Cut),
+                "c" => Box::new(Copy),
+                _ => Box::new(Paste),
+            };
+            window.dispatch_action(input_action, cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
     pub fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
         // A name field takes every key while it is up.
@@ -2256,6 +2291,7 @@ impl Render for Client {
         let moving = self.tick_motion(window);
         self.hold_resizes();
         self.sync_native(&layers);
+        self.sync_card_views();
         self.release_resizes();
         // On the Agents surface every agent of the session is drawn, so each is attached.
         let cards = if self.mode == "agents" && !space_held && !server_stopped { self.agent_cards() } else { vec![] };
@@ -2279,6 +2315,9 @@ impl Render for Client {
                 }
             }))
             .on_key_up(cx.listener(|this, _: &gpui::KeyUpEvent, _, _| this.key_down = None))
+            .on_action(cx.listener(|this, a: &crate::edit_menu::Cut, window, cx| this.edit_command(a, window, cx)))
+            .on_action(cx.listener(|this, a: &crate::edit_menu::Copy, window, cx| this.edit_command(a, window, cx)))
+            .on_action(cx.listener(|this, a: &crate::edit_menu::Paste, window, cx| this.edit_command(a, window, cx)))
             .size_full().bg(rgb(0x0e1311)).text_color(rgb(0xd9e8e1)).text_sm()
             .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
                 if this.press_away(f32::from(e.position.x), f32::from(e.position.y)) {
@@ -2706,6 +2745,7 @@ impl Client {
                 plan
             }
             Kind::Mode(m) => div().text_xs().text_color(rgb(0x8fa89b)).child(format!("Mode: {m}")),
+            Kind::Card(card) => self.card_row(agent, ix, card),
             Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(texts.plain("notice", x, 0x8fa89b)),
             Kind::Error(x) => div().text_color(rgb(0xe07070)).child(texts.plain("error", x, 0xe07070)),
         };
@@ -2821,7 +2861,9 @@ fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, footer: FooterRow
             }));
         }
         if menu.as_deref() == Some(option.id.as_str()) {
-            let mut list = div().flex().flex_col().min_w(px(120.)).rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).py_1().text_xs().text_color(rgb(0xd9e8e1))
+            // Its bounds go to the bridge's overlay, so a card's page view in the transcript never covers it.
+            let mut list = div().relative().flex().flex_col().min_w(px(120.)).rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).py_1().text_xs().text_color(rgb(0xd9e8e1))
+                .child(recorded(agent, &format!("menu:{}", option.id), controls))
                 .child(div().px_2().py_1().text_color(rgb(0x8fa89b)).child(option.name.clone()));
             let current = footer::control_current(option);
             for (row, (value, name)) in choices.into_iter().enumerate() {

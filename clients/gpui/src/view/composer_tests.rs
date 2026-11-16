@@ -191,3 +191,26 @@ fn a_held_up_takes_back_one_message_per_press(cx: &mut TestAppContext) {
     rig.keys("up");
     assert_eq!(unsends(&mut rig), 1, "Up pressed again after a release took nothing back");
 }
+
+#[gpui::test]
+fn the_edit_menus_paste_inserts_the_clipboard_text_at_the_caret(cx: &mut TestAppContext) {
+    let mut rig = rig(cx);
+    rig.typed("ad");
+    rig.keys("left");
+    rig.cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("bc".into())));
+    rig.cx.dispatch_action(crate::edit_menu::Paste);
+    rig.cx.update(|window, cx| window.draw(cx).clear());
+    assert_eq!(rig.draft(), "abcd");
+}
+
+#[gpui::test]
+fn the_edit_menus_cut_and_copy_act_on_the_selection(cx: &mut TestAppContext) {
+    let mut rig = rig(cx);
+    rig.typed("hello");
+    rig.keys("cmd-a");
+    rig.cx.dispatch_action(crate::edit_menu::Copy);
+    assert_eq!(rig.cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())), Some("hello".to_owned()));
+    rig.cx.dispatch_action(crate::edit_menu::Cut);
+    rig.cx.update(|window, cx| window.draw(cx).clear());
+    assert_eq!(rig.draft(), "");
+}
