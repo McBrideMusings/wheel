@@ -212,6 +212,9 @@ pub struct AppState {
     /// The state store and pushed data of each web pane whose page or CLI has used them, keyed by
     /// pane id.
     pub(crate) pages: Mutex<HashMap<String, Arc<crate::page::Page>>>,
+    /// The page of each artifact card (`agent_card`), keyed by its page id: the newest
+    /// `cards::CARDS_KEPT` of each running agent. A card's page is served like a web pane's.
+    pub(crate) card_pages: Mutex<HashMap<String, crate::cards::CardPage>>,
     /// The refresh runner of each web pane whose artifact declares a command, keyed by pane id.
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
     /// The app process of each web pane whose artifact declares one, keyed by pane id.
@@ -374,6 +377,7 @@ impl AppState {
             warden,
             watchers: Mutex::new(HashMap::new()),
             pages: Mutex::new(HashMap::new()),
+            card_pages: Mutex::new(HashMap::new()),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             apps: Mutex::new(crate::app::Apps::new()),
             mcp: Default::default(),
@@ -752,6 +756,7 @@ impl AppState {
     /// End an agent for good; its agent process is killed.
     pub(crate) fn end_agent(&self, name: &str) {
         let agent = self.agents.lock().unwrap().remove(name);
+        self.drop_card_pages(name, 0);
         if let Some(agent) = agent {
             agent.stop(&self.perms);
         }
@@ -760,6 +765,7 @@ impl AppState {
     /// [`AppState::end_agent`], returning once the agent's process is gone.
     pub(crate) async fn end_agent_wait(&self, name: &str) {
         let agent = self.agents.lock().unwrap().remove(name);
+        self.drop_card_pages(name, 0);
         if let Some(agent) = agent {
             agent.stop_and_wait(&self.perms).await;
         }
@@ -1520,6 +1526,16 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
+        ClientMsg::AgentCard { req, agent, pane, artifact } => match state.agent_card(&agent, pane, artifact) {
+            Ok((agent, card)) => {
+                tracing::info!(%peer, %agent, card = %serde_json::to_string(&card).unwrap_or_default(), "agent card");
+                req.map(|req| ServerMsg::Ok { req })
+            }
+            Err(message) => {
+                tracing::warn!(%peer, %agent, %message, "agent card refused");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::AgentWait {
             req,
             agent,

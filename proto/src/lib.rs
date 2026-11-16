@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 42;
+pub const PROTOCOL_VERSION: u32 = 43;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -749,6 +749,19 @@ pub enum ClientMsg {
         req: Option<u64>,
         agent: String,
         text: String,
+    },
+    /// Put a card in an agent's transcript: `pane`, an id in any space, or `artifact`, a name
+    /// looked for in the agent's space's project and then the machine's. Exactly one is set. The
+    /// card arrives as a `card` agent event, in the turn running or between turns. Replies `ok`;
+    /// fails naming the pane or artifact that does not exist. `PROTOCOL_VERSION` 43.
+    AgentCard {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact: Option<String>,
     },
     /// Wait until an agent is ready, up to `timeout_secs`. Replies `agent_waited`, whose
     /// `ready` is false when the time ran out first; an error when the agent gave up.
@@ -3257,6 +3270,13 @@ pub enum AgentEvent {
     Retract {
         turn: u64,
     },
+    /// The agent put a card in its transcript (`agent_card`): a pane or an artifact a client draws
+    /// live in place of the row. Kept in the daemon's transcript only; the agent's own
+    /// conversation does not hold it, so a reload from a saved conversation does not bring it
+    /// back. `PROTOCOL_VERSION` 43.
+    Card {
+        card: CardRef,
+    },
     /// A turn failed (`turn` set), or the agent process stopped (`turn` unset; the daemon restarts
     /// it, and the new process does not remember earlier turns).
     Error {
@@ -3284,6 +3304,7 @@ const AGENT_EVENT_KINDS: &[&str] = &[
     "mode",
     "turn_end",
     "retract",
+    "card",
     "error",
 ];
 
@@ -3320,6 +3341,29 @@ pub enum ToolContent {
         new_text: String,
     },
     /// A content type this build does not know; a newer daemon may send one.
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a `card` transcript item shows. wheeld checks the name when the card is posted and
+/// writes the artifact's scope and space beside it, so a client opens the same page the agent
+/// named; the pane or the artifact may close later, and a client then says it is gone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CardRef {
+    /// A pane, by id, in any space.
+    Pane { pane: String },
+    /// An artifact: `space` is the space whose project holds a `project` artifact, unset for a
+    /// `machine` one. `id` is the page's id: a client opens it as it opens a web pane's, under
+    /// `/artifacts/<id>/`, and every page endpoint answers for it while wheeld runs.
+    Artifact {
+        id: String,
+        name: String,
+        scope: ArtifactScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// A card type this build does not know; a newer daemon may send one.
     #[serde(other)]
     Unknown,
 }
@@ -5059,6 +5103,7 @@ mod tests {
             AgentEvent::Mode { mode: "plan".into() },
             AgentEvent::TurnEnd { turn: 1, stop_reason: "end_turn".into() },
             AgentEvent::Retract { turn: 1 },
+            AgentEvent::Card { card: CardRef::Pane { pane: "p1".into() } },
             AgentEvent::Error { turn: None, message: "x".into() },
         ];
         for event in &events {
@@ -5075,6 +5120,7 @@ mod tests {
                 | AgentEvent::Mode { .. }
                 | AgentEvent::TurnEnd { .. }
                 | AgentEvent::Retract { .. }
+                | AgentEvent::Card { .. }
                 | AgentEvent::Error { .. } => {}
                 AgentEvent::Unknown(_) => unreachable!(),
             }

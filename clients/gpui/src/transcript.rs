@@ -6,7 +6,7 @@
 //! place, the turn's rows follow it, a retract takes a message back, tool calls update in place
 //! by id, the one plan row is replaced whole, and a turn's end or an error closes everything open.
 use std::collections::HashMap;
-use wheel_proto::{AgentEvent, AgentFooter, ConfigOption, ContextUse, PlanItem, ServerMsg, ToolContent};
+use wheel_proto::{AgentEvent, AgentFooter, CardRef, ConfigOption, ContextUse, PlanItem, ServerMsg, ToolContent};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -22,6 +22,8 @@ pub enum Kind {
     Plan(Vec<PlanItem>),
     /// The agent switched its own mode and has no `mode` option to show it in.
     Mode(String),
+    /// A pane or an artifact the agent put in its transcript (`wheel agent card`), drawn live.
+    Card(CardRef),
     /// A turn that stopped for a reason other than finishing.
     Notice(String),
     Error(String),
@@ -280,7 +282,7 @@ impl Transcript {
         // A thought ends when its turn moves on to something else: a reply, a tool call, a plan,
         // or the turn's end. An update to an earlier call, or a later message being queued, is not
         // the turn moving on.
-        if matches!(event, AgentEvent::Text { .. } | AgentEvent::ToolCall { .. } | AgentEvent::Plan { .. } | AgentEvent::Mode { .. } | AgentEvent::TurnEnd { .. } | AgentEvent::Error { .. })
+        if matches!(event, AgentEvent::Text { .. } | AgentEvent::ToolCall { .. } | AgentEvent::Plan { .. } | AgentEvent::Mode { .. } | AgentEvent::Card { .. } | AgentEvent::TurnEnd { .. } | AgentEvent::Error { .. })
             && let Some(last) = self.last_settled()
             && matches!(self.rows[last].kind, Kind::Thought(_))
         {
@@ -396,6 +398,9 @@ impl Transcript {
             },
             AgentEvent::Mode { mode } => {
                 self.append(Kind::Mode(mode.clone()));
+            }
+            AgentEvent::Card { card } => {
+                self.append(Kind::Card(card.clone()));
             }
             AgentEvent::TurnEnd { stop_reason, .. } => {
                 self.close_all();
@@ -634,6 +639,24 @@ mod tests {
         assert_eq!(t.message_markdown(1), None);
         assert_eq!(t.message_markdown(2), Some("**yes**"));
         assert_eq!(t.message_markdown(3), None);
+    }
+
+    /// A card is a row of its own in the order it came, and a card of a type this build does not
+    /// know is still a row (drawn as such) rather than dropped.
+    #[test]
+    fn a_card_is_its_own_row_where_it_came() {
+        let mut t = Transcript::default();
+        ev(&mut t, json!({"kind":"user","text":"show me","turn":1}));
+        ev(&mut t, json!({"kind":"turn_start","turn":1}));
+        ev(&mut t, json!({"kind":"text","text":"Here it is."}));
+        ev(&mut t, json!({"kind":"card","card":{"type":"pane","pane":"p5"}}));
+        ev(&mut t, json!({"kind":"card","card":{"type":"artifact","id":"k9","name":"board","scope":"project","space":"s1"}}));
+        ev(&mut t, json!({"kind":"card","card":{"type":"hologram"}}));
+        let kinds: Vec<_> = t.rows.iter().map(|r| r.kind.clone()).collect();
+        assert_eq!(kinds[2], Kind::Card(CardRef::Pane { pane: "p5".into() }));
+        assert_eq!(kinds[3], Kind::Card(CardRef::Artifact { id: "k9".into(), name: "board".into(), scope: wheel_proto::ArtifactScope::Project, space: Some("s1".into()) }));
+        assert_eq!(kinds[4], Kind::Card(CardRef::Unknown));
+        assert_eq!(kinds.len(), 5);
     }
 
     fn msg(wire: serde_json::Value) -> ServerMsg {

@@ -304,6 +304,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, cards_report) = transcript_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
     let (run, footer_report) = footer(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, buttons_inside_short_pane, resolved_from_cli, status_report) = statuses(run, agent_pane.clone(), agent_name.clone(), agent_rect.clone(), cli_path.clone(), cx).await?;
     let (run, splits_above, perm_card, card_shown, answered_by_key, question_card, question_options, clicked, question_answer) = perm_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
@@ -402,6 +403,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     });
+    report["cards"] = cards_report;
     report["plugin_panes"] = plugin_panes_report;
     // Past the one `json!` the recursion limit allows.
     report["terminal"] = terminal_report;
@@ -982,6 +984,128 @@ async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_pa
     let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
         "reply_row": md_row, "wraps": wraps, "pane_right": pane_right, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, markdown_report))
+}
+
+/// Cards in the transcript (wheel-0but.6): `wheel agent card` puts a terminal pane, the agent's
+/// own pane and the fixture's HTML artifact in the agent's transcript; each is a row, the artifact
+/// card opens a page view under its page id inside the column with the page loaded, and the view
+/// closes once the card scrolls away.
+async fn transcript_cards(run: Run, agent_pane: String, agent_name: String, cli_path: String, term: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let card = |args: &[&str]| -> Result<()> {
+        let mut all = vec!["--url".to_owned(), default_url(), "--token-file".to_owned(), default_token_file().to_string_lossy().into_owned(), "agent".to_owned(), "card".to_owned(), "--agent".to_owned(), agent_pane.clone()];
+        all.extend(args.iter().map(|a| a.to_string()));
+        let out = std::process::Command::new(&cli_path).args(&all).output()?;
+        ensure!(out.status.success(), "wheel agent card {args:?} failed: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        Ok(())
+    };
+    card(&["--pane", &term])?;
+    card(&["--pane", &agent_pane])?;
+    card(&["--artifact", "fixture-html"])?;
+    let missing = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "card", "--agent", &agent_pane, "--artifact", "no-such-artifact"]).output()?;
+    let refusal = String::from_utf8_lossy(&missing.stderr).trim().to_owned();
+    ensure!(!missing.status.success() && refusal.contains("no artifact no-such-artifact"), "a card for a missing artifact: {refusal}");
+    let cards = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| t.rows.iter().enumerate().filter_map(|(i, r)| match &r.kind { Kind::Card(card) => Some((i, card.clone())), _ => None }).collect::<Vec<_>>()).unwrap_or_default());
+    let mut rows = vec![];
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        rows = cards(cx)?;
+        if rows.len() >= 3 {
+            break;
+        }
+    }
+    ensure!(rows.len() == 3, "three card rows, got {rows:?}");
+    let (artifact_row, page_id) = match &rows[2] {
+        (i, wheel_proto::CardRef::Artifact { id, .. }) => (*i, id.clone()),
+        other => anyhow::bail!("the third card is not the artifact: {other:?}"),
+    };
+    ensure!(matches!(&rows[0].1, wheel_proto::CardRef::Pane { pane } if *pane == term), "{rows:?}");
+    window.update(cx, |c, _, _| c.follow_end(&agent_name))?;
+    let mut views = Value::Null;
+    for _ in 0..50 {
+        pump(&mut connection, 50, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        views = window.update(cx, |c, _, _| c.state_json()["card_views"].clone())?;
+        if views.as_array().is_some_and(|v| v.iter().any(|v| v["id"] == json!(page_id) && v["hidden"] == false)) {
+            break;
+        }
+    }
+    let view = views.as_array().and_then(|v| v.iter().find(|v| v["id"] == json!(page_id)).cloned()).ok_or_else(|| anyhow::anyhow!("no card view for {page_id}: {views}"))?;
+    ensure!(view["hidden"] == false && view["rect"][3].as_f64() == Some(f64::from(wheel_gpui::view::CARD_PAGE_H)), "the card view: {view}");
+    let pane_frame = window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["frame"].clone())?;
+    let (px0, pw) = (pane_frame[0].as_f64().unwrap_or(0.), pane_frame[2].as_f64().unwrap_or(0.));
+    let (vx, vw) = (view["rect"][0].as_f64().unwrap_or(-1.), view["rect"][2].as_f64().unwrap_or(-1.));
+    ensure!(vx >= px0 && vx + vw <= px0 + pw + 0.5, "the card view {view} must sit inside the agent pane {pane_frame}");
+    let s = wait(&native, "the card's page", |s| web_ready(s, &page_id), cx).await?;
+    let bridge_entry = s["panes"][page_id.as_str()].clone();
+    draw(window, Some(output.join("client-cards.png")), cx)?;
+    shot(&native, &output.join("cards"), cx).await?;
+    // Zoomed, so the cards are drawn at a readable size: the GPUI frame with the card's page view
+    // pasted at its visible rect, as `/window/snapshot` composes native views.
+    let zoom = |cx: &mut AsyncApp| -> Result<()> {
+        let f: Vec<f64> = window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["header_buttons"]["zoom"]["frame"].clone())?
+            .as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+        ensure!(f.len() == 4, "no zoom button on {agent_pane}");
+        let p = [f[0] + f[2] / 2., f[1] + f[3] / 2.];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+        Ok(())
+    };
+    zoom(cx)?;
+    let mut zoomed_view = Value::Null;
+    for _ in 0..60 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        window.update(cx, |c, _, _| c.follow_end(&agent_name))?;
+        draw(window, None, cx)?;
+        let s = window.update(cx, |c, _, _| c.state_json())?;
+        zoomed_view = s["card_views"].as_array().and_then(|v| v.iter().find(|v| v["id"] == json!(page_id)).cloned()).unwrap_or(Value::Null);
+        if s["grid_motion"]["moving"] != true && !s["grid_motion"]["zoomed"].is_null() && zoomed_view["hidden"] == false && zoomed_view["holes"].as_array().is_some_and(|h| h.is_empty()) {
+            break;
+        }
+    }
+    wait(&native, "the card's page after the zoom", |s| web_ready(s, &page_id), cx).await?;
+    draw(window, Some(output.join("client-cards-zoomed.png")), cx)?;
+    shot(&native, &output.join("cards-zoomed"), cx).await?;
+    let composite = output.join("client-cards-composite.png");
+    {
+        let mut frame = image::open(output.join("client-cards-zoomed.png"))?.to_rgba8();
+        let width = window.update(cx, |_, w, _| f32::from(w.viewport_size().width))?;
+        let scale = frame.width() as f64 / f64::from(width.max(1.));
+        let r: Vec<f64> = zoomed_view["rect"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+        ensure!(r.len() == 4, "the zoomed card view: {zoomed_view}");
+        let page = image::open(output.join("cards-zoomed").join(format!("{page_id}-web.png")))?.to_rgba8();
+        let page = image::imageops::resize(&page, (r[2] * scale) as u32, (r[3] * scale) as u32, image::imageops::FilterType::Triangle);
+        image::imageops::overlay(&mut frame, &page, (r[0] * scale) as i64, (r[1] * scale) as i64);
+        frame.save(&composite)?;
+    }
+    zoom(cx)?;
+    for _ in 0..30 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let motion = window.update(cx, |c, _, _| c.state_json()["grid_motion"].clone())?;
+        if motion["moving"] != true && motion["zoomed"].is_null() {
+            break;
+        }
+    }
+    // Scrolled to the first row, the artifact card is no longer drawn and its view closes.
+    window.update(cx, |c, _, _| c.reveal(&agent_name, 0))?;
+    let mut closed = false;
+    for _ in 0..20 {
+        draw(window, None, cx)?;
+        tick(cx, 50).await;
+        let v = window.update(cx, |c, _, _| c.state_json()["card_views"].clone())?;
+        if v.as_array().is_some_and(|v| v.iter().all(|v| v["id"] != json!(page_id) || v["hidden"] == true)) {
+            closed = true;
+            break;
+        }
+    }
+    ensure!(closed, "the card view stayed after its row scrolled away");
+    window.update(cx, |c, _, _| c.follow_end(&agent_name))?;
+    let report = json!({"rows": rows.iter().map(|(i, c)| json!({"row": i, "card": c})).collect::<Vec<_>>(), "artifact_row": artifact_row, "view": view, "bridge": bridge_entry, "pane_frame": pane_frame, "zoomed_view": zoomed_view, "composite": composite, "missing_refused": refusal, "closed_when_scrolled_away": closed});
+    std::fs::write(output.join("cards-report.json"), serde_json::to_string_pretty(&report)?)?;
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
 
 /// The footer under the composer: the context meter, the config controls and their menus,

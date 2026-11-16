@@ -687,22 +687,14 @@ impl AppState {
         all
     }
 
-    /// Where web pane `pane` looks for the file at `path`: None when there is no such web pane, an
-    /// error when its artifact's page is not anywhere. A path under the reserved `data/` prefix
+    /// Where web pane or artifact card `pane` looks for the file at `path`: None when there is no
+    /// such page, an error when its artifact's page is not anywhere. A path under the reserved `data/` prefix
     /// comes from the pane's own data directory, every other path from the folder the artifact's
     /// page really sits in, and the empty path is that page; the artifact's own `data/`, which the
     /// entry reader reports as a problem, is therefore unreachable. [`resolve`] confines both the
     /// same: nothing a request names may leave its root.
     fn serve(&self, pane: &str, path: &str) -> Option<Result<Serve, String>> {
-        let spaces = self.spaces.lock().unwrap();
-        let (artifact, cwd) = spaces
-            .spaces
-            .iter()
-            .find_map(|s| match crate::spaces::space_find(s, pane) {
-                Some(PaneKind::Web { artifact, .. }) => Some((artifact.clone(), s.cwd.clone())),
-                _ => None,
-            })?;
-        drop(spaces);
+        let (artifact, cwd) = self.page_artifact(pane)?;
         if let Some(path) = under_data(path) {
             // A post's `data/` is the post's own folder; any other pane's is its data directory.
             if let Ok(crate::artifacts::Located {
