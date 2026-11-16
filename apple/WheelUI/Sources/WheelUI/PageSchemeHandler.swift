@@ -42,19 +42,23 @@ public final class RequestGate {
 
 /// Answers one web pane's requests under `WebPanes.scheme` by fetching them from the daemon with the
 /// token in a header, for that pane's own folder only. The page's origin is the scheme and a fixed
-/// host, so its `localStorage` stays with it when the daemon comes back on another port.
+/// host, so its `localStorage` stays with it when the daemon comes back on another port. Made with
+/// `loopback`, it answers a browser pane's requests under `BrowserPanes.loopbackScheme` instead,
+/// from the daemon's `/loopback/<port>/`, which reaches the Mac's loopback page the pane is on.
 @MainActor
 public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     private let pane: String
     private let daemon: PageDaemon
+    private let loopback: Bool
     /// Page requests in flight across every pane; the event streams never count, since they stay open.
     static let gate = RequestGate(limit: 4)
     /// Told the status of each page the pane's main frame loads.
     public var onDocument: ((Int) -> Void)?
 
-    public init(pane: String, daemon: PageDaemon) {
+    public init(pane: String, daemon: PageDaemon, loopback: Bool = false) {
         self.pane = pane
         self.daemon = daemon
+        self.loopback = loopback
     }
 
     /// A remote daemon's connection pins its certificate through Network.framework, because App
@@ -189,8 +193,12 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
             task.didFailWithError(URLError(.cannotConnectToHost))
             return
         }
-        // The page reaches its own folder and its pane's data directory, nothing else the token opens.
-        guard let target = WebPanes.daemonURL(for: page, daemon: address, pane: pane) else {
+        // An artifact's page reaches its own folder and its pane's data directory; a loopback page
+        // reaches the Mac's loopback port it is on. Nothing else the token opens.
+        let target = loopback
+            ? BrowserPanes.loopbackDaemonURL(for: page, daemon: address)
+            : WebPanes.daemonURL(for: page, daemon: address, pane: pane)
+        guard let target else {
             UILog.info("web pane \(pane) request refused outside its folder: \(WebPanes.withoutQuery(page))")
             task.didFailWithError(URLError(.noPermissionsToReadFile))
             return

@@ -2291,7 +2291,10 @@ async fn handle(
             arg,
             path,
             on,
+            from,
         } => {
+            // Who ran it, as a permission card names an asker: an agent pane's agent, else the pane.
+            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to answer.
             let state = state.clone();
             let out = out.clone();
@@ -2304,7 +2307,7 @@ async fn handle(
                     }
                 };
                 if action == "record" {
-                    let reply = match record_request(&state, &pane, arg, path.clone(), side).await {
+                    let reply = match record_request(&state, &pane, arg, path.clone(), side, by).await {
                         Ok((recorded_path, rec)) => req.map(|req| ServerMsg::PaneRecorded {
                             req,
                             pane,
@@ -2323,7 +2326,7 @@ async fn handle(
                     }
                     return;
                 }
-                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side).await {
+                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side, by).await {
                     Ok(crate::render::InspectOutcome::Text(text)) => {
                         req.map(|req| ServerMsg::Inspected { req, pane, text })
                     }
@@ -3175,13 +3178,14 @@ async fn record_request(
     arg: Option<String>,
     path: Option<String>,
     side: crate::render::Side,
+    by: Option<String>,
 ) -> Result<(String, crate::render::Recording), String> {
     let path = path.ok_or("record needs a path")?;
     let seconds = arg
         .as_deref()
         .and_then(|a| a.trim().parse::<u64>().ok())
         .ok_or("record needs a whole number of seconds")?;
-    let recording = state.pane_record(pane, seconds, &path, side).await?;
+    let recording = state.pane_record(pane, seconds, &path, side, by).await?;
     Ok((path, recording))
 }
 

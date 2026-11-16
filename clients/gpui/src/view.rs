@@ -614,7 +614,7 @@ impl Client {
                             return false;
                         }
                         // `wheel pane eval|dom|shot --selector|record` on a browser pane's page.
-                        ServerMsg::InspectPane { id, pane, action, arg } => {
+                        ServerMsg::InspectPane { id, pane, action, arg, .. } => {
                             if self.opened.get(pane).map(String::as_str) == Some("browser") {
                                 self.native.inspect(*id, pane, action, arg.as_deref());
                             } else {

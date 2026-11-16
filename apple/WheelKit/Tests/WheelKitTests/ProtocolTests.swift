@@ -272,9 +272,13 @@ struct ProtocolTests {
 
     /// `inspect_pane` asks for eval, dom or a selector shot; text answers carry the request's id.
     @Test func inspectsABrowserPaneOnRequest() throws {
-        guard case let .inspectPane(id, pane, op, arg) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":5,"pane":"p6","action":"dom","arg":"h1"}"#)
+        guard case let .inspectPane(id, pane, op, arg, by) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":5,"pane":"p6","action":"dom","arg":"h1"}"#)
         else { Issue.record("wrong case"); return }
-        #expect(id == 5 && pane == "p6" && op == "dom" && arg == "h1")
+        #expect(id == 5 && pane == "p6" && op == "dom" && arg == "h1" && by == nil)
+        guard case let .inspectPane(_, _, _, _, named) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":6,"pane":"p6","action":"dom","arg":"h1","by":"claude"}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(named == "claude")
+        #expect(try ClientMsg.paneBrowserMode(req: 7, pane: "p6", mode: "phone").json() == #"{"mode":"phone","op":"pane_browser_mode","pane":"p6","req":7}"#)
         #expect(try ClientMsg.inspected(id: 5, text: "2").json() == #"{"id":5,"op":"inspected","text":"2"}"#)
     }
 

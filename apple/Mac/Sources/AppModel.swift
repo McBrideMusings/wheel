@@ -863,7 +863,7 @@ final class AppModel {
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
         case let .renderPane(id, pane, full):
             renderPane(id: id, pane: pane, full: full)
-        case let .inspectPane(id, pane, op, arg):
+        case let .inspectPane(id, pane, op, arg, _):
             inspectPane(id: id, pane: pane, op: op, arg: arg)
         case let .windowRequest(id, command):
             answerWindowCommand(id: id, command)

@@ -116,6 +116,10 @@ public enum ClientMsg: Sendable, Equatable {
     /// follows them. The daemon refuses a pane that is not a browser pane and a URL that is not
     /// http, https, a file on this machine or about:blank.
     case paneBrowserUrl(req: UInt64?, pane: String, url: String)
+    /// A phone says which side draws browser pane `pane` for it: `mac` or `phone`. Page commands
+    /// sent `--on phone` reach it only for a pane it draws itself. Refused for a pane that is not a
+    /// browser pane and from a connection that is not a paired device that offered rendering.
+    case paneBrowserMode(req: UInt64?, pane: String, mode: String)
     /// Send a browser pane to what the person typed into its address field. The daemon reads the
     /// text — a URL, `example.com`, a path — and replies `opened` with the page, or refuses it
     /// saying why.
@@ -345,6 +349,8 @@ public enum ClientMsg: Sendable, Equatable {
             if let agent { o["agent"] = agent }
         case let .paneBrowserUrl(req, pane, url):
             o = ["op": "pane_browser_url", "pane": pane, "url": url]; put(req)
+        case let .paneBrowserMode(req, pane, mode):
+            o = ["op": "pane_browser_mode", "pane": pane, "mode": mode]; put(req)
         case let .paneBrowserOpen(req, pane, text):
             o = ["op": "pane_browser_open", "pane": pane, "text": text]; put(req)
         case let .paneConsole(req, pane, reset, entries):
@@ -1390,7 +1396,8 @@ public enum ServerMsg: Sendable {
     case renderPane(id: UInt64, pane: String, full: Bool)
     /// Run `op` (`eval`, `dom`, `shot` or `record`) on browser pane `pane` with `arg` and answer with
     /// `inspected` (`eval`, `dom`), `rendered` (`shot`), `recorded` (`record`) or `renderRefused`, naming `id`.
-    case inspectPane(id: UInt64, pane: String, op: String, arg: String?)
+    /// `by` names who ran it when the request said (an agent pane's agent, else the pane's id).
+    case inspectPane(id: UInt64, pane: String, op: String, arg: String?, by: String?)
     /// Run `command` on the windows this client owns and answer with `windowAnswer` naming `id`.
     /// Sent only to a connection that sent `windowOffer`.
     case windowRequest(id: UInt64, command: WindowCommand)
@@ -1407,7 +1414,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane
+        case ev, buttons, req, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, by
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1584,7 +1591,7 @@ extension ServerMsg: Decodable {
             case "space_move": self = .windowRequest(id: try c.decode(UInt64.self, forKey: .id), command: .spaceMove(space: try text(.space), to: try text(.to)))
             default: self = .unknown("window_request \(command)")
             }
-        case "inspect_pane": self = .inspectPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), op: try c.decode(String.self, forKey: .action), arg: try c.decodeIfPresent(String.self, forKey: .arg))
+        case "inspect_pane": self = .inspectPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), op: try c.decode(String.self, forKey: .action), arg: try c.decodeIfPresent(String.self, forKey: .arg), by: try c.decodeIfPresent(String.self, forKey: .by))
         case "render_pane": self = .renderPane(id: try c.decode(UInt64.self, forKey: .id), pane: try c.decode(String.self, forKey: .pane), full: try c.decodeIfPresent(Bool.self, forKey: .full) ?? false)
         case "ok": self = .ok(req: try c.decode(UInt64.self, forKey: .req))
         case "error": self = .error(req: req, term: try c.decodeIfPresent(String.self, forKey: .term), message: try c.decode(String.self, forKey: .message))

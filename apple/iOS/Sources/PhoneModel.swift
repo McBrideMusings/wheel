@@ -75,6 +75,11 @@ final class PhoneModel {
     private var startWhenMade: [UInt64: String] = [:]
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]
+    /// The phone's own page of each browser pane in the layout it draws itself (Phone mode).
+    private(set) var browsers: [String: PhoneBrowser] = [:]
+    /// Which side draws each browser pane for this phone, `mac` or `phone`, kept across launches;
+    /// a pane missing here is drawn by the phone.
+    private(set) var browserModes: [String: String] = UserDefaults.standard.dictionary(forKey: "browserModes") as? [String: String] ?? [:]
     /// The A2UI model of each web pane, drawn natively when its MCP server links an A2UI layout.
     private(set) var a2uiPanes: [String: A2UIPane] = [:]
     /// The script, state and feeds of each plugin pane in the layout (ADR-0041), kept across swipes and layout changes.
@@ -276,6 +281,7 @@ final class PhoneModel {
         pageDaemon.token = nil
         pageDaemon.pairing = nil
         syncWebPanes()
+        syncBrowsers()
         syncPluginPanes()
         chats = [:]
         perms = []
@@ -384,6 +390,7 @@ final class PhoneModel {
                 Log.info("server protocol \(protocolVersion), this app's \(ServerProtocol.current); attachments \(protocolVersion >= ServerProtocol.current ? "offered" : "hidden")")
             }
             serverProtocol = protocolVersion
+            offerBrowsers()
             self.agents = agents
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
@@ -473,6 +480,33 @@ final class PhoneModel {
                 space.root = space.root.replacing(pane: pane, with: .browser(url: url))
                 return space
             }
+            browsers[pane]?.daemonSays(url)
+        case let .inspectPane(id, pane, op, arg, by):
+            guard let browser = browsers[pane], browserMode(pane) == "phone" else {
+                client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))
+                return
+            }
+            Task { [weak self] in
+                let reply: ClientMsg = switch await browser.run(op, arg: arg, by: by) {
+                case let .text(text): .inspected(id: id, text: text)
+                case let .png(png): .rendered(id: id, png: png)
+                case let .film(film): .recorded(id: id, mov: film.mov, frames: film.frames, millis: film.millis)
+                case let .refused(message): .renderRefused(id: id, message: message)
+                }
+                self?.client?.send(reply)
+            }
+        case let .renderPane(id, pane, full):
+            guard let browser = browsers[pane], browserMode(pane) == "phone" else {
+                client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))
+                return
+            }
+            Task { [weak self] in
+                let reply: ClientMsg = switch await browser.shot(full: full, by: nil) {
+                case let .success(png): .rendered(id: id, png: png)
+                case let .failure(refusal): .renderRefused(id: id, message: refusal.message)
+                }
+                self?.client?.send(reply)
+            }
         case let .termAttached(_, id, replayBytes):
             guard attachedTerms.contains(id) else { return }
             // Every attach replays the screen from scratch. It goes to the surfaces not yet drawing, reset first; when
@@ -526,10 +560,15 @@ final class PhoneModel {
             menuReqs.remove(req)
             Log.info("started \(pane) agent \(agent ?? "-")")
         case let .opened(req, pane, url):
-            // The phone shows no page yet, so it reports the navigation the Mac's web view would.
             if menuReqs.remove(req) != nil {
                 Log.info("pane \(pane) opened \(url)")
-                client?.send(.paneBrowserUrl(req: nil, pane: pane, url: url))
+                if let browser = browsers[pane], browserMode(pane) == "phone" {
+                    // The phone's own page goes there and reports where it lands.
+                    browser.daemonSays(url)
+                } else {
+                    // No page here draws it, so the phone reports the navigation the Mac's web view would.
+                    client?.send(.paneBrowserUrl(req: nil, pane: pane, url: url))
+                }
             }
         case let .created(req, id):
             if menuReqs.remove(req) != nil || spaceReqs.remove(req) != nil { Log.info("created \(id)") }
@@ -579,6 +618,52 @@ final class PhoneModel {
             Log.info("new space: \(parent) -> \(path): \(dirs.count) folders\(error.map { ", error \($0)" } ?? "")")
         default:
             break
+        }
+    }
+
+    /// Which side draws browser pane `pane` for this phone: `mac` or `phone`.
+    func browserMode(_ pane: String) -> String { browserModes[pane] ?? "phone" }
+
+    /// Draw browser pane `pane` from `mode`'s side, and tell wheeld, so `--on phone` reaches the
+    /// phone's page only while the phone draws it.
+    func setBrowserMode(_ pane: String, _ mode: String) {
+        guard ["mac", "phone"].contains(mode), browserMode(pane) != mode else { return }
+        browserModes[pane] = mode
+        UserDefaults.standard.set(browserModes, forKey: "browserModes")
+        Log.info("browser pane \(pane) drawn by the \(mode)")
+        client?.send(.paneBrowserMode(req: nil, pane: pane, mode: mode))
+        syncBrowsers()
+    }
+
+    /// Offer page commands to wheeld and say which side draws each browser pane; sent with every
+    /// status, since a new connection starts with no offer and every pane on the Mac's side.
+    private func offerBrowsers() {
+        guard let client else { return }
+        client.send(.renderOffer)
+        for pane in BrowserPanes.urls(spaces).keys { client.send(.paneBrowserMode(req: nil, pane: pane, mode: browserMode(pane))) }
+    }
+
+    /// Keeps one `PhoneBrowser` per browser pane in the layout the phone draws, on the page wheeld
+    /// says it is on. A pane new to the layout tells wheeld which side draws it.
+    private func syncBrowsers() {
+        let wanted = BrowserPanes.urls(spaces)
+        for pane in browsers.keys where wanted[pane] == nil || browserMode(pane) != "phone" {
+            browsers[pane] = nil
+            Log.info("browser pane \(pane) no longer drawn by the phone")
+        }
+        for (pane, url) in wanted {
+            if browserModes[pane] == nil, browsers[pane] == nil, client != nil {
+                client?.send(.paneBrowserMode(req: nil, pane: pane, mode: browserMode(pane)))
+            }
+            guard browserMode(pane) == "phone" else { continue }
+            let browser = browsers[pane] ?? {
+                let made = PhoneBrowser(pane: pane, daemon: pageDaemon) { [weak self] page in
+                    self?.client?.send(.paneBrowserUrl(req: nil, pane: pane, url: page))
+                }
+                browsers[pane] = made
+                return made
+            }()
+            browser.daemonSays(url)
         }
     }
 
@@ -688,6 +773,7 @@ final class PhoneModel {
         appearances.keep(only: self.spaces)
         askAppearances()
         syncWebPanes()
+        syncBrowsers()
         syncPluginPanes()
         dropGoneTerminals()
         showTerm()

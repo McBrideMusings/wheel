@@ -1345,6 +1345,10 @@ pub enum ClientMsg {
         /// attached".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on: Option<String>,
+        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
+        /// in the `by` of the `inspect_pane` a phone gets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
     },
     /// A phone reports which side draws browser pane `pane` for it: `mode` is `mac` or `phone`.
     /// `pane_info` lists each attached phone's mode. Refused for a pane that is not a browser
@@ -2833,6 +2837,10 @@ pub enum ServerMsg {
         action: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arg: Option<String>,
+        /// Who ran it, when the request named the pane it came from: that pane's agent name, else
+        /// the pane's id. A phone drawing its own page shows it ("claude ran dom h1 on this page").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
     },
     /// `pane_inspect` `eval` or `dom` finished: `text` is the result.
     Inspected {
