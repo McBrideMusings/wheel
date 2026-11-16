@@ -2,7 +2,7 @@ import SwiftUI
 import WebKit
 
 /// What a page asks to show inside its own layout: a pane (ADR-0042, `Terminal{pane}` or `AgentChat{pane}`) or an artifact
-/// (ADR-0046, `WebView{artifact}`).
+/// (ADR-0047, `WebView{artifact}`).
 public struct A2UIPaneEmbed: Hashable, Sendable {
     public enum Kind: String, Sendable { case terminal, agentChat = "agent_chat", artifact }
     public let kind: Kind

@@ -605,7 +605,7 @@ impl Client {
                             return false;
                         }
                         // `wheel pane shot`: the bridge draws the pane and answers through a frame.
-                        ServerMsg::RenderPane { id, pane, full } => {
+                        ServerMsg::RenderPane { id, pane, full, .. } => {
                             if self.opened.contains_key(pane) {
                                 self.native.render(*id, pane, *full);
                             } else {
@@ -614,12 +614,23 @@ impl Client {
                             return false;
                         }
                         // `wheel pane eval|dom|shot --selector|record` on a browser pane's page.
-                        ServerMsg::InspectPane { id, pane, action, arg } => {
+                        ServerMsg::InspectPane { id, pane, action, arg, .. } => {
                             if self.opened.get(pane).map(String::as_str) == Some("browser") {
                                 self.native.inspect(*id, pane, action, arg.as_deref());
                             } else {
                                 self.send(&ClientMsg::RenderRefused { id: *id, message: "not shown".into() });
                             }
+                            return false;
+                        }
+                        // A phone's page of a browser pane asks for this Mac's session of a site, or
+                        // hands its own back. The store is the default one every browser pane
+                        // shares, so the bridge answers whether or not it shows the pane.
+                        ServerMsg::SessionRequest { id, pane, origin } => {
+                            self.native.session_read(*id, pane, origin);
+                            return false;
+                        }
+                        ServerMsg::SessionInstall { id, pane, session } => {
+                            self.native.session_write(*id, pane, session);
                             return false;
                         }
                         ServerMsg::Settings { req, settings, space } => {
@@ -1333,6 +1344,7 @@ impl Client {
             }
             Frame::Answer(Answer::Inspected { id, text }) => self.send(&ClientMsg::Inspected { id, text }),
             Frame::Answer(Answer::Recorded { id, mov, frames, millis }) => self.send(&ClientMsg::Recorded { id, mov, frames, millis }),
+            Frame::Answer(Answer::Session { id, session }) => self.send(&ClientMsg::SessionAnswer { id, session }),
             Frame::Answer(Answer::Refused { id, message }) => {
                 if !self.pane_images.answered(id, Err(message.clone())) {
                     self.send(&ClientMsg::RenderRefused { id, message });

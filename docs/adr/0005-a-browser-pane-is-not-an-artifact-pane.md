@@ -6,6 +6,8 @@ A browser pane may point at an `http` or `https` URL with a host, a `file` URL n
 
 The rule for a page is `page_allowed` in `wheel_proto`, and wheeld applies it wherever a page arrives: a caller's request, a `wheel.toml` value, a pane in the saved layout, and every page a client reports landing on. Only wheeld reads what a person types into an address field, with `page_typed`, whose result passes the same rule. A client keeps only its web view's scheme policy, and wheeld refuses any page the client reports that a pane may not be on.
 
+A client that draws a browser pane's page itself, such as a phone, reaches a page on the Mac's loopback (`http://localhost:<port>`, `127.0.0.1`, `[::1]`) through wheeld: `/loopback/<port>/<path>` on its listener, with its token in a header, answers with `/<path>` from that port, and a redirect to the program's own address stays under `/loopback/<port>`. wheeld forwards only to a port some browser pane is on, so a paired device reaches the pages the person opened and no other service on the Mac's loopback, and it logs each forwarded request with the device, port, method and status.
+
 *Page* is the term for what a browser pane points at. `url` names only the protocol fields that carry one.
 
 When a browser pane moves to a new page, wheeld sends every client that one field as `pane_url` instead of the whole layout, and each client applies it to the tree it already holds. This is the one layout change a client does not take whole from the daemon.

@@ -106,7 +106,7 @@ impl AppState {
             .or_else(|| self.embed_pages.lock().unwrap().get(id).map(|p| (p.artifact.clone(), p.cwd.clone())))
     }
 
-    /// The page plugin pane `pane` shows artifact `name` in (`plugin_embed`, ADR-0046): the name
+    /// The page plugin pane `pane` shows artifact `name` in (`plugin_embed`, ADR-0047): the name
     /// resolved in the pane's space, project then machine, and a page for it kept and served as an
     /// artifact card's is. The same pane and artifact get the page they already have, which counts
     /// as its newest use; past `EMBEDS_KEPT` the least recently asked for ends.

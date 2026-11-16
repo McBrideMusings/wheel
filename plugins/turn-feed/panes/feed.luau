@@ -50,12 +50,12 @@ end
 
 -- ───────────────────────────── what a post shows ─────────────────────────────
 
--- The body of a post: its Markdown drawn as blocks (ADR-0045).
+-- The body of a post: its Markdown drawn as blocks (ADR-0046).
 local function body_view(body)
     return ui.StructuredText{ markdown = body }
 end
 
--- The page a post names: the artifact's page inside the post (ADR-0046).
+-- The page a post names: the artifact's page inside the post (ADR-0047).
 local function page_view(name)
     return ui.WebView{ artifact = name, height = 360 }
 end

@@ -182,7 +182,7 @@ function M.copy_button(body, copied, e)
     return M.button(body, { copy = { text = copied } }, e)
 end
 
--- A table cell: its text and the style fields (tone, mono, chip, sort).
+-- A table cell: its text, the style fields (tone, mono, chip, sort) and `view`, a node drawn in place of the text.
 function M.cell(body, extra)
     local c = { text = body }
     if extra then for k, v in extra do c[k] = v end end

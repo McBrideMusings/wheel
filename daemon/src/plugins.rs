@@ -133,7 +133,7 @@ struct RawManifest {
     commands: Option<toml::Value>,
 }
 
-/// `[agent]`: the actions of this plugin an agent pane may invoke (ADR-0044).
+/// `[agent]`: the actions of this plugin an agent pane may invoke (ADR-0045).
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawAgent {

@@ -448,11 +448,10 @@ pub fn collect(dir: &str) -> Snapshot {
 /// As [`collect`]; `force` asks GitHub again unless a read began after this call did.
 pub fn collect_with(dir: &str, force: bool) -> Snapshot {
     let mut s = Snapshot { name: crate::core::project::name_of(dir), ..Default::default() };
-    let (buttons, problem) = detail::buttons(dir);
-    s.buttons = buttons;
-    let (scripts, problems) = crate::core::buttons::scripts(dir, "prs");
-    s.scripts = scripts;
-    let problem = problem.or(problems.into_iter().next());
+    let (files, problems) = crate::core::buttons::files(dir);
+    s.buttons = detail::buttons_of(&files);
+    s.scripts = crate::core::buttons::scripts_of(&files, "prs");
+    let problem = problems.into_iter().next();
     let repo = match repo_of(dir) {
         Ok(r) => r,
         Err(e) => {

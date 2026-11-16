@@ -2602,6 +2602,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://home.example/start".into(),
+            share_session: None,
             extra: Default::default()
         })
     );
@@ -2627,6 +2628,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://example.com/two?q=1#x".into(),
+            share_session: None,
             extra: Default::default()
         })
     );
@@ -2793,6 +2795,7 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         kind_of(&spaces[0], &pane),
         Some(PaneKind::Browser {
             url: "https://kept.example/page".into(),
+            share_session: None,
             extra: Default::default()
         }),
         "a restored browser pane comes back on its page"
@@ -2919,6 +2922,7 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
         req: Some(41),
         pane: pane.clone(),
         since,
+        on: None,
     };
 
     // An empty pane is not a browser pane.
@@ -2959,10 +2963,12 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
     while told.len() < 2 {
         if let ServerMsg::PaneConsoleAppended {
             pane: which,
+            on,
             entries,
         } = recv(&mut other).await
         {
             assert_eq!(which, pane);
+            assert_eq!(on, "mac", "the Mac app's connection reports the Mac's page");
             told.extend(entries);
         }
     }
@@ -2981,6 +2987,7 @@ async fn a_browser_panes_console_is_kept_read_followed_and_cleared_on_load() {
             req: Some(42),
             pane: "p999".into(),
             since: None,
+            on: None,
         },
     )
     .await
@@ -6160,6 +6167,7 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
             arg: arg.map(str::to_string),
             path: path.map(|p| p.to_string_lossy().into_owned()),
             on: None,
+            from: None,
         };
     let refusal = |reply: ServerMsg| match reply {
         ServerMsg::Error { message, .. } => message,
@@ -6513,6 +6521,7 @@ async fn a_url_artifact_opens_a_browser_pane() {
         find_kind(&spaces[0].root, &pane),
         Some(&PaneKind::Browser {
             url: "http://127.0.0.1:3100/".into(),
+            share_session: None,
             extra: Default::default()
         })
     );

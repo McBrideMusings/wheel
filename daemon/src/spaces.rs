@@ -16,6 +16,7 @@ use wheel_proto::{
 };
 
 use crate::pty::Term;
+use crate::render::Side;
 use crate::resume::Harness;
 use crate::server::{AgentStart, AppState, Owner};
 use crate::settings::{page, HOMEPAGE, PLACEMENT, SESSIONS_CLOSE_EMPTY};
@@ -836,7 +837,7 @@ impl AppState {
                 }
             }
             PaneKind::Web { .. } => self.drop_artifact(pane),
-            PaneKind::Browser { .. } => self.console.lock().unwrap().clear(pane),
+            PaneKind::Browser { .. } => self.console.lock().unwrap().forget(pane),
             PaneKind::Agent { agent, .. } => {
                 self.end_agent(agent);
                 // The caller holds the spaces lock, so the sweep that deletes this agent's
@@ -1490,6 +1491,7 @@ impl AppState {
                 {
                     Some(url) => PaneKind::Browser {
                         url: page(&url)?,
+                        share_session: None,
                         extra: Extra::default(),
                     },
                     None => {
@@ -1524,9 +1526,20 @@ impl AppState {
                 }
             }
             (NewPaneKind::Browser, _) => {
-                let space = {
-                    let spaces = self.spaces.lock().unwrap();
-                    spaces.spaces[spaces.holding(pane)?].id.clone()
+                // A browser pane sent to another page keeps its own choice about sharing its
+                // session: going somewhere new must not turn on what the person turned off.
+                let (space, share_session) = {
+                    let mut spaces = self.spaces.lock().unwrap();
+                    let space = spaces.spaces[spaces.holding(pane)?].id.clone();
+                    let share = spaces
+                        .spaces
+                        .iter_mut()
+                        .find_map(|s| space_find_mut(s, pane))
+                        .and_then(|k| match k {
+                            PaneKind::Browser { share_session, .. } => *share_session,
+                            _ => None,
+                        });
+                    (space, share)
                 };
                 // The homepage is read for this pane's own space, so a project that sets its own
                 // opens that and every other project opens the machine's.
@@ -1536,6 +1549,7 @@ impl AppState {
                 };
                 PaneKind::Browser {
                     url: page(&url)?,
+                    share_session,
                     extra: Extra::default(),
                 }
             }
@@ -2070,18 +2084,65 @@ impl AppState {
         Ok(now)
     }
 
-    /// The page in browser pane `pane` wrote `entries` to its console. `reset` means the page
-    /// just loaded, so what was kept for the pane goes first. Every message is logged.
+    /// Set browser pane `pane`'s own choice whether its session follows it between the Mac and a
+    /// phone: `Some` overrides the `browser.share_session` setting, `None` follows it. Saved with
+    /// the pane and broadcast in the layout.
+    pub fn pane_share_session(&self, pane: &str, share: Option<bool>) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let slot = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| space_find_mut(s, pane))
+            .ok_or_else(|| format!("no pane {pane}"))?;
+        let PaneKind::Browser { share_session, .. } = slot else {
+            return Err(format!("{pane} is not a browser pane"));
+        };
+        tracing::info!(%pane, ?share, "browser pane session sharing set");
+        *share_session = share;
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Whether browser pane `pane`'s session follows it, and what decided it: the pane's own
+    /// choice, else the `browser.share_session` setting of its space.
+    pub fn pane_shares_session(&self, pane: &str) -> Result<(bool, &'static str), String> {
+        let (space, own) = {
+            let spaces = self.spaces.lock().unwrap();
+            let at = spaces.holding(pane)?;
+            let own = spaces
+                .spaces
+                .get(at)
+                .and_then(|s| space_find(s, pane))
+                .ok_or_else(|| format!("no pane {pane}"))?;
+            let PaneKind::Browser { share_session, .. } = own else {
+                return Err(format!("{pane} is not a browser pane"));
+            };
+            (spaces.spaces[at].id.clone(), *share_session)
+        };
+        match own {
+            Some(own) => Ok((own, "set on this pane")),
+            None => Ok((
+                self.setting(crate::settings::SHARE_SESSION, Some(&space))? == "true",
+                "browser.share_session",
+            )),
+        }
+    }
+
+    /// The copy of browser pane `pane`'s page that `side` draws wrote `entries` to its console.
+    /// `reset` means that copy just loaded, so what was kept for it goes first; the other side's
+    /// messages stay. Every message is logged.
     pub fn pane_console(
         &self,
         pane: &str,
+        side: Side,
         reset: bool,
         mut entries: Vec<wheel_proto::ConsoleEntry>,
     ) -> Result<(), String> {
         self.browser_pane(pane)?;
+        let on = side.as_str();
         if reset {
-            self.console.lock().unwrap().clear(pane);
-            tracing::info!(%pane, "browser pane console cleared by a page load");
+            self.console.lock().unwrap().clear(pane, side);
+            tracing::info!(%pane, %on, "browser pane console cleared by a page load");
         }
         if entries.is_empty() {
             return Ok(());
@@ -2094,24 +2155,26 @@ impl AppState {
             }
         }
         for e in &entries {
-            tracing::info!(%pane, time = e.time, level = %e.level, text = %e.text, url = ?e.url, line = ?e.line, "browser pane console");
+            tracing::info!(%pane, %on, time = e.time, level = %e.level, text = %e.text, url = ?e.url, line = ?e.line, "browser pane console");
         }
-        self.console.lock().unwrap().append(pane, entries.clone());
+        self.console.lock().unwrap().append(pane, side, entries.clone());
         let _ = self.global.send(ServerMsg::PaneConsoleAppended {
             pane: pane.to_string(),
+            on: on.to_string(),
             entries,
         });
         Ok(())
     }
 
-    /// The console messages kept for browser pane `pane` since its last load.
+    /// The console messages `side`'s copy of browser pane `pane`'s page wrote since its last load.
     pub fn pane_console_read(
         &self,
         pane: &str,
+        side: Side,
         since: Option<u64>,
     ) -> Result<Vec<wheel_proto::ConsoleEntry>, String> {
         self.browser_pane(pane)?;
-        Ok(self.console.lock().unwrap().read(pane, since))
+        Ok(self.console.lock().unwrap().read(pane, side, since))
     }
 
     pub(crate) fn browser_pane(&self, pane: &str) -> Result<(), String> {
@@ -2125,6 +2188,26 @@ impl AppState {
             PaneKind::Browser { .. } => Ok(()),
             _ => Err(format!("{pane} is not a browser pane")),
         }
+    }
+
+    /// Whether some browser pane, in any space, is on a page of this machine's loopback at `port`
+    /// (`http://localhost:<port>/…` and the like), which is what `/loopback/<port>` may reach.
+    pub(crate) fn browser_on_loopback(&self, port: u16) -> bool {
+        fn walk(node: &Node, port: u16) -> bool {
+            match node {
+                Node::Pane {
+                    kind: PaneKind::Browser { url, .. },
+                    ..
+                } => crate::proxy::loopback_port(url) == Some(port),
+                Node::Pane { .. } => false,
+                Node::Split { a, b, .. } => walk(a, port) || walk(b, port),
+            }
+        }
+        let spaces = self.spaces.lock().unwrap();
+        spaces
+            .spaces
+            .iter()
+            .any(|space| space.trees().any(|tree| walk(tree, port)))
     }
 
     /// Record what the agent in terminal pane `pane` says it is doing, and tell clients if the

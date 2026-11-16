@@ -234,6 +234,29 @@ private func text(_ node: PaneNode) -> String? {
         ])
     }
 
+    @Test func liftsANodeAtAnyDepthOfAProperty() throws {
+        let pane = try PaneRuntime(source: """
+        return { view = function()
+            return { component = "Table", sections = { { rows = { { cells = {
+                { key = "pr", text = "#1", view = ui.Link{ title = "#1", destination = "https://github.com" } },
+                { key = "ci", text = "ok" },
+            } } } } } }
+        end }
+        """)
+        let components = try pane.view().a2uiComponents()
+        let cellView = "root@sections.0@rows.0@cells.0@view"
+        #expect(components == [
+            .object(["id": .string("root"), "component": .string("Table"), "sections": .array([
+                .object(["rows": .array([.object(["cells": .array([
+                    .object(["key": .string("pr"), "text": .string("#1"), "view": .string(cellView)]),
+                    .object(["key": .string("ci"), "text": .string("ok")]),
+                ])])])]),
+            ])]),
+            .object(["id": .string(cellView), "component": .string("Link"),
+                     "title": .string("#1"), "destination": .string("https://github.com")]),
+        ])
+    }
+
     @Test func generatedIDsWinOverScriptProps() throws {
         let pane = try PaneRuntime(source: """
         return { view = function() return ui.VStack{ ui.Text{ id = "root", text = "a" } } end }

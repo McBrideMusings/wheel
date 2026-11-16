@@ -1,4 +1,4 @@
-# ADR-0046: A plugin pane embeds an artifact with WebView{artifact}
+# ADR-0047: A plugin pane embeds an artifact with WebView{artifact}
 
 A pane script shows an artifact inside its page with `ui.WebView{artifact = <name>, height?}`: the artifact's page as a web pane shows it, its `.wheel/wheel.css`, `.wheel/lightbox.js` and `.wheel/client.js` included, reloading when its files change.
 
@@ -8,4 +8,4 @@ The page is an artifact card's page under another owner. The client sends `plugi
 
 Each client loads the id through the page scheme it already has for web panes (`PageSchemeHandler`), with one shared piece in WheelUI (`ArtifactEmbeds`) that asks for the page, shows it, reloads it, and asks again on each new connection, since a restarted `wheeld` knows no old id. The GPUI bridge and the iPhone both host it through `a2uiPaneEmbed`.
 
-The client relies on the new op, so `PROTOCOL_VERSION` and `ServerProtocol.current` go to 44 together.
+The client relies on the new op, so `PROTOCOL_VERSION` and `ServerProtocol.current` go to 46 together.

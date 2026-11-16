@@ -20,6 +20,7 @@ use wheel_proto::{decode_bytes, encode_bytes, AgentPermissions, ClientMsg, Conte
 
 use crate::perms::Perms;
 use crate::pty::{Attachment, Term, TermEvent};
+use crate::render::Side;
 use crate::resume::Harness;
 use crate::agent::{Restart, Agent, AgentAttachment, AgentConfig};
 use crate::shell::{Control, Launch, Seat};
@@ -2158,15 +2159,29 @@ async fn handle(
             pane,
             reset,
             entries,
-        } => match state.pane_console(&pane, reset, entries) {
-            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
-            Err(message) => {
-                tracing::warn!(%peer, %pane, %message, "pane console report failed");
-                Some(failed(req, message))
+        } => {
+            // Whose copy of the page wrote it is the connection's to say, never the message's: a
+            // paired phone reports only the page it draws itself.
+            let side = match caller {
+                Caller::Local => Ok(Side::Mac),
+                Caller::Device(_) if state.renderers.draws(peer, &pane) => Ok(Side::Phone),
+                Caller::Device(_) => Err(format!("this phone does not draw pane {pane}'s page")),
+            };
+            match side.and_then(|side| state.pane_console(&pane, side, reset, entries)) {
+                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "pane console report failed");
+                    Some(failed(req, message))
+                }
             }
-        },
-        ClientMsg::PaneConsoleRead { req, pane, since } => {
-            match state.pane_console_read(&pane, since) {
+        }
+        ClientMsg::PaneConsoleRead {
+            req,
+            pane,
+            since,
+            on,
+        } => {
+            match Side::parse(on.as_deref()).and_then(|side| state.pane_console_read(&pane, side, since)) {
                 Ok(entries) => req.map(|req| ServerMsg::Console { req, pane, entries }),
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane console read failed");
@@ -2251,12 +2266,75 @@ async fn handle(
                 .browser_pane(&pane)
                 .and_then(|()| state.renderers.set_mode(peer, &pane, &mode));
             match set {
-                Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                Ok(()) => {
+                    // The phone dropped its own page: what that page wrote describes no page now.
+                    if mode == "mac" {
+                        state.console.lock().unwrap().clear(&pane, Side::Phone);
+                    }
+                    req.map(|req| ServerMsg::Ok { req })
+                }
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane browser mode failed");
                     Some(failed(req, message))
                 }
             }
+        }
+        ClientMsg::PaneShareSession { req, pane, share } => {
+            done(req, state.pane_share_session(&pane, share))
+        }
+        ClientMsg::PaneSessionGet { req, pane, origin } => {
+            if !matches!(caller, Caller::Device(_)) {
+                return Some(failed(req, "only a paired phone asks for a browser pane's session".into()));
+            }
+            // Only for a page the phone draws itself: a phone showing the Mac's page has no
+            // session of its own, and none to take.
+            if !state.renderers.draws(peer, &pane) {
+                return Some(failed(req, format!("this phone does not draw pane {pane}'s page")));
+            }
+            // On a task of its own: the Mac app answers when it has read its cookie store.
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.pane_session_get(&pane, &origin).await {
+                    Ok(session) => req.map(|req| ServerMsg::PaneSession { req, pane, session }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::PaneSessionPut { req, pane, session } => {
+            if !matches!(caller, Caller::Device(_)) {
+                return Some(failed(req, "only a paired phone hands back a browser pane's session".into()));
+            }
+            // Only for a page the phone draws itself: a phone showing the Mac's page has no
+            // session of its own, and none to take.
+            if !state.renderers.draws(peer, &pane) {
+                return Some(failed(req, format!("this phone does not draw pane {pane}'s page")));
+            }
+            let state = state.clone();
+            let out = out.clone();
+            tokio::spawn(async move {
+                let reply = match state.pane_session_put(&pane, session).await {
+                    Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::SessionAnswer { id, session } => {
+            tracing::info!(%peer, id, has_session = session.is_some(), "session answered");
+            let bytes = match session {
+                Some(session) => serde_json::to_vec(&session).map_err(|e| e.to_string()),
+                None => Ok(Vec::new()),
+            };
+            state.renderers.answer(peer, id, bytes);
+            None
         }
         ClientMsg::Rendered { id, png } => {
             tracing::info!(%peer, id, base64_chars = png.len(), "rendered");
@@ -2298,7 +2376,10 @@ async fn handle(
             arg,
             path,
             on,
+            from,
         } => {
+            // Who ran it, as a permission card names an asker: an agent pane's agent, else the pane.
+            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to answer.
             let state = state.clone();
             let out = out.clone();
@@ -2311,7 +2392,7 @@ async fn handle(
                     }
                 };
                 if action == "record" {
-                    let reply = match record_request(&state, &pane, arg, path.clone(), side).await {
+                    let reply = match record_request(&state, &pane, arg, path.clone(), side, by).await {
                         Ok((recorded_path, rec)) => req.map(|req| ServerMsg::PaneRecorded {
                             req,
                             pane,
@@ -2330,7 +2411,7 @@ async fn handle(
                     }
                     return;
                 }
-                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side).await {
+                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side, by).await {
                     Ok(crate::render::InspectOutcome::Text(text)) => {
                         req.map(|req| ServerMsg::Inspected { req, pane, text })
                     }
@@ -2364,7 +2445,9 @@ async fn handle(
             path,
             on,
             full,
+            from,
         } => {
+            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to draw.
             let state = state.clone();
             let out = out.clone();
@@ -2376,7 +2459,7 @@ async fn handle(
                         return;
                     }
                 };
-                let reply = match state.pane_shot(&pane, &path, side, full).await {
+                let reply = match state.pane_shot(&pane, &path, side, full, by).await {
                     Ok(bytes) => req.map(|req| ServerMsg::PaneShot {
                         req,
                         pane,
@@ -3192,13 +3275,14 @@ async fn record_request(
     arg: Option<String>,
     path: Option<String>,
     side: crate::render::Side,
+    by: Option<String>,
 ) -> Result<(String, crate::render::Recording), String> {
     let path = path.ok_or("record needs a path")?;
     let seconds = arg
         .as_deref()
         .and_then(|a| a.trim().parse::<u64>().ok())
         .ok_or("record needs a whole number of seconds")?;
-    let recording = state.pane_record(pane, seconds, &path, side).await?;
+    let recording = state.pane_record(pane, seconds, &path, side, by).await?;
     Ok((path, recording))
 }
 

@@ -1142,6 +1142,7 @@ async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
         .envs((spec.env)())
         .env("WHEEL_PLUGIN_ID", &spec.plugin)
         .env("WHEEL_SPACE_DIR", &spec.space_dir)
+        .env("WHEEL_MACHINE_FILE", &spec.machine_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -2020,7 +2021,7 @@ pub(crate) struct PaneCtx {
     plugin: String,
     plugin_pane: String,
     /// Whether the pane is an agent pane, which may also invoke the actions a package's
-    /// `[agent] actions` grant (ADR-0044).
+    /// `[agent] actions` grant (ADR-0045).
     agent: bool,
 }
 
@@ -2183,7 +2184,7 @@ impl AppState {
 
     /// Whether pane `pane` may invoke `action` now: its package's `[[pane]]` entry lists it under
     /// `actions`, or the pane is an agent pane and the action's own package (resolved in the pane's
-    /// space) lists the action's name under `[agent] actions` (ADR-0044). Returns whether the
+    /// space) lists the action's name under `[agent] actions` (ADR-0045). Returns whether the
     /// agent grant is the one that allowed it.
     async fn action_grant(&self, ctx: &PaneCtx, pane: &str, action: &str) -> Result<bool, String> {
         let entry = self.pane_entry(ctx).await?;

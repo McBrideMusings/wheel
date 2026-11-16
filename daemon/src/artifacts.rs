@@ -1275,7 +1275,7 @@ impl AppState {
 
     /// The name a permission request from `pane` carries: an agent pane's agent name, which is
     /// what a client draws the request's card under, else the pane's own id.
-    fn asking_agent(&self, pane: &str) -> String {
+    pub(crate) fn asking_agent(&self, pane: &str) -> String {
         let spaces = self.spaces.lock().unwrap();
         match spaces
             .spaces

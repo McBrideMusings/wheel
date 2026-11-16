@@ -1148,6 +1148,14 @@ enum PaneCommand {
         #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
         timeout: f64,
     },
+    /// Choose whether a browser pane's logins and site storage follow it between the Mac and a
+    /// phone: `on`, `off`, or `follow` for the `browser.share_session` setting. `wheel pane info`
+    /// shows what is in force and what decided it.
+    ShareSession {
+        pane: String,
+        #[arg(value_parser = ["on", "off", "follow"])]
+        share: String,
+    },
     /// Print a browser pane's console messages since its last page load, one per line:
     /// `<UTC time> <level> <text>`, with `(<url>:<line>)` when the page said where. Uncaught
     /// errors and unhandled promise rejections are `error`. Exits 6 when the pane is not a
@@ -1163,6 +1171,9 @@ enum PaneCommand {
         /// Print one JSON object per line: {time, level, text, url, line}.
         #[arg(long)]
         json: bool,
+        /// Whose copy of the page: the Mac app's (default) or the one the phone draws itself.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
     },
     /// Write a PNG of what a pane shows to a file and print the absolute path written.
     ///
@@ -5980,17 +5991,32 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Statusline { .. } => unreachable!("handled before connecting"),
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
+        PaneCommand::ShareSession { pane, share } => {
+            simple(conn, |req| ClientMsg::PaneShareSession {
+                req: Some(req),
+                pane,
+                share: match share.as_str() {
+                    "on" => Some(true),
+                    "off" => Some(false),
+                    _ => None,
+                },
+            })
+            .await
+        }
         PaneCommand::Console {
             pane,
             follow,
             since,
             json,
+            on,
         } => {
             let req = conn.req();
+            let side = on.clone().unwrap_or_else(|| "mac".into());
             let msg = ClientMsg::PaneConsoleRead {
                 req: Some(req),
                 pane: pane.clone(),
                 since,
+                on,
             };
             let ServerMsg::Console { entries, .. } = conn.call(msg, req).await? else {
                 return Err(Fail::Other("unexpected reply to pane console".into()));
@@ -6007,8 +6033,9 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 match conn.recv(Duration::from_secs(3600)).await? {
                     Some(ServerMsg::PaneConsoleAppended {
                         pane: changed,
+                        on: written_on,
                         entries,
-                    }) if changed == pane => {
+                    }) if changed == pane && written_on == side => {
                         for entry in entries
                             .iter()
                             .filter(|e| since.is_none_or(|t| e.time > t) && !printed.contains(e))
@@ -6029,6 +6056,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 arg: Some(script),
                 path: None,
                 on,
+                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Inspected { text, .. } => {
@@ -6047,6 +6075,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 arg: selector,
                 path: None,
                 on,
+                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Inspected { text, .. } => {
@@ -6074,6 +6103,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     arg: Some(selector),
                     path: Some(path),
                     on,
+                    from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
                 },
                 None => ClientMsg::PaneShot {
                     req: Some(req),
@@ -6081,6 +6111,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     path,
                     on,
                     full,
+                    from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
                 },
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
@@ -6106,6 +6137,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 arg: Some(seconds.to_string()),
                 path: Some(path.to_string_lossy().into_owned()),
                 on,
+                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             let wait = Duration::from_secs(seconds.min(3600) + 60);
             match conn.call_within(msg, req, wait).await? {

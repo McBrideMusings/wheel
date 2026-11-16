@@ -1,4 +1,4 @@
-# ADR-0045: A page draws block Markdown with Textual's StructuredText
+# ADR-0046: A page draws block Markdown with Textual's StructuredText
 
 A page names `StructuredText{markdown, style?}` to draw a Markdown document: headings, lists, tables, code blocks, block quotes, thematic breaks and images. The client draws it with `StructuredText` from Textual (`gonzalezreal/textual`, the library WheelUI already links for the agent chat's transcript), under the name Textual gives it, as ADR-0031 has a page name SwiftUI's controls.
 

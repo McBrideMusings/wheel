@@ -7,7 +7,7 @@ import AppKit
 import UIKit
 #endif
 
-/// The artifacts plugin pages embed (`WebView{artifact}`, ADR-0046) on one client: each asks wheeld for its page with
+/// The artifacts plugin pages embed (`WebView{artifact}`, ADR-0047) on one client: each asks wheeld for its page with
 /// `plugin_embed` and shows `/artifacts/<id>/` under the client's page scheme, exactly as a web pane's page. A host makes
 /// one, hands it every wheeld message (`handle`, for the replies and `pane_reload`) and calls `connected` on each new
 /// connection, since a restarted wheeld knows none of the old page ids.

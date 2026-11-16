@@ -501,8 +501,8 @@ local function sample_columns(wide)
     }
 end
 
-local function sample_row(id, number, title, tone)
-    local title_cell = { key = "title", text = title }
+local function sample_row(id, number, title, tone, view)
+    local title_cell = { key = "title", text = title, view = view }
     if tone then title_cell.tone = tone end
     return { id = id, path = id, depth = 0, cells = { { key = "id", text = id .. "-" .. number, mono = true, sort = number }, title_cell } }
 end
@@ -510,13 +510,16 @@ end
 local function table_class()
     return klass("Table", "SwiftUI's Table of rows under section titles; rows carry cells, an optional fold and a context menu; the page may own the sort and the selection.", {
         { "Table", "Table", {
-            { "one section, two rows; a column with sortable: true sorts the rows of each section when its header is clicked, by each cell's sort (a number or a string) or its text, and the rows keep the page's order until a header is clicked; every column divider can be dragged (a column with a width keeps it and can be dragged narrower, at least 40 pt; a column with no width takes what is left); with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title",
+            { "one section, five rows; a cell with view (any component) draws it in place of its text, and its text and sort still sort the column (a Link, a Button and a ProgressView here); a column with sortable: true sorts the rows of each section when its header is clicked, by each cell's sort (a number or a string) or its text, and the rows keep the page's order until a header is clicked; every column divider can be dragged (a column with a width keeps it and can be dragged narrower, at least 40 pt; a column with no width takes what is left); with a frame height it is that tall and scrolls itself; with none it fills the pane under the rest of the page, which then stays put; on a phone it is a list of the same rows; the ID column is wide, so under 640 pt the section title moves to Title",
                 put("Table", nil, {
                     rowAction = act(), foldAction = act(),
                     columns = sample_columns(true),
-                    sections = { { title = "Ready", count = 2, rows = {
+                    sections = { { title = "Ready", count = 5, rows = {
                         sample_row("a", 1, "First row"),
                         sample_row("b", 2, "Second row", "ok"),
+                        sample_row("c", 3, "Link", nil, put("Link", nil, { title = "A Link in a cell", destination = "https://github.com" })),
+                        sample_row("d", 4, "Button", nil, put("Button", nil, { action = act(), child = txt("A Button in a cell") })),
+                        sample_row("e", 5, "ProgressView", nil, put("ProgressView", nil, { value = 0.6, total = 1 })),
                     } } },
                     sort = { key = "id", asc = true }, empty = "None", modifiers = { { frame = { height = 160 } } },
                 }) },

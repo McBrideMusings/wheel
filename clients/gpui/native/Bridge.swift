@@ -1126,6 +1126,33 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
         }
     }
+    /// `session_request` or `session_install` relayed by the Rust side: read this Mac's session of
+    /// `origin` for a phone's page of browser pane `pane`, or install the `session` a phone handed
+    /// back. Every browser pane keeps its data in the default store, so the pane's own page only
+    /// matters for its storage, read or written when it is on that origin. Answered through
+    /// `emit` with `session` or `refused`.
+    func session(_ value: [String: Any]) {
+        let id = value["id"] as! UInt64
+        let pane = value["pane"] as? String ?? ""
+        let page = panes[pane]?.browser?.view
+        Task { @MainActor [weak self] in
+            if let given = value["session"] {
+                guard let data = try? JSONSerialization.data(withJSONObject: given),
+                      let session = try? JSONDecoder().decode(PageSession.self, from: data) else {
+                    self?.emit(["answer": "refused", "id": id, "message": "the session is not one this Mac reads"])
+                    return
+                }
+                await PageSessionStore.write(session, store: .default(), page: page)
+                self?.log("browser pane \(pane) installed the phone's session of \(session.origin): \(session.cookies.count) cookies, \(session.local.count + session.session.count) stored items")
+                self?.emit(["answer": "session", "id": id])
+            } else {
+                let origin = value["origin"] as? String ?? ""
+                let session = await PageSessionStore.read(origin: origin, store: .default(), page: page)
+                self?.log("browser pane \(pane) read its session of \(origin) for a phone: \(session.cookies.count) cookies, \(session.local.count + session.session.count) stored items")
+                self?.emit(["answer": "session", "id": id, "session": session.json])
+            }
+        }
+    }
     /// A file in the pane's folder changed. Opens the address again rather than `WKWebView.reload()`,
     /// which does nothing when the first load never committed (the daemon was down).
     func reload(_ id: String) {
@@ -1492,6 +1519,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "browser": browser(value)
         case "render": render(value)
         case "inspect": inspect(value)
+        case "session": session(value)
         case "pane_targets":
             var targets: [String: [String: String]] = [:]
             for (pane, held) in value["panes"] as? [String: [String: String]] ?? [:] { targets[pane] = held }

@@ -219,6 +219,13 @@ impl AppState {
             }
             PaneKind::Browser { url, .. } => {
                 let mut fields = vec![pane_field, field("Page", url, "what the pane shows now")];
+                if let Ok((on, by)) = self.pane_shares_session(&pane) {
+                    fields.push(field(
+                        "Shares session",
+                        &format!("{} ({by})", if on { "on" } else { "off" }),
+                        "whether logins and site storage follow the pane between the Mac and a phone",
+                    ));
+                }
                 for (phone, mode) in self.renderers.phone_modes(&pane) {
                     fields.push(field(
                         &format!("Phone {phone}"),

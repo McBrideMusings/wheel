@@ -126,7 +126,10 @@ local function branch_row(st, b, now)
         kit.cell(b.branch, { key = "branch", mono = true, sort = string.lower(b.branch) }),
         kit.cell(wt, { key = "worktree", tone = "muted", sort = b._wt }),
         kit.cell(vs, { key = "vs", mono = true, tone = "muted", sort = b.ahead or -1 }),
-        kit.cell(if b.pr then "#" .. b.pr.number else "", { key = "pr", mono = true, sort = b.pr and b.pr.number or 0 }),
+        kit.cell(if b.pr then "#" .. b.pr.number else "", {
+            key = "pr", mono = true, sort = b.pr and b.pr.number or 0,
+            view = if b.pr and b.pr.url ~= "" then ui.Link{ title = "#" .. b.pr.number, destination = b.pr.url } else nil,
+        }),
         ci_cell,
         state_cell,
         kit.cell(tm.ago_ts(b.ts, now), { key = "updated", tone = "muted", sort = b.ts or 0 }),

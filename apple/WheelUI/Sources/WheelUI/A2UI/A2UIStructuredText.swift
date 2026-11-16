@@ -2,7 +2,7 @@ import SwiftUI
 import Textual
 
 /// `StructuredText{markdown, style?}`: Textual's `StructuredText` drawing block Markdown (headings, lists, tables, code
-/// blocks, quotes, thematic breaks, images) under the name Textual gives it (ADR-0045). `style` names a set of block styles:
+/// blocks, quotes, thematic breaks, images) under the name Textual gives it (ADR-0046). `style` names a set of block styles:
 /// `default` (Textual's, when the page names none), `gitHub` (Textual's), or `chat` (the styles a reply in the agent chat
 /// draws with, from the chat appearance in the environment). Images load from their URL with Textual's own loader. The font
 /// is the page's, so a `font` modifier on the component sets the body size every block scales from.

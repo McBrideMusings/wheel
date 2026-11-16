@@ -408,6 +408,10 @@ struct Key {
 /// The key a browser pane opens when nobody gave it a URL.
 pub(crate) const HOMEPAGE: &str = "browser.homepage";
 
+/// The key choosing whether a browser pane's session (cookies, site storage) follows it between
+/// the Mac and a phone, for a pane that has made no choice of its own.
+pub(crate) const SHARE_SESSION: &str = "browser.share_session";
+
 /// The key choosing where a split that names no side puts the new pane.
 pub(crate) const PLACEMENT: &str = "panes.placement";
 
@@ -465,12 +469,18 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 68] = [
+const KEYS: [Key; 69] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
         default: "about:blank",
         help: "The page a browser pane opens on when nobody gave it a URL.",
+    },
+    Key {
+        id: SHARE_SESSION,
+        accepts: Accepts::Bool,
+        default: "true",
+        help: "Whether a browser pane's logins and site storage follow it between the Mac and a phone: before the phone's own page of the pane first loads a site, wheeld passes it the Mac's cookies for that site (HttpOnly ones included) and the storage of a Mac page open on it, and the phone hands its own back when it gives the pane back to the Mac. A pane's own choice (the phone's pane menu, wheel pane share-session) overrides this. Off, no session crosses wheeld and each device keeps its own.",
     },
     Key {
         id: PLACEMENT,

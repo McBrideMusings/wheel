@@ -5,7 +5,7 @@ import SwiftUI
 import Testing
 @testable import WheelUI
 
-/// `StructuredText{markdown, style?}` (ADR-0045) drawn in a real hosting view.
+/// `StructuredText{markdown, style?}` (ADR-0046) drawn in a real hosting view.
 @MainActor
 struct A2UIStructuredTextTests {
     private func height(_ props: String) throws -> CGFloat {

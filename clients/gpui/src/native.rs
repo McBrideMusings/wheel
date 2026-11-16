@@ -173,6 +173,15 @@ impl Native {
     pub fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>) {
         self.call(json!({"op":"inspect","id":id,"pane":pane,"action":action,"arg":arg}));
     }
+    /// wheeld's `session_request` `id`: the bridge reads this Mac's session of `origin` (cookies, and
+    /// the storage of `pane`'s page when it is on that origin) and answers through a frame.
+    pub fn session_read(&self, id: u64, pane: &str, origin: &str) {
+        self.call(json!({"op":"session","id":id,"pane":pane,"origin":origin}));
+    }
+    /// wheeld's `session_install` `id`: the bridge installs the session a phone handed back.
+    pub fn session_write(&self, id: u64, pane: &str, session: &wheel_proto::PageSession) {
+        self.call(json!({"op":"session","id":id,"pane":pane,"session":session}));
+    }
     /// A file in `pane`'s folder changed: open its page again.
     pub fn reload(&self, pane: &str) {
         self.call(json!({"op":"reload","pane":pane}));
@@ -280,6 +289,8 @@ pub enum Answer {
     Inspected { id: u64, text: String },
     Recorded { id: u64, mov: String, frames: u64, millis: u64 },
     Refused { id: u64, message: String },
+    /// The answer to `session_request` (the session read) or `session_install` (none).
+    Session { id: u64, #[serde(default)] session: Option<wheel_proto::PageSession> },
 }
 
 #[cfg(test)]

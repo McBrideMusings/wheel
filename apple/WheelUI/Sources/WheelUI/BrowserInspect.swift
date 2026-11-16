@@ -1,9 +1,17 @@
 #if os(macOS)
 import AppKit
+/// The image a web view's snapshot comes as on this platform.
+public typealias PageImage = NSImage
+#else
+import UIKit
+/// The image a web view's snapshot comes as on this platform.
+public typealias PageImage = UIImage
+#endif
 import AVFoundation
 import WebKit
 
-/// What `inspect_pane` runs in a browser pane's web view, for every Mac client that hosts one:
+/// What `inspect_pane` runs in a browser pane's web view, for every client that draws one (the
+/// Mac, and a phone drawing its own page):
 /// JavaScript (`wheel pane eval`), its HTML (`wheel pane dom`), one element drawn as a PNG
 /// (`wheel pane shot --selector`) and a film of the page (`wheel pane record`). Each answers
 /// with the text or bytes the daemon relays, or the message it refuses with. The web view's own
@@ -109,7 +117,7 @@ public enum BrowserInspect {
 
     /// The page as the web view draws it, the part in view, or with `full` the whole document as
     /// one tall image.
-    public static func shotPage(_ web: WKWebView, full: Bool) async -> Result<NSImage, Refusal> {
+    public static func shotPage(_ web: WKWebView, full: Bool) async -> Result<PageImage, Refusal> {
         var configuration: WKSnapshotConfiguration?
         if full, case let .success(value) = await evaluate(web, "[Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)]"),
            let size = (value as? [Double]).flatMap({ $0.count == 2 ? CGSize(width: $0[0], height: $0[1]) : nil }), size.width > 0, size.height > 0 {
@@ -205,7 +213,7 @@ public enum BrowserInspect {
         return outcome.map(\.value)
     }
 
-    private static func snapshotImage(_ web: WKWebView, _ configuration: WKSnapshotConfiguration?) async -> Result<NSImage, Refusal> {
+    private static func snapshotImage(_ web: WKWebView, _ configuration: WKSnapshotConfiguration?) async -> Result<PageImage, Refusal> {
         await withCheckedContinuation { continuation in
             web.takeSnapshot(with: configuration) { image, error in
                 if let image { continuation.resume(returning: .success(image)) }
@@ -221,13 +229,18 @@ public enum BrowserInspect {
     private static func snapshot(_ web: WKWebView) async throws -> CGImage {
         let configuration = WKSnapshotConfiguration()
         configuration.snapshotWidth = NSNumber(value: Double(web.bounds.width))
-        let image: NSImage = try await withCheckedThrowingContinuation { continuation in
+        let image: PageImage = try await withCheckedThrowingContinuation { continuation in
             web.takeSnapshot(with: configuration) { image, error in
                 if let image { continuation.resume(returning: image) }
                 else { continuation.resume(throwing: RecordError(errorDescription: "WebKit drew no image: \(error?.localizedDescription ?? "no error")")) }
             }
         }
-        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        #if os(macOS)
+        let bitmap = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        #else
+        let bitmap = image.cgImage
+        #endif
+        guard let cg = bitmap else {
             throw RecordError(errorDescription: "the snapshot has no bitmap")
         }
         return cg
@@ -270,11 +283,16 @@ public enum BrowserInspect {
         return (info["WKJavaScriptExceptionMessage"] as? String) ?? error.localizedDescription
     }
 
-    public static func png(_ image: NSImage) -> Data? {
+    public static func png(_ image: PageImage) -> Data? {
+        #if os(macOS)
         guard let tiff = image.tiffRepresentation else { return nil }
         return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        #else
+        return image.pngData()
+        #endif
     }
 
+    #if os(macOS)
     /// `top` above `page`, as wide as the page, in a bitmap with as many pixels per point as the
     /// sharper of the two, so a Retina snapshot keeps its pixels.
     public static func stack(_ top: NSImage, over page: NSImage) -> NSImage {
@@ -300,5 +318,5 @@ public enum BrowserInspect {
         image.addRepresentation(rep)
         return image
     }
+    #endif
 }
-#endif

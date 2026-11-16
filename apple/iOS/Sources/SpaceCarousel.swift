@@ -161,6 +161,8 @@ struct SpaceCarousel: View {
             A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
+        } else if case let .browser(url, _) = pane.kind {
+            BrowserPage(model: model, pane: pane.id, url: url)
         } else {
             PanePlaceholder(id: pane.id, kind: pane.kind)
         }
@@ -528,7 +530,7 @@ private struct PluginPage: View {
 }
 
 /// A pane a plugin pane's view shows inside itself (`Terminal{pane}` or `AgentChat{pane}`, ADR-0042), drawn as its own
-/// page draws it, at the height the script gave, or an artifact (`WebView{artifact}`, ADR-0046) as a web pane draws it. A
+/// page draws it, at the height the script gave, or an artifact (`WebView{artifact}`, ADR-0047) as a web pane draws it. A
 /// pane that is gone or holds the other kind says so.
 private struct PluginEmbed: View {
     let model: PhoneModel
