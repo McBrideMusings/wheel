@@ -104,7 +104,18 @@ end
 
 -- ───────────────────────────── the table ─────────────────────────────
 
-local function pr_row(st, p, now)
+-- The row's right-click menu: Open, then each project button whose `on` takes this PR.
+local function row_menu(p, buttons)
+    local menu = { { label = "Open", action = { type = "open_pr", number = p.number } } }
+    for _, b in buttons do
+        if wants(b, p) then
+            table.insert(menu, { label = b.label or b.name, action = { type = "row_button", name = b.name, number = p.number } })
+        end
+    end
+    return menu
+end
+
+local function pr_row(st, p, now, buttons)
     local rank, s = standing(p)
     local review = kit.cell(s[2], { key = "review", chip = true, tone = s[3], weight = if s[4] then "semibold" else "regular", sort = rank })
     local cells = {
@@ -122,7 +133,7 @@ local function pr_row(st, p, now)
         kit.cell(tm.ago_ts(p.updated, now), { key = "updated", tone = "muted", sort = p.updated or 0 }),
     }
     local id = tostring(p.number)
-    local row = { id = id, path = id, depth = 0, kids = 0, collapsed = false, cells = cells, menu = {} }
+    local row = { id = id, path = id, depth = 0, kids = 0, collapsed = false, cells = cells, menu = row_menu(p, buttons) }
     if p.draft then row.dim = true end
     if st.sel == p.number then row.sel = true end
     return row
@@ -132,7 +143,7 @@ local function prs_table(st, snap, shown, now)
     local rows = {}
     for i, p in shown do
         if i > MAX_ROWS then break end
-        rows[i] = pr_row(st, p, now)
+        rows[i] = pr_row(st, p, now, snap.buttons or NONE)
     end
     local columns = {
         kit.column("number", "#", 52, false, false, true),
@@ -545,7 +556,23 @@ local function page(st, data, snap)
             counted(prs, "checks", { { "failing", "failing" }, { "pending", "pending" }, { "passing", "passing" }, { "none", "none" } }),
             list.counted(prs, function(p) return { p.author } end),
         }
-        local actions = list.actions(snap.scripts or NONE, took, #shown, "PR numbers", "PRs")
+        -- Each project button over the taken PRs its `on` takes; `update` runs it once per PR in st.applies[name].
+        local by = {}
+        for _, p in shown do by[tostring(p.number)] = p end
+        local more, applies = {}, {}
+        for _, b in snap.buttons or NONE do
+            local numbers = {}
+            for _, id in took do
+                local p = by[id]
+                if p and wants(b, p) then table.insert(numbers, p.number) end
+            end
+            applies[b.name] = numbers
+            local label = b.label or b.name
+            table.insert(more, { label = label, n = #numbers, action = { type = "list_button", name = b.name },
+                help = label .. " on each of the " .. #numbers .. " PRs it applies to: runs wheel.toml [prs.buttons." .. b.name .. "] once per PR" })
+        end
+        st.applies = applies
+        local actions = list.actions(snap.scripts or NONE, took, #shown, "PR numbers", "PRs", nil, more)
         table.insert(children, list.bar(SPEC, st.list, options, actions))
         table.insert(children, kit.box("v", { prs_table(st, snap, shown, now) }, {}))
         local cut = {}
@@ -602,7 +629,8 @@ local function update(state, msg)
         elseif msg.action == "wheelhouse.pr_refresh" then
             if failed then state.said, state.said_bad = text, true end
         elseif MODAL_ACTIONS[msg.action] then
-            state.ran = { text = text, bad = failed }
+            -- A button run from the row menu or the Actions list, with no modal open, says so in the page's box.
+            if state.sel then state.ran = { text = text, bad = failed } else state.said, state.said_bad = text, failed end
         end
         return
     end
@@ -616,6 +644,8 @@ local function update(state, msg)
         local n = tonumber(msg.id)
         if state.sel == n then state.sel = nil else state.sel = n end
         state.ran = nil
+    elseif t == "open_pr" then
+        state.sel, state.ran = tonumber(msg.number), nil
     elseif t == "close_pr" then
         state.sel, state.ran = nil, nil
     elseif t == "set_method" then
@@ -638,6 +668,14 @@ local function update(state, msg)
     elseif t == "list.run" then
         if msg.script then
             wheel.action("wheelhouse.run_list", { dir = dir, script = msg.script, ids = state.ids or {}, view = "prs" })
+        end
+    elseif t == "row_button" then
+        if msg.name and tonumber(msg.number) then
+            wheel.action("wheelhouse.pr_button", { dir = dir, number = math.floor(tonumber(msg.number)), name = msg.name })
+        end
+    elseif t == "list_button" then
+        for _, n in (state.applies or NONE)[msg.name] or NONE do
+            wheel.action("wheelhouse.pr_button", { dir = dir, number = math.floor(n), name = msg.name })
         end
     elseif number then
         state.ran = nil

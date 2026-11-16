@@ -314,8 +314,9 @@ end
 -- The list actions as one chip drawn like the filters: its title counts the rows the actions take, `took` (their ids) of
 -- the `listed` rows ("12 listed" or "3 selected of 12"), and its popover holds Copy IDs (the ids space separated, `copied`
 -- naming them in its help) then the project's list buttons `scripts` ({ name, label }), each with that count, over `rows`.
--- Each keeps its slot: with no rows, or `off`, the buttons are disabled, not removed.
-function M.actions(scripts, took, listed, copied, rows, off)
+-- Each keeps its slot: with no rows, or `off`, the buttons are disabled, not removed. `more` ({ label, n, action, help })
+-- adds the page's own buttons after them, each with its own count `n` of the rows it takes, disabled at 0.
+function M.actions(scripts, took, listed, copied, rows, off, more)
     local n = #took
     local title, what
     if n < listed then
@@ -333,6 +334,9 @@ function M.actions(scripts, took, listed, copied, rows, off)
         table.insert(menu, kit.button(label .. "  " .. n, { type = "list.run", script = s.name }, {
             style = "link", disabled = off or n == 0, help = label .. " over the " .. n .. " " .. what .. " " .. rows,
         }))
+    end
+    for _, m in more or {} do
+        table.insert(menu, kit.button(m.label .. "  " .. m.n, m.action, { style = "link", disabled = off or m.n == 0, help = m.help }))
     end
     return ui.Popover{
         kit.label(title, { size = 12, tabular = true }),
