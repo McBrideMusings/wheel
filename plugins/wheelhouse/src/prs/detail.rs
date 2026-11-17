@@ -173,10 +173,12 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
     run::gh(dir, &["pr", "checkout", &number.to_string()]).map(|_| ())
 }
 
-/// The path of a worktree on the PR's branch: the one that holds it already, else a new one at
-/// `~/.worktrees/<project>/<branch>`, made from the branch on origin (a fork's PR from its head ref,
-/// then `gh pr checkout` inside it, which sets up the fork's remote).
-pub fn worktree(dir: &str, number: i64, branch: &str, cross: bool) -> Result<String, String> {
+/// The path of a worktree on the PR's branch: the one that holds it already, fast-forwarded to the
+/// remote's branch when it can be, else a new one at `~/.worktrees/<project>/<branch>`, made from the
+/// branch on the remote that points at `repo` (a fork's PR from its head ref, then `gh pr checkout`
+/// inside it, which sets up the fork's remote).
+pub fn worktree(dir: &str, repo: &str, number: i64, branch: &str, cross: bool) -> Result<String, String> {
+    let remote = crate::core::git::remote_for(dir, repo)?;
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
     let want = format!("branch refs/heads/{branch}");
     let mut path = None;
@@ -189,6 +191,7 @@ pub fn worktree(dir: &str, number: i64, branch: &str, cross: bool) -> Result<Str
         }
     }
     if let Some(p) = held {
+        let _ = crate::core::git::run(&p, &["merge", "-q", "--ff-only", &format!("{remote}/{branch}")]);
         return Ok(p);
     }
     let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
@@ -196,16 +199,16 @@ pub fn worktree(dir: &str, number: i64, branch: &str, cross: bool) -> Result<Str
     let n = number.to_string();
     if cross {
         let head = format!("pull/{n}/head");
-        crate::core::git::run(dir, &["fetch", "-q", "origin", &head])?;
+        crate::core::git::run(dir, &["fetch", "-q", &remote, &head])?;
         crate::core::git::run(dir, &["worktree", "add", "-q", "--detach", &wt, "FETCH_HEAD"])?;
         run::gh(&wt, &["pr", "checkout", &n])?;
     } else {
-        crate::core::git::run(dir, &["fetch", "-q", "origin", branch])?;
+        crate::core::git::run(dir, &["fetch", "-q", &remote, branch])?;
         let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
         if local {
             crate::core::git::run(dir, &["worktree", "add", "-q", &wt, branch])?;
         } else {
-            crate::core::git::run(dir, &["worktree", "add", "-q", "-b", branch, &wt, &format!("origin/{branch}")])?;
+            crate::core::git::run(dir, &["worktree", "add", "-q", "-b", branch, &wt, &format!("{remote}/{branch}")])?;
         }
     }
     // The project's environment file comes along, as the Beads buttons do it.
@@ -279,7 +282,7 @@ pub fn start_agent(origin: &Origin, pr: &Pr, wt: &str, agent: &str) -> Result<St
 
 /// Run PR button `b` for `pr`, in a worktree first when the button asks for one.
 pub fn run_button(origin: &Origin, repo: &str, pr: &Pr, cross: bool, b: &Button) -> Result<(), String> {
-    let wt = if b.worktree { Some(worktree(&origin.dir, pr.number, &pr.branch, cross)?) } else { None };
+    let wt = if b.worktree { Some(worktree(&origin.dir, repo, pr.number, &pr.branch, cross)?) } else { None };
     let (number, title, branch, url) = (pr.number.to_string(), pr.title.clone(), pr.branch.clone(), pr.url.clone());
     let mut env = vec![("PR_NUMBER", number.as_str()), ("PR_TITLE", title.as_str()), ("PR_BRANCH", branch.as_str()), ("PR_URL", url.as_str()),
         ("PR_REPO", repo), ("PR_PATH", origin.dir.as_str())];
@@ -334,21 +337,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let sh = |dir: &std::path::Path, args: &[&str]| crate::core::git::run(dir.to_str().unwrap(), args).unwrap();
-        let (origin, work) = (root.join("origin.git"), root.join("proj"));
-        sh(&root, &["init", "-q", "--bare", origin.to_str().unwrap()]);
-        sh(&root, &["clone", "-q", origin.to_str().unwrap(), work.to_str().unwrap()]);
+        let (bare, work) = (root.join("Owner").join("Repo.git"), root.join("proj"));
+        sh(&root, &["init", "-q", "--bare", bare.to_str().unwrap()]);
+        sh(&root, &["clone", "-q", bare.to_str().unwrap(), work.to_str().unwrap()]);
+        sh(&work, &["remote", "rename", "origin", "upstream"]);
         for a in [["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
             sh(&work, &a);
         }
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
-        sh(&work, &["push", "-q", "origin", "HEAD:refs/heads/feat/x"]);
+        sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
         let home = root.join("home");
         std::env::set_var("HOME", &home);
-        let a = worktree(work.to_str().unwrap(), 5, "feat/x", false).unwrap();
+        let dir = work.to_str().unwrap();
+        assert!(worktree(dir, "owner/other", 5, "feat/x", false).unwrap_err().contains("no git remote"));
+        let a = worktree(dir, "owner/repo", 5, "feat/x", false).unwrap();
         assert_eq!(a, format!("{}/.worktrees/proj/feat-x", home.display()));
         assert_eq!(crate::core::git::current_branch(&a).as_deref(), Some("feat/x"));
-        let again = worktree(work.to_str().unwrap(), 5, "feat/x", false).unwrap();
+        sh(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
+        let again = worktree(dir, "owner/repo", 5, "feat/x", false).unwrap();
         assert_eq!(std::fs::canonicalize(&again).unwrap(), std::fs::canonicalize(&a).unwrap(), "the second call finds the first");
+        assert_eq!(sh(std::path::Path::new(&again),&["log", "-1", "--format=%s"]).trim(), "two", "the second call fast-forwards to the remote's branch");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
