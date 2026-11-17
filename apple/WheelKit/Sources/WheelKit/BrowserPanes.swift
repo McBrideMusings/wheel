@@ -1,15 +1,15 @@
 import Foundation
 
-/// What a client needs to draw browser panes that is not drawing: which panes the layout holds,
-/// how the address field shows a page, and which reported pages are its own. What typed text
-/// means, and which pages a pane may be on, the daemon decides.
+/// What a client needs to draw browser panes that is not drawing: which panes the layout holds
+/// and how the address field shows a page. What typed text means, and which pages a pane may
+/// open, the daemon decides.
 public enum BrowserPanes {
-    /// Every browser pane in the layout: pane id to the page the daemon says it is on.
+    /// Every browser pane in the layout: pane id to the page it opens at.
     public static func urls(_ spaces: [SpaceInfo]) -> [String: String] {
         var out: [String: String] = [:]
         for space in spaces {
             for pane in space.allPanes {
-                if case let .browser(url, _) = pane.kind { out[pane.id] = url }
+                if case let .browser(url) = pane.kind { out[pane.id] = url }
             }
         }
         return out
@@ -20,7 +20,7 @@ public enum BrowserPanes {
     /// its handler fetches each request from the daemon's `/loopback/<port>/` (ADR-0005).
     public static let loopbackScheme = "wheel-loopback"
 
-    private static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"]
+    static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"]
 
     /// Where a phone loads `page`: a page of the Mac's loopback (`http://localhost:5173/x`) under
     /// `loopbackScheme` with the same host, port, path and query; nil for any other page, which
@@ -46,13 +46,21 @@ public enum BrowserPanes {
         return c.url?.absoluteString ?? url.absoluteString
     }
 
-    /// Whether a request for `url` comes from a page the loopback handler may serve: one under
-    /// `loopbackScheme` on the same host and port (`document` is the request's main document). A
-    /// page from anywhere else (a public site the phone browsed to) never reaches the Mac's
-    /// loopback, so it cannot send requests there that its own origin would not allow.
-    public static func loopbackRequestAllowed(_ url: URL, document: URL?) -> Bool {
+    /// Whether a `method` request for `url` comes from a page the loopback handler may serve: its
+    /// main `document` is under `loopbackScheme`, on any loopback port, and the `origin` it was
+    /// sent with, if any, is a loopback page's too. A request with no `Origin` to another origin
+    /// than the document's (an image, a script, a frame) may only `GET` or `HEAD`, since it may
+    /// come from another site framed in the page. Which ports are reached is wheeld's to decide (a
+    /// port some browser pane's home is on), and a request to another port than the page's is
+    /// held to CORS (`LoopbackCORS`). A page from anywhere else (a public site the phone browsed
+    /// to, or one framed in a loopback page) never reaches the Mac's loopback, so it cannot send
+    /// requests there that its own origin would not allow.
+    public static func loopbackRequestAllowed(_ url: URL, document: URL?, origin: String?, method: String) -> Bool {
         guard let document, document.scheme == loopbackScheme, url.scheme == loopbackScheme else { return false }
-        return document.host?.lowercased() == url.host?.lowercased() && document.port == url.port
+        guard let origin else {
+            return ["GET", "HEAD"].contains(method) || LoopbackCORS.sameOrigin(document, url)
+        }
+        return LoopbackCORS.macOrigin(origin) != nil
     }
 
     /// The daemon's address for a request under `loopbackScheme`: `/loopback/<port><path>` with
@@ -105,87 +113,5 @@ public enum BrowserPanes {
             return .web(secure: scheme == "https", host: host + port, rest: rest)
         default: return .other(url)
         }
-    }
-
-    /// The pages a pane reported to the daemon whose echo has not come back. The daemon applies a
-    /// pane's reports in order and tells every client each one, so the echo of a page this pane
-    /// already left must not drag it back: a page the daemon reports that is still waiting here is
-    /// this pane's own, and drops it and every report before it. The last of those stays this
-    /// pane's own, because a whole layout sent later still carries it until the daemon applies the
-    /// next report. Any other page was asked for by someone else (the CLI, another client) and the
-    /// pane goes there.
-    public struct Echoes: Equatable {
-        private var waiting: [String] = []
-        private var confirmed: String?
-
-        public init() {}
-
-        public mutating func sent(_ url: String) { waiting.append(url) }
-
-        /// The pane went to `url` because the daemon said so. That is the page the daemon holds
-        /// now, so a layout built before any later report still carries it and is the pane's own;
-        /// reports sent before the move were overtaken by it.
-        public mutating func adopt(_ url: String) {
-            waiting.removeAll()
-            confirmed = url
-        }
-
-        /// Whether `url`, which the daemon now says the pane is on, is one this pane sent.
-        public mutating func isOwn(_ url: String) -> Bool {
-            if let at = waiting.firstIndex(of: url) {
-                waiting.removeFirst(at + 1)
-                confirmed = url
-                return true
-            }
-            if url == confirmed { return true }
-            confirmed = nil
-            return false
-        }
-    }
-
-    /// Which page a browser pane loads, from the three things that can tell it: the person typing
-    /// an address, the daemon's `opened` reply to it, and the daemon's `pane_url` broadcast of
-    /// the page it now holds. The reply and the broadcast arrive in either order, and the
-    /// broadcast does not come at all when the page did not change. Each method returns the page
-    /// to load, or nil when the pane stays where it is.
-    public struct Navigation {
-        private var echoes = Echoes()
-        /// Whether the pane went somewhere on the daemon's word since the person last typed an
-        /// address. A move the daemon sent after reading the text is that text's page, or a later
-        /// one from someone else; either way the reply is older and loads nothing.
-        private var movedSinceAsking = false
-
-        public init() {}
-
-        /// The person submitted an address for the daemon to read.
-        public mutating func asked() { movedSinceAsking = false }
-
-        /// The daemon read the typed text as `url`. The pane goes there even when it is already
-        /// on it, as a browser does, unless the daemon has moved it since.
-        public mutating func opened(_ url: String) -> String? {
-            if movedSinceAsking { return nil }
-            went(url)
-            return url
-        }
-
-        /// The daemon says the pane is on `url`, in a whole layout or a `pane_url`. One of this
-        /// pane's own reports coming back changes nothing, and neither does the page the pane is
-        /// already showing; any other page is somebody asking the pane to go there. `page` is
-        /// the page the view is on and `failed` whether a load failure shows over it.
-        public mutating func daemonSays(_ url: String, page: String, failed: Bool) -> String? {
-            if echoes.isOwn(url) { return nil }
-            if url == page, !failed { return nil }
-            went(url)
-            return url
-        }
-
-        /// The pane went to `url` on its own initiative, such as its first page.
-        public mutating func went(_ url: String) {
-            movedSinceAsking = true
-            echoes.adopt(url)
-        }
-
-        /// The view committed a page the daemon was not told about yet.
-        public mutating func sent(_ url: String) { echoes.sent(url) }
     }
 }

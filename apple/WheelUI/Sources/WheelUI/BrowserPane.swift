@@ -19,7 +19,7 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
     /// Persistent website data, as a browser keeps: a login survives a relaunch.
     public let view: WKWebView
     private let relay = ConsoleRelay()
-    /// The page the view is on, or the one the daemon gave it before anything committed.
+    /// The page the view is on, or the one the layout gave it before anything committed.
     @Published public private(set) var url: String
     /// The page's `<title>`; empty until it names itself.
     @Published public private(set) var title = ""
@@ -49,19 +49,18 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
         public let message: String
     }
 
-    /// Tells the daemon the pane is on a new page.
-    private let report: (String) -> Void
     /// Asks the daemon what typed text means; it answers through `opened` or `refused`.
     private let ask: (String) -> Void
     /// Tells the daemon what the page wrote to its console; `true` says the page just loaded.
     private let console: (Bool, [ConsoleEntry]) -> Void
-    private var navigation = BrowserPanes.Navigation()
-    /// The page the daemon was last told about, or last asked for itself.
-    private var reported: String?
+    /// The pane's home as the layout last named it. The browser opens there when it is made and
+    /// moves only when the person or an agent sends it, so a change of home never undoes its own
+    /// browsing; `goHome` goes there.
+    public private(set) var home: String
     private var observations: [NSKeyValueObservation] = []
 
     public init(pane: String, url: String, daemonIsRemote: Bool, log: @escaping (String) -> Void = { _ in },
-                report: @escaping (String) -> Void, ask: @escaping (String) -> Void,
+                ask: @escaping (String) -> Void,
                 console: @escaping (Bool, [ConsoleEntry]) -> Void) {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.addUserScript(
@@ -74,9 +73,9 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
         self.console = console
         self.pane = pane
         self.url = url
+        self.home = url
         self.daemonIsRemote = daemonIsRemote
         self.log = log
-        self.report = report
         self.ask = ask
         super.init()
         relay.onMessage = { [weak self] reset, entry in
@@ -99,29 +98,29 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
     /// What the address field shows: the failed address while a failure shows, else the page.
     public var address: String { failure?.address ?? url }
 
-    /// The daemon says this pane is on `url`, in a whole layout or a `pane_url`. One of this
-    /// pane's own reports coming back changes nothing; any other page is somebody asking the pane
-    /// to go there.
-    public func daemonSays(_ url: String) {
-        guard let target = navigation.daemonSays(url, page: self.url, failed: failure != nil) else { return }
-        log("browser pane \(pane) sent to \(url) by the daemon")
-        go(target)
+    /// The layout holds `url` as this pane's home now. The browser stays where it is.
+    public func homeIs(_ url: String) {
+        home = url
+    }
+
+    /// Go to the pane's home.
+    public func goHome() {
+        log("browser pane \(pane) going home to \(home)")
+        go(home)
     }
 
     /// Open what the person typed into the address field: the daemon says what page it means.
     public func open(typed: String) {
         editing = nil
-        navigation.asked()
         log("browser pane \(pane) asking the daemon what typed text means, \(typed.count) chars")
         ask(typed)
     }
 
-    /// The daemon read the typed text as `url`. The pane goes there even when it is already on it,
-    /// as a browser does, unless the daemon has moved it since.
+    /// The daemon read the typed text as `url`, or an agent's `pane page` asked this browser to go
+    /// there. The pane goes there even when it is already on it, as a browser does.
     public func opened(_ url: String) {
-        guard let target = navigation.opened(url) else { return }
-        log("browser pane \(pane) opening typed text as \(url)")
-        go(target)
+        log("browser pane \(pane) opening \(url)")
+        go(url)
     }
 
     /// The daemon read the typed text as no page, and `message` says why.
@@ -130,8 +129,7 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
         failure = Failure(address: typed, target: nil, message: message)
     }
 
-    /// Home: the page behind a failure shows at once, because when the homepage is that page the
-    /// daemon has nothing new to send; any other homepage arrives as the daemon moving the pane.
+    /// Home: the page behind a failure shows at once.
     public func clearFailure() { failure = nil }
 
     public func back() { view.goBack() }
@@ -155,10 +153,7 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
         }
     }
 
-    /// Go where the daemon says, without telling it back what it just said.
     private func go(_ url: String) {
-        reported = url
-        navigation.went(url)
         self.url = url
         guard let target = URL(string: url) else { return }
         load(target)
@@ -187,13 +182,6 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
         guard let page else { return }
         let string = page.absoluteString
         url = string
-        // Every page goes to the daemon, which keeps only the ones a pane may be on: a `data:` or
-        // `blob:` document is shown but refused there.
-        guard string != reported else { return }
-        reported = string
-        navigation.sent(string)
-        log("browser pane \(pane) on \(string); telling the daemon")
-        report(string)
     }
 
     // MARK: WKNavigationDelegate

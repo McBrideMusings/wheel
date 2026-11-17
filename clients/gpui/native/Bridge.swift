@@ -877,7 +877,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let artifact = (value["artifact"] as? String).map { "\(value["scope"] as? String ?? "")/\($0)" }
         if let existing = panes[id], existing.kind == kind, existing.artifact == artifact, existing.cwd == value["cwd"] as? String, existing.pluginLabel == value["label"] as? String {
             if kind == "web", let url = value["url"] as? String, url != existing.url { existing.url = url; existing.web?.load(URLRequest(url: URL(string: url)!)) }
-            if kind == "browser", let url = value["url"] as? String { existing.browser?.daemonSays(url) }
+            if kind == "browser", let url = value["url"] as? String { existing.browser?.homeIs(url) }
             return
         }
         close(id)
@@ -934,11 +934,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             return
         }
         if kind == "browser" {
-            // The model reports the pages it lands on, asks what typed text means and relays the
-            // page's console through the Rust side, which owns the connection to wheeld.
+            // The model asks what typed text means and relays the page's console through the Rust
+            // side, which owns the connection to wheeld; it reports no navigation.
             let browser = BrowserPane(pane: id, url: value["url"] as? String ?? "about:blank", daemonIsRemote: value["remote"] as? Bool == true,
                 log: { [weak self] in self?.log($0) },
-                report: { [weak self] in self?.emit(["event": "navigated", "pane": id, "url": $0]) },
                 ask: { [weak self] in self?.emit(["event": "typed", "pane": id, "text": $0]) },
                 console: { [weak self] reset, entries in
                     let list = entries.map { e -> [String: Any] in
@@ -1033,7 +1032,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         return o
     }
     /// `back`, `forward`, `reload`, `stop`, `clear_failure`, `open` (typed text), `opened` and
-    /// `refused` (the daemon's answers to typed text), `daemon_says` (a `pane_url`).
+    /// `refused` (the daemon's answers to typed text), `home_is` (the pane's home in the layout) and `go_home`.
     func browser(_ value: [String: Any]) {
         guard let host = panes[value["pane"] as! String], let browser = host.browser else { return }
         switch value["action"] as? String {
@@ -1045,7 +1044,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "open": browser.open(typed: value["text"] as? String ?? "")
         case "opened": browser.opened(value["url"] as? String ?? "")
         case "refused": browser.refused(typed: value["text"] as? String ?? "", value["message"] as? String ?? "")
-        case "daemon_says": browser.daemonSays(value["url"] as? String ?? "")
+        case "home_is": browser.homeIs(value["url"] as? String ?? "")
+        case "go_home": browser.goHome()
         default: break
         }
     }
@@ -1116,40 +1116,26 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let id = value["id"] as! UInt64
         let pane = value["pane"] as! String
         let arg = value["arg"] as? String
-        guard let web = panes[pane]?.browser?.view else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
+        guard let browser = panes[pane]?.browser else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
+        // `where` reads the page this browser is on and changes nothing.
+        if value["action"] as? String == "where" {
+            emit(["answer": "inspected", "id": id, "text": BrowserInspect.place(url: browser.url, title: browser.title)])
+            return
+        }
+        // `open` sends this browser to a page; the rest run in the page.
+        if value["action"] as? String == "open" {
+            guard let arg, !arg.isEmpty else { emit(["answer": "refused", "id": id, "message": "open needs a page"]); return }
+            browser.opened(arg)
+            emit(["answer": "inspected", "id": id, "text": ""])
+            return
+        }
+        let web = browser.view
         Task { @MainActor [weak self] in
             switch await BrowserInspect.run(value["action"] as? String ?? "", arg: arg, in: web) {
             case let .text(text): self?.emit(["answer": "inspected", "id": id, "text": text])
             case let .png(png): self?.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
             case let .film(film): self?.emit(["answer": "recorded", "id": id, "mov": film.mov.base64EncodedString(), "frames": film.frames, "millis": film.millis])
             case let .refused(message): self?.emit(["answer": "refused", "id": id, "message": message])
-            }
-        }
-    }
-    /// `session_request` or `session_install` relayed by the Rust side: read this Mac's session of
-    /// `origin` for a phone's page of browser pane `pane`, or install the `session` a phone handed
-    /// back. Every browser pane keeps its data in the default store, so the pane's own page only
-    /// matters for its storage, read or written when it is on that origin. Answered through
-    /// `emit` with `session` or `refused`.
-    func session(_ value: [String: Any]) {
-        let id = value["id"] as! UInt64
-        let pane = value["pane"] as? String ?? ""
-        let page = panes[pane]?.browser?.view
-        Task { @MainActor [weak self] in
-            if let given = value["session"] {
-                guard let data = try? JSONSerialization.data(withJSONObject: given),
-                      let session = try? JSONDecoder().decode(PageSession.self, from: data) else {
-                    self?.emit(["answer": "refused", "id": id, "message": "the session is not one this Mac reads"])
-                    return
-                }
-                await PageSessionStore.write(session, store: .default(), page: page)
-                self?.log("browser pane \(pane) installed the phone's session of \(session.origin): \(session.cookies.count) cookies, \(session.local.count + session.session.count) stored items")
-                self?.emit(["answer": "session", "id": id])
-            } else {
-                let origin = value["origin"] as? String ?? ""
-                let session = await PageSessionStore.read(origin: origin, store: .default(), page: page)
-                self?.log("browser pane \(pane) read its session of \(origin) for a phone: \(session.cookies.count) cookies, \(session.local.count + session.session.count) stored items")
-                self?.emit(["answer": "session", "id": id, "session": session.json])
             }
         }
     }
@@ -1519,7 +1505,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "browser": browser(value)
         case "render": render(value)
         case "inspect": inspect(value)
-        case "session": session(value)
         case "pane_targets":
             var targets: [String: [String: String]] = [:]
             for (pane, held) in value["panes"] as? [String: [String: String]] ?? [:] { targets[pane] = held }

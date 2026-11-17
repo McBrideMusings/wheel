@@ -118,22 +118,6 @@ pub fn pane_targets(spaces: &[Space]) -> serde_json::Value {
     map.into()
 }
 
-/// Put browser pane `pane` on `url` in `tree` (a `pane_url`), leaving every other leaf alone.
-pub fn set_url(tree: &mut Tree, pane: &str, url: &str) {
-    match tree {
-        Tree::Pane(leaf) => {
-            if leaf.id == pane {
-                leaf.url = Some(url.to_owned());
-                leaf.label = url.to_owned();
-            }
-        }
-        Tree::Split { a, b, .. } => {
-            set_url(a, pane, url);
-            set_url(b, pane, url);
-        }
-    }
-}
-
 /// The daemon's split tree as the view draws it.
 impl From<&Node> for Tree {
     fn from(node: &Node) -> Self {

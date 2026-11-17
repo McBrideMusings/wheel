@@ -15,16 +15,15 @@ use std::time::Duration;
 
 use base64::Engine;
 use tokio::sync::{mpsc, oneshot};
-use wheel_proto::{PageSession, ServerMsg};
+use wheel_proto::ServerMsg;
 
 use crate::server::AppState;
 
 /// How long one client has to draw a pane before the daemon asks the next.
 const RENDER_WAIT: Duration = Duration::from_secs(15);
 
-/// How long the Mac app has to read or install a browser pane's session; a phone waits on it
-/// before its page loads.
-const SESSION_WAIT: Duration = Duration::from_secs(6);
+/// How long a browser has to say where it is, so `pane info` never hangs on a slow one.
+const WHERE_WAIT: Duration = Duration::from_secs(3);
 
 /// What a client says when it does not show the pane it was asked for.
 pub const NOT_SHOWN: &str = "not shown";
@@ -65,8 +64,6 @@ struct Offer {
     out: mpsc::Sender<ServerMsg>,
     /// The paired device's name when this connection is a phone.
     phone: Option<String>,
-    /// For a phone: `mac` or `phone` for each browser pane it reported a mode for.
-    modes: HashMap<String, String>,
 }
 
 /// The connections that offered to draw panes, and the requests waiting on one of them.
@@ -83,58 +80,9 @@ pub(crate) struct Renderers {
 impl Renderers {
     pub(crate) fn offer(&self, peer: SocketAddr, out: mpsc::Sender<ServerMsg>, phone: Option<String>) {
         let mut offered = self.offered.lock().unwrap();
-        let modes = offered
-            .iter()
-            .find(|o| o.peer == peer)
-            .map(|o| o.modes.clone())
-            .unwrap_or_default();
         offered.retain(|o| o.peer != peer);
-        offered.push(Offer {
-            peer,
-            out,
-            phone,
-            modes,
-        });
+        offered.push(Offer { peer, out, phone });
         tracing::info!(%peer, offered = offered.len(), "client offers to render panes");
-    }
-
-    /// A phone says which side draws browser pane `pane` for it.
-    pub(crate) fn set_mode(&self, peer: SocketAddr, pane: &str, mode: &str) -> Result<(), String> {
-        if mode != "mac" && mode != "phone" {
-            return Err(format!("a browser mode is mac or phone, not {mode}"));
-        }
-        let mut offered = self.offered.lock().unwrap();
-        match offered.iter_mut().find(|o| o.peer == peer && o.phone.is_some()) {
-            Some(offer) => {
-                offer.modes.insert(pane.to_string(), mode.to_string());
-                Ok(())
-            }
-            None => Err("only a phone that offered rendering reports a browser mode".into()),
-        }
-    }
-
-    /// Whether the phone at `peer` draws browser pane `pane` itself (it reported `phone`).
-    pub(crate) fn draws(&self, peer: SocketAddr, pane: &str) -> bool {
-        self.offered
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|o| o.peer == peer && o.phone.is_some() && o.modes.get(pane).is_some_and(|m| m == "phone"))
-    }
-
-    /// The attached phones' names and what each shows browser pane `pane` from (`mac` unless it
-    /// reported `phone`).
-    pub(crate) fn phone_modes(&self, pane: &str) -> Vec<(String, String)> {
-        self.offered
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|o| {
-                let name = o.phone.clone()?;
-                let mode = o.modes.get(pane).cloned().unwrap_or_else(|| "mac".into());
-                Some((name, mode))
-            })
-            .collect()
     }
 
     /// A connection closed: it no longer renders, and what waited on it is refused.
@@ -206,7 +154,7 @@ impl AppState {
     }
 
     /// Run `op` with `arg` on browser pane `pane` through a client that shows it. `eval` and `dom`
-    /// return the page's text; `shot` writes the PNG of the first element `arg` matches to `path`
+    /// return the page's text; `open` sends that client's browser to the page `arg` and returns no text; `shot` writes the PNG of the first element `arg` matches to `path`
     /// and returns no text.
     pub async fn pane_inspect(
         &self,
@@ -220,6 +168,13 @@ impl AppState {
         self.browser_pane(pane)?;
         let target = match (op, path) {
             ("eval" | "dom", _) => None,
+            ("where", _) => None,
+            ("open", _) => {
+                if arg.as_deref().is_none_or(str::is_empty) {
+                    return Err("open needs a page".into());
+                }
+                None
+            }
             ("shot", Some(path)) => {
                 let target = PathBuf::from(&path);
                 if !target.is_absolute() {
@@ -237,8 +192,9 @@ impl AppState {
             return Err("eval needs a script".into());
         }
         tracing::info!(pane, op, arg = ?arg, "pane inspect requested");
+        let wait = if op == "where" { WHERE_WAIT } else { RENDER_WAIT };
         let bytes = self
-            .ask_clients(pane, side, None, target.is_some(), RENDER_WAIT, |id| {
+            .ask_clients(pane, side, None, target.is_some(), wait, |id| {
                 ServerMsg::InspectPane {
                     id,
                     pane: pane.to_string(),
@@ -250,6 +206,12 @@ impl AppState {
             .await?;
         match target {
             Some(target) => Ok(InspectOutcome::Shot(self.write_png(pane, &target, &bytes)?)),
+            None if op == "where" => {
+                let text = String::from_utf8(bytes)
+                    .map_err(|e| format!("the page's answer is not UTF-8: {e}"))?;
+                let found = parse_where(&text)?;
+                Ok(InspectOutcome::Text(format!("{}\t{}", found.url, found.title)))
+            }
             None => Ok(InspectOutcome::Text(
                 String::from_utf8(bytes)
                     .map_err(|e| format!("the page's text is not UTF-8: {e}"))?,
@@ -314,64 +276,6 @@ impl AppState {
         })
     }
 
-    /// The Mac's session of `origin` for a phone's page of browser pane `pane`: asked of the Mac
-    /// app, relayed whole and kept nowhere. Refused when the pane does not share its session.
-    pub async fn pane_session_get(&self, pane: &str, origin: &str) -> Result<PageSession, String> {
-        self.browser_pane(pane)?;
-        self.session_shared(pane)?;
-        let bytes = self
-            .ask_clients(pane, Side::Mac, Some("cannot read the session for"), false, SESSION_WAIT, |id| {
-                ServerMsg::SessionRequest {
-                    id,
-                    pane: pane.to_string(),
-                    origin: origin.to_string(),
-                }
-            })
-            .await?;
-        let session: PageSession = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("the Mac's session for pane {pane} is not one wheeld reads: {e}"))?;
-        tracing::info!(
-            pane,
-            origin,
-            cookies = session.cookies.len(),
-            stored = session.local.len() + session.session.len(),
-            "browser pane session passed to a phone"
-        );
-        Ok(session)
-    }
-
-    /// Hand `session`, from a phone's page of browser pane `pane`, to the Mac app to install.
-    /// Refused when the pane does not share its session.
-    pub async fn pane_session_put(&self, pane: &str, session: PageSession) -> Result<(), String> {
-        self.browser_pane(pane)?;
-        self.session_shared(pane)?;
-        let (origin, cookies, stored) = (
-            session.origin.clone(),
-            session.cookies.len(),
-            session.local.len() + session.session.len(),
-        );
-        self.ask_clients(pane, Side::Mac, Some("cannot install the session for"), false, SESSION_WAIT, |id| {
-            ServerMsg::SessionInstall {
-                id,
-                pane: pane.to_string(),
-                session: session.clone(),
-            }
-        })
-        .await?;
-        tracing::info!(pane, %origin, cookies, stored, "browser pane session handed back to the Mac");
-        Ok(())
-    }
-
-    /// Refuses, naming what turned it off, when browser pane `pane`'s session stays on each device.
-    fn session_shared(&self, pane: &str) -> Result<(), String> {
-        let (on, by) = self.pane_shares_session(pane)?;
-        if on {
-            return Ok(());
-        }
-        tracing::info!(pane, by, "browser pane session not passed on: sharing is off");
-        Err(format!("pane {pane} does not share its session (off: {by})"))
-    }
-
     fn write_png(&self, pane: &str, target: &Path, png: &[u8]) -> Result<u64, String> {
         let bytes = write_whole(target, png)?;
         tracing::info!(pane, bytes, path = %target.display(), "pane shot written");
@@ -401,18 +305,9 @@ impl AppState {
             .iter()
             .rev()
             .filter(|o| o.phone.is_some() == (side == Side::Phone))
-            .filter(|o| {
-                let showing_own = side == Side::Mac || o.modes.get(pane).is_some_and(|m| m == "phone");
-                if !showing_own {
-                    refusals.push(format!(
-                        "the phone shows pane {pane} from the Mac, not its own page"
-                    ));
-                }
-                showing_own
-            })
             .map(|o| (o.peer, o.out.clone()))
             .collect();
-        if clients.is_empty() && refusals.is_empty() {
+        if clients.is_empty() {
             return Err(match side {
                 Side::Phone => "the phone is not attached".to_string(),
                 Side::Mac => format!(
@@ -420,55 +315,10 @@ impl AppState {
                 ),
             });
         }
-        if clients.is_empty() {
-            return Err(refusals.join("; "));
-        }
         for (peer, out) in clients {
-            let id = self.renderers.next.fetch_add(1, Ordering::SeqCst) + 1;
-            let (tx, rx) = oneshot::channel();
-            self.renderers
-                .pending
-                .lock()
-                .unwrap()
-                .insert(id, (peer, tx));
-            // A connection that closed between the snapshot above and the insert would never
-            // wake this request: `gone` ran before it was pending.
-            let still_offered = self
-                .renderers
-                .offered
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|o| o.peer == peer);
-            if !still_offered {
-                self.renderers.pending.lock().unwrap().remove(&id);
-                tracing::info!(%peer, id, pane, "render skipped: the client is gone");
-                refusals.push("the client disconnected before it answered".into());
-                continue;
-            }
-            let sent = tokio::time::timeout(RENDER_WAIT, out.send(make(id))).await;
-            let sent = matches!(sent, Ok(Ok(())));
-            tracing::info!(%peer, id, pane, sent, "render requested");
-            let answer = if !sent {
-                Err("the client's connection is closed".to_string())
-            } else {
-                match tokio::time::timeout(wait, rx).await {
-                    Ok(Ok(answer)) => answer,
-                    Ok(Err(_)) => Err("the client dropped the request".to_string()),
-                    Err(_) => Err(format!("no answer within {}s", wait.as_secs())),
-                }
-            };
-            self.renderers.pending.lock().unwrap().remove(&id);
-            match answer {
-                Ok(bytes) if png && !bytes.starts_with(PNG_SIGNATURE) => {
-                    tracing::warn!(%peer, id, pane, bytes = bytes.len(), "render answer is not a PNG");
-                    refusals.push("the client's image is not a PNG".into());
-                }
+            match self.ask_client(pane, peer, out, png, wait, &make).await {
                 Ok(bytes) => return Ok(bytes),
-                Err(message) => {
-                    tracing::info!(%peer, id, pane, %message, "render refused");
-                    refusals.push(message);
-                }
+                Err(message) => refusals.push(message),
             }
         }
         if refusals.iter().all(|m| m == NOT_SHOWN) {
@@ -478,6 +328,138 @@ impl AppState {
             Some(verb) => Err(format!("{verb} pane {pane}: {}", refusals.join("; "))),
             None => Err(refusals.join("; ")),
         }
+    }
+
+    /// Send the request `make(id)` builds to one client and wait `wait` for its answer. With
+    /// `png`, an answer that is not a PNG is an error.
+    async fn ask_client(
+        &self,
+        pane: &str,
+        peer: SocketAddr,
+        out: mpsc::Sender<ServerMsg>,
+        png: bool,
+        wait: Duration,
+        make: &impl Fn(u64) -> ServerMsg,
+    ) -> Result<Vec<u8>, String> {
+        let id = self.renderers.next.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, rx) = oneshot::channel();
+        self.renderers
+            .pending
+            .lock()
+            .unwrap()
+            .insert(id, (peer, tx));
+        // A connection that closed between the snapshot the caller took and the insert would
+        // never wake this request: `gone` ran before it was pending.
+        let still_offered = self
+            .renderers
+            .offered
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|o| o.peer == peer);
+        if !still_offered {
+            self.renderers.pending.lock().unwrap().remove(&id);
+            tracing::info!(%peer, id, pane, "render skipped: the client is gone");
+            return Err("the client disconnected before it answered".into());
+        }
+        let sent = tokio::time::timeout(RENDER_WAIT, out.send(make(id))).await;
+        let sent = matches!(sent, Ok(Ok(())));
+        tracing::info!(%peer, id, pane, sent, "render requested");
+        let answer = if !sent {
+            Err("the client's connection is closed".to_string())
+        } else {
+            match tokio::time::timeout(wait, rx).await {
+                Ok(Ok(answer)) => answer,
+                Ok(Err(_)) => Err("the client dropped the request".to_string()),
+                Err(_) => Err(format!("no answer within {}s", wait.as_secs())),
+            }
+        };
+        self.renderers.pending.lock().unwrap().remove(&id);
+        match answer {
+            Ok(bytes) if png && !bytes.starts_with(PNG_SIGNATURE) => {
+                tracing::warn!(%peer, id, pane, bytes = bytes.len(), "render answer is not a PNG");
+                Err("the client's image is not a PNG".into())
+            }
+            Ok(bytes) => Ok(bytes),
+            Err(message) => {
+                tracing::info!(%peer, id, pane, %message, "render refused");
+                Err(message)
+            }
+        }
+    }
+
+    /// Where one browser is, asked of the Mac app (`phone` None) or of the paired phone
+    /// `phone` names: its page and title, in 3 seconds at most.
+    pub async fn pane_where_of(&self, pane: &str, phone: Option<&str>) -> Result<Where, String> {
+        let text = match phone {
+            None => self.ask_where(pane, Side::Mac, None).await?,
+            Some(name) => self.ask_where(pane, Side::Phone, Some(name)).await?,
+        };
+        parse_where(&text)
+    }
+
+    async fn ask_where(&self, pane: &str, side: Side, phone: Option<&str>) -> Result<String, String> {
+        let make = |id| ServerMsg::InspectPane {
+            id,
+            pane: pane.to_string(),
+            action: "where".into(),
+            arg: None,
+            by: None,
+        };
+        let ask = async {
+            match phone {
+            None => {
+                self.ask_clients(pane, side, None, false, WHERE_WAIT, make)
+                    .await
+            }
+            Some(name) => {
+                let found = self
+                    .renderers
+                    .offered
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|o| o.phone.as_deref() == Some(name))
+                    .map(|o| (o.peer, o.out.clone()));
+                let Some((peer, out)) = found else {
+                    return Err("the phone is not attached".to_string());
+                };
+                self.ask_client(pane, peer, out, false, WHERE_WAIT, &make)
+                    .await
+                    .map_err(|m| {
+                        if m == NOT_SHOWN {
+                            format!("no connected client shows pane {pane}")
+                        } else {
+                            m
+                        }
+                    })
+            }
+            }
+        };
+        // One deadline for the whole side, sends included, however many clients it has.
+        let bytes = tokio::time::timeout(WHERE_WAIT, ask)
+            .await
+            .map_err(|_| format!("no answer within {}s", WHERE_WAIT.as_secs()))??;
+        String::from_utf8(bytes).map_err(|e| format!("the page's answer is not UTF-8: {e}"))
+    }
+
+    /// The names of the paired phones that offered rendering, each once.
+    pub fn attached_phones(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for o in self.renderers.offered.lock().unwrap().iter() {
+            if let Some(name) = &o.phone {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+        }
+        names
+    }
+
+    /// Whether a Mac app offered rendering.
+    pub fn mac_attached(&self) -> bool {
+        self.renderers.offered.lock().unwrap().iter().any(|o| o.phone.is_none())
     }
 }
 
@@ -489,6 +471,31 @@ pub struct Recording {
     pub bytes: u64,
     pub frames: u64,
     pub millis: u64,
+}
+
+/// A browser's page, as it answers `where`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Where {
+    pub url: String,
+    pub title: String,
+}
+
+/// Read the `{"url": …, "title": …}` a browser answers `where` with.
+fn parse_where(text: &str) -> Result<Where, String> {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        url: String,
+        title: String,
+    }
+    let raw: Raw = serde_json::from_str(text)
+        .map_err(|e| format!("the browser's answer to where is not {{url, title}}: {e}"))?;
+    if raw.url.is_empty() {
+        return Err("the browser answered where with no url".into());
+    }
+    Ok(Where {
+        url: raw.url,
+        title: raw.title,
+    })
 }
 
 /// What `pane_inspect` produced.

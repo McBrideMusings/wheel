@@ -637,7 +637,7 @@ async fn local_req_after(
 }
 
 #[tokio::test]
-async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
+async fn page_commands_reach_the_phone_while_it_is_attached() {
     let dir = Scratch(std::env::temp_dir().join(format!("wheeld-phone-page-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&dir.0);
     std::fs::create_dir_all(&dir.0).unwrap();
@@ -690,7 +690,7 @@ async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
     let refused = local_req(&mut cli, inspect(11, "tablet")).await;
     assert!(refused["message"].as_str().unwrap().contains("mac or phone"), "{refused}");
 
-    // Pair a phone, which offers to render and shows the pane from the Mac.
+    // Pair a phone, which offers to render and draws its own page.
     let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
     let pairing = issued["token"].as_str().unwrap();
     let mut phone = remote_ws(remote, &fingerprint, &format!("pair={pairing}&name=Test%20phone"))
@@ -698,38 +698,16 @@ async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
         .unwrap();
     next_event(&mut phone, "paired").await.unwrap();
     phone.send(Message::text(r#"{"op":"render_offer"}"#)).await.unwrap();
-    let mode = |m: &str| {
-        Message::text(
-            serde_json::json!({"op":"pane_browser_mode","req":5,"pane":pane,"mode":m}).to_string(),
-        )
-    };
-    phone.send(mode("mac")).await.unwrap();
-    next_event(&mut phone, "ok").await.unwrap();
 
-    // A phone showing the Mac's page has no console of its own to report.
     let console = |req: u64, reset: bool, text: &str| {
         serde_json::json!({"op":"pane_console","req":req,"pane":pane,"reset":reset,
             "entries":[{"time":req,"level":"log","text":text}]})
     };
-    phone.send(Message::text(console(6, true, "not drawn").to_string())).await.unwrap();
-    let refused = next_event(&mut phone, "error").await.unwrap();
-    assert!(refused["message"].as_str().unwrap().contains("does not draw pane"), "{refused}");
 
-    let refused = local_req(&mut cli, inspect(12, "phone")).await;
-    assert!(
-        refused["message"].as_str().unwrap().contains("from the Mac, not its own page"),
-        "{refused}"
-    );
     let mac = local_req(&mut cli, inspect(13, "mac")).await;
     assert!(mac["message"].as_str().unwrap().contains("no client is connected"), "{mac}");
 
-    let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":14,"pane":pane})).await;
-    assert!(info.to_string().contains("Phone Test phone"), "{info}");
-    assert!(info.to_string().contains("the Mac's page"), "{info}");
-
-    // The phone turns to its own page: the command reaches it and its answer comes back.
-    phone.send(mode("phone")).await.unwrap();
-    next_event(&mut phone, "ok").await.unwrap();
+    // The command reaches the phone and its answer comes back.
     let asked = local_req_after(&mut cli, inspect(15, "phone"), async {
         let req = next_event(&mut phone, "inspect_pane").await.unwrap();
         assert_eq!(req["pane"], pane);
@@ -743,9 +721,6 @@ async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
     })
     .await;
     assert_eq!(asked["text"], "2", "{asked}");
-
-    let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":16,"pane":pane})).await;
-    assert!(info.to_string().contains("own page"), "{info}");
 
     // Each side's page keeps its own console: the Mac app's connection reports the Mac's, the
     // phone's the phone's, and a page load on one leaves the other's.
@@ -768,10 +743,6 @@ async fn page_commands_reach_the_phone_only_while_it_shows_its_own_page() {
     let bad = local_req(&mut cli, read(27, "tablet")).await;
     assert!(bad["message"].as_str().unwrap().contains("mac or phone"), "{bad}");
 
-    // The phone goes back to the Mac's page: what its own page wrote is gone with it.
-    phone.send(mode("mac")).await.unwrap();
-    next_event(&mut phone, "ok").await.unwrap();
-    assert!(texts(&local_req(&mut cli, read(28, "phone")).await).is_empty());
     assert_eq!(texts(&local_req(&mut cli, read(29, "mac")).await), ["mac reloaded"]);
 
     // The app suspends: the connection closes and the command fails at once.
@@ -806,8 +777,8 @@ async fn local_event(ws: &mut Local, ev: &str, wait: Duration) -> Option<serde_j
 }
 
 #[tokio::test]
-async fn a_browser_panes_session_passes_between_the_mac_and_a_phone_only_while_shared() {
-    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-phone-session-{}", std::process::id())));
+async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none() {
+    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-phone-open-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&dir.0);
     std::fs::create_dir_all(&dir.0).unwrap();
     let project = dir.0.join("project");
@@ -850,106 +821,148 @@ async fn a_browser_panes_session_passes_between_the_mac_and_a_phone_only_while_s
     )
     .await;
     assert_eq!(set["ev"], "ok", "{set}");
+    let open = |req: u64, text: &str, on: Option<&str>| {
+        let mut frame = serde_json::json!({"op":"pane_browser_open","req":req,"pane":pane,"text":text});
+        if let Some(on) = on {
+            frame["on"] = on.into();
+        }
+        frame
+    };
 
     // The Mac app: a local connection that offers to render.
     let mut mac = connect().await;
     mac.send(Message::text(r#"{"op":"render_offer"}"#)).await.unwrap();
 
-    // Only a paired phone asks for a session.
-    let get = |req: u64| serde_json::json!({"op":"pane_session_get","req":req,"pane":pane,"origin":"https://example.test"});
-    let refused = local_req(&mut cli, get(4)).await;
-    assert!(refused["message"].as_str().unwrap().contains("only a paired phone"), "{refused}");
+    // With no `on`, wheeld only resolves the text and replies; no browser is asked.
+    let opened = local_req(&mut cli, open(4, "example.test/a b", None)).await;
+    assert_eq!(opened["ev"], "opened", "{opened}");
+    assert_eq!(opened["url"], "https://example.test/a%20b", "{opened}");
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(500)).await.is_none());
 
+    // With `on` mac, the Mac's browser is asked to go to the resolved page.
+    let opened = local_req_after(&mut cli, open(5, "example.test/two", Some("mac")), async {
+        let asked = local_event(&mut mac, "inspect_pane", Duration::from_secs(10))
+            .await
+            .expect("the Mac was asked");
+        assert_eq!(asked["pane"], pane);
+        assert_eq!(asked["action"], "open");
+        assert_eq!(asked["arg"], "https://example.test/two");
+        mac.send(Message::text(
+            serde_json::json!({"op":"inspected","id":asked["id"],"text":""}).to_string(),
+        ))
+        .await
+        .unwrap();
+    })
+    .await;
+    assert_eq!(opened["ev"], "opened", "{opened}");
+    assert_eq!(opened["url"], "https://example.test/two", "{opened}");
+
+    // With `on` phone and no phone attached, it fails; nothing is sent to the Mac.
+    let refused = local_req(&mut cli, open(6, "example.test/three", Some("phone"))).await;
+    assert_eq!(refused["message"], "the phone is not attached", "{refused}");
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
+
+    // A paired phone is asked, and the Mac is not.
     let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
     let pairing = issued["token"].as_str().unwrap();
     let mut phone = remote_ws(remote, &fingerprint, &format!("pair={pairing}&name=Test%20phone"))
         .await
         .unwrap();
     next_event(&mut phone, "paired").await.unwrap();
-
-    // A phone that does not draw the pane's page itself is refused.
-    phone.send(Message::text(get(19).to_string())).await.unwrap();
-    let refused = next_event(&mut phone, "error").await.unwrap();
-    assert!(refused["message"].as_str().unwrap().contains("does not draw pane"), "{refused}");
     phone.send(Message::text(r#"{"op":"render_offer"}"#)).await.unwrap();
-    phone
-        .send(Message::text(serde_json::json!({"op":"pane_browser_mode","req":18,"pane":pane,"mode":"phone"}).to_string()))
-        .await
-        .unwrap();
-    let mode = next_event(&mut phone, "ok").await.unwrap();
-    assert_eq!(mode["req"], 18, "{mode}");
+    let opened = local_req_after(&mut cli, open(7, "example.test/four", Some("phone")), async {
+        let asked = next_event(&mut phone, "inspect_pane").await.unwrap();
+        assert_eq!(asked["action"], "open");
+        assert_eq!(asked["arg"], "https://example.test/four");
+        phone
+            .send(Message::text(
+                serde_json::json!({"op":"inspected","id":asked["id"],"text":""}).to_string(),
+            ))
+            .await
+            .unwrap();
+    })
+    .await;
+    assert_eq!(opened["url"], "https://example.test/four", "{opened}");
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
 
-    // Shared by default: the phone's request reaches the Mac and the Mac's cookie comes back.
-    phone.send(Message::text(get(20).to_string())).await.unwrap();
-    let asked = local_event(&mut mac, "session_request", Duration::from_secs(10)).await.expect("the Mac was asked");
-    assert_eq!(asked["pane"], pane);
-    assert_eq!(asked["origin"], "https://example.test");
-    let session = serde_json::json!({"origin":"https://example.test","cookies":[{"name":"sid","value":"abc","domain":"example.test","http_only":true}],"local":{"theme":"dark"}});
-    mac.send(Message::text(
-        serde_json::json!({"op":"session_answer","id":asked["id"],"session":session}).to_string(),
-    ))
-    .await
-    .unwrap();
-    let got = next_event(&mut phone, "pane_session").await.unwrap();
-    assert_eq!(got["req"], 20, "{got}");
-    assert_eq!(got["session"]["cookies"][0]["name"], "sid", "{got}");
-    assert_eq!(got["session"]["cookies"][0]["http_only"], true, "{got}");
-    assert_eq!(got["session"]["local"]["theme"], "dark", "{got}");
-    let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":5,"pane":pane})).await;
-    assert!(info.to_string().contains("on (browser.share_session)"), "{info}");
-
-    // The phone hands its session back: the Mac is asked to install it.
-    phone
-        .send(Message::text(
-            serde_json::json!({"op":"pane_session_put","req":21,"pane":pane,"session":session}).to_string(),
-        ))
-        .await
-        .unwrap();
-    let install = local_event(&mut mac, "session_install", Duration::from_secs(10)).await.expect("the Mac installs it");
-    assert_eq!(install["session"]["cookies"][0]["value"], "abc", "{install}");
-    mac.send(Message::text(serde_json::json!({"op":"session_answer","id":install["id"]}).to_string()))
-        .await
-        .unwrap();
-    let ok = next_event(&mut phone, "ok").await.unwrap();
-    assert_eq!(ok["req"], 21, "{ok}");
-
-    // The pane turns sharing off: the phone is refused and the Mac never hears of it.
-    let off = local_req(&mut cli, serde_json::json!({"op":"pane_share_session","req":6,"pane":pane,"share":false})).await;
-    assert_eq!(off["ev"], "ok", "{off}");
-    phone.send(Message::text(get(22).to_string())).await.unwrap();
-    let refused = next_event(&mut phone, "error").await.unwrap();
-    assert!(refused["message"].as_str().unwrap().contains("off: set on this pane"), "{refused}");
-    phone
-        .send(Message::text(
-            serde_json::json!({"op":"pane_session_put","req":23,"pane":pane,"session":session}).to_string(),
-        ))
-        .await
-        .unwrap();
-    let refused = next_event(&mut phone, "error").await.unwrap();
-    assert_eq!(refused["req"], 23, "{refused}");
-    assert!(local_event(&mut mac, "session_request", Duration::from_millis(500)).await.is_none());
-    assert!(local_event(&mut mac, "session_install", Duration::from_millis(100)).await.is_none());
-    let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":7,"pane":pane})).await;
-    assert!(info.to_string().contains("off (set on this pane)"), "{info}");
-
-    // The choice stays when the pane goes to another page.
-    let moved = local_req(
+    // `where --on phone` asks the phone alone, and `pane_info` asks the Mac and each phone at
+    // once, naming the phone by its device.
+    let answer = |text: &str| text.to_string();
+    let found = local_req_after(
         &mut cli,
-        serde_json::json!({"op":"pane_set_kind","req":8,"pane":pane,"kind":"browser","url":"https://example.test/two"}),
+        serde_json::json!({"op":"pane_inspect","req":20,"pane":pane,"action":"where","on":"phone"}),
+        async {
+            let asked = next_event(&mut phone, "inspect_pane").await.unwrap();
+            assert_eq!(asked["action"], "where");
+            assert!(asked["arg"].is_null(), "{asked}");
+            phone
+                .send(Message::text(
+                    serde_json::json!({"op":"inspected","id":asked["id"],
+                        "text":answer(r#"{"url":"https://phone.example/p","title":"Phone page"}"#)})
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+        },
     )
     .await;
-    assert_eq!(moved["ev"], "ok", "{moved}");
-    let info = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":9,"pane":pane})).await;
-    assert!(info.to_string().contains("off (set on this pane)"), "{info}");
+    assert_eq!(found["text"], "https://phone.example/p\tPhone page", "{found}");
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
+    let info = local_req_after(
+        &mut cli,
+        serde_json::json!({"op":"pane_info","req":21,"pane":pane}),
+        async {
+            let asked = local_event(&mut mac, "inspect_pane", Duration::from_secs(10))
+                .await
+                .expect("the Mac was asked");
+            assert_eq!(asked["action"], "where");
+            mac.send(Message::text(
+                serde_json::json!({"op":"inspected","id":asked["id"],
+                    "text":r#"{"url":"https://mac.example/m","title":"Mac page"}"#})
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+            let asked = next_event(&mut phone, "inspect_pane").await.unwrap();
+            assert_eq!(asked["action"], "where");
+            phone
+                .send(Message::text(
+                    serde_json::json!({"op":"inspected","id":asked["id"],
+                        "text":r#"{"url":"https://phone.example/q","title":""}"#})
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    let fields: Vec<(String, String)> = info["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["label"].as_str().unwrap().to_string(), f["value"].as_str().unwrap().to_string()))
+        .collect();
+    let of = |label: &str| fields.iter().find(|(l, _)| l == label).map(|(_, v)| v.as_str());
+    assert_eq!(of("Home"), Some("https://example.test/"), "{fields:?}");
+    assert_eq!(of("Mac"), Some("https://mac.example/m (Mac page)"), "{fields:?}");
+    assert_eq!(of("Phone Test phone"), Some("https://phone.example/q"), "{fields:?}");
 
-    // Back to following the setting, which the project turns off.
-    let follow = local_req(&mut cli, serde_json::json!({"op":"pane_share_session","req":10,"pane":pane})).await;
-    assert_eq!(follow["ev"], "ok", "{follow}");
-    std::fs::write(project.join("wheel.toml"), "[browser]\nshare_session = false\n").unwrap();
-    phone.send(Message::text(get(24).to_string())).await.unwrap();
-    let refused = next_event(&mut phone, "error").await.unwrap();
-    assert!(refused["message"].as_str().unwrap().contains("off: browser.share_session"), "{refused}");
-    assert!(local_event(&mut mac, "session_request", Duration::from_millis(500)).await.is_none());
+    // A Mac and a phone that both stay silent: one 3 s deadline per side, run together.
+    let started = Instant::now();
+    let silent = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":22,"pane":pane})).await;
+    assert!(started.elapsed() < Duration::from_millis(4500), "waited {:?}", started.elapsed());
+    let texts: Vec<String> = silent["fields"].as_array().unwrap().iter()
+        .filter(|f| f["label"] == "Mac" || f["label"] == "Phone Test phone")
+        .map(|f| f["value"].as_str().unwrap().to_string()).collect();
+    assert_eq!(texts, ["no answer within 3s", "no answer within 3s"], "{silent}");
+    // The unanswered asks sit in each connection's queue; read them so later checks see only their own.
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_some());
+    next_event(&mut phone, "inspect_pane").await.unwrap();
+
+    // Text no pane may open is refused before any browser is asked.
+    let bad = local_req(&mut cli, open(8, "mailto:a@b.com", Some("mac"))).await;
+    assert!(bad["message"].as_str().unwrap().contains("mailto:a@b.com"), "{bad}");
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
 }
 
 /// What the fake Apple push service received: the request path, its headers and its body.
@@ -1149,6 +1162,17 @@ async fn remote_get(
     path: &str,
     token: Option<&str>,
 ) -> (String, String, String) {
+    remote_get_with(port, fingerprint, path, token, "").await
+}
+
+/// `remote_get` with `extra`, whole header lines each ending in CRLF, added to the request.
+async fn remote_get_with(
+    port: u16,
+    fingerprint: &str,
+    path: &str,
+    token: Option<&str>,
+    extra: &str,
+) -> (String, String, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -1167,7 +1191,7 @@ async fn remote_get(
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
         .unwrap_or_default();
     let request =
-        format!("GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\n{auth}Connection: close\r\n\r\n");
+        format!("GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\n{auth}{extra}Connection: close\r\n\r\n");
     tls.write_all(request.as_bytes()).await.unwrap();
     let mut raw = Vec::new();
     let _ = tls.read_to_end(&mut raw).await;
@@ -1177,8 +1201,8 @@ async fn remote_get(
     (status.to_string(), headers.to_lowercase(), body.to_string())
 }
 
-/// A program on this machine's loopback that answers `/page` with a body naming the path it saw,
-/// and `/away` and `/far` with redirects written as a path and as its own loopback address. The
+/// A program on this machine's loopback that answers `/page` with a body naming the path, the
+/// `Origin` and the `Host` it saw, and `/away` and `/far` with redirects written as a path and as its own loopback address. The
 /// counter holds how many requests reached it.
 async fn loopback_program() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1199,11 +1223,19 @@ async fn loopback_program() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
                 let line = text.lines().next().unwrap_or_default().to_string();
                 let path = line.split(' ').nth(1).unwrap_or("/").to_string();
                 let authorized = text.to_lowercase().contains("authorization:");
+                let origin = text
+                    .lines()
+                    .find_map(|l| l.to_lowercase().starts_with("origin:").then(|| l[7..].trim().to_string()))
+                    .unwrap_or_else(|| "none".into());
+                let host = text
+                    .lines()
+                    .find_map(|l| l.to_lowercase().starts_with("host:").then(|| l[5..].trim().to_string()))
+                    .unwrap_or_else(|| "none".into());
                 let reply = match path.as_str() {
                     "/away" => "HTTP/1.1 302 Found\r\nLocation: /page\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
                     "/far" => format!("HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/page?x=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
                     _ => {
-                        let body = format!("saw {path} authorization={authorized}");
+                        let body = format!("saw {path} authorization={authorized} origin={origin} host={host}");
                         format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
                     }
                 };
@@ -1302,7 +1334,45 @@ async fn a_phone_reaches_the_macs_loopback_pages_through_wheeld() {
     )
     .await;
     assert!(status.contains(" 200 "), "{status} {body}");
-    assert_eq!(body, "saw /page?q=1 authorization=false");
+    assert_eq!(body, format!("saw /page?q=1 authorization=false origin=none host=127.0.0.1:{program}"));
+
+    // The page's origin, as the Mac names it, reaches the program as its Origin, and the host the
+    // page named as its Host. An origin that is not on the loopback, one on a port no browser pane
+    // is on, a host that is not the loopback, and two copies of either are refused before the
+    // program sees them.
+    let (status, _, body) = remote_get_with(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/page"),
+        Some(&credential),
+        &format!("Wheel-Page-Origin: http://localhost:{program}\r\nWheel-Page-Host: localhost\r\n"),
+    )
+    .await;
+    assert!(status.contains(" 200 "), "{status} {body}");
+    assert_eq!(
+        body,
+        format!("saw /page authorization=false origin=http://localhost:{program} host=localhost:{program}")
+    );
+    for (extra, refused) in [
+        ("Wheel-Page-Origin: https://evil.test\r\n".to_string(), " 400 "),
+        ("Wheel-Page-Origin: http://localhost:1\r\n".to_string(), " 403 "),
+        ("Wheel-Page-Host: evil.test\r\n".to_string(), " 400 "),
+        (
+            format!("Wheel-Page-Origin: http://localhost:{program}\r\nWheel-Page-Origin: http://localhost:{program}\r\n"),
+            " 400 ",
+        ),
+        ("Wheel-Page-Host: localhost\r\nWheel-Page-Host: 127.0.0.1\r\n".to_string(), " 400 "),
+    ] {
+        let (status, _, body) = remote_get_with(
+            remote,
+            &fingerprint,
+            &format!("/loopback/{program}/page"),
+            Some(&credential),
+            &extra,
+        )
+        .await;
+        assert!(status.contains(refused), "{extra:?}: {status} {body}");
+    }
 
     // Its redirects, as a path and as its own loopback address, stay under the prefix.
     let (status, headers, _) = remote_get(
@@ -1331,7 +1401,7 @@ async fn a_phone_reaches_the_macs_loopback_pages_through_wheeld() {
         "{headers}"
     );
     let reached = hit_count();
-    assert_eq!(reached, 3);
+    assert_eq!(reached, 4);
 
     // No token, a wrong one, or the Mac's own local token on the remote listener: refused, and
     // nothing reaches the program.

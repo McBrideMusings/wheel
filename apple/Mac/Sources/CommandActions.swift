@@ -293,7 +293,7 @@ extension AppModel {
         case .empty: "Empty pane"
         case let .terminal(_, agent): agent.map { $0.name.capitalized } ?? "Terminal"
         case let .web(artifact): artifact.name
-        case let .browser(url, _): url
+        case let .browser(url): url
         case let .agent(_, agent, _): agent.capitalized
         case let .unknown(kind, _): kind
         }

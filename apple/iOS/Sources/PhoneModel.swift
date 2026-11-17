@@ -76,11 +76,8 @@ final class PhoneModel {
     private var startWhenMade: [UInt64: String] = [:]
     /// The page of each web pane in the layout, kept across swipes and layout changes.
     private(set) var webPanes: [String: WebPane] = [:]
-    /// The phone's own page of each browser pane in the layout it draws itself (Phone mode).
+    /// The phone's own browser of each browser pane in the layout.
     private(set) var browsers: [String: PhoneBrowser] = [:]
-    /// Which side draws each browser pane for this phone, `mac` or `phone`, kept across launches;
-    /// a pane missing here is drawn by the phone.
-    private(set) var browserModes: [String: String] = UserDefaults.standard.dictionary(forKey: "browserModes") as? [String: String] ?? [:]
     /// The A2UI model of each web pane, drawn natively when its MCP server links an A2UI layout.
     private(set) var a2uiPanes: [String: A2UIPane] = [:]
     /// The script, state and feeds of each plugin pane in the layout (ADR-0041), kept across swipes and layout changes.
@@ -108,10 +105,20 @@ final class PhoneModel {
     private var artifactReq: UInt64?
     /// Pane-menu ops sent and not yet answered, so only their refusals reach `menuError`.
     private var menuReqs: Set<UInt64> = []
-    /// The `pane_session_get` requests waiting for wheeld, by request id.
-    private var sessionAsks: [UInt64: CheckedContinuation<Result<PageSession, PageSessionRefusal>, Never>] = [:]
-    /// The `pane_session_put` requests waiting for wheeld's `ok` or `error`, by request id.
-    private var sessionPuts: [UInt64: CheckedContinuation<Void, Never>] = [:]
+    /// One report of a browser pane's page console: `reset` when the page just loaded, `req` once sent.
+    private struct ConsoleReport {
+        var req: UInt64?
+        var reset: Bool
+        var entries: [ConsoleEntry]
+    }
+    /// What each browser pane's page wrote to its console that wheeld has not answered, in write
+    /// order. A report stays until wheeld's `ok`; the first status of each connection sends every
+    /// one again, so a line is delivered at least once (a report wheeld applied whose `ok` was lost
+    /// arrives twice). A page load clears what was written before it.
+    private var consoleOutbox: [String: [ConsoleReport]] = [:]
+    /// The pane of each sent console report on this connection, so a refusal names it.
+    private var consoleReqs: [UInt64: String] = [:]
+    private static let consoleOutboxLimit = 500
     private var agentReqs: [UInt64: String] = [:]
     /// The attaches among `agentReqs`, and the agents whose attach the daemon refused (a restore
     /// keeps an agent's program unstarted until its program is found). Every client hears
@@ -295,10 +302,8 @@ final class PhoneModel {
         agents = []
         artifacts = nil
         menuReqs = []
-        for ask in sessionAsks.values { ask.resume(returning: .failure(PageSessionRefusal("the connection to the Mac dropped"))) }
-        sessionAsks = [:]
-        for put in sessionPuts.values { put.resume() }
-        sessionPuts = [:]
+        consoleOutbox = [:]
+        consoleReqs = [:]
         agentReqs = [:]
         attachReqs = []
         refusedAttach = []
@@ -318,6 +323,7 @@ final class PhoneModel {
     private func open(_ p: Pairing) {
         generation += 1
         let mine = generation
+        consoleReqs = [:]
         pageDaemon.url = p.url
         pageDaemon.token = p.token
         pageDaemon.pairing = p
@@ -340,7 +346,7 @@ final class PhoneModel {
             connection = state
             if state != .connected { for terminal in terminals.values { terminal.attached = false } }
             if wasConnected, state != .connected { for link in pluginPanes.values { link.dropped() } }
-            if state != .connected { links.forget() }
+            if state != .connected { links.forget(); consoleReqs = [:] }
             if case .connected = state {
                 settingListReq = nil
                 settingChangeReqs = [:]
@@ -410,6 +416,9 @@ final class PhoneModel {
             let heldPlugins = Array(pluginPanes.values)
             reportedView = nil
             layoutArrived(spaces, sessions: sessions)
+            // This connection's reqs start over: everything unanswered goes again, in order.
+            consoleReqs = [:]
+            flushConsole(resend: true)
             // A new connection holds no feeds: each plugin pane kept from the last one asks for its script and feeds again.
             for link in heldPlugins where pluginPanes[link.pane] === link { link.start() }
             artifactEmbeds?.connected()
@@ -487,15 +496,8 @@ final class PhoneModel {
             Log.info("permission \(id) resolved: \(choice)")
         case let .paneReload(pane):
             webPanes[pane]?.reload()
-        case let .paneUrl(pane, url):
-            spaces = spaces.map { space in
-                var space = space
-                space.root = space.root.replacing(pane: pane, with: .browser(url: url, share: space.root.panes.first { $0.id == pane }?.kind.browserShare))
-                return space
-            }
-            browsers[pane]?.daemonSays(url)
         case let .inspectPane(id, pane, op, arg, by):
-            guard let browser = browsers[pane], browserMode(pane) == "phone" else {
+            guard let browser = browsers[pane] else {
                 client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))
                 return
             }
@@ -508,10 +510,8 @@ final class PhoneModel {
                 }
                 self?.client?.send(reply)
             }
-        case let .paneSession(req, _, session):
-            sessionAsks.removeValue(forKey: req)?.resume(returning: .success(session))
         case let .renderPane(id, pane, full, by):
-            guard let browser = browsers[pane], browserMode(pane) == "phone" else {
+            guard let browser = browsers[pane] else {
                 client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))
                 return
             }
@@ -566,7 +566,7 @@ final class PhoneModel {
                 Log.info("artifacts: \(list.count) listed")
             }
         case let .ok(req):
-            sessionPuts.removeValue(forKey: req)?.resume()
+            consoleAnswered(req)
             menuReqs.remove(req)
             spaceReqs.remove(req)
         case let .paneView(req, pane, view, conversation):
@@ -578,13 +578,8 @@ final class PhoneModel {
         case let .opened(req, pane, url):
             if menuReqs.remove(req) != nil {
                 Log.info("pane \(pane) opened \(url)")
-                if let browser = browsers[pane], browserMode(pane) == "phone" {
-                    // The phone's own page goes there and reports where it lands.
-                    browser.daemonSays(url)
-                } else {
-                    // No page here draws it, so the phone reports the navigation the Mac's web view would.
-                    client?.send(.paneBrowserUrl(req: nil, pane: pane, url: url))
-                }
+                // The phone's own browser goes there; the Mac's stays where it is.
+                browsers[pane]?.open(url)
             }
         case let .created(req, id):
             if menuReqs.remove(req) != nil || spaceReqs.remove(req) != nil { Log.info("created \(id)") }
@@ -598,10 +593,8 @@ final class PhoneModel {
             }
         case let .error(req, _, message):
             if let req { taskOutputAsks[req] = nil }
-            if let req, let ask = sessionAsks.removeValue(forKey: req) { ask.resume(returning: .failure(PageSessionRefusal(message))) }
-            if let req, let put = sessionPuts.removeValue(forKey: req) {
-                Log.info("hand-back refused: \(message)")
-                put.resume()
+            if let req, let pane = consoleAnswered(req) {
+                Log.info("browser pane \(pane) console report refused: \(message)")
             }
             if let req, let field = settingChangeReqs.removeValue(forKey: req) {
                 settingRefusals[field] = message
@@ -642,127 +635,93 @@ final class PhoneModel {
         }
     }
 
-    /// Which side draws browser pane `pane` for this phone: `mac` or `phone`.
-    func browserMode(_ pane: String) -> String { browserModes[pane] ?? "phone" }
-
-    /// Draw browser pane `pane` from `mode`'s side, and tell wheeld, so `--on phone` reaches the
-    /// phone's page only while the phone draws it.
-    func setBrowserMode(_ pane: String, _ mode: String) {
-        guard ["mac", "phone"].contains(mode), browserMode(pane) != mode else { return }
-        // The Mac draws the pane only once it holds the phone's session, so its page loads logged
-        // in as the phone's was.
-        if mode == "mac", let browser = browsers[pane] {
-            Task { [weak self] in
-                await self?.handBack(browser)
-                PhoneBrowser.setTaken([], pane: pane)
-                self?.applyBrowserMode(pane, mode)
-            }
-            return
-        }
-        applyBrowserMode(pane, mode)
-    }
-
-    private func applyBrowserMode(_ pane: String, _ mode: String) {
-        guard browserMode(pane) != mode else { return }
-        browserModes[pane] = mode
-        UserDefaults.standard.set(browserModes, forKey: "browserModes")
-        Log.info("browser pane \(pane) drawn by the \(mode)")
-        client?.send(.paneBrowserMode(req: nil, pane: pane, mode: mode))
-        syncBrowsers()
-    }
-
-    /// Whether wheeld relays a browser pane's session (`PROTOCOL_VERSION` 44), so the pane menu
-    /// offers the switch and the phone asks for sessions.
-    var sharesSessions: Bool { serverProtocol >= 44 }
-
-    /// Set whether browser pane `pane`'s session follows it: true, false, or nil for the setting.
-    func setShareSession(_ pane: String, _ share: Bool?) {
-        Log.info("browser pane \(pane) shares its session: \(share.map { $0 ? "on" : "off" } ?? "follow the setting")")
-        menuOp { .paneShareSession(req: $0, pane: pane, share: share) }
-    }
-
-    /// The Mac's session of `origin` for browser pane `pane`, or why wheeld relayed none (sharing
-    /// is off, no Mac is attached, an older wheeld).
-    private func fetchSession(_ pane: String, origin: String) async -> Result<PageSession, PageSessionRefusal> {
-        guard sharesSessions else { return .failure(PageSessionRefusal("wheeld is older than protocol 44")) }
-        guard let client else { return .failure(PageSessionRefusal("the phone is not connected")) }
-        let req = client.req()
-        return await withCheckedContinuation { continuation in
-            sessionAsks[req] = continuation
-            client.send(.paneSessionGet(req: req, pane: pane, origin: origin))
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(8))
-                self?.sessionAsks.removeValue(forKey: req)?.resume(returning: .failure(PageSessionRefusal("no answer from wheeld within 8s")))
-            }
-        }
-    }
-
-    /// The phone stops drawing `browser`'s pane: its session goes back to the Mac, which keeps
-    /// what the phone's page changed (a login, saved settings).
-    /// Returns once wheeld answered each session's put (or 8 seconds passed).
-    private func handBack(_ browser: PhoneBrowser) async {
-        guard sharesSessions, client != nil else { return }
-        for session in await browser.sessions() {
-            guard let client else { return }
-            Log.info("browser pane \(browser.pane) hands back the session of \(session.origin): \(session.cookies.count) cookies, \(session.local.count + session.session.count) stored items")
-            let req = client.req()
-            await withCheckedContinuation { continuation in
-                sessionPuts[req] = continuation
-                client.send(.paneSessionPut(req: req, pane: browser.pane, session: session))
-                Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(8))
-                    self?.sessionPuts.removeValue(forKey: req)?.resume()
-                }
-            }
-        }
-    }
-
-    /// Offer page commands to wheeld and say which side draws each browser pane; sent with every
-    /// status, since a new connection starts with no offer and every pane on the Mac's side.
+    /// Offer page commands to wheeld; sent with every status, since a new connection starts with
+    /// no offer.
     private func offerBrowsers() {
-        guard let client else { return }
-        client.send(.renderOffer)
-        modesSent = []
-        sendModes()
+        client?.send(.renderOffer)
     }
 
-    /// The browser panes whose mode this connection has told wheeld since its last offer.
-    private var modesSent: Set<String> = []
-
-    /// Tell wheeld the mode of every browser pane in the layout it has not heard about on this
-    /// connection: a status arrives before its layout, so a pane can only be told once it is known.
-    private func sendModes() {
-        guard let client else { return }
-        for pane in BrowserPanes.urls(spaces).keys where !modesSent.contains(pane) {
-            modesSent.insert(pane)
-            client.send(.paneBrowserMode(req: nil, pane: pane, mode: browserMode(pane)))
-        }
-    }
-
-    /// Keeps one `PhoneBrowser` per browser pane in the layout the phone draws, on the page wheeld
-    /// says it is on. A pane new to the layout tells wheeld which side draws it.
+    /// Keeps one `PhoneBrowser` per browser pane in the layout. Each opens at the pane's home when
+    /// it is made and never moves because the layout names another home; it keeps the latest for
+    /// `goHome`.
     private func syncBrowsers() {
         let wanted = BrowserPanes.urls(spaces)
-        sendModes()
-        for pane in browsers.keys where wanted[pane] == nil || browserMode(pane) != "phone" {
+        for pane in browsers.keys where wanted[pane] == nil {
             browsers[pane] = nil
-            Log.info("browser pane \(pane) no longer drawn by the phone")
+            consoleOutbox[pane] = nil
+            Log.info("browser pane \(pane) left the layout")
         }
         for (pane, url) in wanted {
-            guard browserMode(pane) == "phone" else { continue }
-            let browser = browsers[pane] ?? {
-                let made = PhoneBrowser(pane: pane, daemon: pageDaemon, report: { [weak self] page in
-                    self?.client?.send(.paneBrowserUrl(req: nil, pane: pane, url: page))
-                }, fetchSession: { [weak self] origin in
-                    await self?.fetchSession(pane, origin: origin) ?? .failure(PageSessionRefusal("the phone is not connected"))
-                }, console: { [weak self] reset, entries in
-                    self?.client?.send(.paneConsole(req: nil, pane: pane, reset: reset, entries: entries))
+            if let browser = browsers[pane] {
+                browser.homeIs(url)
+            } else {
+                browsers[pane] = PhoneBrowser(pane: pane, home: url, daemon: pageDaemon, console: { [weak self] reset, entries in
+                    self?.relayConsole(pane, reset: reset, entries: entries)
                 })
-                browsers[pane] = made
-                return made
-            }()
-            browser.daemonSays(url)
+            }
         }
+    }
+
+    /// Queues what pane `pane`'s page wrote behind what is unanswered, then sends it if the
+    /// connection is up. A reset drops what was queued before it; past `consoleOutboxLimit` lines the
+    /// oldest go, and a dropped reset passes to the report that is now first.
+    private func relayConsole(_ pane: String, reset: Bool, entries: [ConsoleEntry]) {
+        var queue = consoleOutbox[pane] ?? []
+        if reset { queue = [] }
+        queue.append(ConsoleReport(req: nil, reset: reset, entries: entries))
+        var count = queue.reduce(0) { $0 + $1.entries.count }
+        var dropped = 0
+        while count > Self.consoleOutboxLimit {
+            let over = count - Self.consoleOutboxLimit
+            if queue[0].entries.count <= over, queue.count > 1 {
+                let head = queue.removeFirst()
+                count -= head.entries.count
+                dropped += head.entries.count
+                if head.reset { queue[0].reset = true }
+            } else {
+                queue[0].entries.removeFirst(over)
+                count -= over
+                dropped += over
+            }
+        }
+        if dropped > 0 { Log.info("browser pane \(pane) console: dropped the \(dropped) oldest unanswered lines (limit \(Self.consoleOutboxLimit))") }
+        consoleOutbox[pane] = queue
+        flushConsole(resend: false)
+    }
+
+    /// Sends the console reports not yet sent (every one, when `resend`), in write order, when the
+    /// connection is up. Reports for a pane the layout no longer shows as a browser pane go nowhere.
+    private func flushConsole(resend: Bool) {
+        guard let client, client.connection == .connected else { return }
+        for pane in Array(consoleOutbox.keys) {
+            guard browsers[pane] != nil else {
+                consoleOutbox[pane] = nil
+                continue
+            }
+            for i in consoleOutbox[pane]!.indices where resend || consoleOutbox[pane]![i].req == nil {
+                let req = client.req()
+                consoleOutbox[pane]![i].req = req
+                consoleReqs[req] = pane
+                let report = consoleOutbox[pane]![i]
+                client.send(.paneConsole(req: req, pane: pane, reset: report.reset, entries: report.entries))
+            }
+        }
+    }
+
+    /// wheeld answered console report `req`: it leaves the outbox. Returns its pane.
+    @discardableResult
+    private func consoleAnswered(_ req: UInt64) -> String? {
+        guard let pane = consoleReqs.removeValue(forKey: req) else { return nil }
+        consoleOutbox[pane]?.removeAll { $0.req == req }
+        if consoleOutbox[pane]?.isEmpty == true { consoleOutbox[pane] = nil }
+        return pane
+    }
+
+    /// Make `url` browser pane `pane`'s home for the Mac's and the phone's browsers. wheeld saves
+    /// it with the layout; neither browser moves.
+    func setHome(_ pane: String, _ url: String) {
+        guard let client else { return }
+        client.send(.paneHome(req: client.req(), pane: pane, url: url))
     }
 
     /// Keeps one `WebPane` per web pane in the layout, loading each new one.
@@ -1577,8 +1536,12 @@ final class PhoneModel {
     /// A browser pane on whatever `text` names, as typing it into the Mac's address field does: a bare
     /// host becomes https. An empty text opens the homepage setting.
     func openBrowser(_ pane: String, _ text: String) {
-        setKind(pane, .browser)
-        if !text.isEmpty { menuOp(clearsError: false) { .paneBrowserOpen(req: $0, pane: pane, text: text) } }
+        setKind(pane, .browser, url: text.isEmpty ? nil : text)
+    }
+    /// What the person typed into browser pane `pane`'s address field: wheeld reads it and this
+    /// phone's own browser goes there (the `opened` reply); the Mac's browser is not asked.
+    func browse(_ pane: String, _ text: String) {
+        menuOp(clearsError: false) { .paneBrowserOpen(req: $0, pane: pane, text: text) }
     }
     func startPane(_ pane: String, _ kind: StartKind, agent: String? = nil) {
         menuOp { .paneStart(req: $0, pane: pane, kind: kind, message: nil, agent: agent) }

@@ -30,6 +30,13 @@ public enum BrowserInspect {
         case refused(String)
     }
 
+    /// What a browser answers `where` with: the JSON `{"url": …, "title": …}` of the page it is on.
+    /// It reads state and changes nothing on the page.
+    public static func place(url: String, title: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: ["url": url, "title": title], options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
     /// `action` (`eval`, `dom`, `shot` or `record`, see `pane_inspect`) with `arg`, run in `web`.
     public static func run(_ action: String, arg: String?, in web: WKWebView) async -> Outcome {
         switch action {

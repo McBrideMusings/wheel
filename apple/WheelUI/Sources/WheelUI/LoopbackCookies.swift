@@ -2,68 +2,22 @@ import Foundation
 import WebKit
 import WheelKit
 
-/// Reads and writes one site's stored data in a web view's browser storage, for a browser pane's
-/// session to follow it between the Mac and a phone (`pane_session_get`, `pane_session_put`):
-/// the cookies `WKHTTPCookieStore` holds for the site, HttpOnly ones included, and the
-/// localStorage and sessionStorage of a page open on it. Live page state (memory, the screen a
-/// game is on) is not stored data and never moves.
+/// The phone's own cookie storage for pages under the loopback scheme. WebKit gives a custom
+/// scheme no cookies, so the handler that fetches a Mac loopback page keeps them in the web
+/// view's `WKHTTPCookieStore` as the Mac's page would hold them (http, its own host and path),
+/// sends them as a `Cookie` header and gives the page a `document.cookie` over them.
 @MainActor
-public enum PageSessionStore {
-    /// The session of `origin` (`https://example.com`, `http://localhost:5173`) in `store`: every
-    /// cookie a request to its host carries, and the storage of `page` when it is open on that
-    /// origin (none otherwise, since no WebKit API reads a site's storage from outside a page).
-    public static func read(origin: String, store: WKWebsiteDataStore, page: WKWebView?) async -> PageSession {
-        var session = PageSession(origin: origin)
-        guard let host = PageSessions.host(of: origin) else { return session }
-        let all = await store.httpCookieStore.allCookies()
-        session.cookies = all.filter { PageSessions.carries($0.domain, to: host) }.map(PageSessions.cookie)
-        if let page, let url = page.url, PageSessions.sameOrigin(BrowserPanes.macPage(url), origin),
-           let value = try? await page.evaluateJavaScript(PageSessions.snapshotScript) as? String,
-           let storage = PageSessions.storage(fromSnapshot: value) {
-            session.local = storage.local
-            session.session = storage.session
-        }
-        return session
-    }
-
-    /// Install `session` in `store`: its cookies now, and its storage into `page` when it is open
-    /// on the session's origin, which a page reads at its next load.
-    /// Only cookies a request to the session's origin carries are installed, so another device
-    /// cannot plant one for any other site, and the store's cookies for that origin the session
-    /// lacks are deleted, so a logout on one device follows the pane.
-    public static func write(_ session: PageSession, store: WKWebsiteDataStore, page: WKWebView?) async {
-        guard let host = PageSessions.host(of: session.origin) else { return }
-        let given = session.cookies.filter { PageSessions.carries($0.domain, to: host) }.compactMap(PageSessions.httpCookie)
-        // The session is the site's cookies whole: one the sender no longer holds (a logout)
-        // goes here too.
-        let kept = Set(given.map { "\($0.name)\u{0}\($0.domain.lowercased())\u{0}\($0.path)" })
-        for old in await store.httpCookieStore.allCookies() where PageSessions.carries(old.domain, to: host)
-            && !kept.contains("\(old.name)\u{0}\(old.domain.lowercased())\u{0}\(old.path)") {
-            await store.httpCookieStore.deleteCookie(old)
-        }
-        for cookie in given {
-            await store.httpCookieStore.setCookie(cookie)
-        }
-        guard !session.local.isEmpty || !session.session.isEmpty,
-              let page, let url = page.url, PageSessions.sameOrigin(BrowserPanes.macPage(url), session.origin) else { return }
-        _ = try? await page.evaluateJavaScript(PageSessions.storageScript(session, mark: UUID().uuidString))
-    }
-
-    /// A script that writes `session`'s storage into the first page of its origin a web view
-    /// loads, before the page's own scripts run, once per tab: add it to the web view's user
-    /// scripts before loading.
-    public static func storageUserScript(_ session: PageSession) -> WKUserScript {
-        WKUserScript(source: PageSessions.storageScript(session, mark: UUID().uuidString), injectionTime: .atDocumentStart, forMainFrameOnly: true)
-    }
-
-    /// The `Cookie` header a request to `url` carries from `store`, for a scheme handler that
-    /// fetches the page itself (WebKit adds none to a custom scheme's requests); nil when none.
-    public static func cookieHeader(for url: URL, store: WKWebsiteDataStore) async -> String? {
+public enum LoopbackCookies {
+    /// The `Cookie` header a request to `url` in `context` carries from `store`, for a scheme
+    /// handler that fetches the page itself (WebKit adds none to a custom scheme's requests); nil
+    /// when none. A cookie goes only where its `SameSite` lets it (`CookieMatch.sameSiteAllows`).
+    public static func cookieHeader(for url: URL, in context: CookieMatch.Context, store: WKWebsiteDataStore) async -> String? {
         await scriptWrites?.value
         guard let host = url.host?.lowercased() else { return nil }
         let path = url.path.isEmpty ? "/" : url.path
         let carried = await store.httpCookieStore.allCookies().filter {
-            PageSessions.carries($0.domain, to: host) && PageSessions.pathMatches($0.path, path) && ($0.expiresDate.map { $0 > Date() } ?? true)
+            CookieMatch.carries($0.domain, to: host) && CookieMatch.pathMatches($0.path, path) && ($0.expiresDate.map { $0 > Date() } ?? true)
+                && CookieMatch.sameSiteAllows($0.sameSitePolicy?.rawValue, in: context)
         }
         guard !carried.isEmpty else { return nil }
         return carried.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
@@ -136,7 +90,7 @@ public enum PageSessionStore {
         guard let host = url.host?.lowercased() else { return [] }
         let path = url.path.isEmpty ? "/" : url.path
         return await store.httpCookieStore.allCookies().filter {
-            !$0.isHTTPOnly && PageSessions.carries($0.domain, to: host) && PageSessions.pathMatches($0.path, path)
+            !$0.isHTTPOnly && CookieMatch.carries($0.domain, to: host) && CookieMatch.pathMatches($0.path, path)
                 && ($0.expiresDate.map { $0 > Date() } ?? true)
         }.map { ($0.name, $0.value) }
     }
@@ -151,9 +105,9 @@ public enum PageSessionStore {
         }
         let cleaned = ([line.split(separator: ";").first.map(String.init) ?? ""] + attributes.map(String.init)).joined(separator: ";")
         for cookie in HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": cleaned], for: url) {
-            guard PageSessions.carries(cookie.domain, to: host) else { continue }
+            guard CookieMatch.carries(cookie.domain, to: host) else { continue }
             let held = await store.httpCookieStore.allCookies()
-            if held.contains(where: { $0.isHTTPOnly && $0.name == cookie.name && PageSessions.carries($0.domain, to: host) }) { continue }
+            if held.contains(where: { $0.isHTTPOnly && $0.name == cookie.name && CookieMatch.carries($0.domain, to: host) }) { continue }
             if let expires = cookie.expiresDate, expires <= Date() {
                 for old in held where old.name == cookie.name && old.domain == cookie.domain && old.path == cookie.path {
                     await store.httpCookieStore.deleteCookie(old)

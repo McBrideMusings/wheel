@@ -3,55 +3,30 @@ import WebKit
 import WheelKit
 import WheelUI
 
-/// One browser pane's page drawn by the phone itself (Phone mode, ADR-0005). The phone's web view
-/// loads the page wheeld says the pane is on, reports every page it lands on with
-/// `pane_browser_url`, and follows the pages someone else sends the pane to. A page on the Mac's
-/// loopback loads under `BrowserPanes.loopbackScheme`, fetched from wheeld's `/loopback/<port>/`.
-/// Agents reach the page with `--on phone`; each command they run shows in `banner` for a moment.
-/// Before the page first lands on a site, the phone asks wheeld for the Mac's session of it
-/// (cookies, and the storage of a Mac page on it) and installs it, unless sharing is off for the
-/// pane; `session()` reads the phone's own for handing it back. What the page writes to its
-/// console goes to wheeld as the phone's own (`wheel pane console --on phone`).
+/// One browser pane's page drawn by the phone itself (ADR-0005). The phone's web view is its own
+/// browser: it opens at the pane's home once and then goes only where the person or an agent sends
+/// it (a change of the home moves it nowhere), and nothing it does is reported to wheeld. A page on the Mac's loopback loads under
+/// `BrowserPanes.loopbackScheme`, fetched from wheeld's `/loopback/<port>/`. Agents reach the
+/// page with `--on phone`; each command they run shows in `banner` for a moment. What the page
+/// writes to its console goes to wheeld as the phone's own (`wheel pane console --on phone`).
 @MainActor
 @Observable
 final class PhoneBrowser: NSObject, WKNavigationDelegate {
     let pane: String
     @ObservationIgnored let view: WKWebView
-    /// The page the address field shows: the last one the pane landed on or was sent to.
+    /// The page the address field shows: the one the web view is on.
     private(set) var page: String = ""
     /// Whether the web view can go back.
     private(set) var canGoBack = false
     /// What an agent last ran on this page, while it shows: who ran it and the command with its
     /// argument ("claude" ran "dom h1").
     private(set) var banner: (by: String, command: String)?
-    @ObservationIgnored private var echoes = BrowserPanes.Echoes()
-    @ObservationIgnored private var reported: String?
-    @ObservationIgnored private let report: (String) -> Void
     @ObservationIgnored private let relay = ConsoleRelay()
-    @ObservationIgnored private let fetchSession: (String) async -> Result<PageSession, PageSessionRefusal>
-    /// The origins whose session the phone asked for since this page was made: once each.
-    @ObservationIgnored private var asked: Set<String> = []
-    /// The one-time storage scripts of the sessions taken, kept while the cookie script is made
-    /// again for each page.
-    @ObservationIgnored private var storageScripts: [WKUserScript] = []
-    /// The origins whose session the page took, each handed back when the pane goes to the Mac
-    /// (a login through another site, such as single sign-on, spans two).
-    @ObservationIgnored private var taken: [String] = [] {
-        didSet { Self.setTaken(taken, pane: pane) }
-    }
-
-    /// The sites each pane took a session of while the phone drew it, kept across launches: a
-    /// relaunch is no handover, so the phone does not take the Mac's session again over its own.
-    /// Cleared when the pane goes to the Mac.
-    static func takenSites(_ pane: String) -> [String] {
-        (UserDefaults.standard.dictionary(forKey: "sessionTaken")?[pane] as? [String]) ?? []
-    }
-
-    static func setTaken(_ sites: [String], pane: String) {
-        var all = UserDefaults.standard.dictionary(forKey: "sessionTaken") ?? [:]
-        all[pane] = sites.isEmpty ? nil : sites
-        UserDefaults.standard.set(all, forKey: "sessionTaken")
-    }
+    @ObservationIgnored private let handler: PageSchemeHandler
+    /// The page `load` sent the web view to, until its navigation starts: one the browser started.
+    @ObservationIgnored private var browserLoad: URL?
+    /// The pane's home as the layout last named it: where `goHome` goes.
+    @ObservationIgnored private(set) var home: String
     /// Counts `prepareScripts` calls, so one that waited on the store while a later navigation
     /// started leaves the later one's scripts alone.
     @ObservationIgnored private var scriptGeneration = 0
@@ -60,22 +35,18 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// Why the last load failed, shown over the page until the next one starts.
     private(set) var failure: String?
 
-    init(pane: String, daemon: PageDaemon, report: @escaping (String) -> Void,
-         fetchSession: @escaping (String) async -> Result<PageSession, PageSessionRefusal>,
-         console: @escaping (Bool, [ConsoleEntry]) -> Void) {
+    init(pane: String, home: String, daemon: PageDaemon, console: @escaping (Bool, [ConsoleEntry]) -> Void) {
         self.pane = pane
-        self.report = report
-        self.fetchSession = fetchSession
-        taken = Self.takenSites(pane)
-        asked = Set(taken)
+        self.home = home
         let config = WKWebViewConfiguration()
         // The phone's own browser storage, shared by every browser pane it draws.
         config.websiteDataStore = .default()
         let handler = PageSchemeHandler(pane: pane, daemon: daemon, loopback: true)
+        self.handler = handler
         config.setURLSchemeHandler(handler, forURLScheme: BrowserPanes.loopbackScheme)
         view = WKWebView(frame: .zero, configuration: config)
         super.init()
-        config.userContentController.add(CookieMessages(self), name: PageSessionStore.cookieHandler)
+        config.userContentController.add(CookieMessages(self), name: LoopbackCookies.cookieHandler)
         // The relay holds no reference to this browser, so the content controller, which retains
         // its handlers, keeps neither alive.
         config.userContentController.add(relay, name: BrowserConsole.handlerName)
@@ -96,46 +67,57 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         watches.append(view.observe(\.canGoBack, options: [.new]) { [weak self] web, _ in
             MainActor.assumeIsolated { self?.canGoBack = web.canGoBack }
         })
+        load(home)
     }
 
-    /// wheeld says the pane is on `url`: go there, unless it is the echo of a page this view
-    /// reported itself.
-    func daemonSays(_ url: String) {
-        if echoes.isOwn(url) { return }
-        guard url != page || view.url == nil else { return }
+    /// The layout holds `url` as this pane's home now. The browser stays where it is.
+    func homeIs(_ url: String) {
+        home = url
+    }
+
+    /// Go to the pane's home.
+    func goHome() {
+        load(home)
+    }
+
+    /// Go to `url`, which wheeld resolved from the address field or an agent's `pane page`.
+    func open(_ url: String) {
         load(url)
     }
 
     private func load(_ url: String) {
-        echoes.adopt(url)
         page = url
-        reported = url
         guard let target = BrowserPanes.phonePage(url) ?? URL(string: url) else {
             Log.info("browser pane \(pane) cannot load \(WebPanes.withoutQuery(URL(string: url) ?? URL(fileURLWithPath: "/")))")
             return
         }
         Log.info("browser pane \(pane) loading \(WebPanes.withoutQuery(target))")
+        browserLoad = target
         view.load(URLRequest(url: target))
     }
 
     func goBack() { view.goBack() }
 
-    /// The web view is on `url` now: report the page it stands for when it is new.
+    /// The web view is on `url` now: the address field shows the page it stands for.
     private func landed(_ url: URL?) {
         guard let url, url.absoluteString != "about:blank" else { return }
-        let now = BrowserPanes.macPage(url)
-        page = now
-        guard now != reported else { return }
-        reported = now
-        echoes.sent(now)
-        Log.info("browser pane \(pane) landed on \(WebPanes.withoutQuery(URL(string: now) ?? url))")
-        report(now)
+        page = BrowserPanes.macPage(url)
     }
 
     /// `inspect_pane` `op` with `arg`, run on this page, shown in the banner under `by`.
     func run(_ op: String, arg: String?, by: String?) async -> BrowserInspect.Outcome {
+        // `where` reads state and changes nothing on the page, so it shows no agent banner.
+        if op == "where" {
+            let current = view.url.map(BrowserPanes.macPage) ?? (page.isEmpty ? "about:blank" : page)
+            return .text(BrowserInspect.place(url: current.isEmpty ? "about:blank" : current, title: view.title ?? ""))
+        }
         let shown = show(by: by, ran: op, arg: arg)
         defer { hide(shown) }
+        if op == "open" {
+            guard let arg, !arg.isEmpty else { return .refused("open needs a page") }
+            open(arg)
+            return .text("")
+        }
         return await BrowserInspect.run(op, arg: arg, in: view)
     }
 
@@ -167,54 +149,45 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         }
     }
 
-    /// Before the main frame first goes to a site, install the Mac's session of it, so the page
-    /// loads logged in as it is on the Mac.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         // A page from elsewhere may link to the Mac's loopback page, but never post a form to it:
-        // the request would reach the Mac's program with no Origin to refuse it by.
+        // the request would reach the Mac's program with no Origin to refuse it by. A loopback
+        // page may post to any loopback port, as on the Mac.
         if action.request.url?.scheme == BrowserPanes.loopbackScheme, (action.request.httpMethod ?? "GET") != "GET",
-           action.sourceFrame.request.url.map({ BrowserPanes.loopbackRequestAllowed(action.request.url!, document: $0) }) != true {
+           action.sourceFrame.request.url.map({
+               BrowserPanes.loopbackRequestAllowed(action.request.url!, document: $0, origin: nil, method: "GET")
+           }) != true {
             Log.info("browser pane \(pane) refused a \(action.request.httpMethod ?? "-") to the Mac's loopback from another site")
             return .cancel
         }
         guard action.targetFrame?.isMainFrame != false, let url = action.request.url else { return .allow }
-        if let origin = PageSessions.origin(of: BrowserPanes.macPage(url)), !asked.contains(origin) {
-            asked.insert(origin)
-            switch await fetchSession(origin) {
-            case let .success(session):
-                await PageSessionStore.write(session, store: webView.configuration.websiteDataStore, page: nil)
-                if !session.local.isEmpty || !session.session.isEmpty {
-                    storageScripts.append(PageSessionStore.storageUserScript(session))
-                }
-                if !taken.contains(origin) { taken.append(origin) }
-                Log.info("browser pane \(pane) took the Mac's session of \(origin): \(session.cookies.count) cookies, \(session.local.count + session.session.count) stored items")
-            case let .failure(why):
-                // Asked again at the next page: the Mac may answer then, or sharing be on.
-                asked.remove(origin)
-                Log.info("browser pane \(pane) has no session of \(origin) from the Mac: \(why.reason)")
-            }
+        // Who started a loopback navigation decides the `SameSite` of its cookies: the browser
+        // (its own load, back, forward, reload) or the page in the frame that started it.
+        if url.scheme == BrowserPanes.loopbackScheme {
+            let byBrowser = url == browserLoad || [WKNavigationType.backForward, .reload].contains(action.navigationType)
+            handler.navigation(to: url, from: byBrowser ? nil : action.sourceFrame.request.url)
         }
+        if url == browserLoad { browserLoad = nil }
         await prepareScripts(for: url)
         return .allow
     }
 
-    /// The user scripts the page about to load at `url` starts with: the console relay, the
-    /// storage of each session taken, and on the Mac's loopback a `document.cookie` from the
-    /// store, which WebKit gives a custom scheme none of.
+    /// The user scripts the page about to load at `url` starts with: the console relay, and on
+    /// the Mac's loopback a `document.cookie` from the store, which WebKit gives a custom scheme
+    /// none of.
     /// This controller holds no other script: every one it runs is added here.
     private func prepareScripts(for url: URL) async {
         scriptGeneration += 1
         let generation = scriptGeneration
         var cookies: [(name: String, value: String)]?
         if url.scheme == BrowserPanes.loopbackScheme, let mac = URL(string: BrowserPanes.macPage(url)) {
-            cookies = await PageSessionStore.scriptCookies(for: mac, store: view.configuration.websiteDataStore)
+            cookies = await LoopbackCookies.scriptCookies(for: mac, store: view.configuration.websiteDataStore)
         }
         guard generation == scriptGeneration else { return }
         let scripts = view.configuration.userContentController
         scripts.removeAllUserScripts()
         scripts.addUserScript(WKUserScript(source: BrowserConsole.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-        storageScripts.forEach(scripts.addUserScript)
-        if let cookies { scripts.addUserScript(PageSessionStore.cookieScript(cookies)) }
+        if let cookies { scripts.addUserScript(LoopbackCookies.cookieScript(cookies)) }
     }
 
     /// The store's cookies changed (a response set one, or the page wrote one): the page in view
@@ -222,31 +195,19 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     private func cookiesChanged() {
         guard let url = view.url, url.scheme == BrowserPanes.loopbackScheme, let mac = URL(string: BrowserPanes.macPage(url)) else { return }
         Task {
-            let cookies = await PageSessionStore.scriptCookies(for: mac, store: view.configuration.websiteDataStore)
-            _ = try? await view.evaluateJavaScript(PageSessionStore.refreshScript(cookies))
+            let cookies = await LoopbackCookies.scriptCookies(for: mac, store: view.configuration.websiteDataStore)
+            _ = try? await view.evaluateJavaScript(LoopbackCookies.refreshScript(cookies))
             await prepareScripts(for: url)
         }
     }
 
     /// The loopback page set `document.cookie = line`: keep it in the store, where the scheme
-    /// handler's next request and a hand-back to the Mac find it.
+    /// handler's next request finds it.
     fileprivate func pageSetCookie(_ line: String) {
         guard let url = view.url, url.scheme == BrowserPanes.loopbackScheme, let mac = URL(string: BrowserPanes.macPage(url)) else { return }
-        PageSessionStore.queueScriptCookie(line, for: mac, store: view.configuration.websiteDataStore) { [weak self] in
+        LoopbackCookies.queueScriptCookie(line, for: mac, store: view.configuration.websiteDataStore) { [weak self] in
             self?.cookiesChanged()
         }
-    }
-
-    /// The phone's own session of every site the page took one of, and of the site it is on, to
-    /// hand back to the Mac; storage only for the site in view, the only one a page can read.
-    func sessions() async -> [PageSession] {
-        var origins = taken
-        if let url = view.url, let origin = PageSessions.origin(of: BrowserPanes.macPage(url)), !origins.contains(origin) { origins.append(origin) }
-        var found: [PageSession] = []
-        for origin in origins {
-            found.append(await PageSessionStore.read(origin: origin, store: view.configuration.websiteDataStore, page: view))
-        }
-        return found
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -281,9 +242,8 @@ struct PhoneBrowserBody: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
-/// A browser pane on the phone: back, the address and which side draws it above the page; the
-/// phone's own page in Phone mode, with a notice saying agents reach it with `--on phone` and a
-/// banner naming each command an agent runs on it; in Mac mode, a placeholder for the Mac's page.
+/// A browser pane on the phone: back and the address above the phone's own page, with a banner
+/// naming each command an agent runs on it.
 struct BrowserPage: View {
     let model: PhoneModel
     let pane: String
@@ -293,43 +253,37 @@ struct BrowserPage: View {
     @FocusState private var fieldFocused: Bool
 
     private var browser: PhoneBrowser? { model.browsers[pane] }
-    private var mode: String { model.browserMode(pane) }
 
     var body: some View {
         VStack(spacing: 0) {
             controls
             ZStack(alignment: .top) {
-                if mode == "phone", let browser {
-                    // The notice sits below the page, never over it, so the page's own bottom
-                    // edge (a tab bar, a Submit button) stays reachable.
-                    VStack(spacing: 0) {
-                        PhoneBrowserBody(browser: browser)
-                            .overlay {
-                                if let failure = browser.failure {
-                                    ContentUnavailableView("Could not open the page", systemImage: "exclamationmark.triangle",
-                                                           description: Text(failure))
-                                        .background(.background)
-                                        .accessibilityIdentifier("browser-failure")
-                                }
+                if let browser {
+                    PhoneBrowserBody(browser: browser)
+                        .overlay {
+                            if let failure = browser.failure {
+                                ContentUnavailableView("Could not open the page", systemImage: "exclamationmark.triangle",
+                                                       description: Text(failure))
+                                    .background(.background)
+                                    .accessibilityIdentifier("browser-failure")
                             }
-                        notice
-                    }
-                } else {
-                    macPage
+                        }
                 }
                 if let banner = browser?.banner {
                     Label {
                         Text("\(Text(banner.by).bold()) ran \(Text(verbatim: banner.command).monospaced()) on this page")
                     } icon: {
                         Image(systemName: "sparkle")
+                            .foregroundStyle(.secondary)
                     }
                         .font(.footnote)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
                         .padding(.horizontal, 8)
                         .padding(.top, 6)
                         .transition(.move(edge: .top).combined(with: .opacity))
@@ -347,16 +301,9 @@ struct BrowserPage: View {
             }
             .buttonStyle(.bordered)
             .buttonBorderShape(.circle)
-            .disabled(mode != "phone" || browser?.canGoBack != true)
+            .disabled(browser?.canGoBack != true)
             .accessibilityLabel("Back")
             address
-            Picker("Drawn by", selection: Binding(get: { mode }, set: { model.setBrowserMode(pane, $0) })) {
-                Text("Mac").tag("mac")
-                Text("Phone").tag("phone")
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .accessibilityIdentifier("browser-mode")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -374,7 +321,7 @@ struct BrowserPage: View {
                     .focused($fieldFocused)
                     .onSubmit {
                         editing = false
-                        model.openBrowser(pane, typed)
+                        model.browse(pane, typed)
                     }
                     .onChange(of: fieldFocused) { _, focused in if !focused { editing = false } }
             } else {
@@ -402,32 +349,6 @@ struct BrowserPage: View {
         case let .file(_, name): name
         case let .other(text): text
         }
-    }
-
-    private var notice: some View {
-        // The flag stays whole on one line: a non-breaking hyphen pair and space.
-        HStack(spacing: 8) {
-            Circle().fill(.white.opacity(0.6)).frame(width: 6, height: 6)
-            Text("This phone's own page · agents reach it with \(Text(verbatim: "\u{2011}\u{2011}on\u{00A0}phone").monospaced())")
-                .font(.footnote)
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(white: 0.25), in: RoundedRectangle(cornerRadius: 10))
-        .padding(8)
-        .accessibilityIdentifier("browser-notice")
-    }
-
-    private var macPage: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "desktopcomputer").font(.largeTitle)
-            Text("Drawn on the Mac").font(.title3)
-            Text("Switch to Phone to load this page here.").font(.footnote).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.quaternary.opacity(0.4))
     }
 }
 

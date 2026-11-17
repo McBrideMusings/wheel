@@ -184,7 +184,7 @@ impl Client {
                     Some("machine") => Some(wheel_proto::ArtifactScope::Machine),
                     Some(_) => return refuse(BAD, "scope must be project or machine"),
                 };
-                self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact, scope, url: None, plugin: q("plugin").zip(q("plugin_pane")).map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }) });
+                self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind, artifact, scope, url: None, plugin: q("plugin").zip(q("plugin_pane")).map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }) });
                 None
             }
             // A plugin pane's drawn view and script state: `action=state`, `press&component=<id>`, `set&path=/<id>&value=<text>`
@@ -221,7 +221,7 @@ impl Client {
             "/start" => {
                 let (Some(pane), Some(kind)) = (q("pane"), q("kind")) else { return refuse(BAD, "pane= and kind=terminal|agent are required") };
                 match kind.as_str() {
-                    "terminal" => self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None, plugin: None }),
+                    "terminal" => self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None, plugin: None }),
                     "agent" => {
                         let Some(agent) = q("agent") else { return refuse(BAD, "agent=<name> is required") };
                         self.send(&ClientMsg::PaneStart { req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None });

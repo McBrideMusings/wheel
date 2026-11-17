@@ -2,16 +2,12 @@ import Foundation
 
 /// The daemon's layout (proto/src/lib.rs SpaceInfo, Node, PaneKind). The daemon owns it
 /// (ADR-0001): a client renders the latest `spaces` broadcast and changes it only by sending ops.
-/// One field arrives on its own — `pane_url`, a browser pane's new page, which changes far too
-/// often to resend the whole layout for — and a client applies that to the tree it already holds.
 
 /// One project's workspace: a directory and a split tree of panes.
 public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
     public let cwd: String
-    /// Settable so a client can apply a narrow broadcast — `pane_url` — to the tree it already
-    /// holds, rather than waiting for the whole layout to be sent again.
     public var root: Node
     /// The pane this client has focused in this space. The daemon keeps no focus (ADR-0022), so it
     /// is not decoded: a client sets it as the person moves between panes, and carries it over when
@@ -233,11 +229,10 @@ public enum PaneKind: Sendable, Equatable {
     case terminal(term: String, agent: TermAgent? = nil)
     /// The artifact `artifact` names, served by the daemon at `/artifacts/<pane>/`.
     case web(artifact: ArtifactRef)
-    /// An ordinary browser on `url`: the open internet, with chrome, where a web pane is one page
-    /// a project ships with none. The client reports navigation back so the layout follows it.
-    /// `share` is the pane's own choice whether its logins and site storage follow it between the
-    /// Mac and a phone; nil follows the `browser.share_session` setting.
-    case browser(url: String, share: Bool? = nil)
+    /// An ordinary browser opened at `url`: the open internet, with chrome, where a web pane is
+    /// one page a project ships with none. Each client's browser browses on its own; the layout
+    /// holds only where a pane opens.
+    case browser(url: String)
     /// An agent the pane owns, running the program named `harness`: it ends when the pane
     /// closes or changes kind. `home` is the configuration directory the pane saved for its own
     /// agent; nil when the pane runs under the agent's `agent.<name>.home` setting.
@@ -254,12 +249,6 @@ public enum PaneKind: Sendable, Equatable {
         case .terminal, .agent: true
         default: false
         }
-    }
-
-    /// A browser pane's own choice whether its session follows it (`share_session`); nil for a pane
-    /// that follows the setting, and for any other kind.
-    public var browserShare: Bool? {
-        if case let .browser(_, share) = self { share } else { nil }
     }
 
     public var name: String {
@@ -312,18 +301,6 @@ public indirect enum Node: Sendable, Equatable {
         default: false
         }
     }
-
-    /// The same tree with `pane` showing `kind`, for applying a broadcast that carries one pane's
-    /// change instead of the whole layout. A tree without that pane comes back unchanged.
-    public func replacing(pane: String, with kind: PaneKind) -> Node {
-        switch self {
-        case let .pane(id, _) where id == pane: .pane(id: id, kind: kind)
-        case .pane: self
-        case let .split(id, axis, ratio, a, b):
-            .split(id: id, axis: axis, ratio: ratio,
-                   a: a.replacing(pane: pane, with: kind), b: b.replacing(pane: pane, with: kind))
-        }
-    }
 }
 
 extension Node: Decodable {
@@ -363,9 +340,7 @@ extension Node: Decodable {
                 }
             case (.string("browser"), _, _, _):
                 if case let .string(url) = raw["url"] ?? .null {
-                    var share: Bool?
-                    if case let .bool(given)? = raw["share_session"] { share = given }
-                    self = .pane(id: id, kind: .browser(url: url, share: share))
+                    self = .pane(id: id, kind: .browser(url: url))
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "browser", raw: raw))
                 }

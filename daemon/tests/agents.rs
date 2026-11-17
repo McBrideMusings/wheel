@@ -3076,6 +3076,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         &mut ws,
         399,
         ClientMsg::PaneSetKind {
+            home: None,
             req: Some(399),
             pane: pane.clone(),
             kind: wheel_proto::NewPaneKind::Terminal,
@@ -3307,6 +3308,7 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
         &mut ws,
         499,
         ClientMsg::PaneSetKind {
+            home: None,
             req: Some(499),
             pane: pane.clone(),
             kind: wheel_proto::NewPaneKind::Terminal,

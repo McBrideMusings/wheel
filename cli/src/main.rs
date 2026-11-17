@@ -930,6 +930,10 @@ enum PaneCommand {
         /// A browser pane on this page. Not `--url`, which is the daemon's address.
         #[arg(long)]
         page: Option<String>,
+        /// The browser pane's home, the page its Mac and phone browsers open at. With none, the
+        /// page is the home; given, `--page` is not read.
+        #[arg(long, requires = "page")]
+        home: Option<String>,
         /// A web pane on this artifact.
         #[arg(long)]
         artifact: Option<String>,
@@ -1076,6 +1080,10 @@ enum PaneCommand {
         /// rather than `url` because `--url` is this CLI's own flag for the daemon's address.
         #[arg(long)]
         page: Option<String>,
+        /// The browser pane's home, the page its Mac and phone browsers open at. With none, the
+        /// page (or the browser.homepage setting) is the home; given, `--page` is not read.
+        #[arg(long)]
+        home: Option<String>,
         /// The plugin a plugin pane shows, by id; see `wheel plugin ls`.
         #[arg(long, requires = "plugin_pane")]
         plugin: Option<String>,
@@ -1083,12 +1091,23 @@ enum PaneCommand {
         #[arg(long, requires = "plugin")]
         plugin_pane: Option<String>,
     },
-    /// Move a browser pane to a page, as typing it into the pane's address field does; print the
-    /// page the text named.
+    /// Print a browser pane's home, the page its Mac and phone browsers open at, or with a page
+    /// set it. Setting it moves neither browser.
+    Home {
+        pane: String,
+        /// Whatever the address field takes: a URL, `example.com`, a path, or about:blank.
+        page: Option<String>,
+    },
+    /// Send one browser of a browser pane to a page, as typing it into its address field does;
+    /// print the page the text named. The other browser stays where it is.
     Page {
         pane: String,
         /// Whatever the address field takes: a URL, `example.com`, a path, or about:blank.
         page: String,
+        /// Which browser goes there: the Mac app's (default) or the phone's own web view. `phone`
+        /// fails with "the phone is not attached" while the app is suspended.
+        #[arg(long, value_parser = ["mac", "phone"], default_value = "mac")]
+        on: String,
     },
     /// Say what the coding agent in a terminal pane is doing: needs_you, working or idle. The
     /// hooks Wheel's `claude` and `pi` wrappers add call this. Exits 0 and does nothing
@@ -1147,14 +1166,6 @@ enum PaneCommand {
         /// Seconds to wait (0 to 3600); exit 3 if no change arrives.
         #[arg(long, default_value_t = 10.0, value_parser = parse_timeout)]
         timeout: f64,
-    },
-    /// Choose whether a browser pane's logins and site storage follow it between the Mac and a
-    /// phone: `on`, `off`, or `follow` for the `browser.share_session` setting. `wheel pane info`
-    /// shows what is in force and what decided it.
-    ShareSession {
-        pane: String,
-        #[arg(value_parser = ["on", "off", "follow"])]
-        share: String,
     },
     /// Print a browser pane's console messages since its last page load, one per line:
     /// `<UTC time> <level> <text>`, with `(<url>:<line>)` when the page said where. Uncaught
@@ -1239,6 +1250,17 @@ enum PaneCommand {
         selector: Option<String>,
         /// Which client runs it: the Mac app (default) or the phone's own web view. `phone` fails
         /// with "the phone is not attached" while the app is suspended.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
+    },
+    /// Print the page a browser pane's browser is on now, as `<url><TAB><title>`.
+    ///
+    /// wheeld asks that one browser and waits 3 seconds. Fails with "the phone is not attached"
+    /// while the phone's app is suspended, when no Mac app is connected, or when the pane is not
+    /// a browser pane.
+    Where {
+        pane: String,
+        /// Which browser: the Mac app (default) or the phone's own web view.
         #[arg(long, value_parser = ["mac", "phone"])]
         on: Option<String>,
     },
@@ -5675,6 +5697,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             pane,
             dir,
             page,
+            home,
             artifact,
             scope,
             focus,
@@ -5689,6 +5712,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
                 dir,
                 url: page,
+                home,
                 artifact,
                 scope,
                 focus,
@@ -5896,6 +5920,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             artifact,
             scope,
             page,
+            home,
             plugin,
             plugin_pane,
         } => {
@@ -5906,20 +5931,38 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 artifact,
                 scope,
                 url: page,
+                home,
                 plugin: plugin
                     .zip(plugin_pane)
                     .map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }),
             })
             .await
         }
-        PaneCommand::Page { pane, page } => {
+        PaneCommand::Home { pane, page } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneHome {
+                req: Some(req),
+                pane,
+                url: page,
+            };
+            match conn.call(msg, req).await? {
+                ServerMsg::PaneHome { url, .. } => {
+                    println!("{url}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+        }
+        PaneCommand::Page { pane, page, on } => {
             let req = conn.req();
             let msg = ClientMsg::PaneBrowserOpen {
                 req: Some(req),
                 pane,
                 text: page,
+                on: Some(on),
+                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
-            match conn.call(msg, req).await? {
+            match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Opened { url, .. } => {
                     println!("{url}");
                     Ok(())
@@ -5991,18 +6034,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
         }
         PaneCommand::Statusline { .. } => unreachable!("handled before connecting"),
         PaneCommand::WaitReload { pane, timeout } => wait_reload(conn, pane, timeout).await,
-        PaneCommand::ShareSession { pane, share } => {
-            simple(conn, |req| ClientMsg::PaneShareSession {
-                req: Some(req),
-                pane,
-                share: match share.as_str() {
-                    "on" => Some(true),
-                    "off" => Some(false),
-                    _ => None,
-                },
-            })
-            .await
-        }
         PaneCommand::Console {
             pane,
             follow,
@@ -6078,6 +6109,25 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
+                ServerMsg::Inspected { text, .. } => {
+                    println!("{text}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+        }
+        PaneCommand::Where { pane, on } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneInspect {
+                req: Some(req),
+                pane,
+                action: "where".into(),
+                arg: None,
+                path: None,
+                on,
+                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
+            };
+            match conn.call_within(msg, req, Duration::from_secs(10)).await? {
                 ServerMsg::Inspected { text, .. } => {
                     println!("{text}");
                     Ok(())

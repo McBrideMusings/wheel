@@ -156,7 +156,7 @@ impl Native {
         self.call(json!({"op":"open","pane":pane,"kind":"browser","url":url,"remote":remote}));
     }
     /// One of a browser pane's actions: `back`, `forward`, `reload`, `stop`, `clear_failure`,
-    /// `open` (with `text`), `opened` and `daemon_says` (with `url`), `refused` (with `text` and
+    /// `go_home`, `open` (with `text`), `opened` and `home_is` (with `url`), `refused` (with `text` and
     /// `message`).
     pub fn browser(&self, pane: &str, action: &str, fields: Value) {
         let mut value = json!({"op":"browser","pane":pane,"action":action});
@@ -169,18 +169,9 @@ impl Native {
     pub fn render(&self, id: u64, pane: &str, full: bool) {
         self.call(json!({"op":"render","id":id,"pane":pane,"full":full}));
     }
-    /// wheeld's `inspect_pane` `id`: the bridge runs `action` on `pane`'s page and answers through a frame.
+    /// wheeld's `inspect_pane` `id`: the bridge runs `action` on `pane`'s page (or, for `open`, sends the pane's browser to the page `arg`) and answers through a frame.
     pub fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>) {
         self.call(json!({"op":"inspect","id":id,"pane":pane,"action":action,"arg":arg}));
-    }
-    /// wheeld's `session_request` `id`: the bridge reads this Mac's session of `origin` (cookies, and
-    /// the storage of `pane`'s page when it is on that origin) and answers through a frame.
-    pub fn session_read(&self, id: u64, pane: &str, origin: &str) {
-        self.call(json!({"op":"session","id":id,"pane":pane,"origin":origin}));
-    }
-    /// wheeld's `session_install` `id`: the bridge installs the session a phone handed back.
-    pub fn session_write(&self, id: u64, pane: &str, session: &wheel_proto::PageSession) {
-        self.call(json!({"op":"session","id":id,"pane":pane,"session":session}));
     }
     /// A file in `pane`'s folder changed: open its page again.
     pub fn reload(&self, pane: &str) {
@@ -250,7 +241,7 @@ pub struct Failure {
 }
 
 /// What the bridge says on its own: a browser pane's state (`browser`), its reports for wheeld
-/// (`navigated`, `typed`, `console`), or the answer to a daemon request the view relayed.
+/// (`typed`, `console`), or the answer to a daemon request the view relayed.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Frame {
@@ -261,8 +252,6 @@ pub enum Frame {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BrowserEvent {
     Browser(BrowserState),
-    /// The view landed on `url`: wheeld's layout follows (`pane_browser_url`).
-    Navigated { pane: String, url: String },
     /// The person submitted `text` in the address field: wheeld says what page it means (`pane_browser_open`).
     Typed { pane: String, text: String },
     /// The page wrote to its console (`pane_console`); `reset` says it just loaded.
@@ -289,8 +278,6 @@ pub enum Answer {
     Inspected { id: u64, text: String },
     Recorded { id: u64, mov: String, frames: u64, millis: u64 },
     Refused { id: u64, message: String },
-    /// The answer to `session_request` (the session read) or `session_install` (none).
-    Session { id: u64, #[serde(default)] session: Option<wheel_proto::PageSession> },
 }
 
 #[cfg(test)]

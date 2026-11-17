@@ -237,24 +237,6 @@ struct ProtocolTests {
         #expect((device, credential) == ("d1", "secret"))
     }
 
-    /// `pane_url` carries one pane's new page, and applying it leaves the rest of the tree alone.
-    @Test func decodesAndAppliesAPaneUrl() throws {
-        guard case let .paneUrl(pane, url) = try ServerMsg.decode(#"{"ev":"pane_url","pane":"p3","url":"https://example.com/two"}"#)
-        else { Issue.record("wrong case"); return }
-        #expect(pane == "p3" && url == "https://example.com/two")
-
-        let tree = Node.split(id: "x1", axis: .horizontal, ratio: 0.5,
-                              a: .pane(id: "p2", kind: .terminal(term: "t1")),
-                              b: .pane(id: "p3", kind: .browser(url: "https://example.com/one")))
-        #expect(tree.replacing(pane: "p3", with: .browser(url: url))
-                == .split(id: "x1", axis: .horizontal, ratio: 0.5,
-                          a: .pane(id: "p2", kind: .terminal(term: "t1")),
-                          b: .pane(id: "p3", kind: .browser(url: "https://example.com/two"))))
-        // A pane the tree does not hold changes nothing, which is what lets a client apply a
-        // broadcast about a space it is not showing.
-        #expect(tree.replacing(pane: "p9", with: .browser(url: url)) == tree)
-    }
-
     @Test func registersThePushToken() throws {
         #expect(try ClientMsg.pushRegister(req: 3, token: "ab12").json() == #"{"op":"push_register","req":3,"token":"ab12"}"#)
     }
@@ -278,7 +260,16 @@ struct ProtocolTests {
         guard case let .inspectPane(_, _, _, _, named) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":6,"pane":"p6","action":"dom","arg":"h1","by":"claude"}"#)
         else { Issue.record("wrong case"); return }
         #expect(named == "claude")
-        #expect(try ClientMsg.paneBrowserMode(req: 7, pane: "p6", mode: "phone").json() == #"{"mode":"phone","op":"pane_browser_mode","pane":"p6","req":7}"#)
+        #expect(try ClientMsg.paneBrowserOpen(req: 7, pane: "p6", text: "example.com", on: "phone", from: "p2").json()
+                == #"{"from":"p2","on":"phone","op":"pane_browser_open","pane":"p6","req":7,"text":"example.com"}"#)
+        #expect(try ClientMsg.paneHome(req: 9, pane: "p6", url: "example.com").json()
+                == #"{"op":"pane_home","pane":"p6","req":9,"url":"example.com"}"#)
+        #expect(try ClientMsg.paneHome(req: 10, pane: "p6").json() == #"{"op":"pane_home","pane":"p6","req":10}"#)
+        guard case let .paneHome(req, pane, home) = try ServerMsg.decode(#"{"ev":"pane_home","req":9,"pane":"p6","url":"https://example.com/h"}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(req == 9 && pane == "p6" && home == "https://example.com/h")
+        #expect(try ClientMsg.paneBrowserOpen(req: 8, pane: "p6", text: "example.com").json()
+                == #"{"op":"pane_browser_open","pane":"p6","req":8,"text":"example.com"}"#)
         #expect(try ClientMsg.inspected(id: 5, text: "2").json() == #"{"id":5,"op":"inspected","text":"2"}"#)
     }
 

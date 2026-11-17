@@ -5,7 +5,7 @@ import WheelUI
 
 /// `inspect_pane`: the daemon asks this window to run JavaScript in a browser pane's page
 /// (`wheel pane eval`), read its HTML (`wheel pane dom`), draw one element of it as a PNG
-/// (`wheel pane shot --selector`) or film it (`wheel pane record`). Only a browser pane's web view
+/// (`wheel pane shot --selector`) or film it (`wheel pane record`), or to go to a page (`wheel pane page`). Only a browser pane's web view
 /// answers; an artifact pane is not one, and the daemon refuses it before it asks. The work is
 /// `BrowserInspect` in WheelUI, shared with the GPUI client's bridge.
 extension AppModel {
@@ -16,6 +16,16 @@ extension AppModel {
             return
         }
         Log.info("inspect \(id): \(op) on \(pane) arg=\(arg ?? "-")")
+        if op == "where", let browser = browserPanes[pane] {
+            reply(.inspected(id: id, text: BrowserInspect.place(url: browser.url, title: browser.title)))
+            return
+        }
+        if op == "open" {
+            guard let arg, !arg.isEmpty else { reply(.renderRefused(id: id, message: "open needs a page")); return }
+            browserPanes[pane]?.opened(arg)
+            reply(.inspected(id: id, text: ""))
+            return
+        }
         Task { @MainActor [weak self] in
             switch await BrowserInspect.run(op, arg: arg, in: web) {
             case let .text(text):
