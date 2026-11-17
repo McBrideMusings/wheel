@@ -1,5 +1,6 @@
 //! The Repo view's data: every local branch of the project with its worktree, its state against
-//! the default branch and its upstream, the open PR on it, and whether it is dead (safe to delete).
+//! the default branch and its upstream (in `git branch -vv`'s words), its PR (the open one, else the
+//! newest merged or closed one), whether it is merged, and whether it is dead (safe to delete).
 //! The classification is admin's `ClassifyDead` (internal/git/dead.go): first match wins.
 
 use std::path::Path;
@@ -41,6 +42,8 @@ pub struct Worktree {
 pub struct Pr {
     pub number: i64,
     pub title: String,
+    /// GitHub's state: `OPEN`, `MERGED` or `CLOSED`.
+    pub state: String,
     pub draft: bool,
     pub url: String,
     pub review: Option<String>,
@@ -57,13 +60,20 @@ pub struct Branch {
     pub ahead: Option<i64>,
     pub behind: Option<i64>,
     pub upstream: Option<String>,
+    /// What `git branch -vv` prints after the upstream: `ahead 5`, `behind 3`, `ahead 2, behind 3`,
+    /// `gone` (deleted on origin), or empty when up to date or there is no upstream.
+    pub track: String,
     pub upstream_gone: bool,
     pub remote: Option<String>,
     pub unpushed: Option<i64>,
     pub worktree: Option<Worktree>,
     pub pr: Option<Pr>,
     pub pr_merged: bool,
+    /// `merged` (its tip is in the default branch, as `git branch --merged` says) or `squash-merged`
+    /// (GitHub merged a PR from it, yet its tip is not in the default branch).
+    pub merged: Option<&'static str>,
     pub local_only: i64,
+    /// Why it is safe to delete: `gone`, `squash-merged`, `merged` or `pushed`.
     pub dead: Option<&'static str>,
     pub blocked: Option<String>,
 }
@@ -85,6 +95,8 @@ pub struct Snapshot {
     pub branches: Vec<Branch>,
     pub stashes: Vec<(String, String, String)>,
     pub commits: Vec<Commit>,
+    /// When origin was last fetched (`FETCH_HEAD`'s time), so the pane can say how old the upstream counts are.
+    pub fetched: Option<i64>,
     pub pr_error: Option<String>,
     pub error: Option<String>,
     /// The project's `[repo.list]` buttons, run over the listed branches.
@@ -143,14 +155,75 @@ fn paused_op(path: &str) -> Option<String> {
         .map(|(_, op)| op.to_string())
 }
 
-/// Head branches of PRs GitHub merged: the only sight of a squash or rebase merge. Empty when
-/// `gh` fails, so a branch then falls through to the git-only checks.
-fn merged_pr_heads(top: &str) -> Vec<String> {
-    let args = ["pr", "list", "--state", "merged", "--limit", "200", "--json", "headRefName"];
-    match run::gh(top, &args).ok().and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok()) {
-        Some(rows) => rows.iter().filter_map(|p| p["headRefName"].as_str().map(String::from)).collect(),
-        None => vec![],
+/// PRs GitHub merged or closed, newest first, each with its head branch. A merged one is the only
+/// sight of a squash or rebase merge. Empty when `gh` fails, so a branch then falls through to the
+/// git-only checks.
+fn closed_prs(top: &str) -> Vec<(String, Pr)> {
+    let args = ["pr", "list", "--state", "closed", "--limit", "200", "--json", "number,headRefName,title,state,isDraft,url"];
+    let rows = run::gh(top, &args).ok().and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok()).unwrap_or_default();
+    rows.iter().map(|p| {
+        let s = |k: &str| p[k].as_str().unwrap_or("").to_string();
+        (s("headRefName"), Pr { number: p["number"].as_i64().unwrap_or(0), title: s("title"), state: s("state"),
+            draft: p["isDraft"].as_bool().unwrap_or(false), url: s("url"), review: None, mergeable: String::new(), ci: None })
+    }).collect()
+}
+
+fn merged_heads(closed: &[(String, Pr)]) -> Vec<String> {
+    closed.iter().filter(|(_, p)| p.state == "MERGED").map(|(h, _)| h.clone()).collect()
+}
+
+/// `git fetch --prune origin` in `dir`, so origin's refs (and with them every branch's `track`) say
+/// what origin holds now: a branch deleted there reads `gone`. Nothing to do without an origin remote.
+/// Never asks for a password: a fetch that needs one fails. A fetch still running after `FETCH_LIMIT`
+/// (a stalled connection) is killed and is an error, so the next tick fetches again.
+pub fn fetch(dir: &str) -> Result<(), String> {
+    let top = git::toplevel(dir)?;
+    if git::quiet(&top, &["remote"]).lines().all(|r| r.trim() != "origin") {
+        return Ok(());
     }
+    let child = std::process::Command::new("/usr/bin/git")
+        .args(["fetch", "--prune", "--quiet", "origin"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(&top)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git fetch: {e}"))?;
+    wait_limited(child, FETCH_LIMIT).map_err(|e| format!("git fetch --prune origin in {top}: {e}"))
+}
+
+const FETCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Wait for `child` up to `limit`: `Ok` when it exits with 0, its stderr when it fails, and a kill
+/// with an error naming the limit when it is still running.
+fn wait_limited(mut child: std::process::Child, limit: std::time::Duration) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(s) if s.success() => return Ok(()),
+            Some(_) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                }
+                return Err(err.trim().to_string());
+            }
+            None if started.elapsed() >= limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("still running after {} s, stopped", limit.as_secs()));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
+}
+
+/// When origin was last fetched: the time of the shared `FETCH_HEAD`.
+fn fetched_at(top: &str) -> Option<i64> {
+    let (_, common) = git::dirs(top)?;
+    let t = std::fs::metadata(Path::new(&common).join("FETCH_HEAD")).ok()?.modified().ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
 }
 
 /// One line naming why `gh` failed, from its stderr: a signed-out `gh` says so in its own words, any
@@ -181,7 +254,7 @@ fn open_prs(top: &str) -> Result<Vec<(String, Pr)>, String> {
             None
         };
         let s = |k: &str| p[k].as_str().unwrap_or("").to_string();
-        (s("headRefName"), Pr { number: p["number"].as_i64().unwrap_or(0), title: s("title"),
+        (s("headRefName"), Pr { number: p["number"].as_i64().unwrap_or(0), title: s("title"), state: "OPEN".into(),
             draft: p["isDraft"].as_bool().unwrap_or(false), url: s("url"),
             review: Some(s("reviewDecision")).filter(|r| !r.is_empty()), mergeable: s("mergeable"), ci })
     }).collect())
@@ -208,30 +281,42 @@ fn classify(top: &str, b: &Branch, merged_heads: &[String]) -> (Option<&'static 
         _ => false,
     };
     let dead = if b.upstream_gone {
-        Some("upstream deleted")
-    } else if merged_on_github && !ahead_of_upstream {
-        Some("PR merged")
+        Some("gone")
     } else if b.ahead == Some(0) {
         Some("merged")
+    } else if merged_on_github && !ahead_of_upstream {
+        Some("squash-merged")
     } else if b.upstream.is_some() && !b.upstream_gone && !ahead_of_upstream {
-        Some("on origin")
+        Some("pushed")
     } else {
         None
     };
     (dead, lo)
 }
 
+/// `merged` when no commit of the branch is missing from the default branch, `squash-merged` when
+/// GitHub merged a PR from it anyway.
+fn merged_label(ahead: Option<i64>, pr_merged: bool) -> Option<&'static str> {
+    if ahead == Some(0) {
+        Some("merged")
+    } else if pr_merged {
+        Some("squash-merged")
+    } else {
+        None
+    }
+}
+
 /// Why a dead branch still cannot be deleted here.
 fn blocked_by(b: &Branch) -> Option<String> {
     let w = b.worktree.as_ref()?;
     Some(if w.primary {
-        "checked out in the primary checkout".into()
+        "primary checkout".into()
     } else if w.current {
-        "this is the checkout the pane is in".into()
+        "this pane's checkout".into()
     } else if let Some(op) = &w.op {
-        format!("a paused {op}")
+        format!("paused {op}")
     } else if w.status.dirty() {
-        "uncommitted changes in its worktree".into()
+        "uncommitted changes".into()
     } else {
         return None;
     })
@@ -241,8 +326,9 @@ fn real(p: &str) -> String {
     std::fs::canonicalize(p).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| p.into())
 }
 
-fn branch_rows(top: &str, dir: &str, default: &Option<String>, wts: &[Wt], prs: &[(String, Pr)], merged_heads: &[String]) -> Vec<Branch> {
-    let fmt = ["%(refname:short)", "%(upstream:short)", "%(upstream:track)", "%(committerdate:unix)", "%(subject)", "%(authorname)"]
+fn branch_rows(top: &str, dir: &str, default: &Option<String>, wts: &[Wt], prs: &[(String, Pr)], closed: &[(String, Pr)]) -> Vec<Branch> {
+    let merged_heads = merged_heads(closed);
+    let fmt = ["%(refname:short)", "%(upstream:short)", "%(upstream:track,nobracket)", "%(committerdate:unix)", "%(subject)", "%(authorname)"]
         .join(&SEP.to_string());
     let remotes = git::quiet(top, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"]);
     let remotes: Vec<&str> = remotes.split_whitespace().collect();
@@ -269,12 +355,13 @@ fn branch_rows(top: &str, dir: &str, default: &Option<String>, wts: &[Wt], prs: 
         });
         let mut b = Branch {
             branch: name.into(), ts: f[3].parse().unwrap_or(0), subject: f[4].into(), author: f[5].into(),
-            ahead, behind, upstream: Some(f[1].to_string()).filter(|u| !u.is_empty()), upstream_gone: f[2].contains("gone"),
+            ahead, behind, upstream: Some(f[1].to_string()).filter(|u| !u.is_empty()), track: f[2].to_string(), upstream_gone: f[2] == "gone",
             unpushed: remote.as_deref().and_then(|r| git::counts(top, name, r)).map(|c| c.0), remote,
-            worktree, pr: prs.iter().find(|(h, _)| h == name).map(|(_, p)| p.clone()),
-            pr_merged: merged_heads.iter().any(|h| h == name), local_only: 0, dead: None, blocked: None,
+            worktree, pr: prs.iter().chain(closed).find(|(h, _)| h == name).map(|(_, p)| p.clone()),
+            pr_merged: merged_heads.iter().any(|h| h == name), merged: None, local_only: 0, dead: None, blocked: None,
         };
-        let (dead, lo) = classify(top, &b, merged_heads);
+        b.merged = merged_label(b.ahead, b.pr_merged);
+        let (dead, lo) = classify(top, &b, &merged_heads);
         b.dead = dead;
         b.local_only = lo;
         b.blocked = if dead.is_some() { blocked_by(&b) } else { None };
@@ -311,13 +398,13 @@ pub fn collect(dir: &str) -> Snapshot {
             })
             .collect()
     });
-    let merged = merged_pr_heads(&top);
+    let closed = closed_prs(&top);
     let (scripts, problems) = crate::core::buttons::scripts(dir, "repo");
     let pr_error = pr_error.or(problems.into_iter().next());
     Snapshot {
-        scripts,
+        scripts, fetched: fetched_at(&top),
         name: crate::core::project::name_of(&top), head: git::current_branch(&top),
-        branches: branch_rows(&top, dir, &default, &wts, &prs, &merged), stashes,
+        branches: branch_rows(&top, dir, &default, &wts, &prs, &closed), stashes,
         commits: commits.unwrap_or_default(), pr_error, default, top, error: None,
     }
 }
@@ -330,7 +417,7 @@ pub fn delete(dir: &str, branch: &str) -> Result<Vec<String>, String> {
     let top = git::toplevel(dir)?;
     let default = git::default_ref(&top);
     let wts = worktrees(&top);
-    let rows = branch_rows(&top, dir, &default, &wts, &[], &merged_pr_heads(&top));
+    let rows = branch_rows(&top, dir, &default, &wts, &[], &closed_prs(&top));
     let row = rows.iter().find(|b| b.branch == branch).ok_or("no such local branch")?;
     if row.dead.is_none() {
         return Err(format!("not deletable: {} commit(s) live on no origin ref", row.local_only));
@@ -367,8 +454,8 @@ mod tests {
 
     fn branch(f: impl Fn(&mut Branch)) -> Branch {
         let mut b = Branch { branch: "x".into(), ts: 0, subject: String::new(), author: String::new(), ahead: Some(1), behind: Some(0),
-            upstream: None, upstream_gone: false, remote: None, unpushed: None, worktree: None, pr: None, pr_merged: false,
-            local_only: 0, dead: None, blocked: None };
+            upstream: None, track: String::new(), upstream_gone: false, remote: None, unpushed: None, worktree: None, pr: None,
+            pr_merged: false, merged: None, local_only: 0, dead: None, blocked: None };
         f(&mut b);
         b
     }
@@ -380,14 +467,80 @@ mod tests {
         Some(w)
     }
 
+    fn sh(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("/usr/bin/git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn a_branch_deleted_on_origin_reads_gone_after_fetch() {
+        let root = std::env::temp_dir().join(format!("wheelhouse-repo-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        sh(&root, &["init", "-q", "--bare", "origin.git"]);
+        sh(&root, &["clone", "-q", "origin.git", "work"]);
+        let work = root.join("work");
+        sh(&work, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        sh(&work, &["push", "-q", "-u", "origin", "main"]);
+        sh(&work, &["checkout", "-q", "-b", "feature"]);
+        sh(&work, &["commit", "-q", "--allow-empty", "-m", "feature work"]);
+        sh(&work, &["push", "-q", "-u", "origin", "feature"]);
+        sh(&work, &["checkout", "-q", "-b", "unmerged", "main"]);
+        sh(&work, &["commit", "-q", "--allow-empty", "-m", "unmerged work"]);
+        sh(&work, &["push", "-q", "-u", "origin", "unmerged"]);
+        sh(&work, &["checkout", "-q", "main"]);
+        sh(&work, &["merge", "-q", "--ff-only", "feature"]);
+        sh(&work, &["push", "-q", "origin", "main"]);
+        let dir = work.to_str().unwrap();
+        let row = |name: &str| collect(dir).branches.into_iter().find(|b| b.branch == name).unwrap();
+        let before = row("feature");
+        assert_eq!((before.track.as_str(), before.dead, before.merged), ("", Some("merged"), Some("merged")));
+        sh(&root.join("origin.git"), &["branch", "-q", "-D", "feature", "unmerged"]);
+        assert_eq!(row("feature").track, "", "without a fetch the local origin/feature still stands");
+        fetch(dir).unwrap();
+        let merged = row("feature");
+        assert_eq!((merged.track.as_str(), merged.upstream_gone, merged.dead), ("gone", true, Some("gone")));
+        let unmerged = row("unmerged");
+        assert_eq!((unmerged.track.as_str(), unmerged.dead, unmerged.local_only), ("gone", None, 1),
+            "its one commit now lives on no origin ref, so it is not safe to delete");
+        assert!(collect(dir).fetched.is_some());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn what_blocks_a_dead_branch() {
         assert_eq!(blocked_by(&branch(|_| {})), None);
-        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.primary = true))).unwrap(), "checked out in the primary checkout");
-        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.current = true))).unwrap(), "this is the checkout the pane is in");
-        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.op = Some("rebase".into())))).unwrap(), "a paused rebase");
-        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.status.untracked = 2))).unwrap(), "uncommitted changes in its worktree");
+        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.primary = true))).unwrap(), "primary checkout");
+        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.current = true))).unwrap(), "this pane's checkout");
+        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.op = Some("rebase".into())))).unwrap(), "paused rebase");
+        assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|w| w.status.untracked = 2))).unwrap(), "uncommitted changes");
         assert_eq!(blocked_by(&branch(|b| b.worktree = wt(|_| {}))), None);
+    }
+
+    #[test]
+    fn merged_is_in_the_default_branch_and_squash_merged_is_a_merged_pr_that_is_not() {
+        assert_eq!(merged_label(Some(0), false), Some("merged"));
+        assert_eq!(merged_label(Some(0), true), Some("merged"));
+        assert_eq!(merged_label(Some(3), true), Some("squash-merged"));
+        assert_eq!(merged_label(Some(3), false), None);
+        assert_eq!(merged_label(None, false), None);
+    }
+
+    #[test]
+    fn a_process_past_its_limit_is_stopped_and_named() {
+        let cmd = |sh: &str| std::process::Command::new("/bin/sh").args(["-c", sh])
+            .stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let limit = std::time::Duration::from_millis(300);
+        assert_eq!(wait_limited(cmd("exit 0"), limit), Ok(()));
+        assert_eq!(wait_limited(cmd("echo boom >&2; exit 1"), limit), Err("boom".into()));
+        let started = std::time::Instant::now();
+        assert_eq!(wait_limited(cmd("sleep 30"), limit), Err("still running after 0 s, stopped".into()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

@@ -40,13 +40,22 @@ local function leaf(path)
     return string.match(path, "([^/]*)$") or path
 end
 
+-- The branch against its upstream in `git branch -vv`'s and `git status`'s words: "up to date", "ahead 5",
+-- "behind 3", "gone" (deleted on origin), or "no upstream". An upstream under another name is named first.
+local function upstream_text(b)
+    if not b.upstream then return "no upstream" end
+    local track = if (b.track or "") == "" then "up to date" else b.track
+    if b.upstream == "origin/" .. b.branch then return track end
+    return b.upstream .. ": " .. track
+end
+
 local SPEC = {
     filters = {
         { key = "state", name = "state" },
         { key = "has", name = "has" },
         { key = "checks", name = "checks" },
     },
-    sorts = { "branch", "worktree", "vs", "pr", "ci", "state", "updated" },
+    sorts = { "branch", "worktree", "vs", "pr", "ci", "upstream", "merged", "delete", "updated" },
     has = function(b, key, value)
         if key == "state" then return b._kind == value end
         if key == "has" then
@@ -54,6 +63,8 @@ local SPEC = {
             if value == "pr" then return b.pr ~= nil end
             if value == "changes" then return changed(b) end
             if value == "local-only" then return (b.local_only or 0) > 0 end
+            if value == "gone" then return b.upstream_gone == true end
+            if value == "merged" then return b.merged ~= nil end
             return false
         end
         if key == "checks" then return b._ci == value end
@@ -73,7 +84,9 @@ local function compare(key, a, b)
     if key == "vs" then return sorting.cmp(a.ahead or -1, b.ahead or -1) end
     if key == "pr" then return sorting.cmp(a.pr and a.pr.number or 0, b.pr and b.pr.number or 0) end
     if key == "ci" then return sorting.cmp(CI_RANK[a._ci], CI_RANK[b._ci]) end
-    if key == "state" then return sorting.cmp(GROUP[a._kind], GROUP[b._kind]) end
+    if key == "upstream" then return sorting.cmp(a._up, b._up) end
+    if key == "merged" then return sorting.cmp(a.merged or "~", b.merged or "~") end
+    if key == "delete" then return sorting.cmp(GROUP[a._kind], GROUP[b._kind]) end
     return sorting.cmp(a.ts or 0, b.ts or 0)
 end
 
@@ -90,6 +103,7 @@ local function prepare(snap)
         b._kind = kinds(b)
         b._ci = ci(b)
         b._wt = if b.worktree then string.lower(leaf(b.worktree.path)) else ""
+        b._up = upstream_text(b)
     end
 end
 
@@ -113,29 +127,41 @@ local function branch_row(st, b, now)
     else
         ci_cell = kit.cell("", { sort = 3 })
     end
-    local state_cell
+    local up_tone = "muted"
+    if b.upstream_gone then up_tone = "warn" end
+    local up_cell = kit.cell(b._up, { key = "upstream", mono = true, tone = up_tone, sort = b._up })
+    local merged_cell = kit.cell(b.merged or "", { key = "merged", tone = "ok", sort = b.merged or "~" })
+    local delete_cell
     if b._kind == "dead" then
-        state_cell = kit.cell(b.dead, { chip = true, tone = "ok" })
+        delete_cell = kit.cell("safe", { chip = true, tone = "ok" })
     elseif b._kind == "blocked" then
-        state_cell = kit.cell(b.blocked, { tone = "warn" })
+        delete_cell = kit.cell("blocked: " .. b.blocked, { tone = "warn" })
     else
         local n = b.local_only or 0
-        state_cell = kit.cell(if n > 0 then n .. " local-only" else "", { tone = "muted" })
+        delete_cell = kit.cell(if n > 0 then n .. " unpushed" else "", { tone = "muted" })
+    end
+    local pr_text = ""
+    if b.pr then
+        local s = string.lower(b.pr.state or "open")
+        if s == "open" and b.pr.draft then s = "draft" end
+        pr_text = "#" .. b.pr.number .. " " .. s
     end
     local cells = {
         kit.cell(b.branch, { key = "branch", mono = true, sort = string.lower(b.branch) }),
         kit.cell(wt, { key = "worktree", tone = "muted", sort = b._wt }),
         kit.cell(vs, { key = "vs", mono = true, tone = "muted", sort = b.ahead or -1 }),
-        kit.cell(if b.pr then "#" .. b.pr.number else "", {
+        kit.cell(pr_text, {
             key = "pr", mono = true, sort = b.pr and b.pr.number or 0,
-            view = if b.pr and b.pr.url ~= "" then ui.Link{ title = "#" .. b.pr.number, destination = b.pr.url } else nil,
+            view = if b.pr and b.pr.url ~= "" then ui.Link{ title = pr_text, destination = b.pr.url } else nil,
         }),
         ci_cell,
-        state_cell,
+        up_cell,
+        merged_cell,
+        delete_cell,
         kit.cell(tm.ago_ts(b.ts, now), { key = "updated", tone = "muted", sort = b.ts or 0 }),
     }
     ci_cell.key = "ci"
-    state_cell.key = "state"
+    delete_cell.key = "delete"
     local row = { id = b.branch, path = b.branch, depth = 0, cells = cells, menu = {} }
     if st.sel == b.branch then row.sel = true end
     if b._kind == "dead" then
@@ -147,13 +173,18 @@ end
 local function branches_table(st, snap, shown, now)
     local rows = {}
     for i, b in shown do rows[i] = branch_row(st, b, now) end
+    -- How old the upstream counts are: they are as fresh as the last `git fetch`.
+    local upstream = "Upstream"
+    if snap.fetched then upstream = "Upstream · fetched " .. tm.ago_ts(snap.fetched, now) end
     local columns = {
         kit.column("branch", "Branch", "flex", false, false, true),
-        kit.column("worktree", "Worktree", 180, false, false, true),
+        kit.column("worktree", "Worktree", 150, false, false, true),
         kit.column("vs", "vs " .. (snap.default or "default"), 90, false, false, true),
-        kit.column("pr", "PR", 60, false, false, true),
-        kit.column("ci", "Checks", 84, false, false, true),
-        kit.column("state", "State", 150, false, false, true),
+        kit.column("pr", "PR", 96, false, false, true),
+        kit.column("ci", "Checks", 70, false, false, true),
+        kit.column("upstream", upstream, 170, false, false, true),
+        kit.column("merged", "Merged", 100, false, false, true),
+        kit.column("delete", "Delete", 120, false, false, true),
         kit.column("updated", "Updated", 70, false, false, true),
     }
     local selected = {}
@@ -302,7 +333,8 @@ local function page(st, data, snap)
         local options = {
             counted(branches, "state", { { "dead", "safe to delete" }, { "blocked", "blocked" }, { "live", "live" } }),
             counted(branches, "has", {
-                { "worktree", "worktree" }, { "pr", "PR" }, { "changes", "uncommitted changes" }, { "local-only", "local-only commits" },
+                { "worktree", "worktree" }, { "pr", "PR" }, { "changes", "uncommitted changes" }, { "local-only", "unpushed commits" },
+                { "gone", "upstream gone" }, { "merged", "merged" },
             }),
             counted(branches, "checks", { { "failing", "failing" }, { "pending", "pending" }, { "passing", "passing" }, { "none", "none" } }),
         }
@@ -317,7 +349,7 @@ end
 -- ───────────────────────────── the module ─────────────────────────────
 
 local function init(previous)
-    local state = previous or { tab = "branches", list = list.new("state", true), sel = nil, said = nil, said_bad = false }
+    local state = previous or { tab = "branches", list = list.new("delete", true), sel = nil, said = nil, said_bad = false }
     return state
 end
 

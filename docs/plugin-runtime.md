@@ -336,15 +336,15 @@ wheel plugin restart wheelhouse     # after each rebuild; the manifest has no wa
 
 ```json
 {"now": 1794647860, "name": "proj-r", "top": "/private/tmp/claude/wheel/wh/proj-r", "default": "origin/main", "head": "main",
- "branches": [{"branch": "merged-b", "ts": 1794647859, "subject": "first commit", "author": "t", "ahead": 0, "behind": 0, "upstream": null,
-               "upstream_gone": false, "remote": null, "unpushed": null, "worktree": null, "pr": null, "pr_merged": false, "local_only": 0,
-               "dead": "merged", "blocked": null}],
+ "branches": [{"branch": "merged-b", "ts": 1794647859, "subject": "first commit", "author": "t", "ahead": 0, "behind": 0, "upstream": null, "track": "",
+               "upstream_gone": false, "remote": null, "unpushed": null, "worktree": null, "pr": null, "pr_merged": false, "merged": "merged",
+               "local_only": 0, "dead": "merged", "blocked": null}],
  "stashes": [{"ref": "stash@{0}", "subject": "WIP on main: 9d68eb1 first commit", "when": "0 seconds ago"}],
  "commits": [{"sha": "9d68eb1", "subject": "first commit", "author": "t", "ts": 1794647859}],
- "pr_error": null, "error": null, "scripts": [{"name": "mark", "label": "Mark branches"}]}
+ "fetched": 1794647800, "pr_error": null, "error": null, "scripts": [{"name": "mark", "label": "Mark branches"}]}
 ```
 
-A branch's `worktree` is `{path, current, primary, status: {staged, unstaged, untracked, conflicted}, op}` and its `pr` is `{number, title, draft, url, review, mergeable, ci}` (`ci` is `pass`, `fail`, `pending` or null). `dead` names why the branch is safe to delete (`upstream deleted`, `PR merged`, `merged`, `on origin`) and `blocked` why it still cannot be (its worktree is the primary or the pane's own checkout, holds a paused operation or has uncommitted changes). A directory outside a git checkout has `error` set and nothing else filled; a failing `gh` puts the last line it printed in `pr_error`. `scripts` are the project's `[repo.list.<name>]` buttons.
+A branch's `worktree` is `{path, current, primary, status: {staged, unstaged, untracked, conflicted}, op}` and its `pr` is `{number, title, state, draft, url, review, mergeable, ci}`: the open PR from it, else the newest merged or closed one (`state` is `OPEN`, `MERGED` or `CLOSED`; `ci` is `pass`, `fail`, `pending` or null). `track` is what `git branch -vv` prints after the upstream (`ahead 5`, `behind 3`, `ahead 2, behind 3`, `gone`, or empty when up to date or with no upstream), as of the `git fetch --prune origin` the backend runs when the subscription starts and every 120 s; `fetched` is when origin was last fetched (unix seconds, `FETCH_HEAD`'s time). `merged` is `merged` (its tip is in the default branch) or `squash-merged` (GitHub merged a PR from it, yet its tip is not), else null. `dead` names why the branch is safe to delete (`gone`, `merged`, `squash-merged`, `pushed`) and `blocked` why it still cannot be (its worktree is the primary or the pane's own checkout, holds a paused operation or has uncommitted changes). A directory outside a git checkout has `error` set and nothing else filled; a failing `gh` puts the last line it printed in `pr_error`. `scripts` are the project's `[repo.list.<name>]` buttons.
 
 **Feed `prs`**, params `{dir}`: the project's open pull requests with their review standing, from `prs::collect` (one `gh api graphql` read, shared by every pane and project of the same repo for 30 s). It is read again when `HEAD`, `logs/HEAD`, `packed-refs` or `refs/stash` change, or anything under `refs/heads`, `refs/remotes/origin` or `worktrees` (the `repo` feed's watches, since a fetch or push moves `refs/remotes/origin`), and every 120 s for every subscription. `fetched` changes only when `gh` is really asked, so a read answered from the 30 s share sends nothing. The value, from a canned snapshot:
 

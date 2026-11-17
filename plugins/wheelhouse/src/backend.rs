@@ -17,7 +17,9 @@
 //! when any subscription needs it so (a `beads` subscription's non-recursive watch of a project
 //! directory is upgraded by a `diff` subscription's recursive watch of the same checkout, and
 //! downgraded again when that one leaves). `repo`, `prs` and `pr_detail` are also read again every
-//! 120 s, as is `issues`, for what only `gh` knows; `diff` has no clock. A read is keyed on the feed
+//! 120 s, as is `issues`, for what only `gh` knows; `diff` has no clock. A `repo` subscription runs
+//! `git fetch --prune origin` when it starts and on each tick, then reads again, so a branch deleted on
+//! origin reads `gone`. A read is keyed on the feed
 //! and its whole params, so `pr_detail {dir, number: 3}` and `{dir, number: 5}` are two values, while an
 //! action or clock names a feed and a project and reads every subscription of that feed on it. Actions
 //! are `press`, `run_list`, `issue_create`, `issue_close`, `branch_delete`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
@@ -268,6 +270,8 @@ struct Core {
     waiting: Mutex<HashSet<(String, String)>>,
     /// The agents `wheel agent watch` lists, followed while a `work` subscription exists.
     agents: Agents,
+    /// The project directories a `git fetch --prune origin` is running in: a second one waits for the next tick.
+    fetching: Mutex<HashSet<String>>,
 }
 
 /// The machine's `wheel.toml`, its symlinks resolved, as file events name it.
@@ -283,6 +287,26 @@ impl Core {
     fn log(&self, level: &str, message: &str) {
         eprintln!("wheelhouse backend: {message}");
         let _ = self.client.notify::<LogMessage>(json!({ "level": level, "message": message }));
+    }
+
+    /// Run `git fetch --prune origin` in `dir`, then read its `repo` subscriptions again, so a branch
+    /// deleted on origin reads `gone` and every upstream count is against origin as it is now.
+    fn fetch_then_refresh(self: &Arc<Self>, dir: String) {
+        if !self.fetching.lock().unwrap().insert(dir.clone()) {
+            return;
+        }
+        let core = self.clone();
+        tokio::spawn(async move {
+            let d = dir.clone();
+            let done = tokio::task::spawn_blocking(move || crate::repo::fetch(&d)).await;
+            core.fetching.lock().unwrap().remove(&dir);
+            match done {
+                Ok(Err(e)) => core.log("warn", &e),
+                Err(e) => core.log("error", &format!("fetching {dir}: {e}")),
+                Ok(Ok(())) => {}
+            }
+            let _ = core.tx.send(Msg::RefreshFeed("repo".into(), dir));
+        });
     }
 
     /// Install `mode` on `path`, replacing the watch it has; false when the watcher refused.
@@ -372,6 +396,9 @@ impl Core {
             if let Some(old) = old {
                 self.unwatch_unused(&subs, &old.watch);
             }
+        }
+        if feed == "repo" {
+            self.fetch_then_refresh(dir);
         }
         let core = self.clone();
         tokio::spawn(async move { core.refresh(&feed, &pkey).await });
@@ -708,7 +735,11 @@ async fn repo_clock(core: Arc<Core>) {
         tick.tick().await;
         let units: BTreeSet<(String, String)> = core.subs.lock().unwrap().values().filter(|s| on_clock(&s.feed)).map(|s| (s.feed.clone(), s.dir.clone())).collect();
         for (feed, dir) in units {
-            let _ = core.tx.send(Msg::RefreshFeed(feed, dir));
+            if feed == "repo" {
+                core.fetch_then_refresh(dir);
+            } else {
+                let _ = core.tx.send(Msg::RefreshFeed(feed, dir));
+            }
         }
     }
 }
@@ -747,6 +778,7 @@ pub async fn run() -> anyhow::Result<()> {
             work: Mutex::default(),
             waiting: Mutex::default(),
             agents: core_agents,
+            fetching: Mutex::default(),
         });
         if let Some(dir) = records_dir() {
             core.watch(dir, false);
