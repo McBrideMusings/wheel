@@ -8600,3 +8600,154 @@ async fn a_plugin_pane_embeds_an_artifact_served_as_a_web_panes_page() {
     assert_eq!(status, 404, "the embed page outlived its plugin pane");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A browser pane with a home, and the pane id, in a fresh daemon.
+async fn browser_pane_for_where(name: &str) -> (String, Ws, common::Daemon, std::path::PathBuf, String) {
+    let base = std::env::temp_dir().join(format!("wheel-where-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, serving) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&project.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            home: None,
+            req: Some(30),
+            pane: pane.clone(),
+            kind: NewPaneKind::Browser,
+            artifact: None,
+            scope: None,
+            url: Some("https://home.example/".into()),
+            plugin: None,
+        },
+    )
+    .await;
+    (url, ws, serving, base, pane)
+}
+
+async fn info_fields(ws: &mut Ws, pane: &str) -> Vec<(String, String)> {
+    match call(
+        ws,
+        ClientMsg::PaneInfo {
+            req: Some(77),
+            pane: pane.into(),
+        },
+    )
+    .await
+    {
+        ServerMsg::PaneInfo { fields, .. } => fields.into_iter().map(|f| (f.label, f.value)).collect(),
+        other => panic!("expected pane_info, got {other:?}"),
+    }
+}
+
+fn field_of<'a>(fields: &'a [(String, String)], label: &str) -> Option<&'a str> {
+    fields.iter().find(|(l, _)| l == label).map(|(_, v)| v.as_str())
+}
+
+/// `where`: a Mac client that answers it shows in `pane_info` beside the home, and `pane_inspect`
+/// returns its page and title; with no Mac client the field reads "not attached" at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_info_asks_the_mac_browser_where_it_is() {
+    let (url, mut ws, _keep, base, pane) = browser_pane_for_where("mac").await;
+
+    // No Mac client: no wait.
+    let started = std::time::Instant::now();
+    let fields = info_fields(&mut ws, &pane).await;
+    assert!(started.elapsed() < Duration::from_millis(900), "waited {:?}", started.elapsed());
+    assert_eq!(field_of(&fields, "Home"), Some("https://home.example/"));
+    assert_eq!(field_of(&fields, "Mac"), Some("not attached"));
+    assert!(fields.iter().all(|(l, _)| !l.starts_with("Phone")), "{fields:?}");
+
+    let mut renderer = connect(&url).await;
+    renderer
+        .send(Message::Text(serde_json::to_string(&ClientMsg::RenderOffer {}).unwrap().into()))
+        .await
+        .unwrap();
+    let _ = layout(&mut renderer).await;
+    tokio::spawn(async move {
+        loop {
+            let ServerMsg::InspectPane { id, action, .. } = recv(&mut renderer).await else {
+                continue;
+            };
+            assert_eq!(action, "where");
+            let answer = ClientMsg::Inspected {
+                id,
+                text: r#"{"url":"https://mac.example/page","title":"Mac page"}"#.into(),
+            };
+            renderer
+                .send(Message::Text(serde_json::to_string(&answer).unwrap().into()))
+                .await
+                .unwrap();
+        }
+    });
+    let fields = info_fields(&mut ws, &pane).await;
+    assert_eq!(field_of(&fields, "Home"), Some("https://home.example/"));
+    assert_eq!(field_of(&fields, "Mac"), Some("https://mac.example/page (Mac page)"));
+    match call(
+        &mut ws,
+        ClientMsg::PaneInspect {
+            req: Some(78),
+            pane: pane.clone(),
+            action: "where".into(),
+            arg: None,
+            path: None,
+            on: None,
+            from: None,
+        },
+    )
+    .await
+    {
+        ServerMsg::Inspected { text, .. } => assert_eq!(text, "https://mac.example/page\tMac page"),
+        other => panic!("expected inspected, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A Mac client that never answers `where` makes `pane_info` return after the 3 s wait, with a
+/// timeout text for that field and the home still named.
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_info_does_not_hang_on_a_silent_browser() {
+    let (url, mut ws, _keep, base, pane) = browser_pane_for_where("silent").await;
+    let mut renderer = connect(&url).await;
+    renderer
+        .send(Message::Text(serde_json::to_string(&ClientMsg::RenderOffer {}).unwrap().into()))
+        .await
+        .unwrap();
+    let _ = layout(&mut renderer).await;
+    let started = std::time::Instant::now();
+    let fields = info_fields(&mut ws, &pane).await;
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(2900) && waited < Duration::from_millis(4500), "waited {waited:?}");
+    assert_eq!(field_of(&fields, "Mac"), Some("no answer within 3s"));
+    assert_eq!(field_of(&fields, "Home"), Some("https://home.example/"));
+    drop(renderer);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Two silent Mac clients and a silent phone: `pane_info` still returns in about 3 s, because
+/// each side has one deadline however many clients it holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn pane_info_waits_3_seconds_in_all_for_many_silent_browsers() {
+    let (url, mut ws, _keep, base, pane) = browser_pane_for_where("many").await;
+    let mut silent = Vec::new();
+    for _ in 0..2 {
+        let mut renderer = connect(&url).await;
+        renderer
+            .send(Message::Text(serde_json::to_string(&ClientMsg::RenderOffer {}).unwrap().into()))
+            .await
+            .unwrap();
+        let _ = layout(&mut renderer).await;
+        silent.push(renderer);
+    }
+    let started = std::time::Instant::now();
+    let fields = info_fields(&mut ws, &pane).await;
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(2900) && waited < Duration::from_millis(4500), "waited {waited:?}");
+    assert_eq!(field_of(&fields, "Mac"), Some("no answer within 3s"));
+    drop(silent);
+    let _ = std::fs::remove_dir_all(&base);
+}

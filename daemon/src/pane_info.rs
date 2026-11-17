@@ -15,6 +15,16 @@ fn field(label: &str, value: impl Into<String>, hint: &str) -> InfoField {
     }
 }
 
+/// A browser's field: its title and page, or why it did not say.
+fn where_field(label: &str, hint: &str, found: Result<crate::render::Where, String>) -> InfoField {
+    let value = match found {
+        Ok(w) if w.title.is_empty() => w.url,
+        Ok(w) => format!("{} ({})", w.url, w.title),
+        Err(why) => why,
+    };
+    field(label, value, hint)
+}
+
 impl AppState {
     /// The config directory an agent pane running `harness` at `place` takes its login from (the
     /// pane's own `home`, else the `agent.<harness>.home` setting, else the harness's default), with
@@ -218,7 +228,28 @@ impl AppState {
                 ("web", fields)
             }
             PaneKind::Browser { url, .. } => {
-                let fields = vec![pane_field, field("Home", url, "the page the Mac's and the phone's browsers open at; each then browses on its own")];
+                let mut fields = vec![pane_field, field("Home", url, "the page the Mac's and the phone's browsers open at; each then browses on its own")];
+                // Each attached browser is asked at once, so the wait is the slowest, not the sum.
+                let phones = self.attached_phones();
+                let mac = async {
+                    if self.mac_attached() {
+                        self.pane_where_of(&pane, None).await
+                    } else {
+                        Err("not attached".to_string())
+                    }
+                };
+                let phone_asks = futures_util::future::join_all(
+                    phones.iter().map(|name| self.pane_where_of(&pane, Some(name))),
+                );
+                let (mac, phone_answers) = tokio::join!(mac, phone_asks);
+                fields.push(where_field("Mac", "the page the Mac's browser is on now", mac));
+                for (name, answer) in phones.iter().zip(phone_answers) {
+                    fields.push(where_field(
+                        &format!("Phone {name}"),
+                        "the page this phone's browser is on now",
+                        answer,
+                    ));
+                }
                 ("browser", fields)
             }
             _ => ("empty", vec![pane_field]),

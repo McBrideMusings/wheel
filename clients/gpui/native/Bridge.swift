@@ -1117,6 +1117,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let pane = value["pane"] as! String
         let arg = value["arg"] as? String
         guard let browser = panes[pane]?.browser else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
+        // `where` reads the page this browser is on and changes nothing.
+        if value["action"] as? String == "where" {
+            emit(["answer": "inspected", "id": id, "text": BrowserInspect.place(url: browser.url, title: browser.title)])
+            return
+        }
         // `open` sends this browser to a page; the rest run in the page.
         if value["action"] as? String == "open" {
             guard let arg, !arg.isEmpty else { emit(["answer": "refused", "id": id, "message": "open needs a page"]); return }

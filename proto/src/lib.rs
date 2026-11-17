@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 48;
+pub const PROTOCOL_VERSION: u32 = 49;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1368,6 +1368,10 @@ pub enum ClientMsg {
     /// `action` `open` sends that client's browser to the page `arg` names (the CLI's
     /// `wheel pane page` sends it after `pane_browser_open` resolves the text); the reply
     /// `inspected` text is empty.
+    ///
+    /// `action` `where` takes no `arg`: the browser answers `inspected` with the JSON
+    /// `{"url": …, "title": …}` of the page it is on, and wheeld waits 3 seconds for it. The CLI's
+    /// `wheel pane where` prints them; `wheel pane info` asks every attached browser. `PROTOCOL_VERSION` 49.
     PaneInspect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,

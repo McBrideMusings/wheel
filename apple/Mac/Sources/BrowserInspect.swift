@@ -16,6 +16,10 @@ extension AppModel {
             return
         }
         Log.info("inspect \(id): \(op) on \(pane) arg=\(arg ?? "-")")
+        if op == "where", let browser = browserPanes[pane] {
+            reply(.inspected(id: id, text: BrowserInspect.place(url: browser.url, title: browser.title)))
+            return
+        }
         if op == "open" {
             guard let arg, !arg.isEmpty else { reply(.renderRefused(id: id, message: "open needs a page")); return }
             browserPanes[pane]?.opened(arg)

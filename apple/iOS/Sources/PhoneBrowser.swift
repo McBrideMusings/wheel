@@ -101,6 +101,11 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
 
     /// `inspect_pane` `op` with `arg`, run on this page, shown in the banner under `by`.
     func run(_ op: String, arg: String?, by: String?) async -> BrowserInspect.Outcome {
+        // `where` reads state and changes nothing on the page, so it shows no agent banner.
+        if op == "where" {
+            let current = view.url.map(BrowserPanes.macPage) ?? (page.isEmpty ? "about:blank" : page)
+            return .text(BrowserInspect.place(url: current.isEmpty ? "about:blank" : current, title: view.title ?? ""))
+        }
         let shown = show(by: by, ran: op, arg: arg)
         defer { hide(shown) }
         if op == "open" {

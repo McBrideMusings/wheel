@@ -1253,6 +1253,17 @@ enum PaneCommand {
         #[arg(long, value_parser = ["mac", "phone"])]
         on: Option<String>,
     },
+    /// Print the page a browser pane's browser is on now, as `<url><TAB><title>`.
+    ///
+    /// wheeld asks that one browser and waits 3 seconds. Fails with "the phone is not attached"
+    /// while the phone's app is suspended, when no Mac app is connected, or when the pane is not
+    /// a browser pane.
+    Where {
+        pane: String,
+        /// Which browser: the Mac app (default) or the phone's own web view.
+        #[arg(long, value_parser = ["mac", "phone"])]
+        on: Option<String>,
+    },
     /// Ask every client to show a pane. wheeld keeps no focused pane; each client shows its own.
     Focus { pane: String },
     /// Set the share of a split its first pane takes (0.1 to 0.9).
@@ -6098,6 +6109,25 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
+                ServerMsg::Inspected { text, .. } => {
+                    println!("{text}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+        }
+        PaneCommand::Where { pane, on } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneInspect {
+                req: Some(req),
+                pane,
+                action: "where".into(),
+                arg: None,
+                path: None,
+                on,
+                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
+            };
+            match conn.call_within(msg, req, Duration::from_secs(10)).await? {
                 ServerMsg::Inspected { text, .. } => {
                     println!("{text}");
                     Ok(())

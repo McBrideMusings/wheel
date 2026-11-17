@@ -47,7 +47,7 @@ SITE_PID=$!
 check "the loopback page serves on 127.0.0.1:$SPORT" poll 20 curl -sf "http://127.0.0.1:$SPORT/"
 
 # The Mac's own browser, played by node: a local connection that offers to render, holds a page
-# (the pane's first page until told to go elsewhere) and answers `eval location.href` with it.
+# (the pane's first page until told to go elsewhere) and answers `eval location.href` and `where` with it.
 cat >"$SCR/mac.js" <<'EOF'
 // usage: node mac.js <ws url> <first page>
 let page = process.argv[3];
@@ -57,7 +57,7 @@ ws.onmessage = (e) => {
   const m = JSON.parse(e.data);
   if (m.ev !== 'inspect_pane') return;
   if (m.action === 'open') page = m.arg;
-  const text = m.action === 'eval' ? JSON.stringify(page) : '';
+  const text = m.action === 'eval' ? JSON.stringify(page) : m.action === 'where' ? JSON.stringify({ url: page, title: 'mac' }) : '';
   ws.send(JSON.stringify({ op: 'inspected', id: m.id, text }));
 };
 ws.onerror = () => { console.error('connection refused'); process.exit(1); };
@@ -133,8 +133,18 @@ done; xcrun simctl ui "$UDID" appearance light; }
 w pane eval "$PANE" 'location.href = "/two.html"; 1' --on phone >/dev/null 2>&1
 check "the phone moved to /two.html (dom h1 --on phone returns its heading)" poll 20 dom_is h1 '<h1>Tandem</h1>'
 check "the Mac's browser (eval location.href) still names the first page" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'location.href')\" = '\"http://localhost:$SPORT/\"' ]"
-layout_holds_first_page() { local ls; ls="$(w pane info "$PANE" 2>&1)"; echo "$ls" | grep -q "localhost:$SPORT/" && ! echo "$ls" | grep -q "two.html"; }
-check "the layout still holds the page the pane opened at" layout_holds_first_page
+check "the layout still holds the page the pane opened at (pane home)" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane home '$PANE')\" = 'http://localhost:$SPORT/' ]"
+
+# wheeld holds no browser's page: it asks (wheel-zpa4.2.10.15). pane info names the home and each
+# attached browser's own page; pane where prints one browser's page and title.
+info_has() { w pane info "$PANE" 2>&1 | grep -q -- "$1"; }
+where_is() { [ "$(w pane where "$PANE" "${@:2}" 2>&1)" = "$1" ]; }
+check "pane info names the home" info_has "^Home: http://localhost:$SPORT/\$"
+check "pane info names the phone's new page and title" poll 10 info_has "^Phone .*: http://localhost:$SPORT/two.html (two)"
+check "pane info names the Mac's page" info_has "^Mac: http://localhost:$SPORT/ (mac)"
+check "pane where --on phone prints the phone's page and title" where_is "$(printf 'http://localhost:%s/two.html\ttwo' "$SPORT")" --on phone
+check "pane where prints the Mac's page and title" where_is "$(printf 'http://localhost:%s/\tmac' "$SPORT")"
+check "the phone's agent banner did not name where" sh -c "! grep -q 'ran where' '$PLOG'"
 
 # `pane page --on phone` moves the phone alone; `--on mac` moves the Mac alone.
 w pane page "$PANE" "http://localhost:$SPORT/three.html" --on phone >/dev/null
@@ -234,6 +244,7 @@ grep "console report refused" "$PLOG" | head -2
 # The app suspended: page commands say so instead of waiting.
 xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1
 check "with the app gone, --on phone fails with 'the phone is not attached'" poll 20 sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane dom '$PANE' h1 --on phone 2>&1 | grep -q 'the phone is not attached'"
+check "with the app gone, pane where --on phone fails with 'the phone is not attached'" sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane where '$PANE' --on phone 2>&1 | grep -q 'the phone is not attached'"
 
 [ "$FAIL" -eq 0 ] || { echo "--- phone.log"; grep -E "browser pane|connected|refused" "$PLOG" | tail -40; echo "--- wheeld.log"; grep -E "loopback|inspect|browser" "$(LOG)" | tail -20 | cut -c1-300; }
 finish

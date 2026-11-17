@@ -885,6 +885,80 @@ async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none
     assert_eq!(opened["url"], "https://example.test/four", "{opened}");
     assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
 
+    // `where --on phone` asks the phone alone, and `pane_info` asks the Mac and each phone at
+    // once, naming the phone by its device.
+    let answer = |text: &str| text.to_string();
+    let found = local_req_after(
+        &mut cli,
+        serde_json::json!({"op":"pane_inspect","req":20,"pane":pane,"action":"where","on":"phone"}),
+        async {
+            let asked = next_event(&mut phone, "inspect_pane").await.unwrap();
+            assert_eq!(asked["action"], "where");
+            assert!(asked["arg"].is_null(), "{asked}");
+            phone
+                .send(Message::text(
+                    serde_json::json!({"op":"inspected","id":asked["id"],
+                        "text":answer(r#"{"url":"https://phone.example/p","title":"Phone page"}"#)})
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    assert_eq!(found["text"], "https://phone.example/p\tPhone page", "{found}");
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
+    let info = local_req_after(
+        &mut cli,
+        serde_json::json!({"op":"pane_info","req":21,"pane":pane}),
+        async {
+            let asked = local_event(&mut mac, "inspect_pane", Duration::from_secs(10))
+                .await
+                .expect("the Mac was asked");
+            assert_eq!(asked["action"], "where");
+            mac.send(Message::text(
+                serde_json::json!({"op":"inspected","id":asked["id"],
+                    "text":r#"{"url":"https://mac.example/m","title":"Mac page"}"#})
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+            let asked = next_event(&mut phone, "inspect_pane").await.unwrap();
+            assert_eq!(asked["action"], "where");
+            phone
+                .send(Message::text(
+                    serde_json::json!({"op":"inspected","id":asked["id"],
+                        "text":r#"{"url":"https://phone.example/q","title":""}"#})
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    let fields: Vec<(String, String)> = info["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["label"].as_str().unwrap().to_string(), f["value"].as_str().unwrap().to_string()))
+        .collect();
+    let of = |label: &str| fields.iter().find(|(l, _)| l == label).map(|(_, v)| v.as_str());
+    assert_eq!(of("Home"), Some("https://example.test/"), "{fields:?}");
+    assert_eq!(of("Mac"), Some("https://mac.example/m (Mac page)"), "{fields:?}");
+    assert_eq!(of("Phone Test phone"), Some("https://phone.example/q"), "{fields:?}");
+
+    // A Mac and a phone that both stay silent: one 3 s deadline per side, run together.
+    let started = Instant::now();
+    let silent = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":22,"pane":pane})).await;
+    assert!(started.elapsed() < Duration::from_millis(4500), "waited {:?}", started.elapsed());
+    let texts: Vec<String> = silent["fields"].as_array().unwrap().iter()
+        .filter(|f| f["label"] == "Mac" || f["label"] == "Phone Test phone")
+        .map(|f| f["value"].as_str().unwrap().to_string()).collect();
+    assert_eq!(texts, ["no answer within 3s", "no answer within 3s"], "{silent}");
+    // The unanswered asks sit in each connection's queue; read them so later checks see only their own.
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_some());
+    next_event(&mut phone, "inspect_pane").await.unwrap();
+
     // Text no pane may open is refused before any browser is asked.
     let bad = local_req(&mut cli, open(8, "mailto:a@b.com", Some("mac"))).await;
     assert!(bad["message"].as_str().unwrap().contains("mailto:a@b.com"), "{bad}");
