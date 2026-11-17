@@ -33,7 +33,7 @@ pub fn project_remote(dir: &str) -> Option<String> {
 }
 
 /// [`project_remote`] with the GitHub repo (`owner/name`) already known, when it is.
-fn choose_remote(dir: &str, repo: Option<&str>) -> Option<String> {
+pub fn choose_remote(dir: &str, repo: Option<&str>) -> Option<String> {
     if let Some(r) = repo.and_then(|repo| remote_for(dir, repo).ok()) {
         return Some(r);
     }

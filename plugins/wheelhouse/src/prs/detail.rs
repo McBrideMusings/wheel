@@ -186,7 +186,7 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
 /// a PR from a fork: its head ref is fetched, then `gh pr checkout` runs inside the worktree, which sets up the
 /// fork's remote.
 pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
-    let remote = crate::core::git::remote_for(dir, repo)?;
+    let remote = crate::core::git::choose_remote(dir, Some(repo).filter(|r| !r.is_empty())).ok_or_else(|| format!("no git remote in {dir} points at {repo}"))?;
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
     let want = format!("branch refs/heads/{branch}");
     let mut path = None;
@@ -374,7 +374,8 @@ mod tests {
         let home = root.join("home");
         std::env::set_var("HOME", &home);
         let dir = work.to_str().unwrap();
-        assert!(worktree(dir, "owner/other", "feat/x", None).unwrap_err().contains("no git remote"));
+        sh(&work, &["remote", "add", "fork", "https://github.com/me/repo.git"]);
+        assert!(worktree(dir, "owner/other", "feat/x", None).unwrap_err().contains("no git remote"), "two remotes and neither is the repo");
         let a = worktree(dir, "owner/repo", "feat/x", None).unwrap();
         assert_eq!(a, format!("{}/.worktrees/proj/feat-x", home.display()));
         assert_eq!(crate::core::git::current_branch(&a).as_deref(), Some("feat/x"));
