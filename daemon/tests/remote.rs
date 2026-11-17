@@ -1162,6 +1162,17 @@ async fn remote_get(
     path: &str,
     token: Option<&str>,
 ) -> (String, String, String) {
+    remote_get_with(port, fingerprint, path, token, "").await
+}
+
+/// `remote_get` with `extra`, whole header lines each ending in CRLF, added to the request.
+async fn remote_get_with(
+    port: u16,
+    fingerprint: &str,
+    path: &str,
+    token: Option<&str>,
+    extra: &str,
+) -> (String, String, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -1180,7 +1191,7 @@ async fn remote_get(
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
         .unwrap_or_default();
     let request =
-        format!("GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\n{auth}Connection: close\r\n\r\n");
+        format!("GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\n{auth}{extra}Connection: close\r\n\r\n");
     tls.write_all(request.as_bytes()).await.unwrap();
     let mut raw = Vec::new();
     let _ = tls.read_to_end(&mut raw).await;
@@ -1190,8 +1201,8 @@ async fn remote_get(
     (status.to_string(), headers.to_lowercase(), body.to_string())
 }
 
-/// A program on this machine's loopback that answers `/page` with a body naming the path it saw,
-/// and `/away` and `/far` with redirects written as a path and as its own loopback address. The
+/// A program on this machine's loopback that answers `/page` with a body naming the path, the
+/// `Origin` and the `Host` it saw, and `/away` and `/far` with redirects written as a path and as its own loopback address. The
 /// counter holds how many requests reached it.
 async fn loopback_program() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1212,11 +1223,19 @@ async fn loopback_program() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
                 let line = text.lines().next().unwrap_or_default().to_string();
                 let path = line.split(' ').nth(1).unwrap_or("/").to_string();
                 let authorized = text.to_lowercase().contains("authorization:");
+                let origin = text
+                    .lines()
+                    .find_map(|l| l.to_lowercase().starts_with("origin:").then(|| l[7..].trim().to_string()))
+                    .unwrap_or_else(|| "none".into());
+                let host = text
+                    .lines()
+                    .find_map(|l| l.to_lowercase().starts_with("host:").then(|| l[5..].trim().to_string()))
+                    .unwrap_or_else(|| "none".into());
                 let reply = match path.as_str() {
                     "/away" => "HTTP/1.1 302 Found\r\nLocation: /page\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
                     "/far" => format!("HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/page?x=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
                     _ => {
-                        let body = format!("saw {path} authorization={authorized}");
+                        let body = format!("saw {path} authorization={authorized} origin={origin} host={host}");
                         format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
                     }
                 };
@@ -1315,7 +1334,45 @@ async fn a_phone_reaches_the_macs_loopback_pages_through_wheeld() {
     )
     .await;
     assert!(status.contains(" 200 "), "{status} {body}");
-    assert_eq!(body, "saw /page?q=1 authorization=false");
+    assert_eq!(body, format!("saw /page?q=1 authorization=false origin=none host=127.0.0.1:{program}"));
+
+    // The page's origin, as the Mac names it, reaches the program as its Origin, and the host the
+    // page named as its Host. An origin that is not on the loopback, one on a port no browser pane
+    // is on, a host that is not the loopback, and two copies of either are refused before the
+    // program sees them.
+    let (status, _, body) = remote_get_with(
+        remote,
+        &fingerprint,
+        &format!("/loopback/{program}/page"),
+        Some(&credential),
+        &format!("Wheel-Page-Origin: http://localhost:{program}\r\nWheel-Page-Host: localhost\r\n"),
+    )
+    .await;
+    assert!(status.contains(" 200 "), "{status} {body}");
+    assert_eq!(
+        body,
+        format!("saw /page authorization=false origin=http://localhost:{program} host=localhost:{program}")
+    );
+    for (extra, refused) in [
+        ("Wheel-Page-Origin: https://evil.test\r\n".to_string(), " 400 "),
+        ("Wheel-Page-Origin: http://localhost:1\r\n".to_string(), " 403 "),
+        ("Wheel-Page-Host: evil.test\r\n".to_string(), " 400 "),
+        (
+            format!("Wheel-Page-Origin: http://localhost:{program}\r\nWheel-Page-Origin: http://localhost:{program}\r\n"),
+            " 400 ",
+        ),
+        ("Wheel-Page-Host: localhost\r\nWheel-Page-Host: 127.0.0.1\r\n".to_string(), " 400 "),
+    ] {
+        let (status, _, body) = remote_get_with(
+            remote,
+            &fingerprint,
+            &format!("/loopback/{program}/page"),
+            Some(&credential),
+            &extra,
+        )
+        .await;
+        assert!(status.contains(refused), "{extra:?}: {status} {body}");
+    }
 
     // Its redirects, as a path and as its own loopback address, stay under the prefix.
     let (status, headers, _) = remote_get(
@@ -1344,7 +1401,7 @@ async fn a_phone_reaches_the_macs_loopback_pages_through_wheeld() {
         "{headers}"
     );
     let reached = hit_count();
-    assert_eq!(reached, 3);
+    assert_eq!(reached, 4);
 
     // No token, a wrong one, or the Mac's own local token on the remote listener: refused, and
     // nothing reaches the program.

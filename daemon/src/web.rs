@@ -1237,16 +1237,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// The header a `/loopback/<port>/` request names the origin of the page that made it in.
+const PAGE_ORIGIN: &str = "wheel-page-origin";
+/// The header a `/loopback/<port>/` request names the loopback host its page asked for in
+/// (`localhost`, `127.0.0.1`), which the program sees in `Host` with the port.
+const PAGE_HOST: &str = "wheel-page-host";
+
 /// `/loopback/<port>/<path>`: `/<path>` on this machine's loopback at `<port>`, for a client that
 /// draws a browser pane's `http://localhost:<port>` page itself, such as a phone (ADR-0005). Only
 /// a port some browser pane is on is reached. The token comes in a header, as for any other
 /// request, and goes no further; the program sees the request as its own, with redirects to its
-/// own paths kept under `/loopback/<port>`.
+/// own paths kept under `/loopback/<port>`. The origin of the page that asked, as the Mac names it
+/// (`http://localhost:5173`), comes in `PAGE_ORIGIN` and reaches the program as `Origin`, and the
+/// host the page named comes in `PAGE_HOST` and reaches it as `Host`, so a page's request arrives as
+/// the Mac's browser would send it. An origin is refused unless a browser pane's home is on its port.
 async fn loopback(
     State(state): State<Arc<AppState>>,
     Extension(listener): Extension<Listener>,
     UrlPath(params): UrlPath<HashMap<String, String>>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
 ) -> Response {
     let raw = params.get("port").map(String::as_str).unwrap_or_default();
     let via = format!("loopback {raw}");
@@ -1270,10 +1279,51 @@ async fn loopback(
         )
             .into_response();
     }
+    if req.headers().get_all(PAGE_ORIGIN).iter().count() > 1
+        || req.headers().get_all(PAGE_HOST).iter().count() > 1
+    {
+        tracing::warn!(via, ?caller, "loopback refused: more than one page origin or host");
+        return (StatusCode::BAD_REQUEST, "more than one page origin or host").into_response();
+    }
+    // `remove` takes every copy of a header out.
+    let origin = req.headers_mut().remove(PAGE_ORIGIN);
+    if let Some(origin) = &origin {
+        let Some(at) = origin
+            .to_str()
+            .ok()
+            .and_then(crate::proxy::loopback_origin_port)
+        else {
+            tracing::warn!(via, ?caller, ?origin, "loopback refused: the page origin is not on the loopback");
+            return (StatusCode::BAD_REQUEST, "the page origin is not on the loopback").into_response();
+        };
+        if !state.browser_on_loopback(at) {
+            tracing::warn!(via, ?caller, ?origin, "loopback refused: no browser pane is on the page origin's port");
+            return (
+                StatusCode::FORBIDDEN,
+                format!("no browser pane is on the page origin's port {at}"),
+            )
+                .into_response();
+        }
+    }
+    let host = match req.headers_mut().remove(PAGE_HOST) {
+        None => None,
+        Some(named) => match named
+            .to_str()
+            .ok()
+            .and_then(|h| crate::proxy::loopback_host(h, port))
+            .and_then(|h| HeaderValue::from_str(&h).ok())
+        {
+            Some(host) => Some(host),
+            None => {
+                tracing::warn!(via, ?caller, ?named, "loopback refused: the page host is not the loopback");
+                return (StatusCode::BAD_REQUEST, "the page host is not the loopback").into_response();
+            }
+        },
+    };
     let (method, path) = (req.method().clone(), req.uri().path().to_string());
     let prefix = format!("/loopback/{port}");
     let label = format!("loopback:{port}");
-    let resp = match crate::proxy::forward_port(port, &prefix, &label, COOKIE, req).await {
+    let resp = match crate::proxy::forward_port(port, &prefix, &label, COOKIE, origin, host, req).await {
         Ok(resp) => resp,
         Err(down) => {
             let why = match down {

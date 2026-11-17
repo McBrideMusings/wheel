@@ -4,8 +4,9 @@
 # the phone and the Mac browse independently, a change of the pane's home (`pane home`) moves neither
 # and a relaunched phone opens at it (wheel-zpa4.2.10.13), the page's console is the phone's own
 # (wheel-zpa4.2.10.5: `pane console --on phone`, apart from the Mac's) and keeps what it wrote while its
-# connection was down (wheel-zpa4.2.10.10; a TCP relay cuts the phone off), and a suspended app is
-# "the phone is not attached".
+# connection was down (wheel-zpa4.2.10.10; a TCP relay cuts the phone off), a loopback page reaches
+# another loopback port that is a browser pane's home under CORS, as the Mac's browser would, and no
+# other port or site (wheel-zpa4.2.10.7), and a suspended app is "the phone is not attached".
 #
 # Needs WHEEL_IOS_APP: the built Wheel.app for the simulator (WheelPhone scheme), and a pool
 # simulator. WHEEL_IOS_HOST (default: the Mac's first non-loopback IPv4 address) is the address the
@@ -19,7 +20,9 @@ SITE_PID=""
 FOLLOWS=""
 MAC_PID=""
 PX_PID=""
-ios_cleanup() { [ -n "$PX_PID" ] && kill "$PX_PID" 2>/dev/null; [ -n "$MAC_PID" ] && kill "$MAC_PID" 2>/dev/null; [ -n "$FOLLOWS" ] && kill $FOLLOWS 2>/dev/null; [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
+API_PID=""
+FOREIGN_PID=""
+ios_cleanup() { [ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null; [ -n "$FOREIGN_PID" ] && kill "$FOREIGN_PID" 2>/dev/null; [ -n "$PX_PID" ] && kill "$PX_PID" 2>/dev/null; [ -n "$MAC_PID" ] && kill "$MAC_PID" 2>/dev/null; [ -n "$FOLLOWS" ] && kill $FOLLOWS 2>/dev/null; [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
 trap ios_cleanup EXIT
 
 command -v node >/dev/null || { echo "this check plays the Mac's browser with node" >&2; exit 2; }
@@ -30,6 +33,9 @@ PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do 
 SPORT="$(PORT=$((RPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 PXPORT="$(PORT=$((SPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 CPORT="$(PORT=$((PXPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
+BPORT="$(PORT=$((CPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
+NPORT="$(PORT=$((BPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
+EPORT="$(PORT=$((NPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
 printf '[remote]\nlisten = "0.0.0.0:%s"\n' "$RPORT" >>"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
@@ -127,6 +133,188 @@ check "the phone shows which agent ran the command" poll 10 plog "browser pane $
   sleep 5
   xcrun simctl io "$UDID" screenshot "$WHEEL_SHOTS/ios-browser-phone-page-$look.png" >/dev/null 2>&1
 done; xcrun simctl ui "$UDID" appearance light; }
+
+# Another loopback port (wheel-zpa4.2.10.7): an API on 127.0.0.1:$BPORT, a second browser pane's
+# home, answers the page on $SPORT as a program answers the Mac's browser, under CORS with the
+# Mac's origin http://localhost:$SPORT. The same API on $NPORT is no pane's home. Every request it
+# gets is logged with its Origin, the preflight's Access-Control-Request-Headers and its cookies.
+cat >"$SCR/api.js" <<'EOF'
+// usage: node api.js <log> <allowed origin> <port>...
+const http = require('http'), fs = require('fs');
+const [log, allow, ...ports] = process.argv.slice(2);
+const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+const serve = (port) => (q, r) => {
+  fs.appendFileSync(log, `${port} ${q.method} ${q.url} origin=${q.headers.origin || 'none'} acrh=${q.headers['access-control-request-headers'] || '-'} cookie=${q.headers.cookie || 'none'} host=${q.headers.host} inm=${q.headers['if-none-match'] || '-'}\n`);
+  const send = (status, headers, body) => { r.writeHead(status, Object.assign({ 'Content-Type': 'text/plain' }, headers)); r.end(body); };
+  const acao = { 'Access-Control-Allow-Origin': allow };
+  switch (q.url) {
+    case '/allowed': return send(200, acao, 'from B');
+    case '/bare': return send(200, {}, 'bare');
+    case '/pre':
+      if (q.method === 'OPTIONS') return send(204, { ...acao, 'Access-Control-Allow-Headers': 'X-Wheel-Test', 'Access-Control-Allow-Methods': 'PUT' }, '');
+      return send(200, acao, `preflighted ${q.method} ${q.headers['x-wheel-test']}`);
+    case '/nopre':
+      if (q.method === 'OPTIONS') return send(404, {}, 'no');
+      return send(200, acao, 'should not arrive');
+    case '/cred': return send(200, { ...acao, 'Access-Control-Allow-Credentials': 'true' }, `cookie=${(q.headers.cookie || 'none').split('; ').sort().join(',')}`);
+    case '/setc': return send(200, { ...acao, 'Set-Cookie': 'fromb=1; Path=/' }, 'set');
+    case '/setc-cred': return send(200, { ...acao, 'Access-Control-Allow-Credentials': 'true', 'Set-Cookie': 'fromb2=1; Path=/' }, 'set');
+    case '/set-none': return send(200, { 'Set-Cookie': 'ss_none=1; Path=/; SameSite=None' }, 'set');
+    case '/set-lax': return send(200, { 'Set-Cookie': 'ss_lax=1; Path=/; SameSite=Lax' }, 'set');
+    case '/set-strict': return send(200, { 'Set-Cookie': 'ss_strict=1; Path=/; SameSite=Strict' }, 'set');
+    case '/redir-ok': return send(302, { ...acao, Location: '/allowed' }, '');
+    case '/redir-bare': return send(302, { Location: '/allowed' }, '');
+    case '/redir-pre':
+      if (q.method === 'OPTIONS') return send(204, { ...acao, 'Access-Control-Allow-Headers': 'X-Wheel-Test' }, '');
+      return send(307, { ...acao, Location: '/pre' }, '');
+    case '/cors.js': {
+      const cached = { ...acao, ETag: '"c1"', 'Cache-Control': 'max-age=0', 'Content-Type': 'text/javascript' };
+      if (q.headers['if-none-match'] === '"c1"') return send(304, cached, '');
+      return send(200, cached, 'window.corsRan = (window.corsRan || 0) + 1');
+    }
+    case '/img': return send(200, { 'Content-Type': 'image/gif' }, gif);
+    default: return send(200, { 'Content-Type': 'text/html' }, '<!doctype html><title>api</title><h1>API</h1>');
+  }
+};
+for (const p of ports) http.createServer(serve(p)).listen(Number(p), '127.0.0.1');
+EOF
+node "$SCR/api.js" "$SCR/api.log" "http://localhost:$SPORT" "$BPORT" "$NPORT" >"$SCR/api.out" 2>&1 &
+API_PID=$!
+check "the API serves on 127.0.0.1:$BPORT and :$NPORT" poll 20 sh -c "curl -sf http://127.0.0.1:$BPORT/ >/dev/null && curl -sf http://127.0.0.1:$NPORT/ >/dev/null"
+P2="$(w pane split "$PANE" right)"
+w pane kind "$P2" browser --page "http://localhost:$BPORT/" >/dev/null
+check "the phone draws the API pane's page" poll 30 plog "browser pane $P2 loaded"
+: >"$SCR/api.log"
+# `xfetch <name> <js promise of text>` starts a request on the phone's page; `xgot <name>` prints
+# how it ended: `ok <text>` or `failed <error>`. The page names the API as an app does, from its own
+# location (`//localhost:<port>`), so the request stays under the page's scheme.
+xfetch() { w pane eval "${XP:-$PANE}" "window.x_$1 = 'pending'; Promise.resolve().then(function () { return $2 }).then(function (t) { window.x_$1 = 'ok ' + t }, function (e) { window.x_$1 = 'failed ' + e }); 1" --on phone >/dev/null 2>&1; }
+xgot() { w pane eval "${XP:-$PANE}" "window.x_$1" --on phone 2>&1; }
+xis() { [ "$(xgot "$1")" = "\"$2\"" ]; }
+xfailed() { xgot "$1" | grep -q '^"failed '; }
+api_has() { grep -q -- "$1" "$SCR/api.log"; }
+api_lacks() { ! grep -q -- "$1" "$SCR/api.log"; }
+B="'//' + location.hostname + ':$BPORT"
+text() { echo "fetch($B$1'${2:+, $2}).then(function (r) { return r.text() })"; }
+# (a) a simple request the API allows: its text arrives, sent with the Mac's origin.
+xfetch a "$(text /allowed)"
+check "(a) the page on :$SPORT fetches :$BPORT/allowed (Allow-Origin http://localhost:$SPORT) and reads its text" poll 20 xis a "ok from B"
+check "(a) the API saw Origin http://localhost:$SPORT, the Mac's origin for the page" api_has "^$BPORT GET /allowed origin=http://localhost:$SPORT "
+check "(a) wheeld forwarded it to :$BPORT" grep -q "loopback forwarded.*port=$BPORT" "$(LOG)"
+check "(a) the API saw Host localhost:$BPORT, as the Mac's browser sends it" api_has "^$BPORT GET /allowed .* host=localhost:$BPORT "
+# (a) credentials: a cookie the page set goes to the other port only when the page asks with
+# credentials: 'include', and the API answers with an exact origin and Allow-Credentials.
+w pane eval "$PANE" 'document.cookie = "crosskey=1; path=/"; 1' --on phone >/dev/null 2>&1
+sleep 2
+xfetch c1 "$(text /cred "{ credentials: 'include' }")"
+check "(a) with credentials: 'include' the API's answer arrives with the page's cookie" poll 20 xis c1 "ok cookie=crosskey=1"
+xfetch c2 "$(text /cred)"
+check "(a) without it the request carries no cookie" poll 20 xis c2 "ok cookie=none"
+xfetch c3 "$(text /allowed "{ credentials: 'include' }")"
+check "(a) with credentials and no Allow-Credentials the fetch fails" poll 20 xfailed c3
+# (b) the API sends no Allow-Origin: the request goes out and its answer is withheld, as on the Mac.
+xfetch b "$(text /bare)"
+check "(b) a fetch of :$BPORT/bare (no Allow-Origin) fails on the page" poll 20 xfailed b
+check "(b) the request reached the API, which answered without CORS" api_has "^$BPORT GET /bare origin=http://localhost:$SPORT "
+# (c) a custom header needs a preflight, which the handler sends because WebKit does not.
+xfetch p1 "$(text /pre "{ headers: { 'X-Wheel-Test': 'yes' } }")"
+check "(c) a fetch with X-Wheel-Test arrives after the API allowed it in a preflight" poll 20 xis p1 "ok preflighted GET yes"
+check "(c) the preflight was an OPTIONS with the Mac's origin naming x-wheel-test" api_has "^$BPORT OPTIONS /pre origin=http://localhost:$SPORT acrh=x-wheel-test cookie=none"
+xfetch p2 "$(text /pre "{ method: 'PUT', body: 'x' }")"
+check "(c) a PUT the preflight allows arrives" poll 20 xis p2 "ok preflighted PUT undefined"
+xfetch p3 "$(text /nopre "{ headers: { 'X-Wheel-Test': 'yes' } }")"
+check "(c) the same fetch to a path whose preflight answers 404 fails" poll 20 xfailed p3
+check "(c) the API saw that preflight and never the request" sh -c "grep -q '^$BPORT OPTIONS /nopre' '$SCR/api.log' && ! grep -q '^$BPORT GET /nopre' '$SCR/api.log'"
+check "(c) phone.log says the preflight refused it" plog "from http://localhost:$SPORT refused by its preflight: the preflight answered 404"
+# Credentials as WebKit marks them (httpShouldHandleCookies): a cross-origin request without
+# credentials: 'include' keeps no cookie it is sent; with it, it does; a same-origin request with
+# credentials: 'omit' sends none.
+xfetch s1 "$(text /setc)"
+check "(a) a cross-origin fetch without credentials of a page that sets a cookie arrives" poll 20 xis s1 "ok set"
+xfetch s2 "$(text /setc-cred "{ credentials: 'include' }")"
+check "(a) the same with credentials: 'include' arrives" poll 20 xis s2 "ok set"
+xfetch s3 "$(text /cred "{ credentials: 'include' }")"
+check "(a) only the cookie set with credentials was kept" poll 20 xis s3 "ok cookie=crosskey=1,fromb2=1"
+XP=$P2 xfetch o1 "fetch('/cred', { credentials: 'omit' }).then(function (r) { return r.text() })"
+check "(a) a same-origin fetch with credentials: 'omit' sends no cookie" poll 20 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$P2' 'window.x_o1' --on phone)\" = '\"ok cookie=none\"' ]"
+XP=$P2 xfetch o2 "fetch('/cred').then(function (r) { return r.text() })"
+check "(a) and without it sends the page's" poll 20 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$P2' 'window.x_o2' --on phone)\" = '\"ok cookie=crosskey=1,fromb2=1\"' ]"
+
+# A CORS request's redirects: each passes the CORS check, and a preflighted one is preflighted
+# again for where it goes.
+: >"$SCR/api.log"
+xfetch r1 "$(text /redir-ok)"
+check "(c) a redirect that allows the origin is followed" poll 20 xis r1 "ok from B"
+xfetch r2 "$(text /redir-bare)"
+check "(c) a redirect without Allow-Origin fails the fetch" poll 20 xfailed r2
+check "(c) and the request never went where it pointed" sh -c "[ \"\$(grep -c '^$BPORT GET /allowed' '$SCR/api.log')\" = 1 ]"
+check "(c) phone.log says the redirect refused it" plog "refused at its redirect: Access-Control-Allow-Origin is missing"
+xfetch r3 "$(text /redir-pre "{ headers: { 'X-Wheel-Test': 'yes' } }")"
+check "(c) a preflighted request that redirects arrives" poll 20 xis r3 "ok preflighted GET yes"
+check "(c) and was preflighted at each hop (OPTIONS /redir-pre, GET, OPTIONS /pre, GET)" sh -c "grep -E '^$BPORT [A-Z]+ /(redir-pre|pre) ' '$SCR/api.log' | awk '{print \$2, \$3}' | tr '\n' ' ' | grep -q '^OPTIONS /redir-pre GET /redir-pre OPTIONS /pre GET /pre '"
+
+# WebKit's own revalidation headers (Cache-Control, If-None-Match) on a reload are no reason for a
+# preflight: a crossorigin script on another port is revalidated with no OPTIONS.
+printf '<!doctype html><title>reload</title><h1>Reload</h1><script crossorigin src="//localhost:%s/cors.js"></script>\n' "$BPORT" >"$SITE/reload.html"
+w pane page "$PANE" "http://localhost:$SPORT/reload.html" --on phone >/dev/null
+ran_is() { [ "$(w pane eval "$PANE" 'window.corsRan' --on phone 2>&1)" = "$1" ]; }
+check "the page with a crossorigin script on :$BPORT ran it" poll 20 ran_is 1
+: >"$SCR/api.log"
+w pane eval "$PANE" 'location.reload(); 1' --on phone >/dev/null 2>&1
+check "after a reload the script ran again" poll 20 ran_is 1
+check "the reload revalidated it (If-None-Match) or fetched it again" poll 10 api_has "^$BPORT GET /cors.js "
+grep "/cors.js" "$SCR/api.log" | cut -c1-200
+check "and sent no preflight for WebKit's revalidation headers" api_lacks "^$BPORT OPTIONS /cors.js"
+
+# SameSite: cookies set on 127.0.0.1:$BPORT, another site than localhost.
+w pane page "$P2" "http://127.0.0.1:$BPORT/" --on phone >/dev/null
+check "the API pane's phone browser is on 127.0.0.1:$BPORT (pane where --on phone)" poll 20 sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane where '$P2' --on phone 2>&1 | grep -q '^http://127.0.0.1:$BPORT/'"
+XP=$P2 xfetch k1 "fetch('/set-none').then(function () { return fetch('/set-lax') }).then(function () { return fetch('/set-strict') }).then(function () { return fetch('/cred') }).then(function (r) { return r.text() })"
+check "on 127.0.0.1 itself every SameSite cookie goes" poll 20 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$P2' 'window.x_k1' --on phone)\" = '\"ok cookie=ss_lax=1,ss_none=1,ss_strict=1\"' ]"
+check "the API saw Host 127.0.0.1:$BPORT for it" api_has "^$BPORT GET /cred .* host=127.0.0.1:$BPORT "
+w pane page "$PANE" "http://localhost:$SPORT/" --on phone >/dev/null
+check "the phone's page is back on localhost:$SPORT" poll 20 dom_is h1 '<h1>Bicycle</h1>'
+xfetch k2 "fetch('//127.0.0.1:$BPORT/cred', { credentials: 'include' }).then(function (r) { return r.text() })"
+check "from localhost, a credentialed fetch of 127.0.0.1 carries only the SameSite=None cookie" poll 20 xis k2 "ok cookie=ss_none=1"
+w pane eval "$PANE" "location.href = '//127.0.0.1:$BPORT/cred'; 1" --on phone >/dev/null 2>&1
+body_is() { [ "$(w pane eval "$PANE" 'document.body.innerText.trim()' --on phone 2>&1)" = "\"$1\"" ]; }
+check "a navigation the localhost page starts to 127.0.0.1 carries None and Lax, not Strict" poll 20 body_is "cookie=ss_lax=1,ss_none=1"
+w pane page "$PANE" "http://127.0.0.1:$BPORT/cred" --on phone >/dev/null
+check "one the browser starts (pane page) carries all three" poll 20 body_is "cookie=ss_lax=1,ss_none=1,ss_strict=1"
+w pane page "$PANE" "http://localhost:$SPORT/" --on phone >/dev/null
+check "the phone's page is back on localhost:$SPORT" poll 20 dom_is h1 '<h1>Bicycle</h1>'
+
+# (d) a port that is no browser pane's home stays out of reach, though something listens there.
+xfetch d "fetch('//' + location.hostname + ':$NPORT/allowed').then(function (r) { return r.status })"
+check "(d) a fetch of :$NPORT (no pane's home) fails on the page" poll 20 xfailed d
+echo "--- (d) the page got: $(xgot d)"
+check "(d) wheeld refused :$NPORT" grep -q "loopback refused: no browser pane is on this port.*port=$NPORT" "$(LOG)"
+check "(d) the API on :$NPORT got nothing" api_lacks "^$NPORT "
+# (e) a page from another site (the Mac's address, which the phone dials itself) cannot reach the
+# Mac's loopback: not by fetch, not by an image, not by a form post.
+FOREIGN="$SCR/foreign"
+mkdir -p "$FOREIGN"
+cat >"$FOREIGN/foreign.html" <<EOF
+<!doctype html><title>foreign</title><h1>Foreign</h1>
+<form method=post action="wheel-loopback://localhost:$BPORT/allowed"><input name=x value=1></form>
+<script>
+window.r = [];
+fetch('wheel-loopback://localhost:$BPORT/allowed').then(function (r) { return r.text() }).then(function (t) { window.r.push('fetch ok ' + t) }, function (e) { window.r.push('fetch failed') });
+var i = new Image(); i.onload = function () { window.r.push('img loaded') }; i.onerror = function () { window.r.push('img failed') }; i.src = 'wheel-loopback://localhost:$BPORT/img';
+</script>
+EOF
+python3 -m http.server "$EPORT" --bind "$HOST" --directory "$FOREIGN" >"$SCR/foreign.log" 2>&1 &
+FOREIGN_PID=$!
+check "the foreign page serves on $HOST:$EPORT" poll 20 curl -sf "http://$HOST:$EPORT/foreign.html"
+: >"$SCR/api.log"
+w pane page "$P2" "http://$HOST:$EPORT/foreign.html" --on phone >/dev/null
+foreign_got() { [ "$(w pane eval "$P2" 'window.r.slice().sort().join(",")' --on phone 2>&1)" = '"fetch failed,img failed"' ]; }
+check "(e) on the foreign page, the fetch and the image of the loopback both fail" poll 30 foreign_got
+w pane eval "$P2" 'document.forms[0].submit(); 1' --on phone >/dev/null 2>&1
+check "(e) its form post to the loopback is cancelled" poll 20 plog "browser pane $P2 refused a POST to the Mac's loopback from another site"
+check "(e) the image was refused by the phone's handler, naming the page's origin" plog "browser pane $P2 request refused: wheel-loopback://localhost:$BPORT/img asked by a page not on the Mac's loopback"
+check "(e) the API got nothing from the foreign page" sh -c "! [ -s '$SCR/api.log' ]"
+w pane kind "$P2" empty >/dev/null
 
 # The phone moves on its own: the Mac's browser stays where it was, and the layout keeps the page
 # the pane opened at.

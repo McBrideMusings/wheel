@@ -108,7 +108,7 @@ pub(crate) async fn forward(
         }
     };
     let prefix = format!("/artifacts/{pane}");
-    match forward_port(port, &prefix, pane, daemon_cookie, req).await {
+    match forward_port(port, &prefix, pane, daemon_cookie, None, None, req).await {
         Ok(resp) => resp,
         Err(Down::Refused(e)) => not_running(
             pane,
@@ -131,13 +131,17 @@ pub(crate) enum Down {
 
 /// Send `req` to `127.0.0.1:<port>` with `prefix` taken off its path, and return the answer with
 /// a redirect to the program's own paths put back under `prefix`. `label` names the caller in
-/// log lines. The port is tried on IPv4 and then IPv6, since a program may listen on only one. A
+/// log lines. The program sees `origin` as the request's `Origin` when given; otherwise a request
+/// that carried an `Origin` arrives with the program's own. It sees `host` as the request's `Host`
+/// when given, and `127.0.0.1:<port>` otherwise. The port is tried on IPv4 and then IPv6, since a program may listen on only one. A
 /// handshake that fails is answered here; a port that is down is the caller's to describe.
 pub(crate) async fn forward_port(
     port: u16,
     prefix: &str,
     label: &str,
     daemon_cookie: &str,
+    origin: Option<HeaderValue>,
+    host: Option<HeaderValue>,
     mut req: Request,
 ) -> Result<Response, Down> {
     let stream = match TcpStream::connect(("127.0.0.1", port)).await {
@@ -198,9 +202,13 @@ pub(crate) async fn forward_port(
     }
     headers.insert(
         header::HOST,
-        HeaderValue::from_str(&format!("127.0.0.1:{port}")).expect("a host is a header value"),
+        host.unwrap_or_else(|| {
+            HeaderValue::from_str(&format!("127.0.0.1:{port}")).expect("a host is a header value")
+        }),
     );
-    if parts.headers.contains_key(header::ORIGIN) {
+    if let Some(origin) = origin {
+        headers.insert(header::ORIGIN, origin);
+    } else if parts.headers.contains_key(header::ORIGIN) {
         headers.insert(
             header::ORIGIN,
             HeaderValue::from_str(&format!("http://127.0.0.1:{port}"))
@@ -296,6 +304,25 @@ fn loopback_parts(address: &str) -> Option<(u16, &str)> {
         .then_some((port, tail))
 }
 
+/// The port of `origin` when it is an origin on this machine's loopback, such as
+/// `http://localhost:5173` (80 when unwritten).
+pub(crate) fn loopback_origin_port(origin: &str) -> Option<u16> {
+    loopback_parts(origin).and_then(|(port, rest)| rest.is_empty().then_some(port))
+}
+
+/// The `Host` a browser sends for `host` (a name of this machine's loopback, such as `localhost`)
+/// at `port`: `localhost:5173`, or `localhost` alone at 80. None for any other host.
+pub(crate) fn loopback_host(host: &str, port: u16) -> Option<String> {
+    let host = LOOPBACK_HOSTS
+        .iter()
+        .find(|h| h.eq_ignore_ascii_case(host))?;
+    Some(if port == 80 {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    })
+}
+
 /// The port of a browser page on this machine's loopback, such as `http://localhost:5173/`.
 pub(crate) fn loopback_port(page: &str) -> Option<u16> {
     loopback_parts(page).map(|(port, _)| port)
@@ -318,7 +345,27 @@ fn own_path(location: &str, port: u16) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{loopback_port, own_path};
+    use super::{loopback_host, loopback_origin_port, loopback_port, own_path};
+
+    #[test]
+    fn only_a_bare_loopback_origin_is_one() {
+        assert_eq!(loopback_origin_port("http://localhost:5173"), Some(5173));
+        assert_eq!(loopback_origin_port("http://127.0.0.1"), Some(80));
+        assert_eq!(loopback_origin_port("http://[::1]:3000"), Some(3000));
+        assert_eq!(loopback_origin_port("http://localhost:5173/"), None);
+        assert_eq!(loopback_origin_port("https://localhost:5173"), None);
+        assert_eq!(loopback_origin_port("http://evil.test"), None);
+        assert_eq!(loopback_origin_port("null"), None);
+    }
+
+    #[test]
+    fn a_loopback_host_is_sent_as_a_browser_writes_it() {
+        assert_eq!(loopback_host("localhost", 5173).as_deref(), Some("localhost:5173"));
+        assert_eq!(loopback_host("127.0.0.1", 80).as_deref(), Some("127.0.0.1"));
+        assert_eq!(loopback_host("[::1]", 3000).as_deref(), Some("[::1]:3000"));
+        assert_eq!(loopback_host("evil.test", 3000), None);
+        assert_eq!(loopback_host("localhost:5173", 3000), None);
+    }
 
     #[test]
     fn a_redirect_to_the_programs_own_address_stays_under_the_prefix() {

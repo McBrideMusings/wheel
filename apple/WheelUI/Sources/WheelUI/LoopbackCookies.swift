@@ -8,14 +8,16 @@ import WheelKit
 /// sends them as a `Cookie` header and gives the page a `document.cookie` over them.
 @MainActor
 public enum LoopbackCookies {
-    /// The `Cookie` header a request to `url` carries from `store`, for a scheme handler that
-    /// fetches the page itself (WebKit adds none to a custom scheme's requests); nil when none.
-    public static func cookieHeader(for url: URL, store: WKWebsiteDataStore) async -> String? {
+    /// The `Cookie` header a request to `url` in `context` carries from `store`, for a scheme
+    /// handler that fetches the page itself (WebKit adds none to a custom scheme's requests); nil
+    /// when none. A cookie goes only where its `SameSite` lets it (`CookieMatch.sameSiteAllows`).
+    public static func cookieHeader(for url: URL, in context: CookieMatch.Context, store: WKWebsiteDataStore) async -> String? {
         await scriptWrites?.value
         guard let host = url.host?.lowercased() else { return nil }
         let path = url.path.isEmpty ? "/" : url.path
         let carried = await store.httpCookieStore.allCookies().filter {
             CookieMatch.carries($0.domain, to: host) && CookieMatch.pathMatches($0.path, path) && ($0.expiresDate.map { $0 > Date() } ?? true)
+                && CookieMatch.sameSiteAllows($0.sameSitePolicy?.rawValue, in: context)
         }
         guard !carried.isEmpty else { return nil }
         return carried.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")

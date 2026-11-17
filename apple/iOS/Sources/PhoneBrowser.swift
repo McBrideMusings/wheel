@@ -22,6 +22,9 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// argument ("claude" ran "dom h1").
     private(set) var banner: (by: String, command: String)?
     @ObservationIgnored private let relay = ConsoleRelay()
+    @ObservationIgnored private let handler: PageSchemeHandler
+    /// The page `load` sent the web view to, until its navigation starts: one the browser started.
+    @ObservationIgnored private var browserLoad: URL?
     /// The pane's home as the layout last named it: where `goHome` goes.
     @ObservationIgnored private(set) var home: String
     /// Counts `prepareScripts` calls, so one that waited on the store while a later navigation
@@ -39,6 +42,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         // The phone's own browser storage, shared by every browser pane it draws.
         config.websiteDataStore = .default()
         let handler = PageSchemeHandler(pane: pane, daemon: daemon, loopback: true)
+        self.handler = handler
         config.setURLSchemeHandler(handler, forURLScheme: BrowserPanes.loopbackScheme)
         view = WKWebView(frame: .zero, configuration: config)
         super.init()
@@ -88,6 +92,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
             return
         }
         Log.info("browser pane \(pane) loading \(WebPanes.withoutQuery(target))")
+        browserLoad = target
         view.load(URLRequest(url: target))
     }
 
@@ -146,13 +151,23 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         // A page from elsewhere may link to the Mac's loopback page, but never post a form to it:
-        // the request would reach the Mac's program with no Origin to refuse it by.
+        // the request would reach the Mac's program with no Origin to refuse it by. A loopback
+        // page may post to any loopback port, as on the Mac.
         if action.request.url?.scheme == BrowserPanes.loopbackScheme, (action.request.httpMethod ?? "GET") != "GET",
-           action.sourceFrame.request.url.map({ BrowserPanes.loopbackRequestAllowed(action.request.url!, document: $0) }) != true {
+           action.sourceFrame.request.url.map({
+               BrowserPanes.loopbackRequestAllowed(action.request.url!, document: $0, origin: nil, method: "GET")
+           }) != true {
             Log.info("browser pane \(pane) refused a \(action.request.httpMethod ?? "-") to the Mac's loopback from another site")
             return .cancel
         }
         guard action.targetFrame?.isMainFrame != false, let url = action.request.url else { return .allow }
+        // Who started a loopback navigation decides the `SameSite` of its cookies: the browser
+        // (its own load, back, forward, reload) or the page in the frame that started it.
+        if url.scheme == BrowserPanes.loopbackScheme {
+            let byBrowser = url == browserLoad || [WKNavigationType.backForward, .reload].contains(action.navigationType)
+            handler.navigation(to: url, from: byBrowser ? nil : action.sourceFrame.request.url)
+        }
+        if url == browserLoad { browserLoad = nil }
         await prepareScripts(for: url)
         return .allow
     }

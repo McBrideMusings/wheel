@@ -44,7 +44,8 @@ public final class RequestGate {
 /// token in a header, for that pane's own folder only. The page's origin is the scheme and a fixed
 /// host, so its `localStorage` stays with it when the daemon comes back on another port. Made with
 /// `loopback`, it answers a browser pane's requests under `BrowserPanes.loopbackScheme` instead,
-/// from the daemon's `/loopback/<port>/`, which reaches the Mac's loopback page the pane is on.
+/// from the daemon's `/loopback/<port>/`, which reaches the Mac's loopback page the pane is on and
+/// any other loopback port wheeld forwards, a request to another port held to CORS (`LoopbackCORS`).
 @MainActor
 public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     private let pane: String
@@ -122,28 +123,73 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// The cookies of a loopback page's requests: `store` holds them as the Mac's page would
     /// (http, its own host and path), and `mac` turns a wheeld `/loopback/<port>/…` URL into the
-    /// Mac's page it stands for.
+    /// Mac's page it stands for. `credentials` is false when the page asked for none (WebKit's
+    /// `httpShouldHandleCookies`: `credentials: 'omit'`, or a cross-origin request without
+    /// `'include'`); such a request carries no cookie and keeps none it is sent.
+    /// `context` is how the request stands to the page that sends it, which each cookie's
+    /// `SameSite` is weighed against.
     struct Jar {
         let store: WKWebsiteDataStore
         let mac: @Sendable (URL) -> URL?
+        let credentials: Bool
+        let context: CookieMatch.Context
+    }
+
+    /// A request to another origin than its page's, held to CORS on every hop: the page's Mac
+    /// `origin`, whether it asked for `credentials`, and the `headers` the page set.
+    struct Cross {
+        let origin: String
+        let credentials: Bool
+        var headers: [String: String]
+    }
+
+    /// Why CORS refused a request, as phone.log says it.
+    struct Refusal: LocalizedError {
+        let why: String
+        var errorDescription: String? { why }
     }
 
     /// Sends `request` and returns its head with the body as a stream. A streaming response
     /// (the page's event stream) arrives a line at a time; any other body whole. With `jar` (a
     /// loopback page) every hop of a redirect carries the store's cookies for its page and keeps
     /// the ones it sets, as a browser does, so a login that answers 302 with its cookie stays.
+    /// With `cross`, each hop that is not a simple request is sent only after its own preflight
+    /// allows it (WebKit sends none for a custom scheme), and each redirect passes the CORS check
+    /// before it is followed, as the Fetch standard's redirect fetch runs them again.
     @MainActor
-    private static func fetch(_ request: URLRequest, over transport: Transport, streaming: Bool, jar: Jar?) async throws -> Reply {
-        if jar == nil, case .plain = transport { return try await open(request, over: transport, streaming: streaming, follow: true) }
+    private static func fetch(_ request: URLRequest, over transport: Transport, streaming: Bool, jar: Jar?, cross: Cross?) async throws -> Reply {
+        if jar == nil, cross == nil, case .plain = transport { return try await open(request, over: transport, streaming: streaming, follow: true) }
         // URLSession follows redirects itself unless told not to (the daemon sends a 308 for a
         // folder without its trailing slash); here they are followed to the same host only.
         var next = request
+        var cross = cross
         for _ in 0..<6 {
-            if let jar, let url = next.url, let page = jar.mac(url) {
-                next.setValue(await LoopbackCookies.cookieHeader(for: page, store: jar.store), forHTTPHeaderField: "Cookie")
+            if let cross, let url = next.url {
+                let method = next.httpMethod ?? "GET"
+                if LoopbackCORS.needsPreflight(method: method, headers: cross.headers) {
+                    // A preflight is never redirected and carries no cookie.
+                    var preflight = URLRequest(url: url)
+                    preflight.httpMethod = "OPTIONS"
+                    for (name, value) in LoopbackCORS.preflightHeaders(method: method, headers: cross.headers) {
+                        preflight.setValue(value, forHTTPHeaderField: name)
+                    }
+                    preflight.setValue("*/*", forHTTPHeaderField: "Accept")
+                    for name in ["Authorization", LoopbackCORS.originHeader, LoopbackCORS.hostHeader] {
+                        preflight.setValue(next.value(forHTTPHeaderField: name), forHTTPHeaderField: name)
+                    }
+                    let answer = try await open(preflight, over: transport, streaming: false, follow: false)
+                    for try await _ in answer.body {}
+                    if let why = LoopbackCORS.preflightRefusal(status: answer.status, answer: answer.headers, origin: cross.origin,
+                                                               method: method, headers: cross.headers, credentials: cross.credentials) {
+                        throw Refusal(why: "refused by its preflight: \(why)")
+                    }
+                }
+            }
+            if let jar, jar.credentials, let url = next.url, let page = jar.mac(url) {
+                next.setValue(await LoopbackCookies.cookieHeader(for: page, in: jar.context, store: jar.store), forHTTPHeaderField: "Cookie")
             }
             let head = try await open(next, over: transport, streaming: streaming, follow: false)
-            if let jar, let url = next.url, let page = jar.mac(url),
+            if let jar, jar.credentials, let url = next.url, let page = jar.mac(url),
                let set = head.headers.first(where: { $0.key.lowercased() == "set-cookie" })?.value {
                 await LoopbackCookies.keepCookies([set], for: page, store: jar.store)
             }
@@ -153,10 +199,17 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                   target.host() == from.host(), target.port == from.port else {
                 return head
             }
+            if let cross, let why = LoopbackCORS.originRefusal(answer: head.headers, origin: cross.origin, credentials: cross.credentials) {
+                throw Refusal(why: "refused at its redirect: \(why)")
+            }
             next.url = target
             if head.status == 303 || ((head.status == 301 || head.status == 302) && next.httpMethod == "POST") {
                 next.httpMethod = "GET"
                 next.httpBody = nil
+                for name in ["Content-Type", "Content-Encoding", "Content-Language", "Content-Location"] {
+                    next.setValue(nil, forHTTPHeaderField: name)
+                }
+                if let kept = cross?.headers { cross?.headers = LoopbackCORS.withoutBody(kept) }
             }
         }
         throw URLError(.httpTooManyRedirects)
@@ -212,10 +265,24 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     }
     private var running: [ObjectIdentifier: (serial: Int, work: Task<Void, Never>)] = [:]
     private var serial = 0
+    /// The validators of the last answer for each loopback page, to tell the headers WebKit adds
+    /// when it revalidates one (`LoopbackCORS.pageHeaders`) from the page's own.
+    private var validators: [URL: LoopbackCORS.Validators] = [:]
+    /// The page that started each loopback navigation not started by the browser itself, for the
+    /// `SameSite` of the navigation's cookies; `navigation(to:from:)` records it.
+    private var initiators: [URL: URL] = [:]
+
+    /// The main frame is about to load `url`, started by the page `from`, or by the browser itself
+    /// (an address typed, an agent's `open`, back or reload) when nil.
+    public func navigation(to url: URL, from: URL?) {
+        initiators[url] = from
+    }
 
     /// Headers the page's own request carries that the daemon must not see: any `Origin` makes it
-    /// refuse the request as a browser's.
-    private static let dropped: Set<String> = ["origin", "referer", "host", "cookie", "authorization"]
+    /// refuse the request as a browser's, so a loopback page's goes in `LoopbackCORS.originHeader`,
+    /// which the page itself never sets.
+    private static let dropped: Set<String> = ["origin", "referer", "host", "cookie", "authorization",
+                                               LoopbackCORS.originHeader.lowercased(), LoopbackCORS.hostHeader.lowercased()]
 
     /// WebKit hands a request's body over as a stream.
     private static func drain(_ stream: InputStream) -> Data {
@@ -239,8 +306,10 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
             task.didFailWithError(URLError(.cannotConnectToHost))
             return
         }
-        if loopback, !BrowserPanes.loopbackRequestAllowed(page, document: task.request.mainDocumentURL) {
-            UILog.info("browser pane \(pane) request refused: \(WebPanes.withoutQuery(page)) asked by a page that is not on it")
+        let origin = task.request.value(forHTTPHeaderField: "Origin")
+        let method = task.request.httpMethod ?? "GET"
+        if loopback, !BrowserPanes.loopbackRequestAllowed(page, document: task.request.mainDocumentURL, origin: origin, method: method) {
+            UILog.info("browser pane \(pane) request refused: \(WebPanes.withoutQuery(page)) asked by a page not on the Mac's loopback (origin \(origin ?? "none"))")
             task.didFailWithError(URLError(.noPermissionsToReadFile))
             return
         }
@@ -261,6 +330,27 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
             request.setValue(value, forHTTPHeaderField: name)
         }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // The page's origin as the Mac names it, for the program to see as `Origin`; a request to
+        // another origin than the page's is cross-origin, and one that is not simple waits for
+        // the program to allow it in a preflight, which WebKit does not send for a custom scheme.
+        // The program sees the host the page named (`localhost`, `127.0.0.1`) as the Mac's browser
+        // sends it.
+        if loopback, let host = page.host?.lowercased() { request.setValue(host, forHTTPHeaderField: LoopbackCORS.hostHeader) }
+        let cors = loopback ? origin.flatMap { o in LoopbackCORS.macOrigin(o).map { (page: o, mac: $0) } } : nil
+        if let cors { request.setValue(cors.mac, forHTTPHeaderField: LoopbackCORS.originHeader) }
+        let credentials = task.request.httpShouldHandleCookies
+        let asked = LoopbackCORS.pageHeaders(task.request.allHTTPHeaderFields ?? [:], revalidating: validators[page])
+        let cross = cors.flatMap { cors in
+            LoopbackCORS.pageOrigin(of: page).flatMap(LoopbackCORS.macOrigin) == cors.mac
+                ? nil : Cross(origin: cors.mac, credentials: credentials, headers: asked)
+        }
+        // `SameSite`: a subresource weighs its site against the main document's; a top-level
+        // navigation against the page that started it, or none when the browser did.
+        let document = task.request.mainDocumentURL
+        let navigating = document == page
+        let from: URL? = navigating ? (initiators.removeValue(forKey: page) ?? page) : document
+        let context: CookieMatch.Context = from.flatMap(LoopbackCORS.site(of:)) == LoopbackCORS.site(of: page)
+            ? .sameSite : (navigating && method == "GET" ? .crossSiteNavigation : .crossSite)
         let shown = WebPanes.withoutQuery(page)
         let pane = pane
         let transport = currentTransport()
@@ -268,7 +358,8 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
         // A loopback page's cookies live in the web view's store as the Mac's page would hold them
         // (http, same host and path); WebKit adds none to a custom scheme's request nor keeps the
         // ones its response sets, so the handler does both.
-        let jar = loopback && target.path.hasPrefix("/loopback/") ? Jar(store: webView.configuration.websiteDataStore, mac: Self.macPage(of: page)) : nil
+        let jar = loopback && target.path.hasPrefix("/loopback/")
+            ? Jar(store: webView.configuration.websiteDataStore, mac: Self.macPage(of: page), credentials: credentials, context: context) : nil
         serial += 1
         let mine = serial
         let work = Task { @MainActor [weak self] in
@@ -283,14 +374,26 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                 defer { if !streaming { Self.gate.leave() } }
                 guard !Task.isCancelled else { return }
                 UILog.info("web pane \(pane) page \(shown) requested \(transport.isPinned ? "through the pinned connection" : "over URLSession")")
-                let reply = try await Self.fetch(sent, over: transport, streaming: streaming, jar: jar)
+                let reply: Reply
+                do {
+                    reply = try await Self.fetch(sent, over: transport, streaming: streaming, jar: jar, cross: cross)
+                } catch let refusal as Refusal {
+                    guard !Task.isCancelled else { return }
+                    UILog.info("browser pane \(pane) \(method) \(shown) from \(cross?.origin ?? "-") \(refusal.why)")
+                    task.didFailWithError(URLError(.noPermissionsToReadFile))
+                    return
+                }
+                if self?.loopback == true, let kept = LoopbackCORS.Validators(answer: reply.headers) {
+                    if self?.validators.count ?? 0 >= 512 { self?.validators.removeAll() }
+                    self?.validators[page] = kept
+                }
                 var held = Data()
                 if !streaming {
                     for try await chunk in reply.body { held.append(chunk) }
                 }
                 guard !Task.isCancelled else { return }
-                var headers = reply.headers
-                if jar != nil { self?.onCookies?() }
+                var headers = cors.map { LoopbackCORS.pageAnswer(reply.headers, origin: $0.mac, pageOrigin: $0.page) } ?? reply.headers
+                if jar?.credentials == true { self?.onCookies?() }
                 // The body is delivered inflated and unframed, so its encoding and framing no longer apply.
                 for name in headers.keys where ["content-encoding", "transfer-encoding", "connection"].contains(name.lowercased()) {
                     headers.removeValue(forKey: name)

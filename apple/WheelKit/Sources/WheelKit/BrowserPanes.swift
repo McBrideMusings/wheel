@@ -20,7 +20,7 @@ public enum BrowserPanes {
     /// its handler fetches each request from the daemon's `/loopback/<port>/` (ADR-0005).
     public static let loopbackScheme = "wheel-loopback"
 
-    private static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"]
+    static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"]
 
     /// Where a phone loads `page`: a page of the Mac's loopback (`http://localhost:5173/x`) under
     /// `loopbackScheme` with the same host, port, path and query; nil for any other page, which
@@ -46,13 +46,21 @@ public enum BrowserPanes {
         return c.url?.absoluteString ?? url.absoluteString
     }
 
-    /// Whether a request for `url` comes from a page the loopback handler may serve: one under
-    /// `loopbackScheme` on the same host and port (`document` is the request's main document). A
-    /// page from anywhere else (a public site the phone browsed to) never reaches the Mac's
-    /// loopback, so it cannot send requests there that its own origin would not allow.
-    public static func loopbackRequestAllowed(_ url: URL, document: URL?) -> Bool {
+    /// Whether a `method` request for `url` comes from a page the loopback handler may serve: its
+    /// main `document` is under `loopbackScheme`, on any loopback port, and the `origin` it was
+    /// sent with, if any, is a loopback page's too. A request with no `Origin` to another origin
+    /// than the document's (an image, a script, a frame) may only `GET` or `HEAD`, since it may
+    /// come from another site framed in the page. Which ports are reached is wheeld's to decide (a
+    /// port some browser pane's home is on), and a request to another port than the page's is
+    /// held to CORS (`LoopbackCORS`). A page from anywhere else (a public site the phone browsed
+    /// to, or one framed in a loopback page) never reaches the Mac's loopback, so it cannot send
+    /// requests there that its own origin would not allow.
+    public static func loopbackRequestAllowed(_ url: URL, document: URL?, origin: String?, method: String) -> Bool {
         guard let document, document.scheme == loopbackScheme, url.scheme == loopbackScheme else { return false }
-        return document.host?.lowercased() == url.host?.lowercased() && document.port == url.port
+        guard let origin else {
+            return ["GET", "HEAD"].contains(method) || LoopbackCORS.sameOrigin(document, url)
+        }
+        return LoopbackCORS.macOrigin(origin) != nil
     }
 
     /// The daemon's address for a request under `loopbackScheme`: `/loopback/<port><path>` with

@@ -14,6 +14,27 @@ public enum CookieMatch {
         return !bare.isEmpty && (host == bare || host.hasSuffix("." + bare))
     }
 
+    /// The request a cookie is weighed for under its `SameSite` attribute.
+    public enum Context: Equatable {
+        /// The request's site is the site of the page that sends it.
+        case sameSite
+        /// Another site's top-level `GET` navigation to it.
+        case crossSiteNavigation
+        /// Any other request from another site.
+        case crossSite
+    }
+
+    /// Whether a cookie whose `SameSite` is `policy` (`strict`, `lax`, or nil or `none` for none)
+    /// goes with a request in `context`. A cookie that names no `SameSite` is sent as `None`, as
+    /// WebKit (the Mac's browser) sends it.
+    public static func sameSiteAllows(_ policy: String?, in context: Context) -> Bool {
+        switch policy?.lowercased() {
+        case "strict": context == .sameSite
+        case "lax": context != .crossSite
+        default: true
+        }
+    }
+
     /// Whether a cookie of `path` goes with a request for `requestPath`: the same path, or one
     /// under it on a `/` boundary (`/app` goes to `/app/x`, never to `/application`).
     public static func pathMatches(_ path: String, _ requestPath: String) -> Bool {
