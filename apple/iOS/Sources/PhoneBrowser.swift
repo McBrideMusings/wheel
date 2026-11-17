@@ -274,14 +274,16 @@ struct BrowserPage: View {
                         Text("\(Text(banner.by).bold()) ran \(Text(verbatim: banner.command).monospaced()) on this page")
                     } icon: {
                         Image(systemName: "sparkle")
+                            .foregroundStyle(.secondary)
                     }
                         .font(.footnote)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
                         .padding(.horizontal, 8)
                         .padding(.top, 6)
                         .transition(.move(edge: .top).combined(with: .opacity))
