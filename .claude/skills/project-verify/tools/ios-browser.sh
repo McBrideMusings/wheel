@@ -3,7 +3,8 @@
 # the Mac's loopback loads through wheeld's /loopback/<port>/, agents reach it with --on phone,
 # the phone and the Mac browse independently, a change of the pane's home (`pane home`) moves neither
 # and a relaunched phone opens at it (wheel-zpa4.2.10.13), the page's console is the phone's own
-# (wheel-zpa4.2.10.5: `pane console --on phone`, apart from the Mac's), and a suspended app is
+# (wheel-zpa4.2.10.5: `pane console --on phone`, apart from the Mac's) and keeps what it wrote while its
+# connection was down (wheel-zpa4.2.10.10; a TCP relay cuts the phone off), and a suspended app is
 # "the phone is not attached".
 #
 # Needs WHEEL_IOS_APP: the built Wheel.app for the simulator (WheelPhone scheme), and a pool
@@ -17,7 +18,8 @@ UDID=""
 SITE_PID=""
 FOLLOWS=""
 MAC_PID=""
-ios_cleanup() { [ -n "$MAC_PID" ] && kill "$MAC_PID" 2>/dev/null; [ -n "$FOLLOWS" ] && kill $FOLLOWS 2>/dev/null; [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
+PX_PID=""
+ios_cleanup() { [ -n "$PX_PID" ] && kill "$PX_PID" 2>/dev/null; [ -n "$MAC_PID" ] && kill "$MAC_PID" 2>/dev/null; [ -n "$FOLLOWS" ] && kill $FOLLOWS 2>/dev/null; [ -n "$SITE_PID" ] && kill "$SITE_PID" 2>/dev/null; [ -n "$UDID" ] && "$SIM" release >/dev/null 2>&1; cleanup; }
 trap ios_cleanup EXIT
 
 command -v node >/dev/null || { echo "this check plays the Mac's browser with node" >&2; exit 2; }
@@ -26,6 +28,8 @@ command -v node >/dev/null || { echo "this check plays the Mac's browser with no
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 SPORT="$(PORT=$((RPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
+PXPORT="$(PORT=$((SPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
+CPORT="$(PORT=$((PXPORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
 printf '[remote]\nlisten = "0.0.0.0:%s"\n' "$RPORT" >>"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
@@ -36,6 +40,7 @@ mkdir -p "$SITE/assets"
 printf '<!doctype html><meta name=viewport content="width=device-width"><title>one</title><link rel=stylesheet href="/assets/s.css"><h1>Bicycle</h1><p id=styled>A bicycle has two wheels.</p>\n' >"$SITE/index.html"
 printf '<!doctype html><title>two</title><h1>Tandem</h1>\n' >"$SITE/two.html"
 printf '<!doctype html><title>three</title><h1>Unicycle</h1>\n' >"$SITE/three.html"
+printf '<!doctype html><title>five</title><script>var k = 0; setInterval(function () { console.log("third " + (++k)) }, 1000)</script>\n' >"$SITE/five.html"
 printf '#styled { color: rgb(1, 2, 3) }\n' >"$SITE/assets/s.css"
 python3 -m http.server "$SPORT" --bind 127.0.0.1 --directory "$SITE" >"$SCR/site.log" 2>&1 &
 SITE_PID=$!
@@ -76,9 +81,38 @@ plog() { grep -q -- "$1" "$PLOG" 2>/dev/null; }
 page_is() { w pane info "$PANE" 2>/dev/null | grep -q -- "$1"; }
 dom_is() { [ "$(w pane dom "$PANE" "$1" --on phone 2>&1)" = "$2" ]; }
 
-code="$(w remote pair --address "$HOST")"
+# The phone dials wheeld through a TCP relay that this script can cut and restore: a stopped
+# wheeld keeps its sockets open, so the phone would only stall; a cut relay resets them, which
+# the phone sees as a lost connection and reconnects from.
+cat >"$SCR/relay.js" <<'EOF'
+// usage: node relay.js <listen port> <wheeld port> <control port>
+// GET /down cuts every connection and refuses new ones (what was held is lost); GET /hold keeps what the
+// phone sends from reaching wheeld (the phone's sends succeed, wheeld sees nothing); GET /up undoes both
+// and delivers what was held.
+const net = require('net'), http = require('http');
+const [lp, tp, cp] = process.argv.slice(2).map(Number);
+let down = false, held = false; const socks = new Set(), pend = [];
+net.createServer((c) => {
+  if (down) return c.destroy();
+  const u = net.connect(tp, '127.0.0.1');
+  for (const s of [c, u]) { socks.add(s); s.on('close', () => { socks.delete(s); c.destroy(); u.destroy(); }); s.on('error', () => {}); }
+  c.on('data', (d) => held ? pend.push([u, d]) : u.write(d));
+  u.pipe(c);
+}).listen(lp, '0.0.0.0');
+http.createServer((q, r) => {
+  if (q.url === '/down') { down = true; held = false; pend.length = 0; for (const s of socks) s.destroy(); }
+  if (q.url === '/hold') held = true;
+  if (q.url === '/up') { down = false; held = false; for (const [u, d] of pend.splice(0)) u.write(d); }
+  r.end('ok');
+}).listen(cp, '127.0.0.1');
+EOF
+node "$SCR/relay.js" "$PXPORT" "$RPORT" "$CPORT" >"$SCR/relay.log" 2>&1 &
+PX_PID=$!
+relay() { curl -sf "http://127.0.0.1:$CPORT/$1" >/dev/null; }
+check "the relay to wheeld's remote port is up" poll 20 sh -c "(exec 3<>/dev/tcp/127.0.0.1/$PXPORT)"
+code="$(w remote pair --address "$HOST" | sed "s/:$RPORT\//:$PXPORT\//")"
 SIMCTL_CHILD_WHEEL_PAIR_JSON="$code" SIMCTL_CHILD_WHEEL_NOTIFICATIONS=off xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
-check "the phone pairs at $HOST" poll 40 plog "connected to wss://$HOST:$RPORT/ws"
+check "the phone pairs at $HOST" poll 40 plog "connected to wss://$HOST:$PXPORT/ws"
 check "the phone loads the pane's loopback page under its own scheme" poll 30 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/"
 check "the page arrives through wheeld's /loopback" poll 30 plog "browser pane $PANE loaded"
 check "wheeld logs the forwarded request with the device and port" poll 10 grep -q "loopback forwarded.*port=$SPORT" "$(LOG)"
@@ -149,6 +183,53 @@ rm -f "$PLOG"
 SIMCTL_CHILD_WHEEL_NOTIFICATIONS=off xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
 check "the relaunched phone opens at the new home" poll 40 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/index.html"
 check "dom h1 --on phone returns the home page's heading" poll 20 dom_is h1 '<h1>Bicycle</h1>'
+
+# Lines the phone's page writes while its connection is down are kept (wheel-zpa4.2.10.10). The
+# page counts once a second; the relay cuts the phone off for 5 seconds; every number is there.
+ticks() { w pane console "$PANE" --on phone 2>&1 | grep -o 'tick [0-9]*' | awk '{print $2}'; }
+ticks_whole() { local t; t="$(ticks)"; [ -n "$t" ] && [ "$(echo "$t" | awk 'NR==1{p=$1;next} {if ($1!=p+1) bad=1; p=$1} END{print bad+0}')" = 0 ]; }
+ticks_past() { [ "$(ticks | tail -1)" -ge "$1" ] 2>/dev/null; }
+connects() { grep -c 'connected to wss' "$PLOG"; }
+drop_phone() { local before; before="$(connects)"; relay down; date -u +%Y-%m-%dT%H:%M:%S >"$SCR/down_at"; sleep "$1"; date -u +%Y-%m-%dT%H:%M:%S >"$SCR/up_at"; relay up; poll 60 sh -c "[ \"\$(grep -c 'connected to wss' '$PLOG')\" -gt $before ]"; }
+w pane eval "$PANE" 'window.n = 0; setInterval(function () { console.log("tick " + (++window.n)) }, 1000); 1' --on phone >/dev/null 2>&1
+check "the phone's page is counting in pane console --on phone" poll 20 ticks_past 3
+check "the phone's connection dropped for 5 seconds and came back" drop_phone 5
+check "the page's count went on after the reconnect" poll 30 ticks_past "$(( $(ticks | tail -1) + 3 ))"
+check "pane console --on phone has every number, none missing across the outage" ticks_whole
+echo "--- ticks: $(ticks | tr '\n' ' ')"
+
+# Lines sent just before the cut, whose ok never comes back, are sent again on the next connection:
+# the relay holds what the phone sends for 4 seconds (wheeld hears nothing), then cuts it.
+relay hold
+sleep 4
+check "the phone's connection dropped with 4 seconds of lines unanswered" drop_phone 2
+check "the page's count went on after the second reconnect" poll 30 ticks_past "$(( $(ticks | tail -1) + 3 ))"
+check "pane console --on phone still has every number, none missing and none twice" ticks_whole
+echo "--- ticks: $(ticks | tr '\n' ' ') (twice: $(ticks | sort -n | uniq -d | wc -l | tr -d ' '))"
+
+# A page load while the phone is cut off clears the list, though wheeld hears of it late. A blank
+# page needs no network, so the load happens during the outage.
+w pane eval "$PANE" 'setTimeout(function () { location.href = "about:blank" }, 2000); 1' --on phone >/dev/null 2>&1
+check "the phone's connection dropped for the page load" drop_phone 5
+load_in_outage() { awk -v from="$(cat "$SCR/down_at")" -v to="$(cat "$SCR/up_at")" -v pane="$PANE" '$0 ~ "browser pane " pane " loaded$" { t = substr($1, 1, 19); if (t >= from && t <= to) found = 1 } END { exit !found }' "$PLOG"; }
+check "the blank page loaded while the relay was down (phone.log, between the cut and the restore)" load_in_outage
+w pane eval "$PANE" 'console.log("after load"); 1' --on phone >/dev/null 2>&1
+check "the phone's list holds the lines written after the load" poll 30 console_has " after load" --on phone
+only_after_load() { local out; out="$(w pane console "$PANE" --on phone 2>&1)"; [ -n "$out" ] && ! echo "$out" | grep -q 'tick'; }
+check "and none from before it (the list is not empty and has no tick)" only_after_load
+echo "--- pane console $PANE --on phone"; w pane console "$PANE" --on phone 2>&1 | tail -4
+
+# A report wheeld refuses is logged on the phone, naming the pane: a second browser pane stops being one
+# while the relay holds what the phone sent for it: wheeld gets the reports after the pane changed.
+P3="$(w pane split "$PANE" right)"
+w pane kind "$P3" browser --page "http://localhost:$SPORT/five.html" >/dev/null
+check "the phone draws the second browser pane's page" poll 30 plog "browser pane $P3 loaded"
+relay hold
+sleep 3
+w pane kind "$P3" empty >/dev/null
+before="$(connects)"; relay up
+check "phone.log names the pane and wheeld's refusal" poll 20 plog "browser pane $P3 console report refused: $P3 is not a browser pane"
+grep "console report refused" "$PLOG" | head -2
 
 # The app suspended: page commands say so instead of waiting.
 xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1
