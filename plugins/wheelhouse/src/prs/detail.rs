@@ -46,7 +46,7 @@ pub struct Button {
     pub name: String,
     pub label: Option<String>,
     /// A PR button's filter: `any`, a bucket (`mine`, `needs-me`, `waiting`, `other`), `fix`, `draft` or `ready`.
-    /// A Repo button has none.
+    /// Read for `[prs.buttons]` only: a Repo button's is always empty.
     pub on: Vec<String>,
     pub run: String,
     /// Run it with `PR_WORKTREE` set to a worktree on the PR's or branch's branch, made first when none exists.
@@ -65,7 +65,7 @@ pub fn buttons_in(files: &[crate::core::buttons::File], view: &str) -> Vec<Butto
         .map(|(name, s)| Button {
             name,
             label: s.get("label").and_then(|v| v.as_str()).map(String::from),
-            on: s.get("on").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+            on: s.get("on").filter(|_| view == "prs").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
             run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             worktree: s.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false),
         })
@@ -186,7 +186,7 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
 /// a PR from a fork: its head ref is fetched, then `gh pr checkout` runs inside the worktree, which sets up the
 /// fork's remote.
 pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
-    let remote = crate::core::git::choose_remote(dir, Some(repo).filter(|r| !r.is_empty())).ok_or_else(|| format!("no git remote in {dir} points at {repo}"))?;
+    let remote = crate::core::git::remote_of_repo(dir, repo);
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
     let want = format!("branch refs/heads/{branch}");
     let mut path = None;
@@ -199,26 +199,27 @@ pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Re
         }
     }
     if let Some(p) = held {
-        let _ = crate::core::git::run(&p, &["merge", "-q", "--ff-only", &format!("{remote}/{branch}")]);
+        if let Ok(remote) = &remote {
+            let _ = crate::core::git::run(&p, &["merge", "-q", "--ff-only", &format!("{remote}/{branch}")]);
+        }
         return Ok(p);
     }
     let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
     let wt = format!("{home}/.worktrees/{}/{}", crate::core::project::name_of(dir), branch.replace('/', "-"));
+    let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
     if let Some(number) = fork_pr {
+        let remote = remote?;
         let n = number.to_string();
         let head = format!("pull/{n}/head");
         crate::core::git::run(dir, &["fetch", "-q", &remote, &head])?;
         crate::core::git::run(dir, &["worktree", "add", "-q", "--detach", &wt, "FETCH_HEAD"])?;
         run::gh(&wt, &["pr", "checkout", &n])?;
+    } else if local {
+        crate::core::git::run(dir, &["worktree", "add", "-q", &wt, branch])?;
     } else {
-        let fetched = crate::core::git::run(dir, &["fetch", "-q", &remote, branch]);
-        let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
-        if local {
-            crate::core::git::run(dir, &["worktree", "add", "-q", &wt, branch])?;
-        } else {
-            fetched?;
-            crate::core::git::run(dir, &["worktree", "add", "-q", "-b", branch, &wt, &format!("{remote}/{branch}")])?;
-        }
+        let remote = remote?;
+        crate::core::git::run(dir, &["fetch", "-q", &remote, branch])?;
+        crate::core::git::run(dir, &["worktree", "add", "-q", "-b", branch, &wt, &format!("{remote}/{branch}")])?;
     }
     // The project's environment file comes along, as the Beads buttons do it.
     let envrc = PathBuf::from(dir).join(".envrc");
@@ -303,9 +304,9 @@ impl Target {
     }
 }
 
-/// Run button `b` for `target`, in a worktree first when the button asks for one. `fork_pr` is the target's PR
-/// number when that PR comes from a fork.
-pub fn run_button(origin: &Origin, repo: &str, target: &Target, fork_pr: Option<i64>, b: &Button) -> Result<(), String> {
+/// Run button `b` of `view` (`prs` or `repo`) for `target`, in a worktree first when the button asks for one. `fork_pr`
+/// is the target's PR number when that PR comes from a fork.
+pub fn run_button(origin: &Origin, view: &str, repo: &str, target: &Target, fork_pr: Option<i64>, b: &Button) -> Result<(), String> {
     let wt = if b.worktree { Some(worktree(&origin.dir, repo, &target.branch, fork_pr)?) } else { None };
     let number = target.number.map(|n| n.to_string()).unwrap_or_default();
     let (title, branch, url) = (target.title.clone(), target.branch.clone(), target.url.clone());
@@ -314,7 +315,7 @@ pub fn run_button(origin: &Origin, repo: &str, target: &Target, fork_pr: Option<
     if let Some(w) = &wt {
         env.push(("PR_WORKTREE", w.as_str()));
     }
-    let log = std::env::temp_dir().join(format!("wheel-prs-{}-{}.log", if number.is_empty() { crate::beads::sane(&branch) } else { number.clone() }, crate::beads::sane(&b.name)));
+    let log = std::env::temp_dir().join(format!("wheel-{view}-{}-{}.log", if view == "repo" { crate::beads::sane(&branch) } else { number.clone() }, crate::beads::sane(&b.name)));
     run::button(label(b), &b.run, &origin.dir, &origin.pane, &env, &log)
 }
 
@@ -374,8 +375,6 @@ mod tests {
         let home = root.join("home");
         std::env::set_var("HOME", &home);
         let dir = work.to_str().unwrap();
-        sh(&work, &["remote", "add", "fork", "https://github.com/me/repo.git"]);
-        assert!(worktree(dir, "owner/other", "feat/x", None).unwrap_err().contains("no git remote"), "two remotes and neither is the repo");
         let a = worktree(dir, "owner/repo", "feat/x", None).unwrap();
         assert_eq!(a, format!("{}/.worktrees/proj/feat-x", home.display()));
         assert_eq!(crate::core::git::current_branch(&a).as_deref(), Some("feat/x"));

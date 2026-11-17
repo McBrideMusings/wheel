@@ -26,21 +26,23 @@ pub fn toplevel(dir: &str) -> Result<String, String> {
     run(dir, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string())
 }
 
-/// The remote the project's GitHub repo lives at, whatever it is called: the one whose URL points at the repo `gh`
-/// names for `dir`, else the only remote there is. `None` with no remote, or several and none of them the repo.
+/// The remote the project's work lives at, whatever it is called, read from local git alone (no `gh`, no network):
+/// the first remote whose `refs/remotes/<r>/HEAD` exists, else the remote the local main (then master) tracks,
+/// else the only remote, else one named `origin`. `None` with no remote, or several and none of these.
 pub fn project_remote(dir: &str) -> Option<String> {
-    choose_remote(dir, crate::prs::repo_of(dir).ok().as_deref())
+    let remotes: Vec<String> = quiet(dir, &["remote"]).lines().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+    let tracked = |b: &str| quiet(dir, &["config", "--get", &format!("branch.{b}.remote")]).trim().to_string();
+    remotes.iter().find(|r| !quiet(dir, &["symbolic-ref", "-q", &format!("refs/remotes/{r}/HEAD")]).trim().is_empty())
+        .or_else(|| ["main", "master"].iter().map(|b| tracked(b)).find_map(|t| remotes.iter().find(|r| **r == t)))
+        .or_else(|| remotes.first().filter(|_| remotes.len() == 1))
+        .or_else(|| remotes.iter().find(|r| *r == "origin"))
+        .cloned()
 }
 
-/// [`project_remote`] with the GitHub repo (`owner/name`) already known, when it is.
-pub fn choose_remote(dir: &str, repo: Option<&str>) -> Option<String> {
-    if let Some(r) = repo.and_then(|repo| remote_for(dir, repo).ok()) {
-        return Some(r);
-    }
-    let names = quiet(dir, &["remote"]);
-    let mut names = names.lines().map(str::trim).filter(|n| !n.is_empty());
-    let only = names.next()?;
-    names.next().is_none().then(|| only.to_string())
+/// The remote for GitHub repo `repo` when its name is known: the one whose URL points at it, else
+/// [`project_remote`]'s pick.
+pub fn remote_of_repo(dir: &str, repo: &str) -> Result<String, String> {
+    remote_for(dir, repo).ok().or_else(|| project_remote(dir)).ok_or_else(|| format!("no git remote in {dir} points at {repo}"))
 }
 
 /// The ref the repo's default branch lives at: `remote`'s HEAD, else its main|master, else local.
@@ -112,26 +114,36 @@ mod tests {
     }
 
     #[test]
-    fn the_projects_remote_and_its_default_branch_are_found_whatever_the_remote_is_called() {
+    fn the_projects_remote_is_picked_from_local_git_whatever_it_is_called() {
         let root = std::env::temp_dir().join(format!("wheelhouse-git-remote-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let (bare, work) = (root.join("Owner").join("Repo.git"), root.join("work"));
         sh(&root, &["init", "-q", "--bare", bare.to_str().unwrap()]);
-        sh(&root, &["clone", "-q", bare.to_str().unwrap(), work.to_str().unwrap()]);
-        sh(&work, &["remote", "rename", "origin", "forevr"]);
+        sh(&root, &["init", "-q", work.to_str().unwrap()]);
+        let dir = work.to_str().unwrap();
+        assert_eq!(project_remote(dir), None, "no remote");
+        sh(&work, &["remote", "add", "forevr", bare.to_str().unwrap()]);
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
         sh(&work, &["push", "-q", "forevr", "main"]);
         sh(&work, &["fetch", "-q", "forevr"]);
-        let dir = work.to_str().unwrap();
-        assert_eq!(choose_remote(dir, None).as_deref(), Some("forevr"), "the only remote");
-        assert_eq!(choose_remote(dir, Some("owner/repo")).as_deref(), Some("forevr"));
+        sh(&work, &["remote", "set-head", "forevr", "-d"]);
+        assert_eq!(project_remote(dir).as_deref(), Some("forevr"), "the only remote");
         assert_eq!(default_ref(dir, Some("forevr")).as_deref(), Some("forevr/main"), "no origin/main exists to find");
-        sh(&work, &["remote", "add", "fork", "https://github.com/me/repo.git"]);
-        assert_eq!(choose_remote(dir, None), None, "two remotes and no repo to tell them apart");
-        assert_eq!(choose_remote(dir, Some("owner/repo")).as_deref(), Some("forevr"), "the one that points at the repo");
-        assert_eq!(choose_remote(dir, Some("me/repo")).as_deref(), Some("fork"));
-        assert_eq!(choose_remote(dir, Some("x/y")), None);
+        assert_eq!(remote_of_repo(dir, "owner/repo").as_deref(), Ok("forevr"));
+        sh(&work, &["remote", "add", "zz-fork", "https://github.com/me/repo.git"]);
+        assert_eq!(project_remote(dir), None, "two remotes, none named origin, no HEAD, nothing tracked");
+        assert_eq!(remote_of_repo(dir, "owner/repo").as_deref(), Ok("forevr"), "the URL names the repo");
+        assert_eq!(remote_of_repo(dir, "me/repo").as_deref(), Ok("zz-fork"));
+        assert!(remote_of_repo(dir, "x/y").is_err());
+        sh(&work, &["config", "branch.main.remote", "forevr"]);
+        assert_eq!(project_remote(dir).as_deref(), Some("forevr"), "the remote main tracks");
+        sh(&work, &["config", "--unset", "branch.main.remote"]);
+        sh(&work, &["remote", "add", "origin", "https://github.com/me/other.git"]);
+        assert_eq!(project_remote(dir).as_deref(), Some("origin"), "a remote named origin");
+        sh(&work, &["remote", "set-head", "forevr", "main"]);
+        assert_eq!(project_remote(dir).as_deref(), Some("forevr"), "the remote whose HEAD exists beats the name");
+        assert_eq!(default_ref(dir, Some("forevr")).as_deref(), Some("forevr/main"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -169,7 +169,7 @@ pub fn act(action: &str, dir: &str, pane: &str, args: &Value) -> Result<String, 
         "pr_button" => {
             let name = text("name").ok_or("pr_button needs args.name")?;
             let b = snap.buttons.iter().find(|b| b.name == name).ok_or_else(|| format!("no button {name}"))?;
-            detail::run_button(&origin, snap.repo.as_deref().unwrap_or(""), &detail::Target::of_pr(&pr), cross().then_some(number), b)?;
+            detail::run_button(&origin, "prs", snap.repo.as_deref().unwrap_or(""), &detail::Target::of_pr(&pr), cross().then_some(number), b)?;
             Ok(format!("{} started for #{number}. See the new pane.", detail::label(b)))
         }
         other => Err(format!("no PR action {other}")),

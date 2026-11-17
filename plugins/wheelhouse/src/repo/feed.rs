@@ -76,20 +76,34 @@ fn cleanup_words(c: &Cleanup) -> String {
 }
 
 /// Run the project's `[repo.buttons.<name>]` button for local branch `branch`, in a worktree on it first when the
-/// button asks for one. The branch's open PR, when it has one, is the button's `PR_NUMBER`, `PR_TITLE` and `PR_URL`.
+/// button asks for one. The branch's open PR, when it has one, is the button's `PR_NUMBER`, `PR_TITLE` and `PR_URL`,
+/// and a PR from a fork is fetched from its head ref for the worktree. Reads the branch and its PR only, not the page.
 pub fn button(dir: &str, pane: &str, branch: &str, name: &str) -> Result<String, String> {
-    let snap = collect(dir);
-    let b = snap.buttons.iter().find(|b| b.name == name).ok_or_else(|| format!("no button {name}"))?;
-    let row = snap.branches.iter().find(|r| r.branch == branch).ok_or_else(|| format!("no such local branch {branch}"))?;
-    let repo = crate::prs::repo_of(dir)?;
-    let open = row.pr.as_ref().filter(|p| p.state == "OPEN");
+    let (files, _) = crate::core::buttons::files(dir);
+    let buttons = crate::prs::detail::buttons_in(&files, "repo");
+    let b = buttons.iter().find(|b| b.name == name).ok_or_else(|| format!("no button {name}"))?;
+    let top = crate::core::git::toplevel(dir)?;
+    if crate::core::git::quiet(&top, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty() {
+        return Err(format!("no such local branch {branch}"));
+    }
+    let pr = open_pr(&top, branch);
     let target = crate::prs::detail::Target {
-        number: open.map(|p| p.number), title: open.map(|p| p.title.clone()).unwrap_or_default(), branch: branch.to_string(),
-        url: open.map(|p| p.url.clone()).unwrap_or_default(),
+        number: pr.as_ref().map(|p| p.0), title: pr.as_ref().map(|p| p.1.clone()).unwrap_or_default(), branch: branch.to_string(),
+        url: pr.as_ref().map(|p| p.2.clone()).unwrap_or_default(),
     };
+    let fork_pr = pr.as_ref().filter(|p| p.3).map(|p| p.0);
+    let repo = crate::prs::repo_of(dir).unwrap_or_default();
     let origin = crate::core::project::Origin { dir: dir.to_string(), pane: if pane.is_empty() { "default".into() } else { pane.into() } };
-    crate::prs::detail::run_button(&origin, &repo, &target, None, b)?;
+    crate::prs::detail::run_button(&origin, "repo", &repo, &target, fork_pr, b)?;
     Ok(format!("{} started for {branch}.", crate::prs::detail::label(b)))
+}
+
+/// The open PR from `branch`: (number, title, url, from a fork), or none when it has none or `gh` cannot say.
+fn open_pr(top: &str, branch: &str) -> Option<(i64, String, String, bool)> {
+    let out = crate::core::run::gh(top, &["pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "number,title,url,isCrossRepository"]).ok()?;
+    let rows: Vec<Value> = serde_json::from_str(&out).ok()?;
+    let p = rows.first()?;
+    Some((p["number"].as_i64()?, p["title"].as_str()?.to_string(), p["url"].as_str()?.to_string(), p["isCrossRepository"].as_bool().unwrap_or(false)))
 }
 
 /// Run the project's `[repo.list]` button `script` over the branches `ids` for the pane `pane`.
@@ -125,6 +139,32 @@ mod tests {
         assert_eq!(cleanup_words(&Cleanup::default()), "Deleted nothing.");
         let f = Cleanup { failed: vec![("d".into(), "the worktree is still there".into())], ..Default::default() };
         assert_eq!(cleanup_words(&f), "Deleted nothing. Failed 1: d (the worktree is still there).");
+    }
+
+    #[test]
+    fn a_repo_button_with_a_worktree_runs_in_the_one_holding_the_branch_and_needs_no_pr_or_remote() {
+        let dir = std::env::temp_dir().join(format!("wheelhouse-repo-feed-button-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let toml = r#"[repo.buttons.t-wt]
+worktree = true
+run = 'printf "%s|%s|%s" "$PR_WORKTREE" "$PR_NUMBER" "$PR_BRANCH" > out.txt'
+[repo.buttons.t-plain]
+run = "true"
+"#;
+        std::fs::write(dir.join("wheel.toml"), toml).unwrap();
+        let d = dir.to_str().unwrap();
+        assert!(button(d, "", "nope", "t-wt").unwrap_err().contains("no such local branch"));
+        assert!(button(d, "", "main", "missing").unwrap_err().contains("no button"));
+        button(d, "", "main", "t-wt").unwrap();
+        let out = std::fs::read_to_string(dir.join("out.txt")).unwrap();
+        let (wt, rest) = out.split_once('|').unwrap();
+        assert_eq!(std::fs::canonicalize(wt).unwrap(), std::fs::canonicalize(&dir).unwrap());
+        assert_eq!(rest, "|main", "no open PR, so PR_NUMBER is empty");
+        button(d, "", "main", "t-plain").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
