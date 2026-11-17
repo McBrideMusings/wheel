@@ -420,7 +420,7 @@ pub fn shared_detail(dir: &str, repo: &str, number: i64, force: bool) -> Result<
     Ok(v)
 }
 
-fn repo_of(dir: &str) -> Result<String, String> {
+pub(crate) fn repo_of(dir: &str) -> Result<String, String> {
     if let Some(r) = CACHE.lock().unwrap().repos.get(dir) {
         return Ok(r.clone());
     }
