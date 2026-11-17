@@ -188,7 +188,11 @@ impl AppState {
             state: None,
             model: None,
             context: None,
-            place: AgentPlace::boxed((cwd != space_cwd).then_some(cwd), claude_dir),
+            // The home Claude Code ran the conversation in is picked, so a restart finds it there.
+            place: AgentPlace::boxed(
+                (cwd != space_cwd).then_some(cwd),
+                [(kind.home_var().to_string(), claude_dir.unwrap_or_default())].into(),
+            ),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
             login: None,
             extra: Extra::default(),
@@ -205,7 +209,7 @@ impl AppState {
     /// Turn an agent pane into a terminal running the same agent on the same conversation.
     async fn view_as_terminal(&self, pane: &str) -> Result<(), String> {
         let (kind, space_cwd) = self.kind_and_space(pane)?;
-        let (name, kind, cwd, home) = match kind {
+        let (name, kind, cwd) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
             PaneKind::Agent {
                 agent,
@@ -216,8 +220,8 @@ impl AppState {
                 let kind = Harness::parse(&harness).ok_or_else(|| {
                     format!("{pane} runs {harness}, and only Claude Code's, Codex's and pi's conversations resume in a terminal")
                 })?;
-                let place = place.map(|p| *p).unwrap_or_default();
-                (agent, kind, place.cwd, place.home)
+                let cwd = place.and_then(|p| p.cwd);
+                (agent, kind, cwd)
             }
             other => return Err(not_switchable(pane, &other)),
         };
@@ -229,12 +233,8 @@ impl AppState {
         let _held = agent.hold_for_handoff()?;
         let options = carried_options(&agent.attach().config);
         let permissions = agent.permissions();
-        // The directory the agent ran with: the pane's own, else the agent's `agent.<name>.home`;
-        // none means it inherited the daemon's environment.
-        let home = home
-            .map(PathBuf::from)
-            .or_else(|| self.agent_home(kind.name()))
-            .map(|h| h.display().to_string());
+        // The directory the agent ran with; none means it inherited the daemon's environment.
+        let home = agent.home().map(|h| h.display().to_string());
         let dir = cwd.unwrap_or_else(|| space_cwd.clone());
         let term = self
             .open_term(

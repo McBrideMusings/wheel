@@ -703,7 +703,16 @@ impl AppState {
                     if let Some(running) = &running {
                         *permissions = self.current_permissions(running);
                     }
-                    *login = self.agent_login(harness, place.as_deref()).map(Box::new);
+                    // An agent not running yet shows the home it picked, which it starts with.
+                    let picked = Harness::parse(harness)
+                        .and_then(|h| place.as_ref()?.env.get(h.home_var()))
+                        .filter(|h| !h.is_empty())
+                        .map(std::path::Path::new);
+                    let home = match &running {
+                        Some(r) => r.home(),
+                        None => picked,
+                    };
+                    *login = self.agent_login(harness, home).map(Box::new);
                 }
             });
         }
@@ -1756,11 +1765,10 @@ impl AppState {
             .ok_or_else(|| format!("agent {agent} has no conversation to fork yet"))?;
         // Refused before a pane is made: Claude Code's transcript says at once whether it holds
         // that many turns. Codex says so when its fork starts.
-        // The home the agent runs with: the pane's own, else `agent.claude.home`, else Claude
-        // Code's default, as the launch picks it.
+        // The home the agent runs with, where its conversation is kept; the fork picks it.
+        let source_home = self.agent(&agent)?.home().map(|h| h.display().to_string());
         if Harness::parse(&harness) == Some(Harness::Claude) {
-            let configured = place.home.as_deref().map(std::path::PathBuf::from).or_else(|| self.agent_home("claude"));
-            let home = crate::claude::store(configured.as_deref())
+            let home = crate::claude::store(source_home.as_deref().map(std::path::Path::new))
                 .ok_or("the agent's configuration directory is not known")?;
             let cwd = place.cwd.clone().unwrap_or(space_cwd);
             let source = conversation.clone();
@@ -1775,7 +1783,7 @@ impl AppState {
             conversation,
             turns,
             cwd: place.cwd,
-            home: place.home,
+            home: source_home,
         };
         match self
             .start_agent(&space, &new, &harness, None, model, permissions, Some(source))
@@ -1876,22 +1884,57 @@ impl AppState {
         Ok(new)
     }
 
+    /// The home each saved agent pane of `spaces` starts with, by pane: the value the pane picked
+    /// for its harness's home variable, else what the login shell gives in the directory the agent
+    /// runs in, as for a new pane. The shell is asked once per harness and directory, every
+    /// question at once, so a restore waits for the slowest answer rather than their sum.
+    pub(crate) async fn saved_agent_homes(
+        &self,
+        spaces: &[SpaceInfo],
+    ) -> HashMap<String, Result<Option<String>, String>> {
+        let mut homes = HashMap::new();
+        let mut asks: HashMap<(String, String), Vec<String>> = HashMap::new();
+        for space in spaces {
+            for saved in agent_panes(space) {
+                let place = saved_place(space, &saved.pane);
+                let picked = Harness::parse(&saved.harness)
+                    .and_then(|h| place.env.get(h.home_var()).cloned());
+                match picked {
+                    Some(home) => {
+                        homes.insert(saved.pane, Ok((!home.is_empty()).then_some(home)));
+                    }
+                    None => {
+                        let cwd = place.cwd.unwrap_or_else(|| space.cwd.clone());
+                        asks.entry((saved.harness, cwd)).or_default().push(saved.pane);
+                    }
+                }
+            }
+        }
+        let answers = futures_util::future::join_all(
+            asks.keys().map(|(harness, cwd)| self.shell_agent_home(harness, cwd)),
+        )
+        .await;
+        for (panes, answer) in asks.into_values().zip(answers) {
+            for pane in panes {
+                homes.insert(pane, answer.clone());
+            }
+        }
+        homes
+    }
+
     /// Start the agent of a saved agent pane under its saved name, loading its saved conversation,
-    /// in a space whose directory is `space_cwd` and whose layout is `root`.
+    /// in a space whose directory is `space_cwd` and whose layout is `root`, with config directory
+    /// `home` ([`Self::saved_agent_homes`]).
     fn start_saved_agent(
         &self,
         space_cwd: &str,
         root: &SpaceInfo,
         saved: AgentPane,
+        home: Result<Option<String>, String>,
     ) -> Result<(), String> {
+        let home = home?;
         // A conversation switched over from a terminal runs where Claude Code ran it.
-        let place = match space_find(root, &saved.pane) {
-            Some(PaneKind::Agent {
-                place: Some(place), ..
-            }) => (**place).clone(),
-            _ => Default::default(),
-        };
-        let wheel_proto::AgentPlace { cwd, home } = place;
+        let cwd = saved_place(root, &saved.pane).cwd;
         let permissions = match space_find(root, &saved.pane) {
             Some(PaneKind::Agent { permissions, .. }) => {
                 permissions.as_deref().cloned().unwrap_or_default()
@@ -1924,7 +1967,7 @@ impl AppState {
 
     /// Start the agent panes a restore kept as saved because their agent could not start, which
     /// is a program not yet found. Called once the login shell's PATH arrives late.
-    pub(crate) fn start_unstarted_agents(&self) {
+    pub(crate) async fn start_unstarted_agents(&self) {
         let kept = std::mem::take(&mut *self.kept_agents.lock().unwrap());
         let waiting: Vec<(String, String, SpaceInfo, AgentPane)> = {
             let spaces = self.spaces.lock().unwrap();
@@ -1939,14 +1982,29 @@ impl AppState {
                 })
                 .collect()
         };
+        let roots: Vec<SpaceInfo> = waiting.iter().map(|(_, _, root, _)| root.clone()).collect();
+        let mut homes = self.saved_agent_homes(&roots).await;
         for (space, cwd, root, saved) in waiting {
             let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
-            match self.start_saved_agent(&cwd, &root, saved) {
+            // The shell was asked without the lock: a pane closed, or started by hand, meanwhile is
+            // left as it is now.
+            let still = {
+                let spaces = self.spaces.lock().unwrap();
+                spaces.spaces.iter().any(|s| {
+                    matches!(space_find(s, &pane), Some(PaneKind::Agent { agent: a, .. }) if *a == agent)
+                }) && self.agent(&agent).is_err()
+            };
+            if !still {
+                continue;
+            }
+            let home = homes.remove(&pane).unwrap_or(Ok(None));
+            match self.start_saved_agent(&cwd, &root, saved, home) {
                 Ok(()) => {
                     tracing::info!(%space, %pane, %agent, "agent started now that its program is found")
                 }
                 Err(e) => {
-                    tracing::warn!(%space, %pane, %agent, error = %e, "agent still cannot start")
+                    tracing::warn!(%space, %pane, %agent, error = %e, "agent still cannot start");
+                    self.kept_agents.lock().unwrap().insert(agent);
                 }
             }
         }
@@ -2001,6 +2059,11 @@ impl AppState {
             },
         )
         .map_err(|e| (e, false))?;
+        let picked: std::collections::BTreeMap<String, String> = match (&fork, Harness::parse(harness)) {
+            (Some(_), Some(h)) => [(h.home_var().to_string(), home.unwrap_or_default())].into(),
+            _ => Default::default(),
+        };
+        let fork_cwd = fork.and_then(|f| f.cwd);
         let new = PaneKind::Agent {
             agent: name.clone(),
             harness: harness.to_string(),
@@ -2008,8 +2071,9 @@ impl AppState {
             state: None,
             model,
             context: None,
-            // The pane keeps the account it started in, so a restart finds its conversation there.
-            place: wheel_proto::AgentPlace::boxed(fork.and_then(|f| f.cwd), home),
+            // A fork picks the account its conversation is kept in, so a restart finds it there;
+            // a home the login shell gave is asked for again on restart.
+            place: wheel_proto::AgentPlace::boxed(fork_cwd, picked),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
             login: None,
             extra: Extra::default(),
@@ -2403,6 +2467,7 @@ impl AppState {
             .flat_map(|space| space_panes(space).into_iter().map(|(p, _)| p.to_string()))
             .collect();
         self.sweep_uploads(&named_all.iter().map(String::as_str).collect());
+        let mut homes = self.saved_agent_homes(&loaded.spaces).await;
         for space in &mut loaded.spaces {
             let mut outcomes: HashMap<String, String> = HashMap::new();
             for (pane, kind) in unknown_panes(space) {
@@ -2504,7 +2569,8 @@ impl AppState {
             // its saved name, and loads its saved conversation where the agent can.
             for saved in agent_panes(space) {
                 let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
-                match self.start_saved_agent(&space.cwd, space, saved) {
+                let home = homes.remove(&pane).unwrap_or(Ok(None));
+                match self.start_saved_agent(&space.cwd, space, saved, home) {
                     Ok(()) => {
                         agents += 1;
                         outcomes.insert(
@@ -2817,6 +2883,16 @@ pub(crate) fn agent_panes(space: &SpaceInfo) -> Vec<AgentPane> {
             _ => None,
         })
         .collect()
+}
+
+/// Where saved agent pane `pane` of `space` runs: its own directory and picked environment.
+fn saved_place(space: &SpaceInfo, pane: &str) -> wheel_proto::AgentPlace {
+    match space_find(space, pane) {
+        Some(PaneKind::Agent {
+            place: Some(place), ..
+        }) => (**place).clone(),
+        _ => Default::default(),
+    }
 }
 
 /// Every pane of a space, wherever it is: the grid, a popped tree or the tray.

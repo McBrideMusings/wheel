@@ -17,7 +17,7 @@
 //! transcript whole. Both are refused while a turn is running or a message is queued.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -399,6 +399,7 @@ impl Agent {
                 self_started: false,
                 footer: AgentFooter {
                     directory: config.cwd.display().to_string(),
+                    home: config.home.as_ref().map(|h| h.display().to_string()),
                     ..AgentFooter::default()
                 },
                 unsent: None,
@@ -1164,6 +1165,11 @@ impl Agent {
         answer
             .await
             .map_err(|_| format!("agent {} stopped before it answered", self.name))?
+    }
+
+    /// The config directory the agent runs with; none when it runs with the agent's own default.
+    pub fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
     }
 
     /// The permissions the agent is in now: the mode its agent is in, which a person may have

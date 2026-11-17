@@ -3130,12 +3130,12 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     let PaneKind::Agent { agent, place, .. } = pane_kind(&mut ws, &pane).await else {
         panic!("the pane is an agent pane")
     };
-    // The space's own directory is not repeated; the config directory Claude Code used is kept.
+    // The space's own directory is not repeated; the config directory Claude Code used is picked.
     assert_eq!(
         place.map(|p| *p),
         Some(wheel_proto::AgentPlace {
             cwd: None,
-            home: Some(home.to_string_lossy().into())
+            env: [("CLAUDE_CONFIG_DIR".to_string(), home.to_string_lossy().into_owned())].into(),
         })
     );
     let events = transcript_when(&mut ws, &agent, |e| e.len() >= 4).await;

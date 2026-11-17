@@ -450,7 +450,7 @@ impl AppState {
                 state.set_login_path(login_path);
                 if found {
                     state.log_agents();
-                    state.start_unstarted_agents();
+                    state.start_unstarted_agents().await;
                     let _ = state.global.send(state.status(None).await);
                 }
                 if !again {

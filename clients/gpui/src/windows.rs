@@ -204,7 +204,7 @@ mod tests {
     use crate::layout::{Leaf, Tree};
 
     fn space(id: &str, name: &str, panes: usize) -> Space {
-        let leaf = |n: usize| Tree::Pane(Leaf { id: format!("{id}p{n}"), kind: "terminal".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, home: None, status: None });
+        let leaf = |n: usize| Tree::Pane(Leaf { id: format!("{id}p{n}"), kind: "terminal".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: None });
         let mut root = leaf(0);
         for n in 1..panes {
             root = Tree::Split { id: format!("{id}x{n}"), horizontal: true, ratio: 0.5, a: Box::new(root), b: Box::new(leaf(n)) };

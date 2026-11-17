@@ -17,11 +17,9 @@ pub struct Leaf {
     pub url: Option<String>,
     /// A web pane's artifact scope (`project` or `machine`); its name is the label.
     pub scope: Option<String>,
-    /// An agent pane's agent, the harness it runs (`claude`, `codex`, `pi`) and the home the
-    /// pane saved for it.
+    /// An agent pane's agent and the harness it runs (`claude`, `codex`, `pi`).
     pub agent: Option<String>,
     pub harness: Option<String>,
-    pub home: Option<String>,
     /// What the pane asks of the person, as the daemon last said: in the `status` listing, then
     /// `status_changed`; a `spaces` broadcast carries none and the client keeps what it holds.
     pub status: Option<PaneStatus>,
@@ -130,7 +128,7 @@ impl From<&Node> for Tree {
                 b: Box::new(Tree::from(b.as_ref())),
             },
             Node::Pane { id, kind, status, .. } => {
-                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, home: None, status: status.clone() };
+                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: status.clone() };
                 match kind {
                     PaneKind::Empty { .. } => leaf.kind = "empty".into(),
                     PaneKind::Terminal { term, cwd, agent, .. } => {
@@ -150,11 +148,10 @@ impl From<&Node> for Tree {
                         leaf.label = url.clone();
                         leaf.url = Some(url.clone());
                     }
-                    PaneKind::Agent { agent, harness, place, .. } => {
+                    PaneKind::Agent { agent, harness, .. } => {
                         leaf.kind = "agent".into();
                         leaf.agent = Some(agent.clone());
                         leaf.harness = Some(harness.clone());
-                        leaf.home = place.as_ref().and_then(|p| p.home.clone());
                     }
                     PaneKind::Plugin { plugin, pane, .. } => {
                         leaf.kind = "plugin".into();
@@ -354,14 +351,14 @@ mod tests {
     #[test]
     fn every_kind_keeps_what_the_view_draws() {
         let leaves: Vec<_> = leaves_of(&tree()).into_iter().cloned().collect();
-        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, home: None, status: None });
-        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, home: None, status: None });
-        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, home: None, status: None });
+        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, status: None });
+        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, status: None });
+        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, status: None });
         let agent = node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}));
-        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), home: None, status: None }));
+        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), status: None }));
         // A shell running a coding agent carries the agent as its harness.
         let shell = node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","agent":{"name":"codex","conversation":"c1"}}));
-        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), home: None, status: None }));
+        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), status: None }));
     }
 
     #[test]
@@ -390,7 +387,7 @@ mod tests {
     #[test]
     fn unknown_kinds_survive_parsing() {
         let leaf = node(json!({"node":"pane","id":"p9","kind":"hologram"}));
-        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, home: None, status: None }));
+        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: None }));
     }
 
     #[test]
