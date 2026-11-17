@@ -22,7 +22,7 @@
 //! origin reads `gone`. A read is keyed on the feed
 //! and its whole params, so `pr_detail {dir, number: 3}` and `{dir, number: 5}` are two values, while an
 //! action or clock names a feed and a project and reads every subscription of that feed on it. Actions
-//! are `press`, `run_list`, `issue_create`, `issue_close`, `branch_delete`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
+//! are `press`, `run_list`, `issue_create`, `issue_close`, `branch_delete`, `branch_cleanup`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
 //! `pr_worktree`, `pr_button`, `pr_refresh`, `vision_save` and `agent_start`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -58,7 +58,7 @@ type ReadLock = Arc<tokio::sync::Mutex<()>>;
 /// The feeds that hold what `bd` and the bead panes' records say: a press and a change of `bead-panes.json` refresh each.
 const BEAD_FEEDS: [&str; 2] = ["beads", "beads_graph"];
 const FEEDS: [&str; 10] = ["beads", "beads_graph", "project", "work", "swarm", "repo", "diff", "prs", "pr_detail", "issues"];
-const ACTIONS: [&str; 14] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
+const ACTIONS: [&str; 15] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "branch_cleanup", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
 /// How often a `repo`, `prs`, `pr_detail` or `issues` subscription is read again whatever the files do: GitHub has no event.
 const REPO_EVERY: Duration = Duration::from_secs(120);
@@ -601,6 +601,13 @@ impl Core {
                 let changed_dir = dir.clone();
                 let done = tokio::task::spawn_blocking(move || repo_feed::delete(&dir, &branch)).await;
                 // Read the project again whether or not the delete went through.
+                let _ = self.tx.send(Msg::RefreshFeed("repo".into(), changed_dir));
+                done
+            }
+            "branch_cleanup" => {
+                let changed_dir = dir.clone();
+                let done = tokio::task::spawn_blocking(move || repo_feed::clean_up(&dir)).await;
+                // Read the project again whatever was deleted.
                 let _ = self.tx.send(Msg::RefreshFeed("repo".into(), changed_dir));
                 done
             }

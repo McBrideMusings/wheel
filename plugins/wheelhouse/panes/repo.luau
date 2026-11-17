@@ -1,5 +1,5 @@
 -- The Repo pane: a project's branches and worktrees as a sortable table with filters and status boxes, a History tab of
--- stashes and commits, and deleting a dead branch.
+-- stashes and commits, deleting a dead branch, and Clean up, which deletes every finished one nothing keeps.
 --
 -- `wheelhouse.repo` (the backend's feed, see wheel-plugin.toml) holds the branches, stashes and commits. The pane's own
 -- state (tab, search and filters, sort, selection, the last result) lives in `state`.
@@ -162,6 +162,13 @@ local function branch_row(st, b, now)
     }
     ci_cell.key = "ci"
     delete_cell.key = "delete"
+    -- A finished branch (its work in the default branch, in a merged PR, or deleted on origin) reads faint in every
+    -- cell but Delete, whose chip says what to do with it.
+    if b.finished then
+        for _, c in cells do
+            if c ~= delete_cell then c.tone = "faint" end
+        end
+    end
     local row = { id = b.branch, path = b.branch, depth = 0, cells = cells, menu = {} }
     if st.sel == b.branch then row.sel = true end
     if b._kind == "dead" then
@@ -338,7 +345,19 @@ local function page(st, data, snap)
             }),
             counted(branches, "checks", { { "failing", "failing" }, { "pending", "pending" }, { "passing", "passing" }, { "none", "none" } }),
         }
-        local actions = list.actions(snap.scripts or NONE, took, #shown, "branch names", "branches")
+        -- Clean up takes every finished branch the backend's plan deletes, whatever is listed or selected.
+        local cleanup = snap.cleanup or NONE
+        local doomed = cleanup.delete or NONE
+        local kept = {}
+        for _, k in cleanup.keep or NONE do table.insert(kept, k.branch .. " (" .. k.why .. ")") end
+        local help = "Delete the " .. #doomed .. " merged, squash-merged or gone branches, each worktree first"
+        if cleanup.off then help = "Unavailable: " .. cleanup.off end
+        if #doomed > 0 then help ..= ": " .. table.concat(doomed, ", ") end
+        if #kept > 0 then help ..= ". Keeps " .. table.concat(kept, ", ") end
+        local more = {
+            { label = "Clean up merged", n = #doomed, action = { type = "cleanup" }, help = help, first = true },
+        }
+        local actions = list.actions(snap.scripts or NONE, took, #shown, "branch names", "branches", nil, more)
         table.insert(children, list.bar(SPEC, st.list, options, actions))
         local t = if st.tab == "history" then history_table(st, snap, now) else branches_table(st, snap, shown, now)
         table.insert(children, kit.box("v", { t }, {}))
@@ -357,7 +376,7 @@ local function update(state, msg)
     if msg.action then
         local failed = msg.error ~= nil
         local words = if failed then msg.error else (type(msg.result) == "table" and msg.result.said) or "Done."
-        if msg.action == "wheelhouse.branch_delete" or msg.action == "wheelhouse.run_list" then
+        if msg.action == "wheelhouse.branch_delete" or msg.action == "wheelhouse.branch_cleanup" or msg.action == "wheelhouse.run_list" then
             state.said, state.said_bad = words, failed
         end
         return
@@ -375,6 +394,8 @@ local function update(state, msg)
         if state.dir and msg.branch then
             wheel.action("wheelhouse.branch_delete", { dir = state.dir, branch = msg.branch })
         end
+    elseif t == "cleanup" then
+        if state.dir then wheel.action("wheelhouse.branch_cleanup", { dir = state.dir }) end
     elseif t == "list.run" then
         if state.dir and msg.script then
             wheel.action("wheelhouse.run_list", { dir = state.dir, script = msg.script, ids = state.ids or {}, view = "repo" })

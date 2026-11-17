@@ -23,7 +23,7 @@ id = "repo"
 title = "Repo"
 script = "panes/repo.luau"
 reads = ["wheelhouse.repo"]
-actions = ["wheelhouse.branch_delete", "wheelhouse.run_list"]
+actions = ["wheelhouse.branch_delete", "wheelhouse.branch_cleanup", "wheelhouse.run_list"]
 
 [[pane]]
 id = "diff"

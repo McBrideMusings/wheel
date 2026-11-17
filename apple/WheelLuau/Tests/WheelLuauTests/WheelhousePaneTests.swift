@@ -311,12 +311,13 @@ import WheelKit
         let runtime = try Self.listPane()
         try runtime.send(Self.msg("list.select", ["ids": .array([.string("wheel-9"), .string("wheel-6")])]))
         var chips = Self.texts(Self.jsonOf(try runtime.view(Self.data)))
-        #expect(chips.contains("2 selected of 9 · Actions ⌄"))
+        #expect(chips.contains("2 selected · Actions ⌄"))
         let copy = try #require(try Self.buttons(runtime.view(Self.data)).first { $0.text == "Copy IDs" })
         #expect(copy.help.hasPrefix("Copy the 2 selected ids"))
         try runtime.send(Self.msg("list.query", ["value": .string("bead")]))
         chips = Self.texts(Self.jsonOf(try runtime.view(Self.data)))
-        #expect(chips.contains("9 listed · Actions ⌄"))
+        #expect(chips.contains("Actions ⌄"))
+        #expect(!chips.contains { $0.contains("listed") })
     }
 
     // MARK: the tree views
