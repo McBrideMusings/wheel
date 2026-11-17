@@ -19,6 +19,7 @@ pub fn value(dir: &str) -> Value {
         "branches": snap.branches,
         "stashes": snap.stashes.iter().map(|(r, subject, when)| json!({ "ref": r, "subject": subject, "when": when })).collect::<Vec<_>>(),
         "commits": snap.commits,
+        "fetched": snap.fetched,
         "pr_error": snap.pr_error,
         "error": snap.error,
         "scripts": snap.scripts.iter().map(|s| json!({ "name": s.name, "label": s.label() })).collect::<Vec<_>>(),
@@ -75,7 +76,7 @@ mod tests {
         git(&dir, &["branch", "extra"]);
         let v = value(dir.to_str().unwrap());
         let keys: std::collections::BTreeSet<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-        let want = ["now", "name", "top", "default", "head", "branches", "stashes", "commits", "pr_error", "error", "scripts"];
+        let want = ["now", "name", "top", "default", "head", "branches", "stashes", "commits", "fetched", "pr_error", "error", "scripts"];
         assert_eq!(keys, want.into_iter().collect());
         assert_eq!(v["error"], Value::Null);
         assert_eq!(v["head"], "main");

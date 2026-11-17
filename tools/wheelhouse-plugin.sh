@@ -501,9 +501,9 @@ if not vals:
     print("no value with branches: %r" % rows[:2]); sys.exit()
 r = vals[0]
 v = r["value"]
-want = {"now", "name", "top", "default", "head", "branches", "stashes", "commits", "pr_error", "error", "scripts"}
-bkeys = {"branch", "ts", "subject", "author", "ahead", "behind", "upstream", "upstream_gone", "remote", "unpushed",
-         "worktree", "pr", "pr_merged", "local_only", "dead", "blocked"}
+want = {"now", "name", "top", "default", "head", "branches", "stashes", "commits", "fetched", "pr_error", "error", "scripts"}
+bkeys = {"branch", "ts", "subject", "author", "ahead", "behind", "upstream", "track", "upstream_gone", "remote", "unpushed",
+         "worktree", "pr", "pr_merged", "merged", "local_only", "dead", "blocked"}
 by = {b["branch"]: b for b in v["branches"]}
 problems = []
 if r.get("params") != {"dir": dirn}:
