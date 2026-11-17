@@ -4,8 +4,8 @@ import WheelKit
 import WheelUI
 
 /// One browser pane's page drawn by the phone itself (ADR-0005). The phone's web view is its own
-/// browser: it opens the pane's page once and then goes only where the person or an agent sends
-/// it, and nothing it does is reported to wheeld. A page on the Mac's loopback loads under
+/// browser: it opens at the pane's home once and then goes only where the person or an agent sends
+/// it (a change of the home moves it nowhere), and nothing it does is reported to wheeld. A page on the Mac's loopback loads under
 /// `BrowserPanes.loopbackScheme`, fetched from wheeld's `/loopback/<port>/`. Agents reach the
 /// page with `--on phone`; each command they run shows in `banner` for a moment. What the page
 /// writes to its console goes to wheeld as the phone's own (`wheel pane console --on phone`).
@@ -22,8 +22,8 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// argument ("claude" ran "dom h1").
     private(set) var banner: (by: String, command: String)?
     @ObservationIgnored private let relay = ConsoleRelay()
-    /// The page the layout last named for this pane; the browser goes again only when it changes.
-    @ObservationIgnored private var layoutURL: String?
+    /// The pane's home as the layout last named it: where `goHome` goes.
+    @ObservationIgnored private(set) var home: String
     /// Counts `prepareScripts` calls, so one that waited on the store while a later navigation
     /// started leaves the later one's scripts alone.
     @ObservationIgnored private var scriptGeneration = 0
@@ -32,8 +32,9 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// Why the last load failed, shown over the page until the next one starts.
     private(set) var failure: String?
 
-    init(pane: String, daemon: PageDaemon, console: @escaping (Bool, [ConsoleEntry]) -> Void) {
+    init(pane: String, home: String, daemon: PageDaemon, console: @escaping (Bool, [ConsoleEntry]) -> Void) {
         self.pane = pane
+        self.home = home
         let config = WKWebViewConfiguration()
         // The phone's own browser storage, shared by every browser pane it draws.
         config.websiteDataStore = .default()
@@ -62,14 +63,17 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         watches.append(view.observe(\.canGoBack, options: [.new]) { [weak self] web, _ in
             MainActor.assumeIsolated { self?.canGoBack = web.canGoBack }
         })
+        load(home)
     }
 
-    /// The layout names `url` for this pane: go there when it is not the page the layout named
-    /// last (the first time, or the pane was set to another page).
-    func layoutSays(_ url: String) {
-        guard url != layoutURL else { return }
-        layoutURL = url
-        load(url)
+    /// The layout holds `url` as this pane's home now. The browser stays where it is.
+    func homeIs(_ url: String) {
+        home = url
+    }
+
+    /// Go to the pane's home.
+    func goHome() {
+        load(home)
     }
 
     /// Go to `url`, which wheeld resolved from the address field or an agent's `pane page`.

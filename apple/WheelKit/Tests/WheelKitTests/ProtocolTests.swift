@@ -262,6 +262,12 @@ struct ProtocolTests {
         #expect(named == "claude")
         #expect(try ClientMsg.paneBrowserOpen(req: 7, pane: "p6", text: "example.com", on: "phone", from: "p2").json()
                 == #"{"from":"p2","on":"phone","op":"pane_browser_open","pane":"p6","req":7,"text":"example.com"}"#)
+        #expect(try ClientMsg.paneHome(req: 9, pane: "p6", url: "example.com").json()
+                == #"{"op":"pane_home","pane":"p6","req":9,"url":"example.com"}"#)
+        #expect(try ClientMsg.paneHome(req: 10, pane: "p6").json() == #"{"op":"pane_home","pane":"p6","req":10}"#)
+        guard case let .paneHome(req, pane, home) = try ServerMsg.decode(#"{"ev":"pane_home","req":9,"pane":"p6","url":"https://example.com/h"}"#)
+        else { Issue.record("wrong case"); return }
+        #expect(req == 9 && pane == "p6" && home == "https://example.com/h")
         #expect(try ClientMsg.paneBrowserOpen(req: 8, pane: "p6", text: "example.com").json()
                 == #"{"op":"pane_browser_open","pane":"p6","req":8,"text":"example.com"}"#)
         #expect(try ClientMsg.inspected(id: 5, text: "2").json() == #"{"id":5,"op":"inspected","text":"2"}"#)

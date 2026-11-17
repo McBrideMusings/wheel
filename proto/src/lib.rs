@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 47;
+pub const PROTOCOL_VERSION: u32 = 48;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1002,6 +1002,10 @@ pub enum ClientMsg {
         dir: Option<Dir>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+        /// For a browser pane only: its home, which the Mac's and the phone's browsers open at.
+        /// Without one, the page `url` names is the home. `PROTOCOL_VERSION` 48.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         artifact: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1140,6 +1144,11 @@ pub enum ClientMsg {
         /// resolves for the pane's space.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+        /// For `browser` only: the pane's home, which the Mac's and the phone's browsers open at.
+        /// Without one, the page `url` names (or the `browser.homepage` setting) is the home.
+        /// `PROTOCOL_VERSION` 48.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
         /// For `plugin` only, and required there: the plugin's id and the id of its `[[pane]]`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         plugin: Option<PluginPaneRef>,
@@ -1309,6 +1318,18 @@ pub enum ClientMsg {
         /// in the `by` of the `inspect_pane` a phone gets.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<String>,
+    },
+    /// Read or set a browser pane's home: the page its Mac and phone browsers open at, held in the
+    /// layout as the pane's `url`. Without `url`, replies `pane_home` with the home. With `url`,
+    /// read as `page_typed` reads an address field and refused when it names no page a pane may
+    /// open, wheeld sets the home, saves it with the layout and logs which client set it; it
+    /// moves no browser. Refused for a pane that is not a browser pane. `PROTOCOL_VERSION` 48.
+    PaneHome {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
     },
     /// Write a PNG of what a client draws for `pane` to `path` on the daemon's machine. The daemon
     /// asks a connected client that offered rendering (`render_offer`) and showed the pane, waits
@@ -2823,6 +2844,12 @@ pub enum ServerMsg {
         pane: String,
         url: String,
     },
+    /// `pane_home` read or set the home of browser pane `pane`: `url` is the home it holds now.
+    PaneHome {
+        req: u64,
+        pane: String,
+        url: String,
+    },
     /// `pane_shot` wrote `bytes` bytes of PNG to `path`, which is complete.
     PaneShot {
         req: u64,
@@ -2959,6 +2986,7 @@ impl ServerMsg {
             | ServerMsg::PaneInfo { req, .. }
             | ServerMsg::Procs { req, .. }
             | ServerMsg::Opened { req, .. }
+            | ServerMsg::PaneHome { req, .. }
             | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }
             | ServerMsg::OrchestratorStarted { req, .. }

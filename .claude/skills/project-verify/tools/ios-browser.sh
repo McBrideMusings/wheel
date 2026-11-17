@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # § iOS browser pane (wheel-zpa4.2.10.3): the phone draws a browser pane's page itself. A page on
 # the Mac's loopback loads through wheeld's /loopback/<port>/, agents reach it with --on phone,
-# the phone and the Mac browse independently, the page's console is the phone's own
+# the phone and the Mac browse independently, a change of the pane's home (`pane home`) moves neither
+# and a relaunched phone opens at it (wheel-zpa4.2.10.13), the page's console is the phone's own
 # (wheel-zpa4.2.10.5: `pane console --on phone`, apart from the Mac's), and a suspended app is
 # "the phone is not attached".
 #
@@ -132,6 +133,22 @@ check "wheeld logs each phone message with on=phone" poll 10 grep -q 'on=phone.*
 w pane eval "$PANE" 'location.reload(); 1' --on phone >/dev/null 2>&1
 check "a page load on the phone clears the phone's list" poll 20 console_lacks "from phone" --on phone
 kill $FOLLOWS 2>/dev/null; FOLLOWS=""
+
+# The pane's home (wheel-zpa4.2.10.13): `wheel pane home` sets it and moves no browser; a browser
+# made afterwards opens at it.
+home_is() { [ "$(w pane home "$PANE" 2>&1)" = "$1" ]; }
+check "pane home prints the page the pane opened at" home_is "http://localhost:$SPORT/"
+w pane home "$PANE" "http://localhost:$SPORT/index.html" >/dev/null
+check "pane home <page> sets the home" home_is "http://localhost:$SPORT/index.html"
+sleep 3
+check "the phone did not move when the home changed (dom h1 --on phone unchanged)" dom_is h1 '<h1>Unicycle</h1>'
+check "the Mac's browser did not move when the home changed" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'location.href')\" = '\"http://localhost:$SPORT/two.html\"' ]"
+xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1
+rm -f "$PLOG"
+# The pairing code is single use: the relaunched app reconnects with the credential it saved.
+SIMCTL_CHILD_WHEEL_NOTIFICATIONS=off xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
+check "the relaunched phone opens at the new home" poll 40 plog "browser pane $PANE loading wheel-loopback://localhost:$SPORT/index.html"
+check "dom h1 --on phone returns the home page's heading" poll 20 dom_is h1 '<h1>Bicycle</h1>'
 
 # The app suspended: page commands say so instead of waiting.
 xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1

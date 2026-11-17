@@ -807,7 +807,7 @@ impl Client {
             if self.opened.get(&leaf.id).map(String::as_str) == Some("browser")
                 && let Some(url) = &leaf.url
             {
-                self.native.browser(&leaf.id, "layout_says", serde_json::json!({"url": url}));
+                self.native.browser(&leaf.id, "home_is", serde_json::json!({"url": url}));
             }
         }
         for pane in self.palettes.iter().filter(|(_, p)| p.req.is_none() && p.is_loading()).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
@@ -1328,6 +1328,12 @@ impl Client {
             }
         }
     }
+    /// Make `url` browser pane `pane`'s home. wheeld saves it with the layout; no browser moves.
+    pub fn set_browser_home(&mut self, pane: &str, url: &str) {
+        let req = self.next_req;
+        self.next_req += 1;
+        self.send(&ClientMsg::PaneHome { req: Some(req), pane: pane.to_owned(), url: Some(url.to_owned()) });
+    }
     /// A press on a browser pane's chrome.
     pub fn browser_press(&mut self, pane: &str, press: Press) {
         self.press(format!("browser {pane} {press:?}"));
@@ -1337,11 +1343,10 @@ impl Client {
             Press::Forward => self.native.browser(pane, "forward", serde_json::json!({})),
             Press::Reload | Press::Retry => self.native.browser(pane, "reload", serde_json::json!({})),
             Press::Stop => self.native.browser(pane, "stop", serde_json::json!({})),
-            // Home: the kind again with no page, which opens the `browser.homepage` setting as
-            // wheeld resolves it for the pane's space.
+            // Home: the pane's home as the layout holds it, which this browser keeps.
             Press::Home => {
                 self.native.browser(pane, "clear_failure", serde_json::json!({}));
-                self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Browser, artifact: None, scope: None, url: None, plugin: None });
+                self.native.browser(pane, "go_home", serde_json::json!({}));
             }
             // The field takes the keyboard from the web view: the GPUI view holds it while editing.
             Press::Edit => {
@@ -1757,12 +1762,12 @@ impl Client {
     /// A plugin's pane picked in an empty pane: wheeld turns the pane into it.
     fn show_plugin(&mut self, pane: &str, plugin: &str, plugin_pane: &str) {
         let (pane, plugin, plugin_pane) = (pane.to_owned(), plugin.to_owned(), plugin_pane.to_owned());
-        self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind: NewPaneKind::Plugin, artifact: None, scope: None, url: None, plugin: Some(wheel_proto::PluginPaneRef { plugin, pane: plugin_pane }) });
+        self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind: NewPaneKind::Plugin, artifact: None, scope: None, url: None, plugin: Some(wheel_proto::PluginPaneRef { plugin, pane: plugin_pane }) });
     }
     /// Turn an empty pane into `kind` (`terminal` or `browser`).
     fn set_kind(&mut self, pane: &str, kind: NewPaneKind) {
         let pane = pane.to_owned();
-        self.send_layout(|req| ClientMsg::PaneSetKind { req: Some(req), pane, kind, artifact: None, scope: None, url: None, plugin: None });
+        self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind, artifact: None, scope: None, url: None, plugin: None });
     }
     /// The artifact palette open inside `pane`, if any.
     pub fn palette(&self, pane: &str) -> Option<&Palette> {
@@ -1841,7 +1846,7 @@ impl Client {
             return;
         }
         self.close_palette(pane);
-        self.send(&ClientMsg::PaneSetKind { req: None, pane: pane.to_owned(), kind: NewPaneKind::Web, artifact: Some(info.name.clone()), scope: Some(info.scope), url: None, plugin: None });
+        self.send(&ClientMsg::PaneSetKind { home: None, req: None, pane: pane.to_owned(), kind: NewPaneKind::Web, artifact: Some(info.name.clone()), scope: Some(info.scope), url: None, plugin: None });
     }
     /// Give every web pane and every terminal pane (with a daemon terminal) its own native view,
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views

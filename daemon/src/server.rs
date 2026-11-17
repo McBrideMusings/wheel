@@ -1859,13 +1859,14 @@ async fn handle(
             pane,
             dir,
             url,
+            home,
             artifact,
             scope,
             focus,
             site,
         } => {
             let opened = state
-                .pane_open(&pane, dir, site, url, artifact, scope)
+                .pane_open(&pane, dir, site, home.or(url), artifact, scope)
                 .await;
             if let (true, Ok(new)) = (focus, &opened) {
                 state.show_pane(new);
@@ -1952,10 +1953,15 @@ async fn handle(
             artifact,
             scope,
             url,
+            home,
             plugin,
         } => {
+            // The page and the home reach `pane_set_kind` as one: the home, else the page.
+            if home.is_some() && kind != wheel_proto::NewPaneKind::Browser {
+                return Some(failed(req, format!("home is only for a browser pane, not {kind:?}").to_lowercase()));
+            }
             let set = state
-                .pane_set_kind(&pane, kind, artifact, scope, url, plugin)
+                .pane_set_kind(&pane, kind, artifact, scope, home.or(url), plugin)
                 .await
                 .map(|_| ());
             done(req, set)
@@ -2176,6 +2182,18 @@ async fn handle(
                 Ok(entries) => req.map(|req| ServerMsg::Console { req, pane, entries }),
                 Err(message) => {
                     tracing::warn!(%peer, %pane, %message, "pane console read failed");
+                    Some(failed(req, message))
+                }
+            }
+        }
+        ClientMsg::PaneHome { req, pane, url } => {
+            // Which client asked is the connection's to say: a paired device's name, the Mac app,
+            // or `local` for the `wheel` command and agents.
+            let by = state.client_name(peer, caller);
+            match state.pane_home(&pane, url.as_deref(), &by) {
+                Ok(url) => req.map(|req| ServerMsg::PaneHome { req, pane, url }),
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, client = %by, %message, "pane home failed");
                     Some(failed(req, message))
                 }
             }

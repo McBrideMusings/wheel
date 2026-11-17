@@ -53,9 +53,10 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
     private let ask: (String) -> Void
     /// Tells the daemon what the page wrote to its console; `true` says the page just loaded.
     private let console: (Bool, [ConsoleEntry]) -> Void
-    /// The page the layout last named for this pane. The browser opens there once and goes again
-    /// only when the layout names another, so its own browsing is never undone.
-    private var layoutURL: String
+    /// The pane's home as the layout last named it. The browser opens there when it is made and
+    /// moves only when the person or an agent sends it, so a change of home never undoes its own
+    /// browsing; `goHome` goes there.
+    public private(set) var home: String
     private var observations: [NSKeyValueObservation] = []
 
     public init(pane: String, url: String, daemonIsRemote: Bool, log: @escaping (String) -> Void = { _ in },
@@ -72,7 +73,7 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
         self.console = console
         self.pane = pane
         self.url = url
-        self.layoutURL = url
+        self.home = url
         self.daemonIsRemote = daemonIsRemote
         self.log = log
         self.ask = ask
@@ -97,13 +98,15 @@ public final class BrowserPane: NSObject, ObservableObject, WKNavigationDelegate
     /// What the address field shows: the failed address while a failure shows, else the page.
     public var address: String { failure?.address ?? url }
 
-    /// The layout names `url` for this pane. A page the layout already named changes nothing; a
-    /// new one (the pane was set to another page) is where this browser goes.
-    public func layoutSays(_ url: String) {
-        guard url != layoutURL else { return }
-        layoutURL = url
-        log("browser pane \(pane) sent to \(url) by its layout")
-        go(url)
+    /// The layout holds `url` as this pane's home now. The browser stays where it is.
+    public func homeIs(_ url: String) {
+        home = url
+    }
+
+    /// Go to the pane's home.
+    public func goHome() {
+        log("browser pane \(pane) going home to \(home)")
+        go(home)
     }
 
     /// Open what the person typed into the address field: the daemon says what page it means.

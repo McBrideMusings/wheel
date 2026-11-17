@@ -156,7 +156,7 @@ impl Native {
         self.call(json!({"op":"open","pane":pane,"kind":"browser","url":url,"remote":remote}));
     }
     /// One of a browser pane's actions: `back`, `forward`, `reload`, `stop`, `clear_failure`,
-    /// `open` (with `text`), `opened` and `layout_says` (with `url`), `refused` (with `text` and
+    /// `go_home`, `open` (with `text`), `opened` and `home_is` (with `url`), `refused` (with `text` and
     /// `message`).
     pub fn browser(&self, pane: &str, action: &str, fields: Value) {
         let mut value = json!({"op":"browser","pane":pane,"action":action});

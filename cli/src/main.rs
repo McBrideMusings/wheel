@@ -930,6 +930,10 @@ enum PaneCommand {
         /// A browser pane on this page. Not `--url`, which is the daemon's address.
         #[arg(long)]
         page: Option<String>,
+        /// The browser pane's home, the page its Mac and phone browsers open at. With none, the
+        /// page is the home; given, `--page` is not read.
+        #[arg(long, requires = "page")]
+        home: Option<String>,
         /// A web pane on this artifact.
         #[arg(long)]
         artifact: Option<String>,
@@ -1076,12 +1080,23 @@ enum PaneCommand {
         /// rather than `url` because `--url` is this CLI's own flag for the daemon's address.
         #[arg(long)]
         page: Option<String>,
+        /// The browser pane's home, the page its Mac and phone browsers open at. With none, the
+        /// page (or the browser.homepage setting) is the home; given, `--page` is not read.
+        #[arg(long)]
+        home: Option<String>,
         /// The plugin a plugin pane shows, by id; see `wheel plugin ls`.
         #[arg(long, requires = "plugin_pane")]
         plugin: Option<String>,
         /// The id of the plugin's `[[pane]]` to show.
         #[arg(long, requires = "plugin")]
         plugin_pane: Option<String>,
+    },
+    /// Print a browser pane's home, the page its Mac and phone browsers open at, or with a page
+    /// set it. Setting it moves neither browser.
+    Home {
+        pane: String,
+        /// Whatever the address field takes: a URL, `example.com`, a path, or about:blank.
+        page: Option<String>,
     },
     /// Send one browser of a browser pane to a page, as typing it into its address field does;
     /// print the page the text named. The other browser stays where it is.
@@ -5671,6 +5686,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             pane,
             dir,
             page,
+            home,
             artifact,
             scope,
             focus,
@@ -5685,6 +5701,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
                 dir,
                 url: page,
+                home,
                 artifact,
                 scope,
                 focus,
@@ -5892,6 +5909,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             artifact,
             scope,
             page,
+            home,
             plugin,
             plugin_pane,
         } => {
@@ -5902,11 +5920,27 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 artifact,
                 scope,
                 url: page,
+                home,
                 plugin: plugin
                     .zip(plugin_pane)
                     .map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }),
             })
             .await
+        }
+        PaneCommand::Home { pane, page } => {
+            let req = conn.req();
+            let msg = ClientMsg::PaneHome {
+                req: Some(req),
+                pane,
+                url: page,
+            };
+            match conn.call(msg, req).await? {
+                ServerMsg::PaneHome { url, .. } => {
+                    println!("{url}");
+                    Ok(())
+                }
+                other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
         }
         PaneCommand::Page { pane, page, on } => {
             let req = conn.req();

@@ -617,8 +617,9 @@ final class PhoneModel {
         client?.send(.renderOffer)
     }
 
-    /// Keeps one `PhoneBrowser` per browser pane in the layout. Each opens at the pane's page once
-    /// and goes again only when the layout names another (the pane was set to a new page).
+    /// Keeps one `PhoneBrowser` per browser pane in the layout. Each opens at the pane's home when
+    /// it is made and never moves because the layout names another home; it keeps the latest for
+    /// `goHome`.
     private func syncBrowsers() {
         let wanted = BrowserPanes.urls(spaces)
         for pane in browsers.keys where wanted[pane] == nil {
@@ -626,15 +627,21 @@ final class PhoneModel {
             Log.info("browser pane \(pane) left the layout")
         }
         for (pane, url) in wanted {
-            let browser = browsers[pane] ?? {
-                let made = PhoneBrowser(pane: pane, daemon: pageDaemon, console: { [weak self] reset, entries in
+            if let browser = browsers[pane] {
+                browser.homeIs(url)
+            } else {
+                browsers[pane] = PhoneBrowser(pane: pane, home: url, daemon: pageDaemon, console: { [weak self] reset, entries in
                     self?.client?.send(.paneConsole(req: nil, pane: pane, reset: reset, entries: entries))
                 })
-                browsers[pane] = made
-                return made
-            }()
-            browser.layoutSays(url)
+            }
         }
+    }
+
+    /// Make `url` browser pane `pane`'s home for the Mac's and the phone's browsers. wheeld saves
+    /// it with the layout; neither browser moves.
+    func setHome(_ pane: String, _ url: String) {
+        guard let client else { return }
+        client.send(.paneHome(req: client.req(), pane: pane, url: url))
     }
 
     /// Keeps one `WebPane` per web pane in the layout, loading each new one.

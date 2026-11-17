@@ -596,7 +596,7 @@ impl Client {
             }
             ServerMsg::Created { req, id, .. } if self.palette_reqs.artifact_after_split.contains_key(req) => {
                 let info = self.palette_reqs.artifact_after_split.remove(req).unwrap();
-                self.send(&ClientMsg::PaneSetKind { req: None, pane: id.clone(), kind: NewPaneKind::Web, artifact: Some(info.name), scope: Some(info.scope), url: None, plugin: None });
+                self.send(&ClientMsg::PaneSetKind { home: None, req: None, pane: id.clone(), kind: NewPaneKind::Web, artifact: Some(info.name), scope: Some(info.scope), url: None, plugin: None });
             }
             _ => return false,
         }

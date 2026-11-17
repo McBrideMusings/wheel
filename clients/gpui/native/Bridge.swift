@@ -877,7 +877,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let artifact = (value["artifact"] as? String).map { "\(value["scope"] as? String ?? "")/\($0)" }
         if let existing = panes[id], existing.kind == kind, existing.artifact == artifact, existing.cwd == value["cwd"] as? String, existing.pluginLabel == value["label"] as? String {
             if kind == "web", let url = value["url"] as? String, url != existing.url { existing.url = url; existing.web?.load(URLRequest(url: URL(string: url)!)) }
-            if kind == "browser", let url = value["url"] as? String { existing.browser?.layoutSays(url) }
+            if kind == "browser", let url = value["url"] as? String { existing.browser?.homeIs(url) }
             return
         }
         close(id)
@@ -1032,7 +1032,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         return o
     }
     /// `back`, `forward`, `reload`, `stop`, `clear_failure`, `open` (typed text), `opened` and
-    /// `refused` (the daemon's answers to typed text), `layout_says` (the layout's page for the pane).
+    /// `refused` (the daemon's answers to typed text), `home_is` (the pane's home in the layout) and `go_home`.
     func browser(_ value: [String: Any]) {
         guard let host = panes[value["pane"] as! String], let browser = host.browser else { return }
         switch value["action"] as? String {
@@ -1044,7 +1044,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "open": browser.open(typed: value["text"] as? String ?? "")
         case "opened": browser.opened(value["url"] as? String ?? "")
         case "refused": browser.refused(typed: value["text"] as? String ?? "", value["message"] as? String ?? "")
-        case "layout_says": browser.layoutSays(value["url"] as? String ?? "")
+        case "home_is": browser.homeIs(value["url"] as? String ?? "")
+        case "go_home": browser.goHome()
         default: break
         }
     }

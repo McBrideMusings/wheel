@@ -1595,7 +1595,7 @@ async fn wheel_call(
                 .transpose()
                 .map_err(|e| bad_args(method, e))?;
             let opened = state
-                .pane_open(&pane, dir, site, text("url"), text("artifact"), scope)
+                .pane_open(&pane, dir, site, text("home").or(text("url")), text("artifact"), scope)
                 .await
                 .map_err(|e| ResponseError::new(ErrorCode::REQUEST_FAILED, e))?;
             tracing::info!(%plugin, pane = %opened, "plugin opened a pane");

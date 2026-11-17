@@ -218,7 +218,7 @@ impl AppState {
                 ("web", fields)
             }
             PaneKind::Browser { url, .. } => {
-                let fields = vec![pane_field, field("Opens at", url, "where the Mac's and the phone's browsers start; each then browses on its own")];
+                let fields = vec![pane_field, field("Home", url, "the page the Mac's and the phone's browsers open at; each then browses on its own")];
                 ("browser", fields)
             }
             _ => ("empty", vec![pane_field]),

@@ -717,7 +717,7 @@ final class AppModel {
         }
         for (pane, url) in pages {
             if let browser = browserPanes[pane] {
-                browser.layoutSays(url)
+                browser.homeIs(url)
             } else {
                 Log.info("browser pane \(pane) opening \(url)")
                 browserPanes[pane] = BrowserPane(
@@ -2252,11 +2252,15 @@ final class AppModel {
         client.send(.paneBrowserOpen(req: req, pane: pane, text: text))
     }
 
-    /// Send a browser pane to the `browser.homepage` setting as the daemon resolves it for the
-    /// pane's space: the kind again with no page, which is what opening one without a page does.
+    /// Send a browser pane to its home, the page the layout holds for it.
     func goHome(_ pane: String) {
         browserPanes[pane]?.clearFailure()
-        sendLayoutOp { .paneSetKind(req: $0, pane: pane, kind: .browser) }
+        browserPanes[pane]?.goHome()
+    }
+
+    /// Make `url` browser pane `pane`'s home. wheeld saves it with the layout; no browser moves.
+    func setHome(_ pane: String, _ url: String) {
+        client.send(.paneHome(req: client.req(), pane: pane, url: url))
     }
 
     // MARK: Terminals

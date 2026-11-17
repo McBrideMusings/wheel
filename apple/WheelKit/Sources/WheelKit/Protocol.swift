@@ -117,6 +117,11 @@ public enum ClientMsg: Sendable, Equatable {
     /// saying why; it moves no browser. With `on` (`mac` or `phone`) it also asks that browser to
     /// go there (`inspectPane` action `open`) and replies once it has.
     case paneBrowserOpen(req: UInt64?, pane: String, text: String, on: String? = nil, from: String? = nil)
+    /// Read or set a browser pane's home, the page its Mac and phone browsers open at. With no
+    /// `url` the daemon replies `paneHome` with the home. With one it sets the home (a page a pane
+    /// may not open is refused), saves it with the layout, logs which client set it and moves no
+    /// browser; the reply is `paneHome` with the new home.
+    case paneHome(req: UInt64?, pane: String, url: String? = nil)
     /// What a browser pane's page wrote to its console. `reset` says the page just loaded, so the
     /// daemon drops what it kept for the pane before it appends `entries`.
     case paneConsole(req: UInt64?, pane: String, reset: Bool, entries: [ConsoleEntry])
@@ -347,6 +352,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_browser_open", "pane": pane, "text": text]; put(req)
             if let on { o["on"] = on }
             if let from { o["from"] = from }
+        case let .paneHome(req, pane, url):
+            o = ["op": "pane_home", "pane": pane]; put(req)
+            if let url { o["url"] = url }
         case let .paneConsole(req, pane, reset, entries):
             o = ["op": "pane_console", "pane": pane, "reset": reset, "entries": entries.map(\.json)]; put(req)
         case let .splitRatio(req, split, ratio):
@@ -1386,6 +1394,8 @@ public enum ServerMsg: Sendable {
     /// `pane_browser_open` read its text as `url`: the client that asked goes there itself, or,
     /// with `on`, the browser it named went there.
     case opened(req: UInt64, pane: String, url: String)
+    /// `paneHome` read or set browser pane `pane`'s home: `url` is the home it holds now.
+    case paneHome(req: UInt64, pane: String, url: String)
     /// Draw `pane` as a PNG and answer with `rendered` or `renderRefused` naming `id`. Sent only to
     /// a connection that sent `renderOffer`.
     case renderPane(id: UInt64, pane: String, full: Bool, by: String? = nil)
@@ -1576,6 +1586,7 @@ extension ServerMsg: Decodable {
             self = .paneView(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
                              view: try c.decodeIfPresent(String.self, forKey: .view).flatMap(ConversationView.init(rawValue:)),
                              conversation: try c.decodeIfPresent(String.self, forKey: .conversation))
+        case "pane_home": self = .paneHome(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "opened": self = .opened(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane), url: try c.decode(String.self, forKey: .url))
         case "window_request":
             let command = try c.decode(String.self, forKey: .command)

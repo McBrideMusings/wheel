@@ -1529,13 +1529,14 @@ impl AppState {
                     let spaces = self.spaces.lock().unwrap();
                     spaces.spaces[spaces.holding(pane)?].id.clone()
                 };
-                // The homepage is read for this pane's own space, so a project that sets its own
-                // opens that and every other project opens the machine's. A page given is read
+                // `url` is the pane's home (a caller's `home`, else its page), else the homepage
+                // setting as it reads for this pane's own space (a project that sets its own
+                // opens that and every other project opens the machine's). A page given is read
                 // as an address field reads typed text, so `example.com` opens https.
                 let url = match url {
                     Some(url) => {
-                        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-                        wheel_proto::page_typed(&url, &home)?
+                        let user_home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+                        wheel_proto::page_typed(&url, &user_home)?
                     }
                     None => self.setting(HOMEPAGE, Some(&space))?,
                 };
@@ -2304,6 +2305,33 @@ impl AppState {
         let url = page(&wheel_proto::page_typed(text, &home)?)?;
         tracing::info!(%pane, typed = %text, %url, "browser pane resolved typed text");
         Ok(url)
+    }
+
+    /// The home of browser pane `pane`: the page its Mac and phone browsers open at, which is the
+    /// pane's `url` in the layout. With `set`, read as an address field reads typed text and
+    /// refused when it names no page a pane may open, the home becomes that page and is saved
+    /// with the layout; `by` names the client that asked, for the log. No browser is asked to go.
+    pub fn pane_home(&self, pane: &str, set: Option<&str>, by: &str) -> Result<String, String> {
+        self.browser_pane(pane)?;
+        let mut spaces = self.spaces.lock().unwrap();
+        let Some(PaneKind::Browser { url, .. }) = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| space_find_mut(s, pane))
+        else {
+            return Err(format!("{pane} is not a browser pane"));
+        };
+        let Some(text) = set else {
+            return Ok(url.clone());
+        };
+        let user_home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        let new = page(&wheel_proto::page_typed(text, &user_home)?)?;
+        if *url != new {
+            *url = new.clone();
+            self.changed(&spaces);
+        }
+        tracing::info!(%pane, client = %by, home = %new, "browser pane home set");
+        Ok(new)
     }
 
     pub fn split_ratio(&self, split: &str, ratio: f64) -> Result<(), String> {
