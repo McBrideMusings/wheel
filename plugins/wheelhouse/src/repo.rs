@@ -61,7 +61,7 @@ pub struct Branch {
     pub behind: Option<i64>,
     pub upstream: Option<String>,
     /// What `git branch -vv` prints after the upstream: `ahead 5`, `behind 3`, `ahead 2, behind 3`,
-    /// `gone` (deleted on origin), or empty when up to date or there is no upstream.
+    /// `gone` (deleted on the remote), or empty when up to date or there is no upstream.
     pub track: String,
     pub upstream_gone: bool,
     pub remote: Option<String>,
@@ -99,17 +99,22 @@ pub struct Snapshot {
     pub name: String,
     pub top: String,
     pub default: Option<String>,
+    /// The remote the project's GitHub repo lives at (`git::project_remote`), whatever it is called.
+    pub remote: Option<String>,
     pub head: Option<String>,
     pub branches: Vec<Branch>,
     pub stashes: Vec<(String, String, String)>,
     pub commits: Vec<Commit>,
-    /// When origin was last fetched (`FETCH_HEAD`'s time), so the pane can say how old the upstream counts are.
+    /// When the remote was last fetched (`FETCH_HEAD`'s time), so the pane can say how old the upstream counts are.
     pub fetched: Option<i64>,
     pub pr_error: Option<String>,
     /// Why the open PRs could not all be read, so the pane cannot tell which branches have one.
     #[serde(skip)]
     pub open_prs_problem: Option<String>,
     pub error: Option<String>,
+    /// The project's `[repo.buttons]`, run for one branch.
+    #[serde(skip)]
+    pub buttons: Vec<crate::prs::detail::Button>,
     /// The project's `[repo.list]` buttons, run over the listed branches.
     #[serde(skip)]
     pub scripts: Vec<crate::core::buttons::Script>,
@@ -195,17 +200,16 @@ fn pr_merged(top: &str, name: &str, closed: &[Closed]) -> bool {
     })
 }
 
-/// `git fetch --prune origin` in `dir`, so origin's refs (and with them every branch's `track`) say
-/// what origin holds now: a branch deleted there reads `gone`. Nothing to do without an origin remote.
+/// `git fetch --prune <remote>` in `dir`, `remote` being the one that points at the project's GitHub repo, so its
+/// refs (and with them every branch's `track`) say what it holds now: a branch deleted there reads `gone`.
+/// Nothing to do without such a remote.
 /// Never asks for a password: a fetch that needs one fails. A fetch still running after `FETCH_LIMIT`
 /// (a stalled connection) is killed and is an error, so the next tick fetches again.
 pub fn fetch(dir: &str) -> Result<(), String> {
     let top = git::toplevel(dir)?;
-    if git::quiet(&top, &["remote"]).lines().all(|r| r.trim() != "origin") {
-        return Ok(());
-    }
+    let Some(remote) = git::project_remote(&top) else { return Ok(()) };
     let child = std::process::Command::new("/usr/bin/git")
-        .args(["fetch", "--prune", "--quiet", "origin"])
+        .args(["fetch", "--prune", "--quiet", &remote])
         .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(&top)
         .stdin(std::process::Stdio::null())
@@ -213,7 +217,7 @@ pub fn fetch(dir: &str) -> Result<(), String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("git fetch: {e}"))?;
-    wait_limited(child, FETCH_LIMIT).map_err(|e| format!("git fetch --prune origin in {top}: {e}"))
+    wait_limited(child, FETCH_LIMIT).map_err(|e| format!("git fetch --prune {remote} in {top}: {e}"))
 }
 
 const FETCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -242,7 +246,7 @@ fn wait_limited(mut child: std::process::Child, limit: std::time::Duration) -> R
     }
 }
 
-/// When origin was last fetched: the time of the shared `FETCH_HEAD`.
+/// When the remote was last fetched: the time of the shared `FETCH_HEAD`.
 fn fetched_at(top: &str) -> Option<i64> {
     let (_, common) = git::dirs(top)?;
     let t = std::fs::metadata(Path::new(&common).join("FETCH_HEAD")).ok()?.modified().ok()?;
@@ -286,18 +290,23 @@ fn open_prs(top: &str) -> Result<Vec<(String, Pr)>, String> {
     }).collect())
 }
 
-/// Commits on `name` that live on no origin ref. A failed read answers 1: never claim a branch is
+/// Commits on `name` that live on no ref of `remote`. A failed read answers 1: never claim a branch is
 /// empty of local work.
-fn local_only(top: &str, name: &str) -> i64 {
-    count_or_one(git::run(top, &["rev-list", "--count", &format!("refs/heads/{name}"), "--not", "--remotes=origin"]))
+fn local_only(top: &str, name: &str, remote: Option<&str>) -> i64 {
+    let (head, not) = (format!("refs/heads/{name}"), remote.map(|r| format!("--remotes={r}")));
+    let mut args = vec!["rev-list", "--count", head.as_str()];
+    if let Some(n) = &not {
+        args.extend(["--not", n.as_str()]);
+    }
+    count_or_one(git::run(top, &args))
 }
 
 fn count_or_one(r: Result<String, String>) -> i64 {
     r.ok().and_then(|s| s.trim().parse().ok()).unwrap_or(1)
 }
 
-fn classify(top: &str, b: &Branch) -> (Option<&'static str>, i64) {
-    let lo = local_only(top, &b.branch);
+fn classify(top: &str, b: &Branch, remote: Option<&str>) -> (Option<&'static str>, i64) {
+    let lo = local_only(top, &b.branch, remote);
     let merged_on_github = b.pr_merged;
     if lo > 0 && !merged_on_github {
         return (None, lo);
@@ -352,10 +361,10 @@ fn real(p: &str) -> String {
     std::fs::canonicalize(p).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| p.into())
 }
 
-fn branch_rows(top: &str, dir: &str, default: &Option<String>, wts: &[Wt], prs: &[(String, Pr)], closed: &[Closed]) -> Vec<Branch> {
+fn branch_rows(top: &str, dir: &str, remote: Option<&str>, default: &Option<String>, wts: &[Wt], prs: &[(String, Pr)], closed: &[Closed]) -> Vec<Branch> {
     let fmt = ["%(refname:short)", "%(upstream:short)", "%(upstream:track,nobracket)", "%(committerdate:unix)", "%(subject)", "%(authorname)"]
         .join(&SEP.to_string());
-    let remotes = git::quiet(top, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"]);
+    let remotes = remote.map(|r| git::quiet(top, &["for-each-ref", "--format=%(refname:short)", &format!("refs/remotes/{r}")])).unwrap_or_default();
     let remotes: Vec<&str> = remotes.split_whitespace().collect();
     let list = git::quiet(top, &["for-each-ref", "--sort=-committerdate", &format!("--format={fmt}"), "refs/heads"]);
     let mut rows = vec![];
@@ -372,7 +381,7 @@ fn branch_rows(top: &str, dir: &str, default: &Option<String>, wts: &[Wt], prs: 
             Some((a, b)) => (Some(a), Some(b)),
             None => (None, None),
         };
-        let remote = Some(format!("origin/{name}")).filter(|r| remotes.contains(&r.as_str()));
+        let on_remote = remote.map(|r| format!("{r}/{name}")).filter(|r| remotes.contains(&r.as_str()));
         let worktree = wts.iter().position(|w| w.branch.as_deref() == Some(name)).map(|i| {
             let w = &wts[i];
             Worktree { path: w.path.clone(), current: real(&w.path) == real(dir), primary: i == 0,
@@ -381,7 +390,7 @@ fn branch_rows(top: &str, dir: &str, default: &Option<String>, wts: &[Wt], prs: 
         let mut b = Branch {
             branch: name.into(), ts: f[3].parse().unwrap_or(0), subject: f[4].into(), author: f[5].into(),
             ahead, behind, upstream: Some(f[1].to_string()).filter(|u| !u.is_empty()), track: f[2].to_string(), upstream_gone: f[2] == "gone",
-            unpushed: remote.as_deref().and_then(|r| git::counts(top, name, r)).map(|c| c.0), remote,
+            unpushed: on_remote.as_deref().and_then(|r| git::counts(top, name, r)).map(|c| c.0), remote: on_remote,
             worktree,
             pr: prs.iter().find(|(h, _)| h == name).map(|(_, p)| p.clone())
                 .or_else(|| closed.iter().find(|c| c.head == name).map(|c| c.pr.clone())),
@@ -389,23 +398,23 @@ fn branch_rows(top: &str, dir: &str, default: &Option<String>, wts: &[Wt], prs: 
             finished: false, untouched: false,
         };
         b.merged = merged_label(b.ahead, b.pr_merged);
-        let (dead, lo) = classify(top, &b);
+        let (dead, lo) = classify(top, &b, remote);
         b.dead = dead;
         b.local_only = lo;
         b.blocked = if dead.is_some() { blocked_by(&b) } else { None };
         b.finished = finished(&b);
-        b.untouched = dead == Some("merged") && untouched(top, &b, default.as_deref());
+        b.untouched = dead == Some("merged") && untouched(top, &b, remote, default.as_deref());
         rows.push(b);
     }
     rows
 }
 
 /// Whether nothing was ever done on branch `b`: its reflog holds at most its creation entry, and its
-/// upstream is none or the default branch (a branch made from `origin/<name>` holds pushed work).
-fn untouched(top: &str, b: &Branch, default: Option<&str>) -> bool {
+/// upstream is none or the default branch (a branch made from `<remote>/<name>` holds pushed work).
+fn untouched(top: &str, b: &Branch, remote: Option<&str>, default: Option<&str>) -> bool {
     let tracks_default = match (&b.upstream, default) {
         (None, _) => true,
-        (Some(u), Some(d)) => u == d || *u == format!("origin/{d}"),
+        (Some(u), Some(d)) => u == d || remote.is_some_and(|r| *u == format!("{r}/{d}")),
         _ => false,
     };
     tracks_default && git::quiet(top, &["reflog", "show", "--format=%gs", &format!("refs/heads/{}", b.branch)]).lines().count() <= 1
@@ -417,7 +426,8 @@ pub fn collect(dir: &str) -> Snapshot {
         Ok(t) => t,
         Err(_) => return Snapshot { name: crate::core::project::name_of(dir), top: dir.into(), error: Some(format!("{dir} is not a git checkout")), ..Default::default() },
     };
-    let default = git::default_ref(&top);
+    let remote = git::project_remote(&top);
+    let default = git::default_ref(&top, remote.as_deref());
     let wts = worktrees(&top);
     let (prs, pr_error) = match open_prs(&top) {
         Ok(p) => (p, None),
@@ -441,13 +451,14 @@ pub fn collect(dir: &str) -> Snapshot {
             .collect()
     });
     let closed = closed_prs(&top);
-    let (scripts, problems) = crate::core::buttons::scripts(dir, "repo");
+    let (files, problems) = crate::core::buttons::files(dir);
+    let (scripts, buttons) = (crate::core::buttons::scripts_of(&files, "repo"), crate::prs::detail::buttons_in(&files, "repo"));
     let pr_error = pr_error.or(problems.into_iter().next());
     Snapshot {
-        scripts, fetched: fetched_at(&top),
+        scripts, buttons, fetched: fetched_at(&top),
         name: crate::core::project::name_of(&top), head: git::current_branch(&top),
-        branches: branch_rows(&top, dir, &default, &wts, &prs, &closed), stashes,
-        commits: commits.unwrap_or_default(), pr_error, open_prs_problem, default, top, error: None,
+        branches: branch_rows(&top, dir, remote.as_deref(), &default, &wts, &prs, &closed), stashes,
+        commits: commits.unwrap_or_default(), pr_error, open_prs_problem, default, remote, top, error: None,
     }
 }
 
@@ -455,12 +466,13 @@ pub fn collect(dir: &str) -> Snapshot {
 /// classification calls it dead right now and nothing blocks it. Returns what was done.
 pub fn delete(dir: &str, branch: &str) -> Result<Vec<String>, String> {
     let top = git::toplevel(dir)?;
-    let default = git::default_ref(&top);
+    let remote = git::project_remote(&top);
+    let default = git::default_ref(&top, remote.as_deref());
     let wts = worktrees(&top);
-    let rows = branch_rows(&top, dir, &default, &wts, &[], &closed_prs(&top));
+    let rows = branch_rows(&top, dir, remote.as_deref(), &default, &wts, &[], &closed_prs(&top));
     let row = rows.iter().find(|b| b.branch == branch).ok_or("no such local branch")?;
     if row.dead.is_none() {
-        return Err(format!("not deletable: {} commit(s) live on no origin ref", row.local_only));
+        return Err(format!("not deletable: {} commit(s) live on no remote ref", row.local_only));
     }
     if let Some(why) = &row.blocked {
         return Err(format!("blocked: {why}"));
@@ -489,7 +501,7 @@ fn remove(top: &str, row: &Branch) -> Result<Vec<String>, String> {
 }
 
 /// Whether a branch is finished: its work is in the default branch (`merged`), GitHub merged a PR
-/// holding all of it (`squash-merged`), or origin deleted it (`gone`). A branch only `pushed` is not.
+/// holding all of it (`squash-merged`), or the remote deleted it (`gone`). A branch only `pushed` is not.
 fn finished(b: &Branch) -> bool {
     matches!(b.dead, Some("merged" | "squash-merged" | "gone"))
 }
@@ -549,8 +561,9 @@ pub fn clean_up(dir: &str) -> Result<Cleanup, String> {
         return Err(format!("{why}, so nothing was deleted"));
     }
     let open = open.unwrap_or_default();
-    let default = git::default_ref(&top);
-    let rows = branch_rows(&top, dir, &default, &worktrees(&top), &open, &closed_prs(&top));
+    let remote = git::project_remote(&top);
+    let default = git::default_ref(&top, remote.as_deref());
+    let rows = branch_rows(&top, dir, remote.as_deref(), &default, &worktrees(&top), &open, &closed_prs(&top));
     let (go, keep) = cleanup_plan(&rows);
     let mut out = Cleanup { kept: keep.into_iter().map(|(b, why)| (b.branch.clone(), why)).collect(), ..Default::default() };
     for b in go {
@@ -600,31 +613,33 @@ mod tests {
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
-    #[test]
-    fn a_branch_deleted_on_origin_reads_gone_after_fetch() {
-        let root = std::env::temp_dir().join(format!("wheelhouse-repo-gone-{}", std::process::id()));
+    fn gone_after_fetch(remote: &str) {
+        let root = std::env::temp_dir().join(format!("wheelhouse-repo-gone-{remote}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         sh(&root, &["init", "-q", "--bare", "origin.git"]);
         sh(&root, &["clone", "-q", "origin.git", "work"]);
         let work = root.join("work");
+        if remote != "origin" {
+            sh(&work, &["remote", "rename", "origin", remote]);
+        }
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "first"]);
-        sh(&work, &["push", "-q", "-u", "origin", "main"]);
+        sh(&work, &["push", "-q", "-u", remote, "main"]);
         sh(&work, &["checkout", "-q", "-b", "feature"]);
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "feature work"]);
-        sh(&work, &["push", "-q", "-u", "origin", "feature"]);
+        sh(&work, &["push", "-q", "-u", remote, "feature"]);
         sh(&work, &["checkout", "-q", "-b", "unmerged", "main"]);
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "unmerged work"]);
-        sh(&work, &["push", "-q", "-u", "origin", "unmerged"]);
+        sh(&work, &["push", "-q", "-u", remote, "unmerged"]);
         sh(&work, &["checkout", "-q", "main"]);
         sh(&work, &["merge", "-q", "--ff-only", "feature"]);
-        sh(&work, &["push", "-q", "origin", "main"]);
+        sh(&work, &["push", "-q", remote, "main"]);
         let dir = work.to_str().unwrap();
         let row = |name: &str| collect(dir).branches.into_iter().find(|b| b.branch == name).unwrap();
         let before = row("feature");
         assert_eq!((before.track.as_str(), before.dead, before.merged), ("", Some("merged"), Some("merged")));
         sh(&root.join("origin.git"), &["branch", "-q", "-D", "feature", "unmerged"]);
-        assert_eq!(row("feature").track, "", "without a fetch the local origin/feature still stands");
+        assert_eq!(row("feature").track, "", "without a fetch the local remote ref still stands");
         fetch(dir).unwrap();
         let merged = row("feature");
         assert_eq!((merged.track.as_str(), merged.upstream_gone, merged.dead), ("gone", true, Some("gone")));
@@ -633,6 +648,16 @@ mod tests {
             "its one commit now lives on no origin ref, so it is not safe to delete");
         assert!(collect(dir).fetched.is_some());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_branch_deleted_on_origin_reads_gone_after_fetch() {
+        gone_after_fetch("origin");
+    }
+
+    #[test]
+    fn a_branch_deleted_on_a_remote_not_named_origin_reads_gone_after_fetch() {
+        gone_after_fetch("forevr");
     }
 
     fn rev(dir: &Path, r: &str) -> String {

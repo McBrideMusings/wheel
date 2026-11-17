@@ -18,11 +18,11 @@
 //! directory is upgraded by a `diff` subscription's recursive watch of the same checkout, and
 //! downgraded again when that one leaves). `repo`, `prs` and `pr_detail` are also read again every
 //! 120 s, as is `issues`, for what only `gh` knows; `diff` has no clock. A `repo` subscription runs
-//! `git fetch --prune origin` when it starts and on each tick, then reads again, so a branch deleted on
-//! origin reads `gone`. A read is keyed on the feed
+//! `git fetch --prune <remote>` when it starts and on each tick, then reads again, so a branch deleted on
+//! the remote reads `gone`. A read is keyed on the feed
 //! and its whole params, so `pr_detail {dir, number: 3}` and `{dir, number: 5}` are two values, while an
 //! action or clock names a feed and a project and reads every subscription of that feed on it. Actions
-//! are `press`, `run_list`, `issue_create`, `issue_close`, `branch_delete`, `branch_cleanup`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
+//! are `press`, `run_list`, `issue_create`, `issue_close`, `branch_delete`, `branch_cleanup`, `branch_button`, `pr_merge`, `pr_close`, `pr_draft`, `pr_checkout`,
 //! `pr_worktree`, `pr_button`, `pr_refresh`, `vision_save` and `agent_start`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -34,7 +34,6 @@ use std::time::Duration;
 use async_lsp::router::Router;
 use async_lsp::{ClientSocket, ErrorCode, MainLoop, ResponseError};
 use notify::{EventKind, RecursiveMode, Watcher};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use wheel_plugin_sdk::wire::*;
@@ -58,7 +57,7 @@ type ReadLock = Arc<tokio::sync::Mutex<()>>;
 /// The feeds that hold what `bd` and the bead panes' records say: a press and a change of `bead-panes.json` refresh each.
 const BEAD_FEEDS: [&str; 2] = ["beads", "beads_graph"];
 const FEEDS: [&str; 10] = ["beads", "beads_graph", "project", "work", "swarm", "repo", "diff", "prs", "pr_detail", "issues"];
-const ACTIONS: [&str; 15] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "branch_cleanup", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
+const ACTIONS: [&str; 16] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "branch_cleanup", "branch_button", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
 /// How often a `repo`, `prs`, `pr_detail` or `issues` subscription is read again whatever the files do: GitHub has no event.
 const REPO_EVERY: Duration = Duration::from_secs(120);
@@ -219,7 +218,7 @@ fn watches(feed: &str, dir: &str, real: &std::path::Path) -> Watches {
     let (files, trees) = if feed != "diff" {
         (
             vec![own.join("logs/HEAD"), own.join("HEAD"), common.join("packed-refs"), common.join("refs/stash")],
-            vec![common.join("refs/heads"), common.join("refs/remotes/origin"), common.join("worktrees")],
+            vec![common.join("refs/heads"), common.join("refs/remotes"), common.join("worktrees")],
         )
     } else {
         (
@@ -234,7 +233,7 @@ fn watches(feed: &str, dir: &str, real: &std::path::Path) -> Watches {
         if t.is_dir() {
             watch.push((t.clone(), true));
         } else {
-            // A tree that does not exist yet (`refs/remotes/origin` before the first fetch): watch the
+            // A tree that does not exist yet (`refs/remotes` before the first fetch): watch the
             // nearest ancestor that does, so its creation is an event; the next read watches the tree.
             if let Some(up) = t.ancestors().skip(1).find(|a| a.is_dir()) {
                 watch.push((up.to_path_buf(), false));
@@ -270,7 +269,7 @@ struct Core {
     waiting: Mutex<HashSet<(String, String)>>,
     /// The agents `wheel agent watch` lists, followed while a `work` subscription exists.
     agents: Agents,
-    /// The project directories a `git fetch --prune origin` is running in: a second one waits for the next tick.
+    /// The project directories a `git fetch --prune <remote>` is running in: a second one waits for the next tick.
     fetching: Mutex<HashSet<String>>,
 }
 
@@ -289,8 +288,8 @@ impl Core {
         let _ = self.client.notify::<LogMessage>(json!({ "level": level, "message": message }));
     }
 
-    /// Run `git fetch --prune origin` in `dir`, then read its `repo` subscriptions again, so a branch
-    /// deleted on origin reads `gone` and every upstream count is against origin as it is now.
+    /// Run `git fetch --prune <remote>` in `dir`, then read its `repo` subscriptions again, so a branch
+    /// deleted on the remote reads `gone` and every upstream count is against the remote as it is now.
     fn fetch_then_refresh(self: &Arc<Self>, dir: String) {
         if !self.fetching.lock().unwrap().insert(dir.clone()) {
             return;
@@ -601,6 +600,15 @@ impl Core {
                 let changed_dir = dir.clone();
                 let done = tokio::task::spawn_blocking(move || repo_feed::delete(&dir, &branch)).await;
                 // Read the project again whether or not the delete went through.
+                let _ = self.tx.send(Msg::RefreshFeed("repo".into(), changed_dir));
+                done
+            }
+            "branch_button" => {
+                let branch = arg("branch").ok_or_else(|| bad("branch_button needs args.branch".into()))?;
+                let name = arg("name").ok_or_else(|| bad("branch_button needs args.name".into()))?;
+                let changed_dir = dir.clone();
+                let done = tokio::task::spawn_blocking(move || repo_feed::button(&dir, &pane, &branch, &name)).await;
+                // The button may make a worktree: read the project again whether or not it went through.
                 let _ = self.tx.send(Msg::RefreshFeed("repo".into(), changed_dir));
                 done
             }

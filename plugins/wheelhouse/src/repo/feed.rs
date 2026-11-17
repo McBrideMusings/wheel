@@ -26,6 +26,7 @@ pub fn value(dir: &str) -> Value {
         "name": snap.name,
         "top": snap.top,
         "default": snap.default,
+        "remote": snap.remote,
         "head": snap.head,
         "branches": snap.branches,
         "stashes": snap.stashes.iter().map(|(r, subject, when)| json!({ "ref": r, "subject": subject, "when": when })).collect::<Vec<_>>(),
@@ -34,6 +35,7 @@ pub fn value(dir: &str) -> Value {
         "cleanup": cleanup,
         "pr_error": snap.pr_error,
         "error": snap.error,
+        "buttons": snap.buttons.iter().map(|b| json!({ "name": b.name, "label": crate::prs::detail::label(b), "worktree": b.worktree })).collect::<Vec<_>>(),
         "scripts": snap.scripts.iter().map(|s| json!({ "name": s.name, "label": s.label() })).collect::<Vec<_>>(),
     })
 }
@@ -71,6 +73,23 @@ fn cleanup_words(c: &Cleanup) -> String {
         parts.push(format!("Kept {}: {}.", c.kept.len(), named(&c.kept)));
     }
     parts.join(" ")
+}
+
+/// Run the project's `[repo.buttons.<name>]` button for local branch `branch`, in a worktree on it first when the
+/// button asks for one. The branch's open PR, when it has one, is the button's `PR_NUMBER`, `PR_TITLE` and `PR_URL`.
+pub fn button(dir: &str, pane: &str, branch: &str, name: &str) -> Result<String, String> {
+    let snap = collect(dir);
+    let b = snap.buttons.iter().find(|b| b.name == name).ok_or_else(|| format!("no button {name}"))?;
+    let row = snap.branches.iter().find(|r| r.branch == branch).ok_or_else(|| format!("no such local branch {branch}"))?;
+    let repo = crate::prs::repo_of(dir)?;
+    let open = row.pr.as_ref().filter(|p| p.state == "OPEN");
+    let target = crate::prs::detail::Target {
+        number: open.map(|p| p.number), title: open.map(|p| p.title.clone()).unwrap_or_default(), branch: branch.to_string(),
+        url: open.map(|p| p.url.clone()).unwrap_or_default(),
+    };
+    let origin = crate::core::project::Origin { dir: dir.to_string(), pane: if pane.is_empty() { "default".into() } else { pane.into() } };
+    crate::prs::detail::run_button(&origin, &repo, &target, None, b)?;
+    Ok(format!("{} started for {branch}.", crate::prs::detail::label(b)))
 }
 
 /// Run the project's `[repo.list]` button `script` over the branches `ids` for the pane `pane`.
@@ -131,7 +150,7 @@ mod tests {
         git(&dir, &["branch", "extra"]);
         let v = value(dir.to_str().unwrap());
         let keys: std::collections::BTreeSet<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-        let want = ["now", "name", "top", "default", "head", "branches", "stashes", "commits", "fetched", "cleanup", "pr_error", "error", "scripts"];
+        let want = ["now", "name", "top", "default", "remote", "head", "branches", "stashes", "commits", "fetched", "cleanup", "pr_error", "error", "buttons", "scripts"];
         assert_eq!(keys, want.into_iter().collect());
         assert_eq!(v["error"], Value::Null);
         assert_eq!(v["head"], "main");
