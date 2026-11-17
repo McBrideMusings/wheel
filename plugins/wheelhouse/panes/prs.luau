@@ -31,6 +31,7 @@ local STANDINGS = {
     { "reply", "Replied to you", "warn", true },
     { "changes-requested", "Changes requested", "bad", true },
     { "comments", "Comments to answer", "bad", true },
+    { "outdated", "Review outdated", "warn", false },
     { "no-reviewer", "No reviewer", "warn", false },
     { "waiting-reviewer", "Waiting on reviewer", "muted", false },
     { "waiting-author", "Waiting on author", "muted", false },
@@ -120,7 +121,13 @@ local function pr_row(st, p, now, buttons)
     local review = kit.cell(s[2], { key = "review", chip = true, tone = s[3], weight = if s[4] then "semibold" else "regular", sort = rank })
     local cells = {
         kit.cell("#" .. p.number, { key = "number", mono = true, tone = "muted", sort = p.number }),
-        kit.cell(p.title, { key = "title", tone = if p.fix then "bad" else "fg", sort = string.lower(p.title) }),
+        -- The title links to the PR on GitHub; a click elsewhere in the row still selects it.
+        kit.cell(p.title, {
+            key = "title", tone = if p.fix then "bad" else "fg", sort = string.lower(p.title),
+            view = if p.url ~= "" then ui.Link{ title = p.title, destination = p.url, modifiers = {
+                { lineLimit = 1 }, { help = p.url }, table.unpack(if p.fix then { { foregroundStyle = kit.colour("bad") } } else NONE),
+            } } else nil,
+        }),
         kit.cell(if p.draft then "draft" else "ready", {
             key = "draft", chip = p.draft, tone = if p.draft then "warn" else "muted", sort = if p.draft then 0 else 1,
         }),

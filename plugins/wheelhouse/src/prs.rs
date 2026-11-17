@@ -17,12 +17,12 @@ pub mod feed;
 pub mod markdown;
 
 const QUERY: &str = "query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:25,after:$after,orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{
-number title bodyText headRefName isDraft mergeable updatedAt reviewDecision url additions deletions changedFiles
+number title bodyText headRefName headRefOid isDraft mergeable updatedAt reviewDecision url additions deletions changedFiles
 author{login __typename}
 assignees(first:10){nodes{login}}
 reviewRequests(first:10){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}
 labels(first:20){nodes{name}}
-reviews(last:50){nodes{author{login __typename} state submittedAt}}
+reviews(last:50){nodes{author{login __typename} state submittedAt commit{oid}}}
 comments(last:50){nodes{author{login __typename} createdAt body}}
 reviewThreads(first:50){nodes{isResolved comments(last:20){nodes{author{login __typename} createdAt}}}}
 commits(last:1){totalCount nodes{commit{committedDate statusCheckRollup{state}}}}
@@ -61,13 +61,14 @@ pub struct Pr {
 }
 
 /// Where a PR's review stands for the viewer: `review`, `re-review`, `reply`, `changes-requested`, `comments`,
-/// `no-reviewer`, `waiting-reviewer`, `waiting-author`, `not-asked` or `approved`.
+/// `outdated`, `no-reviewer`, `waiting-reviewer`, `waiting-author`, `not-asked` or `approved`.
 fn standing(n: &Value, bucket: &str, my: Option<&str>, review: &str) -> &'static str {
     let approved = n["reviewDecision"] == "APPROVED";
     match (bucket, my) {
         ("mine", _) => match review {
             "changes-requested" => "changes-requested",
             "needs-response" => "comments",
+            _ if outdated(n) => "outdated",
             _ if approved => "approved",
             _ if has_reviewer(n) => "waiting-reviewer",
             _ => "no-reviewer",
@@ -76,6 +77,7 @@ fn standing(n: &Value, bucket: &str, my: Option<&str>, review: &str) -> &'static
         (_, Some("replied")) => "reply",
         ("needs-me", _) => "review",
         (_, Some("approved")) => "approved",
+        _ if outdated(n) => "outdated",
         _ if approved => "approved",
         (_, Some("changes" | "commented")) => "waiting-author",
         _ if has_reviewer(n) => "waiting-reviewer",
@@ -247,6 +249,26 @@ fn author_class(n: &Value) -> &'static str {
     } else {
         "in-review"
     }
+}
+
+/// Whether the reviews that decide a PR are all of an older commit: someone other than the author approved it or asked
+/// for changes, and no reviewer's latest such verdict was given on the head commit.
+fn outdated(n: &Value) -> bool {
+    let author = login(&n["author"]);
+    let mut latest: HashMap<String, (i64, &str)> = HashMap::new();
+    for r in nodes(n, "reviews") {
+        let who = login(&r["author"]).unwrap_or("");
+        if bot(&r["author"]) || eq(Some(who), author) || !matches!(r["state"].as_str(), Some("APPROVED" | "CHANGES_REQUESTED")) {
+            continue;
+        }
+        let (t, oid) = (ts(&r["submittedAt"]).unwrap_or(0), r["commit"]["oid"].as_str().unwrap_or(""));
+        let e = latest.entry(who.to_lowercase()).or_insert((t, oid));
+        if t >= e.0 {
+            *e = (t, oid);
+        }
+    }
+    let head = n["headRefOid"].as_str().unwrap_or("");
+    !head.is_empty() && !latest.is_empty() && latest.values().all(|(_, oid)| *oid != head)
 }
 
 fn has_reviewer(n: &Value) -> bool {
@@ -488,7 +510,7 @@ mod tests {
 
     fn node(author: &str, f: impl Fn(&mut Value)) -> Value {
         let mut n = json!({ "number": 1, "title": "t", "headRefName": "b", "isDraft": false, "mergeable": "MERGEABLE",
-            "updatedAt": "2026-11-01T00:00:00Z", "reviewDecision": null, "url": "u", "additions": 1, "deletions": 0, "changedFiles": 1,
+            "updatedAt": "2026-11-01T00:00:00Z", "reviewDecision": null, "headRefOid": "new", "url": "u", "additions": 1, "deletions": 0, "changedFiles": 1,
             "author": { "login": author, "__typename": "User" }, "assignees": { "nodes": [] }, "reviewRequests": { "nodes": [] },
             "labels": { "nodes": [] }, "reviews": { "nodes": [] }, "comments": { "nodes": [] }, "reviewThreads": { "nodes": [] },
             "commits": { "totalCount": 1, "nodes": [{ "commit": { "committedDate": "2026-11-01T00:00:00Z", "statusCheckRollup": { "state": "SUCCESS" } } }] } });
@@ -519,6 +541,25 @@ mod tests {
         assert_eq!(at("you", &|n| n["reviewDecision"] = json!("APPROVED")), "approved");
         let p = convert(&node("me", |n| n["bodyText"] = json!("A  long\n description")), "me");
         assert_eq!(p.summary, "A long description");
+    }
+
+    #[test]
+    fn a_verdict_on_an_older_commit_is_outdated_until_a_reviewer_judges_the_head() {
+        let review = |who: &str, state: &str, oid: &str, at: &str| json!({ "author": { "login": who }, "state": state, "submittedAt": at, "commit": { "oid": oid } });
+        let at = |author: &str, reviews: Value| convert(&node(author, |n| {
+            n["reviews"]["nodes"] = reviews.clone();
+            n["reviewDecision"] = json!("APPROVED");
+            n["commits"]["nodes"][0]["commit"]["committedDate"] = json!("2026-11-04T00:00:00Z");
+        }), "me").standing;
+        assert_eq!(at("me", json!([review("you", "APPROVED", "old", "2026-11-02T00:00:00Z")])), "outdated", "my PR, approved before the last push");
+        assert_eq!(at("me", json!([review("you", "APPROVED", "new", "2026-11-02T00:00:00Z")])), "approved");
+        assert_eq!(at("me", json!([review("you", "APPROVED", "old", "2026-11-02T00:00:00Z"), review("them", "APPROVED", "new", "2026-11-03T00:00:00Z")])), "approved",
+            "one reviewer on the head is enough");
+        assert_eq!(at("me", json!([review("you", "APPROVED", "new", "2026-11-02T00:00:00Z"), review("you", "CHANGES_REQUESTED", "old", "2026-11-03T00:00:00Z")])), "outdated",
+            "a reviewer's latest verdict counts");
+        assert_eq!(at("me", json!([review("me", "APPROVED", "old", "2026-11-02T00:00:00Z")])), "approved", "the author's own review is no verdict");
+        assert_eq!(at("you", json!([review("them", "APPROVED", "old", "2026-11-02T00:00:00Z")])), "outdated", "someone else's PR, approved by a third person");
+        assert_eq!(at("you", json!([review("them", "COMMENTED", "old", "2026-11-02T00:00:00Z")])), "approved", "a comment is no verdict");
     }
 
     #[test]
