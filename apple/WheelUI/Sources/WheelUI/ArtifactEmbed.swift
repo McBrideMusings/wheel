@@ -105,10 +105,17 @@ final class ArtifactEmbed: NSObject, WKNavigationDelegate {
         self.daemon = daemon
     }
 
+    /// The view is gone for good (SwiftUI released its state): its page's requests end with it. A view that only
+    /// disappears and comes back keeps its page.
+    isolated deinit {
+        close()
+    }
+
     func show(id: String, scope: ArtifactScope) {
         error = nil
         guard id != self.id || web == nil, let page = WebPanes.pageURL(pane: id) else { return }
         self.id = id
+        close()
         let config = WKWebViewConfiguration()
         config.websiteDataStore = WKWebsiteDataStore(forIdentifier: WebPanes.store(cwd: cwd, artifact: ArtifactRef(scope: scope, name: name)))
         let handler = PageSchemeHandler(pane: id, daemon: daemon)
@@ -123,8 +130,14 @@ final class ArtifactEmbed: NSObject, WKNavigationDelegate {
 
     func fail(_ message: String) {
         error = message
-        web = nil
+        close()
         id = nil
+    }
+
+    /// Drops the web view and ends its page's requests (`PageSchemeHandler.close`); the next `show` opens a new one.
+    func close() {
+        if let web { PageSchemeHandler.close(web) }
+        web = nil
     }
 
     /// A file of the page changed. Opens the address again rather than `WKWebView.reload()`, which does nothing when the

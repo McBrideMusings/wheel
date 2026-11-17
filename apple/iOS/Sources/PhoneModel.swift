@@ -647,6 +647,7 @@ final class PhoneModel {
     private func syncBrowsers() {
         let wanted = BrowserPanes.urls(spaces)
         for pane in browsers.keys where wanted[pane] == nil {
+            if let browser = browsers[pane] { PageSchemeHandler.close(browser.view) }
             browsers[pane] = nil
             consoleOutbox[pane] = nil
             Log.info("browser pane \(pane) left the layout")
@@ -728,6 +729,7 @@ final class PhoneModel {
     private func syncWebPanes() {
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
+            PageSchemeHandler.close(web.view)
             webPanes[pane] = nil
             a2uiPanes[pane] = nil
             Log.info("web pane \(pane) left the layout")

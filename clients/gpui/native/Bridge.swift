@@ -1313,6 +1313,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         for key in gone.keys { agentEmbeds[key] = nil }
         for embed in gone.values { embed.drop() }
         if let term = host.termID { release(term) }
+        if let web = host.web { PageSchemeHandler.close(web) }
         host.slot.removeFromSuperview()
         if let plugin = host.plugin {
             plugin.close()
