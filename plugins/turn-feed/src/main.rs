@@ -1,7 +1,7 @@
 //! `turn-feed backend`: the plugin backend `wheeld` runs for the `turn-feed` package.
 //!
 //! Agents post one card per turn with the `post` action (granted to agent panes by the manifest's
-//! `[agent]` table); the pane answers a card with `answer`. The `posts` feed holds a project's
+//! `[agent]` table); the pane answers a card with `answer`. The `posts` feed holds one space's
 //! cards, newest first, and follows the store folder, so a post from any process shows.
 
 mod store;
@@ -22,8 +22,8 @@ async fn main() {
     }
     let mut backend = Backend::new();
     backend.feed("posts", |sub| async move {
-        let Some(dir) = sub.params.get("dir").and_then(Value::as_str).map(str::to_string) else {
-            sub.peer.log("warn", "posts feed needs params {dir}");
+        let Some(space) = sub.params.get("space").and_then(Value::as_str).map(str::to_string) else {
+            sub.peer.log("warn", "posts feed needs params {space}");
             return;
         };
         let store = Store::from_env();
@@ -48,7 +48,7 @@ async fn main() {
         }
         let mut last: Option<Value> = None;
         loop {
-            let value = store.feed(&dir);
+            let value = store.feed(&space);
             if last.as_ref() != Some(&value) {
                 sub.value(value.clone());
                 last = Some(value);

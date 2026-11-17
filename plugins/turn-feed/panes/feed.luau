@@ -1,6 +1,8 @@
 -- The Turn feed pane: one card per agent turn, newest first.
 --
--- `turn-feed.posts` {dir} holds the project's posts; `wheel.agents` says which pane still runs an agent.
+-- `turn-feed.posts` {space} holds the posts this space's agent panes made, so a second space on the same
+-- directory has its own feed; `wheel.agents` says which pane still runs an agent. Each post is its own Card
+-- (GroupBox), headed by the agent pane that wrote it.
 -- A pick or a reply calls `turn-feed.answer`, which records it and returns the text to send; the pane then
 -- calls `wheel.agent.send` with it, then `turn-feed.delivered`. An answer stored with `delivered == false` can be
 -- sent again from its Send button. All three answers arrive in `update` as `{action, result | error}` in the order
@@ -11,7 +13,7 @@ local COLOUR = { fg = "primary", muted = "secondary", ok = "green", warn = "oran
 
 local ANSWER, SEND, DELIVERED = "turn-feed.answer", "wheel.agent.send", "turn-feed.delivered"
 
--- The last value drawn per project: a read that answers nil draws this meanwhile, so the pane keeps its list.
+-- The last value drawn per space: a read that answers nil draws this meanwhile, so the pane keeps its list.
 local LAST_POSTS, LAST_AGENTS = {}, nil
 
 -- ───────────────────────────── pieces ─────────────────────────────
@@ -95,10 +97,15 @@ local function post_view(state, post, running)
     local gone = running ~= nil and not running[post.agent_pane]
     local locked = answered or gone
     local undelivered = answered and post.answer.delivered == false and type(post.answer.text) == "string"
-    local posted = clock(post.at) .. " · " .. tostring(post.agent_pane)
+    local posted = clock(post.at)
     if post.updated_at then posted = posted .. " · edited " .. clock(post.updated_at) end
     local c = {
-        row({ text(post.title, { weight = "bold", size = 15, flex = true }), text(posted, { size = 11, tone = "muted" }) }),
+        row({
+            text("Agent " .. tostring(post.agent_pane), { size = 11, weight = "semibold", tone = "muted", flex = true }),
+            text(posted, { size = 11, tone = "muted" }),
+        }),
+        text(post.title, { weight = "bold", size = 16, flex = true }),
+        ui.Divider{},
         body_view(post.body),
     }
     if post.page then table.insert(c, page_view(post.page)) end
@@ -127,11 +134,13 @@ local function post_view(state, post, running)
         send = button("Send", { type = "send", post = post.post }, "Send the reply", locked)
     end
     table.insert(c, row({ send, text(line, { size = 12, tone = tone, flex = true }) }))
-    table.insert(c, ui.Divider{})
-    return ui.Column{
-        spacing = 8,
-        children = c,
-        modifiers = { { padding = 12 }, { frame = { maxWidth = "infinity", alignment = "leading" } } },
+    return ui.Card{
+        child = ui.Column{
+            spacing = 8,
+            children = c,
+            modifiers = { { padding = 10 }, { frame = { maxWidth = "infinity", alignment = "leading" } } },
+        },
+        modifiers = { { padding = { 6, 12, 6, 12 } } },
     }
 end
 
@@ -201,9 +210,9 @@ local function update(state, msg)
 end
 
 local function view(state, data)
-    local fresh = data.feed("turn-feed.posts", { dir = data.cwd })
+    local fresh = data.feed("turn-feed.posts", { space = data.space })
     local snap = fresh
-    if fresh ~= nil then LAST_POSTS[data.cwd] = fresh else snap = LAST_POSTS[data.cwd] end
+    if fresh ~= nil then LAST_POSTS[data.space] = fresh else snap = LAST_POSTS[data.space] end
     local agents = data.feed("wheel.agents")
     if agents ~= nil then LAST_AGENTS = agents else agents = LAST_AGENTS end
     if snap == nil then
@@ -218,7 +227,7 @@ local function view(state, data)
     if #posts == 0 then
         return ui.Column{
             modifiers = { { padding = 16 } },
-            children = { text("No posts yet for " .. data.cwd .. ". Agents post with: wheel plugin action \"$WHEEL_PANE\" turn-feed.post --args-file post.json", { tone = "muted", flex = true }) },
+            children = { text("No posts yet from this space's agents. Agents post with: wheel plugin action \"$WHEEL_PANE\" turn-feed.post --args-file post.json", { tone = "muted", flex = true }) },
         }
     end
     local cards = {}

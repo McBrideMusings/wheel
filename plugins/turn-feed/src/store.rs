@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
-/// The newest posts kept per project directory.
+/// The newest posts kept per space.
 pub const KEEP: usize = 500;
 /// The most posts the feed holds.
 const FEED_MAX: usize = 200;
@@ -94,8 +94,8 @@ impl Store {
         posts
     }
 
-    fn prune(&self, dir: &str) {
-        let mine: Vec<Value> = self.all().into_iter().filter(|p| p["dir"] == dir).collect();
+    fn prune(&self, space: &str) {
+        let mine: Vec<Value> = self.all().into_iter().filter(|p| p["space"] == space).collect();
         for old in mine.iter().skip(self.keep) {
             if let Some(id) = old["post"].as_str() {
                 let _ = fs::remove_file(self.file(id));
@@ -103,10 +103,11 @@ impl Store {
         }
     }
 
-    /// The `posts` feed's value for a project directory.
-    pub fn feed(&self, dir: &str) -> Value {
-        let posts: Vec<Value> = self.all().into_iter().filter(|p| p["dir"] == dir).take(FEED_MAX).collect();
-        json!({ "dir": dir, "posts": posts })
+    /// The `posts` feed's value for a space: only the posts its own agent panes made, so two spaces
+    /// on one directory never share a feed.
+    pub fn feed(&self, space: &str) -> Value {
+        let posts: Vec<Value> = self.all().into_iter().filter(|p| p["space"] == space).take(FEED_MAX).collect();
+        json!({ "space": space, "posts": posts })
     }
 
     pub fn post(&self, args: &Value, caller: &Value) -> Result<Value, String> {
@@ -115,8 +116,9 @@ impl Store {
             return Err(format!("turn-feed.post is for agent panes; pane {pane} is not one"));
         }
         let cwd = caller["cwd"].as_str().filter(|c| !c.is_empty());
-        let (Some(cwd), false) = (cwd, pane.is_empty()) else {
-            return Err("post refused: the call names no pane or no directory".into());
+        let space = caller["space"].as_str().filter(|s| !s.is_empty());
+        let (Some(cwd), Some(space), false) = (cwd, space, pane.is_empty()) else {
+            return Err("post refused: the call names no pane, space or directory".into());
         };
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let valid = validate(args)?;
@@ -139,14 +141,14 @@ impl Store {
         };
         post.insert("post".into(), json!(id));
         post.insert("agent_pane".into(), json!(pane));
-        post.insert("space".into(), caller["space"].clone());
+        post.insert("space".into(), json!(space));
         post.insert("dir".into(), json!(cwd));
         for (k, v) in valid.fields {
             post.insert(k, v);
         }
         post.insert("answer".into(), Value::Null);
         self.write(&Value::Object(post))?;
-        self.prune(cwd);
+        self.prune(space);
         Ok(json!({ "post": id }))
     }
 
@@ -396,8 +398,8 @@ mod tests {
         Store::at(dir, keep)
     }
 
-    fn agent(pane: &str, cwd: &str) -> Value {
-        json!({ "pane": pane, "space": "s1", "cwd": cwd, "agent": true })
+    fn agent(pane: &str, space: &str) -> Value {
+        json!({ "pane": pane, "space": space, "cwd": "/p", "agent": true })
     }
 
     fn option(id: &str, pick: bool) -> Value {
@@ -417,9 +419,9 @@ mod tests {
         let s = store(KEEP);
         let mut args = with_options();
         args["options"][1] = json!({ "id": "1B", "action": "x", "case": "y" });
-        let e = s.post(&args, &agent("p1", "/p")).unwrap_err();
+        let e = s.post(&args, &agent("p1", "s1")).unwrap_err();
         assert_eq!(e, "post refused: option 1B has no cost; option 1B has no checked");
-        let e = s.post(&json!({ "title": "", "options": [], "tpyo": 1 }), &agent("p1", "/p")).unwrap_err();
+        let e = s.post(&json!({ "title": "", "options": [], "tpyo": 1 }), &agent("p1", "s1")).unwrap_err();
         assert!(e.contains("unknown key \"tpyo\""), "{e}");
         assert!(e.contains("post has an empty title"), "{e}");
         assert!(e.contains("post has no body"), "{e}");
@@ -429,13 +431,13 @@ mod tests {
         args["options"][0]["extra"] = json!(1);
         args["options"][1]["pick"] = json!(true);
         args["options"][1]["id"] = json!("1A");
-        let e = s.post(&args, &agent("p1", "/p")).unwrap_err();
+        let e = s.post(&args, &agent("p1", "s1")).unwrap_err();
         assert!(e.contains("post has options but no question"), "{e}");
         assert!(e.contains("option 1A has unknown key \"extra\""), "{e}");
         assert!(e.contains("option id 1A is used twice"), "{e}");
         assert!(e.contains("exactly one option must have pick: true (found 2)"), "{e}");
         assert!(s.all().is_empty());
-        let e = s.post(&json!({ "title": "a\nb", "body": "x" }), &agent("p1", "/p")).unwrap_err();
+        let e = s.post(&json!({ "title": "a\nb", "body": "x" }), &agent("p1", "s1")).unwrap_err();
         assert!(e.contains("title must be one line"), "{e}");
     }
 
@@ -450,7 +452,7 @@ mod tests {
     #[test]
     fn a_post_is_stored_and_replaced_only_by_its_own_pane() {
         let s = store(KEEP);
-        let id = s.post(&with_options(), &agent("p1", "/p")).unwrap()["post"].as_str().unwrap().to_string();
+        let id = s.post(&with_options(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
         let first = s.read(&id).unwrap();
         println!("{}", serde_json::to_string_pretty(&first).unwrap());
         assert_eq!(first["agent_pane"], "p1");
@@ -459,14 +461,14 @@ mod tests {
         assert!(first.get("updated_at").is_none());
         let mut next = simple();
         next["id"] = json!(id);
-        let e = s.post(&next, &agent("p2", "/p")).unwrap_err();
+        let e = s.post(&next, &agent("p2", "s1")).unwrap_err();
         assert_eq!(e, format!("post refused: post {id} was not posted by pane p2"));
         next["id"] = json!("tnope");
-        assert!(s.post(&next, &agent("p1", "/p")).unwrap_err().contains("does not exist"));
+        assert!(s.post(&next, &agent("p1", "s1")).unwrap_err().contains("does not exist"));
         // An answered post replaced by its agent has its answer reset and its time kept.
         s.answer(&json!({ "post": id, "pick": "1A" }), &json!({ "pane": "p9" })).unwrap();
         next["id"] = json!(id);
-        assert_eq!(s.post(&next, &agent("p1", "/p")).unwrap()["post"], id.as_str());
+        assert_eq!(s.post(&next, &agent("p1", "s1")).unwrap()["post"], id.as_str());
         let after = s.read(&id).unwrap();
         assert_eq!(after["at"], first["at"]);
         assert_eq!(after["title"], "Done");
@@ -479,7 +481,7 @@ mod tests {
     #[test]
     fn a_post_is_answered_once() {
         let s = store(KEEP);
-        let id = s.post(&with_options(), &agent("p1", "/p")).unwrap()["post"].as_str().unwrap().to_string();
+        let id = s.post(&with_options(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
         let by = json!({ "pane": "p7", "space": "s1" });
         let e = s.answer(&json!({ "post": id, "pick": "9Z" }), &by).unwrap_err();
         assert!(e.contains("has no option 9Z") && e.contains("1A, 1B"), "{e}");
@@ -502,7 +504,7 @@ mod tests {
     #[test]
     fn delivered_marks_an_answer_received_and_refuses_an_unanswered_post() {
         let s = store(KEEP);
-        let id = s.post(&simple(), &agent("p1", "/p")).unwrap()["post"].as_str().unwrap().to_string();
+        let id = s.post(&simple(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
         let e = s.delivered(&json!({ "post": id })).unwrap_err();
         assert!(e.contains("has no answer"), "{e}");
         assert!(s.delivered(&json!({ "post": "tnone" })).unwrap_err().contains("does not exist"));
@@ -519,47 +521,53 @@ mod tests {
     #[test]
     fn a_reply_text_names_the_post_title() {
         let s = store(KEEP);
-        let id = s.post(&simple(), &agent("p1", "/p")).unwrap()["post"].as_str().unwrap().to_string();
+        let id = s.post(&simple(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
         let r = s.answer(&json!({ "post": id, "reply": "ship it" }), &json!({ "pane": "p7" })).unwrap();
         assert_eq!(r["text"], "Turn feed, \"Done\": ship it");
         let long = "x".repeat(REPLY_MAX + 1);
-        let id2 = s.post(&simple(), &agent("p1", "/p")).unwrap()["post"].as_str().unwrap().to_string();
+        let id2 = s.post(&simple(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
         assert!(s.answer(&json!({ "post": id2, "reply": long }), &json!({})).unwrap_err().contains("over 4000"));
         // An id that climbs out of the folder is refused before any file is read.
         assert!(s.answer(&json!({ "post": "../x", "reply": "a" }), &json!({})).unwrap_err().contains("is not a post id"));
     }
 
     #[test]
-    fn the_newest_posts_of_a_project_are_kept() {
+    fn the_newest_posts_of_a_space_are_kept() {
         let s = store(3);
         for i in 0..5 {
             let mut a = simple();
             a["title"] = json!(format!("t{i}"));
-            s.post(&a, &agent("p1", "/p")).unwrap();
+            s.post(&a, &agent("p1", "s1")).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(3));
         }
-        s.post(&simple(), &agent("p2", "/other")).unwrap();
-        let feed = s.feed("/p");
+        s.post(&simple(), &agent("p2", "s2")).unwrap();
+        let feed = s.feed("s1");
         let titles: Vec<&str> = feed["posts"].as_array().unwrap().iter().map(|p| p["title"].as_str().unwrap()).collect();
         assert_eq!(titles, ["t4", "t3", "t2"]);
-        assert_eq!(s.all().len(), 4, "the other project's post stays");
+        assert_eq!(s.all().len(), 4, "the other space's post stays");
     }
 
     #[test]
-    fn the_feed_holds_one_projects_posts_newest_first() {
+    fn the_feed_holds_one_spaces_posts_newest_first_even_on_a_shared_directory() {
         let s = store(KEEP);
-        for (i, dir) in ["/a", "/b", "/a"].iter().enumerate() {
+        for (i, space) in ["sa", "sb", "sa"].iter().enumerate() {
             let mut a = simple();
             a["title"] = json!(format!("n{i}"));
-            s.post(&a, &agent("p1", dir)).unwrap();
+            s.post(&a, &agent("p1", space)).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(3));
         }
-        let feed = s.feed("/a");
-        println!("{}", serde_json::to_string_pretty(&feed).unwrap());
-        assert_eq!(feed["dir"], "/a");
+        let feed = s.feed("sa");
+        assert_eq!(feed["space"], "sa");
         let titles: Vec<&str> = feed["posts"].as_array().unwrap().iter().map(|p| p["title"].as_str().unwrap()).collect();
         assert_eq!(titles, ["n2", "n0"]);
-        assert_eq!(s.feed("/none")["posts"], json!([]));
+        assert_eq!(s.feed("snone")["posts"], json!([]));
+    }
+
+    #[test]
+    fn a_post_needs_a_space() {
+        let s = store(KEEP);
+        let caller = json!({ "pane": "p1", "cwd": "/p", "agent": true });
+        assert_eq!(s.post(&simple(), &caller).unwrap_err(), "post refused: the call names no pane, space or directory");
     }
 
     #[test]
