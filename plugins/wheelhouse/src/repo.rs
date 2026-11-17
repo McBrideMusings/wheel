@@ -174,22 +174,48 @@ fn merged_heads(closed: &[(String, Pr)]) -> Vec<String> {
 
 /// `git fetch --prune origin` in `dir`, so origin's refs (and with them every branch's `track`) say
 /// what origin holds now: a branch deleted there reads `gone`. Nothing to do without an origin remote.
-/// Never asks for a password: a fetch that needs one fails.
+/// Never asks for a password: a fetch that needs one fails. A fetch still running after `FETCH_LIMIT`
+/// (a stalled connection) is killed and is an error, so the next tick fetches again.
 pub fn fetch(dir: &str) -> Result<(), String> {
     let top = git::toplevel(dir)?;
     if git::quiet(&top, &["remote"]).lines().all(|r| r.trim() != "origin") {
         return Ok(());
     }
-    let out = std::process::Command::new("/usr/bin/git")
+    let child = std::process::Command::new("/usr/bin/git")
         .args(["fetch", "--prune", "--quiet", "origin"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(&top)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("git fetch: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!("git fetch --prune origin in {top}: {}", String::from_utf8_lossy(&out.stderr).trim()))
+    wait_limited(child, FETCH_LIMIT).map_err(|e| format!("git fetch --prune origin in {top}: {e}"))
+}
+
+const FETCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Wait for `child` up to `limit`: `Ok` when it exits with 0, its stderr when it fails, and a kill
+/// with an error naming the limit when it is still running.
+fn wait_limited(mut child: std::process::Child, limit: std::time::Duration) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(s) if s.success() => return Ok(()),
+            Some(_) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                }
+                return Err(err.trim().to_string());
+            }
+            None if started.elapsed() >= limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("still running after {} s, stopped", limit.as_secs()));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
     }
 }
 
@@ -503,6 +529,18 @@ mod tests {
         assert_eq!(merged_label(Some(3), true), Some("squash-merged"));
         assert_eq!(merged_label(Some(3), false), None);
         assert_eq!(merged_label(None, false), None);
+    }
+
+    #[test]
+    fn a_process_past_its_limit_is_stopped_and_named() {
+        let cmd = |sh: &str| std::process::Command::new("/bin/sh").args(["-c", sh])
+            .stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let limit = std::time::Duration::from_millis(300);
+        assert_eq!(wait_limited(cmd("exit 0"), limit), Ok(()));
+        assert_eq!(wait_limited(cmd("echo boom >&2; exit 1"), limit), Err("boom".into()));
+        let started = std::time::Instant::now();
+        assert_eq!(wait_limited(cmd("sleep 30"), limit), Err("still running after 0 s, stopped".into()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]
