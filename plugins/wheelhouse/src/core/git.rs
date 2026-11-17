@@ -38,6 +38,22 @@ pub fn default_ref(dir: &str) -> Option<String> {
         .map(|n| n.to_string())
 }
 
+/// The name of the remote whose URL points at GitHub repo `repo` (`owner/name`), whatever it is called:
+/// the URL's last two path parts, compared without case and without a trailing `.git`.
+pub fn remote_for(dir: &str, repo: &str) -> Result<String, String> {
+    let want = repo.to_lowercase();
+    quiet(dir, &["config", "--get-regexp", r"^remote\..*\.url$"])
+        .lines()
+        .find_map(|line| {
+            let (key, url) = line.split_once(' ')?;
+            let url = url.trim().trim_end_matches('/').to_lowercase();
+            let mut parts = url.trim_end_matches(".git").rsplit(['/', ':']);
+            let (name, owner) = (parts.next()?, parts.next()?);
+            (format!("{owner}/{name}") == want).then(|| key.strip_prefix("remote.")?.strip_suffix(".url").map(String::from)).flatten()
+        })
+        .ok_or_else(|| format!("no git remote in {dir} points at {repo}"))
+}
+
 pub fn current_branch(dir: &str) -> Option<String> {
     let b = quiet(dir, &["symbolic-ref", "-q", "--short", "HEAD"]);
     (!b.trim().is_empty()).then(|| b.trim().to_string())

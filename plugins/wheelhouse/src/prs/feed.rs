@@ -160,7 +160,7 @@ pub fn act(action: &str, dir: &str, pane: &str, args: &Value) -> Result<String, 
             Ok(format!("Checked out {} here; terminal {p} opened.", pr.branch))
         }
         "pr_worktree" => {
-            let wt = detail::worktree(dir, number, &pr.branch, cross())?;
+            let wt = detail::worktree(dir, snap.repo.as_deref().unwrap_or(""), number, &pr.branch, cross())?;
             let agent = text("agent").unwrap_or_else(|| "default".into());
             let open = text("open").unwrap_or_else(|| "pane".into());
             let p = detail::place_agent(&origin, &pr, &wt, &agent, &open)?;
