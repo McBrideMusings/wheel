@@ -184,7 +184,7 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
 /// fast-forwarded to the remote's branch when it can be, else a new one at `~/.worktrees/<project>/<branch>`,
 /// made on the local branch, else from the branch on the remote that points at `repo`. `fork_pr` is the number of
 /// a PR from a fork: its head ref is fetched, then `gh pr checkout` runs inside the worktree, which sets up the
-/// fork's remote.
+/// fork's remote; that PR's head ref is fetched only from the remote whose URL points at `repo`, and no such remote is an error.
 pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
     let remote = crate::core::git::remote_of_repo(dir, repo);
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
@@ -208,7 +208,8 @@ pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Re
     let wt = format!("{home}/.worktrees/{}/{}", crate::core::project::name_of(dir), branch.replace('/', "-"));
     let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
     if let Some(number) = fork_pr {
-        let remote = remote?;
+        // A fork PR's head ref exists only on the remote that points at the PR's repo: another remote's `pull/N/head` is a different PR.
+        let remote = crate::core::git::remote_for(dir, repo)?;
         let n = number.to_string();
         let head = format!("pull/{n}/head");
         crate::core::git::run(dir, &["fetch", "-q", &remote, &head])?;
@@ -355,6 +356,21 @@ mod tests {
         assert_eq!((b[0].name.as_str(), label(&b[0]), b[0].on.clone(), b[0].run.as_str(), b[0].worktree), ("mergeable", "mergeable", vec!["any".to_string()], "make fix", false),
             "the project's table replaces the machine's whole: no label, worktree or on carry over");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_fork_prs_worktree_needs_the_remote_whose_url_points_at_the_repo() {
+        let root = std::env::temp_dir().join(format!("wheelhouse-wt-fork-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let work = root.join("proj");
+        let sh = |args: &[&str]| crate::core::git::run(work.to_str().unwrap(), args).unwrap();
+        crate::core::git::run(root.to_str().unwrap(), &["init", "-q", work.to_str().unwrap()]).unwrap();
+        sh(&["remote", "add", "origin", "https://github.com/me/repo.git"]);
+        sh(&["remote", "add", "other", "https://github.com/someone/else.git"]);
+        let err = worktree(work.to_str().unwrap(), "owner/repo", "feat/x", Some(5)).unwrap_err();
+        assert!(err.contains("no git remote") && err.contains("owner/repo"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
