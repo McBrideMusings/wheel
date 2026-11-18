@@ -123,7 +123,7 @@ extension AppModel {
     func lastLine(ofPane pane: String, kind: PaneKind) -> String? {
         switch kind {
         case .empty: return nil
-        case let .agent(agent, _, _):
+        case let .agent(agent, _):
             guard let rows = chats[agent]?.transcript.rows else { return nil }
             for row in rows.reversed() {
                 switch row.kind {
@@ -233,7 +233,7 @@ private struct PreviewPane: View {
 
     private var title: String {
         switch kind {
-        case let .agent(_, agent, _): agent
+        case let .agent(_, agent): agent
         case let .terminal(_, agent): agent?.name ?? "terminal"
         default: kind.name
         }

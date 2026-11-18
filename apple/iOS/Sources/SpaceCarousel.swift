@@ -151,7 +151,7 @@ struct SpaceCarousel: View {
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
                 // The surface draws its own opaque background, so the tint goes over it.
                 .overlay(SwipeArea.tint.allowsHitTesting(false))
-        } else if case let .agent(agent, harness, _) = pane.kind, let chat = model.chats[agent] {
+        } else if case let .agent(agent, harness) = pane.kind, let chat = model.chats[agent] {
             AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat)
                 // Behind the page, so what scrolls sideways on its own fill (a code block) stays untinted.
                 .background(SwipeArea.tint)
@@ -372,7 +372,7 @@ struct SpaceCarousel: View {
         let firstAgent: () -> (pane: String, agent: String)? = {
             let panes = model.activeSpace?.root.readingOrder ?? []
             return panes.lazy.compactMap { pane -> (String, String)? in
-                if case let .agent(agent, _, _) = pane.kind { (pane.id, agent) } else { nil }
+                if case let .agent(agent, _) = pane.kind { (pane.id, agent) } else { nil }
             }.first
         }
         if let paths = env["WHEEL_ATTACH"] {
@@ -544,7 +544,7 @@ private struct PluginEmbed: View {
             switch (embed.kind, kind) {
             case (.artifact, _):
                 model.artifactEmbed(host: host, name: embed.pane)
-            case let (.agentChat, .agent(agent, harness, _)?) where model.chats[agent] != nil:
+            case let (.agentChat, .agent(agent, harness)?) where model.chats[agent] != nil:
                 AgentPane(model: model, pane: embed.pane, agent: agent, harness: harness, chat: model.chats[agent]!)
             case let (.terminal, .terminal(term, _)?):
                 // A new identity per term: a pane that starts another shell gets a new surface.
@@ -591,7 +591,7 @@ private struct PanePlaceholder: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if case let .agent(_, agent, _) = kind {
+            if case let .agent(_, agent) = kind {
                 AgentLogo(agent: agent).frame(width: 40, height: 40)
             } else {
                 Image(systemName: symbol).font(.largeTitle)

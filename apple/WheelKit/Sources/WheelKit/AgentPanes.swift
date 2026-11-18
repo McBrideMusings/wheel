@@ -9,7 +9,7 @@ public enum AgentPanes {
         for space in spaces {
             for pane in space.allPanes {
                 switch pane.kind {
-                case let .agent(agent, _, _): out[pane.id] = agent
+                case let .agent(agent, _): out[pane.id] = agent
                 default: break
                 }
             }
@@ -21,7 +21,7 @@ public enum AgentPanes {
     public static func harness(ofAgent agent: String, in spaces: [SpaceInfo]) -> String? {
         for space in spaces {
             for pane in space.allPanes {
-                if case let .agent(name, harness, _) = pane.kind, name == agent { return harness }
+                if case let .agent(name, harness) = pane.kind, name == agent { return harness }
             }
         }
         return nil
@@ -31,17 +31,6 @@ public enum AgentPanes {
     /// Codex can, Pi cannot.
     public static func canFork(harness: String?) -> Bool {
         harness == "claude" || harness == "codex"
-    }
-
-    /// The home directory the pane running `agent` saved for itself; nil when it saved none or no
-    /// pane runs the agent.
-    public static func home(ofAgent agent: String, in spaces: [SpaceInfo]) -> String? {
-        for space in spaces {
-            for pane in space.allPanes {
-                if case let .agent(name, _, home) = pane.kind, name == agent { return home }
-            }
-        }
-        return nil
     }
 
     /// Permission requests waiting in each space, by space id: a request belongs to the space

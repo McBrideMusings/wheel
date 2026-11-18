@@ -28,8 +28,8 @@ extension AgentInfo {
         }
     }
 
-    /// The home as written beside the composer: the home the pane saved for its own agent, else the
-    /// `agent.<name>.home` setting, else the agent's default.
+    /// The home as written beside the composer: the home the agent runs with (`AgentFooter.home`),
+    /// else the `agent.<name>.home` setting, else the agent's default.
     public static func shownHome(own: String? = nil, of name: String, in agents: [AgentInfo]) -> String {
         let info = agents.first { $0.name == name }
         if let home = [own, info?.home].lazy.compactMap({ $0 }).first(where: { !$0.isEmpty }) {

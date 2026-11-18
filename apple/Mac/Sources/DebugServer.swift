@@ -1626,13 +1626,13 @@ final class DebugServer {
         case ("POST", "/conversations/pick"):
             // What a click on a row of the conversations list sends: `id=new` or a conversation's id.
             guard let pane = query["pane"], let id = query["id"] else { return refuse("400 Bad Request", "pane and id are required") }
-            guard case let .agent(agent, _, _)? = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane })?.kind,
+            guard case let .agent(agent, _)? = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane })?.kind,
                   let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane \(pane)") }
             let actions = model.conversationActions(chat, pane: pane)
             if id == "new" { actions.startNew() } else { actions.resume(id) }
         case ("POST", "/conversations/load"):
             guard let pane = query["pane"] else { return refuse("400 Bad Request", "pane is required") }
-            guard case let .agent(agent, _, _)? = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane })?.kind,
+            guard case let .agent(agent, _)? = model.spaces.lazy.flatMap({ $0.allPanes }).first(where: { $0.id == pane })?.kind,
                   let chat = model.chats[agent] else { return refuse("404 Not Found", "no agent pane \(pane)") }
             model.conversationActions(chat, pane: pane).load(Int(query["limit"] ?? "") ?? ConversationPaging.popover)
         case ("POST", "/space/menu"):
@@ -2115,7 +2115,7 @@ final class DebugServer {
                 ["kind": "terminal", "term": term, "agent": agent.map { ["name": $0.name, "conversation": $0.conversation, "context": contextJSON($0.context, pane: id)] as Any } ?? NSNull()]
             case let .web(artifact): ["kind": "web", "scope": artifact.scope.rawValue, "name": artifact.name]
             case let .browser(url): ["kind": "browser", "url": url]
-            case let .agent(agent, harness, _): ["kind": "agent", "agent": agent, "harness": harness]
+            case let .agent(agent, harness): ["kind": "agent", "agent": agent, "harness": harness]
             case let .unknown(_, raw): raw.mapValues(\.foundation)
             }
             o["node"] = "pane"
@@ -2163,7 +2163,7 @@ final class DebugServer {
                 if case let .terminal(_, agent) = pane.kind {
                     o["context"] = contextJSON(agent?.context, pane: pane.id)
                 }
-                if case let .agent(agent, harness, _) = pane.kind {
+                if case let .agent(agent, harness) = pane.kind {
                     o["agent"] = agent
                     let chat = model.chats[agent]
                     o["harness"] = harness
