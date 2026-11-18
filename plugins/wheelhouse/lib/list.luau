@@ -228,6 +228,8 @@ function M.boxes(l, cards)
             { overlay = { stroke = if on then "tint" else "separator", cornerRadius = 8 } },
         }
         if on then table.insert(mods, { background = "controlBackground" }) end
+        table.insert(mods, { hoverEffect = "highlight" })
+        table.insert(mods, { pointerStyle = "link" })
         table.insert(kids, {
             component = "Button", child = inner, variant = "borderless", modifiers = mods,
             action = { type = "list.filter", key = key, value = if on then "" else value },
