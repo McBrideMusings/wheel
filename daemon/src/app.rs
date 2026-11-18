@@ -167,6 +167,14 @@ fn restarts(policy: AppRestart, exit: &AppExit) -> bool {
     }
 }
 
+/// Why an app's page cannot be fetched now: it is still coming up, or it is not running.
+pub(crate) enum Unreachable {
+    /// The process started and has not yet announced its port; a page can be shown that waits.
+    Starting,
+    /// The process was stopped or ended; the text says which.
+    Down(String),
+}
+
 impl App {
     /// This app as a reader sees it.
     pub(crate) fn info(&self) -> AppInfo {
@@ -192,15 +200,17 @@ impl App {
     }
 
     /// The port the program announced, or why a page cannot be fetched from it now.
-    pub(crate) fn upstream(&self) -> Result<u16, String> {
+    pub(crate) fn upstream(&self) -> Result<u16, Unreachable> {
         let seen = self.seen.lock().unwrap();
         match (seen.state, seen.port) {
             (AppState::Running, Some(port)) => Ok(port),
-            (AppState::Running | AppState::Starting, None) => {
-                Err("It has started and has not yet said which port it serves.".into())
+            (AppState::Running | AppState::Starting, None) => Err(Unreachable::Starting),
+            (AppState::Waiting, _) => {
+                Err(Unreachable::Down("It ended and is waiting to start again.".into()))
             }
-            (AppState::Waiting, _) => Err("It ended and is waiting to start again.".into()),
-            _ => Err("It was stopped, or ended and is not set to start again.".into()),
+            _ => Err(Unreachable::Down(
+                "It was stopped, or ended and is not set to start again.".into(),
+            )),
         }
     }
 
