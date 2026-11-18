@@ -14,7 +14,7 @@ import WheelUI
 final class PhoneBrowser: NSObject, WKNavigationDelegate {
     let pane: String
     @ObservationIgnored let view: WKWebView
-    /// The page the address field shows: the one the web view is on.
+    /// The page the web view is on, as the Mac names it.
     private(set) var page: String = ""
     /// Whether the web view can go back.
     private(set) var canGoBack = false
@@ -23,7 +23,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// The page `load` sent the web view to, until its navigation starts: one the browser started.
     @ObservationIgnored private var browserLoad: URL?
     /// The pane's home as the layout last named it: where `goHome` goes.
-    @ObservationIgnored private(set) var home: String
+    private(set) var home: String
     /// Counts `prepareScripts` calls, so one that waited on the store while a later navigation
     /// started leaves the later one's scripts alone.
     @ObservationIgnored private var scriptGeneration = 0
@@ -76,7 +76,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         load(home)
     }
 
-    /// Go to `url`, which wheeld resolved from the address field or an agent's `pane page`.
+    /// Go to `url`, which wheeld resolved from an agent's `pane page`.
     func open(_ url: String) {
         load(url)
     }
@@ -99,7 +99,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
 
     func goBack() { view.goBack() }
 
-    /// The web view is on `url` now: the address field shows the page it stands for.
+    /// The web view is on `url` now: `page` names the page it stands for.
     private func landed(_ url: URL?) {
         guard let url, url.absoluteString != "about:blank" else { return }
         page = BrowserPanes.macPage(url)
@@ -219,90 +219,106 @@ struct PhoneBrowserBody: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
-/// A browser pane on the phone: back and the address above the phone's own page.
-struct BrowserPage: View {
+/// The buttons of a browser pane's bottom toolbar, in the order they are drawn.
+enum BrowserButton: String, CaseIterable {
+    case back, home, setHome = "set-home", reload
+
+    var accessibilityID: String { "browser-\(rawValue)" }
+    var label: String {
+        switch self {
+        case .back: "Back"
+        case .home: "Home"
+        case .setHome: "Set as home"
+        case .reload: "Reload"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .back: "chevron.backward"
+        case .home: "house"
+        case .setHome: "house.and.flag"
+        case .reload: "arrow.clockwise"
+        }
+    }
+}
+
+extension PhoneBrowser {
+    /// Whether `button` takes a press now: back needs a page to go back to, and the page in view
+    /// being the pane's home leaves nothing to set.
+    func enabled(_ button: BrowserButton) -> Bool {
+        switch button {
+        case .back: canGoBack
+        case .setHome: page != home
+        case .home, .reload: true
+        }
+    }
+}
+
+/// A browser pane on the phone: the phone's own page under the system navigation bar, whose title
+/// is the page's host, with back, Home, Set as home and reload in the system toolbar below it.
+/// UIKit's navigation controller draws both; a SwiftUI `NavigationStack` in each page of the
+/// carousel's pager asserts in `UINavigationBar.layoutSubviews` once a second page exists.
+struct BrowserPage: UIViewControllerRepresentable {
     let model: PhoneModel
     let pane: String
     let url: String
-    @State private var editing = false
-    @State private var typed = ""
-    @FocusState private var fieldFocused: Bool
 
-    private var browser: PhoneBrowser? { model.browsers[pane] }
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let root = UIHostingController(rootView: BrowserContent(browser: model.browsers[pane]))
+        let nav = UINavigationController(rootViewController: root)
+        nav.setToolbarHidden(false, animated: false)
+        root.navigationItem.titleView = nil
+        root.navigationItem.largeTitleDisplayMode = .never
+        return nav
+    }
+
+    func updateUIViewController(_ nav: UINavigationController, context: Context) {
+        guard let root = nav.viewControllers.first as? UIHostingController<BrowserContent> else { return }
+        let browser = model.browsers[pane]
+        root.rootView = BrowserContent(browser: browser)
+        root.navigationItem.title = title(browser)
+        var items: [UIBarButtonItem] = []
+        for (index, button) in BrowserButton.allCases.enumerated() {
+            if index > 0 { items.append(UIBarButtonItem(systemItem: .flexibleSpace)) }
+            let item = UIBarButtonItem(image: UIImage(systemName: button.symbol), primaryAction: UIAction { [model, pane] _ in
+                model.press(button, in: pane)
+            })
+            item.isEnabled = browser?.enabled(button) == true
+            item.accessibilityLabel = button.label
+            item.accessibilityIdentifier = button.accessibilityID
+            items.append(item)
+        }
+        root.toolbarItems = items
+    }
+
+    /// The page's host, or the page itself for a file or a blank one.
+    private func title(_ browser: PhoneBrowser?) -> String {
+        let page = browser?.page.isEmpty == false ? browser!.page : url
+        switch BrowserPanes.shown(page) {
+        case .blank: return page
+        case let .web(_, host, _): return host
+        case .file, .other: return page
+        }
+    }
+}
+
+/// The page under the navigation bar: the web view, and why it could not open when it could not.
+private struct BrowserContent: View {
+    let browser: PhoneBrowser?
 
     var body: some View {
-        VStack(spacing: 0) {
-            controls
-            ZStack(alignment: .top) {
-                if let browser {
-                    PhoneBrowserBody(browser: browser)
-                        .overlay {
-                            if let failure = browser.failure {
-                                ContentUnavailableView("Could not open the page", systemImage: "exclamationmark.triangle",
-                                                       description: Text(failure))
-                                    .background(.background)
-                                    .accessibilityIdentifier("browser-failure")
-                            }
-                        }
-                }
-            }
-        }
-    }
-
-    private var controls: some View {
-        HStack(spacing: 8) {
-            Button { browser?.goBack() } label: {
-                Image(systemName: "chevron.left").frame(width: 32, height: 32)
-            }
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.circle)
-            .disabled(browser?.canGoBack != true)
-            .accessibilityLabel("Back")
-            address
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-    }
-
-    @ViewBuilder private var address: some View {
-        let page = browser?.page.isEmpty == false ? browser!.page : url
         ZStack {
-            if editing {
-                TextField("Address", text: $typed)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.go)
-                    .focused($fieldFocused)
-                    .onSubmit {
-                        editing = false
-                        model.browse(pane, typed)
+            if let browser {
+                PhoneBrowserBody(browser: browser)
+                    .overlay {
+                        if let failure = browser.failure {
+                            ContentUnavailableView("Could not open the page", systemImage: "exclamationmark.triangle",
+                                                   description: Text(failure))
+                                .background(.background)
+                                .accessibilityIdentifier("browser-failure")
+                        }
                     }
-                    .onChange(of: fieldFocused) { _, focused in if !focused { editing = false } }
-            } else {
-                Button {
-                    typed = page
-                    editing = true
-                    fieldFocused = true
-                } label: {
-                    Text(shownAddress(page)).lineLimit(1).truncationMode(.middle)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("browser-address")
             }
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 32)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func shownAddress(_ page: String) -> String {
-        switch BrowserPanes.shown(page) {
-        case .blank: "Search or enter address"
-        case let .web(_, host, _): host
-        case let .file(_, name): name
-        case let .other(text): text
         }
     }
 }

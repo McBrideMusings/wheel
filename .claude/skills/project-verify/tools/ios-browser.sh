@@ -427,6 +427,38 @@ before="$(connects)"; relay up
 check "phone.log names the pane and wheeld's refusal" poll 20 plog "browser pane $P3 console report refused: $P3 is not a browser pane"
 grep "console report refused" "$PLOG" | head -2
 
+# The bottom toolbar (wheel-zpa4.2.10.18): back, Home, Set as home and reload are the system's own buttons.
+# The app's debug route presses one as its tap does (it writes "<pane> <button>" to Documents/toolbar-press)
+# and logs each button's state, "on" or "off" (disabled).
+printf '<!doctype html><title>stamp</title><script>window.stamp = Math.random()</script>\n' >"$SITE/stamp.html"
+tb_lines() { grep -c "toolbar $PANE: $1" "$PLOG"; }
+tb_press() { local n; n="$(tb_lines "press $1")"; printf '%s %s' "$PANE" "$1" >"$DATA/Documents/toolbar-press"; poll 10 sh -c "[ \"\$(grep -c 'toolbar $PANE: press $1' '$PLOG')\" -gt $n ]"; }
+tb_state() { local n; n="$(tb_lines back=)"; printf '%s state' "$PANE" >"$DATA/Documents/toolbar-press"; poll 10 sh -c "[ \"\$(grep -c 'toolbar $PANE: back=' '$PLOG')\" -gt $n ]" && grep "toolbar $PANE: back=" "$PLOG" | tail -1; }
+tb_is() { tb_state | grep -q -- "$1"; }
+w pane page "$PANE" "http://localhost:$SPORT/index.html" --on phone >/dev/null
+check "the toolbar's page is the home: dom h1 --on phone returns Bicycle" poll 20 dom_is h1 '<h1>Bicycle</h1>'
+tb_images() { local s; s="$(tb_state)"; [ -n "$s" ] && ! printf %s "$s" | grep -q noimage; }
+check "every toolbar button has its SF Symbol (the state line has no noimage)" poll 10 tb_images
+check "(3) on the home page Set as home is disabled and the other buttons keep their slots" poll 10 tb_is "set-home=off/image"
+w pane page "$PANE" "http://localhost:$SPORT/two.html" --on phone >/dev/null
+check "the phone moved off the home: dom h1 --on phone returns Tandem" poll 20 dom_is h1 '<h1>Tandem</h1>'
+check "back is enabled after the phone moved on" poll 10 tb_is "back=on/"
+check "(3) off the home Set as home is enabled" poll 10 tb_is "set-home=on/"
+check "(2) the Home button is pressed" tb_press home
+check "(2) pane where --on phone names the home after Home" poll 20 sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane where '$PANE' --on phone 2>&1 | grep -q 'http://localhost:$SPORT/index.html'"
+w pane page "$PANE" "http://localhost:$SPORT/three.html" --on phone >/dev/null
+check "the phone moved to /three.html: dom h1 --on phone returns Unicycle" poll 20 dom_is h1 '<h1>Unicycle</h1>'
+check "(3) the Set as home button is pressed" tb_press set-home
+check "(3) pane home prints the page in view" poll 20 home_is "http://localhost:$SPORT/three.html"
+check "(3) on the new home Set as home is disabled" poll 10 tb_is "set-home=off/image"
+w pane page "$PANE" "http://localhost:$SPORT/stamp.html" --on phone >/dev/null
+stamp() { w pane eval "$PANE" 'window.stamp' --on phone 2>&1; }
+check "the stamp page loaded" poll 20 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'typeof window.stamp' --on phone 2>&1)\" = '\"number\"' ]"
+S1="$(stamp)"
+check "(4) the reload button is pressed" tb_press reload
+stamp_changed() { local now; now="$(stamp)"; [ "$now" != "$S1" ] && [ "$now" != '"undefined"' ] && [ -n "$now" ]; }
+check "(4) the value the page writes on each load changed" poll 20 stamp_changed
+
 # The app suspended: page commands say so instead of waiting.
 xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1
 check "with the app gone, --on phone fails with 'the phone is not attached'" poll 20 sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane dom '$PANE' h1 --on phone 2>&1 | grep -q 'the phone is not attached'"
