@@ -261,8 +261,10 @@ pub struct AppState {
     /// The agent panes' agents a restore kept as saved because their agent could not start,
     /// started once the login shell's PATH arrives, or once it answers for the agent's home.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
-    /// Held while kept agents are started ([`Self::start_kept_agents`]), so two starts never take
-    /// `kept_agents` at once; it holds whether a loop asking the login shell again is scheduled.
+    /// Held while kept agents are started ([`Self::start_kept_agents`]), and by a restore until
+    /// its layout is set, so two starts never take `kept_agents` at once and none takes an agent
+    /// the restore kept before its pane is in a space; it holds whether a loop asking the login
+    /// shell again is scheduled.
     pub(crate) starting_kept_agents: tokio::sync::Mutex<bool>,
     /// Conversations a switch is moving an agent into now, by id and the agent's name, so two
     /// switches to one id cannot both pass the check that no other agent is in it.
@@ -472,8 +474,8 @@ impl AppState {
     }
 
     /// Start the agents kept as saved ([`Self::start_unstarted_agents`]), and start them again
-    /// later ([`Self::start_kept_agents_later`]) when the login shell gave no answer for a home.
-    pub(crate) async fn start_kept_agents(&self) {
+    /// later ([`Self::schedule_kept_agents`]) when the login shell gave no answer for a home.
+    pub async fn start_kept_agents(&self) {
         let mut scheduled = self.starting_kept_agents.lock().await;
         if self.start_unstarted_agents().await > 0 {
             self.schedule_kept_agents(&mut scheduled);
@@ -482,15 +484,9 @@ impl AppState {
 
     /// Start the agents kept as saved again after [`crate::login_path::RETRY`], then after twice
     /// as long each time up to [`KEPT_AGENT_RETRY_MOST`], until the login shell answers for every
-    /// kept agent's home or the daemon is gone. Called when a restore got no answer for one.
-    pub(crate) async fn start_kept_agents_later(&self) {
-        let mut scheduled = self.starting_kept_agents.lock().await;
-        self.schedule_kept_agents(&mut scheduled);
-    }
-
-    /// Spawn the loop of [`Self::start_kept_agents_later`] unless `scheduled` says one runs. The
+    /// kept agent's home or the daemon is gone, unless `scheduled` says such a loop runs. The
     /// caller holds `starting_kept_agents`, so a loop ending and a new failure never pass.
-    fn schedule_kept_agents(&self, scheduled: &mut bool) {
+    pub(crate) fn schedule_kept_agents(&self, scheduled: &mut bool) {
         if *scheduled {
             return;
         }

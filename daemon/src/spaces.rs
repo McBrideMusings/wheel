@@ -1986,7 +1986,8 @@ impl AppState {
     /// Start the agent panes a restore kept as saved because their agent could not start: a
     /// program not yet found, or a login shell that gave no answer for the agent's home. Called
     /// only while holding `starting_kept_agents` ([`Self::start_kept_agents`]), so never two at
-    /// once. Returns how many are still kept because the shell gave no answer for their home.
+    /// once, nor during a restore. Returns how many are still kept because the shell gave no
+    /// answer for their home.
     pub(crate) async fn start_unstarted_agents(&self) -> usize {
         let kept = std::mem::take(&mut *self.kept_agents.lock().unwrap());
         let waiting: Vec<(String, String, SpaceInfo, AgentPane)> = {
@@ -2439,7 +2440,8 @@ impl AppState {
 
     /// Load the layout saved at `path` (none yet is an empty layout) and save every change there
     /// from now on. Shells do not outlive the daemon, so each terminal pane gets a new one in its
-    /// space's directory.
+    /// space's directory. A start of kept agents ([`Self::start_kept_agents`]) waits until the
+    /// restore returns, including while it waits on the login shell for agents' homes.
     pub async fn restore_spaces(&self, path: PathBuf) -> anyhow::Result<()> {
         self.sweep_removed_pane_dirs();
         let Saved {
@@ -2489,6 +2491,9 @@ impl AppState {
             .flat_map(|space| space_panes(space).into_iter().map(|(p, _)| p.to_string()))
             .collect();
         self.sweep_uploads(&named_all.iter().map(String::as_str).collect());
+        // Held until the restore returns, so a start of kept agents meanwhile (the login shell's
+        // PATH arriving late) never takes the agents kept here before their panes are in a space.
+        let mut scheduled = self.starting_kept_agents.lock().await;
         let mut homes = self.saved_agent_homes(&loaded.spaces).await;
         let mut no_home = false;
         for space in &mut loaded.spaces {
@@ -2595,7 +2600,7 @@ impl AppState {
         }
         self.watch_terminals();
         if no_home {
-            self.start_kept_agents_later().await;
+            self.schedule_kept_agents(&mut scheduled);
         }
         Ok(())
     }
