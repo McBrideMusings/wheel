@@ -39,26 +39,33 @@ pub(super) fn fetch(dir: &str, repo: &str, number: i64) -> Result<Value, String>
     Ok(pr)
 }
 
-/// A PR button: a shell command the machine's or the project's wheel.toml writes, run in the project.
+/// A button on a PR (`[prs.buttons.<name>]`) or a branch of the Repo page (`[repo.buttons.<name>]`): a shell
+/// command the machine's or the project's wheel.toml writes, run in the project.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Button {
     pub name: String,
     pub label: Option<String>,
-    /// `any`, a bucket (`mine`, `needs-me`, `waiting`, `other`), `fix`, `draft` or `ready`.
+    /// A PR button's filter: `any`, a bucket (`mine`, `needs-me`, `waiting`, `other`), `fix`, `draft` or `ready`.
+    /// Read for `[prs.buttons]` only: a Repo button's is always empty.
     pub on: Vec<String>,
     pub run: String,
-    /// Run it with `PR_WORKTREE` set to a worktree on the PR's branch, made first when none exists.
+    /// Run it with `PR_WORKTREE` set to a worktree on the PR's or branch's branch, made first when none exists.
     pub worktree: bool,
 }
 
 /// The buttons under `[prs.buttons]` in `files`, the machine's first.
 pub fn buttons_of(files: &[crate::core::buttons::File]) -> Vec<Button> {
-    crate::core::buttons::named(files, &["prs", "buttons"])
+    buttons_in(files, "prs")
+}
+
+/// The buttons under `[<view>.buttons]` in `files`, the machine's first.
+pub fn buttons_in(files: &[crate::core::buttons::File], view: &str) -> Vec<Button> {
+    crate::core::buttons::named(files, &[view, "buttons"])
         .into_iter()
         .map(|(name, s)| Button {
             name,
             label: s.get("label").and_then(|v| v.as_str()).map(String::from),
-            on: s.get("on").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+            on: s.get("on").filter(|_| view == "prs").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
             run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             worktree: s.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false),
         })
@@ -173,10 +180,13 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
     run::gh(dir, &["pr", "checkout", &number.to_string()]).map(|_| ())
 }
 
-/// The path of a worktree on the PR's branch: the one that holds it already, else a new one at
-/// `~/.worktrees/<project>/<branch>`, made from the branch on origin (a fork's PR from its head ref,
-/// then `gh pr checkout` inside it, which sets up the fork's remote).
-pub fn worktree(dir: &str, number: i64, branch: &str, cross: bool) -> Result<String, String> {
+/// The path of a worktree on `branch`, a PR's or a branch with none: the one that holds it already,
+/// fast-forwarded to the remote's branch when it can be, else a new one at `~/.worktrees/<project>/<branch>`,
+/// made on the local branch, else from the branch on the remote that points at `repo`. `fork_pr` is the number of
+/// a PR from a fork: its head ref is fetched, then `gh pr checkout` runs inside the worktree, which sets up the
+/// fork's remote; that PR's head ref is fetched only from the remote whose URL points at `repo`, and no such remote is an error.
+pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
+    let remote = crate::core::git::remote_of_repo(dir, repo);
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
     let want = format!("branch refs/heads/{branch}");
     let mut path = None;
@@ -189,24 +199,28 @@ pub fn worktree(dir: &str, number: i64, branch: &str, cross: bool) -> Result<Str
         }
     }
     if let Some(p) = held {
+        if let Ok(remote) = &remote {
+            let _ = crate::core::git::run(&p, &["merge", "-q", "--ff-only", &format!("{remote}/{branch}")]);
+        }
         return Ok(p);
     }
     let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
     let wt = format!("{home}/.worktrees/{}/{}", crate::core::project::name_of(dir), branch.replace('/', "-"));
-    let n = number.to_string();
-    if cross {
+    let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
+    if let Some(number) = fork_pr {
+        // A fork PR's head ref exists only on the remote that points at the PR's repo: another remote's `pull/N/head` is a different PR.
+        let remote = crate::core::git::remote_for(dir, repo)?;
+        let n = number.to_string();
         let head = format!("pull/{n}/head");
-        crate::core::git::run(dir, &["fetch", "-q", "origin", &head])?;
+        crate::core::git::run(dir, &["fetch", "-q", &remote, &head])?;
         crate::core::git::run(dir, &["worktree", "add", "-q", "--detach", &wt, "FETCH_HEAD"])?;
         run::gh(&wt, &["pr", "checkout", &n])?;
+    } else if local {
+        crate::core::git::run(dir, &["worktree", "add", "-q", &wt, branch])?;
     } else {
-        crate::core::git::run(dir, &["fetch", "-q", "origin", branch])?;
-        let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
-        if local {
-            crate::core::git::run(dir, &["worktree", "add", "-q", &wt, branch])?;
-        } else {
-            crate::core::git::run(dir, &["worktree", "add", "-q", "-b", branch, &wt, &format!("origin/{branch}")])?;
-        }
+        let remote = remote?;
+        crate::core::git::run(dir, &["fetch", "-q", &remote, branch])?;
+        crate::core::git::run(dir, &["worktree", "add", "-q", "-b", branch, &wt, &format!("{remote}/{branch}")])?;
     }
     // The project's environment file comes along, as the Beads buttons do it.
     let envrc = PathBuf::from(dir).join(".envrc");
@@ -277,16 +291,32 @@ pub fn start_agent(origin: &Origin, pr: &Pr, wt: &str, agent: &str) -> Result<St
     Agents::new("wheel").start(origin, &brief(pr, wt), Some(agent).filter(|a| *a != "default"), None).or_else(fail)
 }
 
-/// Run PR button `b` for `pr`, in a worktree first when the button asks for one.
-pub fn run_button(origin: &Origin, repo: &str, pr: &Pr, cross: bool, b: &Button) -> Result<(), String> {
-    let wt = if b.worktree { Some(worktree(&origin.dir, pr.number, &pr.branch, cross)?) } else { None };
-    let (number, title, branch, url) = (pr.number.to_string(), pr.title.clone(), pr.branch.clone(), pr.url.clone());
+/// What a button runs for: a PR, or a branch that may have none.
+pub struct Target {
+    pub number: Option<i64>,
+    pub title: String,
+    pub branch: String,
+    pub url: String,
+}
+
+impl Target {
+    pub fn of_pr(pr: &Pr) -> Target {
+        Target { number: Some(pr.number), title: pr.title.clone(), branch: pr.branch.clone(), url: pr.url.clone() }
+    }
+}
+
+/// Run button `b` of `view` (`prs` or `repo`) for `target`, in a worktree first when the button asks for one. `fork_pr`
+/// is the target's PR number when that PR comes from a fork.
+pub fn run_button(origin: &Origin, view: &str, repo: &str, target: &Target, fork_pr: Option<i64>, b: &Button) -> Result<(), String> {
+    let wt = if b.worktree { Some(worktree(&origin.dir, repo, &target.branch, fork_pr)?) } else { None };
+    let number = target.number.map(|n| n.to_string()).unwrap_or_default();
+    let (title, branch, url) = (target.title.clone(), target.branch.clone(), target.url.clone());
     let mut env = vec![("PR_NUMBER", number.as_str()), ("PR_TITLE", title.as_str()), ("PR_BRANCH", branch.as_str()), ("PR_URL", url.as_str()),
         ("PR_REPO", repo), ("PR_PATH", origin.dir.as_str())];
     if let Some(w) = &wt {
         env.push(("PR_WORKTREE", w.as_str()));
     }
-    let log = std::env::temp_dir().join(format!("wheel-prs-{}-{}.log", pr.number, crate::beads::sane(&b.name)));
+    let log = std::env::temp_dir().join(format!("wheel-{view}-{}-{}.log", if view == "repo" { crate::beads::sane(&branch) } else { number.clone() }, crate::beads::sane(&b.name)));
     run::button(label(b), &b.run, &origin.dir, &origin.pane, &env, &log)
 }
 
@@ -329,26 +359,50 @@ mod tests {
     }
 
     #[test]
+    fn a_fork_prs_worktree_needs_the_remote_whose_url_points_at_the_repo() {
+        let root = std::env::temp_dir().join(format!("wheelhouse-wt-fork-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let work = root.join("proj");
+        let sh = |args: &[&str]| crate::core::git::run(work.to_str().unwrap(), args).unwrap();
+        crate::core::git::run(root.to_str().unwrap(), &["init", "-q", work.to_str().unwrap()]).unwrap();
+        sh(&["remote", "add", "origin", "https://github.com/me/repo.git"]);
+        sh(&["remote", "add", "other", "https://github.com/someone/else.git"]);
+        let err = worktree(work.to_str().unwrap(), "owner/repo", "feat/x", Some(5)).unwrap_err();
+        assert!(err.contains("no git remote") && err.contains("owner/repo"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_worktree_is_made_on_the_prs_branch_once_and_found_again() {
         let root = std::env::temp_dir().join(format!("wheelhouse-wt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let sh = |dir: &std::path::Path, args: &[&str]| crate::core::git::run(dir.to_str().unwrap(), args).unwrap();
-        let (origin, work) = (root.join("origin.git"), root.join("proj"));
-        sh(&root, &["init", "-q", "--bare", origin.to_str().unwrap()]);
-        sh(&root, &["clone", "-q", origin.to_str().unwrap(), work.to_str().unwrap()]);
+        let (bare, work) = (root.join("Owner").join("Repo.git"), root.join("proj"));
+        sh(&root, &["init", "-q", "--bare", bare.to_str().unwrap()]);
+        sh(&root, &["clone", "-q", bare.to_str().unwrap(), work.to_str().unwrap()]);
+        sh(&work, &["remote", "rename", "origin", "upstream"]);
         for a in [["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
             sh(&work, &a);
         }
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
-        sh(&work, &["push", "-q", "origin", "HEAD:refs/heads/feat/x"]);
+        sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
         let home = root.join("home");
         std::env::set_var("HOME", &home);
-        let a = worktree(work.to_str().unwrap(), 5, "feat/x", false).unwrap();
+        let dir = work.to_str().unwrap();
+        let a = worktree(dir, "owner/repo", "feat/x", None).unwrap();
         assert_eq!(a, format!("{}/.worktrees/proj/feat-x", home.display()));
         assert_eq!(crate::core::git::current_branch(&a).as_deref(), Some("feat/x"));
-        let again = worktree(work.to_str().unwrap(), 5, "feat/x", false).unwrap();
+        sh(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
+        let again = worktree(dir, "owner/repo", "feat/x", None).unwrap();
         assert_eq!(std::fs::canonicalize(&again).unwrap(), std::fs::canonicalize(&a).unwrap(), "the second call finds the first");
+        assert_eq!(sh(std::path::Path::new(&again),&["log", "-1", "--format=%s"]).trim(), "two", "the second call fast-forwards to the remote's branch");
+        sh(&work, &["branch", "local-only"]);
+        let l = worktree(dir, "owner/repo", "local-only", None).unwrap();
+        assert_eq!(crate::core::git::current_branch(&l).as_deref(), Some("local-only"), "a branch with no PR and no remote branch gets a worktree on the local branch");
+        assert!(worktree(dir, "owner/repo", "nowhere", None).is_err(), "a branch neither local nor on the remote has none to make");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

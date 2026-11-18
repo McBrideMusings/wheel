@@ -769,7 +769,7 @@ const ROLLOUT_WINDOWS: [u64; 3] = [TRANSCRIPT_TAIL, 16 * 1024 * 1024, u64::MAX];
 
 /// The rollout file of Codex `conversation` under `conversations`, newest day first: Codex names it
 /// `rollout-<time>-<conversation>.jsonl` inside a year, month and day directory.
-fn codex_rollout(conversations: &Path, conversation: &str) -> Option<PathBuf> {
+pub(crate) fn codex_rollout(conversations: &Path, conversation: &str) -> Option<PathBuf> {
     let newest_first = |dir: &Path| {
         let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
             .into_iter()

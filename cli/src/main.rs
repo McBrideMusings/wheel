@@ -1091,6 +1091,27 @@ enum PaneCommand {
         #[arg(long, requires = "plugin")]
         plugin_pane: Option<String>,
     },
+    /// Start a pane again on what it is on: an agent restarts on the same conversation, a
+    /// terminal's shell starts again in the directory it was in (resuming the agent it ran), a web
+    /// pane reloads and runs its artifact's refresh, a browser reloads its page, a plugin pane runs
+    /// its script again from the top. An empty pane is left as it is. An agent is refused while a
+    /// turn runs.
+    ///
+    /// On an agent or terminal pane, `--env` and `--unset-env` change the environment the new
+    /// process starts with, and the pane keeps the change. When an agent's home variable
+    /// (CLAUDE_CONFIG_DIR, CODEX_HOME, PI_CODING_AGENT_DIR) changes, its conversation's file is
+    /// copied to the same place in the new home first; one there with turns this one lacks
+    /// refuses the reload, naming both files.
+    Reload {
+        pane: String,
+        /// Start the new process with VAR set to VALUE, and keep it for the pane's later starts.
+        /// Repeatable.
+        #[arg(long = "env", value_name = "VAR=VALUE", value_parser = parse_env_pair)]
+        env: Vec<(String, String)>,
+        /// Drop a value --env kept, so the login shell decides VAR again. Repeatable.
+        #[arg(long = "unset-env", value_name = "VAR")]
+        unset_env: Vec<String>,
+    },
     /// Print a browser pane's home, the page its Mac and phone browsers open at, or with a page
     /// set it. Setting it moves neither browser.
     Home {
@@ -1445,6 +1466,14 @@ enum WorkCommand {
         #[arg(long, env = "WHEEL_PANE")]
         pane: Option<String>,
     },
+}
+
+/// `VAR=VALUE` for `--env`: the value may hold `=` and may be empty; the name may not.
+fn parse_env_pair(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.to_string())),
+        _ => Err(format!("{text:?} is not VAR=VALUE")),
+    }
 }
 
 fn parse_work_item(text: &str) -> Result<wheel_proto::WorkItem, String> {
@@ -5937,6 +5966,24 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     .map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }),
             })
             .await
+        }
+        PaneCommand::Reload { pane, env, unset_env } => {
+            let mut set = std::collections::BTreeMap::new();
+            for (name, value) in env {
+                if set.insert(name.clone(), value).is_some() {
+                    return Err(Fail::Other(format!("--env names {name} twice; name it once")));
+                }
+            }
+            let req = conn.req();
+            let msg = ClientMsg::PaneReload {
+                req: Some(req),
+                pane,
+                set,
+                unset: unset_env,
+            };
+            // An agent's reload asks the login shell (up to 20s) and waits for the agent (up to 60s).
+            conn.call_within(msg, req, Duration::from_secs(90)).await?;
+            Ok(())
         }
         PaneCommand::Home { pane, page } => {
             let req = conn.req();

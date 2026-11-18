@@ -501,9 +501,9 @@ if not vals:
     print("no value with branches: %r" % rows[:2]); sys.exit()
 r = vals[0]
 v = r["value"]
-want = {"now", "name", "top", "default", "head", "branches", "stashes", "commits", "fetched", "pr_error", "error", "scripts"}
+want = {"now", "name", "top", "default", "head", "branches", "stashes", "commits", "fetched", "cleanup", "pr_error", "error", "scripts"}
 bkeys = {"branch", "ts", "subject", "author", "ahead", "behind", "upstream", "track", "upstream_gone", "remote", "unpushed",
-         "worktree", "pr", "pr_merged", "merged", "local_only", "dead", "blocked"}
+         "worktree", "pr", "pr_merged", "merged", "local_only", "dead", "blocked", "finished"}
 by = {b["branch"]: b for b in v["branches"]}
 problems = []
 if r.get("params") != {"dir": dirn}:
@@ -514,7 +514,7 @@ if v["name"] != "proj-r" or v["default"] != "origin/main" or v["head"] != "main"
     problems.append("header %r" % {k: v[k] for k in ("name", "default", "head", "error")})
 if set(by) != {"merged-b", "wip"} or any(set(b) != bkeys for b in v["branches"]):
     problems.append("branches %r" % sorted(by))
-elif not (by["merged-b"]["ahead"] == 0 and by["merged-b"]["dead"] == "merged" and by["merged-b"]["local_only"] == 0
+elif not (by["merged-b"]["ahead"] == 0 and by["merged-b"]["dead"] == "merged" and by["merged-b"]["finished"] and not by["wip"]["finished"] and by["merged-b"]["local_only"] == 0
           and by["wip"]["ahead"] == 1 and by["wip"]["dead"] is None and by["wip"]["local_only"] == 1):
     problems.append("branch fields %r" % by)
 if len(v["stashes"]) != 1 or set(v["stashes"][0]) != {"ref", "subject", "when"} or v["stashes"][0]["ref"] != "stash@{0}":

@@ -1,7 +1,7 @@
 //! What a pane is, as labelled values a person copies: one builder behind the clients' ⓘ popover
 //! and `wheel pane info`, so every surface shows the same fields.
 
-use wheel_proto::{AgentLogin, AgentPlace, InfoField, PaneKind, PaneLogin, UsageAccount};
+use wheel_proto::{AgentLogin, InfoField, PaneKind, PaneLogin, UsageAccount};
 
 use crate::resume::{self, Harness};
 use crate::server::AppState;
@@ -26,14 +26,14 @@ fn where_field(label: &str, hint: &str, found: Result<crate::render::Where, Stri
 }
 
 impl AppState {
-    /// The config directory an agent pane running `harness` at `place` takes its login from (the
-    /// pane's own `home`, else the `agent.<harness>.home` setting, else the harness's default), with
-    /// no trailing `/`, and the usage account whose login lives there. None
-    /// for a harness with no home at all.
-    fn login_of(&self, harness: &str, place: Option<&AgentPlace>) -> Option<(String, Option<UsageAccount>)> {
+    /// The config directory an agent pane running `harness` takes its login from (`running`, the
+    /// one its agent was started with, else the `agent.<harness>.home` setting, else the harness's
+    /// default), with no trailing `/`, and the usage account whose login lives there. None for a
+    /// harness with no home at all.
+    fn login_of(&self, harness: &str, running: Option<&std::path::Path>) -> Option<(String, Option<UsageAccount>)> {
         let parsed = Harness::parse(harness);
-        let home = place
-            .and_then(|p| p.home.clone())
+        let home = running
+            .map(|h| h.display().to_string())
             .or_else(|| self.agent_home(harness).map(|h| h.display().to_string()))
             .or_else(|| {
                 parsed
@@ -53,10 +53,10 @@ impl AppState {
         Some((home, account))
     }
 
-    /// The login an agent pane running `harness` at `place` takes, as `status` lists it: the
-    /// home [`Self::login_of`] finds and the billing and email of its account's reading.
-    pub(crate) fn agent_login(&self, harness: &str, place: Option<&AgentPlace>) -> Option<AgentLogin> {
-        let (home, account) = self.login_of(harness, place)?;
+    /// The login an agent pane running `harness` takes, as `status` lists it: the home
+    /// [`Self::login_of`] finds and the billing and email of its account's reading.
+    pub(crate) fn agent_login(&self, harness: &str, running: Option<&std::path::Path>) -> Option<AgentLogin> {
+        let (home, account) = self.login_of(harness, running)?;
         let reading = account.and_then(|a| a.usage.reading);
         Some(AgentLogin {
             home,
@@ -103,7 +103,12 @@ impl AppState {
                     .or(conversation);
                 let parsed = Harness::parse(&harness);
                 let place = place.map(|p| *p).unwrap_or_default();
-                let found = self.login_of(&harness, Some(&place));
+                // An agent not running yet shows the home it picked, which is the one it starts with.
+                let picked = parsed.and_then(|h| place.env.get(h.home_var())).filter(|h| !h.is_empty());
+                let found = match &live {
+                    Some(l) => self.login_of(&harness, l.home()),
+                    None => self.login_of(&harness, picked.map(std::path::Path::new)),
+                };
                 let home = found.as_ref().map(|(dir, _)| dir.clone());
                 if let Some((dir, account)) = found {
                     login = Some(PaneLogin { dir, account });
@@ -149,7 +154,7 @@ impl AppState {
                 fields.push(field(
                     "Home",
                     home,
-                    &format!("agent.{harness}.home, as the agent's config directory"),
+                    &format!("{}, the config directory the agent runs with", parsed.map_or("its home variable", |a| a.home_var())),
                 ));
                 fields.push(field(
                     "Weekly",

@@ -528,7 +528,7 @@ final class AppModel {
         var panes: Set<String> = []
         for pane in spaces.flatMap(\.allPanes) {
             switch pane.kind {
-            case let .agent(agent, _, _):
+            case let .agent(agent, _):
                 panes.insert(pane.id)
                 chats[agent]?.state = nil
             case .terminal:
@@ -1130,7 +1130,7 @@ final class AppModel {
                     refusedAttach.insert(agent)
                     // Refused: the pane will not restore, so it must not wait under the cover.
                     for pane in spaces.flatMap(\.allPanes) {
-                        if case let .agent(name, _, _) = pane.kind, name == agent { restoringPanes.remove(pane.id) }
+                        if case let .agent(name, _) = pane.kind, name == agent { restoringPanes.remove(pane.id) }
                     }
                 }
             }
@@ -1279,7 +1279,7 @@ final class AppModel {
         case let .terminal(_, agent): agent.map { AgentInfo.title(of: $0.name) } ?? "Terminal"
         case let .web(artifact): artifact.name
         case let .browser(url): URL(string: url)?.host ?? url
-        case let .agent(_, harness, _): AgentInfo.title(of: harness)
+        case let .agent(_, harness): AgentInfo.title(of: harness)
         case .unknown: "Pane"
         }
     }
@@ -1438,7 +1438,7 @@ final class AppModel {
             let isEmpty: Bool = { if case .empty = kind { return true }; return false }()
             items.append(HeaderMenuItem(id: "kind:shell", title: "Change Type ▸ Shell", enabled: !isShell))
             for agent in AgentInfo.pickable(agents) {
-                let current: Bool = { if case let .agent(_, name, _) = kind { return name == agent.name }; return false }()
+                let current: Bool = { if case let .agent(_, name) = kind { return name == agent.name }; return false }()
                 items.append(HeaderMenuItem(id: "kind:agent:\(agent.name)", title: "Change Type ▸ \(agent.title)", enabled: !current))
             }
             items.append(HeaderMenuItem(id: "kind:browser", title: "Change Type ▸ Browser", enabled: !isBrowser))

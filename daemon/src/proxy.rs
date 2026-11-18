@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
-use crate::app::App;
+use crate::app::{App, Unreachable};
 
 /// Headers that describe one connection, not the message, so a proxy never passes them on.
 const HOP_BY_HOP: [HeaderName; 7] = [
@@ -41,6 +41,26 @@ fn not_running(pane: &str, why: &str, detail: &str) -> Response {
     );
     (
         StatusCode::BAD_GATEWAY,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// The page a pane shows while its app is starting: it says so and asks again every second, so
+/// the app's own page replaces it as soon as the program has announced its port.
+fn starting() -> Response {
+    let body = "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
+         <meta http-equiv=refresh content=1>\
+         <title>Starting</title>\
+         <style>body{font:15px -apple-system,system-ui,sans-serif;margin:3em auto;max-width:34em;padding:0 1em;color:#444}\
+         h1{font-size:1.2em;color:#222}</style>\
+         <h1>Starting\u{2026}</h1><p>This pane's app is starting. The page appears when it is ready.</p>";
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
@@ -102,7 +122,11 @@ pub(crate) async fn forward(
 ) -> Response {
     let port = match app.upstream() {
         Ok(port) => port,
-        Err(why) => {
+        Err(Unreachable::Starting) => {
+            tracing::info!(%pane, "app proxy: the app is starting");
+            return starting();
+        }
+        Err(Unreachable::Down(why)) => {
             tracing::info!(%pane, %why, "app proxy: nothing to forward to");
             return not_running(pane, "Nothing is serving this pane's page right now.", &why);
         }
@@ -345,7 +369,8 @@ fn own_path(location: &str, port: u16) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{loopback_host, loopback_origin_port, loopback_port, own_path};
+    use super::{loopback_host, loopback_origin_port, loopback_port, own_path, starting};
+    use axum::http::StatusCode;
 
     #[test]
     fn only_a_bare_loopback_origin_is_one() {
@@ -391,5 +416,16 @@ mod tests {
         assert_eq!(loopback_port("https://localhost:5173/"), None);
         assert_eq!(loopback_port("https://example.com/"), None);
         assert_eq!(loopback_port("about:blank"), None);
+    }
+
+    #[tokio::test]
+    async fn starting_page_waits_and_is_not_the_error_page() {
+        let resp = starting();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let page = String::from_utf8(body.to_vec()).unwrap();
+        assert!(page.contains("http-equiv=refresh"), "{page}");
+        assert!(page.contains("Starting"), "{page}");
+        assert!(!page.contains("not running"), "{page}");
     }
 }

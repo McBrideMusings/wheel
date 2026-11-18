@@ -12,7 +12,7 @@
 //! request, `item/commandExecution/requestApproval` or `item/fileChange/requestApproval`, which the
 //! host answers with a decision; any other server request is refused.
 //!
-//! The one control is `mode`, the approval policy: it is sent with every `turn/start`.
+//! Approval policy (when), reviewer (who), and sandbox are independent controls.
 
 use std::collections::{HashMap, HashSet};
 
@@ -29,10 +29,8 @@ use crate::driver::{
 };
 use crate::claude::History;
 
-/// The approval policies the `mode` control offers, in order, with their names. Codex asks for
-/// most commands under the first.
-const POLICIES: [(&str, &str); 3] = [
-    ("untrusted", "Ask for most commands"),
+/// Public selectable approval policies. Project trust may derive a stricter policy on its own.
+const POLICIES: [(&str, &str); 2] = [
     ("on-request", "Ask when it needs more access"),
     ("never", "Never ask"),
 ];
@@ -119,11 +117,25 @@ pub(crate) fn policy_names() -> Vec<&'static str> {
     POLICIES.iter().map(|(v, _)| *v).collect()
 }
 
+/// The current public choices, plus the structured policy an inherited config may use.
+pub(crate) fn valid_policy(value: &str) -> bool {
+    if POLICIES.iter().any(|(policy, _)| *policy == value) { return true; }
+    let Ok(policy) = serde_json::from_str::<Value>(value) else { return false; };
+    let Some(flags) = policy["granular"].as_object() else { return false; };
+    ["sandbox_approval", "rules", "skill_approval", "request_permissions", "mcp_elicitations"]
+        .iter().all(|key| flags.get(*key).is_some_and(Value::is_boolean))
+}
+
+/// Granular inherited policies are structured JSON, not a string enum.
+fn policy_value(policy: &str) -> Value {
+    serde_json::from_str::<Value>(policy).ok().filter(Value::is_object).unwrap_or_else(|| json!(policy))
+}
+
 /// The `mode` control with `current` chosen.
 fn mode_option(current: &str) -> ConfigOption {
     select(
         "mode",
-        "Approvals",
+        "Approval policy",
         Some("mode"),
         current,
         POLICIES.iter().map(|(v, n)| choice(v, n, None)).collect(),
@@ -171,6 +183,9 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         model: String::new(),
         effort: None,
         sandbox,
+        reviewer: None,
+        profile: None,
+        deferred_prompt: None,
         next_request: 1,
         pending: HashMap::new(),
         thread: None,
@@ -207,6 +222,10 @@ enum Pending {
     /// `thread/read` of the conversation a fork copies, asked to learn which turn the fork ends at.
     ForkRead { from: String, turns: usize },
     TurnStart,
+    /// Resolve a legacy sandbox selection through Codex's own config loader.
+    Sandbox { value: String, reply: tokio::sync::oneshot::Sender<Result<Vec<ConfigOption>, String>> },
+    Permission { id: &'static str, value: String, reply: tokio::sync::oneshot::Sender<Result<Vec<ConfigOption>, String>> },
+    Unsubscribe,
     Interrupt,
     /// `turn/steer` for the message of `turn`, which comes back as the `userMessage` item `id`.
     Steer { turn: u64, id: String },
@@ -216,7 +235,7 @@ enum Pending {
 struct Approval {
     /// Codex's id for the request, which the answer repeats.
     id: Value,
-    /// Whether the answer is `acceptForSession` for "allow always".
+    /// Whether this request supports Codex's session-scoped `acceptForSession` decision.
     agent_scope: bool,
     /// Set when the request is a `request_user_input` call: the questions are put one at a time.
     ask: Option<Ask>,
@@ -246,6 +265,11 @@ struct Driver {
     effort: Option<String>,
     /// The sandbox each turn runs in, by the name `thread/start` takes.
     sandbox: String,
+    reviewer: Option<String>,
+    /// Ordinary turns inherit Codex's complete settings, including restrictions that a legacy
+    /// sandbox cannot express. Explicit changes go through `thread/settings/update`.
+    profile: Option<String>,
+    deferred_prompt: Option<String>,
     next_request: u64,
     pending: HashMap<u64, Pending>,
     thread: Option<String>,
@@ -290,7 +314,9 @@ impl Driver {
             .request(
                 Pending::Initialize,
                 "initialize",
-                json!({"clientInfo": {"name": "wheel", "title": "Wheel", "version": env!("CARGO_PKG_VERSION")}}),
+                // `thread/settings/update` is capability-gated in Codex 0.169.0. It persists
+                // permission selections without needing to start a model turn.
+                json!({"clientInfo": {"name": "wheel", "title": "Wheel", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {"experimentalApi": true}}),
             )
             .await
             .err();
@@ -358,6 +384,10 @@ impl Driver {
     async fn input(&mut self, input: Input) -> Result<(), String> {
         match input {
             Input::Prompt(text) => {
+                if self.pending.values().any(|p| matches!(p, Pending::Sandbox { .. } | Pending::Permission { .. })) {
+                    self.deferred_prompt = Some(text);
+                    return Ok(());
+                }
                 let Some(thread) = self.thread.clone() else {
                     return Err("a prompt arrived before the thread opened".into());
                 };
@@ -369,16 +399,12 @@ impl Driver {
                 let mut params = json!({
                     "threadId": thread,
                     "input": [{"type": "text", "text": text, "text_elements": []}],
-                    "approvalPolicy": self.policy,
                 });
                 if !self.model.is_empty() {
                     params["model"] = json!(self.model);
                 }
                 if let Some(effort) = &self.effort {
                     params["effort"] = json!(effort);
-                }
-                if let Some((_, _, kind)) = SANDBOXES.iter().find(|(v, _, _)| *v == self.sandbox) {
-                    params["sandboxPolicy"] = json!({"type": kind});
                 }
                 self.request(Pending::TurnStart, "turn/start", params).await
             }
@@ -408,6 +434,10 @@ impl Driver {
             // steered message is already one it holds: nothing to do.
             Input::Withdraw { .. } | Input::SendNow { .. } => Ok(()),
             Input::Cancel => {
+                if self.deferred_prompt.take().is_some() {
+                    self.emit(DriverEvent::TurnEnd { stop_reason: "cancelled".into() });
+                    return Ok(());
+                }
                 if !self.in_turn || self.interrupted {
                     return Ok(());
                 }
@@ -433,6 +463,40 @@ impl Driver {
                     .await
             }
             Input::SetOption { id, value, reply } => {
+                let permission = match id.as_str() {
+                    "mode" if valid_policy(&value) => Some(("mode", "approvalPolicy", policy_value(&value))),
+                    "reviewer" if ["user", "auto_review"].contains(&value.as_str()) =>
+                        Some(("reviewer", "approvalsReviewer", json!(value))),
+                    _ => None,
+                };
+                if let Some((id, field, setting)) = permission {
+                    if self.pending.values().any(|p| matches!(p, Pending::Permission { id: pending, .. } if *pending == id)) {
+                        let _ = reply.send(Err(format!("a {id} change is already pending")));
+                        return Ok(());
+                    }
+                    let Some(thread) = self.thread.clone() else {
+                        let _ = reply.send(Err("the chat is not ready".into()));
+                        return Ok(());
+                    };
+                    let mut params = json!({"threadId": thread});
+                    params[field] = setting;
+                    // Codex persists these settings even if no further turn runs.
+                    return self.request(Pending::Permission { id, value, reply },
+                        "thread/settings/update", params).await;
+                }
+                if id == "sandbox" && SANDBOXES.iter().any(|(v, _, _)| *v == value)
+                    && self.profile.is_none()
+                    && SANDBOXES.iter().any(|(v, _, _)| *v == self.sandbox)
+                {
+                    if self.pending.values().any(|p| matches!(p, Pending::Sandbox { .. } | Pending::Permission { id: "sandbox", .. })) {
+                        let _ = reply.send(Err("a sandbox change is already pending".into()));
+                        return Ok(());
+                    }
+                    // An ephemeral thread resolves the selected mode without touching this chat,
+                    // generating a turn, or guessing defaults for network access or writable roots.
+                    return self.request(Pending::Sandbox { value: value.clone(), reply },
+                        "thread/start", json!({"cwd": self.launch.cwd, "sandbox": value, "ephemeral": true})).await;
+                }
                 let answer = self.set_option(&id, &value);
                 tracing::info!(pid = self.pid, option = %id, %value, ok = answer.is_ok(), "agent option set");
                 let _ = reply.send(answer);
@@ -446,18 +510,14 @@ impl Driver {
     fn set_option(&mut self, id: &str, value: &str) -> Result<Vec<ConfigOption>, String> {
         let refuse = |valid: Vec<&str>| format!("{id} does not take {value}; it takes {valid:?}");
         match id {
-            "mode" => {
-                if !POLICIES.iter().any(|(v, _)| *v == value) {
-                    return Err(refuse(policy_names()));
-                }
-                self.policy = value.into();
-            }
+            "mode" => return Err(refuse(policy_names())),
             "sandbox" => {
                 if !SANDBOXES.iter().any(|(v, _, _)| *v == value) {
                     return Err(refuse(SANDBOXES.iter().map(|(v, _, _)| *v).collect()));
                 }
-                self.sandbox = value.into();
+                return Err("this chat uses configured Codex permissions; change them in Codex configuration".into());
             }
+            "reviewer" => return Err(refuse(vec!["user", "auto_review"])),
             "model" => {
                 let Some(model) = self.models.iter().find(|m| m.id == value) else {
                     return Err(refuse(self.models.iter().filter(|m| !m.hidden).map(|m| m.id.as_str()).collect()));
@@ -484,8 +544,7 @@ impl Driver {
         self.models.iter().find(|m| m.id == self.model)
     }
 
-    /// The controls: the model, how hard it reasons, what it may do without asking, and the sandbox
-    /// it runs commands in.
+    /// The controls: model, effort, approval policy, reviewer and sandbox or permission profile.
     fn options(&self) -> Vec<ConfigOption> {
         let mut options = Vec::new();
         if !self.model.is_empty() {
@@ -511,8 +570,34 @@ impl Driver {
                 ));
             }
         }
-        options.push(mode_option(&self.policy));
-        options.push(sandbox_option(&self.sandbox));
+        let mut policy = mode_option(&self.policy);
+        policy.description = Some("When Codex requires review. Independent of who reviews the request.".into());
+        if let ConfigKind::Select { choices, .. } = &mut policy.kind {
+            if valid_policy(&self.policy) && !choices.iter().any(|c| c.value == self.policy) {
+                choices.push(choice(&self.policy, "Inherited approval policy", None));
+            }
+        }
+        options.push(policy);
+        if let Some(reviewer) = &self.reviewer {
+            let choices = vec![
+                choice("user", "Person reviews", Some("Send approval requests to you.")),
+                choice("auto_review", "Automatic reviewer", Some("Codex routes eligible requests to its separate automatic reviewer.")),
+            ];
+            let mut option = select("reviewer", "Reviewer", Some("reviewer"), reviewer, choices);
+            option.description = Some("Who reviews requests for subsequent turns in this chat. Saved by Codex independently of new-chat defaults.".into());
+            options.push(option);
+        }
+        if let Some(profile) = &self.profile {
+            let mut option = select("permissions", "Permission profile", None, profile, Vec::new());
+            option.description = Some("Codex owns this profile, including filesystem, socket and proxy restrictions. Change it in Codex configuration.".into());
+            options.push(option);
+        } else if SANDBOXES.iter().any(|(name, _, _)| *name == self.sandbox) {
+            options.push(sandbox_option(&self.sandbox));
+        } else {
+            let mut option = select("sandbox_status", "Sandbox", Some("sandbox"), &self.sandbox, Vec::new());
+            option.description = Some("Externally configured sandbox; managed by Codex.".into());
+            options.push(option);
+        }
         options
     }
 
@@ -562,6 +647,14 @@ impl Driver {
                 Pending::Initialize | Pending::Models | Pending::Thread | Pending::ForkRead { .. } => {
                     Err(said.to_string())
                 }
+                Pending::Sandbox { reply, .. } | Pending::Permission { reply, .. } => {
+                    let _ = reply.send(Err(said.to_string()));
+                    if let Some(text) = self.deferred_prompt.take() {
+                        return self.input(Input::Prompt(text)).await;
+                    }
+                    Ok(())
+                }
+                Pending::Unsubscribe => Ok(()),
                 Pending::TurnStart => {
                     self.turn_failed(said.to_string());
                     Ok(())
@@ -629,15 +722,16 @@ impl Driver {
                 .then(|| history(thread));
                 self.model = result["model"].as_str().unwrap_or_default().to_string();
                 self.effort = result["reasoningEffort"].as_str().map(String::from);
-                // A resumed thread keeps the sandbox it ran in unless the host chose one.
-                if self.launch.permissions.sandbox.is_none() {
-                    if let Some(name) = SANDBOXES
-                        .iter()
-                        .find(|(_, _, kind)| result["sandbox"]["type"] == *kind)
-                        .map(|(value, _, _)| *value)
-                    {
-                        self.sandbox = name.to_string();
-                    }
+                if let Some(policy) = result.get("approvalPolicy") {
+                    self.policy = policy.as_str().map(str::to_owned).unwrap_or_else(|| policy.to_string());
+                }
+                self.reviewer = result["approvalsReviewer"].as_str().map(str::to_owned)
+                    .or_else(|| self.launch.permissions.approvals_reviewer.clone());
+                self.profile = result["activePermissionProfile"]["id"].as_str().map(str::to_owned);
+                if let Some((name, _, _)) = SANDBOXES.iter().find(|(_, _, kind)| result["sandbox"]["type"] == *kind) {
+                    self.sandbox = (*name).into();
+                } else if let Some(kind) = result["sandbox"]["type"].as_str() {
+                    self.sandbox = kind.into();
                 }
                 tracing::info!(pid = self.pid, thread = %id, model = %self.model, effort = ?self.effort, sandbox = %self.sandbox, resumed = history.is_some(), turns = history.as_ref().map_or(0, |h| h.turns.len()), "agent ready");
                 self.emit(DriverEvent::Ready {
@@ -671,7 +765,36 @@ impl Driver {
                 }
                 Ok(())
             }
-            Pending::Interrupt | Pending::Steer { .. } => Ok(()),
+            Pending::Permission { id, value, reply } => {
+                match id {
+                    "mode" => self.policy = value,
+                    "reviewer" => self.reviewer = Some(value),
+                    "sandbox" => self.sandbox = value,
+                    _ => unreachable!("only permission settings are sent here"),
+                }
+                let _ = reply.send(Ok(self.options()));
+                if let Some(text) = self.deferred_prompt.take() {
+                    return self.input(Input::Prompt(text)).await;
+                }
+                Ok(())
+            }
+            Pending::Sandbox { value, reply } => {
+                if let Some(id) = result["thread"]["id"].as_str() {
+                    self.request(Pending::Unsubscribe, "thread/unsubscribe", json!({"threadId": id})).await?;
+                }
+                if result["sandbox"].is_object() && result["activePermissionProfile"].is_null() {
+                    let thread = self.thread.as_ref().ok_or("the chat is not ready")?;
+                    let params = json!({"threadId": thread, "sandboxPolicy": result["sandbox"]});
+                    return self.request(Pending::Permission { id: "sandbox", value, reply },
+                        "thread/settings/update", params).await;
+                }
+                let _ = reply.send(Err("Codex did not return a standalone resolved sandbox policy; reopen the chat to use its configured profile".into()));
+                if let Some(text) = self.deferred_prompt.take() {
+                    return self.input(Input::Prompt(text)).await;
+                }
+                Ok(())
+            }
+            Pending::Unsubscribe | Pending::Interrupt | Pending::Steer { .. } => Ok(()),
         }
     }
 
@@ -698,13 +821,24 @@ impl Driver {
     fn thread_params(&self) -> Value {
         let mut params = json!({
             "cwd": self.launch.cwd.display().to_string(),
-            "approvalPolicy": self.policy,
         });
+        // A resumed/forked thread already owns its complete persisted settings. Replaying only
+        // a cached sandbox mode would discard runtime roots/network restrictions from its store.
+        if matches!(self.launch.conversation, Conversation::New(_)) {
+            if let Some(policy) = &self.launch.permissions.permission_mode {
+                params["approvalPolicy"] = policy_value(policy);
+            }
+            if let Some(reviewer) = &self.launch.permissions.approvals_reviewer {
+                params["approvalsReviewer"] = json!(reviewer);
+            }
+            if let Some(profile) = &self.launch.permissions.permission_profile {
+                params["permissions"] = json!(profile);
+            } else if let Some(sandbox) = &self.launch.permissions.sandbox {
+                params["sandbox"] = json!(sandbox);
+            }
+        }
         if let Some(brief) = &self.launch.brief {
             params["developerInstructions"] = json!(brief);
-        }
-        if let Some(sandbox) = &self.launch.permissions.sandbox {
-            params["sandbox"] = json!(sandbox);
         }
         if let Some(model) = &self.launch.model {
             params["model"] = json!(model);
@@ -1064,7 +1198,7 @@ fn perm_options(agent: bool) -> Vec<PermOption> {
     if agent {
         options.push(option(
             "allow_always",
-            "Allow for this agent",
+            "Allow for this chat",
             "allow_always",
         ));
     }

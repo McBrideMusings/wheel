@@ -3232,7 +3232,7 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
     wait(&native, "the first space's views shown again", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     // New Window opens a second window with a connection of its own, showing the same space.
     // A drag's chip and card are app windows too; only the main windows count.
-    let before_windows = cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count());
+    let before_windows = cx.update(|app| app.windows().into_iter().filter_map(ClientWindow::from_any).count());
     window.update(cx, |c, _, cx| c.run_action("new-window", cx))?;
     for _ in 0..3 {
         tick(cx, 100).await;
@@ -3899,12 +3899,12 @@ async fn window_commands(run: Run, first_session: Option<String>, id1: String, c
     let (ok, _, err) = run_pumped(&["window", "rename", "Nowhere", "x"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(!ok && err.contains("no window Nowhere; the windows are"), "renaming a window that is not there said {err:?}");
     // A new window, named, on the session the focused window shows.
-    let before_new = cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count());
+    let before_new = cx.update(|app| app.windows().into_iter().filter_map(ClientWindow::from_any).count());
     let (ok, out, err) = run_pumped(&["window", "new", "--name", "Second"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel window new failed: {err}");
     let new_id = out.trim().to_owned();
     let made = cx.update(|_| wheel_gpui::window_handle(&new_id)).ok_or_else(|| anyhow::anyhow!("wheel window new printed {new_id:?}, which is no window"))?;
-    ensure!(cx.update(|app| app.windows().into_iter().filter(|w| w.downcast::<Client>().is_some()).count()) == before_new + 1, "wheel window new opened no window");
+    ensure!(cx.update(|app| app.windows().into_iter().filter_map(ClientWindow::from_any).count()) == before_new + 1, "wheel window new opened no window");
     for _ in 0..30 {
         if made.update(cx, |c, _, _| c.session_id().is_some())? {
             break;
@@ -4287,8 +4287,8 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     };
     // The browser pane: `wheel pane page` sends it to a file page through wheeld; the page's
     // console reaches wheeld; `eval`, `dom`, `shot` (the pane and one element) and `record` run in
-    // the pane's page; an address typed into the GPUI-drawn field goes through wheeld and the
-    // layout follows; Back goes back and the layout follows; a missing file shows the failure
+    // the pane's page; an address typed into the GPUI-drawn field goes through wheeld; Back goes
+    // back; none of them moves the home the layout holds; a missing file shows the failure
     // card in place of the page, and the next page clears it.
     let browser_pane = native_panes.iter().find(|p| p.1 == "browser").map(|p| p.0.clone()).ok_or_else(|| anyhow::anyhow!("no browser pane"))?;
     let pages = PathBuf::from(std::env::var("WHEEL_CLIENT_PAGES")?);
@@ -4312,9 +4312,29 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     draw(window, None, cx)?;
     draw(window, Some(output.join("client-browser.png")), cx)?;
     let leaf_url = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == browser_pane).and_then(|p| p.leaf.url));
-    ensure!(leaf_url(cx)? == Some(one_url.clone()), "wheeld's layout does not hold page one: {:?}", leaf_url(cx)?);
+    // The layout holds the pane's home; `pane page` moves the browser and leaves the home where it was.
+    ensure!(leaf_url(cx)?.as_deref() == Some("about:blank"), "pane page moved the home: {:?}", leaf_url(cx)?);
     let title_shown = window.update(cx, |c, _, _| c.browser_state(&browser_pane).map(wheel_gpui::browser::title))?;
     ensure!(title_shown.as_deref() == Some("Fixture page one"), "the pane's title reads {title_shown:?}");
+    // `wheel pane reload` loads the page the browser is on again: a mark set in the page is gone,
+    // and the browser is still on page one.
+    let (ok, mark_out, mark_err) = run_pumped(&["pane", "eval", &browser_pane, "window.__reloadMark = 1"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane eval setting the mark: {mark_out}{mark_err}");
+    let (ok, _, reload_err) = run_pumped(&["pane", "reload", &browser_pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane reload on the browser: {reload_err}");
+    let mut fresh = String::new();
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if state_of(cx)?.is_some_and(|s| s.url == one_url && !s.loading) {
+            let (ok, out, _) = run_pumped(&["pane", "eval", &browser_pane, "typeof window.__reloadMark"], &mut connection, &mut layouts, window, cx).await?;
+            fresh = out;
+            if ok && fresh.contains("undefined") {
+                break;
+            }
+        }
+    }
+    ensure!(fresh.contains("undefined"), "the browser did not load its page again: the mark reads {fresh:?}, state {:?}", state_of(cx)?);
+    ensure!(state_of(cx)?.is_some_and(|s| s.url == one_url), "the reload left page one: {:?}", state_of(cx)?);
     let (ok, console_out, console_err) = run_pumped(&["pane", "console", &browser_pane], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok && console_out.contains("hello from one") && console_out.contains("careful from one"), "pane console: {console_out}{console_err}");
     let (ok, eval_out, eval_err) = run_pumped(&["pane", "eval", &browser_pane, "1 + 2"], &mut connection, &mut layouts, window, cx).await?;
@@ -4430,12 +4450,13 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
         draw(window, None, cx)?;
-        if state_of(cx)?.is_some_and(|s| s.url == two_url && s.title == "Fixture page two") && leaf_url(cx)? == Some(two_url.clone()) {
+        if state_of(cx)?.is_some_and(|s| s.url == two_url && s.title == "Fixture page two") {
             on_two = true;
             break;
         }
     }
-    ensure!(on_two, "typing page two's path did not move the pane and the layout: state {:?} leaf {:?}", state_of(cx)?, leaf_url(cx)?);
+    ensure!(on_two, "typing page two's path did not move the pane: state {:?}", state_of(cx)?);
+    ensure!(leaf_url(cx)?.as_deref() == Some("about:blank"), "a typed address moved the home: {:?}", leaf_url(cx)?);
     ensure!(window.update(cx, |c, _, _| c.address_edit())?.is_none(), "the field is still being edited after Return");
     let back = window.update(cx, |c, _, _| c.control_bounds(&browser_pane, "browser:back"))?.ok_or_else(|| anyhow::anyhow!("the back button was not drawn"))?;
     ensure!(state_of(cx)?.is_some_and(|s| s.can_go_back), "back is not enabled on page two");
@@ -4444,12 +4465,13 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
         draw(window, None, cx)?;
-        if state_of(cx)?.is_some_and(|s| s.url == one_url && s.can_go_forward) && leaf_url(cx)? == Some(one_url.clone()) {
+        if state_of(cx)?.is_some_and(|s| s.url == one_url && s.can_go_forward) {
             back_on_one = true;
             break;
         }
     }
-    ensure!(back_on_one, "Back did not return to page one with the layout following: state {:?} leaf {:?}", state_of(cx)?, leaf_url(cx)?);
+    ensure!(back_on_one, "Back did not return to page one: state {:?}", state_of(cx)?);
+    ensure!(leaf_url(cx)?.as_deref() == Some("about:blank"), "Back moved the home: {:?}", leaf_url(cx)?);
     // A file that does not exist: wheeld reads the path as a page, the load fails, and the failure
     // card takes the body with the web view hidden under it; the next page clears it.
     let missing = pages.join("missing.html");
@@ -4518,10 +4540,10 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         let name = name.to_owned();
         let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", plugin, "--plugin-pane", &name], &mut connection, &mut layouts, window, cx).await?;
         ensure!(ok, "pane kind plugin {entry}: {err}");
-        // What each pane shows once its feed has arrived: Beads and Issues a `N listed` count, Repo anything but its loading line,
+        // What each pane shows once its feed has arrived: Beads and Issues their Actions button, Repo anything but its loading line,
         // the gallery its last class's heading.
         let want = |t: &str| match name.as_str() {
-            "beads" | "issues" => t.contains(" listed"),
+            "beads" | "issues" => t == "Actions ⌄",
             "graph" => t.contains(" open issues"),
             "gallery" => t == "Wheel's own component",
             _ => !t.starts_with("Reading"),
@@ -4694,6 +4716,43 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     ensure!(headers.iter().all(|h| h.1 .2 >= 100.0), "a title was squeezed by its error: {headers:?}");
     ensure!((headers[0].1 .2 - headers[1].1 .2).abs() < 6.0, "the title's width changed with the error: {:?} vs {:?}", headers[0].1, headers[1].1);
     report.insert("tall".into(), json!({"last_row": last, "content": content, "visible": visible, "offset": offset, "png_bytes": bytes}));
+    // `wheel pane reload` runs a plugin pane's script again from the top: the counter's `init`
+    // keeps its count across a hot reload, so only a fresh run reads `Count 0` after a press.
+    let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "counter", "--plugin-pane", "counter"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane kind plugin counter: {err}");
+    let mut seen = Value::Null;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen = state(&native);
+        if texts(&seen).iter().any(|t| t == "Count 0") {
+            break;
+        }
+    }
+    ensure!(texts(&seen).iter().any(|t| t == "Count 0"), "the counter never drew: error {} texts {:?}", seen["error"], texts(&seen));
+    let button = components(&seen).iter().find(|c| c["type"] == "Button").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the counter has no button"))?;
+    let pressed = native.call(json!({"op":"plugin","pane":pane,"action":"press","component":button}));
+    ensure!(pressed["ok"] == true, "the counter's button refused a press: {pressed}");
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen = state(&native);
+        if texts(&seen).iter().any(|t| t == "Count 1") {
+            break;
+        }
+    }
+    ensure!(texts(&seen).iter().any(|t| t == "Count 1"), "a press did not count: {:?}", texts(&seen));
+    let restarts_before = seen["restarts"].as_u64().unwrap_or(0);
+    let (ok, _, err) = run_pumped(&["pane", "reload", &pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane reload on the counter: {err}");
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen = state(&native);
+        if seen["restarts"].as_u64().unwrap_or(0) > restarts_before && texts(&seen).iter().any(|t| t == "Count 0") {
+            break;
+        }
+    }
+    ensure!(seen["restarts"].as_u64().unwrap_or(0) > restarts_before && texts(&seen).iter().any(|t| t == "Count 0") && seen["error"].is_null(),
+        "the reload did not run the counter from the top: restarts {} texts {:?} error {}", seen["restarts"], texts(&seen), seen["error"]);
+    report.insert("counter_reload".into(), json!({"restarts": seen["restarts"], "texts": texts(&seen)}));
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
     wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;

@@ -8,7 +8,9 @@ import SwiftUI
 // frame: {width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight ("infinity" or n), alignment};
 // fixedSize: true | {horizontal, vertical}; overlay: {stroke: colour,
 // cornerRadius}; clipShape: {cornerRadius}; opacity; lineLimit; truncationMode (head, middle, tail); multilineTextAlignment; textSelection; textCase; tracking; help;
-// disabled, accessibilityLabel. A name this does not map draws a visible marker, never nothing.
+// disabled, accessibilityLabel; hoverEffect: "highlight" (a rounded fill while the pointer is over an enabled control: SwiftUI's own
+// effect on iOS, drawn here on macOS, where SwiftUI has none); pointerStyle: "link" (the pointing-hand cursor, macOS).
+// A name this does not map draws a visible marker, never nothing.
 
 /// The colour a modifier's colour name means.
 func a2uiColor(_ name: String?) -> Color? {
@@ -179,11 +181,42 @@ struct A2UIModifiers: ViewModifier {
         case "tracking": if let n = arg.numberValue { return AnyView(v.tracking(n)) }
         case "help": if let s = arg.stringValue { return AnyView(v.help(s)) }
         case "accessibilityLabel": if let s = arg.stringValue { return AnyView(v.accessibilityLabel(s)) }
+        case "hoverEffect":
+            if arg.stringValue == "highlight" {
+                #if os(macOS)
+                return AnyView(v.modifier(HoverHighlight()))
+                #else
+                return AnyView(v.hoverEffect(.highlight))
+                #endif
+            }
+        case "pointerStyle":
+            if arg.stringValue == "link" {
+                #if os(macOS)
+                return AnyView(v.pointerStyle(.link))
+                #else
+                return v
+                #endif
+            }
         default: break
         }
         return AnyView(v.overlay(alignment: .topTrailing) { Text("⚠︎ \(name)").font(.caption2).foregroundStyle(.red) })
     }
 }
+
+#if os(macOS)
+/// `hoverEffect: "highlight"` on macOS: a rounded fill behind the view, at its own bounds, while the pointer is over it.
+/// A disabled control never lights. The fill adds no size, so nothing around the view moves.
+private struct HoverHighlight: ViewModifier {
+    @State private var over = false
+    @Environment(\.isEnabled) private var enabled
+
+    func body(content: Content) -> some View {
+        content
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(over && enabled ? 0.16 : 0)))
+            .onHover { over = $0 }
+    }
+}
+#endif
 
 extension View {
     /// The component's `modifiers` property, applied.

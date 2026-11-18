@@ -99,7 +99,9 @@ pub fn check_permissions(
         )),
         _ => Ok(()),
     };
-    check("permission mode", permission_mode, &modes)?;
+    if !(agent == Harness::Codex && permission_mode.is_some_and(crate::codex::valid_policy)) {
+        check("permission mode", permission_mode, &modes)?;
+    }
     check("sandbox", sandbox, &sandboxes)
 }
 

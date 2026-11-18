@@ -213,7 +213,7 @@ pub fn collect(dir: &str) -> Snapshot {
         Ok(t) => t,
         Err(_) => return Snapshot { name: crate::core::project::name_of(dir), top: dir.into(), error: Some(format!("{dir} is not a git checkout")), ..Default::default() },
     };
-    let default = git::default_ref(&top);
+    let default = git::default_ref(&top, git::project_remote(&top).as_deref());
     let branch = git::current_branch(&top);
     let mut scopes = vec![Scope { key: "uncommitted".into(), label: "Uncommitted".into(), base: "HEAD".into(), fork: None, commits: None, files: files_against(&top, "HEAD") }];
     if let Some(d) = &default {

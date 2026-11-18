@@ -96,14 +96,45 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private var pinned: PinnedHTTP?
-    private lazy var plain: URLSession = {
+    private var plainSession: URLSession?
+    private var plain: URLSession {
+        if let plainSession { return plainSession }
         // No cookie jar and no cache: the token travels in a header, and a reload after a file
         // changed must reach the daemon.
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config)
-    }()
+        let session = URLSession(configuration: config)
+        plainSession = session
+        return session
+    }
+    /// `close` ran: the web view is going away, and a request it still starts is refused.
+    private var closed = false
+
+    /// Ends every request this handler answers and its connections to the daemon, for a web view that is going away.
+    /// WebKit calls `webView(_:stop:)` only when the page itself stops a request; a view that is removed and released
+    /// never does, so without this a page's event stream stays open to wheeld for as long as the app runs.
+    public func close() {
+        closed = true
+        let work = running.values.map(\.work)
+        running = [:]
+        work.forEach { $0.cancel() }
+        plainSession?.invalidateAndCancel()
+        plainSession = nil
+        pinned = nil
+    }
+
+    /// Ends the page `web` shows and every request its page handlers answer (`close`). Call it before a web view whose
+    /// scheme a `PageSchemeHandler` answers is dropped.
+    public static func close(_ web: WKWebView) {
+        web.stopLoading()
+        for scheme in [WebPanes.scheme, BrowserPanes.loopbackScheme] {
+            (web.configuration.urlSchemeHandler(forURLScheme: scheme) as? PageSchemeHandler)?.close()
+        }
+    }
+
+    /// Requests in flight, the event streams included.
+    var runningCount: Int { running.count }
 
     private func currentTransport() -> Transport {
         guard let pairing = daemon.pairing else { return .plain(plain) }
@@ -301,6 +332,10 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
     public func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         let key = ObjectIdentifier(task)
         let page = task.request.url
+        guard !closed else {
+            task.didFailWithError(URLError(.cancelled))
+            return
+        }
         guard let page, let address = daemon.url, let token = daemon.token else {
             UILog.info("web pane \(pane) request refused: no daemon address or token yet")
             task.didFailWithError(URLError(.cannotConnectToHost))

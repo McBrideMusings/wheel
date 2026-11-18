@@ -12,16 +12,20 @@ public struct AgentFooter: Decodable, Equatable, Sendable {
     public let removed: UInt32
     /// The background tasks running, oldest first.
     public let tasks: [RunningTask]
+    /// The config directory the agent runs with (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+    /// `PI_CODING_AGENT_DIR`); nil when it runs with the agent's own default.
+    public let home: String?
 
-    public init(directory: String, branch: String? = nil, added: UInt32 = 0, removed: UInt32 = 0, tasks: [RunningTask] = []) {
+    public init(directory: String, branch: String? = nil, added: UInt32 = 0, removed: UInt32 = 0, tasks: [RunningTask] = [], home: String? = nil) {
         self.directory = directory
         self.branch = branch
         self.added = added
         self.removed = removed
         self.tasks = tasks
+        self.home = home
     }
 
-    private enum CodingKeys: String, CodingKey { case directory, branch, added, removed, tasks }
+    private enum CodingKeys: String, CodingKey { case directory, branch, added, removed, tasks, home }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -30,6 +34,7 @@ public struct AgentFooter: Decodable, Equatable, Sendable {
         added = try c.decodeIfPresent(UInt32.self, forKey: .added) ?? 0
         removed = try c.decodeIfPresent(UInt32.self, forKey: .removed) ?? 0
         tasks = try c.decodeIfPresent([RunningTask].self, forKey: .tasks) ?? []
+        home = try c.decodeIfPresent(String.self, forKey: .home)
     }
 
     /// The directory with the person's home folder written `~`, as the status line shows it.

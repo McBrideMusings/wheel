@@ -160,7 +160,7 @@ public struct ChatAppearances: Equatable, Sendable {
     public func appearance(forAgent agent: String, in spaces: [SpaceInfo]) -> ChatAppearance {
         for space in spaces {
             for pane in space.allPanes {
-                if case let .agent(name, _, _) = pane.kind, name == agent { return bySpace[space.id] ?? .standard }
+                if case let .agent(name, _) = pane.kind, name == agent { return bySpace[space.id] ?? .standard }
             }
         }
         return .standard

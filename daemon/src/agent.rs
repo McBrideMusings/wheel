@@ -17,7 +17,7 @@
 //! transcript whole. Both are refused while a turn is running or a message is queued.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -399,6 +399,7 @@ impl Agent {
                 self_started: false,
                 footer: AgentFooter {
                     directory: config.cwd.display().to_string(),
+                    home: config.home.as_ref().map(|h| h.display().to_string()),
                     ..AgentFooter::default()
                 },
                 unsent: None,
@@ -574,13 +575,13 @@ impl Agent {
         }
         if inner.running.is_some() || !inner.queued.is_empty() {
             return Err(format!(
-                "agent {} is working on a turn; switch once it ends, or cancel it",
+                "agent {} is working on a turn; try again once it ends, or cancel it",
                 self.name
             ));
         }
         if inner.state == AgentState::Starting {
             return Err(format!(
-                "agent {} is still starting; switch once it is ready",
+                "agent {} is still starting; try again once it is ready",
                 self.name
             ));
         }
@@ -1166,27 +1167,44 @@ impl Agent {
             .map_err(|_| format!("agent {} stopped before it answered", self.name))?
     }
 
-    /// The permissions the agent is in now: the mode its agent is in, which a person may have
-    /// changed since the start, and the sandbox it started with. A process launched while another
-    /// runs (a conversation switch) starts in it too.
-    pub fn permissions(&self) -> AgentPermissions {
-        let started = self.permissions.lock().unwrap().clone();
-        AgentPermissions {
-            permission_mode: self.permission_mode().or(started.permission_mode),
-            sandbox: self.sandbox().or(started.sandbox),
-        }
+    /// The config directory the agent runs with; none when it runs with the agent's own default.
+    pub fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
     }
 
-    /// The sandbox the running agent is in: the current value of its `sandbox` option.
-    fn sandbox(&self) -> Option<String> {
+    /// The effective permission controls, retained for process restarts and conversation switches.
+    pub fn permissions(&self) -> AgentPermissions {
+        let started = self.permissions.lock().unwrap().clone();
         let inner = self.inner.lock().unwrap();
-        inner
-            .config
-            .iter()
-            .find_map(|option| match (&option.kind, option.id.as_str()) {
-                (ConfigKind::Select { current, .. }, "sandbox") => Some(current.clone()),
+        let selection = |id: &str| inner.config.iter().find_map(|option| {
+            match &option.kind {
+                ConfigKind::Select { current, .. } if option.id == id => Some(current.clone()),
                 _ => None,
-            })
+            }
+        });
+        let mode = inner.config.iter().find_map(|option| {
+            match (&option.kind, option.category.as_deref()) {
+                (ConfigKind::Select { current, .. }, Some("mode")) => Some(current.clone()),
+                _ => None,
+            }
+        });
+        let mode = match mode {
+            // Codex can derive `untrusted` from project trust, but rejects it as an explicit
+            // configured policy. Let Codex derive it again instead of persisting an override.
+            Some(mode) if self.harness == Harness::Codex && !crate::codex::valid_policy(&mode) => None,
+            mode => mode.or(started.permission_mode),
+        };
+        let sandbox = selection("sandbox");
+        let profile = selection("permissions");
+        let resolved = sandbox.is_some() || profile.is_some() || selection("sandbox_status").is_some();
+        let profile = if resolved { profile } else { started.permission_profile };
+        let sandbox = if resolved { sandbox } else { started.sandbox };
+        AgentPermissions {
+            permission_mode: mode,
+            sandbox: if profile.is_some() { None } else { sandbox },
+            approvals_reviewer: selection("reviewer").or(started.approvals_reviewer),
+            permission_profile: profile,
+        }
     }
 
     /// The permission mode the running agent is in: the current value of its `mode` option.
@@ -1481,7 +1499,7 @@ impl Agent {
     }
 
     /// Start one agent process for this agent in `conversation`.
-    fn launch(&self, config: &AgentConfig, conversation: Conversation) -> Result<DriverHandle, String> {
+    fn launch(&self, config: &AgentConfig, conversation: Conversation, permissions: AgentPermissions) -> Result<DriverHandle, String> {
         tracing::info!(agent = %self.name, conversation = ?conversation, command = %config.command, "agent launch");
         let launched = driver::launch(Launch {
             agent: config.agent,
@@ -1492,7 +1510,7 @@ impl Agent {
             env: config.env.clone(),
             conversation,
             model: config.model.clone(),
-            permissions: self.permissions(),
+            permissions,
             orchestrator: config.orchestrator,
         });
         if let Ok(agent) = &launched {
@@ -1525,11 +1543,10 @@ impl Agent {
         if !config.cwd.is_dir() {
             return Err(format!("{} is not a directory", config.cwd.display()));
         }
-        // The mode it was in, kept so the process after a crash starts in it, not in the one the
-        // agent was configured with.
-        if let Some(mode) = self.permission_mode() {
-            self.permissions.lock().unwrap().permission_mode = Some(mode);
-        }
+        // Keep the effective permissions before dropping this process's controls, so a crash or
+        // conversation switch retains the selected reviewer, policy and sandbox/profile.
+        let permissions = self.permissions();
+        *self.permissions.lock().unwrap() = permissions;
         // The options belong to the agent process, not the conversation. Drop the last one's
         // before this one starts, so one that never gets that far cannot leave a dead process's
         // controls on screen for a client to set.
@@ -1588,7 +1605,7 @@ impl Agent {
                     turns,
                     id: claude::new_conversation_id(),
                 };
-                let mut agent = self.launch(config, conversation.clone())?;
+                let mut agent = self.launch(config, conversation.clone(), self.permissions())?;
                 let ready = wait_ready(&mut agent).await?;
                 // Claude Code copies into the id it was told; Codex names its own.
                 let id = match (&ready.conversation, &conversation) {
@@ -1622,7 +1639,7 @@ impl Agent {
                 let conversation = Conversation::Resume(id.clone());
                 // A driver that finds the conversation gone before starting its agent (pi's)
                 // refuses the launch; that is the same failure as an agent that will not open it.
-                let opened = match self.launch(config, conversation.clone()) {
+                let opened = match self.launch(config, conversation.clone(), self.permissions()) {
                     Ok(mut agent) => wait_ready(&mut agent).await.map(|ready| (agent, ready)),
                     Err(e) => Err(e),
                 };
@@ -1642,7 +1659,7 @@ impl Agent {
                         tracing::warn!(agent = %self.name, conversation = %id, error = %e, "agent resume failed");
                         history = None;
                         let conversation = Conversation::New(claude::new_conversation_id());
-                        let mut agent = self.launch(config, conversation.clone())?;
+                        let mut agent = self.launch(config, conversation.clone(), self.permissions())?;
                         let ready = wait_ready(&mut agent).await?;
                         let conversation = ready
                             .conversation
@@ -1653,7 +1670,7 @@ impl Agent {
             }
             _ => {
                 let conversation = Conversation::New(claude::new_conversation_id());
-                let mut agent = self.launch(config, conversation.clone())?;
+                let mut agent = self.launch(config, conversation.clone(), self.permissions())?;
                 let ready = wait_ready(&mut agent).await?;
                 let conversation = ready
                     .conversation
@@ -2069,7 +2086,15 @@ impl Agent {
             Some(id) => (Conversation::Resume(id), None),
         };
         let started = tokio::time::Instant::now();
-        let mut agent = self.launch(config, conversation.clone())?;
+        // Codex permissions belong to chats: new chats inherit configuration and resumed chats
+        // retain their saved policy, reviewer and sandbox/profile. Do not override the destination
+        // with the previous chat's permissions.
+        let permissions = if config.agent == Harness::Codex {
+            AgentPermissions::default()
+        } else {
+            self.permissions()
+        };
+        let mut agent = self.launch(config, conversation.clone(), permissions.clone())?;
         let ready = wait_ready(&mut agent).await.map_err(|e| {
             tracing::warn!(agent = %self.name, conversation = ?conversation, error = %e, "conversation change failed");
             e
@@ -2081,6 +2106,9 @@ impl Agent {
         let options = ready.options;
         let reported = ready.context;
         let history = history.or(ready.history);
+        // Once the switch succeeds, fallbacks also belong to the destination. In particular a
+        // previous named profile must not reappear when this chat uses a legacy sandbox.
+        *self.permissions.lock().unwrap() = permissions;
         self.reset();
         let resumed = history.is_some();
         if let Some(history) = history {

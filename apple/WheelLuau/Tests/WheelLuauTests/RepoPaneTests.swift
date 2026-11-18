@@ -15,7 +15,7 @@ import WheelKit
         {"branch":"\(name)","ts":100,"subject":"s","author":"a","ahead":1,"behind":0,"upstream":\(q(upstream)),
          "track":"\(track)","upstream_gone":\(track == "gone"),"remote":null,"unpushed":null,"worktree":null,
          "pr":\(pr ?? "null"),"pr_merged":false,"merged":\(q(merged)),"local_only":\(localOnly),
-         "dead":\(q(dead)),"blocked":\(q(blocked))}
+         "dead":\(q(dead)),"blocked":\(q(blocked)),"finished":\(["merged", "squash-merged", "gone"].contains(dead ?? ""))}
         """
     }
 
@@ -35,7 +35,8 @@ import WheelKit
         ]
         return try W.json("""
         {"now":400,"name":"p","top":"/p","default":"origin/main","head":"main","branches":[\(rows.joined(separator: ","))],
-         "stashes":[],"commits":[],"fetched":280,"pr_error":null,"error":null,"scripts":[]}
+         "stashes":[],"commits":[],"fetched":280,"pr_error":null,"error":null,"scripts":[],
+         "cleanup":{"delete":["squashed","deleted"],"keep":[{"branch":"dirty","why":"blocked: uncommitted changes"}]}}
         """)
     }
 
@@ -63,6 +64,53 @@ import WheelKit
         #expect(row("dirty") == ["origin/main: behind 118", "merged", "", "blocked: uncommitted changes"])
         #expect(row("other-upstream") == ["origin/base: ahead 5", "", "", "5 unpushed"])
         #expect(row("never-pushed") == ["no upstream", "", "", "6 unpushed"])
+    }
+
+    /// Each row's cell tones by key.
+    static func tones(_ tree: PaneNode) throws -> [String: [String: String]] {
+        var out: [String: [String: String]] = [:]
+        for r in try W.rows(tree) {
+            guard case let .array(cells)? = r.row["cells"] else { continue }
+            var m: [String: String] = [:]
+            for case let .object(c) in cells { if let k = W.str(c["key"]) { m[k] = W.str(c["tone"]) ?? "" } }
+            out[r.id] = m
+        }
+        return out
+    }
+
+    @Test func aFinishedBranchIsFaintInEveryCellButDelete() throws {
+        let t = try Self.tones(W.pane("repo", feed: "repo", value: Self.feed()).view(W.data))
+        for b in ["squashed", "deleted", "dirty"] {
+            let row = try #require(t[b])
+            #expect(row.filter { $0.key != "delete" }.allSatisfy { $0.value == "faint" }, "\(b): \(row)")
+        }
+        #expect(t["squashed"]?["delete"] == "ok")
+        #expect(t["deleted"]?["delete"] == "ok")
+        #expect(t["dirty"]?["delete"] == "warn")
+        for b in ["open-pr", "closed-pr", "other-upstream", "never-pushed"] {
+            #expect(t[b]?.values.contains("faint") == false, "\(b) is not finished")
+        }
+    }
+
+    @Test func theActionsButtonIsAtTheRightAndCleanUpComesFirst() throws {
+        let runtime = try W.pane("repo", feed: "repo", value: Self.feed())
+        let tree = try runtime.view(W.data)
+        let texts = W.texts(W.jsonOf(tree))
+        #expect(texts.contains("Actions ⌄"))
+        #expect(!texts.contains { $0.contains("listed") })
+        let buttons = W.buttons(tree)
+        let clean = try #require(buttons.firstIndex { $0.text == "Clean up merged  2" })
+        let copy = try #require(buttons.firstIndex { $0.text == "Copy IDs" })
+        #expect(clean < copy)
+        #expect(!buttons[clean].disabled)
+        #expect(buttons[clean].help.contains("squashed, deleted"))
+        #expect(buttons[clean].help.contains("dirty (blocked: uncommitted changes)"))
+        #expect(W.actionType(buttons[clean]) == "cleanup")
+        try runtime.send(W.msg("list.select", ["ids": .array([.string("deleted")])]))
+        #expect(W.texts(W.jsonOf(try runtime.view(W.data))).contains("1 selected · Actions ⌄"))
+        // The bar pins the actions to the far right: its two groups are spread apart.
+        let bars = W.all(try runtime.view(W.data), "Row").filter { W.str($0["justify"]) == "spaceBetween" }
+        #expect(bars.count == 1)
     }
 
     @Test func theUpstreamHeaderSaysWhenOriginWasFetched() throws {
