@@ -598,7 +598,7 @@ impl Client {
                             return false;
                         }
                         // `wheel pane shot`: the bridge draws the pane and answers through a frame.
-                        ServerMsg::RenderPane { id, pane, full, .. } => {
+                        ServerMsg::RenderPane { id, pane, full } => {
                             if self.opened.contains_key(pane) {
                                 self.native.render(*id, pane, *full);
                             } else {
@@ -607,7 +607,7 @@ impl Client {
                             return false;
                         }
                         // `wheel pane eval|dom|shot --selector|record` on a browser pane's page, or `open` to send it to a page.
-                        ServerMsg::InspectPane { id, pane, action, arg, .. } => {
+                        ServerMsg::InspectPane { id, pane, action, arg } => {
                             if self.opened.get(pane).map(String::as_str) == Some("browser") {
                                 self.native.inspect(*id, pane, action, arg.as_deref());
                             } else {
@@ -1313,7 +1313,7 @@ impl Client {
                 let req = self.next_req;
                 self.next_req += 1;
                 self.open_reqs.insert(req, (pane.clone(), text.clone()));
-                self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text, on: None, from: None });
+                self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text, on: None });
             }
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             // Open Folder's picker answered: a space for that folder, as the Swift app makes one.

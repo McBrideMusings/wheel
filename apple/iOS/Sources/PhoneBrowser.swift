@@ -7,7 +7,7 @@ import WheelUI
 /// browser: it opens at the pane's home once and then goes only where the person or an agent sends
 /// it (a change of the home moves it nowhere), and nothing it does is reported to wheeld. A page on the Mac's loopback loads under
 /// `BrowserPanes.loopbackScheme`, fetched from wheeld's `/loopback/<port>/`. Agents reach the
-/// page with `--on phone`; each command they run shows in `banner` for a moment. What the page
+/// page with `--on phone`. What the page
 /// writes to its console goes to wheeld as the phone's own (`wheel pane console --on phone`).
 @MainActor
 @Observable
@@ -18,9 +18,6 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     private(set) var page: String = ""
     /// Whether the web view can go back.
     private(set) var canGoBack = false
-    /// What an agent last ran on this page, while it shows: who ran it and the command with its
-    /// argument ("claude" ran "dom h1").
-    private(set) var banner: (by: String, command: String)?
     @ObservationIgnored private let relay = ConsoleRelay()
     @ObservationIgnored private let handler: PageSchemeHandler
     /// The page `load` sent the web view to, until its navigation starts: one the browser started.
@@ -31,7 +28,6 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// started leaves the later one's scripts alone.
     @ObservationIgnored private var scriptGeneration = 0
     @ObservationIgnored private var watches: [NSKeyValueObservation] = []
-    @ObservationIgnored private var bannerGeneration = 0
     /// Why the last load failed, shown over the page until the next one starts.
     private(set) var failure: String?
 
@@ -109,15 +105,12 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         page = BrowserPanes.macPage(url)
     }
 
-    /// `inspect_pane` `op` with `arg`, run on this page, shown in the banner under `by`.
-    func run(_ op: String, arg: String?, by: String?) async -> BrowserInspect.Outcome {
-        // `where` reads state and changes nothing on the page, so it shows no agent banner.
+    /// `inspect_pane` `op` with `arg`, run on this page.
+    func run(_ op: String, arg: String?) async -> BrowserInspect.Outcome {
         if op == "where" {
             let current = view.url.map(BrowserPanes.macPage) ?? (page.isEmpty ? "about:blank" : page)
             return .text(BrowserInspect.place(url: current.isEmpty ? "about:blank" : current, title: view.title ?? ""))
         }
-        let shown = show(by: by, ran: op, arg: arg)
-        defer { hide(shown) }
         if op == "open" {
             guard let arg, !arg.isEmpty else { return .refused("open needs a page") }
             open(arg)
@@ -127,30 +120,9 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     }
 
     /// The page as a PNG, the part in view or with `full` the whole document, for `render_pane`.
-    func shot(full: Bool, by: String?) async -> Result<Data, BrowserInspect.Refusal> {
-        let shown = show(by: by, ran: "shot", arg: nil)
-        defer { hide(shown) }
+    func shot(full: Bool) async -> Result<Data, BrowserInspect.Refusal> {
         return await BrowserInspect.shotPage(view, full: full).flatMap { image in
             BrowserInspect.png(image).map(Result.success) ?? .failure("the drawing could not be encoded as a PNG")
-        }
-    }
-
-    /// Show who runs which command for as long as it runs (a recording runs for its whole
-    /// length); returns the banner's generation for `hide`.
-    private func show(by: String?, ran op: String, arg: String?) -> Int {
-        let command = [op, arg].compactMap { $0 }.joined(separator: " ")
-        banner = (by ?? "An agent", command)
-        Log.info("browser pane \(pane) \(by ?? "An agent") ran \(command) on this page")
-        bannerGeneration += 1
-        return bannerGeneration
-    }
-
-    /// The command shown as `generation` finished: its banner stays 4 seconds more, unless a
-    /// later command replaced it.
-    private func hide(_ generation: Int) {
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            if self?.bannerGeneration == generation { self?.banner = nil }
         }
     }
 
@@ -247,8 +219,7 @@ struct PhoneBrowserBody: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
-/// A browser pane on the phone: back and the address above the phone's own page, with a banner
-/// naming each command an agent runs on it.
+/// A browser pane on the phone: back and the address above the phone's own page.
 struct BrowserPage: View {
     let model: PhoneModel
     let pane: String
@@ -274,28 +245,7 @@ struct BrowserPage: View {
                             }
                         }
                 }
-                if let banner = browser?.banner {
-                    Label {
-                        Text("\(Text(banner.by).bold()) ran \(Text(verbatim: banner.command).monospaced()) on this page")
-                    } icon: {
-                        Image(systemName: "sparkle")
-                            .foregroundStyle(.secondary)
-                    }
-                        .font(.footnote)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
-                        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
-                        .padding(.horizontal, 8)
-                        .padding(.top, 6)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .accessibilityIdentifier("browser-banner")
-                }
             }
-            .animation(.default, value: browser?.banner?.command)
         }
     }
 

@@ -10,7 +10,7 @@
 #
 # Needs WHEEL_IOS_APP: the built Wheel.app for the simulator (WheelPhone scheme), and a pool
 # simulator. WHEEL_IOS_HOST (default: the Mac's first non-loopback IPv4 address) is the address the
-# phone dials. WHEEL_SHOTS, when set, receives ios-browser-{phone-page,agent-banner}-{light,dark}.png.
+# phone dials. WHEEL_SHOTS, when set, receives ios-browser-phone-page-{light,dark}.png.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 SIM=~/.claude/tools/sim
 BUNDLE=com.piercemakes.wheel.phone
@@ -125,12 +125,10 @@ check "wheeld logs the forwarded request with the device and port" poll 10 grep 
 check "dom h1 --on phone returns the phone's heading" poll 20 dom_is h1 '<h1>Bicycle</h1>'
 check "the page's root-relative stylesheet loaded (the styled color is applied)" \
   sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'getComputedStyle(document.getElementById(\"styled\")).color' --on phone)\" = '\"rgb(1, 2, 3)\"' ]"
-check "the phone shows which agent ran the command" poll 10 plog "browser pane $PANE .* ran dom h1 on this page"
+check "the phone logs no agent banner after dom h1" sh -c "! grep -q ' on this page' '$PLOG'"
 [ -n "${WHEEL_SHOTS:-}" ] && { mkdir -p "$WHEEL_SHOTS"; for look in light dark; do
   xcrun simctl ui "$UDID" appearance "$look"; sleep 1
   w pane dom "$PANE" h1 --on phone >/dev/null 2>&1; sleep 1
-  xcrun simctl io "$UDID" screenshot "$WHEEL_SHOTS/ios-browser-agent-banner-$look.png" >/dev/null 2>&1
-  sleep 5
   xcrun simctl io "$UDID" screenshot "$WHEEL_SHOTS/ios-browser-phone-page-$look.png" >/dev/null 2>&1
 done; xcrun simctl ui "$UDID" appearance light; }
 
@@ -332,7 +330,7 @@ check "pane info names the phone's new page and title" poll 10 info_has "^Phone 
 check "pane info names the Mac's page" info_has "^Mac: http://localhost:$SPORT/ (mac)"
 check "pane where --on phone prints the phone's page and title" where_is "$(printf 'http://localhost:%s/two.html\ttwo' "$SPORT")" --on phone
 check "pane where prints the Mac's page and title" where_is "$(printf 'http://localhost:%s/\tmac' "$SPORT")"
-check "the phone's agent banner did not name where" sh -c "! grep -q 'ran where' '$PLOG'"
+check "the phone logs no agent banner after where" sh -c "! grep -q ' on this page' '$PLOG'"
 
 # `pane page --on phone` moves the phone alone; `--on mac` moves the Mac alone.
 w pane page "$PANE" "http://localhost:$SPORT/three.html" --on phone >/dev/null

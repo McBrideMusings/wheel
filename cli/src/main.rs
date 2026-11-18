@@ -6033,7 +6033,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 pane,
                 text: page,
                 on: Some(on),
-                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Opened { url, .. } => {
@@ -6160,7 +6159,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 arg: Some(script),
                 path: None,
                 on,
-                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Inspected { text, .. } => {
@@ -6179,7 +6177,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 arg: selector,
                 path: None,
                 on,
-                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
                 ServerMsg::Inspected { text, .. } => {
@@ -6198,7 +6195,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 arg: None,
                 path: None,
                 on,
-                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             match conn.call_within(msg, req, Duration::from_secs(10)).await? {
                 ServerMsg::Inspected { text, .. } => {
@@ -6226,7 +6222,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     arg: Some(selector),
                     path: Some(path),
                     on,
-                    from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
                 },
                 None => ClientMsg::PaneShot {
                     req: Some(req),
@@ -6234,7 +6229,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     path,
                     on,
                     full,
-                    from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
                 },
             };
             match conn.call_within(msg, req, Duration::from_secs(60)).await? {
@@ -6260,7 +6254,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 arg: Some(seconds.to_string()),
                 path: Some(path.to_string_lossy().into_owned()),
                 on,
-                from: std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty()),
             };
             let wait = Duration::from_secs(seconds.min(3600) + 60);
             match conn.call_within(msg, req, wait).await? {

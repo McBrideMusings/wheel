@@ -37,7 +37,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent): a label
 /// for logs and reports. No client decides anything from it; what a client may send is the
 /// server's `ops`, and whether it can connect is `compat` (ADR-0050).
-pub const PROTOCOL_VERSION: u32 = 52;
+pub const PROTOCOL_VERSION: u32 = 53;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1316,10 +1316,6 @@ pub enum ClientMsg {
         /// Which browser moves: `mac` or `phone`. Absent, none is asked and the asking client goes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on: Option<String>,
-        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
-        /// in the `by` of the `inspect_pane` a phone gets.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from: Option<String>,
     },
     /// Read or set a browser pane's home: the page its Mac and phone browsers open at, held in the
     /// layout as the pane's `url`. Without `url`, replies `pane_home` with the home. With `url`,
@@ -1377,10 +1373,6 @@ pub enum ClientMsg {
         /// Draw the pane's whole scrollable content as one tall image, not the part in view.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         full: bool,
-        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
-        /// in the `by` of the `render_pane` a phone gets.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from: Option<String>,
     },
     /// Run JavaScript in the page of browser pane `pane` (`action` `eval`, `arg` the script; the reply
     /// `inspected` text is the result as JSON), read its HTML (`action` `dom`, `arg` an optional CSS
@@ -1416,10 +1408,6 @@ pub enum ClientMsg {
         /// attached".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on: Option<String>,
-        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
-        /// in the `by` of the `inspect_pane` a phone gets.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from: Option<String>,
     },
     /// This connection can draw any pane it shows as a PNG, so the daemon may send it
     /// `render_pane`. Sent once after connecting; it lasts until the connection closes.
@@ -2908,9 +2896,6 @@ pub enum ServerMsg {
         /// Draw the pane's whole scrollable content as one tall image.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         full: bool,
-        /// Who ran it, as in `inspect_pane`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        by: Option<String>,
     },
     /// `pane_inspect` `record` wrote `bytes` bytes of movie to `path`: `frames` frames over
     /// `millis` milliseconds.
@@ -2931,10 +2916,6 @@ pub enum ServerMsg {
         action: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arg: Option<String>,
-        /// Who ran it, when the request named the pane it came from: that pane's agent name, else
-        /// the pane's id. A phone drawing its own page shows it ("claude ran dom h1 on this page").
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        by: Option<String>,
     },
     /// `pane_inspect` `eval` or `dom` finished: `text` is the result.
     Inspected {

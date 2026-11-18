@@ -133,7 +133,6 @@ impl AppState {
         path: &str,
         side: Side,
         full: bool,
-        by: Option<String>,
     ) -> Result<u64, String> {
         let target = PathBuf::from(path);
         if !target.is_absolute() {
@@ -146,7 +145,6 @@ impl AppState {
                     id,
                     pane: pane.to_string(),
                     full,
-                    by: by.clone(),
                 }
             })
             .await?;
@@ -163,7 +161,6 @@ impl AppState {
         arg: Option<String>,
         path: Option<String>,
         side: Side,
-        by: Option<String>,
     ) -> Result<InspectOutcome, String> {
         self.browser_pane(pane)?;
         let target = match (op, path) {
@@ -200,7 +197,6 @@ impl AppState {
                     pane: pane.to_string(),
                     action: op.to_string(),
                     arg: arg.clone(),
-                    by: by.clone(),
                 }
             })
             .await?;
@@ -227,7 +223,6 @@ impl AppState {
         seconds: u64,
         path: &str,
         side: Side,
-        by: Option<String>,
     ) -> Result<Recording, String> {
         self.browser_pane(pane)?;
         let target = PathBuf::from(path);
@@ -255,7 +250,6 @@ impl AppState {
                         pane: pane.to_string(),
                         action: "record".into(),
                         arg: Some(seconds.to_string()),
-                        by: by.clone(),
                     }
                 },
             )
@@ -404,7 +398,6 @@ impl AppState {
             pane: pane.to_string(),
             action: "where".into(),
             arg: None,
-            by: None,
         };
         let ask = async {
             match phone {

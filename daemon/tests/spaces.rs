@@ -2674,7 +2674,6 @@ async fn a_browser_pane_carries_the_page_it_is_on() {
         pane: pane.clone(),
         text: text.to_string(),
         on: None,
-        from: None,
     };
     for _ in 0..2 {
         let reply = call(&mut ws, typed("example.com/a b")).await;
@@ -6204,7 +6203,6 @@ async fn a_browser_pane_is_inspected_through_a_rendering_client() {
             arg: arg.map(str::to_string),
             path: path.map(|p| p.to_string_lossy().into_owned()),
             on: None,
-            from: None,
         };
     let refusal = |reply: ServerMsg| match reply {
         ServerMsg::Error { message, .. } => message,
@@ -8696,7 +8694,6 @@ async fn pane_info_asks_the_mac_browser_where_it_is() {
             arg: None,
             path: None,
             on: None,
-            from: None,
         },
     )
     .await
