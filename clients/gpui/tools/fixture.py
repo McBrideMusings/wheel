@@ -179,6 +179,20 @@ def fixture():
             '    return ui.Column(rows)\n'
             'end\n'
             'return { init = init, update = update, view = view }\n')
+        # A plugin that counts presses of its button, keeping the count across a hot reload, so a
+        # `wheel pane reload` that runs the script from the top shows the count back at 0.
+        (root / 'plugins/counter/panes').mkdir(parents=True)
+        (root / 'plugins/counter/wheel-plugin.toml').write_text('[plugin]\nid = "counter"\nversion = "0.1.0"\n\n[[pane]]\nid = "counter"\ntitle = "Counter"\nscript = "panes/counter.luau"\n')
+        (root / 'plugins/counter/panes/counter.luau').write_text(
+            'local function init(previous) return previous or { count = 0 } end\n'
+            'local function update(state, msg)\n'
+            '    if msg.type == "add" then state.count = state.count + 1 end\n'
+            '    return state\n'
+            'end\n'
+            'local function view(state, data)\n'
+            '    return ui.Column({ ui.Text("Count " .. state.count), ui.Button{ child = ui.Text("Add"), action = { type = "add" } } })\n'
+            'end\n'
+            'return { init = init, update = update, view = view }\n')
         # Two plugins whose script fails to load: one with a long error, one with a short one.
         for name, source in [('errlong1', 'error("' + 'a very long script failure, '*12 + '")\n'), ('errshort', 'error("x")\n')]:
             (root / f'plugins/{name}/panes').mkdir(parents=True)

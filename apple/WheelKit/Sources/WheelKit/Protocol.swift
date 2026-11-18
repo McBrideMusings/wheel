@@ -660,6 +660,8 @@ public enum AgentEvent: Sendable, Equatable {
     case turnEnd(turn: UInt64, stopReason: String)
     /// The message of `turn` was taken back before the agent answered it.
     case retract(turn: UInt64)
+    /// A reload of the pane's agent waiting in its queue as `turn`; `text` says what it sets.
+    case reload(turn: UInt64, text: String)
     case error(turn: UInt64?, message: String)
     case other(String)
 }
@@ -689,6 +691,7 @@ extension AgentEvent: Decodable {
         case "mode": self = .mode(try c.decode(String.self, forKey: .mode))
         case "turn_end": self = .turnEnd(turn: try c.decode(UInt64.self, forKey: .turn), stopReason: try c.decode(String.self, forKey: .stop_reason))
         case "retract": self = .retract(turn: try c.decode(UInt64.self, forKey: .turn))
+        case "reload": self = .reload(turn: try c.decode(UInt64.self, forKey: .turn), text: try c.decode(String.self, forKey: .text))
         case "error": self = .error(turn: try c.decodeIfPresent(UInt64.self, forKey: .turn), message: try c.decode(String.self, forKey: .message))
         case let other: self = .other(other)
         }

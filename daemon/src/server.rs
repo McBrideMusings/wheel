@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,6 +38,9 @@ pub(crate) struct AgentStart {
     pub context: Option<ContextUse>,
     pub model: Option<String>,
     pub permissions: AgentPermissions,
+    /// Environment values picked for the agent (`pane_reload`'s `set`), other than its home
+    /// variable, which `home` carries. Set last, so they win over Wheel's own.
+    pub env: BTreeMap<String, String>,
 }
 
 /// An agent pane's choices while the pane is a terminal: the model and mode (config option id,
@@ -115,6 +118,10 @@ pub(crate) struct Report {
     pub status: wheel_proto::ReportedStatus,
     pub reason: Option<String>,
 }
+
+/// The longest [`AppState::start_kept_agents`] waits between asks of a login shell that gave
+/// no answer for a kept agent's home.
+const KEPT_AGENT_RETRY_MOST: Duration = Duration::from_secs(300);
 
 pub struct AppState {
     started: Instant,
@@ -252,8 +259,13 @@ pub struct AppState {
     /// after startup answers while other threads run, when changing the environment is unsound.
     pub(crate) login_path: Arc<Mutex<wheel_proto::LoginPath>>,
     /// The agent panes' agents a restore kept as saved because their agent could not start,
-    /// started once the login shell's PATH arrives.
+    /// started once the login shell's PATH arrives, or once it answers for the agent's home.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
+    /// Held while kept agents are started ([`Self::start_kept_agents`]), and by a restore until
+    /// its layout is set, so two starts never take `kept_agents` at once and none takes an agent
+    /// the restore kept before its pane is in a space; it holds whether a loop asking the login
+    /// shell again is scheduled.
+    pub(crate) starting_kept_agents: tokio::sync::Mutex<bool>,
     /// Conversations a switch is moving an agent into now, by id and the agent's name, so two
     /// switches to one id cannot both pass the check that no other agent is in it.
     pub(crate) switching_into: Mutex<std::collections::HashMap<String, String>>,
@@ -403,6 +415,7 @@ impl AppState {
                 problem: None,
             })),
             kept_agents: Mutex::new(Default::default()),
+            starting_kept_agents: tokio::sync::Mutex::new(false),
             switching_into: Mutex::new(Default::default()),
             statuses: Mutex::new(Default::default()),
             reports: Mutex::new(Default::default()),
@@ -450,12 +463,53 @@ impl AppState {
                 state.set_login_path(login_path);
                 if found {
                     state.log_agents();
-                    state.start_unstarted_agents();
+                    state.start_kept_agents().await;
                     let _ = state.global.send(state.status(None).await);
                 }
                 if !again {
                     return;
                 }
+            }
+        });
+    }
+
+    /// Start the agents kept as saved ([`Self::start_unstarted_agents`]), and start them again
+    /// later ([`Self::schedule_kept_agents`]) when the login shell gave no answer for a home.
+    pub async fn start_kept_agents(&self) {
+        let mut scheduled = self.starting_kept_agents.lock().await;
+        if self.start_unstarted_agents().await > 0 {
+            self.schedule_kept_agents(&mut scheduled);
+        }
+    }
+
+    /// Start the agents kept as saved again after [`crate::login_path::RETRY`], then after twice
+    /// as long each time up to [`KEPT_AGENT_RETRY_MOST`], until the login shell answers for every
+    /// kept agent's home or the daemon is gone, unless `scheduled` says such a loop runs. The
+    /// caller holds `starting_kept_agents`, so a loop ending and a new failure never pass.
+    pub(crate) fn schedule_kept_agents(&self, scheduled: &mut bool) {
+        if *scheduled {
+            return;
+        }
+        *scheduled = true;
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            let mut wait = crate::login_path::RETRY;
+            loop {
+                tokio::time::sleep(wait).await;
+                let Some(state) = me.upgrade() else { return };
+                let mut scheduled = state.starting_kept_agents.lock().await;
+                let left = state.start_unstarted_agents().await;
+                tracing::info!(
+                    left,
+                    "kept agents started again after the login shell gave no home"
+                );
+                *scheduled = left > 0;
+                drop(scheduled);
+                let _ = state.global.send(state.status(None).await);
+                if left == 0 {
+                    return;
+                }
+                wait = (wait * 2).min(KEPT_AGENT_RETRY_MOST);
             }
         });
     }
@@ -487,7 +541,7 @@ impl AppState {
     }
 
     /// How to start a terminal for `seat` (its space and pane), running `shell` or the login shell.
-    fn term_launch(&self, shell: Option<String>, seat: Option<Seat>) -> Launch {
+    fn term_launch(&self, shell: Option<String>, seat: Option<Seat>, picked: &BTreeMap<String, String>) -> Launch {
         match self.control.lock().unwrap().as_ref() {
             Some(control) => crate::shell::launch(
                 shell,
@@ -497,9 +551,11 @@ impl AppState {
                 control,
                 &self.instance_dir,
                 seat,
+                picked,
             ),
             None => Launch {
                 program: shell,
+                env: picked.clone().into_iter().collect(),
                 ..Default::default()
             },
         }
@@ -610,21 +666,22 @@ impl AppState {
     }
 
     /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.
-    /// `seat` is the pane the terminal belongs to and the directory of the space holding it.
+    /// `seat` is the pane the terminal belongs to and the directory of the space holding it, and
+    /// `picked` the environment values picked for the pane's shell.
     pub(crate) async fn open_term(
         &self,
         cwd: String,
         shell: Option<String>,
-        cols: u16,
-        rows: u16,
+        (cols, rows): (u16, u16),
         owner: Owner,
         seat: Option<(Seat<'_>, &str)>,
+        picked: &BTreeMap<String, String>,
     ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         if let Some((pane, space_cwd)) = seat {
             self.pane_brief(pane, space_cwd);
         }
-        let launch = self.term_launch(shell, seat.map(|(pane, _)| pane));
+        let launch = self.term_launch(shell, seat.map(|(pane, _)| pane), picked);
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
             tokio::task::spawn_blocking(move || {
@@ -674,6 +731,7 @@ impl AppState {
             context,
             model,
             permissions,
+            env: picked,
         } = start;
         let command = self.agent_ready(agent)?.command;
         let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
@@ -688,7 +746,11 @@ impl AppState {
                 &self.pane_brief(pane, space_cwd),
                 &self.guidance_for(agent),
             )),
-            env: self.agent_env(pane),
+            env: {
+                let mut env = self.agent_env(pane);
+                env.extend(picked);
+                env
+            },
             restored: conversation.is_some(),
             conversation,
             fork,
@@ -783,6 +845,7 @@ impl AppState {
     /// that stops serving without its process ending (an in-process restart in a test) calls this
     /// first, so its agents do not outlive it.
     pub fn stop_agents(&self) {
+        self.keep_agent_permissions();
         let agents: Vec<_> = self
             .agents
             .lock()
@@ -1776,7 +1839,7 @@ async fn handle(
         } => {
             let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
             match state
-                .open_term(cwd, None, cols, rows, Owner::Client, None)
+                .open_term(cwd, None, (cols, rows), Owner::Client, None, &BTreeMap::new())
                 .await
             {
                 Ok(term) => Some(ServerMsg::TermOpened {
@@ -1995,6 +2058,8 @@ async fn handle(
                                     permissions: AgentPermissions {
                                         permission_mode,
                                         sandbox,
+                                        approvals_reviewer: None,
+                                        permission_profile: None,
                                     },
                                 },
                             )
@@ -2022,6 +2087,27 @@ async fn handle(
             None
         }
         // On a task of its own: a switch waits for the other view's process to stop.
+        ClientMsg::PaneReload { req, pane, set, unset } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match state.pane_reload(&pane, set, unset).await {
+                    Ok(crate::reload::Reloaded::Done) => req.map(|req| ServerMsg::Ok { req }),
+                    // A busy agent's reload waits in its queue; the reply names its turn, as a
+                    // queued message's does.
+                    Ok(crate::reload::Reloaded::Queued { agent, turn }) => {
+                        req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
+                    }
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %message, "pane reload failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::PaneView { req, pane, to } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {

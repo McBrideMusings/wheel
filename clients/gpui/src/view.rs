@@ -549,7 +549,7 @@ impl Client {
                             apply_status(&mut self.spaces, space, pane.as_deref(), status.clone(), space_status.clone());
                             return false;
                         }
-                        // A file in a web pane's folder changed: its page opens again.
+                        // `pane_reload`: a web pane's page opens again, a browser reloads its page, a plugin pane runs its script from the top.
                         ServerMsg::PaneReload { pane } => {
                             if self.opened.contains_key(pane) {
                                 self.native.reload(pane);
@@ -2679,7 +2679,13 @@ impl Client {
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
                     .child(div().flex_none().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
                     .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
-                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, queue, &self.controls, cx))),
+                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, false, queue, &self.controls, cx))),
+            // Drawn as a queued message is, with the same line under it less Edit.
+            Kind::Reload { text } => div().flex().flex_col()
+                .child(div().flex().gap_2().text_color(rgb(0xe0b070))
+                    .child(div().flex_none().child("queued").text_color(rgb(0x8fa89b)).text_xs())
+                    .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
+                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, true, true, queue, &self.controls, cx))),
             Kind::Reply(x) => {
                 let blocks = {
                     let mut cache = self.parsed.borrow_mut();
@@ -2895,7 +2901,7 @@ fn footer_items(order: &[String], t: &Transcript, leaf: Option<&Leaf>, agents: &
             "home" => leaf.map(|l| {
                 let harness = l.harness.as_deref().unwrap_or("claude");
                 let listed = agents.iter().find(|a| a.name == harness).and_then(|a| a.home.as_deref());
-                footer::shown_home(l.home.as_deref(), harness, listed)
+                footer::shown_home(t.footer.as_ref().and_then(|f| f.home.as_deref()), harness, listed)
             }),
             "branch" => t.footer.as_ref().and_then(|f| f.branch.as_ref()).map(|b| format!("\u{2387} {b}")),
             "changes" => t.footer.as_ref().and_then(footer::changes_text),

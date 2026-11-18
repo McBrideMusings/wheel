@@ -496,6 +496,7 @@ final class PhoneModel {
             Log.info("permission \(id) resolved: \(choice)")
         case let .paneReload(pane):
             webPanes[pane]?.reload()
+            browsers[pane]?.reload()
         case let .inspectPane(id, pane, op, arg, by):
             guard let browser = browsers[pane] else {
                 client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))
@@ -647,6 +648,7 @@ final class PhoneModel {
     private func syncBrowsers() {
         let wanted = BrowserPanes.urls(spaces)
         for pane in browsers.keys where wanted[pane] == nil {
+            if let browser = browsers[pane] { PageSchemeHandler.close(browser.view) }
             browsers[pane] = nil
             consoleOutbox[pane] = nil
             Log.info("browser pane \(pane) left the layout")
@@ -728,6 +730,7 @@ final class PhoneModel {
     private func syncWebPanes() {
         let wanted = WebPanes.panes(spaces)
         for (pane, web) in webPanes where wanted[pane]?.artifact != web.artifact {
+            PageSchemeHandler.close(web.view)
             webPanes[pane] = nil
             a2uiPanes[pane] = nil
             Log.info("web pane \(pane) left the layout")

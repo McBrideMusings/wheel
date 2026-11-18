@@ -185,7 +185,7 @@ extension PaneKind {
         case let .terminal(_, agent):
             guard let agent, agent.switchesView, agentFound(agent.name) else { return nil }
             return .agent
-        case let .agent(_, harness, _):
+        case let .agent(_, harness):
             return PaneKind.switchableAgents.contains(harness) ? .terminal : nil
         default:
             return nil
@@ -234,9 +234,8 @@ public enum PaneKind: Sendable, Equatable {
     /// holds only where a pane opens.
     case browser(url: String)
     /// An agent the pane owns, running the program named `harness`: it ends when the pane
-    /// closes or changes kind. `home` is the configuration directory the pane saved for its own
-    /// agent; nil when the pane runs under the agent's `agent.<name>.home` setting.
-    case agent(agent: String, harness: String, home: String? = nil)
+    /// closes or changes kind.
+    case agent(agent: String, harness: String)
     /// A kind this build does not know, or a known one it could not read. `raw` is every field
     /// the daemon sent beside the pane's `node` and `id`, kept so the client can show it; the
     /// daemon saves it back unchanged.
@@ -346,9 +345,7 @@ extension Node: Decodable {
                 }
             case let (.string("agent"), _, _, .string(agent)):
                 if case let .string(harness) = raw["harness"] ?? .null {
-                    var home: String?
-                    if case let .string(h)? = raw["home"] { home = h }
-                    self = .pane(id: id, kind: .agent(agent: agent, harness: harness, home: home))
+                    self = .pane(id: id, kind: .agent(agent: agent, harness: harness))
                 } else {
                     self = .pane(id: id, kind: .unknown(kind: "agent", raw: raw))
                 }

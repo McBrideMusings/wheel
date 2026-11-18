@@ -638,8 +638,8 @@ pub(super) fn command_list(agent: &str, harness: &str, rows: &[Command], at: usi
 
 /// The line under a queued message (Queued, then Send now, Edit, Remove, and Clear queue on the
 /// first of two or more), or under the message of a turn that has said nothing yet (Edit). None
-/// for any other message.
-pub(super) fn queue_line(agent: &str, turn: u64, queued: bool, queue: &QueueView, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> Option<gpui::Div> {
+/// for any other message. A queued reload has no text to edit, so its line has no Edit.
+pub(super) fn queue_line(agent: &str, turn: u64, queued: bool, reload: bool, queue: &QueueView, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> Option<gpui::Div> {
     let button = |label: &'static str, id: String, act: fn(&mut Client, &str, u64), cx: &mut Context<Client>| {
         let a = agent.to_owned();
         div().relative().cursor_pointer().text_color(rgb(0x7fb89a))
@@ -660,7 +660,7 @@ pub(super) fn queue_line(agent: &str, turn: u64, queued: bool, queue: &QueueView
         return Some(line.child(div().text_color(rgb(0x7fb89a)).child("Sending now…")));
     }
     line = line.child(button("Send now", format!("queue:now:{turn}"), Client::send_now, cx))
-        .child(button("Edit", format!("queue:edit:{turn}"), Client::edit_message, cx))
+        .when(!reload, |line| line.child(button("Edit", format!("queue:edit:{turn}"), Client::edit_message, cx)))
         .child(button("Remove", format!("queue:remove:{turn}"), Client::remove_queued, cx));
     if queue.queued.len() >= 2 && queue.queued.first() == Some(&turn) {
         line = line.child(button("Clear queue", "queue:clear".into(), |c, a, _| c.clear_queue(a), cx));

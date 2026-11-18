@@ -35,7 +35,7 @@ extension PhoneModel {
             space.allPanes.compactMap { pane -> AgentRow? in
                 let agent: String, harness: String
                 switch pane.kind {
-                case let .agent(name, program, _): (agent, harness) = (name, program)
+                case let .agent(name, program): (agent, harness) = (name, program)
                 case let .terminal(_, found?): (agent, harness) = (found.name, found.name)
                 default: return nil
                 }

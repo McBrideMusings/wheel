@@ -125,6 +125,24 @@ struct TranscriptTests {
         #expect(t.rows.map(\.kind) == [.user("first", queued: false), .agent("Working"), .user("a", queued: true), .user("c", queued: true)])
     }
 
+    @Test func aQueuedReloadWaitsInTheQueueUntilItsRetract() throws {
+        var t = Transcript()
+        t.apply(.user(turn: 1, text: "first"))
+        t.apply(.turnStart(turn: 1))
+        t.apply(.user(turn: 2, text: "before"))
+        let json = Data(#"{"kind":"reload","turn":3,"text":"Reload with CLAUDE_CONFIG_DIR=~/.claude-work"}"#.utf8)
+        t.apply(try JSONDecoder().decode(AgentEvent.self, from: json))
+        t.apply(.text("Working"))
+        #expect(t.queuedMessages.map(\.turn) == [2, 3])
+        #expect(t.rows.map(\.kind) == [
+            .user("first", queued: false), .agent("Working"),
+            .user("before", queued: true), .user("Reload with CLAUDE_CONFIG_DIR=~/.claude-work", queued: true),
+        ])
+        #expect(t.rows.map(\.reload) == [false, false, false, true])
+        t.apply(.retract(turn: 3))
+        #expect(t.queuedMessages.map(\.turn) == [2])
+    }
+
     @Test func aMessageIsUnanswerableOnlyUntilTheAgentsFirstEvent() {
         var t = Transcript()
         t.apply(.user(turn: 1, text: "first"))

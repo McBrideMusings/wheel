@@ -498,7 +498,12 @@ struct ProtocolTests {
         #expect(RunningTask.clock(2412) == "40:12" && RunningTask.clock(3725) == "1:02:05")
         #expect(AgentFooter(directory: "/p").backgroundText == nil)
         guard case let .agentFooter(_, bare) = try ServerMsg.decode(#"{"ev":"agent_footer","agent":"w3","footer":{"directory":"/p"}}"#) else { Issue.record("wrong case"); return }
-        #expect(bare.tasks.isEmpty && bare.branch == nil)
+        #expect(bare.tasks.isEmpty && bare.branch == nil && bare.home == nil)
+        // The home the agent runs with arrives on the footer, and the footer's home item shows it.
+        let mine = NSHomeDirectory()
+        guard case let .agentFooter(_, homed) = try ServerMsg.decode(#"{"ev":"agent_footer","agent":"w3","footer":{"directory":"/p","home":"\#(mine)/.claude-work"}}"#) else { Issue.record("wrong case"); return }
+        #expect(homed.home == mine + "/.claude-work")
+        #expect(AgentInfo.shownHome(own: homed.home, of: "claude", in: [AgentInfo(name: "claude", command: "claude", home: "~/.claude", found: true)]) == "~/.claude-work")
         guard case let .taskOutput(req, text, truncated) = try ServerMsg.decode(#"{"ev":"task_output","req":4,"text":"line 1\n","truncated":true}"#) else { Issue.record("wrong case"); return }
         #expect(req == 4 && text == "line 1\n" && truncated)
     }

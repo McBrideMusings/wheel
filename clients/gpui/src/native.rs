@@ -173,7 +173,7 @@ impl Native {
     pub fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>) {
         self.call(json!({"op":"inspect","id":id,"pane":pane,"action":action,"arg":arg}));
     }
-    /// A file in `pane`'s folder changed: open its page again.
+    /// `pane_reload`: open `pane`'s artifact page again, reload its browser's page, or run its plugin script again from the top.
     pub fn reload(&self, pane: &str) {
         self.call(json!({"op":"reload","pane":pane}));
     }

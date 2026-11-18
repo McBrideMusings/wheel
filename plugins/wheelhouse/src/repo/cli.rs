@@ -26,6 +26,13 @@ enum Cmd {
     },
     /// Delete a dead branch, and its worktree first when it has one.
     Delete { branch: String },
+    /// Delete every merged, squash-merged or gone branch nothing keeps, each worktree first: the Repo
+    /// pane's Clean up. Prints what it deleted, then what it kept and why.
+    Cleanup {
+        /// Print the plan (`delete`, `keep` with why, `off` when no plan can be made) and delete nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
@@ -63,6 +70,12 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     println!("{d}");
                 }
             }
+        }
+        Cmd::Cleanup { dry_run: true } => {
+            println!("{}", serde_json::to_string_pretty(&feed::value(&dir)["cleanup"])?);
+        }
+        Cmd::Cleanup { dry_run: false } => {
+            println!("{}", feed::clean_up(&dir).map_err(anyhow::Error::msg)?);
         }
     }
     Ok(())

@@ -343,7 +343,7 @@ public final class AgentChat: ObservableObject {
         // `turn_start` is on its way): it is as unanswered as one whose turn started and said nothing.
         let target = unansweredTurn ?? (isBusy ? nil : queued.last?.turn)
         guard queue.takeBackAvailable, let turn = target, editing[turn] == nil,
-              let row = transcript.rows.last(where: { $0.turn == turn }),
+              let row = transcript.rows.last(where: { $0.turn == turn }), !row.reload,
               case let .user(text, _) = row.kind else { return false }
         edit(turn: turn, text: text)
         return true

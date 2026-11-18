@@ -228,6 +228,8 @@ function M.boxes(l, cards)
             { overlay = { stroke = if on then "tint" else "separator", cornerRadius = 8 } },
         }
         if on then table.insert(mods, { background = "controlBackground" }) end
+        table.insert(mods, { hoverEffect = "highlight" })
+        table.insert(mods, { pointerStyle = "link" })
         table.insert(kids, {
             component = "Button", child = inner, variant = "borderless", modifiers = mods,
             action = { type = "list.filter", key = key, value = if on then "" else value },
@@ -267,8 +269,8 @@ local function capitalise(s)
 end
 
 -- The filter row: one popover of ticks per filter (`options[i]` gives the i-th filter's { value, text } in the spec's
--- order), then Clear and `actions` (the list actions chip). Each popover's title says what it holds ("Any label",
--- "Status not: done"); Clear is hidden, not removed, when nothing narrows the list, so nothing after it moves.
+-- order) and Clear on the left, `actions` (the list actions button) at the far right. Each popover's title says what it
+-- holds ("Any label", "Status not: done"); Clear is hidden, not removed, when nothing narrows the list, so nothing moves.
 function M.bar(spec, l, options, actions)
     local menus = {}
     for i, f in spec.filters do
@@ -301,46 +303,51 @@ function M.bar(spec, l, options, actions)
             kit.box("v", kids, { spacing = 6, align = "start" }),
         })
     end
-    -- Two groups, by proximity: what narrows the list, and Clear with the actions. The gap between them is whatever width
-    -- is left, never under 16. Sorting is the column headers' job.
-    local narrow = kit.box("h", menus, { spacing = 6, align = "center" })
+    -- Two groups, by proximity: what narrows the list with its Clear, and the actions pinned to the right edge, so a
+    -- longer actions title grows leftward into the gap. The gap is whatever width is left, never under 16. Sorting is
+    -- the column headers' job.
     local clear = kit.button("Clear", { type = "list.clear" }, { style = "link", disabled = not M.active(l), hideOff = true })
-    local shape = kit.box("h", { clear, actions }, { spacing = 10, align = "center" })
-    local bar = kit.box("h", { narrow, shape }, { spacing = 16, align = "center", widths = { "flex", false }, padding = { 4, 0, 0, 0 } })
+    table.insert(menus, clear)
+    local narrow = kit.box("h", menus, { spacing = 6, align = "center" })
+    local bar = kit.box("h", { narrow, actions }, { spacing = 16, align = "center", padding = { 4, 0, 0, 0 } })
+    bar.justify = "spaceBetween"
     kit.modify(bar, { frame = { maxWidth = "infinity" } })
     return bar
 end
 
--- The list actions as one chip drawn like the filters: its title counts the rows the actions take, `took` (their ids) of
--- the `listed` rows ("12 listed" or "3 selected of 12"), and its popover holds Copy IDs (the ids space separated, `copied`
--- naming them in its help) then the project's list buttons `scripts` ({ name, label }), each with that count, over `rows`.
--- Each keeps its slot: with no rows, or `off`, the buttons are disabled, not removed. `more` ({ label, n, action, help })
--- adds the page's own buttons after them, each with its own count `n` of the rows it takes, disabled at 0.
+-- The list actions as one bordered pull-down button. With nothing selected it reads "Actions ⌄" and its buttons take every
+-- listed row; with some of the `listed` rows selected it reads "3 selected · Actions ⌄" and they take those. `took` are the
+-- ids they take. Its popover holds Copy IDs (the ids space separated, `copied` naming them in its help) then the project's
+-- list buttons `scripts` ({ name, label }), each with that count, over `rows`. Each keeps its slot: with no rows, or
+-- `off`, the buttons are disabled, not removed. `more` ({ label, n, action, help, first }) adds the page's own buttons,
+-- each with its own count `n` of the rows it takes, disabled at 0: after the list buttons, or before Copy IDs when `first`.
 function M.actions(scripts, took, listed, copied, rows, off, more)
     local n = #took
     local title, what
     if n < listed then
-        title, what = n .. " selected of " .. listed .. " · Actions ⌄", "selected"
+        title, what = n .. " selected · Actions ⌄", "selected"
     else
-        title, what = n .. " listed · Actions ⌄", "listed"
+        title, what = "Actions ⌄", "listed"
     end
-    local menu = {
-        kit.copy_button("Copy IDs", table.concat(took, " "), {
-            style = "link", disabled = n == 0, help = "Copy the " .. n .. " " .. what .. " " .. copied .. ", space separated",
-        }),
-    }
+    local menu, lead = {}, {}
+    for _, m in more or {} do
+        local b = kit.button(m.label .. "  " .. m.n, m.action, { style = "link", disabled = off or m.n == 0, help = m.help })
+        table.insert(if m.first then lead else menu, b)
+    end
+    local items = lead
+    table.insert(items, kit.copy_button("Copy IDs", table.concat(took, " "), {
+        style = "link", disabled = n == 0, help = "Copy the " .. n .. " " .. what .. " " .. copied .. ", space separated",
+    }))
     for _, s in scripts do
         local label = s.label or s.name
-        table.insert(menu, kit.button(label .. "  " .. n, { type = "list.run", script = s.name }, {
+        table.insert(items, kit.button(label .. "  " .. n, { type = "list.run", script = s.name }, {
             style = "link", disabled = off or n == 0, help = label .. " over the " .. n .. " " .. what .. " " .. rows,
         }))
     end
-    for _, m in more or {} do
-        table.insert(menu, kit.button(m.label .. "  " .. m.n, m.action, { style = "link", disabled = off or m.n == 0, help = m.help }))
-    end
+    for _, b in menu do table.insert(items, b) end
     return ui.Popover{
         kit.label(title, { size = 12, tabular = true }),
-        kit.box("v", menu, { spacing = 6, align = "start" }),
+        kit.box("v", items, { spacing = 6, align = "start" }),
     }
 end
 

@@ -1139,10 +1139,23 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
         }
     }
-    /// A file in the pane's folder changed. Opens the address again rather than `WKWebView.reload()`,
-    /// which does nothing when the first load never committed (the daemon was down).
+    /// `pane_reload`: a browser reloads the page it is on, a plugin pane runs its script again from the top, and an
+    /// artifact page opens its address again rather than `WKWebView.reload()`, which does nothing when the first load
+    /// never committed (the daemon was down).
     func reload(_ id: String) {
-        guard let host = panes[id], let page = host.pageURL else { return }
+        guard let host = panes[id] else { return }
+        if let browser = host.browser {
+            host.reloads += 1
+            browser.reload()
+            return
+        }
+        if let plugin = host.plugin {
+            host.reloads += 1
+            plugin.restart()
+            requestSource(host)
+            return
+        }
+        guard let page = host.pageURL else { return }
         host.reloads += 1
         host.web?.load(URLRequest(url: page))
     }
@@ -1313,6 +1326,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         for key in gone.keys { agentEmbeds[key] = nil }
         for embed in gone.values { embed.drop() }
         if let term = host.termID { release(term) }
+        if let web = host.web { PageSchemeHandler.close(web) }
         host.slot.removeFromSuperview()
         if let plugin = host.plugin {
             plugin.close()
@@ -1543,7 +1557,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 if let chat = embed?.chat, let text = value["value"] as? String { chat.draft = text; sendAgent(chat) } else { ok = false }
             default: break
             }
-            return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "components": plugin.componentTexts, "feeds": plugin.feedJSON,
+            return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "restarts": plugin.restarts, "components": plugin.componentTexts, "feeds": plugin.feedJSON,
                 "fills": plugin.fillsPane,
                 "scroll": (plugin.fillsPane ? nil : plugin.scrollMetrics).map { ["offset": $0.offset, "content": $0.content, "visible": $0.visible] as [String: Any] } ?? NSNull(),
                 "agent_view": panes[pane]?.agentTarget != nil,
@@ -1904,7 +1918,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                                      "components": page.surface?.components.count ?? 0, "diagnostics": page.diagnostics]
                 }
             } else if let p = host.plugin {
-                entry["plugin"] = ["agent_view": host.agentTarget != nil, "permission": waitingPermission(for: host).map { ["id": $0.id, "title": $0.title, "options": $0.options.map(\.id)] as [String: Any] } ?? NSNull(), "state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
+                entry["plugin"] = ["agent_view": host.agentTarget != nil, "permission": waitingPermission(for: host).map { ["id": $0.id, "title": $0.title, "options": $0.options.map(\.id)] as [String: Any] } ?? NSNull(), "state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "restarts": p.restarts, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
             }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["sent_grids"] = host.sent; entry["lagged_reports"] = host.lagged; entry["writes"] = host.writes
                    entry["pixels"] = host.terminal?.layer?.contents != nil

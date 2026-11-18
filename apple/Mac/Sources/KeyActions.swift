@@ -58,7 +58,7 @@ extension AppModel {
         focus(pane: pane)
         switch kind {
         case let .terminal(term, _): terminals[term]?.view?.requestFocus()
-        case let .agent(agent, _, _): chats[agent]?.composerFocusRequest += 1
+        case let .agent(agent, _): chats[agent]?.composerFocusRequest += 1
         case .empty: break
         default:
             // A page has no keyboard of its own to give; the shell that had it must not keep it.
@@ -140,10 +140,10 @@ extension AppModel {
         space(holding: pane)?.allPanes.first { $0.id == pane }?.kind
     }
 
-    /// The home directory text for the agent pane running `agent`: the home that pane saved, else
-    /// the agent's setting or default.
+    /// The home directory text for `agent`: the home it runs with, else the agent's setting or
+    /// default.
     func shownHome(agent: String, harness: String) -> String {
-        AgentInfo.shownHome(own: AgentPanes.home(ofAgent: agent, in: spaces), of: harness, in: agents)
+        AgentInfo.shownHome(own: chats[agent]?.footer?.home, of: harness, in: agents)
     }
 
     /// The question a pane that runs a shell or an agent asks before it stops running it.

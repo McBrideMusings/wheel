@@ -380,6 +380,9 @@ local function modifiers_class()
         mrow("disabled", "true", put("Button", nil, { child = txt("Disabled button"), action = act(), modifiers = { { disabled = true } } })),
         mrow("tint", "a colour name", put("Button", nil, { child = txt("Confirm"), variant = "primary", action = act(), modifiers = { { tint = "green" } } })),
         mrow("help, accessibilityLabel", "a string", put("Button", nil, { child = put("Icon", nil, { name = "play.fill" }), action = act(), modifiers = { { help = "Run build" }, { accessibilityLabel = "Run build" } } })),
+        mrow("hoverEffect", "highlight: a rounded fill while hovered", put("Button", nil, { child = txt("Hover me"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "highlight" } } })),
+        mrow("hoverEffect (disabled)", "a disabled control never lights", put("Button", nil, { child = txt("Disabled"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "highlight" }, { disabled = true } } })),
+        mrow("pointerStyle", "link: the pointing hand (macOS)", put("Button", nil, { child = txt("Pointing hand"), variant = "borderless", action = act(), modifiers = { { pointerStyle = "link" } } })),
         mrow("(unknown name)", "draws a red marker", mod("bad modifier", { frobnicate = 1 })),
     }
     return boxed("Modifiers", "A modifiers list on any component; each entry is a SwiftUI modifier by its SwiftUI name.", mrows)

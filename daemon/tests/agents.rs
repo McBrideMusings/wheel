@@ -3130,12 +3130,12 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     let PaneKind::Agent { agent, place, .. } = pane_kind(&mut ws, &pane).await else {
         panic!("the pane is an agent pane")
     };
-    // The space's own directory is not repeated; the config directory Claude Code used is kept.
+    // The space's own directory is not repeated; the config directory Claude Code used is picked.
     assert_eq!(
         place.map(|p| *p),
         Some(wheel_proto::AgentPlace {
             cwd: None,
-            home: Some(home.to_string_lossy().into())
+            env: [("CLAUDE_CONFIG_DIR".to_string(), home.to_string_lossy().into_owned())].into(),
         })
     );
     let events = transcript_when(&mut ws, &agent, |e| e.len() >= 4).await;
@@ -3428,6 +3428,7 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
         "{answered}"
     );
 
+    codex_config_ok(&mut ws, &agent, 512, "reviewer", "user").await;
     // Back in a terminal: `codex resume` shows the thread, the chat's message in it.
     assert_eq!(
         pane_view(&mut ws, 504, &pane, Some(PaneView::Terminal)).await,
@@ -3445,6 +3446,20 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
         shown.contains("> second from the chat") && shown.contains("> first from the terminal"),
         "{shown:?}"
     );
+    // Model a native TUI permission change in its own store. Returning to chat must not replay
+    // the old chat's reviewer/policy/sandbox over the destination's persisted settings.
+    edit_codex_permissions(&home, &thread, |settings| {
+        settings["approvalsReviewer"] = serde_json::json!("auto_review");
+        settings["approvalPolicy"] = serde_json::json!("never");
+        settings["sandbox"] = serde_json::json!({"type": "readOnly", "networkAccess": false});
+    });
+    pane_view(&mut ws, 513, &pane, Some(PaneView::Agent)).await.unwrap();
+    let PaneKind::Agent { agent, .. } = pane_kind(&mut ws, &pane).await else { panic!("agent pane") };
+    transcript_when(&mut ws, &agent, |events| events.len() >= 4).await;
+    let options = config_of(&mut ws, &agent, 514).await;
+    assert_eq!(current(&options, "reviewer"), "auto_review");
+    assert_eq!(current(&options, "mode"), "never");
+    assert_eq!(current(&options, "sandbox"), "read-only");
 }
 
 /// A daemon that cannot write its shell integration says so in `status`, and one that wrote it
@@ -4007,7 +4022,7 @@ async fn a_codex_pane_starts_with_its_approval_policy_and_sandbox() {
         .await
         .unwrap_err();
     assert!(
-        error.contains("untrusted") && error.contains("never"),
+        error.contains("on-request") && error.contains("never"),
         "{error}"
     );
     let error = start_with_permissions(&url, &other, "codex", None, Some("everything"))
@@ -4212,13 +4227,15 @@ async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_codex_file_change_approval_names_the_files_and_can_last_the_agent() {
+async fn a_codex_file_change_approval_names_the_files_and_can_last_the_chat_session() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = codex_agent(&url).await;
     attach_and_send(&mut ws, &agent, "edit").await;
     let perm = next_perm(&mut ws).await;
     assert_eq!(perm.title, "Edit src/a.rs");
+    assert_eq!(perm.options.iter().find(|o| o.id == "allow_always").unwrap().name, "Allow for this chat");
+    assert!(perm.why.always_rule.is_none());
     send(
         &mut ws,
         ClientMsg::PermAnswer {
@@ -4270,7 +4287,7 @@ async fn a_cancel_interrupts_a_codex_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_approval_policy_is_a_control_sent_with_each_codex_turn() {
+async fn the_approval_policy_is_an_independent_codex_thread_control() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let agent = codex_agent(&url).await;
@@ -5841,4 +5858,527 @@ async fn a_card_names_a_pane_or_an_artifact_and_lands_in_the_transcript() {
     assert!(card_reply(&mut ws, 806, &agent, None, None).await.is_err());
     daemon.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codex_keeps_the_complete_resolved_sandbox_and_inherits_the_reviewer() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    let text = reply(&mut ws, &agent, "show setup").await;
+    assert!(text.contains("\"networkAccess\":true"), "{text}");
+    assert!(text.contains("/tmp/wheel-extra-root"), "{text}");
+    assert!(text.contains("\"excludeSlashTmp\":true"), "{text}");
+    let options = config_of(&mut ws, &agent, 2).await;
+    assert_eq!(current(&options, "reviewer"), "auto_review");
+}
+
+/// Set through the public socket and wait for the driver's acknowledgement.
+async fn codex_config_ok(ws: &mut Ws, agent: &str, req: u64, config: &str, value: &str) {
+    let answer = client_op(ws, req, ClientMsg::AgentConfigSet {
+        req: Some(req), agent: agent.into(), config: config.into(), value: value.into(),
+    }).await;
+    assert!(matches!(answer, ServerMsg::Ok { .. }), "{answer:?}");
+}
+
+fn setup_permissions(text: &str) -> serde_json::Value {
+    let json = text.split(" | ").find_map(|line| line.strip_prefix("permissions: ")).expect(text);
+    serde_json::from_str(json).unwrap()
+}
+
+/// Simulate a settings update written by a native Codex process while Wheel is not its owner.
+fn edit_codex_permissions(home: &std::path::Path, thread: &str, edit: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+    use std::io::Write as _;
+    let rollout = std::fs::read_dir(home.join("sessions/2026/01/01")).unwrap().flatten()
+        .map(|e| e.path()).find(|p| p.to_string_lossy().ends_with(&format!("-{thread}.jsonl"))).unwrap();
+    let text = std::fs::read_to_string(&rollout).unwrap();
+    let mut settings = text.lines().rev().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find_map(|e| (e["payload"]["type"] == "permissions").then(|| e["payload"]["settings"].clone())).unwrap();
+    edit(&mut settings);
+    let entry = serde_json::json!({"type": "event_msg", "payload": {"type": "permissions", "settings": settings}});
+    writeln!(std::fs::OpenOptions::new().append(true).open(rollout).unwrap(), "{entry}").unwrap();
+    settings
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codex_reviewer_and_policy_are_independent_and_sandbox_changes_are_resolved() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    config_set_refused(&mut ws, &agent, 2, "reviewer", "guardian_subagent", "does not take").await;
+    config_set_refused(&mut ws, &agent, 3, "mode", "untrusted", "does not take").await;
+    codex_config_ok(&mut ws, &agent, 4, "reviewer", "user").await;
+    let options = config_of(&mut ws, &agent, 5).await;
+    assert_eq!(current(&options, "reviewer"), "user");
+    assert_eq!(current(&options, "mode"), "on-request");
+    codex_config_ok(&mut ws, &agent, 6, "mode", "never").await;
+    let permissions = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(permissions["approvalsReviewer"], "user");
+    assert_eq!(permissions["approvalPolicy"], "never");
+    let thread = layout(&url).await["spaces"][0]["root"]["conversation"].as_str().unwrap().to_string();
+    codex_config_ok(&mut ws, &agent, 7, "sandbox", "read-only").await;
+    // The sandbox selection is durable even when the person switches chats before another turn.
+    switch_of(&mut ws, &agent, 90, None).await.unwrap();
+    switch_of(&mut ws, &agent, 91, Some(&thread)).await.unwrap();
+    let read = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(read["sandbox"], serde_json::json!({"type": "readOnly", "networkAccess": false}));
+    codex_config_ok(&mut ws, &agent, 8, "sandbox", "workspace-write").await;
+    let expected = serde_json::json!({"type": "workspaceWrite", "networkAccess": true,
+        "writableRoots": ["/tmp/wheel-extra-root"], "excludeTmpdirEnvVar": true, "excludeSlashTmp": true});
+    for _ in 0..2 {
+        let permissions = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+        assert_eq!(permissions["sandbox"], expected);
+        assert_eq!(permissions["approvalsReviewer"], "user");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codex_reviewer_survives_resume_process_restart_and_pane_persistence() {
+    let dir = Scratch::new("codex-reviewer-persistence");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let agent = codex_agent(&url).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    let text = reply(&mut ws, &agent, "show setup").await;
+    assert_eq!(setup_permissions(&text)["approvalsReviewer"], "auto_review");
+    let thread = saved_conversation(&state_file).unwrap();
+    // Change the reviewer without another turn: Codex must save it immediately.
+    codex_config_ok(&mut ws, &agent, 2, "reviewer", "user").await;
+    switch_of(&mut ws, &agent, 3, None).await.unwrap();
+    let options = config_of(&mut ws, &agent, 4).await;
+    assert_eq!(current(&options, "reviewer"), "auto_review", "a new chat inherits its default reviewer");
+    codex_config_ok(&mut ws, &agent, 8, "mode", "never").await;
+    reply(&mut ws, &agent, "show setup").await;
+    switch_of(&mut ws, &agent, 5, Some(&thread)).await.unwrap();
+    let options = config_of(&mut ws, &agent, 6).await;
+    assert_eq!(current(&options, "reviewer"), "user");
+    assert_eq!(current(&options, "mode"), "on-request", "resume must not copy another chat's policy");
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(saved["spaces"][0]["root"]["approvals_reviewer"], "user");
+    first.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stopped: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(stopped["spaces"][0]["root"]["approvals_reviewer"], "user", "{stopped}");
+    let (url, _, second) = start_daemon_with(fake, Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 7).await;
+    let permissions = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(permissions["approvalsReviewer"], "user");
+    assert_eq!(permissions["approvalPolicy"], "on-request");
+    second.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codex_inherits_granular_policy_and_preserves_named_permission_profiles() {
+    let dir = Scratch::new("codex-profile-inheritance");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, daemon) = start_daemon_with(fake, Some(state_file.clone())).await;
+    std::fs::write(dir.0.join("codex-home/config.toml"), r#"
+approvals_reviewer = "user"
+default_permissions = "restricted"
+[approval_policy.granular]
+sandbox_approval = true
+rules = false
+mcp_elicitations = true
+request_permissions = false
+skill_approval = true
+"#).unwrap();
+    let agent = codex_agent(&url).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    let options = config_of(&mut ws, &agent, 2).await;
+    assert_eq!(current(&options, "reviewer"), "user");
+    assert_eq!(current(&options, "permissions"), "restricted");
+    assert!(!options.iter().any(|o| o.id == "sandbox"));
+    let permissions = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(permissions["activePermissionProfile"]["id"], "restricted");
+    assert_eq!(permissions["approvalPolicy"]["granular"]["rules"], false);
+    assert_eq!(permissions["approvalPolicy"]["granular"]["sandbox_approval"], true);
+    let thread = saved_conversation(&state_file).unwrap();
+    let config_file = dir.0.join("codex-home/config.toml");
+    let config = std::fs::read_to_string(&config_file).unwrap();
+    std::fs::write(&config_file, config.replace("default_permissions = \"restricted\"\n", "")).unwrap();
+    switch_of(&mut ws, &agent, 4, None).await.unwrap();
+    let options = config_of(&mut ws, &agent, 5).await;
+    assert!(options.iter().any(|o| o.id == "sandbox"));
+    assert!(!options.iter().any(|o| o.id == "permissions"));
+    assert!(layout(&url).await["spaces"][0]["root"]["permission_profile"].is_null());
+    switch_of(&mut ws, &agent, 6, Some(&thread)).await.unwrap();
+    let options = config_of(&mut ws, &agent, 7).await;
+    assert_eq!(current(&options, "permissions"), "restricted", "resume retains the destination's profile");
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(saved["spaces"][0]["root"]["permission_profile"], "restricted");
+    assert!(saved["spaces"][0]["root"]["sandbox"].is_null());
+    daemon.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (url, _, again) = start_daemon_with(fake, Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 3).await;
+    let permissions = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(permissions["activePermissionProfile"]["id"], "restricted");
+    assert!(permissions["approvalPolicy"]["granular"].is_object());
+    again.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codex_keeps_a_trust_derived_policy_without_persisting_a_retired_explicit_choice() {
+    let dir = Scratch::new("codex-derived-policy");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    std::fs::write(dir.0.join("codex-home/config.toml"), "fake_derived_untrusted = true\n").unwrap();
+    let agent = codex_agent(&url).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    let options = config_of(&mut ws, &agent, 2).await;
+    assert_eq!(current(&options, "mode"), "untrusted");
+    let mode = options.iter().find(|o| o.id == "mode").unwrap();
+    if let wheel_proto::ConfigKind::Select { choices, .. } = &mode.kind {
+        assert!(!choices.iter().any(|c| c.value == "untrusted"));
+    }
+    let permissions = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(permissions["approvalPolicy"], "untrusted");
+    assert!(layout(&url).await["spaces"][0]["root"]["permission_mode"].is_null());
+    first.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (url, _, second) = start_daemon_with(fake, Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 3).await;
+    let permissions = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(permissions["approvalPolicy"], "untrusted");
+    second.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codex_resume_uses_complete_backend_settings_instead_of_cached_pane_modes() {
+    let dir = Scratch::new("codex-native-settings-win");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    std::fs::write(dir.0.join("codex-home/config.toml"), "default_permissions = \"before\"\n").unwrap();
+    let agent = codex_agent(&url).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    reply(&mut ws, &agent, "show setup").await;
+    let thread = saved_conversation(&state_file).unwrap();
+    first.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Another native view changed these settings after Wheel saved its pane. The runtime policy
+    // deliberately differs from configured defaults, so replaying a mode string loses its fields.
+    let expected = edit_codex_permissions(&dir.0.join("codex-home"), &thread, |settings| {
+        settings["approvalPolicy"] = serde_json::json!("never");
+        settings["approvalsReviewer"] = serde_json::json!("user");
+        settings["activePermissionProfile"] = serde_json::Value::Null;
+        settings["sandbox"] = serde_json::json!({"type": "workspaceWrite", "networkAccess": false,
+            "writableRoots": ["/tmp/runtime-only-root"], "excludeTmpdirEnvVar": false, "excludeSlashTmp": false});
+    });
+    let (url, _, second) = start_daemon_with(fake, Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    transcript_when(&mut ws, &agent, |events| events.len() >= 4).await;
+    let actual = setup_permissions(&reply(&mut ws, &agent, "show setup").await);
+    assert_eq!(actual, expected);
+    let pane = layout(&url).await["spaces"][0]["root"].clone();
+    assert!(pane["permission_profile"].is_null(), "{pane}");
+    assert_eq!(pane["sandbox"], "workspace-write");
+    assert_eq!(pane["approvals_reviewer"], "user");
+    second.abort();
+}
+
+/// Send `pane_reload` `msg` (its `req` is `req`) to a busy agent's pane; returns the turn its
+/// reload waits in the queue as.
+async fn reload_queued(ws: &mut Ws, msg: ClientMsg, req: u64) -> u64 {
+    send(ws, msg).await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::AgentQueued { req: r, turn, .. } if r == req => return turn,
+            ServerMsg::Ok { req: r } if r == req => panic!("reload {req} ran at once"),
+            ServerMsg::Error { req: Some(r), message, .. } if r == req => panic!("reload {req} failed: {message}"),
+            _ => {}
+        }
+    }
+}
+
+/// The agent `pane` names once it no longer names `old`, within 20 s.
+async fn agent_after(url: &str, old: &str) -> String {
+    for _ in 0..200 {
+        let listed = layout(url).await;
+        let named = listed["spaces"][0]["root"]["agent"].as_str().unwrap_or_default().to_string();
+        if !named.is_empty() && named != old {
+            return named;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the pane still names agent {old}");
+}
+
+/// A reload asked while a turn runs waits in the agent's queue as a turn of its own: taken back by
+/// `agent_unsend` and `agent_clear_queue`, one at a time, and run at once by `agent_send_now`.
+/// When its turn comes the agent starts again with the reload's values, and the message queued
+/// behind it runs in the new agent; the one queued before it ran in the old.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_asked_during_a_turn_waits_in_the_queue() {
+    let dir = Scratch::new("agent-reload-queued");
+    let (url, _state_file, agent) = agent_with_store(&dir.0).await;
+    let pane = layout(&url).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 900).await;
+    let home = dir.0.join("queued-home").display().to_string();
+    let reload = |req: u64, set: &[(&str, &str)], unset: &[&str]| ClientMsg::PaneReload {
+        req: Some(req),
+        pane: pane.clone(),
+        set: set.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        unset: unset.iter().map(|n| n.to_string()).collect(),
+    };
+    let with_home = |req: u64| reload(req, &[("CLAUDE_CONFIG_DIR", &home)], &[]);
+
+    // Turn 1 waits on a permission; a reload asked now waits behind it, shown in the queue.
+    queue(&mut ws, &agent, "needs permission", 901).await;
+    let perm = next_perm(&mut ws).await;
+    let turn = reload_queued(&mut ws, with_home(902), 902).await;
+    let shown = attach(&mut ws, &agent, 903).await;
+    let reloads: Vec<_> = shown
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Reload { turn, text } => Some((*turn, text.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reloads.len(), 1, "{shown:?}");
+    assert_eq!(reloads[0].0, turn);
+    assert!(
+        reloads[0].1.starts_with("Reload with CLAUDE_CONFIG_DIR=") && reloads[0].1.ends_with("queued-home"),
+        "{reloads:?}"
+    );
+
+    // One reload waits at a time; `agent_unsend` takes it back.
+    let refused = ok_or_error(&mut ws, with_home(904), 904).await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("has a reload waiting")),
+        "{refused:?}"
+    );
+    let unsend = ClientMsg::AgentUnsend { req: Some(905), agent: agent.clone(), turn };
+    assert_eq!(unsend_and_retract(&mut ws, unsend, 905, turn).await, ServerMsg::Ok { req: 905 });
+
+    // `agent_clear_queue` takes it back with the messages.
+    let turn = reload_queued(&mut ws, with_home(906), 906).await;
+    let clear = ClientMsg::AgentClearQueue { req: Some(907), agent: agent.clone() };
+    assert_eq!(unsend_and_retract(&mut ws, clear, 907, turn).await, ServerMsg::Ok { req: 907 });
+    let shown = attach(&mut ws, &agent, 908).await;
+    assert!(!shown.iter().any(|e| matches!(e, AgentEvent::Reload { .. })), "{shown:?}");
+
+    // A message before the reload and one after it. The turn ends, the queued message before the
+    // reload runs in the old agent, then the pane's agent starts again with the picked home.
+    queue(&mut ws, &agent, "show setup before", 909).await;
+    reload_queued(&mut ws, with_home(910), 910).await;
+    queue(&mut ws, &agent, "show setup after", 911).await;
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    // The message before the reload answers in the old agent, under the home it started with.
+    // Its reply streams in chunks: read them until the line naming the home is whole.
+    let mut streamed = String::new();
+    let before = loop {
+        if let ServerMsg::Agent { agent: from, event: StampedEvent { event: AgentEvent::Text { text }, .. }, .. } = recv(&mut ws).await {
+            if from == agent {
+                streamed.push_str(&text);
+            }
+        }
+        if let Some((_, rest)) = streamed.split_once("setup: config_dir=") {
+            if let Some((line, _)) = rest.split_once('\n') {
+                break line.to_string();
+            }
+        }
+    };
+    assert!(!before.contains("queued-home"), "{before}");
+    let reloaded = agent_after(&url, &agent).await;
+    let listed = layout(&url).await;
+    assert_eq!(listed["spaces"][0]["root"]["env"]["CLAUDE_CONFIG_DIR"], home.as_str(), "{listed}");
+    // The message after it runs in the new agent, under the picked home.
+    let events = transcript_when(&mut ws, &reloaded, |events| {
+        events.iter().any(|e| matches!(e, AgentEvent::Text { text } if text.contains("setup: config_dir=")))
+    })
+    .await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::User { text, .. } if text == "show setup after")),
+        "{events:?}"
+    );
+    let after = events.iter().find_map(|e| match e {
+        AgentEvent::Text { text } if text.contains("setup: config_dir=") && text.contains("show setup after") => Some(text.as_str()),
+        _ => None,
+    });
+    assert!(after.is_some_and(|t| t.contains(&format!("config_dir={home}\n"))), "{events:?}");
+
+    // `agent_send_now` runs a queued reload at once: the turn running is interrupted. A message
+    // sent before the reload is never lost: an agent that takes messages mid-turn (as Claude Code
+    // does) holds it and answers it before the reload, else it goes to the new agent.
+    attach(&mut ws, &reloaded, 912).await;
+    queue(&mut ws, &reloaded, "needs permission", 913).await;
+    next_perm(&mut ws).await;
+    queue(&mut ws, &reloaded, "ahead of the reload", 916).await;
+    let turn = reload_queued(&mut ws, reload(914, &[], &["CLAUDE_CONFIG_DIR"]), 914).await;
+    let now = ClientMsg::AgentSendNow { req: Some(915), agent: reloaded.clone(), turn };
+    assert_eq!(ok_or_error(&mut ws, now, 915).await, ServerMsg::Ok { req: 915 });
+    let again = agent_after(&url, &reloaded).await;
+    assert_ne!(again, agent);
+    let listed = layout(&url).await;
+    assert!(listed["spaces"][0]["root"].get("env").is_none(), "{listed}");
+    let mut old_stream = String::new();
+    while let Ok(msg) = tokio::time::timeout(Duration::from_millis(300), recv(&mut ws)).await {
+        if let ServerMsg::Agent { agent: from, event: StampedEvent { event: AgentEvent::Text { text }, .. }, .. } = msg {
+            if from == reloaded {
+                old_stream.push_str(&text);
+            }
+        }
+    }
+    if !old_stream.contains("echo: ahead of the reload") {
+        transcript_when(&mut ws, &again, |events| {
+            events.iter().any(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: ahead of the reload")))
+        })
+        .await;
+    }
+}
+
+/// Sent now while a message waits ahead of it, a queued reload takes that message to the new
+/// agent: Codex queues a message sent during a turn rather than taking it in, so it is still in the
+/// queue when the reload's turn comes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_sent_now_takes_the_messages_ahead_of_it_to_the_new_agent() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let agent = start_agent_as(&url, &pane, None, Some("codex")).await;
+    attach(&mut ws, &agent, 1).await;
+    queue(&mut ws, &agent, "permission", 2).await;
+    perm_from(&mut ws, &agent).await;
+    queue(&mut ws, &agent, "ahead", 3).await;
+    let reload = ClientMsg::PaneReload { req: Some(4), pane: pane.clone(), set: Default::default(), unset: Vec::new() };
+    let turn = reload_queued(&mut ws, reload, 4).await;
+    let now = ClientMsg::AgentSendNow { req: Some(5), agent: agent.clone(), turn };
+    assert_eq!(ok_or_error(&mut ws, now, 5).await, ServerMsg::Ok { req: 5 });
+    let mut again = None;
+    for _ in 0..200 {
+        let listed = layout(&url).await;
+        let named = listed["spaces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| s["root"]["id"] == pane.as_str())
+            .and_then(|s| s["root"]["agent"].as_str())
+            .map(str::to_string);
+        if named.as_deref().is_some_and(|n| n != agent) {
+            again = named;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let again = again.expect("the pane names a new agent");
+    transcript_when(&mut ws, &again, |events| {
+        events.iter().any(|e| matches!(e, AgentEvent::Text { text } if text.contains("echo: ahead")))
+    })
+    .await;
+}
+
+/// `pane_reload` on an agent pane queues while a turn runs; between turns it ends the agent and
+/// starts a new one, under a new name, on the same conversation, which carries on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reloaded_agent_pane_carries_on_its_conversation() {
+    let dir = Scratch::new("agent-reload");
+    let (url, state_file, agent) = agent_with_store(&dir.0).await;
+    let pane = layout(&url).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 900).await;
+    let reload = |req: u64| ClientMsg::PaneReload {
+        req: Some(req),
+        pane: pane.clone(),
+        set: Default::default(),
+        unset: Vec::new(),
+    };
+
+    // A turn waiting on a permission keeps the agent busy: the reload waits in the queue, and is
+    // taken back.
+    send(
+        &mut ws,
+        ClientMsg::AgentSend {
+            req: Some(901),
+            agent: agent.clone(),
+            text: "needs permission".into(),
+        },
+    )
+    .await;
+    let perm = next_perm(&mut ws).await;
+    let turn = reload_queued(&mut ws, reload(902), 902).await;
+    let unsend = ClientMsg::AgentUnsend { req: Some(910), agent: agent.clone(), turn };
+    assert_eq!(unsend_and_retract(&mut ws, unsend, 910, turn).await, ServerMsg::Ok { req: 910 });
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    transcript_when(&mut ws, &agent, |events| {
+        events.iter().any(
+            |e| matches!(e, AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn"),
+        )
+    })
+    .await;
+    let before = saved_conversation(&state_file);
+    assert!(before.is_some(), "the first turn saved the conversation");
+
+    // Between turns a new agent starts on the same conversation, and the pane names it.
+    client_op(&mut ws, 903, reload(903)).await;
+    let listed = layout(&url).await;
+    let reloaded = listed["spaces"][0]["root"]["agent"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(reloaded, agent, "the pane names the new agent");
+    attach(&mut ws, &reloaded, 904).await;
+    let text = reply(&mut ws, &reloaded, "after reload").await;
+    assert_eq!(text, "echo: after reload");
+    let events = attach(&mut ws, &reloaded, 905).await;
+    assert!(
+        events.contains(&AgentEvent::TurnStart { turn: 2 }),
+        "the second turn follows the first in one conversation: {events:?}"
+    );
+    assert_eq!(saved_conversation(&state_file), before);
+
+    // `set` picks values the pane saves, its home among them; `unset` drops them again.
+    let home = dir.0.join("picked-home").display().to_string();
+    let with_env = |req: u64, set: &[(&str, &str)], unset: &[&str]| ClientMsg::PaneReload {
+        req: Some(req),
+        pane: pane.clone(),
+        set: set.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        unset: unset.iter().map(|n| n.to_string()).collect(),
+    };
+    client_op(&mut ws, 906, with_env(906, &[("CLAUDE_CONFIG_DIR", &home), ("RELOAD_PICK_TEST", "x")], &[])).await;
+    let listed = layout(&url).await;
+    let root = &listed["spaces"][0]["root"];
+    assert_eq!(root["env"]["CLAUDE_CONFIG_DIR"], home.as_str(), "{root}");
+    assert_eq!(root["env"]["RELOAD_PICK_TEST"], "x", "{root}");
+    let picked = root["agent"].as_str().unwrap().to_string();
+    attach(&mut ws, &picked, 907).await;
+    assert_eq!(reply(&mut ws, &picked, "in the new home").await, "echo: in the new home");
+    client_op(&mut ws, 908, with_env(908, &[], &["CLAUDE_CONFIG_DIR", "RELOAD_PICK_TEST"])).await;
+    let listed = layout(&url).await;
+    assert!(listed["spaces"][0]["root"].get("env").is_none(), "{listed}");
 }

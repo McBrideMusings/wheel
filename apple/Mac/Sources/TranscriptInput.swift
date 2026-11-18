@@ -120,7 +120,7 @@ extension AppModel {
               commandPalette == nil, !shortcutsOpen,
               event.modifierFlags.intersection(.deviceIndependentFlagsMask).isDisjoint(with: [.command, .control, .option, .function]),
               let characters = event.characters, AgentChat.isTyped(characters),
-              let pane = activeSpace?.focus, case let .agent(agent, _, _)? = kind(of: pane),
+              let pane = activeSpace?.focus, case let .agent(agent, _)? = kind(of: pane),
               let chat = chats[agent], chat.composerShown,
               !holdsTextKeys(window.firstResponder)
         else { return false }
@@ -141,7 +141,7 @@ extension AppModel {
             else { return false }
         }
         guard let window = NSApp.wheelWindow, window.attachedSheet == nil, commandPalette == nil,
-              let pane = activeSpace?.focus, case let .agent(agent, _, _)? = kind(of: pane),
+              let pane = activeSpace?.focus, case let .agent(agent, _)? = kind(of: pane),
               let chat = chats[agent], chat.composerShown,
               let text = window.firstResponder as? NSTextView, text.isEditable
         else { return false }

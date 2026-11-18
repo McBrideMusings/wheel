@@ -85,6 +85,13 @@ public final class PluginPaneLink {
     @discardableResult
     public func handle(_ msg: ServerMsg) -> Bool {
         switch msg {
+        case let .paneReload(pane):
+            // `wheel pane reload`: the script runs again from the top, with no state kept.
+            guard pane == self.pane else { return false }
+            plugin.restart()
+            let req = nextReq()
+            pending[req] = .source
+            send(.pluginSource(req: req, pane: pane))
         case let .pluginSource(req, pane, package, packagePane, chunk, source, modules):
             guard pane == self.pane else { return false }
             if let req { pending[req] = nil }
