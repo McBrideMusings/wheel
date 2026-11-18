@@ -313,7 +313,11 @@ pub(crate) fn env(
 /// How to start a terminal whose shell is `shell` (the login shell when None): the environment plus
 /// the shell's own way to run Wheel's startup files. `path` is the daemon's PATH, which the shell
 /// starts with; `login_shell` is `$SHELL`, which names the login shell; `user_zdotdir` is the
-/// `ZDOTDIR` the daemon runs with.
+/// `ZDOTDIR` the daemon runs with. `picked` is the environment values picked for the pane's shell:
+/// the shell starts with them, and zsh and bash set them again after the person's startup files
+/// (from `WHEEL_PICKED`, the names, and `WHEEL_PICKED_<name>`, each value), so a startup file that
+/// sets one of them does not undo the pick.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn launch(
     shell: Option<String>,
     path: &str,
@@ -322,6 +326,7 @@ pub(crate) fn launch(
     control: &Control,
     instance_dir: &Path,
     seat: Option<Seat>,
+    picked: &std::collections::BTreeMap<String, String>,
 ) -> Launch {
     let mut env = env(control, instance_dir, seat);
     let which = shell
@@ -332,6 +337,12 @@ pub(crate) fn launch(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
+    env.extend(picked.clone());
+    // Only Wheel's zsh and bash startup files read these and unset them.
+    if matches!(name, "zsh" | "bash") && !picked.is_empty() {
+        env.extend(picked.iter().map(|(name, value)| (format!("WHEEL_PICKED_{name}"), value.clone())));
+        env.push(("WHEEL_PICKED".into(), picked.keys().cloned().collect::<Vec<_>>().join(" ")));
+    }
     let mut launch = Launch {
         program: shell,
         ..Default::default()
@@ -433,6 +444,7 @@ mod tests {
             &control(),
             Path::new("/s"),
             None,
+            &Default::default(),
         );
         assert_eq!(l.program, None);
         assert_eq!(get(&l.env, "ZDOTDIR"), Some("/s/shell/zsh"));
@@ -449,6 +461,7 @@ mod tests {
             &control(),
             Path::new("/s"),
             None,
+            &Default::default(),
         );
         assert_eq!(l.program.as_deref(), Some("/bin/bash"));
         assert_eq!(l.args, ["--rcfile", "/s/shell/bash/rcfile"]);
@@ -465,6 +478,7 @@ mod tests {
             &control(),
             Path::new("/s"),
             None,
+            &Default::default(),
         );
         assert_eq!(l.program.as_deref(), Some("/opt/homebrew/bin/bash"));
         assert_eq!(l.args.len(), 2);
@@ -480,6 +494,7 @@ mod tests {
             &control(),
             Path::new("/s"),
             None,
+            &Default::default(),
         );
         assert!(get(&l.env, "PATH").unwrap().starts_with("/s/shell/bin:"));
     }
@@ -821,6 +836,16 @@ mod tests {
     /// Run `shell` interactively through `launch` with `HOME` at a directory whose startup files
     /// leave a mark and put their own directory first on `PATH`; return what it printed.
     fn run_shell(shell: &str, name: &str, extra: &[(&str, &str)]) -> String {
+        run_shell_picked(shell, name, extra, &Default::default())
+    }
+
+    /// [`run_shell`] with `picked` environment values for the pane's shell.
+    fn run_shell_picked(
+        shell: &str,
+        name: &str,
+        extra: &[(&str, &str)],
+        picked: &std::collections::BTreeMap<String, String>,
+    ) -> String {
         let root = std::env::temp_dir().join(format!("wheel-shell-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
@@ -847,10 +872,11 @@ mod tests {
             &control(),
             &instance,
             Some("p2"),
+            picked,
         );
         let mut cmd = std::process::Command::new(launch.program.as_deref().unwrap());
         cmd.args(&launch.args)
-            .args(["-i", "-c", "echo \"mark=$MARK\"; echo \"path=$PATH\"; echo \"pane=$WHEEL_PANE zdotdir=${ZDOTDIR-unset}\""])
+            .args(["-i", "-c", "echo \"mark=$MARK\"; echo \"path=$PATH\"; echo \"pane=$WHEEL_PANE zdotdir=${ZDOTDIR-unset}\"; echo \"left=${WHEEL_PICKED-}${WHEEL_PICKED_MARK-}\""])
             .env_clear()
             .env("HOME", &home)
             .env("PATH", "/usr/bin:/bin")
@@ -882,6 +908,17 @@ mod tests {
         assert!(out.contains("mark=.bash_profile"), "{out}");
         assert!(out.contains("shell/bin:/user/bin:"), "{out}");
         assert!(out.contains("pane=p2"), "{out}");
+    }
+
+    #[test]
+    fn a_picked_value_outlasts_the_persons_startup_files() {
+        let picked = [("MARK".to_string(), "picked value".to_string())].into();
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            let name = format!("picked-{}", shell.rsplit('/').next().unwrap());
+            let out = run_shell_picked(shell, &name, &[], &picked);
+            assert!(out.contains("mark=picked value\n"), "{shell}: {out}");
+            assert!(out.contains("left=\n"), "{shell}: {out}");
+        }
     }
 
     #[test]

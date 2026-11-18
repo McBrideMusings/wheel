@@ -11,6 +11,7 @@ mod external_backends;
 mod brief;
 mod builtins;
 mod cards;
+mod carry;
 mod claude;
 mod clients;
 mod codex;

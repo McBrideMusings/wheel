@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,6 +38,9 @@ pub(crate) struct AgentStart {
     pub context: Option<ContextUse>,
     pub model: Option<String>,
     pub permissions: AgentPermissions,
+    /// Environment values picked for the agent (`pane_reload`'s `set`), other than its home
+    /// variable, which `home` carries. Set last, so they win over Wheel's own.
+    pub env: BTreeMap<String, String>,
 }
 
 /// An agent pane's choices while the pane is a terminal: the model and mode (config option id,
@@ -487,7 +490,7 @@ impl AppState {
     }
 
     /// How to start a terminal for `seat` (its space and pane), running `shell` or the login shell.
-    fn term_launch(&self, shell: Option<String>, seat: Option<Seat>) -> Launch {
+    fn term_launch(&self, shell: Option<String>, seat: Option<Seat>, picked: &BTreeMap<String, String>) -> Launch {
         match self.control.lock().unwrap().as_ref() {
             Some(control) => crate::shell::launch(
                 shell,
@@ -497,9 +500,11 @@ impl AppState {
                 control,
                 &self.instance_dir,
                 seat,
+                picked,
             ),
             None => Launch {
                 program: shell,
+                env: picked.clone().into_iter().collect(),
                 ..Default::default()
             },
         }
@@ -610,21 +615,22 @@ impl AppState {
     }
 
     /// Start `shell`, else the login shell, on a new PTY and keep it until its owner ends it.
-    /// `seat` is the pane the terminal belongs to and the directory of the space holding it.
+    /// `seat` is the pane the terminal belongs to and the directory of the space holding it, and
+    /// `picked` the environment values picked for the pane's shell.
     pub(crate) async fn open_term(
         &self,
         cwd: String,
         shell: Option<String>,
-        cols: u16,
-        rows: u16,
+        (cols, rows): (u16, u16),
         owner: Owner,
         seat: Option<(Seat<'_>, &str)>,
+        picked: &BTreeMap<String, String>,
     ) -> Result<Arc<Term>, String> {
         let id = format!("t{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         if let Some((pane, space_cwd)) = seat {
             self.pane_brief(pane, space_cwd);
         }
-        let launch = self.term_launch(shell, seat.map(|(pane, _)| pane));
+        let launch = self.term_launch(shell, seat.map(|(pane, _)| pane), picked);
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
             tokio::task::spawn_blocking(move || {
@@ -674,6 +680,7 @@ impl AppState {
             context,
             model,
             permissions,
+            env: picked,
         } = start;
         let command = self.agent_ready(agent)?.command;
         let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
@@ -688,7 +695,11 @@ impl AppState {
                 &self.pane_brief(pane, space_cwd),
                 &self.guidance_for(agent),
             )),
-            env: self.agent_env(pane),
+            env: {
+                let mut env = self.agent_env(pane);
+                env.extend(picked);
+                env
+            },
             restored: conversation.is_some(),
             conversation,
             fork,
@@ -1777,7 +1788,7 @@ async fn handle(
         } => {
             let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
             match state
-                .open_term(cwd, None, cols, rows, Owner::Client, None)
+                .open_term(cwd, None, (cols, rows), Owner::Client, None, &BTreeMap::new())
                 .await
             {
                 Ok(term) => Some(ServerMsg::TermOpened {
@@ -2025,10 +2036,10 @@ async fn handle(
             None
         }
         // On a task of its own: a switch waits for the other view's process to stop.
-        ClientMsg::PaneReload { req, pane } => {
+        ClientMsg::PaneReload { req, pane, set, unset } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
-                let reply = match state.pane_reload(&pane).await {
+                let reply = match state.pane_reload(&pane, set, unset).await {
                     Ok(()) => req.map(|req| ServerMsg::Ok { req }),
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %message, "pane reload failed");

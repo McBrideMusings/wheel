@@ -19,7 +19,7 @@ use wheel_proto::{
 
 use crate::resume::{self, Harness};
 use crate::server::{AgentStart, AppState, CarriedView, Owner};
-use crate::spaces::{space_find, space_panes, PANE_COLS, PANE_ROWS};
+use crate::spaces::{picked_besides_home, space_find, space_panes, PANE_COLS, PANE_ROWS};
 
 /// How long Claude Code in a terminal has to quit after SIGTERM before the switch gives up.
 pub(crate) const TUI_EXIT: Duration = Duration::from_secs(10);
@@ -84,9 +84,9 @@ impl AppState {
     /// Turn a terminal running Claude Code, Codex or pi into an agent pane on the same conversation.
     async fn view_as_agent(&self, pane: &str) -> Result<(), String> {
         let (kind, space_cwd) = self.kind_and_space(pane)?;
-        let (term_id, previous) = match kind {
+        let (term_id, previous, picked) = match kind {
             PaneKind::Agent { .. } => return Ok(()),
-            PaneKind::Terminal { term, agent, .. } => (term, agent.map(|a| *a)),
+            PaneKind::Terminal { term, agent, env, .. } => (term, agent.map(|a| *a), env),
             other => return Err(not_switchable(pane, &other)),
         };
         let term = self
@@ -185,6 +185,7 @@ impl AppState {
                 conversation: Some(agent.conversation.clone()),
                 home: claude_dir.clone(),
                 permissions: permissions.clone(),
+                env: picked_besides_home(picked.clone(), kind),
                 ..Default::default()
             },
         )?;
@@ -195,11 +196,13 @@ impl AppState {
             state: None,
             model: None,
             context: None,
-            // The home Claude Code ran the conversation in is picked, so a restart finds it there.
-            place: AgentPlace::boxed(
-                (cwd != space_cwd).then_some(cwd),
-                [(kind.home_var().to_string(), claude_dir.unwrap_or_default())].into(),
-            ),
+            // The home Claude Code ran the conversation in is picked, so a restart finds it there;
+            // the terminal's other picks stay the pane's.
+            place: AgentPlace::boxed((cwd != space_cwd).then_some(cwd), {
+                let mut picked = picked;
+                picked.insert(kind.home_var().to_string(), claude_dir.unwrap_or_default());
+                picked
+            }),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
             extra: Extra::default(),
@@ -216,7 +219,7 @@ impl AppState {
     /// Turn an agent pane into a terminal running the same agent on the same conversation.
     async fn view_as_terminal(&self, pane: &str) -> Result<(), String> {
         let (kind, space_cwd) = self.kind_and_space(pane)?;
-        let (name, kind, cwd) = match kind {
+        let (name, kind, cwd, picked) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
             PaneKind::Agent {
                 agent,
@@ -227,8 +230,11 @@ impl AppState {
                 let kind = Harness::parse(&harness).ok_or_else(|| {
                     format!("{pane} runs {harness}, and only Claude Code's, Codex's and pi's conversations resume in a terminal")
                 })?;
-                let cwd = place.and_then(|p| p.cwd);
-                (agent, kind, cwd)
+                let place = place.map(|p| *p).unwrap_or_default();
+                // The agent's picks are the pane's: its shell starts with them. An empty one
+                // picks no override for an agent, so the shell is not given it.
+                let picked = place.env.into_iter().filter(|(_, v)| !v.is_empty()).collect::<std::collections::BTreeMap<_, _>>();
+                (agent, kind, place.cwd, picked)
             }
             other => return Err(not_switchable(pane, &other)),
         };
@@ -247,10 +253,10 @@ impl AppState {
             .open_term(
                 dir.clone(),
                 self.shell_in(&space_cwd),
-                PANE_COLS,
-                PANE_ROWS,
+                (PANE_COLS, PANE_ROWS),
                 Owner::Pane,
                 Some((pane, &space_cwd)),
+                &picked,
             )
             .await?;
         tracing::info!(%pane, agent = %name, harness = kind.name(), %conversation, "switching to the terminal view: stopping the agent");
@@ -275,6 +281,7 @@ impl AppState {
             term: term.id.clone(),
             cwd: Some(dir),
             agent: Some(Box::new(agent)),
+            env: picked,
             extra: Extra::default(),
         };
         // The agent is gone, so the pane becomes the terminal before anything else can fail: a

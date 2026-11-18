@@ -6104,6 +6104,8 @@ async fn a_reloaded_agent_pane_carries_on_its_conversation() {
     let reload = |req: u64| ClientMsg::PaneReload {
         req: Some(req),
         pane: pane.clone(),
+        set: Default::default(),
+        unset: Vec::new(),
     };
 
     // A turn waiting on a permission keeps the agent busy: the reload is refused.
@@ -6158,4 +6160,24 @@ async fn a_reloaded_agent_pane_carries_on_its_conversation() {
         "the second turn follows the first in one conversation: {events:?}"
     );
     assert_eq!(saved_conversation(&state_file), before);
+
+    // `set` picks values the pane saves, its home among them; `unset` drops them again.
+    let home = dir.0.join("picked-home").display().to_string();
+    let with_env = |req: u64, set: &[(&str, &str)], unset: &[&str]| ClientMsg::PaneReload {
+        req: Some(req),
+        pane: pane.clone(),
+        set: set.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        unset: unset.iter().map(|n| n.to_string()).collect(),
+    };
+    client_op(&mut ws, 906, with_env(906, &[("CLAUDE_CONFIG_DIR", &home), ("RELOAD_PICK_TEST", "x")], &[])).await;
+    let listed = layout(&url).await;
+    let root = &listed["spaces"][0]["root"];
+    assert_eq!(root["env"]["CLAUDE_CONFIG_DIR"], home.as_str(), "{root}");
+    assert_eq!(root["env"]["RELOAD_PICK_TEST"], "x", "{root}");
+    let picked = root["agent"].as_str().unwrap().to_string();
+    attach(&mut ws, &picked, 907).await;
+    assert_eq!(reply(&mut ws, &picked, "in the new home").await, "echo: in the new home");
+    client_op(&mut ws, 908, with_env(908, &[], &["CLAUDE_CONFIG_DIR", "RELOAD_PICK_TEST"])).await;
+    let listed = layout(&url).await;
+    assert!(listed["spaces"][0]["root"].get("env").is_none(), "{listed}");
 }

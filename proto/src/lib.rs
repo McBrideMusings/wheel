@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 51;
+pub const PROTOCOL_VERSION: u32 = 52;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1338,10 +1338,23 @@ pub enum ClientMsg {
     /// directory the shell was last in, resuming the Claude Code, Codex or pi conversation it ran.
     /// A web, browser or plugin pane gets `pane_reload` sent to every client, and a web pane's
     /// artifact runs its refresh command. An empty pane is left as it is. `PROTOCOL_VERSION` 51.
+    ///
+    /// `set` and `unset` change the environment of an agent or terminal pane's new process: each
+    /// `set` value is picked and saved on the pane, each `unset` name drops a saved value so the
+    /// login shell decides it again. Any other kind of pane refuses them. When an agent's home
+    /// variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`) changes, its
+    /// conversation's file is carried to the same place in the new home first: resumed where it is
+    /// already the same file, copied where none is, replaced where the one there is an earlier copy,
+    /// and the reload refused, naming both files, where the one there has turns the pane's lacks.
+    /// `PROTOCOL_VERSION` 52.
     PaneReload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         pane: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        set: std::collections::BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
     },
     /// Write a PNG of what a client draws for `pane` to `path` on the daemon's machine. The daemon
     /// asks a connected client that offered rendering (`render_offer`) and showed the pane, waits
@@ -4491,10 +4504,13 @@ pub enum PaneKind {
     Empty { extra: Extra },
     /// A shell. `cwd` is the directory it was last in and `agent` the coding agent it was running,
     /// both sampled by the daemon and saved so a restart opens the shell there and resumes the agent.
+    /// `env` is the environment values picked for the shell (`pane_reload`'s `set`), set again
+    /// after the person's startup files at every start.
     Terminal {
         term: String,
         cwd: Option<String>,
         agent: Option<Box<TermAgent>>,
+        env: std::collections::BTreeMap<String, String>,
         extra: Extra,
     },
     /// The artifact `artifact` names, served at `/artifacts/<pane>/` and reloaded when a file in
@@ -4642,6 +4658,8 @@ enum KnownPaneKind {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<Box<TermAgent>>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        env: std::collections::BTreeMap<String, String>,
     },
     Web {
         scope: ArtifactScope,
@@ -4692,12 +4710,14 @@ impl Serialize for PaneKind {
                 term,
                 cwd,
                 agent,
+                env,
                 extra,
             } => (
                 KnownPaneKind::Terminal {
                     term: term.clone(),
                     cwd: cwd.clone(),
                     agent: agent.clone(),
+                    env: env.clone(),
                 },
                 extra,
             ),
@@ -4802,10 +4822,11 @@ impl<'de> Deserialize<'de> for PaneKind {
         );
         Ok(match known {
             KnownPaneKind::Empty => PaneKind::Empty { extra },
-            KnownPaneKind::Terminal { term, cwd, agent } => PaneKind::Terminal {
+            KnownPaneKind::Terminal { term, cwd, agent, env } => PaneKind::Terminal {
                 term,
                 cwd,
                 agent,
+                env,
                 extra,
             },
             // The same for a name no reference can hold, which only a hand-edited layout has.

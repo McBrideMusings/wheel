@@ -3,6 +3,13 @@
 # here behaves as it would outside Wheel.
 if [ -n "$WHEEL_USER_ZDOTDIR" ]; then export ZDOTDIR="$WHEEL_USER_ZDOTDIR"; else unset ZDOTDIR; fi
 unset WHEEL_USER_ZDOTDIR
+# Values picked for this pane (`wheel pane reload --env`) win over the person's startup files.
+for WHEEL_NAME in ${=WHEEL_PICKED}; do
+  WHEEL_VALUE="WHEEL_PICKED_$WHEEL_NAME"
+  export "$WHEEL_NAME=${(P)WHEEL_VALUE}"
+  unset "$WHEEL_VALUE"
+done
+unset WHEEL_PICKED WHEEL_NAME WHEEL_VALUE
 case ":$PATH:" in
   ":$WHEEL_BIN:"*) ;;
   *) PATH="$WHEEL_BIN:$PATH" ;;

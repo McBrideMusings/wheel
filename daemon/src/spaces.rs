@@ -1581,16 +1581,17 @@ impl AppState {
                         .open_term(
                             cwd.clone(),
                             shell,
-                            PANE_COLS,
-                            PANE_ROWS,
+                            (PANE_COLS, PANE_ROWS),
                             Owner::Pane,
                             Some((pane, &cwd)),
+                            &Default::default(),
                         )
                         .await?
                         .id
                         .clone(),
                     cwd: None,
                     agent: None,
+                    env: Default::default(),
                     extra: Extra::default(),
                 }
             }
@@ -1949,7 +1950,8 @@ impl AppState {
     ) -> Result<(), String> {
         let home = home?;
         // A conversation switched over from a terminal runs where Claude Code ran it.
-        let cwd = saved_place(root, &saved.pane).cwd;
+        let place = saved_place(root, &saved.pane);
+        let cwd = place.cwd;
         let permissions = match space_find(root, &saved.pane) {
             Some(PaneKind::Agent { permissions, .. }) => {
                 permissions.as_deref().cloned().unwrap_or_default()
@@ -1976,6 +1978,7 @@ impl AppState {
                 context: saved.context,
                 model: saved.model,
                 permissions,
+                env: picked_besides_home(place.env, harness),
             },
         )
     }
@@ -2496,12 +2499,12 @@ impl AppState {
             let mut ids = Vec::new();
             collect_terminal_panes(space, &mut ids);
             for pane in ids {
-                let (saved_cwd, saved_agent) = match space_find(space, &pane) {
-                    Some(PaneKind::Terminal { cwd, agent, .. }) => (cwd.clone(), agent.clone()),
-                    _ => (None, None),
+                let (saved_cwd, saved_agent, picked) = match space_find(space, &pane) {
+                    Some(PaneKind::Terminal { cwd, agent, env, .. }) => (cwd.clone(), agent.clone(), env.clone()),
+                    _ => Default::default(),
                 };
                 let opened = self
-                    .reopen_shell(&pane, &space.cwd, saved_cwd, saved_agent, &mut resumed_conversations)
+                    .reopen_shell(&pane, &space.cwd, (saved_cwd, saved_agent), &picked, &mut resumed_conversations)
                     .await;
                 let space_id = space.id.clone();
                 let Some(slot) = space_find_mut(space, &pane) else {
@@ -2850,6 +2853,15 @@ pub(crate) fn agent_panes(space: &SpaceInfo) -> Vec<AgentPane> {
             _ => None,
         })
         .collect()
+}
+
+/// The values of `picked` other than `harness`'s home variable, which an agent gets as its home.
+pub(crate) fn picked_besides_home(
+    mut picked: std::collections::BTreeMap<String, String>,
+    harness: Harness,
+) -> std::collections::BTreeMap<String, String> {
+    picked.remove(harness.home_var());
+    picked
 }
 
 /// Where saved agent pane `pane` of `space` runs: its own directory and picked environment.

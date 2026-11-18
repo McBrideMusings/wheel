@@ -8752,6 +8752,109 @@ async fn pane_info_waits_3_seconds_in_all_for_many_silent_browsers() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// `pane_reload`'s `set` and `unset` on a terminal pane: the new shell has a picked value, the
+/// pane saves it and a restored shell starts with it, an unset drops it, and a web pane refuses.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_reload_picks_env_the_pane_keeps_across_a_restart() {
+    let base = std::env::temp_dir().join(format!("wheel-reload-env-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let dash = base.join(".wheel/artifacts/dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    register(&base, "dash", &dash, "title = \"Dash\"\n");
+    let state_file = base.join("spaces.json");
+    let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    ok(&mut ws, terminal(&pane)).await;
+    let reload = |req: u64, set: &[(&str, &str)], unset: &[&str]| ClientMsg::PaneReload {
+        req: Some(req),
+        pane: pane.clone(),
+        set: set.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        unset: unset.iter().map(|n| n.to_string()).collect(),
+    };
+    let echo = |term: String, req: u64, mark: &'static str| ClientMsg::TermInput {
+        req: Some(req),
+        id: term,
+        data: wheel_proto::encode_bytes(format!("echo \"{mark}=[$RELOAD_PICK_TEST]\"\n").as_bytes()),
+    };
+    let saved_env = |spaces: &[wheel_proto::SpaceInfo]| match find_kind(&spaces[0].root, &pane) {
+        Some(PaneKind::Terminal { env, .. }) => env.clone(),
+        other => panic!("not a terminal: {other:?}"),
+    };
+
+    // A name that is no variable, and a name both set and unset, are refused.
+    for bad in [reload(2, &[("1X", "a")], &[]), reload(3, &[("A", "a")], &["A"])] {
+        assert!(matches!(call(&mut ws, bad).await, ServerMsg::Error { .. }));
+    }
+
+    // --env: the new shell has the value, and the pane saves it.
+    ok(&mut ws, reload(4, &[("RELOAD_PICK_TEST", "two words")], &[])).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(saved_env(&spaces), [("RELOAD_PICK_TEST".to_string(), "two words".to_string())].into());
+    let term = term_of(&spaces[0], &pane).unwrap();
+    ok(&mut ws, echo(term.clone(), 5, "picked")).await;
+    let text = term_text(&mut connect(&url).await, &term, "picked=[two words]").await;
+    assert!(text.contains("picked=[two words]"), "{text}");
+
+    // The pick outlives wheeld: a restored shell starts with it.
+    drop(ws);
+    first_daemon.abort();
+    let (url, second_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(saved_env(&spaces), [("RELOAD_PICK_TEST".to_string(), "two words".to_string())].into());
+    let term = term_of(&spaces[0], &pane).unwrap();
+    ok(&mut ws, echo(term.clone(), 6, "restored")).await;
+    let text = term_text(&mut connect(&url).await, &term, "restored=[two words]").await;
+    assert!(text.contains("restored=[two words]"), "{text}");
+
+    // --unset-env drops it: the next shell does not have it, and the pane saves none.
+    ok(&mut ws, reload(7, &[], &["RELOAD_PICK_TEST"])).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(saved_env(&spaces).is_empty());
+    let term = term_of(&spaces[0], &pane).unwrap();
+    ok(&mut ws, echo(term.clone(), 8, "dropped")).await;
+    let text = term_text(&mut connect(&url).await, &term, "dropped=[]").await;
+    assert!(text.contains("dropped=[]"), "{text}");
+
+    // A web pane runs no process of its own, so it refuses --env and says why.
+    let web = created(
+        &mut ws,
+        ClientMsg::PaneSplit { req: Some(9), pane: pane.clone(), dir: Some(Dir::Right), focus: false, site: None },
+    )
+    .await;
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            home: None,
+            req: Some(10),
+            pane: web.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("dash".into()),
+            scope: None,
+            url: None,
+            plugin: None,
+        },
+    )
+    .await;
+    let refused = call(
+        &mut ws,
+        ClientMsg::PaneReload { req: Some(11), pane: web.clone(), set: [("A".to_string(), "b".to_string())].into(), unset: Vec::new() },
+    )
+    .await;
+    assert!(
+        matches!(&refused, ServerMsg::Error { message, .. } if message.contains("takes no --env") && message.contains("per artifact")),
+        "{refused:?}"
+    );
+    drop(second_daemon);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// `pane_reload` starts each pane again on what it is on: an empty pane stays empty, a terminal
 /// gets a new shell in the directory the old one was in, a web pane is reloaded on every client
 /// and runs its refresh again, and a browser pane is reloaded on every client.
@@ -8780,6 +8883,8 @@ async fn a_reload_starts_each_pane_again_on_what_it_is_on() {
     let reload = |req: u64, pane: &str| ClientMsg::PaneReload {
         req: Some(req),
         pane: pane.into(),
+        set: Default::default(),
+        unset: Vec::new(),
     };
 
     // An empty pane: nothing happens, and the reload succeeds.
