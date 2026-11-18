@@ -2895,7 +2895,7 @@ fn footer_items(order: &[String], t: &Transcript, leaf: Option<&Leaf>, agents: &
             "home" => leaf.map(|l| {
                 let harness = l.harness.as_deref().unwrap_or("claude");
                 let listed = agents.iter().find(|a| a.name == harness).and_then(|a| a.home.as_deref());
-                footer::shown_home(l.home.as_deref(), harness, listed)
+                footer::shown_home(t.footer.as_ref().and_then(|f| f.home.as_deref()), harness, listed)
             }),
             "branch" => t.footer.as_ref().and_then(|f| f.branch.as_ref()).map(|b| format!("\u{2387} {b}")),
             "changes" => t.footer.as_ref().and_then(footer::changes_text),

@@ -450,7 +450,7 @@ impl AppState {
                 state.set_login_path(login_path);
                 if found {
                     state.log_agents();
-                    state.start_unstarted_agents();
+                    state.start_unstarted_agents().await;
                     let _ = state.global.send(state.status(None).await);
                 }
                 if !again {
@@ -783,6 +783,7 @@ impl AppState {
     /// that stops serving without its process ending (an in-process restart in a test) calls this
     /// first, so its agents do not outlive it.
     pub fn stop_agents(&self) {
+        self.keep_agent_permissions();
         let agents: Vec<_> = self
             .agents
             .lock()
@@ -1995,6 +1996,8 @@ async fn handle(
                                     permissions: AgentPermissions {
                                         permission_mode,
                                         sandbox,
+                                        approvals_reviewer: None,
+                                        permission_profile: None,
                                     },
                                 },
                             )

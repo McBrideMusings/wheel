@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 49;
+pub const PROTOCOL_VERSION: u32 = 50;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -3981,6 +3981,10 @@ pub struct AgentFooter {
     /// The running background tasks, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<BackgroundTask>,
+    /// The config directory the agent runs with (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+    /// `PI_CODING_AGENT_DIR`); none when it runs with the agent's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
 /// One background task an agent has running, with only what the agent's own events say about it:
@@ -4401,8 +4405,8 @@ pub struct PaneLogin {
 /// says, so a script can say which login a pane uses; never saved with the layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentLogin {
-    /// The agent's config directory: the pane's own `home`, else the `agent.<name>.home`
-    /// setting, else the agent's default (`~/.claude`, `~/.codex`).
+    /// The agent's config directory: the one its running agent was started with, else the
+    /// `agent.<name>.home` setting, else the agent's default (`~/.claude`, `~/.codex`).
     pub home: String,
     /// The reading's `billing` (`Max 20x`, `API`); None while no reading names a login in `home`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4498,8 +4502,8 @@ pub enum PaneKind {
     /// settings); `conversation` is that agent's own id for the conversation, saved so a
     /// restarted daemon can load it. `state` is the agent's state, filled in only in the
     /// layout listing (`status`): never saved, and never in the layout
-    /// broadcast, where `agent_state_changed` carries it. `place` is where the agent runs when
-    /// that is not the space's directory with the daemon's own Claude config directory.
+    /// broadcast, where `agent_state_changed` carries it. `place` is the directory the agent runs
+    /// in when it is not the space's, and the environment values picked for it.
     Agent {
         agent: String,
         harness: String,
@@ -4533,41 +4537,49 @@ impl PaneKind {
     }
 }
 
-/// Where an agent pane's agent runs, saved flat in the pane as `cwd` and `home`: the directory and
-/// the Claude config directory, each set only when it is not the space's directory or the daemon's
-/// own. A conversation switched over from a terminal keeps the ones Claude Code ran it with there,
-/// since that is where its store is.
+/// Where an agent pane's agent runs, saved flat in the pane as `cwd` and `env`: the directory, set
+/// only when it is not the space's, and the environment values that were picked for the agent (a
+/// fork's home, the home a conversation switched over from a terminal ran in). A value the login
+/// shell or the daemon gave is not saved: a restored pane asks the login shell again for every
+/// variable it did not pick. An empty value picks no override: the agent runs with the
+/// `agent.<name>.home` setting, else the daemon's own environment, and the shell is not asked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentPlace {
     pub cwd: Option<String>,
-    pub home: Option<String>,
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 impl AgentPlace {
     /// The place, or none when neither is set.
-    pub fn boxed(cwd: Option<String>, home: Option<String>) -> Option<Box<AgentPlace>> {
-        (cwd.is_some() || home.is_some()).then(|| Box::new(AgentPlace { cwd, home }))
+    pub fn boxed(cwd: Option<String>, env: std::collections::BTreeMap<String, String>) -> Option<Box<AgentPlace>> {
+        (cwd.is_some() || !env.is_empty()).then(|| Box::new(AgentPlace { cwd, env }))
     }
 }
 
-/// What `pane_start` set for an agent pane's permissions, saved flat in the pane as
-/// `permission_mode` and `sandbox` so a restored pane starts its agent the same way.
+/// Effective agent permissions, saved flat in the pane so restored processes keep the policy,
+/// reviewer and selected sandbox or named profile independently. None inherits the harness config.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentPermissions {
     pub permission_mode: Option<String>,
     pub sandbox: Option<String>,
+    pub approvals_reviewer: Option<String>,
+    pub permission_profile: Option<String>,
 }
 
 impl AgentPermissions {
-    /// The permissions, or none when neither is set.
+    /// The permissions, or none when every field inherits.
     pub fn boxed(
         permission_mode: Option<String>,
         sandbox: Option<String>,
+        approvals_reviewer: Option<String>,
+        permission_profile: Option<String>,
     ) -> Option<Box<AgentPermissions>> {
-        (permission_mode.is_some() || sandbox.is_some()).then(|| {
+        (permission_mode.is_some() || sandbox.is_some() || approvals_reviewer.is_some() || permission_profile.is_some()).then(|| {
             Box::new(AgentPermissions {
                 permission_mode,
                 sandbox,
+                approvals_reviewer,
+                permission_profile,
             })
         })
     }
@@ -4643,12 +4655,16 @@ enum KnownPaneKind {
         context: Option<ContextUse>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        home: Option<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        env: std::collections::BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_mode: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sandbox: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approvals_reviewer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_profile: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         login: Option<AgentLogin>,
     },
@@ -4713,9 +4729,11 @@ impl Serialize for PaneKind {
                     model: model.clone(),
                     context: *context,
                     cwd: place.as_ref().and_then(|p| p.cwd.clone()),
-                    home: place.as_ref().and_then(|p| p.home.clone()),
+                    env: place.as_ref().map(|p| p.env.clone()).unwrap_or_default(),
                     permission_mode: permissions.as_ref().and_then(|p| p.permission_mode.clone()),
                     sandbox: permissions.as_ref().and_then(|p| p.sandbox.clone()),
+                    approvals_reviewer: permissions.as_ref().and_then(|p| p.approvals_reviewer.clone()),
+                    permission_profile: permissions.as_ref().and_then(|p| p.permission_profile.clone()),
                     login: login.as_deref().cloned(),
                 },
                 extra,
@@ -4801,9 +4819,11 @@ impl<'de> Deserialize<'de> for PaneKind {
                 model,
                 context,
                 cwd,
-                home,
+                env,
                 permission_mode,
                 sandbox,
+                approvals_reviewer,
+                permission_profile,
                 login,
             } => PaneKind::Agent {
                 agent,
@@ -4812,8 +4832,8 @@ impl<'de> Deserialize<'de> for PaneKind {
                 state: state.map(Box::new),
                 model,
                 context,
-                place: AgentPlace::boxed(cwd, home),
-                permissions: AgentPermissions::boxed(permission_mode, sandbox),
+                place: AgentPlace::boxed(cwd, env),
+                permissions: AgentPermissions::boxed(permission_mode, sandbox, approvals_reviewer, permission_profile),
                 login: login.map(Box::new),
                 extra,
             },
@@ -5313,6 +5333,13 @@ mod tests {
         assert!(matches!(&node, Node::Pane { kind: PaneKind::Agent { login: Some(l), .. }, .. }
             if l.home == "/h/.claude-work" && l.email.as_deref() == Some("pat@work.example")));
         assert_eq!(serde_json::to_value(&node).unwrap(), listed);
+        // Picked environment values ride on the agent pane as `env` and come back whole.
+        let picked = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7", "harness": "claude",
+            "env": {"CLAUDE_CONFIG_DIR": "/h/.claude-work"}});
+        let node: Node = serde_json::from_value(picked.clone()).unwrap();
+        assert!(matches!(&node, Node::Pane { kind: PaneKind::Agent { place: Some(p), .. }, .. }
+            if p.env.get("CLAUDE_CONFIG_DIR").map(String::as_str) == Some("/h/.claude-work") && p.cwd.is_none()));
+        assert_eq!(serde_json::to_value(&node).unwrap(), picked);
         // A pane saved without an agent name ran Claude Code.
         let old = serde_json::json!({"node": "pane", "id": "p6", "kind": "agent", "agent": "w7"});
         let node: Node = serde_json::from_value(old).unwrap();

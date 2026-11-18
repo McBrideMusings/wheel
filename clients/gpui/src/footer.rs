@@ -118,8 +118,8 @@ pub fn default_home(harness: &str) -> &'static str {
     }
 }
 
-/// The home as written beside the composer: the home the pane saved for its own agent, else the
-/// one the daemon lists for the harness (`agent.<name>.home`), else the harness's default.
+/// The home as written beside the composer: the one the pane's agent runs with, else the one the
+/// daemon lists for the harness (`agent.<name>.home`), else the harness's default.
 pub fn shown_home(own: Option<&str>, harness: &str, listed: Option<&str>) -> String {
     match [own, listed].into_iter().flatten().find(|h| !h.is_empty()) {
         Some(home) => with_tilde(home, &std::env::var("HOME").unwrap_or_default()),
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn the_footer_words_follow_the_swift_client() {
-        let f = AgentFooter { directory: "/Users/me/Projects/x".into(), branch: Some("main".into()), added: 12, removed: 3,
+        let f = AgentFooter { directory: "/Users/me/Projects/x".into(), branch: Some("main".into()), added: 12, removed: 3, home: None,
             tasks: [TaskKind::Shell, TaskKind::Agent, TaskKind::Agent].into_iter().enumerate().map(|(i, kind)| wheel_proto::BackgroundTask { id: i.to_string(), kind, ..Default::default() }).collect() };
         assert_eq!(with_tilde(&f.directory, "/Users/me"), "~/Projects/x");
         assert_eq!(with_tilde("/Users/meow/x", "/Users/me"), "/Users/meow/x");
