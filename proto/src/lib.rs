@@ -1194,8 +1194,8 @@ pub enum ClientMsg {
         #[serde(default)]
         force: bool,
     },
-    /// Start a terminal or an agent in a pane, in its space's directory; whatever the pane showed
-    /// goes. An agent runs the daemon's agent command and takes `message` as its first message;
+    /// Start a terminal or an agent in a pane, in its space's directory (an agent in `dir` when
+    /// given); whatever the pane showed goes. An agent runs the daemon's agent command and takes `message` as its first message;
     /// the reply waits until the agent is ready or has given up, and is an error when it could
     /// not start. Replies `started`.
     PaneStart {
@@ -1224,6 +1224,11 @@ pub enum ClientMsg {
         /// `danger-full-access`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sandbox: Option<String>,
+        /// For `agent` only: the directory the agent runs in, an absolute path to an existing
+        /// directory (a git worktree, say); the space's directory without one. The pane keeps it:
+        /// a restart, `agent conversations` and `status` use it, not the space's directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
     },
     /// A client reports what its copy of a browser pane's page wrote to its console: `entries`,
     /// oldest first. With `reset`, that copy was just loaded, so the daemon drops what it kept for
