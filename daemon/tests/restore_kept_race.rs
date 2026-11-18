@@ -1,6 +1,7 @@
-//! A start of kept agents that runs while a restore is in progress, as the login shell's PATH
-//! arriving late starts one, waits for the restore, and the agent the restore kept survives it. Its own
-//! test binary, since it points `SHELL` at a stand-in shell for the whole process.
+//! A restore never waits on a slow login shell for an agent's home: it keeps the agent as saved,
+//! wheeld serves at once, and the agent starts when the shell answers. An agent the restore kept
+//! survives starts of kept agents that cannot start it. Its own test binary, since it points
+//! `SHELL` at a stand-in shell for the whole process.
 
 mod common;
 
@@ -158,37 +159,50 @@ async fn a_kept_agent_survives_a_start_during_the_restore() {
     assert!(matches!(started, ServerMsg::Started { .. }), "{started:?}");
     running.abort();
 
-    // The restore cannot find the agent's program, so it keeps the agent as saved. A start of
-    // kept agents that runs while the restore waits on the slow shell waits for the restore, so
-    // it never takes an agent the restore kept before the agent's pane is in a space.
+    // A restore with the slow shell keeps the agent as saved rather than wait on the shell, so
+    // wheeld serves at once; the agent starts once the shell answers.
     std::fs::write(&slow, "").unwrap();
-    let second = state(&dir, &dir.join("no-such-agent").display().to_string());
-    let restoring = tokio::spawn({
-        let second = second.clone();
-        let path = dir.join("spaces.json");
-        async move { second.restore_spaces(path).await.unwrap() }
-    });
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(
-        !restoring.is_finished(),
-        "the restore did not wait on the slow shell"
-    );
-    std::fs::remove_file(&slow).unwrap();
-    second.start_kept_agents().await;
-    assert!(
-        restoring.is_finished(),
-        "a start of kept agents ran while the restore was in progress"
-    );
-    restoring.await.unwrap();
-
-    // The agent is still kept, and starts once its program is there.
+    let routed = routed.display().to_string();
+    let began = std::time::Instant::now();
+    let second = state(&dir, fake);
     second
+        .restore_spaces(dir.join("spaces.json"))
+        .await
+        .unwrap();
+    let (url, running) = serve(second).await;
+    let listed = listed_home(&url, &pane).await;
+    assert!(
+        began.elapsed() < Duration::from_secs(2),
+        "status took {:?}: the restore waited on the slow shell",
+        began.elapsed()
+    );
+    assert_ne!(
+        listed, routed,
+        "the agent started before the shell answered"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while listed_home(&url, &pane).await != routed {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent never started once the shell answered"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    running.abort();
+
+    // The restore keeps the agent, and the start of kept agents it leaves behind and a second
+    // one both find no program for it, so the agent is still kept and starts once its program is
+    // there.
+    let third = state(&dir, &dir.join("no-such-agent").display().to_string());
+    third.restore_spaces(dir.join("spaces.json")).await.unwrap();
+    third.start_kept_agents().await;
+    std::fs::remove_file(&slow).unwrap();
+    third
         .setting_set("agent.claude.command", fake, None, true)
         .unwrap();
-    second.start_kept_agents().await;
+    third.start_kept_agents().await;
 
-    let (url, running) = serve(second).await;
-    let routed = routed.display().to_string();
+    let (url, running) = serve(third).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while listed_home(&url, &pane).await != routed {
         assert!(

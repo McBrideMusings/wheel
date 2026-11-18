@@ -69,6 +69,16 @@ async fn running_home(url: &str, pane: &str) -> String {
         .to_string()
 }
 
+/// Wait until the agent pane `pane` runs with `home`: one whose home the login shell gives starts
+/// once the shell answers, after the restore.
+async fn wait_home(url: &str, pane: &str, home: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while running_home(url, pane).await != home {
+        assert!(std::time::Instant::now() < deadline, "{pane} never ran with {home}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 fn find_pane<'a>(value: &'a serde_json::Value, pane: &str) -> &'a serde_json::Value {
     fn walk<'a>(v: &'a serde_json::Value, pane: &str) -> Option<&'a serde_json::Value> {
         if v["node"] == "pane" && v["id"] == pane {
@@ -173,7 +183,7 @@ async fn a_restored_agent_asks_the_shell_for_any_home_it_did_not_pick() {
     // 2. The route changes; the restored agent runs with the new home.
     std::fs::write(&route, second.to_str().unwrap()).unwrap();
     let (url, running) = daemon(&dir).await;
-    assert_eq!(running_home(&url, &pane).await, second.display().to_string());
+    wait_home(&url, &pane, &second.display().to_string()).await;
     running.abort();
 
     // 3. A picked home outlives any route.
@@ -210,7 +220,7 @@ async fn a_restored_agent_asks_the_shell_for_any_home_it_did_not_pick() {
     running.abort();
 
     // 5. A login shell that gives no answer once leaves the restored agent kept as saved, and it
-    // starts by itself once the shell answers.
+    // starts by itself once the shell answers again.
     fn unpick(v: &mut serde_json::Value, pane: &str) {
         if v["node"] == "pane" && v["id"] == pane {
             v.as_object_mut().unwrap().remove("env");
@@ -228,15 +238,15 @@ async fn a_restored_agent_asks_the_shell_for_any_home_it_did_not_pick() {
     std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     std::fs::write(&fail, "").unwrap();
     let (url, running) = daemon(&dir).await;
-    assert!(!fail.exists(), "the restore never asked the shell");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while fail.exists() {
+        assert!(std::time::Instant::now() < deadline, "the shell was never asked");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     // A pane whose agent is not running lists the default home, never the shell's.
     let routed = second.display().to_string();
     assert_ne!(running_home(&url, &pane).await, routed, "an agent started with no answer from the shell");
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while running_home(&url, &pane).await != routed {
-        assert!(std::time::Instant::now() < deadline, "the kept agent never started");
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    wait_home(&url, &pane, &routed).await;
     running.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
