@@ -482,6 +482,17 @@ impl AppState {
         }
     }
 
+    /// Start the agents kept as saved ([`Self::start_kept_agents`]) without waiting for it, then
+    /// send every client a fresh status.
+    pub(crate) fn start_kept_agents_soon(&self) {
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            let Some(state) = me.upgrade() else { return };
+            state.start_kept_agents().await;
+            let _ = state.global.send(state.status(None).await);
+        });
+    }
+
     /// Start the agents kept as saved again after [`crate::login_path::RETRY`], then after twice
     /// as long each time up to [`KEPT_AGENT_RETRY_MOST`], until the login shell answers for every
     /// kept agent's home or the daemon is gone, unless `scheduled` says such a loop runs. The
