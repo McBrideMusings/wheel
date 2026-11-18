@@ -56,6 +56,9 @@ public final class DaemonClient {
     public private(set) var connection: Connection = .connecting {
         didSet { if connection != oldValue { onConnection?(connection) } }
     }
+    /// What the connected wheeld offers, from the status that brought the connection up and every
+    /// status since; `.none` while not connected. `send` sends only ops it lists (ADR-0050).
+    public private(set) var offer: ServerOffer = .none
     public var onMessage: ((ServerMsg) -> Void)?
     /// Runs after each successful (re)connect with the daemon's status at that moment.
     public var onConnect: ((ServerMsg) -> Void)?
@@ -133,10 +136,21 @@ public final class DaemonClient {
         return nextReq
     }
 
+    /// Send `msg` while connected. An op the server did not list is not sent: it is logged as a
+    /// feature that sent without asking `offer.has`, and its request is answered here with the
+    /// `error` wheeld would send.
     public func send(_ msg: ClientMsg) {
         guard let task, connection == .connected else { return }
         do {
-            let text = try msg.json()
+            let fields = try msg.fields()
+            let op = fields["op"] as? String ?? ""
+            guard offer.has(op) else {
+                let message = "the running wheeld does not handle `\(op)`; restart wheeld to use it"
+                log?("refused `\(op)`: wheeld did not list it, and a feature sent it without checking offer.has")
+                onMessage?(.error(req: fields["req"] as? UInt64, term: nil, message: message))
+                return
+            }
+            let text = try ClientMsg.text(fields)
             task.send(.string(text)) { [weak self] error in
                 if let error {
                     Task { @MainActor in self?.log?("send failed: \(error.localizedDescription)") }
@@ -204,6 +218,13 @@ public final class DaemonClient {
                     if case let .string(text) = message {
                         do {
                             let msg = try ServerMsg.decode(text)
+                            if case let .status(req, _, _, _, _, _, _, _, _, _, _, _, offer, _) = msg {
+                                if let mismatch = offer.mismatch {
+                                    self.fail(gen, mismatch)
+                                    return
+                                }
+                                if self.connection == .connected || req == probe { self.offer = offer }
+                            }
                             if self.connection != .connected, case let .status(req, _, _, _, _, _, _, _, _, _, _, _, _, _) = msg, req == probe {
                                 self.connection = .connected
                                 self.refusals = 0
@@ -331,6 +352,7 @@ public final class DaemonClient {
         }
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        offer = .none
         connection = .unreachable(reason)
         if giveUp { onRefused?(); return }
         let delay = retryDelay

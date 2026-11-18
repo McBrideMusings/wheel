@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn the_layout_comes_from_status_and_broadcast_only() {
-        let status = crate::daemon::tests::status_frame(wheel_proto::PROTOCOL_VERSION);
+        let status = crate::daemon::tests::status_frame(wheel_proto::COMPAT);
         let message: ServerMsg = serde_json::from_str(&status).unwrap();
         assert!(matches!(&message, ServerMsg::Status { protocol, .. } if *protocol == wheel_proto::PROTOCOL_VERSION));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&serde_json::to_string(&message).unwrap()).unwrap()["spaces"], serde_json::from_str::<serde_json::Value>(&status).unwrap()["spaces"]);

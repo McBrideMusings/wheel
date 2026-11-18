@@ -81,9 +81,12 @@ private final class Harness {
         socket.deliver(Self.status(req: req, uptime: uptime))
     }
 
-    static func status(req: Int?, uptime: Int) -> String {
+    /// The ops the stand-in wheeld lists: what these tests send, never `push_register`.
+    static let ops = #"["status","log","term_detach"]"#
+
+    static func status(req: Int?, uptime: Int, compat: UInt32 = ServerOffer.clientCompat) -> String {
         let r = req.map { "\"req\":\($0)," } ?? ""
-        return "{\(r)\"ev\":\"status\",\"version\":\"0\",\"log_path\":\"/l\",\"uptime_secs\":\(uptime),\"terms\":[],\"perms\":[],\"spaces\":[],\"agents\":[]}"
+        return "{\(r)\"ev\":\"status\",\"version\":\"0\",\"log_path\":\"/l\",\"uptime_secs\":\(uptime),\"compat\":\(compat),\"ops\":\(ops),\"terms\":[],\"perms\":[],\"spaces\":[],\"agents\":[]}"
     }
 }
 
@@ -136,6 +139,41 @@ struct DaemonClientTests {
         #expect(h.client.connection == .connecting)
         #expect(h.connects.isEmpty)
         #expect(h.messages.count == 1)
+    }
+
+    /// A server lacking an op connects; a send of that op never reaches it and is answered here
+    /// with the error naming it, while a listed op goes out.
+    @Test func anOpTheServerDidNotListIsAnsweredWithAnErrorAndNotSent() async throws {
+        let h = Harness()
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        try h.answerProbe(socket)
+        await h.until { h.client.connection == .connected }
+        #expect(h.client.offer.has("term_detach") && !h.client.offer.has("push_register"))
+        h.client.send(.pushRegister(req: 41, token: "apns"))
+        #expect(socket.sent.count == 1)
+        guard case let .error(req, _, message) = try #require(h.messages.last) else { Issue.record("no error"); return }
+        #expect(req == 41)
+        #expect(message.contains("`push_register`"))
+        h.client.send(.termDetach(id: "t1"))
+        #expect(socket.sent.count == 2)
+    }
+
+    /// A server at another level never connects: the client reads unreachable, saying which side
+    /// is behind, and tries again.
+    @Test func aServerAtAnotherLevelIsUnreachableWithTheReason() async throws {
+        let h = Harness()
+        h.client.start()
+        await h.until { h.sockets.first?.sent.count == 1 }
+        let socket = try #require(h.sockets.first)
+        let probe = try #require(socket.sent.first)
+        let req = try #require(JSONSerialization.jsonObject(with: Data(probe.utf8)) as? [String: Any])["req"] as? Int
+        socket.deliver(Harness.status(req: req, uptime: 1, compat: 0))
+        await h.until { h.client.connection != .connecting }
+        guard case let .unreachable(reason) = h.client.connection else { Issue.record("state \(h.client.connection)"); return }
+        #expect(reason.hasPrefix("This Wheel needs a newer wheeld"))
+        #expect(h.connects.isEmpty)
     }
 
     @Test func sendIsDroppedUntilConnected() async throws {

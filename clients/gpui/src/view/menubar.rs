@@ -53,11 +53,12 @@ pub struct MenuBar {
     /// The link as the server line reads it, and why it is down.
     link: LinkKind,
     down_reason: Option<String>,
-    /// wheeld answered at another protocol: it waits for a restart.
+    /// wheeld answered at another compatibility level: it waits for a restart.
     incompatible: bool,
-    /// From wheeld's last `status`: its source hash, protocol and start (unix ms).
+    /// From wheeld's last `status`: its source hash, how many ops this build knows that it did
+    /// not list, and its start (unix ms).
     running_source: Option<String>,
-    protocol: Option<u32>,
+    lacks: usize,
     started: Option<u64>,
     /// The remote listener and the paired devices, for the server line's details.
     remote: Option<crate::settings::Remote>,
@@ -99,7 +100,7 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     let mut changes = crate::windows::with(|r| r.watch());
     let menu = cx.new(|_| MenuBar {
         native, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
-        running_source: None, protocol: None, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
+        running_source: None, lacks: 0, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
         sessions: vec![], spaces: vec![], perms: vec![], told: None, item: Value::Null, popover: None, symbols: RefCell::default(), log: vec![],
         status_dots: crate::status::all_ranks(), space_menu: None, context_menu: Value::Null, next_req: 100, closing: None, copying: None,
     });
@@ -203,8 +204,12 @@ impl MenuBar {
                 self.up = false;
                 true
             }
-            Event::Incompatible { server: protocol, .. } => {
-                (self.link, self.down_reason, self.incompatible, self.protocol) = (LinkKind::Connected, None, true, Some(protocol));
+            Event::Refused { op } => {
+                self.log(format!("refused `{op}`: wheeld did not list it, and the item sent it without checking"));
+                false
+            }
+            Event::Incompatible { .. } => {
+                (self.link, self.down_reason, self.incompatible) = (LinkKind::Connected, None, true);
                 self.copying = None;
                 server::link(true);
                 self.up = false;
@@ -220,8 +225,8 @@ impl MenuBar {
     /// paired devices; a `stopping` frame goes to the app's watch. True when the line changed.
     fn on_server_message(&mut self, message: &ServerMsg) -> bool {
         match message {
-            ServerMsg::Status { protocol, uptime_secs, host, .. } => {
-                self.protocol = Some(*protocol);
+            ServerMsg::Status { uptime_secs, host, .. } => {
+                self.lacks = message.offer().map_or(0, |offer| offer.lacks().len());
                 self.started = Some(super::settings::now_ms().saturating_sub(uptime_secs * 1000));
                 self.running_source = Some(host.source.clone());
                 true
@@ -317,7 +322,7 @@ impl MenuBar {
     /// update dot on the item, the orange word and Restart Server in the details.
     fn restart_waiting(&self) -> bool {
         let bundled = server::with(|s| s.control.service().and_then(|s| s.bundled_source.clone())).flatten();
-        self.incompatible || crate::server::restart_waiting(self.up, self.running_source.as_deref(), bundled.as_deref(), self.protocol, crate::daemon::PROTOCOL)
+        self.incompatible || crate::server::restart_waiting(self.up, self.running_source.as_deref(), bundled.as_deref(), self.lacks)
     }
 
     fn stopped_by_menu(&self) -> bool {

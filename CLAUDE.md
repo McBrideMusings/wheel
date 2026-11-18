@@ -50,7 +50,7 @@ This is a hard rule (ADR-0020):
 - Change the server only when the work needs what only the server holds: processes, files, other clients. Everything else goes in the client.
 - Deploy the server only when a landed change touched `daemon/` or `proto/`.
 - The server depends on nothing in the client and runs with no client attached.
-- A server change a client relies on (a new op, or a field whose absence the client must notice) raises `PROTOCOL_VERSION` in `proto/src/lib.rs` and `ServerProtocol.current` in WheelKit together; against an older server the app hides what needs the new one and shows only "The server was updated." with Restart Server, and the `wheel` command refuses with "restart the server".
+- A new op needs nothing raised: `status` lists the ops `wheeld` handles, and a client feature that sends an op checks the list (`server_has` in the GPUI client, `ServerOffer.has` in WheelKit) and stays in place disabled or hidden when the running `wheeld` lacks it. Only a breaking change (an op removed, an op or field whose meaning changes, a reply field an older client cannot do without) adds a level to `BREAKS` in `proto/src/ops.rs` and raises `ServerOffer.clientCompat` in WheelKit to match; a client refuses a `wheeld` at another level and says which side is behind (ADR-0050).
 
 ## Deploying Wheel from inside Wheel
 

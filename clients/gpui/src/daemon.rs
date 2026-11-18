@@ -72,31 +72,18 @@ fn socket(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
 pub enum Event {
     /// A frame from wheeld, boxed: a `status` reply is large and the other events are not.
     Message(Box<ServerMsg>),
-    /// A socket is open and wheeld answered `status` with a protocol this client speaks. The
+    /// A socket is open and wheeld answered `status` at this client's compatibility level. The
     /// endpoint carries the token read for this attempt.
     Up(Endpoint),
     /// The socket closed or could not open; the connection retries on its own. Sent once until
     /// the cause changes or the link comes up.
     Down(String),
-    /// wheeld answered with a protocol older than the one this client needs.
+    /// wheeld answered at another compatibility level (`compat`), so its frames are not read.
     Incompatible { server: u32, client: u32 },
-}
-
-/// The protocol the client needs: ops it sends and fields it reads exist from this version on,
-/// the rule the `wheel` command applies (`cli/src/main.rs`).
-pub const PROTOCOL: u32 = wheel_proto::PROTOCOL_VERSION;
-
-/// The two fields of a `status` reply read before the rest: an older server's reply may lack
-/// fields this build's `ServerMsg` requires, and its protocol number still has to be read to
-/// say so.
-#[derive(Deserialize)]
-struct StatusHead {
-    ev: String,
-    #[serde(default = "first_protocol")]
-    protocol: u32,
-}
-fn first_protocol() -> u32 {
-    1
+    /// A frame was not sent because its op is not one wheeld listed: a feature sent it without
+    /// checking `Offer::has` first. The connection answers the request itself with an `error`
+    /// carrying `req`, as wheeld would.
+    Refused { op: String },
 }
 
 /// Pause between attempts: doubles from the first to the last, then stays.
@@ -167,7 +154,9 @@ enum Ended {
     Lost { was_up: bool, reason: Event },
 }
 
-/// One socket from open to close.
+/// One socket from open to close. Every frame the client queues passes the offer of the wheeld
+/// at the other end (`Offer::admit`): one whose op it did not list is answered here with an
+/// `error` and never sent.
 fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmpsc::UnboundedSender<Event>) -> Ended {
     let lost = |was_up, why: String| Ended::Lost { was_up, reason: Event::Down(why) };
     let mut ws = match socket(&endpoint.ws) {
@@ -178,12 +167,19 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmps
     if ws.send(Message::text(frame(&ClientMsg::Status { req: Some(1) }))).is_err() {
         return lost(false, "wheeld closed the socket".into());
     }
-    let mut up = false;
+    let mut offer: Option<wheel_proto::Offer> = None;
     loop {
         loop {
             match outgoing.try_recv() {
                 Ok(text) => {
-                    if up && ws.send(Message::text(text)).is_err() {
+                    let Some(offer) = &offer else { continue };
+                    if let Err(refused) = offer.admit(&text) {
+                        if refuse(events, &text, refused).is_err() {
+                            return Ended::ClientGone;
+                        }
+                        continue;
+                    }
+                    if ws.send(Message::text(text)).is_err() {
                         return lost(true, "wheeld closed the socket".into());
                     }
                 }
@@ -193,43 +189,65 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmps
         }
         match ws.read() {
             Ok(Message::Text(t)) => {
-                if !up {
-                    let Ok(head) = serde_json::from_str::<StatusHead>(&t) else { continue };
-                    if head.ev != "status" {
-                        continue;
-                    }
-                    if head.protocol < PROTOCOL {
-                        return Ended::Lost { was_up: false, reason: Event::Incompatible { server: head.protocol, client: PROTOCOL } };
-                    }
-                    up = true;
-                    if events.unbounded_send(Event::Up(endpoint.clone())).is_err() {
-                        return Ended::ClientGone;
-                    }
-                }
                 // A frame this build's proto crate cannot read (an event a newer server added) is
                 // dropped: nothing in the client reads it.
-                let Ok(message) = serde_json::from_str::<ServerMsg>(&t) else { continue };
+                let message = serde_json::from_str::<ServerMsg>(&t).ok();
+                // Every `status` names what wheeld offers; the first decides whether the link comes
+                // up. A status from another level may not read as this build's `ServerMsg`, so
+                // before the link is up its offer is read on its own.
+                let fresh = match &message {
+                    Some(message) => message.offer(),
+                    None if offer.is_none() => wheel_proto::Offer::read(&t),
+                    None => None,
+                };
+                if let Some(fresh) = fresh {
+                    if let Err(mismatch) = fresh.check() {
+                        return Ended::Lost { was_up: offer.is_some(), reason: Event::Incompatible { server: mismatch.server, client: mismatch.client } };
+                    }
+                    let first = offer.is_none();
+                    offer = Some(fresh);
+                    if first && events.unbounded_send(Event::Up(endpoint.clone())).is_err() {
+                        return Ended::ClientGone;
+                    }
+                } else if offer.is_none() {
+                    continue;
+                }
+                let Some(message) = message else { continue };
                 if events.unbounded_send(Event::Message(Box::new(message))).is_err() {
                     return Ended::ClientGone;
                 }
             }
-            Ok(Message::Close(_)) => return lost(up, "wheeld closed the socket".into()),
+            Ok(Message::Close(_)) => return lost(offer.is_some(), "wheeld closed the socket".into()),
             Ok(_) => {}
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-            Err(error) => return lost(up, format!("{error}")),
+            Err(error) => return lost(offer.is_some(), format!("{error}")),
         }
     }
+}
+
+/// Tell the client a frame was refused, and answer its request with the `error` wheeld would send.
+fn refuse(events: &fmpsc::UnboundedSender<Event>, text: &str, refused: wheel_proto::Refused) -> Result<(), ()> {
+    #[derive(Deserialize)]
+    struct Req {
+        req: Option<u64>,
+    }
+    let req = serde_json::from_str::<Req>(text).ok().and_then(|r| r.req);
+    let message = refused.to_string();
+    events.unbounded_send(Event::Refused { op: refused.op }).map_err(drop)?;
+    events.unbounded_send(Event::Message(Box::new(ServerMsg::Error { req, term: None, message }))).map_err(drop)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use wheel_proto::COMPAT;
     use serde_json::json;
     use std::{net::TcpListener, sync::{Arc, Mutex}};
 
-    /// A `status` reply at `protocol` with one space, as wheeld writes it.
-    pub(crate) fn status_frame(protocol: u32) -> String {
-        json!({"ev":"status","req":1,"version":"test","protocol":protocol,"uptime_secs":0,"log_path":"/dev/null","terms":[],"perms":[],
+    /// A `status` reply at compatibility level `compat`, listing every op, with one space, as
+    /// wheeld writes it.
+    pub(crate) fn status_frame(compat: u32) -> String {
+        json!({"ev":"status","req":1,"version":"test","protocol":wheel_proto::PROTOCOL_VERSION,"compat":compat,"ops":wheel_proto::ops(),"uptime_secs":0,"log_path":"/dev/null","terms":[],"perms":[],
             "spaces":[{"id":"s1","name":"wheel","cwd":"/w","root":{"node":"pane","id":"p1","kind":"empty"}}],
             "sessions":[{"id":"n1","name":"Main","spaces":["s1"]}]}).to_string()
     }
@@ -240,14 +258,14 @@ pub(crate) mod tests {
     }
 
     /// A stand-in wheeld: for each scripted connection, record the token in the URL, answer the
-    /// first frame with a `status` at `protocol`, then either close (`hold` false) or keep reading.
+    /// first frame with a `status` at level `compat`, then either close (`hold` false) or keep reading.
     fn serve(script: Vec<(u32, bool)>) -> (u16, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let tokens = Arc::new(Mutex::new(vec![]));
         let seen = tokens.clone();
         std::thread::spawn(move || {
-            for (protocol, hold) in script {
+            for (compat, hold) in script {
                 let (stream, _) = listener.accept().unwrap();
                 let seen = seen.clone();
                 let mut ws = tungstenite::accept_hdr(stream, move |request: &tungstenite::handshake::server::Request, response| {
@@ -256,8 +274,8 @@ pub(crate) mod tests {
                 })
                 .unwrap();
                 ws.read().unwrap();
-                ws.send(Message::text(status_frame(protocol))).unwrap();
-                ws.send(Message::text(marker_frame(protocol))).unwrap();
+                ws.send(Message::text(status_frame(compat))).unwrap();
+                ws.send(Message::text(marker_frame(compat))).unwrap();
                 if hold {
                     while ws.read().is_ok() {}
                 }
@@ -290,12 +308,12 @@ pub(crate) mod tests {
 
     #[test]
     fn reconnects_after_the_socket_closes_and_rereads_the_token() {
-        let (port, tokens) = serve(vec![(PROTOCOL, false), (PROTOCOL, true)]);
+        let (port, tokens) = serve(vec![(COMPAT, false), (COMPAT, true)]);
         let (endpoint, file) = endpoint(port, "one");
         let mut connection = Connection::open(endpoint);
         assert!(matches!(next(&mut connection), Event::Up(e) if e.token == "one"));
-        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(*m, ServerMsg::Status { protocol, .. } if protocol == PROTOCOL)));
-        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(&*m, ServerMsg::Spaces { sessions, .. } if sessions[0].name == PROTOCOL.to_string())));
+        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(*m, ServerMsg::Status { compat, .. } if compat == COMPAT)));
+        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(&*m, ServerMsg::Spaces { sessions, .. } if sessions[0].name == COMPAT.to_string())));
         assert!(matches!(next(&mut connection), Event::Down(_)));
         std::fs::write(&file, "two").unwrap();
         assert!(matches!(next(&mut connection), Event::Up(e) if e.token == "two"));
@@ -311,7 +329,7 @@ pub(crate) mod tests {
             let mut ws = tungstenite::accept(stream).unwrap();
             ws.read().unwrap();
             // A status whose agent pane is in a phase a newer wheeld added.
-            let status = json!({"ev":"status","req":1,"version":"test","protocol":PROTOCOL,"uptime_secs":0,"log_path":"/dev/null","terms":[],"perms":[],
+            let status = json!({"ev":"status","req":1,"version":"test","protocol":wheel_proto::PROTOCOL_VERSION,"compat":COMPAT,"ops":wheel_proto::ops(),"uptime_secs":0,"log_path":"/dev/null","terms":[],"perms":[],
                 "spaces":[{"id":"s1","name":"wheel","cwd":"/w","root":{"node":"pane","id":"p1","kind":"agent","agent":"a1","harness":"claude","state":{"phase":"dreaming"}}}],
                 "sessions":[{"id":"n1","name":"Main","spaces":["s1"]}]});
             ws.send(Message::text(status.to_string())).unwrap();
@@ -336,11 +354,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_older_protocol_is_reported_once_and_a_restart_to_the_new_one_connects() {
-        let (port, _) = serve(vec![(1, false), (1, false), (PROTOCOL, true)]);
+    fn an_older_compatibility_level_is_reported_once_and_a_restart_to_the_new_one_connects() {
+        let (port, _) = serve(vec![(COMPAT - 1, false), (COMPAT - 1, false), (COMPAT, true)]);
         let (endpoint, _) = endpoint(port, "t");
         let mut connection = Connection::open(endpoint);
-        assert!(matches!(next(&mut connection), Event::Incompatible { server: 1, client } if client == PROTOCOL));
+        assert!(matches!(next(&mut connection), Event::Incompatible { server, client } if server == COMPAT - 1 && client == COMPAT));
         // The second old answer announces nothing; the next event is the new server's Up.
         assert!(matches!(next(&mut connection), Event::Up(_)));
     }
@@ -358,7 +376,7 @@ pub(crate) mod tests {
             let (stream, _) = listener.accept().unwrap();
             let mut ws = tungstenite::accept(stream).unwrap();
             ws.read().unwrap();
-            ws.send(Message::text(status_frame(PROTOCOL))).unwrap();
+            ws.send(Message::text(status_frame(COMPAT))).unwrap();
             while ws.read().is_ok() {}
         });
         assert!(matches!(next(&mut connection), Event::Up(_)));
@@ -380,6 +398,44 @@ pub(crate) mod tests {
             // An old server's status, with none of the fields later builds added.
             ws.send(Message::text(json!({"ev":"status","protocol":1}).to_string())).unwrap();
         });
-        assert!(matches!(next(&mut connection), Event::Incompatible { server: 1, .. }));
+        assert!(matches!(next(&mut connection), Event::Incompatible { server: 0, .. }));
+    }
+
+    #[test]
+    fn an_older_server_missing_an_op_connects_and_only_that_op_is_held_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = Arc::new(Mutex::new(vec![]));
+        let seen = received.clone();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            ws.read().unwrap();
+            let mut status: serde_json::Value = serde_json::from_str(&status_frame(COMPAT)).unwrap();
+            status["protocol"] = json!(wheel_proto::PROTOCOL_VERSION - 1);
+            status["ops"] = json!(wheel_proto::ops().iter().filter(|op| **op != "pane_reload").collect::<Vec<_>>());
+            ws.send(Message::text(status.to_string())).unwrap();
+            while let Ok(message) = ws.read() {
+                if let Message::Text(text) = message {
+                    seen.lock().unwrap().push(wheel_proto::op_of(&text).unwrap_or_default());
+                }
+            }
+        });
+        let (endpoint, _) = endpoint(port, "t");
+        let mut connection = Connection::open(endpoint);
+        assert!(matches!(next(&mut connection), Event::Up(_)));
+        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(*m, ServerMsg::Status { .. })));
+        let reload = ClientMsg::PaneReload { req: Some(7), pane: "p1".into(), set: Default::default(), unset: vec![] };
+        connection.send.send(frame(&reload)).unwrap();
+        connection.send.send(frame(&ClientMsg::Status { req: Some(8) })).unwrap();
+        assert!(matches!(next(&mut connection), Event::Refused { op } if op == "pane_reload"));
+        let Event::Message(error) = next(&mut connection) else { panic!("no error") };
+        let ServerMsg::Error { req: Some(7), message, .. } = *error else { panic!("not the refusal: {error:?}") };
+        assert!(message.contains("`pane_reload`"), "{message}");
+        let end = std::time::Instant::now() + Duration::from_secs(15);
+        while received.lock().unwrap().is_empty() && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(*received.lock().unwrap(), ["status"], "wheeld got the status and never the refused op");
     }
 }

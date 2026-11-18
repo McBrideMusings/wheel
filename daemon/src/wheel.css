@@ -52,6 +52,8 @@ a { color: var(--accent); }
 code, pre, kbd, .mono { font-family: var(--mono); font-size: var(--callout); }
 code { background: var(--fill); padding: 1px 5px; border-radius: 4px; }
 pre { background: var(--fill); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
+img, video { max-width: 100%; height: auto; }
+svg, canvas { max-width: 100%; }
 pre code { background: none; padding: 0; }
 :focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
 [hidden] { display: none !important; }

@@ -26,7 +26,7 @@ Two layers run separately (ADR-0020): the **client** (`/Applications/Wheel.app`,
 3. **Built-in artifacts, after step 2:** built-ins are compiled into `wheeld` and installed as copies in `~/.wheel/artifacts/`. A starting `wheeld` brings every installed built-in that is behind up to date when none of its files was edited; one with an edited file stays as it is, and `wheel artifact builtin ls` lists it as `edited`. For that one run `wheel artifact builtin update <name>` (it shows the diff), then `--replace-edited` to take the shipped page or `--keep-edited` to keep the edit. `wheel artifact new --renderer <built-in>` reports a stale built-in renderer as a problem.
 4. **Phone, last:** `make deploy-phone` (needs `WHEEL_IOS_DEVICE`).
 
-A raised `PROTOCOL_VERSION` (`proto/src/lib.rs`, with `ServerProtocol.current` in WheelKit) makes the gap visible: between steps 1 and 2 the app hides what needs the new server and shows "The server was updated." with Restart Server, and `wheel` refuses with "restart the server". That is the expected state until step 2, not a failure.
+Between steps 1 and 2 the app works with the running `wheeld` (ADR-0050): a feature whose op the running `wheeld` does not list stays in place disabled or hidden, a closable notice reads "The server was updated." with Restart Server, and `wheel` refuses only a command whose op is missing, naming it. That is the expected state until step 2, not a failure. Only a raised level in `BREAKS` (`proto/src/ops.rs`) replaces the window with "This Wheel needs a newer wheeld" until step 2.
 
 Several landed beads deploy together in one pass through this order, once, at the end of the batch: not once per bead.
 

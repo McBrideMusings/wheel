@@ -72,7 +72,7 @@ extension AppModel {
     /// comes back to the front (the person edits a file in another app) and when the previewed
     /// agent changes.
     func askGuidance() {
-        guard connection == .connected, serverProtocol >= ServerProtocol.current else { return }
+        guard connection == .connected, serverOffer.has("guidance_ls") else { return }
         let req = client.req()
         guidanceReq = req
         client.send(.guidanceLs(req: req, agent: settings.guidance.previewAgent))
@@ -88,7 +88,7 @@ extension AppModel {
     /// Open in Editor: the server makes the file when it is missing and says where it is, then the
     /// default text editor opens it. `agent` nil is the file for every agent.
     func openGuidanceFile(_ agent: String?, launch: Bool = true) {
-        guard connection == .connected, serverProtocol >= ServerProtocol.current else { return }
+        guard connection == .connected, serverOffer.has("guidance_path") else { return }
         let req = client.req()
         guidanceOpenReqs[req] = launch
         Log.info("guidance: open the file for \(agent ?? "every agent")")
@@ -108,7 +108,7 @@ struct GuidanceSettings: View {
         VStack(alignment: .leading, spacing: 14) {
             if model.connection != .connected {
                 notice("Not connected to wheeld.", "Guidance lives in files the server reads; it shows here once the server answers.")
-            } else if model.serverProtocol < ServerProtocol.current {
+            } else if !model.serverOffer.has("guidance_ls") {
                 VStack(alignment: .leading, spacing: 8) {
                     Label(AppModel.serverUpdatedText, systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
                     if model.serverControl?.unavailable == nil { ServerRestartControl(model: model) }

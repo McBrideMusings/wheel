@@ -1028,6 +1028,8 @@ impl AppState {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol: wheel_proto::PROTOCOL_VERSION,
+            compat: wheel_proto::COMPAT,
+            ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
