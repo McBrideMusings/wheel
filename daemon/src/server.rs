@@ -119,6 +119,10 @@ pub(crate) struct Report {
     pub reason: Option<String>,
 }
 
+/// The longest [`AppState::start_kept_agents`] waits between asks of a login shell that gave
+/// no answer for a kept agent's home.
+const KEPT_AGENT_RETRY_MOST: Duration = Duration::from_secs(300);
+
 pub struct AppState {
     started: Instant,
     /// The paired devices and the pairing tokens waiting to be used.
@@ -255,8 +259,11 @@ pub struct AppState {
     /// after startup answers while other threads run, when changing the environment is unsound.
     pub(crate) login_path: Arc<Mutex<wheel_proto::LoginPath>>,
     /// The agent panes' agents a restore kept as saved because their agent could not start,
-    /// started once the login shell's PATH arrives.
+    /// started once the login shell's PATH arrives, or once it answers for the agent's home.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
+    /// Held while kept agents are started ([`Self::start_kept_agents`]), so two starts never take
+    /// `kept_agents` at once; it holds whether a loop asking the login shell again is scheduled.
+    pub(crate) starting_kept_agents: tokio::sync::Mutex<bool>,
     /// Conversations a switch is moving an agent into now, by id and the agent's name, so two
     /// switches to one id cannot both pass the check that no other agent is in it.
     pub(crate) switching_into: Mutex<std::collections::HashMap<String, String>>,
@@ -406,6 +413,7 @@ impl AppState {
                 problem: None,
             })),
             kept_agents: Mutex::new(Default::default()),
+            starting_kept_agents: tokio::sync::Mutex::new(false),
             switching_into: Mutex::new(Default::default()),
             statuses: Mutex::new(Default::default()),
             reports: Mutex::new(Default::default()),
@@ -453,12 +461,59 @@ impl AppState {
                 state.set_login_path(login_path);
                 if found {
                     state.log_agents();
-                    state.start_unstarted_agents().await;
+                    state.start_kept_agents().await;
                     let _ = state.global.send(state.status(None).await);
                 }
                 if !again {
                     return;
                 }
+            }
+        });
+    }
+
+    /// Start the agents kept as saved ([`Self::start_unstarted_agents`]), and start them again
+    /// later ([`Self::start_kept_agents_later`]) when the login shell gave no answer for a home.
+    pub(crate) async fn start_kept_agents(&self) {
+        let mut scheduled = self.starting_kept_agents.lock().await;
+        if self.start_unstarted_agents().await > 0 {
+            self.schedule_kept_agents(&mut scheduled);
+        }
+    }
+
+    /// Start the agents kept as saved again after [`crate::login_path::RETRY`], then after twice
+    /// as long each time up to [`KEPT_AGENT_RETRY_MOST`], until the login shell answers for every
+    /// kept agent's home or the daemon is gone. Called when a restore got no answer for one.
+    pub(crate) async fn start_kept_agents_later(&self) {
+        let mut scheduled = self.starting_kept_agents.lock().await;
+        self.schedule_kept_agents(&mut scheduled);
+    }
+
+    /// Spawn the loop of [`Self::start_kept_agents_later`] unless `scheduled` says one runs. The
+    /// caller holds `starting_kept_agents`, so a loop ending and a new failure never pass.
+    fn schedule_kept_agents(&self, scheduled: &mut bool) {
+        if *scheduled {
+            return;
+        }
+        *scheduled = true;
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            let mut wait = crate::login_path::RETRY;
+            loop {
+                tokio::time::sleep(wait).await;
+                let Some(state) = me.upgrade() else { return };
+                let mut scheduled = state.starting_kept_agents.lock().await;
+                let left = state.start_unstarted_agents().await;
+                tracing::info!(
+                    left,
+                    "kept agents started again after the login shell gave no home"
+                );
+                *scheduled = left > 0;
+                drop(scheduled);
+                let _ = state.global.send(state.status(None).await);
+                if left == 0 {
+                    return;
+                }
+                wait = (wait * 2).min(KEPT_AGENT_RETRY_MOST);
             }
         });
     }

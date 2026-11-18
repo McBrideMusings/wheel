@@ -95,14 +95,16 @@ async fn a_restored_agent_asks_the_shell_for_any_home_it_did_not_pick() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // The stand-in login shell sets CLAUDE_CONFIG_DIR to whatever `route` holds, as a kennel route
-    // in the person's startup files would.
+    // in the person's startup files would, and fails once, answering nothing, while `fail` exists.
     let route = dir.join("route");
+    let fail = dir.join("fail");
     let shell = dir.join("shell");
     std::fs::write(
         &shell,
         format!(
-            "#!/bin/sh\nexport CLAUDE_CONFIG_DIR=\"$(cat {})\"\nshift\nexec /bin/sh -c \"$1\"\n",
-            route.display()
+            "#!/bin/sh\nif [ -e {fail} ]; then rm {fail}; exit 1; fi\nexport CLAUDE_CONFIG_DIR=\"$(cat {route})\"\nshift\nexec /bin/sh -c \"$1\"\n",
+            fail = fail.display(),
+            route = route.display()
         ),
     )
     .unwrap();
@@ -205,6 +207,36 @@ async fn a_restored_agent_asks_the_shell_for_any_home_it_did_not_pick() {
     let home = running_home(&url, &pane).await;
     assert_ne!(home, second.display().to_string(), "the shell's home reached a pane that picked none");
     assert_ne!(home, "", "{home}");
+    running.abort();
+
+    // 5. A login shell that gives no answer once leaves the restored agent kept as saved, and it
+    // starts by itself once the shell answers.
+    fn unpick(v: &mut serde_json::Value, pane: &str) {
+        if v["node"] == "pane" && v["id"] == pane {
+            v.as_object_mut().unwrap().remove("env");
+            return;
+        }
+        match v {
+            serde_json::Value::Object(map) => map.values_mut().for_each(|c| unpick(c, pane)),
+            serde_json::Value::Array(list) => list.iter_mut().for_each(|c| unpick(c, pane)),
+            _ => {}
+        }
+    }
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    unpick(&mut saved, &pane);
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    std::fs::write(&fail, "").unwrap();
+    let (url, running) = daemon(&dir).await;
+    assert!(!fail.exists(), "the restore never asked the shell");
+    // A pane whose agent is not running lists the default home, never the shell's.
+    let routed = second.display().to_string();
+    assert_ne!(running_home(&url, &pane).await, routed, "an agent started with no answer from the shell");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while running_home(&url, &pane).await != routed {
+        assert!(std::time::Instant::now() < deadline, "the kept agent never started");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
     running.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

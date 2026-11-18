@@ -1983,9 +1983,11 @@ impl AppState {
         )
     }
 
-    /// Start the agent panes a restore kept as saved because their agent could not start, which
-    /// is a program not yet found. Called once the login shell's PATH arrives late.
-    pub(crate) async fn start_unstarted_agents(&self) {
+    /// Start the agent panes a restore kept as saved because their agent could not start: a
+    /// program not yet found, or a login shell that gave no answer for the agent's home. Called
+    /// only while holding `starting_kept_agents` ([`Self::start_kept_agents`]), so never two at
+    /// once. Returns how many are still kept because the shell gave no answer for their home.
+    pub(crate) async fn start_unstarted_agents(&self) -> usize {
         let kept = std::mem::take(&mut *self.kept_agents.lock().unwrap());
         let waiting: Vec<(String, String, SpaceInfo, AgentPane)> = {
             let spaces = self.spaces.lock().unwrap();
@@ -2002,6 +2004,7 @@ impl AppState {
         };
         let roots: Vec<SpaceInfo> = waiting.iter().map(|(_, _, root, _)| root.clone()).collect();
         let mut homes = self.saved_agent_homes(&roots).await;
+        let mut no_home_left = 0;
         for (space, cwd, root, saved) in waiting {
             let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
             // The shell was asked without the lock: a pane closed, or started by hand, meanwhile is
@@ -2016,16 +2019,17 @@ impl AppState {
                 continue;
             }
             let home = homes.remove(&pane).unwrap_or(Ok(None));
+            let no_home = home.is_err();
             match self.start_saved_agent(&cwd, &root, saved, home) {
-                Ok(()) => {
-                    tracing::info!(%space, %pane, %agent, "agent started now that its program is found")
-                }
+                Ok(()) => tracing::info!(%space, %pane, %agent, "kept agent started"),
                 Err(e) => {
                     tracing::warn!(%space, %pane, %agent, error = %e, "agent still cannot start");
                     self.kept_agents.lock().unwrap().insert(agent);
+                    no_home_left += usize::from(no_home);
                 }
             }
         }
+        no_home_left
     }
 
     /// Make `pane` an agent pane, send its agent `message` if there is one, and wait for it to
@@ -2486,6 +2490,7 @@ impl AppState {
             .collect();
         self.sweep_uploads(&named_all.iter().map(String::as_str).collect());
         let mut homes = self.saved_agent_homes(&loaded.spaces).await;
+        let mut no_home = false;
         for space in &mut loaded.spaces {
             let mut outcomes: HashMap<String, String> = HashMap::new();
             for (pane, kind) in unknown_panes(space) {
@@ -2540,6 +2545,7 @@ impl AppState {
             for saved in agent_panes(space) {
                 let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
                 let home = homes.remove(&pane).unwrap_or(Ok(None));
+                no_home |= home.is_err();
                 match self.start_saved_agent(&space.cwd, space, saved, home) {
                     Ok(()) => {
                         agents += 1;
@@ -2577,16 +2583,20 @@ impl AppState {
         self.sweep_pane_data(&named_web.iter().map(String::as_str).collect());
         tracing::info!(path = %path.display(), spaces = loaded.spaces.len(), respawned, agents, "spaces restored");
         *self.state_file.lock().unwrap() = Some(path);
-        let mut spaces = self.spaces.lock().unwrap();
-        *spaces = loaded;
-        // A layout saved before sessions, or one a crash left disagreeing, is grouped here.
-        if spaces.heal(|| self.new_id('n')) {
-            tracing::info!(sessions = spaces.sessions.len(), "sessions grouped on restore");
+        {
+            let mut spaces = self.spaces.lock().unwrap();
+            *spaces = loaded;
+            // A layout saved before sessions, or one a crash left disagreeing, is grouped here.
+            if spaces.heal(|| self.new_id('n')) {
+                tracing::info!(sessions = spaces.sessions.len(), "sessions grouped on restore");
+            }
+            self.sync_conversations(&mut spaces);
+            self.changed(&spaces);
         }
-        self.sync_conversations(&mut spaces);
-        self.changed(&spaces);
-        drop(spaces);
         self.watch_terminals();
+        if no_home {
+            self.start_kept_agents_later().await;
+        }
         Ok(())
     }
 
