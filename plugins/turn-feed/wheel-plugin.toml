@@ -13,4 +13,4 @@ id = "feed"
 title = "Turn feed"
 script = "panes/feed.luau"
 reads = ["turn-feed.posts", "wheel.agents"]
-actions = ["turn-feed.answer", "turn-feed.delivered", "wheel.agent.send"]
+actions = ["turn-feed.answer", "turn-feed.delivered", "turn-feed.delete", "turn-feed.focus", "wheel.agent.send"]

@@ -64,11 +64,14 @@ w remote revoke d1 >/dev/null
 check "the daemon closes the revoked device's connection" wait_dlog "device revoked; closing its connection .*caller=Device(\"d1\")" 10
 stop_app
 M="$(phone_lines)"
+# The app that was running retries the closed connection until it is stopped, so only refusals
+# after this line are the relaunched app's.
+D="$(wc -l <"$(LOG)")"
 xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
 check "a relaunch after revoke is refused" wait_dlog "refused: missing or wrong token via=.*listener=Remote" 20
 check "the phone reports the Mac refused the credential" poll 20 sh -c "tail -n +$((M + 1)) '$PLOG' | grep -q 'daemon refused the credential'"
 check "the phone asks to pair again" wait_plog "asking to pair again" 20
-check "the phone stops after two refusals" sh -c "sleep 6; [ \"\$(grep -c 'refused: missing or wrong token' '$(LOG)')\" = 2 ]"
+check "the phone stops after two refusals" sh -c "sleep 6; [ \"\$(tail -n +$((D + 1)) '$(LOG)' | grep -c 'refused: missing or wrong token')\" = 2 ]"
 check "the phone does not reach the layout" sh -c "! tail -n +$((M + 1)) '$PLOG' | grep -q 'layout:'"
 check "the revoked device is gone from the daemon" sh -c "! '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' remote devices | grep -q '^d1 '"
 finish

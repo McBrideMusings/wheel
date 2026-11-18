@@ -349,8 +349,9 @@ pub struct Client {
     pub toast_log: Vec<String>,
     /// The process card and the lists behind it.
     pub procs: crate::procs::Procs,
-    /// The protocol the connected wheeld speaks, from its last `status`; None before it answered.
-    pub server_protocol: Option<u32>,
+    /// What the connected wheeld offers (its ops and levels), from its last `status`; None before
+    /// it answered. A feature that sends an op asks `server_has` first (ADR-0050).
+    pub server_offer: Option<wheel_proto::Offer>,
     /// The source line last logged, so one connection logs it once.
     server_source_logged: Option<String>,
     /// When the connected wheeld started (unix ms), from its `status` uptime.
@@ -482,7 +483,7 @@ impl Link {
             Link::Up => String::new(),
             Link::Connecting => "connecting to wheeld".into(),
             Link::Down(_) => "wheeld is not reachable, reconnecting".into(),
-            Link::Incompatible { .. } => crate::server::UPDATED.into(),
+            Link::Incompatible { server, client } => wheel_proto::Mismatch { server: *server, client: *client }.headline().into(),
         }
     }
 }
@@ -506,7 +507,7 @@ impl Client {
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), surface, pinned: false, usage_open: false, usage_refreshing: false,
             session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
-            server_protocol: None, server_source_logged: None, server_started: None,
+            server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
@@ -516,11 +517,14 @@ impl Client {
         match event {
             Event::Message(message) => match crate::layout::parse_layout(&message) {
                 Some(layout) => {
-                    if let ServerMsg::Status { agents, perms, protocol, uptime_secs, .. } = message.as_ref() {
-                        if self.server_protocol != Some(*protocol) {
-                            self.log(format!("server protocol {protocol}, this app's {}", crate::daemon::PROTOCOL));
+                    if let ServerMsg::Status { agents, perms, uptime_secs, .. } = message.as_ref() {
+                        let offer = message.offer();
+                        if self.server_offer != offer {
+                            if let Some(offer) = &offer {
+                                self.log(format!("server protocol {}, level {}; lacks {:?}", offer.protocol, offer.compat, offer.lacks()));
+                            }
                         }
-                        self.server_protocol = Some(*protocol);
+                        self.server_offer = offer;
                         self.server_started = Some(settings::now_ms().saturating_sub(uptime_secs * 1000));
                         self.agents = agents.clone();
                         self.perms = perms.clone();
@@ -594,7 +598,7 @@ impl Client {
                             return false;
                         }
                         // `wheel pane shot`: the bridge draws the pane and answers through a frame.
-                        ServerMsg::RenderPane { id, pane, full, .. } => {
+                        ServerMsg::RenderPane { id, pane, full } => {
                             if self.opened.contains_key(pane) {
                                 self.native.render(*id, pane, *full);
                             } else {
@@ -603,7 +607,7 @@ impl Client {
                             return false;
                         }
                         // `wheel pane eval|dom|shot --selector|record` on a browser pane's page, or `open` to send it to a page.
-                        ServerMsg::InspectPane { id, pane, action, arg, .. } => {
+                        ServerMsg::InspectPane { id, pane, action, arg } => {
                             if self.opened.get(pane).map(String::as_str) == Some("browser") {
                                 self.native.inspect(*id, pane, action, arg.as_deref());
                             } else {
@@ -746,18 +750,26 @@ impl Client {
                 server::link(false);
                 false
             }
+            Event::Refused { op } => {
+                // A feature sent an op without asking `server_has`: the connection held it back and
+                // answers its request with an error. The notice makes the missing gate seen.
+                self.log(format!("refused `{op}`: wheeld did not list it, and a feature sent it without checking server_has"));
+                let text = wheel_proto::Refused { op: op.clone() }.to_string();
+                self.post(crate::toasts::Toast::posted(format!("refused:{op}"), crate::toasts::Level::Error, text, None));
+                false
+            }
             Event::Incompatible { server, client } => {
-                // The link is not up: wheeld's frames may lack fields this build reads. What needs
-                // the newer server is the whole layout, so the window shows the notice and Restart
-                // Server (Swift: serverRestartWaiting) until wheeld answers at this protocol.
+                // The link is not up: wheeld's frames are at another compatibility level and are
+                // not read, so the window says which side is behind and offers Restart Server
+                // until wheeld answers at this level.
                 if self.link != (Link::Incompatible { server, client }) {
-                    self.log(format!("server protocol {server}, this app's {client}: restart offered"));
+                    self.log(format!("{}: restart offered", wheel_proto::Mismatch { server, client }));
                 }
                 self.link = Link::Incompatible { server, client };
-                // wheeld answers, at another protocol: whatever the watch waited for is over.
+                // wheeld answers, at another level: whatever the watch waited for is over.
                 server::link(true);
-                self.server_protocol = Some(server);
-                self.toast_sources.server_updated = Some(crate::server::banner_key(self.bundled_source().as_deref(), self.server_protocol));
+                self.server_offer = None;
+                self.toast_sources.server_updated = Some(crate::server::banner_key(self.bundled_source().as_deref(), Some(server)));
                 // A window that was up on a newer wheeld shows nothing of it: the older one's
                 // layout is not read, so the old one's panes would be stale. The next `Up` applies
                 // a layout again.
@@ -1045,6 +1057,11 @@ impl Client {
             let _ = self.out.send(crate::daemon::frame(message));
         }
     }
+    /// Whether the connected wheeld listed `op`: a feature that sends it shows only when it did,
+    /// and keeps its place disabled when it did not.
+    pub fn server_has(&self, op: &str) -> bool {
+        self.server_offer.as_ref().is_some_and(|offer| offer.has(op))
+    }
     pub fn request_status(&self, req: u64) {
         self.send(&ClientMsg::Status { req: Some(req) });
     }
@@ -1296,7 +1313,7 @@ impl Client {
                 let req = self.next_req;
                 self.next_req += 1;
                 self.open_reqs.insert(req, (pane.clone(), text.clone()));
-                self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text, on: None, from: None });
+                self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text, on: None });
             }
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
@@ -2679,7 +2696,13 @@ impl Client {
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
                     .child(div().flex_none().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
                     .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
-                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, queue, &self.controls, cx))),
+                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, false, queue, &self.controls, cx))),
+            // Drawn as a queued message is, with the same line under it less Edit.
+            Kind::Reload { text } => div().flex().flex_col()
+                .child(div().flex().gap_2().text_color(rgb(0xe0b070))
+                    .child(div().flex_none().child("queued").text_color(rgb(0x8fa89b)).text_xs())
+                    .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
+                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, true, true, queue, &self.controls, cx))),
             Kind::Reply(x) => {
                 let blocks = {
                     let mut cache = self.parsed.borrow_mut();

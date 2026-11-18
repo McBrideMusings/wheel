@@ -1912,15 +1912,14 @@ impl AppState {
         let mut asks: HashMap<(String, String), Vec<String>> = HashMap::new();
         for space in spaces {
             for saved in agent_panes(space) {
-                let place = saved_place(space, &saved.pane);
-                let picked = Harness::parse(&saved.harness)
-                    .and_then(|h| place.env.get(h.home_var()).cloned());
-                match picked {
+                match self.known_agent_home(space, &saved) {
                     Some(home) => {
-                        homes.insert(saved.pane, Ok((!home.is_empty()).then_some(home)));
+                        homes.insert(saved.pane, Ok(home));
                     }
                     None => {
-                        let cwd = place.cwd.unwrap_or_else(|| space.cwd.clone());
+                        let cwd = saved_place(space, &saved.pane)
+                            .cwd
+                            .unwrap_or_else(|| space.cwd.clone());
                         asks.entry((saved.harness, cwd)).or_default().push(saved.pane);
                     }
                 }
@@ -1936,6 +1935,20 @@ impl AppState {
             }
         }
         homes
+    }
+
+    /// The home the saved agent pane `saved` of `space` starts with when it is known without asking
+    /// the login shell: the value the pane picked for its harness's home variable (empty is no
+    /// override), else none when a home setting applies or the harness is unknown. `None` means
+    /// only the login shell can say ([`Self::shell_agent_home`]).
+    fn known_agent_home(&self, space: &SpaceInfo, saved: &AgentPane) -> Option<Option<String>> {
+        let Some(harness) = Harness::parse(&saved.harness) else {
+            return Some(None);
+        };
+        if let Some(home) = saved_place(space, &saved.pane).env.get(harness.home_var()) {
+            return Some((!home.is_empty()).then(|| home.clone()));
+        }
+        self.agent_home(&saved.harness).is_some().then_some(None)
     }
 
     /// Start the agent of a saved agent pane under its saved name, loading its saved conversation,
@@ -1983,10 +1996,11 @@ impl AppState {
         )
     }
 
-    /// Start the agent panes a restore kept as saved because their agent could not start: a
-    /// program not yet found, or a login shell that gave no answer for the agent's home. Called
+    /// Start the agent panes a restore kept as saved: one whose home only the login shell can say,
+    /// one whose program was not yet found, or one whose shell gave no answer for its home. Called
     /// only while holding `starting_kept_agents` ([`Self::start_kept_agents`]), so never two at
-    /// once. Returns how many are still kept because the shell gave no answer for their home.
+    /// once, nor before a restore has set its layout. Returns how many are still kept because the
+    /// shell gave no answer for their home.
     pub(crate) async fn start_unstarted_agents(&self) -> usize {
         let kept = std::mem::take(&mut *self.kept_agents.lock().unwrap());
         let waiting: Vec<(String, String, SpaceInfo, AgentPane)> = {
@@ -2439,7 +2453,9 @@ impl AppState {
 
     /// Load the layout saved at `path` (none yet is an empty layout) and save every change there
     /// from now on. Shells do not outlive the daemon, so each terminal pane gets a new one in its
-    /// space's directory.
+    /// space's directory. An agent pane whose home only the login shell can say is kept as saved and
+    /// started by a start of kept agents ([`Self::start_kept_agents`]) once the restore returns; a
+    /// start of kept agents waits until then.
     pub async fn restore_spaces(&self, path: PathBuf) -> anyhow::Result<()> {
         self.sweep_removed_pane_dirs();
         let Saved {
@@ -2489,8 +2505,10 @@ impl AppState {
             .flat_map(|space| space_panes(space).into_iter().map(|(p, _)| p.to_string()))
             .collect();
         self.sweep_uploads(&named_all.iter().map(String::as_str).collect());
-        let mut homes = self.saved_agent_homes(&loaded.spaces).await;
-        let mut no_home = false;
+        // Held until the restore returns, so a start of kept agents meanwhile (the login shell's
+        // PATH arriving late) never takes the agents kept here before their panes are in a space.
+        let held = self.starting_kept_agents.lock().await;
+        let mut ask_shell = false;
         for space in &mut loaded.spaces {
             let mut outcomes: HashMap<String, String> = HashMap::new();
             for (pane, kind) in unknown_panes(space) {
@@ -2541,12 +2559,21 @@ impl AppState {
                 outcomes.insert(pane, outcome);
             }
             // Agents do not outlive the daemon: each agent pane's agent starts again under
-            // its saved name, and loads its saved conversation where the agent can.
+            // its saved name, and loads its saved conversation where the agent can. One whose home
+            // only the login shell can say is kept as saved and started once the restore returns,
+            // so a slow shell never holds wheeld from serving.
             for saved in agent_panes(space) {
                 let (pane, agent) = (saved.pane.clone(), saved.agent.clone());
-                let home = homes.remove(&pane).unwrap_or(Ok(None));
-                no_home |= home.is_err();
-                match self.start_saved_agent(&space.cwd, space, saved, home) {
+                let Some(home) = self.known_agent_home(space, &saved) else {
+                    ask_shell = true;
+                    self.kept_agents.lock().unwrap().insert(agent.clone());
+                    outcomes.insert(
+                        pane,
+                        format!("agent {agent} kept as saved until the login shell gives its home"),
+                    );
+                    continue;
+                };
+                match self.start_saved_agent(&space.cwd, space, saved, Ok(home)) {
                     Ok(()) => {
                         agents += 1;
                         outcomes.insert(
@@ -2594,8 +2621,9 @@ impl AppState {
             self.changed(&spaces);
         }
         self.watch_terminals();
-        if no_home {
-            self.start_kept_agents_later().await;
+        drop(held);
+        if ask_shell {
+            self.start_kept_agents_soon();
         }
         Ok(())
     }

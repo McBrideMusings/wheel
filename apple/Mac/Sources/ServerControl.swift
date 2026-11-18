@@ -87,16 +87,15 @@ extension AppModel {
     static let serverUpdatedText = "The server was updated."
 
     /// A newer server is installed and waits for a restart: the bundled source differs from the
-    /// running one, or the running one lacks a protocol feature this app has. The app never
-    /// restarts it itself (ADR-0020); the menu bar dot, the banner and Restart Server follow this.
+    /// running one. The app never restarts it itself (ADR-0020); the menu bar dot, the banner and
+    /// Restart Server follow this, and the app works with the running one meanwhile (ADR-0050).
     var serverRestartWaiting: Bool {
-        guard connection == .connected else { return false }
-        if let sources = serverSources, sources.running != sources.bundled { return true }
-        return serverProtocol < ServerProtocol.current
+        guard connection == .connected, let sources = serverSources else { return false }
+        return sources.running != sources.bundled
     }
 
     /// What a dismissed banner was about: the bundled source, or the protocol when there is none.
-    private var serverBannerKey: String { service?.bundledSource ?? "protocol \(serverProtocol)" }
+    private var serverBannerKey: String { service?.bundledSource ?? "protocol \(serverOffer.protocolVersion)" }
 
     /// The window's banner shows while a restart waits, until the person closes it for this server.
     var serverBannerShown: Bool { serverRestartWaiting && serverBannerDismissed != serverBannerKey }
@@ -110,7 +109,7 @@ extension AppModel {
     /// One log line per connection: the server's protocol, and whether the running server is the
     /// bundled one.
     func logServerSource() {
-        Log.info("server protocol \(serverProtocol), this app's \(ServerProtocol.current)")
+        Log.info("server protocol \(serverOffer.protocolVersion), level \(serverOffer.compat), this app's \(ServerOffer.clientCompat)")
         guard let service else { return }
         let running = serverHost?.source ?? "none reported"
         let bundled = service.bundledSource ?? "none recorded"

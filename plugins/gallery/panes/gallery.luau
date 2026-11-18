@@ -138,22 +138,8 @@ local function content_class()
         "markdown: true reads inline Markdown (bold, italic, code, links)",
         txt("A **bold** word, an *italic* one, `code` and a [link](https://example.com).", nil, { markdown = true }),
     })
-    local doc = "### A heading\n\nA paragraph with **bold**, `code` and a [link](https://example.com).\n\n"
-        .. "- a list item\n- another\n\n1. first\n2. second\n\n> A block quote.\n\n"
-        .. "| Name | Count |\n| --- | ---: |\n| apples | 3 |\n| pears | 12 |\n\n```swift\nlet x = 1\n```\n\n---\n"
-    local structured = {}
-    for _, s in ipairs({ "default", "gitHub", "chat" }) do
-        local what = if s == "default" then "style absent or default: Textual's own styles"
-            elseif s == "gitHub" then "style = \"gitHub\": Textual's GitHub styles"
-            else "style = \"chat\": the agent chat's reply styles"
-        local p = { markdown = doc }
-        if s ~= "default" then p.style = s end
-        table.insert(structured, { what, put("StructuredText", nil, p) })
-    end
-    table.insert(structured, { "markdown images (![alt](https://...)) load from their URL; not shown", secondary("An unknown style draws the unsupported marker.") })
     return klass("Content", "Static text and images. Apple's guidelines call read-only text a label: SwiftUI Text, AppKit NSTextField.", {
         { "Text", "Text", text_opts },
-        { "StructuredText", "Textual StructuredText", structured },
         { "Icon", "Image(systemName:)", {
             { "SF Symbol names", icons({ "play.fill", "stop.fill", "xmark", "checkmark.circle.fill", "xmark.circle.fill", "gearshape" }) },
             { "material names", icons({ "check", "close", "add", "delete", "edit", "home" }) },

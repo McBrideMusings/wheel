@@ -687,7 +687,7 @@ impl Client {
             "daemon_url": self.endpoint.ws.split('?').next().unwrap_or_default(),
             "connection": match &self.link { Link::Connecting => "connecting".to_owned(), Link::Up => "connected".to_owned(), Link::Down(why) => format!("unreachable: {why}"), Link::Incompatible { .. } => "incompatible".to_owned() },
             "banner": self.link.banner(),
-            "server_protocol": json!({"version": self.server_protocol.unwrap_or(crate::daemon::PROTOCOL), "client": crate::daemon::PROTOCOL}),
+            "server_offer": self.server_offer.as_ref().map(|o| json!({"protocol": o.protocol, "compat": o.compat, "client_compat": wheel_proto::COMPAT, "lacks": o.lacks()})),
             "daemon_service": super::server::with(|sv| sv.control.service().map(|s| json!({"label": s.label, "instance": s.instance, "listen": s.listen, "status": sv.service_status, "bundled_source": s.bundled_source, "running_source": self.running_source(), "update": self.restart_waiting()}))).flatten(),
             "server": super::server::with(|sv| json!({
                 "status": self.server_status_word().word,

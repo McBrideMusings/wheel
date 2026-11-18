@@ -24,6 +24,7 @@
 //! else over standard input and output, with Content-Length framing.
 
 pub mod commands;
+pub mod markdown;
 pub mod wire;
 
 use std::collections::HashMap;

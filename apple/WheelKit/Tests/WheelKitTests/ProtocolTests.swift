@@ -90,13 +90,17 @@ struct ProtocolTests {
         #expect(host == HostAccess(exe: "/Users/p/Library/Application Support/Wheel/Server/Current/Wheel Server.app/Contents/MacOS/wheeld", folders: [FolderAccess(path: "/Users/p/Downloads", allowed: false, error: "Operation not permitted (os error 1)"), FolderAccess(path: "/Users/p/Desktop", allowed: true), FolderAccess(path: "/Users/p/Documents", allowed: false, waiting: true)]))
     }
 
-    /// A server that predates the version reports none and is version 1.
-    @Test func statusCarriesTheProtocolVersion() throws {
+    /// A server that predates levels reports none: level 0, protocol 1, no ops, and a mismatch.
+    @Test func statusCarriesTheOffer() throws {
         let base = #"{"ev":"status","req":1,"version":"0.1.0","uptime_secs":3,"log_path":"/l","agents":[],"terms":[],"perms":[],"spaces":[]"#
         guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, old, _) = try ServerMsg.decode(base + "}") else { Issue.record("wrong case"); return }
-        #expect(old == 1)
-        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, now, _) = try ServerMsg.decode(base + #","protocol":\#(ServerProtocol.current)}"#) else { Issue.record("wrong case"); return }
-        #expect(now == ServerProtocol.current)
+        #expect(old == ServerOffer(compat: 0, protocolVersion: 1, ops: []))
+        #expect(old.mismatch?.hasPrefix("This Wheel needs a newer wheeld") == true)
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, _, now, _) = try ServerMsg.decode(base + #","protocol":52,"compat":\#(ServerOffer.clientCompat),"ops":["status","agent_fork"]}"#) else { Issue.record("wrong case"); return }
+        #expect(now.mismatch == nil)
+        #expect(now.protocolVersion == 52)
+        #expect(now.has("agent_fork") && !now.has("pane_reload"))
+        #expect(ServerOffer(compat: ServerOffer.clientCompat + 1, protocolVersion: 99, ops: []).mismatch?.hasPrefix("This wheeld is newer than this Wheel") == true)
     }
 
     /// `watches` is for the CLI and tests; the client decodes the rest of the status past it.
@@ -243,7 +247,7 @@ struct ProtocolTests {
 
     /// The daemon asks for a pane drawn with `render_pane`; the client's answers carry the same id.
     @Test func rendersAPaneOnRequest() throws {
-        guard case let .renderPane(id, pane, full, _) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6","full":true}"#)
+        guard case let .renderPane(id, pane, full) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6","full":true}"#)
         else { Issue.record("wrong case"); return }
         #expect(id == 4 && pane == "p6" && full)
         #expect(try ClientMsg.renderOffer.json() == #"{"op":"render_offer"}"#)
@@ -254,14 +258,11 @@ struct ProtocolTests {
 
     /// `inspect_pane` asks for eval, dom or a selector shot; text answers carry the request's id.
     @Test func inspectsABrowserPaneOnRequest() throws {
-        guard case let .inspectPane(id, pane, op, arg, by) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":5,"pane":"p6","action":"dom","arg":"h1"}"#)
+        guard case let .inspectPane(id, pane, op, arg) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":5,"pane":"p6","action":"dom","arg":"h1"}"#)
         else { Issue.record("wrong case"); return }
-        #expect(id == 5 && pane == "p6" && op == "dom" && arg == "h1" && by == nil)
-        guard case let .inspectPane(_, _, _, _, named) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":6,"pane":"p6","action":"dom","arg":"h1","by":"claude"}"#)
-        else { Issue.record("wrong case"); return }
-        #expect(named == "claude")
-        #expect(try ClientMsg.paneBrowserOpen(req: 7, pane: "p6", text: "example.com", on: "phone", from: "p2").json()
-                == #"{"from":"p2","on":"phone","op":"pane_browser_open","pane":"p6","req":7,"text":"example.com"}"#)
+        #expect(id == 5 && pane == "p6" && op == "dom" && arg == "h1")
+        #expect(try ClientMsg.paneBrowserOpen(req: 7, pane: "p6", text: "example.com", on: "phone").json()
+                == #"{"on":"phone","op":"pane_browser_open","pane":"p6","req":7,"text":"example.com"}"#)
         #expect(try ClientMsg.paneHome(req: 9, pane: "p6", url: "example.com").json()
                 == #"{"op":"pane_home","pane":"p6","req":9,"url":"example.com"}"#)
         #expect(try ClientMsg.paneHome(req: 10, pane: "p6").json() == #"{"op":"pane_home","pane":"p6","req":10}"#)

@@ -261,8 +261,10 @@ pub struct AppState {
     /// The agent panes' agents a restore kept as saved because their agent could not start,
     /// started once the login shell's PATH arrives, or once it answers for the agent's home.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
-    /// Held while kept agents are started ([`Self::start_kept_agents`]), so two starts never take
-    /// `kept_agents` at once; it holds whether a loop asking the login shell again is scheduled.
+    /// Held while kept agents are started ([`Self::start_kept_agents`]), and by a restore until
+    /// its layout is set, so two starts never take `kept_agents` at once and none takes an agent
+    /// the restore kept before its pane is in a space; it holds whether a loop asking the login
+    /// shell again is scheduled.
     pub(crate) starting_kept_agents: tokio::sync::Mutex<bool>,
     /// Conversations a switch is moving an agent into now, by id and the agent's name, so two
     /// switches to one id cannot both pass the check that no other agent is in it.
@@ -472,25 +474,30 @@ impl AppState {
     }
 
     /// Start the agents kept as saved ([`Self::start_unstarted_agents`]), and start them again
-    /// later ([`Self::start_kept_agents_later`]) when the login shell gave no answer for a home.
-    pub(crate) async fn start_kept_agents(&self) {
+    /// later ([`Self::schedule_kept_agents`]) when the login shell gave no answer for a home.
+    pub async fn start_kept_agents(&self) {
         let mut scheduled = self.starting_kept_agents.lock().await;
         if self.start_unstarted_agents().await > 0 {
             self.schedule_kept_agents(&mut scheduled);
         }
     }
 
-    /// Start the agents kept as saved again after [`crate::login_path::RETRY`], then after twice
-    /// as long each time up to [`KEPT_AGENT_RETRY_MOST`], until the login shell answers for every
-    /// kept agent's home or the daemon is gone. Called when a restore got no answer for one.
-    pub(crate) async fn start_kept_agents_later(&self) {
-        let mut scheduled = self.starting_kept_agents.lock().await;
-        self.schedule_kept_agents(&mut scheduled);
+    /// Start the agents kept as saved ([`Self::start_kept_agents`]) without waiting for it, then
+    /// send every client a fresh status.
+    pub(crate) fn start_kept_agents_soon(&self) {
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            let Some(state) = me.upgrade() else { return };
+            state.start_kept_agents().await;
+            let _ = state.global.send(state.status(None).await);
+        });
     }
 
-    /// Spawn the loop of [`Self::start_kept_agents_later`] unless `scheduled` says one runs. The
+    /// Start the agents kept as saved again after [`crate::login_path::RETRY`], then after twice
+    /// as long each time up to [`KEPT_AGENT_RETRY_MOST`], until the login shell answers for every
+    /// kept agent's home or the daemon is gone, unless `scheduled` says such a loop runs. The
     /// caller holds `starting_kept_agents`, so a loop ending and a new failure never pass.
-    fn schedule_kept_agents(&self, scheduled: &mut bool) {
+    pub(crate) fn schedule_kept_agents(&self, scheduled: &mut bool) {
         if *scheduled {
             return;
         }
@@ -1021,6 +1028,8 @@ impl AppState {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol: wheel_proto::PROTOCOL_VERSION,
+            compat: wheel_proto::COMPAT,
+            ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
@@ -2095,7 +2104,12 @@ async fn handle(
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let reply = match state.pane_reload(&pane, set, unset).await {
-                    Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                    Ok(crate::reload::Reloaded::Done) => req.map(|req| ServerMsg::Ok { req }),
+                    // A busy agent's reload waits in its queue; the reply names its turn, as a
+                    // queued message's does.
+                    Ok(crate::reload::Reloaded::Queued { agent, turn }) => {
+                        req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
+                    }
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %message, "pane reload failed");
                         Some(failed(req, message))
@@ -2288,7 +2302,6 @@ async fn handle(
             pane,
             text,
             on,
-            from,
         } => {
             let side = match on.as_deref().map(|on| crate::render::Side::parse(Some(on))).transpose() {
                 Ok(side) => side,
@@ -2305,12 +2318,11 @@ async fn handle(
                 return req.map(|req| ServerMsg::Opened { req, pane, url });
             };
             // Asking that browser to go takes as long as the client takes to answer.
-            let by = from.as_deref().map(|p| state.asking_agent(p));
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
                 let moved = state
-                    .pane_inspect(&pane, "open", Some(url.clone()), None, side, by)
+                    .pane_inspect(&pane, "open", Some(url.clone()), None, side)
                     .await
                     .map(|_| ());
                 let reply = match moved {
@@ -2429,10 +2441,7 @@ async fn handle(
             arg,
             path,
             on,
-            from,
         } => {
-            // Who ran it, as a permission card names an asker: an agent pane's agent, else the pane.
-            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to answer.
             let state = state.clone();
             let out = out.clone();
@@ -2445,7 +2454,7 @@ async fn handle(
                     }
                 };
                 if action == "record" {
-                    let reply = match record_request(&state, &pane, arg, path.clone(), side, by).await {
+                    let reply = match record_request(&state, &pane, arg, path.clone(), side).await {
                         Ok((recorded_path, rec)) => req.map(|req| ServerMsg::PaneRecorded {
                             req,
                             pane,
@@ -2464,7 +2473,7 @@ async fn handle(
                     }
                     return;
                 }
-                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side, by).await {
+                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side).await {
                     Ok(crate::render::InspectOutcome::Text(text)) => {
                         req.map(|req| ServerMsg::Inspected { req, pane, text })
                     }
@@ -2498,9 +2507,7 @@ async fn handle(
             path,
             on,
             full,
-            from,
         } => {
-            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to draw.
             let state = state.clone();
             let out = out.clone();
@@ -2512,7 +2519,7 @@ async fn handle(
                         return;
                     }
                 };
-                let reply = match state.pane_shot(&pane, &path, side, full, by).await {
+                let reply = match state.pane_shot(&pane, &path, side, full).await {
                     Ok(bytes) => req.map(|req| ServerMsg::PaneShot {
                         req,
                         pane,
@@ -3328,14 +3335,13 @@ async fn record_request(
     arg: Option<String>,
     path: Option<String>,
     side: crate::render::Side,
-    by: Option<String>,
 ) -> Result<(String, crate::render::Recording), String> {
     let path = path.ok_or("record needs a path")?;
     let seconds = arg
         .as_deref()
         .and_then(|a| a.trim().parse::<u64>().ok())
         .ok_or("record needs a whole number of seconds")?;
-    let recording = state.pane_record(pane, seconds, &path, side, by).await?;
+    let recording = state.pane_record(pane, seconds, &path, side).await?;
     Ok((path, recording))
 }
 

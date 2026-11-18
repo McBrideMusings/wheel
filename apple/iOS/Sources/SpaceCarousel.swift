@@ -387,7 +387,7 @@ struct SpaceCarousel: View {
                     try? await Task.sleep(for: .seconds(1))
                 }
             } else {
-                Log.info("WHEEL_ATTACH: no paperclip (server protocol \(model.serverProtocol), agent pane \(firstAgent()?.pane ?? "none"))")
+                Log.info("WHEEL_ATTACH: no paperclip (server protocol \(model.serverOffer.protocolVersion), agent pane \(firstAgent()?.pane ?? "none"))")
             }
         }
         // `WHEEL_SEND=<text>` types the text into the first agent pane's composer and sends it,

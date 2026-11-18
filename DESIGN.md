@@ -47,3 +47,5 @@ Every artifact page draws with Wheel's design system, `wheel.css`, which wheeld 
 - **Highlighted log.** `.log`: a tinted monospace well, one line per entry at one height, newest first. Commands are orange, reading teal, editing blue, agents and skills purple, speech green and italic, thinking faint; inside a command, paths are blue, quoted strings green and flags purple; a running call is orange, an error red. `.log.fade` fades the lines past the sixth, to 30%.
 - **No chips.** A state is a coloured word or glyph, never a pill or a badge.
 - **Controls.** Push buttons, the accent default button (`button.primary`), segmented controls (`.seg`) and text fields in the macOS shape.
+- **Item actions.** An action on one item (delete, show, open) is a borderless SF Symbol button with a help label, never a text button.
+- **Times.** A time shown to the person is their local clock (`3:13pm`, `Nov 16, 3:13pm`), formatted where the time zone is known, never UTC.

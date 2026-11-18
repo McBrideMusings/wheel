@@ -6408,14 +6408,46 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, header_report, new_space))
 }
 
-/// An older wheeld behind a protocol-lowering proxy shows only "The server was updated."
+/// A wheeld that lacks an op this client knows connects and works, with Restart Server offered;
+/// one at another compatibility level shows which side is behind instead of the window.
 async fn older_server(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, usize, PathBuf, PathBuf)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
-    // An older wheeld (wheel-ynjo.2): the fixture daemon behind a proxy that lowers the protocol
-    // number in its `status` by one. The window over it never comes up: it shows the notice with
-    // Restart Server, whose click runs `WHEEL_SERVER_STOP` then `WHEEL_SERVER_START`.
-    let proxy = OlderProxy::start(&format!("{}?token={}", default_url(), std::fs::read_to_string(default_token_file())?.trim()), PROTOCOL - 1)?;
+    let upstream = format!("{}?token={}", default_url(), std::fs::read_to_string(default_token_file())?.trim());
+    // A merely older wheeld (ADR-0050): the fixture daemon behind a proxy that drops `pane_reload`
+    // from its `ops` and lowers its protocol. The window over it comes up with the layout, and the
+    // restart is a notice beside it, never in its place.
+    let lacking = OlderProxy::start(&upstream, |status| {
+        status["protocol"] = json!(status["protocol"].as_u64().unwrap_or(1) - 1);
+        if let Some(ops) = status["ops"].as_array_mut() {
+            ops.retain(|op| op != "pane_reload");
+        }
+    })?;
+    let lacking_endpoint = Endpoint::new(&lacking.url, &default_token_file())?;
+    let mut lacking_connection = Connection::open(lacking_endpoint.clone());
+    let lacking_window = cx.update(|app| wheel_gpui::create_window(app, &bridge, lacking_connection.send.clone(), lacking_endpoint, None, None, true, wheel_gpui::Opening::Main, None))?;
+    let mut lacking_layouts = 0usize;
+    for _ in 0..100 {
+        pump(&mut lacking_connection, 100, &mut lacking_layouts, lacking_window, cx).await?;
+        if lacking_layouts > 0 && lacking_window.update(cx, |c, _, _| c.server_offer.is_some())? {
+            break;
+        }
+    }
+    draw(lacking_window, Some(output.join("client-server-lacks-op.png")), cx)?;
+    let (lacking_link, lacking_toasts, lacking_state, can_reload) = lacking_window.update(cx, |c, _, _| (c.link.clone(), c.toasts(), c.state_json(), c.server_has("pane_reload")))?;
+    ensure!(lacking_link == Link::Up && lacking_layouts > 0, "the window over a wheeld lacking one op read {lacking_link:?} with {lacking_layouts} layouts");
+    ensure!(!can_reload, "the window believes the lacking wheeld has pane_reload");
+    ensure!(lacking_state["server_offer"]["lacks"] == json!(["pane_reload"]), "the lacking window's offer reads {}", lacking_state["server_offer"]);
+    ensure!(lacking_state["spaces"].as_array().is_some_and(|s| !s.is_empty()), "the lacking window shows no spaces");
+    ensure!(lacking_toasts.iter().any(|t| t.id == "server-update"), "no Restart Server notice over a wheeld lacking an op: {lacking_toasts:?}");
+    lacking_window.update(cx, |_, w, _| w.remove_window())?;
+    drop(lacking_connection);
+    let lacking_rewritten = lacking.stop();
+    ensure!(lacking_rewritten >= 1, "the proxy rewrote no status reply: the window never met the lacking wheeld");
+    // A wheeld at a lower compatibility level (wheel-ynjo.2): the same proxy lowers `compat`. The
+    // window over it never comes up: it says what is incompatible and offers Restart Server, whose
+    // click runs `WHEEL_SERVER_STOP` then `WHEEL_SERVER_START`.
+    let proxy = OlderProxy::start(&upstream, |status| status["compat"] = json!(wheel_proto::COMPAT - 1))?;
     let older = Endpoint::new(&proxy.url, &default_token_file())?;
     let mut older_connection = Connection::open(older.clone());
     let older_window = cx.update(|app| wheel_gpui::create_window(app, &bridge, older_connection.send.clone(), older, None, None, true, wheel_gpui::Opening::Main, None))?;
@@ -6428,16 +6460,16 @@ async fn older_server(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
             break;
         }
     }
-    ensure!(older_link == (Link::Incompatible { server: PROTOCOL - 1, client: PROTOCOL }), "the window over the older wheeld read {older_link:?}");
+    ensure!(older_link == (Link::Incompatible { server: wheel_proto::COMPAT - 1, client: wheel_proto::COMPAT }), "the window over the older wheeld read {older_link:?}");
     ensure!(older_layouts == 0, "a layout came through from the older wheeld");
     draw(older_window, None, cx)?;
     let (older_banner, older_toasts, older_state) = older_window.update(cx, |c, _, _| (c.link.banner(), c.toasts(), c.state_json()))?;
-    ensure!(older_banner == "The server was updated.", "the banner over the older wheeld reads {older_banner:?}");
+    ensure!(older_banner == "This Wheel needs a newer wheeld", "the banner over the older wheeld reads {older_banner:?}");
     let server_toast = older_toasts.iter().find(|t| t.id == "server-update").cloned().ok_or_else(|| anyhow::anyhow!("no server-update notice over the older wheeld: {older_toasts:?}"))?;
     let server_toast_actions: Vec<&str> = server_toast.actions.iter().map(|a| a.title).collect();
     ensure!(server_toast.text == "The server was updated." && server_toast_actions == ["Restart Server"], "the server notice reads {server_toast:?}");
-    let older_view = json!({"server_protocol": older_state["server_protocol"], "connection": older_state["connection"], "spaces": older_state["spaces"]});
-    ensure!(older_view == json!({"server_protocol": {"version": PROTOCOL - 1, "client": PROTOCOL}, "connection": "incompatible", "spaces": []}), "the older window's state reads {older_view}");
+    let older_view = json!({"server_offer": older_state["server_offer"], "connection": older_state["connection"], "spaces": older_state["spaces"]});
+    ensure!(older_view == json!({"server_offer": null, "connection": "incompatible", "spaces": []}), "the older window's state reads {older_view}");
     draw(older_window, Some(output.join("client-server-updated.png")), cx)?;
     let (stop_file, start_file) = (output.join("server.stop"), output.join("server.start"));
     older_window.update(cx, |c, _, _| c.run_toast_action(&server_toast.actions[0].act))?;
@@ -6462,11 +6494,12 @@ async fn older_server(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     ensure!(proxy_frames >= 1, "the proxy rewrote no status reply: the older window never met the lowered protocol");
     // The first window, on the fixture wheeld itself, has nothing to offer.
     let (main_state, main_toasts) = window.update(cx, |c, _, _| (c.state_json(), c.toasts()))?;
-    ensure!(main_state["server_protocol"] == json!({"version": PROTOCOL, "client": PROTOCOL}), "the fixture wheeld's protocol reads {}", main_state["server_protocol"]);
+    ensure!(main_state["server_offer"]["compat"] == json!(wheel_proto::COMPAT) && main_state["server_offer"]["lacks"] == json!([]), "the fixture wheeld's offer reads {}", main_state["server_offer"]);
     ensure!(!main_toasts.iter().any(|t| t.id == "server-update"), "a server notice over the fixture wheeld: {main_toasts:?}");
-    let server_updated_report = json!({"proxy_port": proxy_port, "proxy_frames_rewritten": proxy_frames, "server_protocol": older_state["server_protocol"], "connection": older_state["connection"],
+    let server_updated_report = json!({"lacking": {"connection": lacking_state["connection"], "server_offer": lacking_state["server_offer"], "layouts": lacking_layouts, "frames_rewritten": lacking_rewritten},
+        "proxy_port": proxy_port, "proxy_frames_rewritten": proxy_frames, "connection": older_state["connection"],
         "banner": older_banner, "toast": {"text": server_toast.text, "actions": server_toast_actions}, "restart_log": restart_log, "stop_ran": stop_file.exists(), "start_ran": start_file.exists(),
-        "after_dismiss": after_dismiss, "log": older_log, "main_server_protocol": main_state["server_protocol"]});
+        "after_dismiss": after_dismiss, "log": older_log, "main_server_offer": main_state["server_offer"]});
     let (request, done) = (output.join("restart.request"), output.join("restart.done"));
     let _ = std::fs::remove_file(&done);
     let status_before_restart = native.status();
@@ -7291,7 +7324,8 @@ struct OlderProxy {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl OlderProxy {
-    fn start(upstream: &str, protocol: u32) -> Result<Self> {
+    /// Proxy `upstream`, passing every `status` reply through `rewrite` first.
+    fn start(upstream: &str, rewrite: fn(&mut Value)) -> Result<Self> {
         use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
@@ -7324,7 +7358,7 @@ impl OlderProxy {
                         Ok(tungstenite::Message::Text(t)) => {
                             let mut frame: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
                             if frame["ev"] == "status" {
-                                frame["protocol"] = json!(protocol);
+                                rewrite(&mut frame);
                                 count.fetch_add(1, Ordering::Relaxed);
                             }
                             if client.send(tungstenite::Message::text(frame.to_string())).is_err() { break 'session; }

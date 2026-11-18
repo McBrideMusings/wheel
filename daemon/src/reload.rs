@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use wheel_proto::{PaneKind, ServerMsg, TermAgent};
 
+use crate::agent::{Agent, Handoff, ReloadTurn};
 use crate::pty::Term;
 use crate::resume::Harness;
 use crate::carry::Carried;
@@ -24,6 +25,29 @@ pub(crate) struct Shell {
     pub(crate) dir: String,
     pub(crate) agent: Option<Box<TermAgent>>,
     pub(crate) outcome: String,
+}
+
+/// What a reload did: started the pane again, or (an agent pane's while it is busy) queued the
+/// reload on the pane's agent as `turn`.
+pub enum Reloaded {
+    Done,
+    Queued { agent: String, turn: u64 },
+}
+
+/// What [`AppState::ready_reload`] read and checked for an agent pane's reload, which holds the
+/// pane against a view switch until it drops.
+struct ReadyReload<'a> {
+    _switching: Switching<'a>,
+    space_cwd: String,
+    harness: String,
+    model: Option<String>,
+    context: Option<wheel_proto::ContextUse>,
+    place: wheel_proto::AgentPlace,
+    cwd: String,
+    picked: BTreeMap<String, String>,
+    home: Option<String>,
+    conversation: Option<String>,
+    kind: Harness,
 }
 
 /// How a reload changes the environment values picked for a pane's process: `set` picks values,
@@ -65,6 +89,22 @@ impl EnvChange {
         self.set.is_empty() && self.unset.is_empty()
     }
 
+    /// What a client shows for the reload while it waits in an agent's queue: `Reload with` and
+    /// each variable it sets, a value under the home directory written from `~`; `Reload` alone
+    /// when it sets none.
+    fn queued_text(&self) -> String {
+        let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
+        let shown = |value: &str| match home.as_deref().and_then(|h| value.strip_prefix(h)) {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+            _ => value.to_string(),
+        };
+        if self.set.is_empty() {
+            return "Reload".into();
+        }
+        let set: Vec<String> = self.set.iter().map(|(name, value)| format!("{name}={}", shown(value))).collect();
+        format!("Reload with {}", set.join(" "))
+    }
+
     /// `picked` with this change made.
     fn apply(&self, picked: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut env = picked.clone();
@@ -80,11 +120,11 @@ impl AppState {
     /// Start `pane` again on what it is on (`ClientMsg::PaneReload`), with the environment values
     /// picked for an agent or terminal pane changed by `set` and `unset`.
     pub async fn pane_reload(
-        &self,
+        self: &Arc<Self>,
         pane: &str,
         set: BTreeMap<String, String>,
         unset: Vec<String>,
-    ) -> Result<(), String> {
+    ) -> Result<Reloaded, String> {
         let change = EnvChange::new(set, unset)?;
         let kind = {
             let spaces = self.spaces.lock().unwrap();
@@ -107,8 +147,8 @@ impl AppState {
             }
         }
         match kind {
-            PaneKind::Agent { .. } => self.reload_agent(pane, &change).await,
-            PaneKind::Terminal { .. } => self.reload_terminal(pane, &change).await,
+            PaneKind::Agent { .. } => self.reload_agent(pane, change).await,
+            PaneKind::Terminal { .. } => self.reload_terminal(pane, &change).await.map(|()| Reloaded::Done),
             PaneKind::Web { .. } => {
                 let _ = self.global.send(ServerMsg::PaneReload { pane: pane.into() });
                 // An artifact that declares no refresh command has nothing more to run. The run
@@ -123,86 +163,96 @@ impl AppState {
                     });
                 }
                 tracing::info!(%pane, "web pane reloaded");
-                Ok(())
+                Ok(Reloaded::Done)
             }
             PaneKind::Browser { .. } | PaneKind::Plugin { .. } => {
                 let _ = self.global.send(ServerMsg::PaneReload { pane: pane.into() });
                 tracing::info!(%pane, "pane reload sent to clients");
-                Ok(())
+                Ok(Reloaded::Done)
             }
-            PaneKind::Empty { .. } => Ok(()),
+            PaneKind::Empty { .. } => Ok(Reloaded::Done),
             PaneKind::Unknown(_) => Err(format!(
                 "{pane} is a kind of pane this wheeld does not know, so it cannot reload it"
             )),
         }
     }
 
-    /// End agent pane `pane`'s agent between turns and start a new one on the same conversation,
-    /// directory, model, mode and permissions. The new agent has a new name, as a view switch's
-    /// does, so every client attaches to it when the layout names it; the pane keeps its declared
-    /// work. Its picked environment is the pane's with `change` made, saved on the pane once the
-    /// new agent starts. The home is the one picked, else the login shell's answer now, asked before
-    /// the agent ends so a shell that gives none leaves the agent running. When the home differs
-    /// from the one the agent ran in, the conversation's file is carried there first
-    /// ([`crate::carry`]); a carry that fails leaves the agent running.
-    async fn reload_agent(&self, pane: &str, change: &EnvChange) -> Result<(), String> {
-        let _switching = Switching::begin(self, pane)?;
-        let (space_cwd, old, harness, model, context, place, pane_conversation) = {
+    /// Reload agent pane `pane`'s agent ([`AppState::reload_held`]): at once when it is between
+    /// turns with nothing queued, else once the turn running and the messages queued before this
+    /// ask are done. A queued reload waits in the agent's queue as a turn of its own, which
+    /// `agent_unsend`, `agent_send_now` and `agent_clear_queue` act on as on a message; the messages
+    /// queued behind it go to the agent it starts.
+    async fn reload_agent(self: &Arc<Self>, pane: &str, change: EnvChange) -> Result<Reloaded, String> {
+        let old = {
             let spaces = self.spaces.lock().unwrap();
             let space = &spaces.spaces[spaces.holding(pane)?];
             match space_find(space, pane) {
-                Some(PaneKind::Agent {
-                    agent,
-                    harness,
-                    model,
-                    context,
-                    place,
-                    conversation,
-                    ..
-                }) => (
-                    space.cwd.clone(),
-                    agent.clone(),
-                    harness.clone(),
-                    model.clone(),
-                    *context,
-                    place.as_deref().cloned().unwrap_or_default(),
-                    conversation.clone(),
-                ),
+                Some(PaneKind::Agent { agent, .. }) => agent.clone(),
                 _ => return Err(format!("{pane} no longer shows an agent")),
             }
         };
-        let kind = Harness::parse(&harness).ok_or_else(|| format!("no agent {harness}"))?;
-        self.agent_ready(&harness)?;
         let live = self.agent(&old)?;
-        // Refuses a running turn or a waiting message, and every message until the agent is gone.
-        let held = live.hold_for_handoff()?;
-        let cwd = place.cwd.clone().unwrap_or_else(|| space_cwd.clone());
-        let picked = change.apply(&place.env);
-        let home = match picked.get(kind.home_var()) {
-            Some(picked) => (!picked.is_empty()).then(|| picked.clone()),
-            None => self.shell_agent_home(&harness, &cwd).await?,
-        };
-        // An agent that has not saved its conversation yet (one restored on it, say) is still on
-        // the one the pane saved.
-        let conversation = live.saved_conversation().or(pane_conversation);
-        let homes = (
-            live.home().map(Path::to_path_buf).or_else(|| kind.daemon_home()),
-            home.as_ref().map(PathBuf::from).or_else(|| self.agent_home(&harness)).or_else(|| kind.daemon_home()),
-        );
-        if let (Some(conversation), (Some(old_home), Some(new_home))) = (&conversation, &homes) {
-            if old_home != new_home {
-                // Between turns the agent writes nothing, so its file is whole.
-                let carried = crate::carry::carry(kind, (old_home, new_home), &cwd, conversation)
-                    .map_err(|e| format!("{pane} was not reloaded: {e}"))?;
-                log_carry(pane, conversation, old_home, new_home, &carried);
+        let turn = live.hold_or_queue_reload(change.queued_text())?;
+        match turn {
+            ReloadTurn::Now(held) => {
+                self.reload_held(pane, &change, &live, held, Vec::new()).await?;
+                Ok(Reloaded::Done)
+            }
+            ReloadTurn::Queued { turn, reached } => {
+                let (state, pane, waiting) = (self.clone(), pane.to_string(), live.clone());
+                tokio::spawn(async move {
+                    let Ok(behind) = reached.await else {
+                        tracing::info!(%pane, agent = %waiting.name, turn, "queued reload taken back");
+                        return;
+                    };
+                    let held = waiting.adopt_reload_hold();
+                    if let Err(e) = state.reload_held(&pane, &change, &waiting, held, behind).await {
+                        tracing::warn!(%pane, agent = %waiting.name, turn, error = %e, "queued reload failed");
+                        waiting.set_notice(Some(format!("The reload did not run: {e}")));
+                    }
+                });
+                Ok(Reloaded::Queued { agent: old, turn })
             }
         }
+    }
+
+    /// End agent `live`, which `held` holds between turns, and start a new one in its pane on the
+    /// same conversation, directory, model, mode and permissions, then send it `behind`, the texts
+    /// of the messages a queued reload left queued behind it. The new agent has a new name, as a
+    /// view switch's does, so every client attaches to it when the layout names it; the pane keeps
+    /// its declared work. Its picked environment is the pane's with `change` made, saved on the
+    /// pane once the new agent starts. The home is the one picked, else the login shell's answer
+    /// now, asked before the agent ends so a shell that gives none leaves the agent running. When
+    /// the home differs from the one the agent ran in, the conversation's file is carried there
+    /// first ([`crate::carry`]); a carry that fails leaves the agent running. A reload refused
+    /// before the agent ends lets `live` go on, with `behind` queued on it again.
+    async fn reload_held(
+        &self,
+        pane: &str,
+        change: &EnvChange,
+        live: &Arc<Agent>,
+        held: Handoff<'_>,
+        behind: Vec<String>,
+    ) -> Result<(), String> {
+        let ready = match self.ready_reload(pane, change, live).await {
+            Ok(ready) => ready,
+            Err(e) => {
+                drop(held);
+                for text in behind {
+                    if let Err(lost) = live.send(text) {
+                        tracing::warn!(%pane, agent = %live.name, error = %lost, "a message queued behind the reload was lost");
+                    }
+                }
+                return Err(e);
+            }
+        };
+        let ReadyReload { _switching, space_cwd, harness, model, context, place, cwd, picked, home, conversation, kind } = ready;
+        let old = live.name.clone();
         let options = carried_options(&live.attach().config);
         let permissions = live.permissions();
         tracing::info!(%pane, agent = %old, ?conversation, ?home, "reloading the agent: stopping it");
         self.end_agent_wait(&old).await;
         drop(held);
-        drop(live);
         let name = self.new_id('w');
         let started = self.spawn_agent(
             &name,
@@ -241,11 +291,13 @@ impl AppState {
                     self.kept_agents.lock().unwrap().insert(old.clone());
                     let message = format!("agent {old} in pane {pane} stopped and could not start again: {e}");
                     self.changed(&spaces);
+                    lost_behind(pane, &behind);
                     return Err(message);
                 }
                 // The pane closed or changed while the agent started: the new agent is not its.
                 _ => {
                     self.end_agent(&name);
+                    lost_behind(pane, &behind);
                     return Err(match &started {
                         Err(e) => format!("agent {old} in pane {pane} stopped and could not start again: {e}"),
                         Ok(()) => format!("{pane} closed or changed while its agent started again"),
@@ -259,6 +311,12 @@ impl AppState {
             self.carry_options(pane, &name, options);
         }
         let live = self.agent(&name)?;
+        // Queued on the new agent at once: it takes them up once it is ready, in this order.
+        for text in behind {
+            if let Err(e) = live.send(text) {
+                tracing::warn!(%pane, agent = %name, error = %e, "a message queued behind the reload was lost");
+            }
+        }
         let start_wait = self.agent_timing.lock().unwrap().start_wait;
         match tokio::time::timeout(start_wait, live.started()).await {
             Ok(Ok(())) => {
@@ -271,6 +329,61 @@ impl AppState {
                 Ok(())
             }
         }
+    }
+
+    /// What reloading agent `live` in `pane` needs, read and checked before the agent ends: the
+    /// pane's settings, the home the new agent runs in, and its conversation carried there. Fails
+    /// when the pane no longer shows `live`, the agent's program is missing, the login shell gives
+    /// no home, or the carry would fail.
+    async fn ready_reload(&self, pane: &str, change: &EnvChange, live: &Agent) -> Result<ReadyReload<'_>, String> {
+        let _switching = Switching::begin(self, pane)?;
+        let (space_cwd, harness, model, context, place, pane_conversation) = {
+            let spaces = self.spaces.lock().unwrap();
+            let space = &spaces.spaces[spaces.holding(pane)?];
+            match space_find(space, pane) {
+                Some(PaneKind::Agent {
+                    agent,
+                    harness,
+                    model,
+                    context,
+                    place,
+                    conversation,
+                    ..
+                }) if *agent == live.name => (
+                    space.cwd.clone(),
+                    harness.clone(),
+                    model.clone(),
+                    *context,
+                    place.as_deref().cloned().unwrap_or_default(),
+                    conversation.clone(),
+                ),
+                _ => return Err(format!("{pane} no longer shows agent {}", live.name)),
+            }
+        };
+        let kind = Harness::parse(&harness).ok_or_else(|| format!("no agent {harness}"))?;
+        self.agent_ready(&harness)?;
+        let cwd = place.cwd.clone().unwrap_or_else(|| space_cwd.clone());
+        let picked = change.apply(&place.env);
+        let home = match picked.get(kind.home_var()) {
+            Some(picked) => (!picked.is_empty()).then(|| picked.clone()),
+            None => self.shell_agent_home(&harness, &cwd).await?,
+        };
+        // An agent that has not saved its conversation yet (one restored on it, say) is still on
+        // the one the pane saved.
+        let conversation = live.saved_conversation().or(pane_conversation);
+        let homes = (
+            live.home().map(Path::to_path_buf).or_else(|| kind.daemon_home()),
+            home.as_ref().map(PathBuf::from).or_else(|| self.agent_home(&harness)).or_else(|| kind.daemon_home()),
+        );
+        if let (Some(conversation), (Some(old_home), Some(new_home))) = (&conversation, &homes) {
+            if old_home != new_home {
+                // Between turns the agent writes nothing, so its file is whole.
+                let carried = crate::carry::carry(kind, (old_home, new_home), &cwd, conversation)
+                    .map_err(|e| format!("{pane} was not reloaded: {e}"))?;
+                log_carry(pane, conversation, old_home, new_home, &carried);
+            }
+        }
+        Ok(ReadyReload { _switching, space_cwd, harness, model, context, place, cwd, picked, home, conversation, kind })
     }
 
     /// End terminal pane `pane`'s shell and start a new one in the directory it was last in,
@@ -476,6 +589,14 @@ impl AppState {
 }
 
 /// Say in the log what carrying `conversation` from `old` to `new` did.
+/// Say in the log that the messages a queued reload left behind it were lost with the agent that
+/// did not start again.
+fn lost_behind(pane: &str, behind: &[String]) {
+    if !behind.is_empty() {
+        tracing::warn!(%pane, lost = behind.len(), "messages queued behind the reload were lost: the agent did not start again");
+    }
+}
+
 fn log_carry(pane: &str, conversation: &str, old: &Path, new: &Path, carried: &Carried) {
     let (old, new) = (old.display(), new.display());
     match carried {

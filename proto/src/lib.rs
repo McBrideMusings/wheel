@@ -9,7 +9,9 @@
 //! Terminal bytes travel base64-encoded.
 
 mod finder;
+mod ops;
 pub use finder::TextFinder;
+pub use ops::{op_of, ops, Mismatch, Offer, Refused, BREAKS, COMPAT};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -32,10 +34,10 @@ pub const AGENT_NOT_REOPENED: &str =
 /// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
 pub const DEFAULT_INSTANCE: &str = "wheel";
 
-/// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
-/// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
-/// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 52;
+/// The protocol this build speaks, which `status` reports as `protocol` (1 when absent): a label
+/// for logs and reports. No client decides anything from it; what a client may send is the
+/// server's `ops`, and whether it can connect is `compat` (ADR-0050).
+pub const PROTOCOL_VERSION: u32 = 53;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1314,10 +1316,6 @@ pub enum ClientMsg {
         /// Which browser moves: `mac` or `phone`. Absent, none is asked and the asking client goes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on: Option<String>,
-        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
-        /// in the `by` of the `inspect_pane` a phone gets.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from: Option<String>,
     },
     /// Read or set a browser pane's home: the page its Mac and phone browsers open at, held in the
     /// layout as the pane's `url`. Without `url`, replies `pane_home` with the home. With `url`,
@@ -1331,11 +1329,14 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
-    /// Start `pane` again on what it is on, and reply `ok`. An agent pane's agent ends and a new
+    /// Start `pane` again on what it is on, and reply `ok` (`agent_queued` for a queued agent
+    /// reload, below). An agent pane's agent ends and a new
     /// one, under a new name the layout carries, starts on the same conversation, model, mode and
-    /// permissions, with its home asked of the login shell again unless the pane picked one;
-    /// refused while a turn runs or a message waits. A terminal pane's shell ends and a new one starts in the
-    /// directory the shell was last in, resuming the Claude Code, Codex or pi conversation it ran.
+    /// permissions, with its home asked of the login shell again unless the pane picked one. Asked
+    /// while a turn runs or a message waits, the agent's reload waits in its queue instead, as a
+    /// `reload` event under a turn of its own, and the reply is `agent_queued` naming that turn;
+    /// when its turn comes the agent starts again, and the messages still queued go to the new
+    /// agent. A terminal pane's shell ends and a new one starts in the directory the shell was last in, resuming the Claude Code, Codex or pi conversation it ran.
     /// A web, browser or plugin pane gets `pane_reload` sent to every client, and a web pane's
     /// artifact runs its refresh command. An empty pane is left as it is. `PROTOCOL_VERSION` 51.
     ///
@@ -1372,10 +1373,6 @@ pub enum ClientMsg {
         /// Draw the pane's whole scrollable content as one tall image, not the part in view.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         full: bool,
-        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
-        /// in the `by` of the `render_pane` a phone gets.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from: Option<String>,
     },
     /// Run JavaScript in the page of browser pane `pane` (`action` `eval`, `arg` the script; the reply
     /// `inspected` text is the result as JSON), read its HTML (`action` `dom`, `arg` an optional CSS
@@ -1411,10 +1408,6 @@ pub enum ClientMsg {
         /// attached".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on: Option<String>,
-        /// The pane the request comes from (the CLI sends `WHEEL_PANE`), which names who ran it
-        /// in the `by` of the `inspect_pane` a phone gets.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from: Option<String>,
     },
     /// This connection can draw any pane it shows as a PNG, so the daemon may send it
     /// `render_pane`. Sent once after connecting; it lasts until the connection closes.
@@ -2203,6 +2196,13 @@ pub enum ServerMsg {
         /// The protocol the server speaks (`PROTOCOL_VERSION`); 1 from a server that predates it.
         #[serde(default = "first_protocol")]
         protocol: u32,
+        /// The server's compatibility level (`COMPAT`); 0 from a server that predates it. A
+        /// client connects only at its own level (ADR-0050).
+        #[serde(default)]
+        compat: u32,
+        /// The op of every `ClientMsg` the server handles (`ops()`); a client sends no other.
+        #[serde(default)]
+        ops: Vec<String>,
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
@@ -2896,9 +2896,6 @@ pub enum ServerMsg {
         /// Draw the pane's whole scrollable content as one tall image.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         full: bool,
-        /// Who ran it, as in `inspect_pane`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        by: Option<String>,
     },
     /// `pane_inspect` `record` wrote `bytes` bytes of movie to `path`: `frames` frames over
     /// `millis` milliseconds.
@@ -2919,10 +2916,6 @@ pub enum ServerMsg {
         action: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arg: Option<String>,
-        /// Who ran it, when the request named the pane it came from: that pane's agent name, else
-        /// the pane's id. A phone drawing its own page shows it ("claude ran dom h1 on this page").
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        by: Option<String>,
     },
     /// `pane_inspect` `eval` or `dom` finished: `text` is the result.
     Inspected {
@@ -2959,6 +2952,23 @@ pub enum ServerMsg {
 }
 
 impl ServerMsg {
+    /// What a `status` says its server offers; None for any other message.
+    pub fn offer(&self) -> Option<Offer> {
+        match self {
+            ServerMsg::Status {
+                compat,
+                protocol,
+                ops,
+                ..
+            } => Some(Offer {
+                compat: *compat,
+                protocol: *protocol,
+                ops: ops.iter().cloned().collect(),
+            }),
+            _ => None,
+        }
+    }
+
     /// The `req` of the request this message answers; None for a message the daemon sends
     /// unprompted, and for a reply to a request sent without one. The match names every variant,
     /// so a new one cannot be left out.
@@ -3361,6 +3371,16 @@ pub enum AgentEvent {
     Retract {
         turn: u64,
     },
+    /// A reload of the agent's pane (`pane_reload`) asked while a turn ran or messages waited. It
+    /// waits in the queue as a `user` message does, under its own `turn`, and is taken back
+    /// (`agent_unsend`), run at once (`agent_send_now`) or cleared (`agent_clear_queue`) the same
+    /// way. `text` says what it does: `Reload`, or `Reload with` and each variable it sets. Never
+    /// stored: when its turn comes it is retracted and the pane's agent starts again, with the
+    /// messages queued behind it.
+    Reload {
+        turn: u64,
+        text: String,
+    },
     /// The agent put a card in its transcript (`agent_card`): a pane or an artifact a client draws
     /// live in place of the row. Kept in the daemon's transcript only; the agent's own
     /// conversation does not hold it, so a reload from a saved conversation does not bring it
@@ -3395,6 +3415,7 @@ const AGENT_EVENT_KINDS: &[&str] = &[
     "mode",
     "turn_end",
     "retract",
+    "reload",
     "card",
     "error",
 ];
@@ -4924,13 +4945,13 @@ pub fn decode_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(data)
 }
 
-/// The turns of `user` events still waiting to start: no `turn_start` for them yet. The one
-/// rule text transcripts use to mark a message `(queued)`.
+/// The turns of `user` and `reload` events still waiting to start: no `turn_start` for them yet.
+/// The one rule text transcripts use to mark a message `(queued)`.
 pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
     let mut queued = std::collections::HashSet::new();
     for e in events {
         match e.event {
-            AgentEvent::User { turn, .. } => {
+            AgentEvent::User { turn, .. } | AgentEvent::Reload { turn, .. } => {
                 queued.insert(turn);
             }
             AgentEvent::TurnStart { turn } => {
@@ -5224,6 +5245,7 @@ mod tests {
             AgentEvent::Mode { mode: "plan".into() },
             AgentEvent::TurnEnd { turn: 1, stop_reason: "end_turn".into() },
             AgentEvent::Retract { turn: 1 },
+            AgentEvent::Reload { turn: 2, text: "Reload".into() },
             AgentEvent::Card { card: CardRef::Pane { pane: "p1".into() } },
             AgentEvent::Error { turn: None, message: "x".into() },
         ];
@@ -5241,6 +5263,7 @@ mod tests {
                 | AgentEvent::Mode { .. }
                 | AgentEvent::TurnEnd { .. }
                 | AgentEvent::Retract { .. }
+                | AgentEvent::Reload { .. }
                 | AgentEvent::Card { .. }
                 | AgentEvent::Error { .. } => {}
                 AgentEvent::Unknown(_) => unreachable!(),

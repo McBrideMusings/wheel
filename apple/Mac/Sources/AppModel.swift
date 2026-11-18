@@ -267,13 +267,15 @@ final class AppModel {
     @ObservationIgnored var diskAccessObserver: NSObjectProtocol?
     /// The connected server's program and source, from its last status.
     var serverHost: HostAccess?
-    /// The protocol the connected server speaks; what it lacks is hidden (`ServerProtocol`).
-    var serverProtocol: UInt32 = ServerProtocol.current {
+    /// What the connected server offers; a feature whose op it lacks is hidden (`ServerOffer`).
+    var serverOffer: ServerOffer = .none {
         didSet {
-            let available = serverProtocol >= ServerProtocol.current
+            let available = takeBackOffered
             for chat in chats.values where chat.queue.takeBackAvailable != available { chat.queue.takeBackAvailable = available }
         }
     }
+    /// Edit, Remove and Clear queue on sent messages need the server to take a turn back.
+    var takeBackOffered: Bool { serverOffer.has("agent_unsend") && serverOffer.has("agent_clear_queue") }
     /// Why the last stop or start did not work.
     var serverProblem: String?
     /// wheeld said it is stopping and is expected back soon: the unreachable notice stays hidden.
@@ -563,7 +565,7 @@ final class AppModel {
         if commandPalette != nil { askRecentDirs(); askRunners() }
         if commandPalette?.mode == .newSpace { askRoots(); askDirList(commandPalette?.browsedParent) }
         let known = Array(chats.values)
-        if case let .status(_, _, _, uptime, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, protocolVersion, sessions) = status {
+        if case let .status(_, _, _, uptime, _, perms, spaces, agents, shellIntegration, loginPath, logs, host, offer, sessions) = status {
             self.agents = agents
             settings.commandLine.shellProblem = shellIntegration
             settings.commandLine.loginPath = loginPath
@@ -572,7 +574,7 @@ final class AppModel {
             showLogShipping(logs)
             let startedBefore = serverStarted
             serverStarted = Date().addingTimeInterval(-Double(uptime))
-            serverProtocol = protocolVersion
+            serverOffer = offer
             logServerSource()
             self.perms = perms
             reportedViews = [:]
@@ -740,7 +742,7 @@ final class AppModel {
         }
         for name in agents where chats[name] == nil {
             let chat = AgentChat(name: name)
-            chat.queue.takeBackAvailable = serverProtocol >= ServerProtocol.current
+            chat.queue.takeBackAvailable = takeBackOffered
             chat.sendUnsend = { [weak self, weak chat] turn in
                 if let chat { self?.unsend(chat, turn: turn) }
             }
@@ -755,7 +757,7 @@ final class AppModel {
             }
             chat.canFork = { [weak self, weak chat] in
                 guard let self, let chat else { return false }
-                return self.serverProtocol >= 28
+                return self.serverOffer.has("agent_fork")
                     && AgentPanes.canFork(harness: AgentPanes.harness(ofAgent: chat.name, in: self.spaces))
             }
             chats[name] = chat
@@ -860,9 +862,9 @@ final class AppModel {
         case let .statusChanged(space, pane, status, spaceStatus):
             spaces = spaces.map { $0.id == space ? $0.applying(pane: pane, status: status, spaceStatus: spaceStatus) : $0 }
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
-        case let .renderPane(id, pane, full, _):
+        case let .renderPane(id, pane, full):
             renderPane(id: id, pane: pane, full: full)
-        case let .inspectPane(id, pane, op, arg, _):
+        case let .inspectPane(id, pane, op, arg):
             inspectPane(id: id, pane: pane, op: op, arg: arg)
         case let .windowRequest(id, command):
             answerWindowCommand(id: id, command)
