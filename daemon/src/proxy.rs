@@ -369,7 +369,8 @@ fn own_path(location: &str, port: u16) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{loopback_host, loopback_origin_port, loopback_port, own_path};
+    use super::{loopback_host, loopback_origin_port, loopback_port, own_path, starting};
+    use axum::http::StatusCode;
 
     #[test]
     fn only_a_bare_loopback_origin_is_one() {
@@ -416,11 +417,6 @@ mod tests {
         assert_eq!(loopback_port("https://example.com/"), None);
         assert_eq!(loopback_port("about:blank"), None);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[tokio::test]
     async fn starting_page_waits_and_is_not_the_error_page() {
