@@ -230,6 +230,16 @@ impl AppState {
             .filter_map(|s| s.status.map(|status| (s.id, status)))
             .collect();
         drop(book);
+        // The layout file says which panes are in a turn ([`AppState::mid_turn_panes`]), so a
+        // wheeld that stops by any means tells them so when it is back: every change of state can
+        // start or end a turn, and the file is written when the set differs from the one in it.
+        {
+            let spaces = self.spaces.lock().unwrap();
+            let written = self.saved_mid_turn.lock().unwrap().clone();
+            if self.mid_turn_panes(&spaces) != written {
+                self.save_state(&spaces);
+            }
+        }
         let changed = !sent.is_empty();
         for msg in sent {
             let _ = self.global.send(msg);

@@ -1145,6 +1145,14 @@ impl Agent {
         });
     }
 
+    /// Whether the agent is in a turn: one a message started, from its `turn_start` until its
+    /// end, or one it started itself. Read under the lock that records the turn's end, so it never
+    /// says a turn runs once its `turn_end` is out.
+    pub fn in_turn(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.running.is_some() || inner.self_started
+    }
+
     /// How many background tasks the agent has running.
     pub fn background(&self) -> u32 {
         self.tasks.lock().unwrap().len() as u32

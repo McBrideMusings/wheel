@@ -689,9 +689,11 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
     assert!(matches!(&**a, Node::Pane { id, kind: PaneKind::Empty { .. }, .. } if *id == left));
     let new_term = term_of(&after[0], &right).expect("still a terminal pane");
     assert_ne!(new_term, old_term, "a new shell, under a new id");
-    assert!(terms
-        .iter()
-        .any(|t| t.id == new_term && t.alive && t.cwd == "/tmp"));
+    // In the directory the stop's save sampled the shell in: /tmp, which macOS resolves.
+    let tmp = std::fs::canonicalize("/tmp").unwrap();
+    assert!(terms.iter().any(|t| t.id == new_term
+        && t.alive
+        && std::fs::canonicalize(&t.cwd).is_ok_and(|cwd| cwd == tmp)));
 
     // Ids come from one counter that survives the restart: everything made after it is
     // numbered above the pane closed before it.
@@ -710,6 +712,122 @@ async fn a_restarted_daemon_restores_the_layout_with_fresh_shells() {
     for id in [&new_term, &third] {
         assert!(num(id) > num(&closed), "{id} is numbered after {closed}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The command terminal pane `pane` keeps, as the layout lists it.
+async fn command_of(ws: &mut Ws, pane: &str) -> Option<String> {
+    let (spaces, _) = layout(ws).await;
+    match spaces.iter().find_map(|s| find_kind(&s.root, pane)) {
+        Some(PaneKind::Terminal { command, .. }) => command.clone(),
+        other => panic!("{pane} is not a terminal: {other:?}"),
+    }
+}
+
+/// The lines of `file`, once it holds `n` of them.
+async fn lines_when(file: &std::path::Path, n: usize) -> Vec<String> {
+    let deadline = std::time::Instant::now() + REPLIES;
+    loop {
+        let lines: Vec<String> = std::fs::read_to_string(file)
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect();
+        if lines.len() >= n {
+            return lines;
+        }
+        assert!(std::time::Instant::now() < deadline, "{} holds {lines:?}, not {n} lines", file.display());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_pane_runs_its_still_running_command_again_and_a_hand_made_one_runs_nothing() {
+    let dir = std::env::temp_dir().join(format!("wheel-rerun-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("spaces.json");
+    let marker = dir.join("marker");
+    let command = format!("echo ran >> '{}'; sleep 30", marker.display());
+
+    let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(dir.to_str().unwrap())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let hand = first_pane(&spaces[0].root);
+    ok(&mut ws, terminal(&hand)).await;
+    let run = created(
+        &mut ws,
+        ClientMsg::PaneRun {
+            req: Some(3),
+            pane: hand.clone(),
+            command: command.clone(),
+            focus: false,
+            site: None,
+        },
+    )
+    .await;
+    lines_when(&marker, 1).await;
+    // Recorded as the pane's command and saved with the layout; the hand-made pane has none.
+    assert_eq!(command_of(&mut ws, &run).await.as_deref(), Some(command.as_str()));
+    assert_eq!(command_of(&mut ws, &hand).await, None);
+    let saved = std::fs::read_to_string(&state_file).unwrap();
+    assert!(saved.contains("\"command\""), "{saved}");
+    drop(ws);
+    first_daemon.abort();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    // Typed again into the restored pane's new shell, which keeps it while it runs.
+    assert_eq!(lines_when(&marker, 2).await, ["ran", "ran"]);
+    assert_eq!(command_of(&mut ws, &run).await.as_deref(), Some(command.as_str()));
+    assert_eq!(command_of(&mut ws, &hand).await, None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_that_ended_is_dropped_and_a_restore_does_not_run_it() {
+    let dir = std::env::temp_dir().join(format!("wheel-oneshot-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("spaces.json");
+    let marker = dir.join("marker");
+    // It prints while it holds the terminal, then ends and gives the shell its prompt back.
+    let command = format!("sh -c 'echo once >> {}; echo printed; sleep 1'", marker.display());
+
+    let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(dir.to_str().unwrap())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let left = first_pane(&spaces[0].root);
+    let run = created(
+        &mut ws,
+        ClientMsg::PaneRun {
+            req: Some(3),
+            pane: left,
+            command: command.clone(),
+            focus: false,
+            site: None,
+        },
+    )
+    .await;
+    lines_when(&marker, 1).await;
+    let deadline = std::time::Instant::now() + REPLIES;
+    while command_of(&mut ws, &run).await.is_some() {
+        assert!(std::time::Instant::now() < deadline, "the ended command was never dropped");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    drop(ws);
+    first_daemon.abort();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(term_of(&spaces[0], &run).is_some(), "still a terminal pane");
+    assert_eq!(command_of(&mut ws, &run).await, None);
+    // Long enough for a shell to have read and run a typed line.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(lines_when(&marker, 1).await, ["once"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

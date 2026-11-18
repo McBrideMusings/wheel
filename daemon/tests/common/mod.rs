@@ -3,8 +3,9 @@
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-/// A daemon serving in this process. `abort` stops it serving and ends its agents, so the
-/// agent processes do not run on until the test process exits.
+/// A daemon serving in this process. `abort` stops it as wheeld stops on SIGTERM: it writes the
+/// layout a last time, then stops serving and ends its agents, so the agent processes do not run
+/// on until the test process exits.
 pub struct Daemon {
     serving: JoinHandle<anyhow::Result<()>>,
     state: Arc<wheeld::AppState>,
@@ -28,6 +29,7 @@ impl Daemon {
     }
 
     pub fn abort(&self) {
+        self.state.save_layout_now();
         self.serving.abort();
         self.state.stop_agents();
     }

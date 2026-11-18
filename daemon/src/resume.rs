@@ -693,9 +693,15 @@ fn walk_for(dir: &Path, conversation: &str) -> bool {
 }
 
 /// The line typed into a restored shell to resume `agent`. The agent's data directory is named
-/// when the conversation lives somewhere other than the default, so the agent finds it.
-pub fn resume_line(agent: &TermAgent) -> Option<String> {
-    line(agent)
+/// when the conversation lives somewhere other than the default, so the agent finds it. With
+/// `message`, the agent takes it as the first message of the resumed session, as if the person
+/// typed it at its prompt (Claude Code, Codex and pi each take one after the session).
+pub fn resume_line(agent: &TermAgent, message: Option<&str>) -> Option<String> {
+    let line = line(agent)?;
+    Some(match message {
+        Some(message) => format!("{line} {}", shell_quote(message)),
+        None => line,
+    })
 }
 
 /// The line typed into a new shell to take over `agent`'s conversation from wheel's agent view. The
@@ -1190,21 +1196,25 @@ mod tests {
             context: None,
         };
         assert_eq!(
-            resume_line(&agent("claude", None)).unwrap(),
+            resume_line(&agent("claude", None), None).unwrap(),
             format!("claude --resume {ID}")
         );
         assert_eq!(
-            resume_line(&agent("codex", None)).unwrap(),
+            resume_line(&agent("codex", None), None).unwrap(),
             format!("codex resume {ID}")
         );
         assert_eq!(
-            resume_line(&agent("claude", Some("/data/my claude"))).unwrap(),
+            resume_line(&agent("claude", Some("/data/my claude")), None).unwrap(),
             format!("CLAUDE_CONFIG_DIR='/data/my claude' claude --resume {ID}")
         );
-        assert_eq!(resume_line(&agent("vim", None)), None);
+        assert_eq!(resume_line(&agent("vim", None), None), None);
+        assert_eq!(
+            resume_line(&agent("codex", None), Some("it's back")).unwrap(),
+            format!("codex resume {ID} 'it'\\''s back'")
+        );
         let default = Harness::Claude.default_home().unwrap().display().to_string();
         assert_eq!(
-            resume_line(&agent("claude", Some(&default))).unwrap(),
+            resume_line(&agent("claude", Some(&default)), None).unwrap(),
             format!("claude --resume {ID}")
         );
         assert_eq!(

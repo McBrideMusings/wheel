@@ -205,6 +205,10 @@ pub struct AppState {
     /// Whether a coalesced save of the layout is already scheduled, so a burst of browser
     /// navigations is one write rather than one each.
     pub(crate) save_pending: AtomicBool,
+    /// Set by the save wheeld makes as it stops ([`Self::save_layout_now`]): the layout then,
+    /// with the panes whose agent was in a turn, is what the next start restores, so the agents
+    /// ending as the process goes write nothing over it.
+    pub(crate) layout_final: AtomicBool,
     /// Panes whose conversation is moving between its chat and its terminal, so a second switch
     /// cannot start a second program on the same conversation.
     pub(crate) switching_views: Mutex<std::collections::HashSet<String>>,
@@ -261,6 +265,12 @@ pub struct AppState {
     /// The agent panes' agents a restore kept as saved because their agent could not start,
     /// started once the login shell's PATH arrives, or once it answers for the agent's home.
     pub(crate) kept_agents: Mutex<std::collections::HashSet<String>>,
+    /// The agent panes that were in a turn when the last wheeld stopped and whose agent has not
+    /// started since, each with the message it takes first once it does: that wheeld restarted,
+    /// and the turn and its processes ended. Saved with the layout until it is sent.
+    pub(crate) turn_ended: Mutex<std::collections::HashMap<String, String>>,
+    /// The panes the layout file last written names as in a turn.
+    pub(crate) saved_mid_turn: Mutex<Vec<String>>,
     /// Held while kept agents are started ([`Self::start_kept_agents`]), and by a restore until
     /// its layout is set, so two starts never take `kept_agents` at once and none takes an agent
     /// the restore kept before its pane is in a space; it holds whether a loop asking the login
@@ -385,6 +395,7 @@ impl AppState {
             backends: Default::default(),
             builtins_write: Mutex::new(()),
             save_pending: AtomicBool::new(false),
+            layout_final: AtomicBool::new(false),
             switching_views: Mutex::new(Default::default()),
             saves: AtomicU64::new(0),
             requests: Mutex::default(),
@@ -415,6 +426,8 @@ impl AppState {
                 problem: None,
             })),
             kept_agents: Mutex::new(Default::default()),
+            turn_ended: Mutex::new(Default::default()),
+            saved_mid_turn: Mutex::new(Vec::new()),
             starting_kept_agents: tokio::sync::Mutex::new(false),
             switching_into: Mutex::new(Default::default()),
             statuses: Mutex::new(Default::default()),

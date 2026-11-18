@@ -282,12 +282,13 @@ impl AppState {
             cwd: Some(dir),
             agent: Some(Box::new(agent)),
             env: picked,
+            command: None,
             extra: Extra::default(),
         };
         // The agent is gone, so the pane becomes the terminal before anything else can fail: a
         // pane left showing an agent pane with no agent behind it would answer nothing.
         self.install(pane, new, None)?;
-        if let Err(e) = term.write(format!("{line}\n").into_bytes()) {
+        if let Err(e) = term.type_line(&line) {
             tracing::warn!(%pane, error = %e, "could not type the resume command");
             return Err(format!(
                 "the agent stopped and {pane} is a terminal, but typing `{line}` into it failed: {e}"

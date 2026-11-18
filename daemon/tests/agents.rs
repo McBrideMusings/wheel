@@ -1798,6 +1798,97 @@ async fn a_restored_agent_pane_resumes_its_conversation() {
     );
 }
 
+/// How many of `events` are the message a restore sends an agent whose turn it ended.
+fn told_turn_ended(events: &[AgentEvent]) -> usize {
+    events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::User { text, .. } if text.starts_with("wheeld restarted at ")))
+        .count()
+}
+
+/// The panes the layout file at `state_file` names as in a turn.
+fn saved_mid_turn(state_file: &std::path::Path) -> Vec<String> {
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state_file).unwrap()).unwrap();
+    serde_json::from_value(saved["mid_turn"].clone()).unwrap_or_default()
+}
+
+/// Wait until the layout file at `state_file` names exactly `panes` as in a turn.
+async fn saved_mid_turn_when(state_file: &std::path::Path, panes: &[&str]) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let saved = saved_mid_turn(state_file);
+        if saved == panes {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the layout names {saved:?} in a turn, not {panes:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_in_a_turn_when_wheeld_stops_is_told_once_that_the_turn_ended() {
+    let dir = Scratch::new("mid-turn");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let state_file = dir.0.join("spaces.json");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let (busy_pane, busy) = agent_pane(&url, Some("first task")).await;
+    let (_, idle) = agent_pane(&url, Some("first task")).await;
+    // A turn that waits on a permission has not ended; the file says so as soon as it starts,
+    // so a wheeld that dies without its stop's save still has it.
+    let mut ws = connect(&url).await;
+    send(
+        &mut ws,
+        ClientMsg::AgentSend {
+            req: Some(2),
+            agent: busy.clone(),
+            text: "needs permission".into(),
+        },
+    )
+    .await;
+    while !matches!(recv(&mut ws).await, ServerMsg::PermRequested { .. }) {}
+    saved_mid_turn_when(&state_file, &[&busy_pane]).await;
+    drop(ws);
+    // As wheeld does on SIGTERM: the stop's save, then the agents end with the process.
+    first.abort();
+    assert_eq!(saved_mid_turn(&state_file), [busy_pane.clone()]);
+
+    let (url, _, second) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    // The busy agent takes the message as its first new turn, and runs it.
+    let events = transcript_when(&mut ws, &busy, |events| {
+        told_turn_ended(events) == 1
+            && matches!(events.last(), Some(AgentEvent::TurnEnd { .. }))
+    })
+    .await;
+    let told = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::User { text, .. } if text.starts_with("wheeld restarted at ") => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        told.contains(" UTC. The turn you were in ended when it stopped, and every process you ran stopped with it."),
+        "{told}"
+    );
+    // The idle agent resumed its conversation and was told nothing.
+    let events = transcript_when(&mut ws, &idle, |events| events.len() >= 4).await;
+    assert_eq!(told_turn_ended(&events), 0, "{events:?}");
+    // That turn ended, so the next stop names no pane, and the next start tells nobody again.
+    saved_mid_turn_when(&state_file, &[]).await;
+    drop(ws);
+    second.abort();
+
+    let (url, _, _) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let events = transcript_when(&mut ws, &busy, |events| told_turn_ended(events) >= 1).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let events_later = attach(&mut ws, &busy, 900).await;
+    assert_eq!(told_turn_ended(&events_later), 1, "{events_later:?}");
+    assert_eq!(events_later.len(), events.len(), "{events_later:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_load_that_fails_leaves_only_the_notice() {
     let dir = Scratch::new("failed-load");
