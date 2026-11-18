@@ -2679,7 +2679,13 @@ impl Client {
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
                     .child(div().flex_none().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
                     .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
-                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, queue, &self.controls, cx))),
+                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, false, queue, &self.controls, cx))),
+            // Drawn as a queued message is, with the same line under it less Edit.
+            Kind::Reload { text } => div().flex().flex_col()
+                .child(div().flex().gap_2().text_color(rgb(0xe0b070))
+                    .child(div().flex_none().child("queued").text_color(rgb(0x8fa89b)).text_xs())
+                    .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
+                .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, true, true, queue, &self.controls, cx))),
             Kind::Reply(x) => {
                 let blocks = {
                     let mut cache = self.parsed.borrow_mut();

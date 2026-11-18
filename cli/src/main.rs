@@ -1094,8 +1094,9 @@ enum PaneCommand {
     /// Start a pane again on what it is on: an agent restarts on the same conversation, a
     /// terminal's shell starts again in the directory it was in (resuming the agent it ran), a web
     /// pane reloads and runs its artifact's refresh, a browser reloads its page, a plugin pane runs
-    /// its script again from the top. An empty pane is left as it is. An agent is refused while a
-    /// turn runs.
+    /// its script again from the top. An empty pane is left as it is. An agent asked while a turn
+    /// runs or messages wait queues the reload behind them and prints `<agent> turn <n>`: `wheel
+    /// agent unsend`, `send-now` and `clear-queue` act on it as on a message.
     ///
     /// On an agent or terminal pane, `--env` and `--unset-env` change the environment the new
     /// process starts with, and the pane keeps the change. When an agent's home variable
@@ -3154,6 +3155,7 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
                 };
                 println!("\n> {text}{queued}")
             }
+            AgentEvent::Reload { text, .. } => println!("\n> [{text}] (queued)"),
             AgentEvent::Text { text } => println!("{text}"),
             AgentEvent::Thought { text } => println!("[thought] {text}"),
             AgentEvent::ToolCall {
@@ -5982,8 +5984,14 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 unset: unset_env,
             };
             // An agent's reload asks the login shell (up to 20s) and waits for the agent (up to 60s).
-            conn.call_within(msg, req, Duration::from_secs(90)).await?;
-            Ok(())
+            match conn.call_within(msg, req, Duration::from_secs(90)).await? {
+                // The agent was busy: the reload waits in its queue.
+                ServerMsg::AgentQueued { agent, turn, .. } => {
+                    println!("{agent} turn {turn}");
+                    Ok(())
+                }
+                _ => Ok(()),
+            }
         }
         PaneCommand::Home { pane, page } => {
             let req = conn.req();

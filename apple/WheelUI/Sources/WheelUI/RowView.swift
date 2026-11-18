@@ -177,9 +177,12 @@ struct UserMessage: View {
                         Button("Send now") { chat.sendNow(turn: turn) }
                             .buttonStyle(.chat("queue", "Send this queued message now"))
                             .help("Interrupt the running turn and send this message now (Control-Return sends a new message this way)")
-                        Button("Edit") { chat.edit(turn: turn, text: text) }
-                            .buttonStyle(.chat("queue", "Edit this queued message"))
-                            .help("Take this message out of the queue and edit it in the composer")
+                        // A queued reload has no text to edit.
+                        if !row.reload {
+                            Button("Edit") { chat.edit(turn: turn, text: text) }
+                                .buttonStyle(.chat("queue", "Edit this queued message"))
+                                .help("Take this message out of the queue and edit it in the composer")
+                        }
                         Button("Remove") { chat.remove(turn: turn) }
                             .buttonStyle(.chat("queue", "Remove this queued message"))
                             .help("Take this message out of the queue")

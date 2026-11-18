@@ -156,6 +156,10 @@ enum Cmd {
     Retract {
         turns: Vec<u64>,
     },
+    /// A reload of the agent's pane waits in the queue as `turn` ([`Agent::hold_or_queue_reload`]).
+    Reload {
+        turn: u64,
+    },
     /// Run the queued message of `turn` now: the turn running is interrupted and the message goes
     /// first.
     SendNow {
@@ -221,6 +225,8 @@ struct Inner {
     context: Option<ContextUse>,
     /// The slash commands the agent listed when its process started; none before it has.
     commands: Option<Vec<String>>,
+    /// The waiting reload's turn and what tells its asker the turn came: at most one waits.
+    reload: Option<(u64, oneshot::Sender<Vec<String>>)>,
 }
 
 pub struct Agent {
@@ -323,8 +329,31 @@ pub struct AgentConfig {
     pub on_build_failed: Option<OnBuildFailed>,
 }
 
+/// What waits in the queue under a turn: a message for the agent, or a reload of its pane.
+enum Waiting {
+    Prompt(String),
+    Reload,
+}
+
 /// Messages waiting for a turn. Lives outside any one agent process, so a restart keeps them.
-type Queue = VecDeque<(u64, String)>;
+type Queue = VecDeque<(u64, Waiting)>;
+
+/// What [`Agent::hold_or_queue_reload`] did: the agent was free and is held for the reload now, or
+/// the reload waits in its queue as `turn`, and `reached` gives the texts of the messages queued
+/// behind it once its turn comes, with the agent then held as `Now` holds it
+/// ([`Agent::adopt_reload_hold`]). A reload taken back drops the sender, so `reached` fails.
+pub enum ReloadTurn<'a> {
+    Now(Handoff<'a>),
+    Queued {
+        turn: u64,
+        reached: oneshot::Receiver<Vec<String>>,
+    },
+}
+
+/// Whether `event` waits in the queue as `turn`: a message's `user` event or a reload.
+fn waits_as(event: &AgentEvent, turn: u64) -> bool {
+    matches!(event, AgentEvent::User { turn: t, .. } | AgentEvent::Reload { turn: t, .. } if *t == turn)
+}
 
 /// Messages handed to an agent that takes input mid-turn, which it has not taken in yet. They are
 /// still queued as far as a client can tell.
@@ -409,6 +438,7 @@ impl Agent {
                 notice: None,
                 title: None,
                 commands: None,
+                reload: None,
                 context: config.context.filter(|_| config.restored),
             }),
             tx,
@@ -489,6 +519,7 @@ impl Agent {
                     // them gone, not queued forever.
                     let mut inner = run.inner.lock().unwrap();
                     inner.queued.clear();
+                    inner.reload = None;
                     inner.unsent = None;
                     drop(inner);
                     run.push(AgentEvent::Error {
@@ -541,6 +572,8 @@ impl Agent {
     /// goes `Failed` instead, and the pane's next view replaces it.
     fn halt(&self, perms: &Perms, announce: bool) -> Option<JoinHandle<()>> {
         self.stopped.store(true, Ordering::SeqCst);
+        // A reload waiting in the queue goes with the agent; its asker is told.
+        self.inner.lock().unwrap().reload = None;
         let runner = self.runner.lock().unwrap().take();
         if let Some(runner) = &runner {
             runner.abort();
@@ -566,7 +599,7 @@ impl Agent {
     /// while a turn runs or a message waits, and every message sent while held is refused, as during
     /// a conversation change. The hold lasts until the guard drops.
     pub fn hold_for_handoff(&self) -> Result<Handoff<'_>, String> {
-        let mut inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap();
         if inner.switching {
             return Err(format!(
                 "agent {} is changing conversation; try again once that is done",
@@ -585,14 +618,118 @@ impl Agent {
                 self.name
             ));
         }
+        Ok(self.hold_locked(inner))
+    }
+
+    /// Hold the agent for a reload of its pane: at once when it is between turns with nothing
+    /// queued, as [`Agent::hold_for_handoff`] holds it, else by queueing the reload behind the turn
+    /// running and the messages waiting. `text` is what clients show for the queued reload.
+    /// Refused while the agent changes conversation or starts, and while another reload waits.
+    pub fn hold_or_queue_reload(&self, text: String) -> Result<ReloadTurn<'_>, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.switching {
+            return Err(format!(
+                "agent {} is changing conversation; try again once that is done",
+                self.name
+            ));
+        }
+        if inner.state == AgentState::Starting {
+            return Err(format!(
+                "agent {} is still starting; try again once it is ready",
+                self.name
+            ));
+        }
+        if let Some((waiting, _)) = &inner.reload {
+            return Err(format!(
+                "agent {} has a reload waiting as turn {waiting}; take it back (wheel agent unsend {} {waiting}) first",
+                self.name, self.name
+            ));
+        }
+        if inner.running.is_none() && inner.queued.is_empty() && !inner.self_started {
+            return Ok(ReloadTurn::Now(self.hold_locked(inner)));
+        }
+        let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
+        self.cmds
+            .send(Cmd::Reload { turn })
+            .map_err(|_| format!("agent {} is not running", self.name))?;
+        let (reach, reached) = oneshot::channel();
+        inner.reload = Some((turn, reach));
+        let event = StampedEvent::now(AgentEvent::Reload { turn, text });
+        inner.queued.push_back(event.clone());
+        let _ = self.tx.send(event);
+        tracing::info!(agent = %self.name, turn, "reload queued");
+        Ok(ReloadTurn::Queued { turn, reached })
+    }
+
+    /// The hold a queued reload's turn put on the agent ([`ReloadTurn::Queued`]), to drop once the
+    /// reload is done or has failed, as the hold `ReloadTurn::Now` gives is dropped.
+    pub fn adopt_reload_hold(&self) -> Handoff<'_> {
+        Handoff {
+            switching: Switching(self),
+            previous: AgentState::Ready,
+        }
+    }
+
+    /// Mark the agent as held between turns and say so to every client.
+    fn hold_locked(&self, mut inner: std::sync::MutexGuard<'_, Inner>) -> Handoff<'_> {
         inner.switching = true;
         let previous = inner.state.clone();
         drop(inner);
         self.set_state(AgentState::Switching);
-        Ok(Handoff {
+        Handoff {
             switching: Switching(self),
             previous,
-        })
+        }
+    }
+
+    /// The runner reached the queued reload of `turn`: it leaves the queue with every message
+    /// still in it (those behind it, and those ahead of it when `agent_send_now` moved it to the
+    /// front), the agent is held as for a handoff, and the reload's asker is given those messages'
+    /// texts, in queue order, to send to the agent it starts (or back to this one when the reload
+    /// fails).
+    /// Returns false, holding nothing, when the reload was taken back or its asker is gone; the
+    /// messages behind it then stay queued.
+    fn reach_reload(&self, turn: u64) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(at) = inner.queued.iter().position(|e| waits_as(&e.event, turn)) else {
+            return false;
+        };
+        let reach = match inner.reload.take() {
+            Some((waiting, reach)) if waiting == turn && !reach.is_closed() => reach,
+            other => {
+                // Not this reload's sender: put it back. A closed one belongs to nobody.
+                inner.reload = other.filter(|(waiting, reach)| *waiting != turn && !reach.is_closed());
+                inner.queued.remove(at);
+                self.retracted_locked(&mut inner, &[turn]);
+                tracing::warn!(agent = %self.name, turn, "queued reload reached with nobody waiting on it");
+                return false;
+            }
+        };
+        inner.queued.remove(at);
+        // The runner's own queue is cleared with this one, so nothing is left only on screen.
+        let rest: Vec<StampedEvent> = inner.queued.drain(..).collect();
+        let mut turns = vec![turn];
+        let mut texts = Vec::new();
+        for e in rest {
+            if let AgentEvent::User { turn, text } = e.event {
+                turns.push(turn);
+                texts.push(text);
+            }
+        }
+        inner.switching = true;
+        self.retracted_locked(&mut inner, &turns);
+        drop(inner);
+        self.set_state(AgentState::Switching);
+        tracing::info!(agent = %self.name, turn, behind = texts.len(), "queued reload reached");
+        if let Err(texts) = reach.send(texts) {
+            // Its asker went between the check and now: let the agent go on with the messages.
+            self.inner.lock().unwrap().switching = false;
+            self.set_state(AgentState::Ready);
+            for text in texts {
+                let _ = self.send(text);
+            }
+        }
+        true
     }
 
     /// Record how the start came out; only the first outcome counts.
@@ -688,13 +825,10 @@ impl Agent {
         true
     }
 
-    /// Whether the message of `turn` is still waiting to join the transcript.
+    /// Whether the message or reload of `turn` is still waiting in the queue.
     fn is_queued(&self, turn: u64) -> bool {
         let inner = self.inner.lock().unwrap();
-        inner
-            .queued
-            .iter()
-            .any(|e| matches!(e.event, AgentEvent::User { turn: t, .. } if t == turn))
+        inner.queued.iter().any(|e| waits_as(&e.event, turn))
     }
 
     /// The running turn is ending: end the turns it took in too, each ahead of it, so every message
@@ -761,17 +895,16 @@ impl Agent {
     /// is sent `retract`. Returns the message's text.
     pub fn unsend(&self, turn: u64) -> Result<String, String> {
         let mut inner = self.inner.lock().unwrap();
-        let queued = inner
-            .queued
-            .iter()
-            .position(|e| matches!(e.event, AgentEvent::User { turn: t, .. } if t == turn));
+        let queued = inner.queued.iter().position(|e| waits_as(&e.event, turn));
         let text = if let Some(i) = queued {
-            let Some(StampedEvent {
-                event: AgentEvent::User { text, .. },
-                ..
-            }) = inner.queued.remove(i)
-            else {
-                unreachable!("position matched a user event");
+            let text = match inner.queued.remove(i).map(|e| e.event) {
+                Some(AgentEvent::User { text, .. }) => text,
+                Some(AgentEvent::Reload { text, .. }) => {
+                    // Dropping the sender tells the reload's asker it was taken back.
+                    inner.reload = None;
+                    text
+                }
+                _ => unreachable!("position matched a user or reload event"),
             };
             self.cmds
                 .send(Cmd::Retract { turns: vec![turn] })
@@ -813,7 +946,7 @@ impl Agent {
             .queued
             .iter()
             .filter_map(|e| match e.event {
-                AgentEvent::User { turn, .. } => Some(turn),
+                AgentEvent::User { turn, .. } | AgentEvent::Reload { turn, .. } => Some(turn),
                 _ => None,
             })
             .collect();
@@ -821,6 +954,7 @@ impl Agent {
             return Err(format!("agent {} has no queued messages", self.name));
         }
         inner.queued.clear();
+        inner.reload = None;
         self.cmds
             .send(Cmd::Retract {
                 turns: turns.clone(),
@@ -1536,8 +1670,8 @@ impl Agent {
         merged: &mut Vec<u64>,
     ) -> Result<(), String> {
         // A process that stopped took the messages it held with it; they go first in the next.
-        for held in steered.drain(..).rev() {
-            queue.push_front(held);
+        for (turn, text) in steered.drain(..).rev() {
+            queue.push_front((turn, Waiting::Prompt(text)));
         }
         // An agent started in a missing directory fails in ways that differ per agent; say why.
         if !config.cwd.is_dir() {
@@ -1744,7 +1878,20 @@ impl Agent {
             // A message the agent holds starts the next turn on its own, so nothing is sent
             // before it does.
             if running.is_none() && !unprompted && steered.is_empty() {
-                if let Some((turn, text)) = queue.pop_front() {
+                if let Some((turn, waiting)) = queue.pop_front() {
+                    let text = match waiting {
+                        Waiting::Prompt(text) => text,
+                        Waiting::Reload => {
+                            // The reload's asker ends this agent; the messages behind it go to the
+                            // agent it starts, or come back here if it fails.
+                            if self.reach_reload(turn) {
+                                queue.clear();
+                            } else {
+                                self.set_state(idle(queue.len() + steered.len()));
+                            }
+                            continue;
+                        }
+                    };
                     if !self.start_turn(turn, false) {
                         tracing::info!(agent = %self.name, turn, "prompt taken back before it started");
                         self.set_state(idle(queue.len() + steered.len()));
@@ -1776,8 +1923,14 @@ impl Agent {
                             }
                             steered.push((turn, text));
                         } else {
-                            queue.push_back((turn, text));
+                            queue.push_back((turn, Waiting::Prompt(text)));
                         }
+                        if running.is_some() || unprompted {
+                            self.set_state(AgentState::Busy { queued: queue.len() + steered.len() });
+                        }
+                    }
+                    Some(Cmd::Reload { turn }) => {
+                        queue.push_back((turn, Waiting::Reload));
                         if running.is_some() || unprompted {
                             self.set_state(AgentState::Busy { queued: queue.len() + steered.len() });
                         }
@@ -1788,15 +1941,18 @@ impl Agent {
                             // A turn stopped on a permission request reads nothing until it is
                             // answered, so a steered message would wait there: interrupt it.
                             let blocked = perms.has_pending(&self.name);
-                            if agent.steers && running.is_some() && !agent.withdraws && !blocked {
-                                // Not interrupted: the agent takes the message into the turn, and
-                                // since it cannot give it back, it was kept here until now.
-                                tracing::info!(agent = %self.name, turn, "queued message steered now");
-                                if agent.input.steer(turn, held.1.clone()).is_err() {
-                                    return Err(exit_reason(&mut agent).await);
+                            // A reload is never the agent's to take in: the turn ends for it.
+                            if let (turn, Waiting::Prompt(text)) = &held {
+                                if agent.steers && running.is_some() && !agent.withdraws && !blocked {
+                                    // Not interrupted: the agent takes the message into the turn,
+                                    // and since it cannot give it back, it was kept here until now.
+                                    tracing::info!(agent = %self.name, turn, "queued message steered now");
+                                    if agent.input.steer(*turn, text.clone()).is_err() {
+                                        return Err(exit_reason(&mut agent).await);
+                                    }
+                                    steered.push((*turn, text.clone()));
+                                    continue;
                                 }
-                                steered.push(held);
-                                continue;
                             }
                             queue.push_front(held);
                             if running.is_some() || unprompted {
@@ -1812,9 +1968,9 @@ impl Agent {
                         {
                             // The agent holds it but its turn is stopped on a permission request:
                             // end the turn, and the message goes again as the next one.
-                            let held = steered.remove(at);
+                            let (turn, text) = steered.remove(at);
                             tracing::info!(agent = %self.name, turn, "steered message sent now: turn interrupted");
-                            queue.push_front(held);
+                            queue.push_front((turn, Waiting::Prompt(text)));
                             if agent.input.cancel().is_err() {
                                 return Err(exit_reason(&mut agent).await);
                             }
@@ -1937,10 +2093,10 @@ impl Agent {
                         // Not taken in: it goes back to the front of the queue, if its sender has
                         // not taken it back meanwhile.
                         if let Some(at) = steered.iter().position(|(t, _)| *t == turn) {
-                            let held = steered.remove(at);
+                            let (turn, text) = steered.remove(at);
                             if self.is_queued(turn) {
                                 tracing::info!(agent = %self.name, turn, "steered message refused; queued again");
-                                queue.push_front(held);
+                                queue.push_front((turn, Waiting::Prompt(text)));
                             }
                         }
                         self.set_state(if running.is_some() || unprompted {
@@ -2245,6 +2401,7 @@ fn spawn_config_set(
 fn event_bytes(event: &AgentEvent) -> usize {
     64 + match event {
         AgentEvent::User { text, .. }
+        | AgentEvent::Reload { text, .. }
         | AgentEvent::Text { text }
         | AgentEvent::Thought { text } => text.len(),
         AgentEvent::ToolCall {
@@ -2365,6 +2522,7 @@ mod tests {
                 notice: None,
                 title: None,
                 commands: None,
+                reload: None,
                 context: None,
             }),
             tx: broadcast::channel(16).0,

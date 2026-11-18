@@ -27,6 +27,9 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     }
     /// The turn a `.user` row's message was queued as; nil for every other kind.
     public var turn: UInt64? = nil
+    /// A queued `.user` row that is a reload of the pane's agent (`reload`), not a message: it
+    /// leaves the queue by a `retract`, and has no text to edit.
+    public var reload = false
     /// The agent's call id of a `.tool` row; nil for every other kind.
     public var toolCall: String? = nil {
         didSet { revision &+= 1 }
@@ -157,11 +160,11 @@ public struct Transcript: Sendable, Equatable {
         switch event {
         case .text, .notice, .toolCall, .plan, .mode, .turnEnd, .error:
             if let last = lastSettled, case .thought = rows[last].kind, rows[last].open { close(last, at: at) }
-        case .user, .turnStart, .retract, .thought, .textRevised, .thoughtRevised, .toolUpdate, .other:
+        case .user, .reload, .turnStart, .retract, .thought, .textRevised, .thoughtRevised, .toolUpdate, .other:
             break
         }
         switch event {
-        case .user, .turnStart, .retract, .notice, .textRevised, .thoughtRevised, .other:
+        case .user, .reload, .turnStart, .retract, .notice, .textRevised, .thoughtRevised, .other:
             break
         default:
             unansweredTurn = nil
@@ -170,6 +173,14 @@ public struct Transcript: Sendable, Equatable {
         case let .user(turn, text):
             var row = TranscriptRow(id: nextId, kind: .user(text, queued: true))
             row.turn = turn
+            row.started = at
+            rows.append(row)
+            nextId += 1
+            queuedTurns.append(turn)
+        case let .reload(turn, text):
+            var row = TranscriptRow(id: nextId, kind: .user(text, queued: true))
+            row.turn = turn
+            row.reload = true
             row.started = at
             rows.append(row)
             nextId += 1

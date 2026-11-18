@@ -2095,7 +2095,12 @@ async fn handle(
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let reply = match state.pane_reload(&pane, set, unset).await {
-                    Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                    Ok(crate::reload::Reloaded::Done) => req.map(|req| ServerMsg::Ok { req }),
+                    // A busy agent's reload waits in its queue; the reply names its turn, as a
+                    // queued message's does.
+                    Ok(crate::reload::Reloaded::Queued { agent, turn }) => {
+                        req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
+                    }
                     Err(message) => {
                         tracing::warn!(%peer, %pane, %message, "pane reload failed");
                         Some(failed(req, message))

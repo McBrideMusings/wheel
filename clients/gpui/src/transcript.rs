@@ -12,6 +12,9 @@ use wheel_proto::{AgentEvent, AgentFooter, CardRef, ConfigOption, ContextUse, Pl
 pub enum Kind {
     /// A message the person sent; `queued` while it waits for its turn to start.
     User { text: String, queued: bool },
+    /// A reload of the pane's agent waiting in its queue (`reload`): `text` says what it sets. It
+    /// leaves the queue by a `retract`, never by a turn starting.
+    Reload { text: String },
     /// The agent's reply text; streamed chunks are merged into one row.
     Reply(String),
     /// The agent's reasoning; streamed chunks are merged into one row.
@@ -289,13 +292,19 @@ impl Transcript {
             self.rows[last].open = false;
         }
         // Only an event that answers the turn clears it; one this build cannot read answers nothing.
-        if !matches!(event, AgentEvent::User { .. } | AgentEvent::TurnStart { .. } | AgentEvent::Retract { .. } | AgentEvent::TextRevised { .. } | AgentEvent::ThoughtRevised { .. } | AgentEvent::Unknown(_)) {
+        if !matches!(event, AgentEvent::User { .. } | AgentEvent::Reload { .. } | AgentEvent::TurnStart { .. } | AgentEvent::Retract { .. } | AgentEvent::TextRevised { .. } | AgentEvent::ThoughtRevised { .. } | AgentEvent::Unknown(_)) {
             self.unanswered_turn = None;
         }
         match event {
             AgentEvent::User { turn, text } => {
                 self.touch(self.rows.len());
                 self.rows.push(Row { id: self.next_id, kind: Kind::User { text: text.clone(), queued: true }, turn: Some(*turn), open: false });
+                self.next_id += 1;
+                self.queued_turns.push(*turn);
+            }
+            AgentEvent::Reload { turn, text } => {
+                self.touch(self.rows.len());
+                self.rows.push(Row { id: self.next_id, kind: Kind::Reload { text: text.clone() }, turn: Some(*turn), open: false });
                 self.next_id += 1;
                 self.queued_turns.push(*turn);
             }
@@ -755,6 +764,23 @@ mod tests {
         assert_eq!(kinds(&t), vec![&user("go", false)]);
         ev(&mut t, json!({"kind":"retract","turn":1}));
         assert!(t.rows.is_empty());
+    }
+
+    #[test]
+    fn a_queued_reload_waits_below_the_queued_messages_until_its_retract() {
+        let mut t = Transcript::default();
+        ev(&mut t, json!({"kind":"user","turn":1,"text":"go"}));
+        ev(&mut t, json!({"kind":"turn_start","turn":1}));
+        ev(&mut t, json!({"kind":"user","turn":2,"text":"before"}));
+        ev(&mut t, json!({"kind":"reload","turn":3,"text":"Reload with CLAUDE_CONFIG_DIR=~/.claude-work"}));
+        ev(&mut t, json!({"kind":"text","text":"working"}));
+        let reload = Kind::Reload { text: "Reload with CLAUDE_CONFIG_DIR=~/.claude-work".into() };
+        assert_eq!(kinds(&t), vec![&user("go", false), &Kind::Reply("working".into()), &user("before", true), &reload]);
+        assert_eq!(t.queued_turns(), &[2, 3]);
+        assert_eq!(t.user_text(3), None, "a reload has no text to edit");
+        ev(&mut t, json!({"kind":"retract","turn":3}));
+        assert_eq!(t.queued_turns(), &[2]);
+        assert_eq!(kinds(&t), vec![&user("go", false), &Kind::Reply("working".into()), &user("before", true)]);
     }
 
     #[test]

@@ -1331,11 +1331,14 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
-    /// Start `pane` again on what it is on, and reply `ok`. An agent pane's agent ends and a new
+    /// Start `pane` again on what it is on, and reply `ok` (`agent_queued` for a queued agent
+    /// reload, below). An agent pane's agent ends and a new
     /// one, under a new name the layout carries, starts on the same conversation, model, mode and
-    /// permissions, with its home asked of the login shell again unless the pane picked one;
-    /// refused while a turn runs or a message waits. A terminal pane's shell ends and a new one starts in the
-    /// directory the shell was last in, resuming the Claude Code, Codex or pi conversation it ran.
+    /// permissions, with its home asked of the login shell again unless the pane picked one. Asked
+    /// while a turn runs or a message waits, the agent's reload waits in its queue instead, as a
+    /// `reload` event under a turn of its own, and the reply is `agent_queued` naming that turn;
+    /// when its turn comes the agent starts again, and the messages still queued go to the new
+    /// agent. A terminal pane's shell ends and a new one starts in the directory the shell was last in, resuming the Claude Code, Codex or pi conversation it ran.
     /// A web, browser or plugin pane gets `pane_reload` sent to every client, and a web pane's
     /// artifact runs its refresh command. An empty pane is left as it is. `PROTOCOL_VERSION` 51.
     ///
@@ -3361,6 +3364,16 @@ pub enum AgentEvent {
     Retract {
         turn: u64,
     },
+    /// A reload of the agent's pane (`pane_reload`) asked while a turn ran or messages waited. It
+    /// waits in the queue as a `user` message does, under its own `turn`, and is taken back
+    /// (`agent_unsend`), run at once (`agent_send_now`) or cleared (`agent_clear_queue`) the same
+    /// way. `text` says what it does: `Reload`, or `Reload with` and each variable it sets. Never
+    /// stored: when its turn comes it is retracted and the pane's agent starts again, with the
+    /// messages queued behind it.
+    Reload {
+        turn: u64,
+        text: String,
+    },
     /// The agent put a card in its transcript (`agent_card`): a pane or an artifact a client draws
     /// live in place of the row. Kept in the daemon's transcript only; the agent's own
     /// conversation does not hold it, so a reload from a saved conversation does not bring it
@@ -3395,6 +3408,7 @@ const AGENT_EVENT_KINDS: &[&str] = &[
     "mode",
     "turn_end",
     "retract",
+    "reload",
     "card",
     "error",
 ];
@@ -4924,13 +4938,13 @@ pub fn decode_bytes(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(data)
 }
 
-/// The turns of `user` events still waiting to start: no `turn_start` for them yet. The one
-/// rule text transcripts use to mark a message `(queued)`.
+/// The turns of `user` and `reload` events still waiting to start: no `turn_start` for them yet.
+/// The one rule text transcripts use to mark a message `(queued)`.
 pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
     let mut queued = std::collections::HashSet::new();
     for e in events {
         match e.event {
-            AgentEvent::User { turn, .. } => {
+            AgentEvent::User { turn, .. } | AgentEvent::Reload { turn, .. } => {
                 queued.insert(turn);
             }
             AgentEvent::TurnStart { turn } => {
@@ -5224,6 +5238,7 @@ mod tests {
             AgentEvent::Mode { mode: "plan".into() },
             AgentEvent::TurnEnd { turn: 1, stop_reason: "end_turn".into() },
             AgentEvent::Retract { turn: 1 },
+            AgentEvent::Reload { turn: 2, text: "Reload".into() },
             AgentEvent::Card { card: CardRef::Pane { pane: "p1".into() } },
             AgentEvent::Error { turn: None, message: "x".into() },
         ];
@@ -5241,6 +5256,7 @@ mod tests {
                 | AgentEvent::Mode { .. }
                 | AgentEvent::TurnEnd { .. }
                 | AgentEvent::Retract { .. }
+                | AgentEvent::Reload { .. }
                 | AgentEvent::Card { .. }
                 | AgentEvent::Error { .. } => {}
                 AgentEvent::Unknown(_) => unreachable!(),
