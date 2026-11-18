@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 49;
+pub const PROTOCOL_VERSION: u32 = 50;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -4556,24 +4556,30 @@ impl AgentPlace {
     }
 }
 
-/// What `pane_start` set for an agent pane's permissions, saved flat in the pane as
-/// `permission_mode` and `sandbox` so a restored pane starts its agent the same way.
+/// Effective agent permissions, saved flat in the pane so restored processes keep the policy,
+/// reviewer and selected sandbox or named profile independently. None inherits the harness config.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentPermissions {
     pub permission_mode: Option<String>,
     pub sandbox: Option<String>,
+    pub approvals_reviewer: Option<String>,
+    pub permission_profile: Option<String>,
 }
 
 impl AgentPermissions {
-    /// The permissions, or none when neither is set.
+    /// The permissions, or none when every field inherits.
     pub fn boxed(
         permission_mode: Option<String>,
         sandbox: Option<String>,
+        approvals_reviewer: Option<String>,
+        permission_profile: Option<String>,
     ) -> Option<Box<AgentPermissions>> {
-        (permission_mode.is_some() || sandbox.is_some()).then(|| {
+        (permission_mode.is_some() || sandbox.is_some() || approvals_reviewer.is_some() || permission_profile.is_some()).then(|| {
             Box::new(AgentPermissions {
                 permission_mode,
                 sandbox,
+                approvals_reviewer,
+                permission_profile,
             })
         })
     }
@@ -4656,6 +4662,10 @@ enum KnownPaneKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sandbox: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        approvals_reviewer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_profile: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         login: Option<AgentLogin>,
     },
 }
@@ -4722,6 +4732,8 @@ impl Serialize for PaneKind {
                     env: place.as_ref().map(|p| p.env.clone()).unwrap_or_default(),
                     permission_mode: permissions.as_ref().and_then(|p| p.permission_mode.clone()),
                     sandbox: permissions.as_ref().and_then(|p| p.sandbox.clone()),
+                    approvals_reviewer: permissions.as_ref().and_then(|p| p.approvals_reviewer.clone()),
+                    permission_profile: permissions.as_ref().and_then(|p| p.permission_profile.clone()),
                     login: login.as_deref().cloned(),
                 },
                 extra,
@@ -4810,6 +4822,8 @@ impl<'de> Deserialize<'de> for PaneKind {
                 env,
                 permission_mode,
                 sandbox,
+                approvals_reviewer,
+                permission_profile,
                 login,
             } => PaneKind::Agent {
                 agent,
@@ -4819,7 +4833,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 model,
                 context,
                 place: AgentPlace::boxed(cwd, env),
-                permissions: AgentPermissions::boxed(permission_mode, sandbox),
+                permissions: AgentPermissions::boxed(permission_mode, sandbox, approvals_reviewer, permission_profile),
                 login: login.map(Box::new),
                 extra,
             },

@@ -168,8 +168,15 @@ impl AppState {
         let claude_dir = (Some(&home) != configured.as_ref()).then(|| home.display().to_string());
         let name = self.new_id('w');
         let carried = self.view_options.lock().unwrap().get(pane).cloned();
-        let (options, permissions) =
+        let (mut options, mut permissions) =
             carried.map_or_else(Default::default, |c| (c.options, c.permissions));
+        if kind == Harness::Codex {
+            // Codex persists these settings itself. Replaying the old chat controls would
+            // overwrite an explicit policy/reviewer or profile change made in its TUI.
+            permissions = AgentPermissions::default();
+            options.retain(|(id, _)| !matches!(id.as_str(),
+                "mode" | "reviewer" | "sandbox" | "permissions" | "sandbox_status"));
+        }
         self.spawn_agent(
             &name,
             (pane, kind.name()),
@@ -193,7 +200,7 @@ impl AppState {
                 (cwd != space_cwd).then_some(cwd),
                 [(kind.home_var().to_string(), claude_dir.unwrap_or_default())].into(),
             ),
-            permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
+            permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
             extra: Extra::default(),
         };

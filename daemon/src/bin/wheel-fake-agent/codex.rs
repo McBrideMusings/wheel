@@ -63,6 +63,7 @@ struct State {
     cwd: Mutex<String>,
     brief: Mutex<Option<String>>,
     sandbox: Mutex<Option<String>>,
+    permissions: Mutex<Value>,
     turns: AtomicU64,
     next_server_request: AtomicU64,
     answers: Mutex<HashMap<u64, oneshot::Sender<String>>>,
@@ -78,7 +79,13 @@ struct State {
 fn home() -> PathBuf {
     std::env::var("CODEX_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex"))
+        .unwrap_or_else(|_| {
+            // A no-override test must not read config or write fake rollouts in the person's
+            // real Codex home. Keep the fake default under this fixture daemon's support dir.
+            std::env::var_os("WHEEL_TOKEN_FILE")
+                .and_then(|file| PathBuf::from(file).parent().map(|p| p.join("fake-codex-default")))
+                .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex"))
+        })
 }
 
 /// Thread `id`'s rollout, wherever under `sessions` it was filed.
@@ -158,6 +165,14 @@ fn turns(id: &str) -> Option<Vec<Value>> {
     Some(turns)
 }
 
+/// The latest thread settings, mirroring Codex's persisted reviewer on resume.
+fn saved_permissions(thread: &str) -> Option<Value> {
+    let text = std::fs::read_to_string(rollout(thread)?).ok()?;
+    text.lines().rev().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find_map(|entry| (entry["payload"]["type"] == "permissions")
+            .then(|| entry["payload"]["settings"].clone()))
+}
+
 fn made_up_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -170,6 +185,26 @@ fn made_up_id() -> String {
     )
 }
 
+/// Deliberately non-default fields catch lossy host reconstruction of the resolved policy.
+fn resolved_permissions(params: &Value) -> Value {
+    let config: Value = std::fs::read_to_string(home().join("config.toml")).ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|config| serde_json::to_value(config).ok()).unwrap_or(Value::Null);
+    let sandbox = match params["sandbox"].as_str().or(config["sandbox_mode"].as_str()).unwrap_or("workspace-write") {
+        "read-only" => json!({"type": "readOnly", "networkAccess": false}),
+        "danger-full-access" => json!({"type": "dangerFullAccess"}),
+        _ => json!({"type": "workspaceWrite", "networkAccess": true,
+            "writableRoots": ["/tmp/wheel-extra-root"], "excludeTmpdirEnvVar": true,
+            "excludeSlashTmp": true}),
+    };
+    let policy = if config["fake_derived_untrusted"] == true { json!("untrusted") }
+        else { params.get("approvalPolicy").or(config.get("approval_policy")).cloned().unwrap_or(json!("on-request")) };
+    json!({"approvalPolicy": policy,
+        "approvalsReviewer": params.get("approvalsReviewer").or(config.get("approvals_reviewer")).cloned().unwrap_or(json!("auto_review")),
+        "activePermissionProfile": params.get("permissions").or(config.get("default_permissions")).map(|id| json!({"id": id})),
+        "sandbox": sandbox})
+}
+
 pub async fn main() {
     let out = Out(Arc::new(Mutex::new(std::io::stdout())));
     let state = Arc::new(State {
@@ -178,6 +213,7 @@ pub async fn main() {
         cwd: Mutex::new(String::new()),
         brief: Mutex::new(None),
         sandbox: Mutex::new(None),
+        permissions: Mutex::new(Value::Null),
         turns: AtomicU64::new(0),
         next_server_request: AtomicU64::new(100),
         answers: Mutex::new(HashMap::new()),
@@ -206,6 +242,14 @@ pub async fn main() {
             ]}})),
             Some("thread/start") => {
                 let thread = made_up_id();
+                let permissions = resolved_permissions(params);
+                if params["ephemeral"] == true {
+                    let mut result = permissions;
+                    result["thread"] = json!({"id": thread, "turns": []});
+                    out.send(json!({"id": id, "result": result}));
+                    continue;
+                }
+                *state.permissions.lock().unwrap() = permissions.clone();
                 *state.thread.lock().unwrap() = thread.clone();
                 *state.cwd.lock().unwrap() = params["cwd"].as_str().unwrap_or_default().into();
                 *state.brief.lock().unwrap() =
@@ -214,6 +258,10 @@ pub async fn main() {
                 out.send(json!({"id": id, "result": {
                     "thread": {"id": thread, "turns": []},
                     "model": params["model"].as_str().unwrap_or("fake-codex"),
+                    "approvalPolicy": permissions["approvalPolicy"],
+                    "approvalsReviewer": permissions["approvalsReviewer"],
+                    "sandbox": permissions["sandbox"],
+                    "activePermissionProfile": permissions["activePermissionProfile"],
                 }}));
             }
             Some("thread/resume") => {
@@ -224,6 +272,16 @@ pub async fn main() {
                         "message": format!("no rollout found for thread id {thread}"),
                     }})),
                     Some(turns) => {
+                        let mut permissions = saved_permissions(&thread).unwrap_or_else(|| resolved_permissions(params));
+                        for key in ["approvalPolicy", "approvalsReviewer"] {
+                            if let Some(value) = params.get(key) { permissions[key] = value.clone(); }
+                        }
+                        if params.get("sandbox").is_some() || params.get("permissions").is_some() {
+                            let resolved = resolved_permissions(params);
+                            permissions["sandbox"] = resolved["sandbox"].clone();
+                            permissions["activePermissionProfile"] = resolved["activePermissionProfile"].clone();
+                        }
+                        *state.permissions.lock().unwrap() = permissions.clone();
                         *state.thread.lock().unwrap() = thread.clone();
                         *state.cwd.lock().unwrap() =
                             params["cwd"].as_str().unwrap_or_default().into();
@@ -233,6 +291,10 @@ pub async fn main() {
                         out.send(json!({"id": id, "result": {
                             "thread": {"id": thread, "turns": turns},
                             "model": "fake-codex",
+                            "approvalPolicy": permissions["approvalPolicy"],
+                            "approvalsReviewer": permissions["approvalsReviewer"],
+                            "sandbox": permissions["sandbox"],
+                            "activePermissionProfile": permissions["activePermissionProfile"],
                         }}));
                     }
                 }
@@ -247,10 +309,32 @@ pub async fn main() {
                     .flatten()
                     .filter_map(|c| c["text"].as_str())
                     .collect();
-                let policy = params["approvalPolicy"].as_str().unwrap_or("-").to_string();
+                let mut permissions = state.permissions.lock().unwrap();
+                for key in ["approvalPolicy", "approvalsReviewer"] {
+                    if let Some(value) = params.get(key) { permissions[key] = value.clone(); }
+                }
+                if let Some(sandbox) = params.get("sandboxPolicy") { permissions["sandbox"] = sandbox.clone(); }
+                let policy = permissions["approvalPolicy"].as_str().unwrap_or("-").to_string();
+                drop(permissions);
                 let state = state.clone();
                 tokio::spawn(async move { run_turn(state, turn, prompt, policy).await });
             }
+            Some("thread/settings/update") => {
+                let mut permissions = state.permissions.lock().unwrap();
+                if let Some(policy) = params.get("approvalPolicy") {
+                    permissions["approvalPolicy"] = policy.clone();
+                }
+                if let Some(reviewer) = params.get("approvalsReviewer") {
+                    permissions["approvalsReviewer"] = reviewer.clone();
+                }
+                if let Some(sandbox) = params.get("sandboxPolicy") {
+                    permissions["sandbox"] = sandbox.clone();
+                }
+                event(&state.thread.lock().unwrap(), &state.cwd.lock().unwrap(),
+                    json!({"type": "permissions", "settings": *permissions}));
+                out.send(json!({"id": id, "result": {}}));
+            }
+            Some("thread/unsubscribe") => out.send(json!({"id": id, "result": {}})),
             Some("turn/steer") => {
                 let running = state.current.lock().unwrap().clone();
                 if running.is_some() && params["expectedTurnId"].as_str() == running.as_deref() {
@@ -325,6 +409,7 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
     let out = &state.out;
     let thread = state.thread.lock().unwrap().clone();
     let cwd = state.cwd.lock().unwrap().clone();
+    event(&thread, &cwd, json!({"type": "permissions", "settings": *state.permissions.lock().unwrap()}));
     task_started(&thread, &cwd);
     let at = |mut params: Value| {
         params["threadId"] = json!(thread);
@@ -363,6 +448,7 @@ async fn run_turn(state: Arc<State>, turn: String, prompt: String, policy: Strin
             "setup: codex_home={home} thread={thread} policy={policy}"
         ));
         say(&format!("brief: {first}"));
+        say(&format!("permissions: {}", state.permissions.lock().unwrap()));
         let sandbox = state.sandbox.lock().unwrap().clone();
         say(&format!("sandbox: {}", sandbox.as_deref().unwrap_or("-")));
     }

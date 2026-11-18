@@ -722,7 +722,22 @@ impl AppState {
     /// The permissions `running` is in now: the mode a person may have changed since the start.
     fn current_permissions(&self, running: &crate::agent::Agent) -> Option<Box<AgentPermissions>> {
         let p = running.permissions();
-        AgentPermissions::boxed(p.permission_mode, p.sandbox)
+        AgentPermissions::boxed(p.permission_mode, p.sandbox, p.approvals_reviewer, p.permission_profile)
+    }
+
+    /// Keep effective permissions in the layout before the running agent map is drained.
+    /// A late client/disconnect save must not replace the last saved controls with launch defaults.
+    pub(crate) fn keep_agent_permissions(&self) {
+        let mut spaces = self.spaces.lock().unwrap();
+        for space in &mut spaces.spaces {
+            each_space_kind_mut(space, &mut |kind| {
+                if let PaneKind::Agent { agent, permissions, .. } = kind {
+                    if let Ok(running) = self.agent(agent) {
+                        *permissions = self.current_permissions(&running);
+                    }
+                }
+            });
+        }
     }
 
     /// Write the saved state — the layout and the id counter. The one place that touches the file.
@@ -2074,7 +2089,7 @@ impl AppState {
             // A fork picks the account its conversation is kept in, so a restart finds it there;
             // a home the login shell gave is asked for again on restart.
             place: wheel_proto::AgentPlace::boxed(fork_cwd, picked),
-            permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox),
+            permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
             extra: Extra::default(),
         };
