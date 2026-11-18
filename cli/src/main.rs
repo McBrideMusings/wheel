@@ -1801,6 +1801,9 @@ struct Conn {
     next_req: u64,
     /// Pushed events that arrived while waiting for a reply, delivered by the next `recv`.
     events: std::collections::VecDeque<ServerMsg>,
+    /// What the running wheeld offers, once `require_compatible_server` read it: `send` refuses
+    /// an op it did not list (ADR-0050).
+    offer: Option<wheel_proto::Offer>,
 }
 
 impl Conn {
@@ -1828,6 +1831,7 @@ impl Conn {
             ws,
             next_req: 0,
             events: Default::default(),
+            offer: None,
         })
     }
 
@@ -1838,6 +1842,11 @@ impl Conn {
 
     async fn send(&mut self, msg: &ClientMsg) -> Result<(), Fail> {
         let text = serde_json::to_string(msg).map_err(other)?;
+        if let Some(offer) = &self.offer {
+            offer
+                .admit(&text)
+                .map_err(|refused| Fail::Daemon(format!("{refused} (Restart Server in the app)")))?;
+        }
         self.ws.send(Message::Text(text.into())).await.map_err(lost)
     }
 
@@ -1911,15 +1920,15 @@ impl Conn {
         }
     }
 
-    /// Refuse to go on when the running server speaks an older protocol than this command: its
-    /// replies may lack fields this command decodes, which would otherwise surface as a serde
-    /// error. The status reply is read as JSON, not as a `ServerMsg`, because an older server's
-    /// status is itself one this command may not decode.
-    async fn require_current_server(&mut self) -> Result<(), Fail> {
+    /// Refuse to go on when the running server is at another compatibility level than this
+    /// command, whose replies this command could misread; otherwise keep its `ops`, so `send`
+    /// refuses only an op the server lacks. The status reply is read as JSON, not as a
+    /// `ServerMsg`, because a status from another level is one this command may not decode.
+    async fn require_compatible_server(&mut self) -> Result<(), Fail> {
         let req = self.req();
         self.send(&ClientMsg::Status { req: Some(req) }).await?;
         let wait = Duration::from_secs(10);
-        let protocol = loop {
+        let offer = loop {
             let Some(text) = self.recv_text(wait).await? else {
                 return Err(Fail::Timeout("no reply from daemon within 10s".into()));
             };
@@ -1932,15 +1941,24 @@ impl Conn {
                         value["message"].as_str().unwrap_or("error").to_string(),
                     ));
                 }
-                break value["protocol"].as_u64().unwrap_or(1);
+                if let Some(offer) = wheel_proto::Offer::read(&text) {
+                    break offer;
+                }
             }
         };
-        if protocol < u64::from(wheel_proto::PROTOCOL_VERSION) {
+        if let Err(mismatch) = offer.check() {
+            let remedy = if mismatch.server_older() {
+                "restart wheeld (Restart Server in the app)"
+            } else {
+                "install the Wheel that matches it"
+            };
             return Err(Fail::Daemon(format!(
-                "the running wheeld speaks protocol {protocol}, older than this command's {}; restart the server (Restart Server in the app)",
-                wheel_proto::PROTOCOL_VERSION
+                "{}: {}; {remedy}",
+                mismatch.headline(),
+                mismatch.detail()
             )));
         }
+        self.offer = Some(offer);
         Ok(())
     }
 }
@@ -6370,7 +6388,7 @@ async fn main() -> ExitCode {
                         | PaneCommand::ReportConversation { .. }
                 )
         ) {
-            conn.require_current_server().await?;
+            conn.require_compatible_server().await?;
         }
         match command {
             Command::Install { .. } => unreachable!("handled before connecting"),
@@ -6862,8 +6880,8 @@ mod markdown_reference_tests {
 mod older_server_tests {
     use super::*;
 
-    /// A server that answers `status` with protocol 3 and a body this command could not decode.
-    async fn old_server() -> String {
+    /// A server that answers `status` with `reply` (its `req` filled in), then reads what it is sent.
+    async fn server(reply: serde_json::Value) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}/ws", listener.local_addr().unwrap());
         tokio::spawn(async move {
@@ -6871,25 +6889,63 @@ mod older_server_tests {
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
             let request = ws.next().await.unwrap().unwrap().into_text().unwrap();
             let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-            let reply = serde_json::json!({
-                "ev": "status", "req": request["req"], "protocol": 3,
-                "spaces": [{"id": "s1", "panes": [{"kind": "agent"}]}],
-            });
+            let mut reply = reply;
+            reply["req"] = request["req"].clone();
             ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            while ws.next().await.is_some() {}
         });
         url
     }
 
-    #[tokio::test]
-    async fn an_older_server_is_refused_with_restart_the_server_not_a_decode_error() {
-        let url = old_server().await;
+    async fn open(url: &str) -> Conn {
         let dir = std::env::temp_dir().join(format!("wheel-c4xq-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let token = dir.join("token");
         std::fs::write(&token, "t").unwrap();
-        let mut conn = Conn::open(&url, Some(token)).await.unwrap();
-        let err = conn.require_current_server().await.unwrap_err().to_string();
-        assert!(err.contains("restart the server"), "{err}");
-        assert!(err.contains("protocol 3"), "{err}");
+        Conn::open(url, Some(token)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_server_at_an_older_level_is_refused_naming_what_changed_not_a_decode_error() {
+        // A status from before levels, with a body this command could not decode.
+        let url = server(serde_json::json!({
+            "ev": "status", "protocol": 3,
+            "spaces": [{"id": "s1", "panes": [{"kind": "agent"}]}],
+        }))
+        .await;
+        let mut conn = open(&url).await;
+        let err = conn.require_compatible_server().await.unwrap_err().to_string();
+        assert!(err.contains("This Wheel needs a newer wheeld"), "{err}");
+        assert!(err.contains("compatibility level 0"), "{err}");
+        assert!(err.contains("lists the operations it handles"), "{err}");
+        assert!(err.contains("restart wheeld"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_older_server_lacking_an_op_serves_the_rest_and_refuses_only_that_op() {
+        let ops: Vec<&str> = wheel_proto::ops()
+            .iter()
+            .copied()
+            .filter(|op| *op != "pane_reload")
+            .collect();
+        let url = server(serde_json::json!({
+            "ev": "status", "protocol": wheel_proto::PROTOCOL_VERSION - 1,
+            "compat": wheel_proto::COMPAT, "ops": ops,
+        }))
+        .await;
+        let mut conn = open(&url).await;
+        conn.require_compatible_server().await.unwrap();
+        let err = conn
+            .send(&ClientMsg::PaneReload {
+                req: Some(9),
+                pane: "p1".into(),
+                set: Default::default(),
+                unset: vec![],
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not handle `pane_reload`"), "{err}");
+        conn.send(&ClientMsg::Status { req: Some(10) }).await.unwrap();
     }
 }

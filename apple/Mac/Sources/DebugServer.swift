@@ -2481,9 +2481,10 @@ final class DebugServer {
                  "update": model.serverRestartWaiting] as [String: Any]
             } ?? NSNull(),
             "connection": connection,
-            "server_protocol": [
-                "version": model.serverProtocol,
-                "client": ServerProtocol.current,
+            "server_offer": [
+                "protocol": model.serverOffer.protocolVersion,
+                "compat": model.serverOffer.compat,
+                "client_compat": ServerOffer.clientCompat,
             ] as [String: Any],
             "spaces": model.spaces.map { space in
                 ["id": space.id, "name": space.name, "cwd": space.cwd, "focus": space.focus, "root": node(space.root),

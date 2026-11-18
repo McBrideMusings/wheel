@@ -82,9 +82,9 @@ impl Client {
         });
     }
     /// Whether `agent`'s harness and wheeld can fork its conversation at a turn (`AppModel`'s
-    /// `canFork`: `AgentPanes.canFork` and protocol 28).
+    /// `canFork`: `AgentPanes.canFork` and wheeld listing `agent_fork`).
     pub fn can_fork(&self, agent: &str) -> bool {
-        self.server_protocol.is_some_and(|p| p >= 28)
+        self.server_has("agent_fork")
             && self.spaces.iter().flat_map(|s| s.all()).find(|l| l.agent.as_deref() == Some(agent)).is_some_and(|l| conv::can_fork(l.harness.as_deref()))
     }
     /// Fork `agent`'s conversation through the turn of reply `ix` (`ChatFork.swift`'s `fork`):

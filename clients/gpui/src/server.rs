@@ -1,9 +1,9 @@
 //! The server as the client carries and controls it: DaemonService.swift (the wheeld in the
 //! bundle and the launch agent `wheel-server.sh` runs it as), ServerControl.swift (how a restart
 //! runs, the restart window and the rollback that follows a wheeld that never answers again) and
-//! the words the header and the notices use. A client built for `PROTOCOL` that meets an older
-//! wheeld, or one whose running source is not the bundled one, offers Restart Server; it never
-//! restarts wheeld on its own (ADR-0020). Every command here blocks, so `view/toasts.rs` runs
+//! the words the header and the notices use. A client that meets a wheeld lacking ops it knows, or
+//! one whose running source is not the bundled one, offers Restart Server; it never restarts
+//! wheeld on its own (ADR-0020, ADR-0050). Every command here blocks, so `view/toasts.rs` runs
 //! them on a thread and reads the outcome at the next tick. Stop Server and Start Server from
 //! the menu bar item are wheel-ynjo.7's, with the stopped-from-the-menu state.
 use std::path::{Path, PathBuf};
@@ -177,13 +177,13 @@ fn run(command: Option<&str>) -> Result<String, String> {
 }
 
 /// Whether a newer server waits for a restart: the bundled source differs from the running one,
-/// or the running one speaks an older protocol than this client (AppModel.serverRestartWaiting).
+/// or the running one lacks `lacks` ops this client knows (AppModel.serverRestartWaiting). Either
+/// way it is an offer: the window works with the running one (ADR-0050).
 /// `running` is the `status` host's source, None before that wheeld answered a `status` (then the
 /// source says nothing yet, as Swift's `serverSources` is nil without a host) and empty for a
 /// wheeld that predates the hash.
-pub fn restart_waiting(connected: bool, running: Option<&str>, bundled: Option<&str>, server_protocol: Option<u32>, client_protocol: u32) -> bool {
-    connected
-        && (matches!((running, bundled), (Some(r), Some(b)) if r != b) || server_protocol.is_some_and(|p| p < client_protocol))
+pub fn restart_waiting(connected: bool, running: Option<&str>, bundled: Option<&str>, lacks: usize) -> bool {
+    connected && (matches!((running, bundled), (Some(r), Some(b)) if r != b) || lacks > 0)
 }
 
 /// What a dismissed notice was about: the bundled source, or the protocol when there is none
@@ -537,14 +537,14 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_waits_when_the_source_or_the_protocol_is_behind() {
-        assert!(!restart_waiting(false, Some("a"), Some("b"), Some(1), 2));
-        assert!(restart_waiting(true, Some("a"), Some("b"), Some(2), 2));
-        assert!(restart_waiting(true, Some(""), Some("b"), Some(2), 2), "a wheeld that reports no source is not the bundled one");
-        assert!(!restart_waiting(true, None, Some("b"), Some(2), 2), "before the first status the source says nothing");
-        assert!(!restart_waiting(true, Some("b"), Some("b"), Some(2), 2));
-        assert!(restart_waiting(true, Some("b"), Some("b"), Some(1), 2));
-        assert!(!restart_waiting(true, Some("x"), None, Some(2), 2), "no bundled server: only the protocol counts");
+    fn a_restart_waits_when_the_source_differs_or_an_op_is_missing() {
+        assert!(!restart_waiting(false, Some("a"), Some("b"), 1));
+        assert!(restart_waiting(true, Some("a"), Some("b"), 0));
+        assert!(restart_waiting(true, Some(""), Some("b"), 0), "a wheeld that reports no source is not the bundled one");
+        assert!(!restart_waiting(true, None, Some("b"), 0), "before the first status the source says nothing");
+        assert!(!restart_waiting(true, Some("b"), Some("b"), 0));
+        assert!(restart_waiting(true, Some("b"), Some("b"), 1));
+        assert!(!restart_waiting(true, Some("x"), None, 0), "no bundled server: only the ops count");
         assert_eq!(banner_key(Some("b"), Some(3)), "b");
         assert_eq!(banner_key(None, Some(3)), "protocol 3");
         assert_eq!(source_line("l", Some(""), None, false), "daemon l: running source none reported, bundled source none recorded: same; nothing to offer");

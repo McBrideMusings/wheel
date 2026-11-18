@@ -120,11 +120,11 @@ impl Client {
     /// A newer server is installed and waits for a restart (AppModel.serverRestartWaiting). The
     /// app never restarts it itself (ADR-0020); the notice, Settings and Restart Server follow this.
     pub fn restart_waiting(&self) -> bool {
-        crate::server::restart_waiting(self.link == Link::Up, self.running_source(), self.bundled_source().as_deref(), self.server_protocol, crate::daemon::PROTOCOL)
+        crate::server::restart_waiting(self.link == Link::Up, self.running_source(), self.bundled_source().as_deref(), self.server_offer.as_ref().map_or(0, |offer| offer.lacks().len()))
     }
     /// What a dismissed notice is about (AppModel.serverBannerKey).
     fn server_banner_key(&self) -> String {
-        crate::server::banner_key(self.bundled_source().as_deref(), self.server_protocol)
+        crate::server::banner_key(self.bundled_source().as_deref(), self.server_offer.as_ref().map(|offer| offer.protocol))
     }
     /// The header's word and dot colour for the server (AppModel.serverStatus).
     pub fn server_status_word(&self) -> crate::server::Status {
@@ -180,8 +180,16 @@ impl Client {
     /// (ServerSourceSettings): the words, Restart Server when the client has commands for it, and
     /// why the last restart did not work.
     pub(super) fn server_box(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut col = div().flex().flex_col().gap_2().p(px(10.)).rounded_md().bg(rgb(BOX)).border_1().border_color(rgb(LINE))
-            .child(div().text_color(rgb(crate::server::ORANGE)).child(crate::server::UPDATED));
+        let mut col = div().flex().flex_col().gap_2().p(px(10.)).rounded_md().bg(rgb(BOX)).border_1().border_color(rgb(LINE));
+        col = match self.link {
+            // What is incompatible, never only that something changed.
+            Link::Incompatible { server, client } => {
+                let mismatch = wheel_proto::Mismatch { server, client };
+                col.child(div().text_color(rgb(crate::server::ORANGE)).child(mismatch.headline()))
+                    .child(div().text_xs().text_color(rgb(DIM)).child(format!("{}.", mismatch.detail())))
+            }
+            _ => col.child(div().text_color(rgb(crate::server::ORANGE)).child(crate::server::UPDATED)),
+        };
         let (available, restarting, problem) = super::server::with(|s| (s.control.available(), s.busy == Some(crate::server::Op::Restart), s.problem.clone())).unwrap_or((false, false, None));
         if available {
             col = col.child(div().flex().child(button(if restarting { "Restarting…" } else { "Restart Server" }, click(cx, |this| {

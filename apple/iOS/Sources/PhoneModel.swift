@@ -91,9 +91,9 @@ final class PhoneModel {
     private(set) var chats: [String: AgentChat] = [:]
     /// The files each agent pane's composer holds for its next message, keyed by pane id.
     private(set) var trays: [String: AttachmentTray] = [:]
-    /// The protocol the connected server speaks, from its last status; 0 until one arrives, so
-    /// nothing that needs a newer server shows before the server has said.
-    private(set) var serverProtocol: UInt32 = 0
+    /// What the connected server offers, from its last status; `.none` until one arrives, so
+    /// nothing whose op the server may lack shows before the server has said (ADR-0050).
+    private(set) var serverOffer: ServerOffer = .none
     /// Permission requests waiting on a person, from every agent.
     private(set) var perms: [PermInfo] = []
     /// The agents the Mac can start, from `status`.
@@ -208,9 +208,9 @@ final class PhoneModel {
         return spaces.filter { ids.contains($0.id) }.sorted { (ids.firstIndex(of: $0.id) ?? 0) < (ids.firstIndex(of: $1.id) ?? 0) }
     }
 
-    /// Whether the composer offers attachments: the server takes uploads from protocol 3 on
-    /// (ADR-0020), and a server that predates that hides the paperclip.
-    var canAttach: Bool { isConnected && serverProtocol >= ServerProtocol.current }
+    /// Whether the composer offers attachments: an upload is an HTTP request every connected
+    /// server takes, and the message that names the files is `agent_send`.
+    var canAttach: Bool { isConnected && serverOffer.has("agent_send") }
 
 
     /// The upload client for the connected Mac, with this device's current credential.
@@ -231,9 +231,9 @@ final class PhoneModel {
         registerPush()
     }
 
-    /// Tell the daemon the push token, once connected to a server that takes it (protocol 8).
+    /// Tell the daemon the push token, once connected to a server that takes it.
     private func registerPush() {
-        guard let token = apnsToken, let client, serverProtocol >= 8 else { return }
+        guard let token = apnsToken, let client, serverOffer.has("push_register") else { return }
         client.send(.pushRegister(req: client.req(), token: token))
     }
 
@@ -403,11 +403,11 @@ final class PhoneModel {
         if pluginPanes.values.contains(where: { $0.handle(msg) }) { return }
         if artifactEmbeds?.handle(msg) == true { return }
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, protocolVersion, sessions):
-            if serverProtocol != protocolVersion {
-                Log.info("server protocol \(protocolVersion), this app's \(ServerProtocol.current); attachments \(protocolVersion >= ServerProtocol.current ? "offered" : "hidden")")
+        case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, offer, sessions):
+            if serverOffer != offer {
+                Log.info("server protocol \(offer.protocolVersion), level \(offer.compat), this app's \(ServerOffer.clientCompat); attachments \(offer.has("agent_send") ? "offered" : "hidden")")
             }
-            serverProtocol = protocolVersion
+            serverOffer = offer
             offerBrowsers()
             self.agents = agents
             // An unsolicited status means this connection missed daemon-wide events.
@@ -872,7 +872,7 @@ final class PhoneModel {
             }
             chat.canFork = { [weak self, weak chat] in
                 guard let self, let chat else { return false }
-                return self.serverProtocol >= 28
+                return self.serverOffer.has("agent_fork")
                     && AgentPanes.canFork(harness: AgentPanes.harness(ofAgent: chat.name, in: self.spaces))
             }
             chats[name] = chat

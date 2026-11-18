@@ -9,7 +9,9 @@
 //! Terminal bytes travel base64-encoded.
 
 mod finder;
+mod ops;
 pub use finder::TextFinder;
+pub use ops::{op_of, ops, Mismatch, Offer, Refused, BREAKS, COMPAT};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -32,9 +34,9 @@ pub const AGENT_NOT_REOPENED: &str =
 /// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
 pub const DEFAULT_INSTANCE: &str = "wheel";
 
-/// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
-/// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
-/// it with each op or field a client relies on.
+/// The protocol this build speaks, which `status` reports as `protocol` (1 when absent): a label
+/// for logs and reports. No client decides anything from it; what a client may send is the
+/// server's `ops`, and whether it can connect is `compat` (ADR-0050).
 pub const PROTOCOL_VERSION: u32 = 52;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
@@ -2206,6 +2208,13 @@ pub enum ServerMsg {
         /// The protocol the server speaks (`PROTOCOL_VERSION`); 1 from a server that predates it.
         #[serde(default = "first_protocol")]
         protocol: u32,
+        /// The server's compatibility level (`COMPAT`); 0 from a server that predates it. A
+        /// client connects only at its own level (ADR-0050).
+        #[serde(default)]
+        compat: u32,
+        /// The op of every `ClientMsg` the server handles (`ops()`); a client sends no other.
+        #[serde(default)]
+        ops: Vec<String>,
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
@@ -2962,6 +2971,23 @@ pub enum ServerMsg {
 }
 
 impl ServerMsg {
+    /// What a `status` says its server offers; None for any other message.
+    pub fn offer(&self) -> Option<Offer> {
+        match self {
+            ServerMsg::Status {
+                compat,
+                protocol,
+                ops,
+                ..
+            } => Some(Offer {
+                compat: *compat,
+                protocol: *protocol,
+                ops: ops.iter().cloned().collect(),
+            }),
+            _ => None,
+        }
+    }
+
     /// The `req` of the request this message answers; None for a message the daemon sends
     /// unprompted, and for a reply to a request sent without one. The match names every variant,
     /// so a new one cannot be left out.
