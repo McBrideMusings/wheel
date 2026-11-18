@@ -149,6 +149,10 @@ pub struct AppState {
     /// Daemon-wide events (permission requests, every agent's state, layout) every connection
     /// forwards.
     pub(crate) global: broadcast::Sender<ServerMsg>,
+    /// The status follower's subscription to `global`, taken when the state is made so it sees
+    /// every event from the first, those of the agents a restore starts before serving included;
+    /// [`crate::status::follow`] takes it.
+    pub(crate) status_events: Mutex<Option<broadcast::Receiver<ServerMsg>>>,
     pub(crate) perms: Arc<Perms>,
     /// Every running agent by name: the ones agent panes own.
     pub(crate) agents: Mutex<HashMap<String, Arc<Agent>>>,
@@ -354,6 +358,7 @@ impl AppState {
             }
         }
         let (global, _) = broadcast::channel(1024);
+        let status_events = Mutex::new(Some(global.subscribe()));
         let devices = crate::devices::Devices::load(&instance_dir);
         let (revoked, _) = broadcast::channel(16);
         let (stopping, _) = broadcast::channel(1);
@@ -375,6 +380,7 @@ impl AppState {
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
             global,
+            status_events,
             agents: Mutex::new(HashMap::new()),
             agent_timing: Mutex::new(AgentTiming::default()),
             orchestrator_lease: Mutex::new(None),

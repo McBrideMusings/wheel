@@ -289,9 +289,12 @@ fn set_pane_statuses(node: &mut Node, by_pane: &HashMap<String, PaneStatus>) {
     }
 }
 
-/// Follow the events that change a status and recompute on each.
+/// Follow the events that change a status and recompute on each, from the first event the state
+/// sent: the subscription is the one taken when the state was made, so a turn an agent started
+/// and ended while a restore ran is still seen. A second call follows from now.
 pub(crate) fn follow(state: Arc<AppState>) {
-    let mut events = state.global.subscribe();
+    let taken = state.status_events.lock().unwrap().take();
+    let mut events = taken.unwrap_or_else(|| state.global.subscribe());
     tokio::spawn(async move {
         loop {
             match events.recv().await {
