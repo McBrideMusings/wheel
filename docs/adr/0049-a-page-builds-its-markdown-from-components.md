@@ -1,0 +1,3 @@
+# ADR-0049: A page builds its Markdown from components
+
+A page draws a Markdown document by building it from components it sizes itself: `Text` (with `markdown: true` for inline runs), `Grid` for tables, `Image` with the page's own `resizable`, `scaledToFit` and `frame` modifiers, and monospaced `Text` for code. A plugin's backend turns Markdown into blocks with `wheel_plugin_sdk::markdown::blocks` (pulldown-cmark), and the pane maps each block to components. No page names `StructuredText`: it lays out what the page did not build (image width, table overflow, block spacing) and so holds defaults a page cannot undo (ADR-0038). `StructuredText` stays in the agent chat's transcript, which the client owns.

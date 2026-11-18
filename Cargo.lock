@@ -3050,9 +3050,11 @@ dependencies = [
 name = "turn-feed"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "notify",
  "serde_json",
  "tokio",
+ "toml_edit",
  "wheel-plugin-sdk",
 ]
 
@@ -3337,6 +3339,7 @@ name = "wheel-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "async-lsp",
+ "pulldown-cmark",
  "serde",
  "serde_json",
  "tokio",

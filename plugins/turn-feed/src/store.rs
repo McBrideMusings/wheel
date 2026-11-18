@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
+use wheel_plugin_sdk::markdown::blocks;
 
 /// The newest posts kept per space.
 pub const KEEP: usize = 500;
@@ -104,9 +105,32 @@ impl Store {
     }
 
     /// The `posts` feed's value for a space: only the posts its own agent panes made, so two spaces
-    /// on one directory never share a feed.
+    /// on one directory never share a feed. Each post carries its body as `body_blocks`, and a post
+    /// whose `page` is a markdown post its page as `page_blocks` (`wheel_plugin_sdk::markdown`), so the
+    /// pane draws every block with components it sizes itself (ADR-0049). `page_dir` is the page's
+    /// folder, which the backend watches; `page_markdown` is its text, which the pane searches.
     pub fn feed(&self, space: &str) -> Value {
-        let posts: Vec<Value> = self.all().into_iter().filter(|p| p["space"] == space).take(FEED_MAX).collect();
+        let mut posts: Vec<Value> = self.all().into_iter().filter(|p| p["space"] == space).take(FEED_MAX).collect();
+        let tz = jiff::tz::TimeZone::system();
+        let today = jiff::Zoned::now().with_time_zone(tz.clone()).date();
+        for post in &mut posts {
+            for (from, to) in [("at", "at_local"), ("updated_at", "updated_local")] {
+                if let Some(local) = post[from].as_str().and_then(|at| local_time(at, &tz, today)) {
+                    post[to] = json!(local);
+                }
+            }
+            if let Some(local) = post["answer"]["at"].as_str().and_then(|at| local_time(at, &tz, today)) {
+                post["answer"]["at_local"] = json!(local);
+            }
+            let dir = post["dir"].as_str().map(PathBuf::from);
+            post["body_blocks"] = json!(blocks(post["body"].as_str().unwrap_or(""), dir.as_deref()));
+            let (Some(dir), Some(page)) = (dir, post["page"].as_str()) else { continue };
+            if let Some((folder, markdown)) = markdown_page(&dir, page) {
+                post["page_blocks"] = json!(blocks(&markdown, Some(&folder)));
+                post["page_dir"] = json!(folder.to_string_lossy());
+                post["page_markdown"] = json!(markdown);
+            }
+        }
         json!({ "space": space, "posts": posts })
     }
 
@@ -236,6 +260,55 @@ impl Store {
         self.write(&post)?;
         Ok(json!({ "post": id }))
     }
+
+    /// Removes one post's file. Only a pane in the post's own space may delete it.
+    pub fn delete(&self, args: &Value, caller: &Value) -> Result<Value, String> {
+        let Some(obj) = args.as_object() else {
+            return Err("delete refused: args must be an object".into());
+        };
+        let problems = unknown_keys(obj, &["post"], "");
+        if !problems.is_empty() {
+            return Err(format!("delete refused: {}", problems.join("; ")));
+        }
+        let id = obj.get("post").and_then(Value::as_str).unwrap_or("");
+        if !id_ok(id) {
+            return Err(format!("delete refused: post {id:?} is not a post id"));
+        }
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let post = self.read(id).ok_or_else(|| format!("delete refused: post {id} does not exist"))?;
+        if post["space"] != caller["space"] {
+            return Err(format!("delete refused: post {id} belongs to space {}, not {}", post["space"], caller["space"]));
+        }
+        fs::remove_file(self.file(id)).map_err(|e| format!("cannot delete {}: {e}", self.file(id).display()))?;
+        Ok(json!({ "post": id }))
+    }
+
+    /// The agent pane that wrote post `args.post`, for a pane in the post's own space.
+    pub fn author(&self, args: &Value, caller: &Value) -> Result<String, String> {
+        let id = args["post"].as_str().unwrap_or("");
+        if !id_ok(id) {
+            return Err(format!("focus refused: post {id:?} is not a post id"));
+        }
+        let post = self.read(id).ok_or_else(|| format!("focus refused: post {id} does not exist"))?;
+        if post["space"] != caller["space"] {
+            return Err(format!("focus refused: post {id} belongs to space {}, not {}", post["space"], caller["space"]));
+        }
+        post["agent_pane"].as_str().filter(|p| id_ok(p)).map(str::to_string).ok_or_else(|| format!("focus refused: post {id} names no agent pane"))
+    }
+}
+
+/// An RFC 3339 time as the machine's local clock: `3:13pm` today, `Nov 16, 3:13pm` this year,
+/// `Nov 16 2025, 3:13pm` before.
+fn local_time(at: &str, tz: &jiff::tz::TimeZone, today: jiff::civil::Date) -> Option<String> {
+    let t = at.parse::<jiff::Timestamp>().ok()?.to_zoned(tz.clone());
+    let clock = format!("{}:{:02}{}", (t.hour() + 11) % 12 + 1, t.minute(), if t.hour() < 12 { "am" } else { "pm" });
+    Some(if t.date() == today {
+        clock
+    } else if t.year() == today.year() {
+        format!("{}, {clock}", t.strftime("%b %-d"))
+    } else {
+        format!("{}, {clock}", t.strftime("%b %-d %Y"))
+    })
 }
 
 struct Valid {
@@ -389,6 +462,24 @@ fn rfc3339(secs: i64, millis: u32) -> String {
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
+/// The file the markdown renderer reads from a post's folder (its page declares
+/// `<meta name="wheel-post-reads" content="index.md">`).
+const MARKDOWN_FILE: &str = "index.md";
+
+/// A project artifact named `page` in `<dir>/wheel.toml` whose renderer is `markdown`: its folder
+/// and the Markdown of its `index.md`. None for any other page, which the pane shows as a web view.
+pub fn markdown_page(dir: &Path, page: &str) -> Option<(PathBuf, String)> {
+    let doc: toml_edit::DocumentMut = fs::read_to_string(dir.join("wheel.toml")).ok()?.parse().ok()?;
+    let entry = doc.get("artifacts")?.get(page)?;
+    if entry.get("renderer")?.as_str()? != "markdown" {
+        return None;
+    }
+    let path = Path::new(entry.get("path")?.as_str()?);
+    let folder = if path.is_absolute() { path.to_path_buf() } else { dir.join(path) };
+    let markdown = fs::read_to_string(folder.join(MARKDOWN_FILE)).ok()?;
+    Some((folder, markdown))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,6 +610,21 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_only_that_post_and_only_from_its_own_space() {
+        let s = store(KEEP);
+        let a = s.post(&simple(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
+        let b = s.post(&simple(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
+        let feed_pane = json!({ "pane": "p4", "space": "s1", "plugin": "turn-feed" });
+        let e = s.delete(&json!({ "post": a }), &json!({ "pane": "p5", "space": "s2" })).unwrap_err();
+        assert!(e.contains("belongs to space"), "{e}");
+        assert!(s.delete(&json!({ "post": "../x" }), &feed_pane).unwrap_err().contains("is not a post id"));
+        assert_eq!(s.delete(&json!({ "post": a }), &feed_pane).unwrap()["post"], a.as_str());
+        assert!(s.read(&a).is_none());
+        assert!(s.read(&b).is_some());
+        assert!(s.delete(&json!({ "post": a }), &feed_pane).unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
     fn a_reply_text_names_the_post_title() {
         let s = store(KEEP);
         let id = s.post(&simple(), &agent("p1", "s1")).unwrap()["post"].as_str().unwrap().to_string();
@@ -568,6 +674,54 @@ mod tests {
         let s = store(KEEP);
         let caller = json!({ "pane": "p1", "cwd": "/p", "agent": true });
         assert_eq!(s.post(&simple(), &caller).unwrap_err(), "post refused: the call names no pane, space or directory");
+    }
+
+    #[test]
+    fn a_markdown_page_becomes_blocks_with_its_images_in_its_folder() {
+        let dir = std::env::temp_dir().join(format!("turn-feed-page-{}-{}", std::process::id(), new_id()));
+        fs::create_dir_all(dir.join(".wheel/artifacts/notes")).unwrap();
+        fs::create_dir_all(dir.join(".wheel/artifacts/site")).unwrap();
+        fs::write(
+            dir.join("wheel.toml"),
+            "[artifacts.notes]\npath = \".wheel/artifacts/notes\"\nrenderer = \"markdown\"\n\n[artifacts.site]\npath = \".wheel/artifacts/site\"\n",
+        )
+        .unwrap();
+        fs::write(dir.join(".wheel/artifacts/notes/index.md"), "# Hi\n\n![a](<a b.png>) ![w](https://x.org/w.png) [link](rel.md)\n").unwrap();
+        let (folder, md) = markdown_page(&dir, "notes").unwrap();
+        assert_eq!(folder, dir.join(".wheel/artifacts/notes"));
+        assert_eq!(md, "# Hi\n\n![a](<a b.png>) ![w](https://x.org/w.png) [link](rel.md)\n");
+        assert!(markdown_page(&dir, "site").is_none(), "an HTML artifact stays a web view");
+        assert!(markdown_page(&dir, "none").is_none());
+
+        let s = store(KEEP);
+        let mut caller = agent("p1", "s1");
+        caller["cwd"] = json!(dir.to_string_lossy());
+        let mut a = simple();
+        a["page"] = json!("notes");
+        s.post(&a, &caller).unwrap();
+        let post = &s.feed("s1")["posts"][0];
+        assert_eq!(post["page_dir"], json!(folder.to_string_lossy()));
+        assert_eq!(
+            post["page_blocks"],
+            json!([
+                { "kind": "heading", "level": 1, "text": "Hi" },
+                { "kind": "image", "url": format!("file://{}/a%20b.png", folder.display()), "alt": "a" },
+                { "kind": "image", "url": "https://x.org/w.png", "alt": "w" },
+                { "kind": "paragraph", "text": "[link](rel.md)" },
+            ])
+        );
+        assert_eq!(post["body_blocks"], json!([{ "kind": "paragraph", "text": "I did it." }, { "kind": "paragraph", "text": "Second paragraph." }]));
+    }
+
+    #[test]
+    fn local_times_name_the_day_unless_it_is_today() {
+        let tz = jiff::tz::TimeZone::get("America/New_York").unwrap();
+        let today = jiff::civil::date(2026, 11, 17);
+        assert_eq!(local_time("2026-11-17T17:13:00.000Z", &tz, today).as_deref(), Some("12:13pm"));
+        assert_eq!(local_time("2026-11-17T20:05:00.000Z", &tz, today).as_deref(), Some("3:05pm"));
+        assert_eq!(local_time("2026-11-16T05:00:00.000Z", &tz, today).as_deref(), Some("Nov 16, 12:00am"));
+        assert_eq!(local_time("2025-07-04T16:30:00.000Z", &tz, today).as_deref(), Some("Jul 4 2025, 12:30pm"));
+        assert_eq!(local_time("nope", &tz, today), None);
     }
 
     #[test]

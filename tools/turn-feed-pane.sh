@@ -1,5 +1,5 @@
 #!/bin/bash
-# Draw the turn-feed pane and two gallery rows (StructuredText, WebView{artifact}) in the hidden GPUI app (never shown,
+# Draw the turn-feed pane and the gallery's WebView{artifact} row in the hidden GPUI app (never shown,
 # never focused) against a throwaway wheeld running the fake agent, and save PNGs under /private/tmp/claude/wheel/shots.
 # The project holds the turn-feed and gallery plugins (symlinked), a markdown post artifact "tf-sample" (heading, table,
 # SVG image), and two posts from the fake agent pane: one with a Markdown body, a question, options 1A and 1B and the
@@ -146,7 +146,7 @@ wait_for() {
 
 wait_for 60 'd.get("error") is None and "Pick a store for the feed" in texts' && pass "the feed draws the post" ||
   fail "the feed: $(q '(d.get("error"), texts[:6])')"
-wait_for 30 'len(comps("StructuredText")) >= 2 and len(comps("WebView")) == 1' && pass "StructuredText bodies and the WebView are in the drawn tree" ||
+wait_for 30 'len(comps("Grid")) >= 2 and len(comps("Image")) >= 1' && pass "the body and page tables (Grid) and the page image (Image) are in the drawn tree" ||
   fail "tree: $(q '[c["type"] for c in cs][:40]')"
 sleep 4
 # The feed's List scrolls itself and takes no debug scroll, so a shot shows the top of the newest card. The paged card is
@@ -178,7 +178,7 @@ sent() { w plugin feed "$AGENT_PANE" wheel.agent.transcript --params "{\"agent\"
 ok=1; for _ in $(seq 1 50); do sent && { ok=0; break; }; sleep 0.2; done
 [ $ok -eq 0 ] && pass "the fake agent's transcript received picked 1A" || fail "the agent's transcript has no picked 1A"
 
-# The gallery: StructuredText row, then the WebView{artifact} row, scrolled into view.
+# The gallery: the WebView{artifact} row, scrolled into view.
 w pane kind "$PANE" plugin --plugin gallery --plugin-pane gallery > /dev/null
 wait_for 40 'any(t == "A2UI component gallery" for t in texts)' && pass "the gallery draws" || fail "gallery: $(q 'texts[:4]')"
 # gallery_row <name> <scroll arg> <text the row draws>: scrolls the pane (to=top|bottom, or dy=<points> from the top), then snapshots.
@@ -190,7 +190,6 @@ gallery_row() {
   shot "$1"
 }
 gallery_row gallery-webview-artifact to=bottom "artifact: an artifact"
-gallery_row gallery-structuredtext "dy=${STRUCT_DY:-700}" "style absent or default"
 
 echo "debug $DEBUG pane $PANE token $T/support/token"; [ -n "${HOLD:-}" ] && sleep "$HOLD"
 echo "snapshots in $SHOTS"
