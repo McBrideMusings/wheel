@@ -2500,65 +2500,16 @@ impl AppState {
                     Some(PaneKind::Terminal { cwd, agent, .. }) => (cwd.clone(), agent.clone()),
                     _ => (None, None),
                 };
-                let mut outcome = "shell in the space's directory".to_string();
-                let dir = match saved_cwd {
-                    Some(dir) if Path::new(&dir).is_dir() => {
-                        outcome = format!("shell in {dir}");
-                        dir
-                    }
-                    Some(dir) => {
-                        tracing::warn!(space = %space.id, %pane, %dir, "the pane's last directory is gone; its shell starts in the space's directory");
-                        space.cwd.clone()
-                    }
-                    None => space.cwd.clone(),
-                };
                 let opened = self
-                    .open_term(
-                        dir.clone(),
-                        self.shell_in(&space.cwd),
-                        PANE_COLS,
-                        PANE_ROWS,
-                        Owner::Pane,
-                        Some((&pane, &space.cwd)),
-                    )
+                    .reopen_shell(&pane, &space.cwd, saved_cwd, saved_agent, &mut resumed_conversations)
                     .await;
                 let space_id = space.id.clone();
                 let Some(slot) = space_find_mut(space, &pane) else {
                     continue;
                 };
-                match opened {
+                let outcome = match opened {
                     // Only the shell is new; the pane keeps the rest of what was saved.
-                    Ok(term) => {
-                        let mut resumed = None;
-                        if let Some(agent) = saved_agent {
-                            let line = crate::resume::resume_line(&agent);
-                            let key = (agent.name.clone(), agent.conversation.clone());
-                            if resumed_conversations.contains(&key) {
-                                outcome = format!("{outcome}; {} conversation {} already resumed in another pane, so a plain shell", agent.name, agent.conversation);
-                            } else if !crate::resume::conversation_exists(&agent, &dir) {
-                                tracing::warn!(space = %space_id, %pane, agent = %agent.name, conversation = %agent.conversation, %dir, "the agent's conversation is gone; the pane starts a plain shell");
-                                outcome = format!(
-                                    "{outcome}; {} conversation {} is gone, so a plain shell",
-                                    agent.name, agent.conversation
-                                );
-                            } else if let Some(line) = line {
-                                match term.write(format!("{line}\n").into_bytes()) {
-                                    Ok(()) => {
-                                        outcome = format!(
-                                            "{outcome}; resumed {} conversation {}",
-                                            agent.name, agent.conversation
-                                        );
-                                        resumed_conversations.insert(key);
-                                        resumed = Some(agent);
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(space = %space_id, %pane, error = %e, "could not type the agent's resume command");
-                                        outcome =
-                                            format!("{outcome}; could not resume {}", agent.name);
-                                    }
-                                }
-                            }
-                        }
+                    Ok(shell) => {
                         if let PaneKind::Terminal {
                             term: id,
                             cwd,
@@ -2567,17 +2518,18 @@ impl AppState {
                         } = slot
                         {
                             respawned += 1;
-                            *id = term.id.clone();
-                            *cwd = Some(dir);
-                            *agent = resumed;
+                            *id = shell.term.id.clone();
+                            *cwd = Some(shell.dir);
+                            *agent = shell.agent;
                         }
+                        shell.outcome
                     }
                     Err(e) => {
                         tracing::warn!(space = %space_id, %pane, error = %e, "could not restart the pane's shell; it is empty now");
-                        outcome = format!("empty: {e}");
                         *slot = PaneKind::empty();
+                        format!("empty: {e}")
                     }
-                }
+                };
                 outcomes.insert(pane, outcome);
             }
             // Agents do not outlive the daemon: each agent pane's agent starts again under
@@ -2795,7 +2747,7 @@ impl AppState {
     /// Copy each running agent's conversation id into its agent pane; true when one changed.
     /// Agents run while the spaces lock is free, so a pane takes its agent's id here, under the
     /// lock, whichever of the two comes first.
-    fn sync_conversations(&self, spaces: &mut Spaces) -> bool {
+    pub(crate) fn sync_conversations(&self, spaces: &mut Spaces) -> bool {
         let mut changed = false;
         for space in &mut spaces.spaces {
             each_space_kind_mut(space, &mut |kind| {
@@ -2919,7 +2871,7 @@ pub fn space_find<'a>(space: &'a SpaceInfo, pane: &str) -> Option<&'a PaneKind> 
     space.trees().find_map(|tree| find_pane(tree, pane))
 }
 
-fn space_find_mut<'a>(space: &'a mut SpaceInfo, pane: &str) -> Option<&'a mut PaneKind> {
+pub(crate) fn space_find_mut<'a>(space: &'a mut SpaceInfo, pane: &str) -> Option<&'a mut PaneKind> {
     space.trees_mut().find_map(|tree| find_pane_mut(tree, pane))
 }
 

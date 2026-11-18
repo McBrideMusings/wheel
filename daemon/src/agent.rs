@@ -575,13 +575,13 @@ impl Agent {
         }
         if inner.running.is_some() || !inner.queued.is_empty() {
             return Err(format!(
-                "agent {} is working on a turn; switch once it ends, or cancel it",
+                "agent {} is working on a turn; try again once it ends, or cancel it",
                 self.name
             ));
         }
         if inner.state == AgentState::Starting {
             return Err(format!(
-                "agent {} is still starting; switch once it is ready",
+                "agent {} is still starting; try again once it is ready",
                 self.name
             ));
         }

@@ -6088,3 +6088,74 @@ async fn codex_resume_uses_complete_backend_settings_instead_of_cached_pane_mode
     assert_eq!(pane["approvals_reviewer"], "user");
     second.abort();
 }
+
+/// `pane_reload` on an agent pane is refused while a turn runs; between turns it ends the agent
+/// and starts a new one, under a new name, on the same conversation, which carries on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reloaded_agent_pane_carries_on_its_conversation() {
+    let dir = Scratch::new("agent-reload");
+    let (url, state_file, agent) = agent_with_store(&dir.0).await;
+    let pane = layout(&url).await["spaces"][0]["root"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 900).await;
+    let reload = |req: u64| ClientMsg::PaneReload {
+        req: Some(req),
+        pane: pane.clone(),
+    };
+
+    // A turn waiting on a permission keeps the agent busy: the reload is refused.
+    send(
+        &mut ws,
+        ClientMsg::AgentSend {
+            req: Some(901),
+            agent: agent.clone(),
+            text: "needs permission".into(),
+        },
+    )
+    .await;
+    let perm = next_perm(&mut ws).await;
+    match ok_or_error(&mut ws, reload(902), 902).await {
+        ServerMsg::Error { message, .. } => {
+            assert!(message.contains("working on a turn"), "{message}")
+        }
+        other => panic!("a reload during a turn: {other:?}"),
+    }
+    send(
+        &mut ws,
+        ClientMsg::PermAnswer {
+            req: None,
+            id: perm.id,
+            choice: "allow".into(),
+        },
+    )
+    .await;
+    transcript_when(&mut ws, &agent, |events| {
+        events.iter().any(
+            |e| matches!(e, AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn"),
+        )
+    })
+    .await;
+    let before = saved_conversation(&state_file);
+    assert!(before.is_some(), "the first turn saved the conversation");
+
+    // Between turns a new agent starts on the same conversation, and the pane names it.
+    client_op(&mut ws, 903, reload(903)).await;
+    let listed = layout(&url).await;
+    let reloaded = listed["spaces"][0]["root"]["agent"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(reloaded, agent, "the pane names the new agent");
+    attach(&mut ws, &reloaded, 904).await;
+    let text = reply(&mut ws, &reloaded, "after reload").await;
+    assert_eq!(text, "echo: after reload");
+    let events = attach(&mut ws, &reloaded, 905).await;
+    assert!(
+        events.contains(&AgentEvent::TurnStart { turn: 2 }),
+        "the second turn follows the first in one conversation: {events:?}"
+    );
+    assert_eq!(saved_conversation(&state_file), before);
+}

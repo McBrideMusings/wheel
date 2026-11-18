@@ -74,6 +74,24 @@ import WheelKit
         #expect(link.plugin.error == nil)
     }
 
+    @Test func aPaneReloadRunsTheScriptFromTheTopWithNoStateKept() throws {
+        let wire = Wire()
+        let link = make(wire)
+        link.handle(try source(Self.script, req: 1))
+        #expect(link.plugin.press(component: "root.1"))
+        #expect(texts(link).first == "Count 1")
+        // Another pane's reload is not this one's.
+        #expect(!link.handle(try msg(#"{"ev":"pane_reload","pane":"p2"}"#)))
+        wire.sent = []
+        #expect(link.handle(try msg(#"{"ev":"pane_reload","pane":"p1"}"#)))
+        #expect(link.plugin.restarts == 1)
+        guard case let .pluginSource(req, pane)? = wire.sent.first else { Issue.record("no plugin_source asked: \(wire.sent)"); return }
+        #expect(pane == "p1")
+        #expect(link.handle(try source(Self.script, req: req)))
+        #expect(texts(link).first == "Count 0")
+        #expect(link.plugin.error == nil)
+    }
+
     @Test func feedsAndActionsGoOutAndTheirRepliesComeBack() throws {
         let wire = Wire()
         let link = make(wire)

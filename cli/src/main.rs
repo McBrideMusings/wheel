@@ -1091,6 +1091,12 @@ enum PaneCommand {
         #[arg(long, requires = "plugin")]
         plugin_pane: Option<String>,
     },
+    /// Start a pane again on what it is on: an agent restarts on the same conversation, a
+    /// terminal's shell starts again in the directory it was in (resuming the agent it ran), a web
+    /// pane reloads and runs its artifact's refresh, a browser reloads its page, a plugin pane runs
+    /// its script again from the top. An empty pane is left as it is. An agent is refused while a
+    /// turn runs.
+    Reload { pane: String },
     /// Print a browser pane's home, the page its Mac and phone browsers open at, or with a page
     /// set it. Setting it moves neither browser.
     Home {
@@ -5937,6 +5943,13 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                     .map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }),
             })
             .await
+        }
+        PaneCommand::Reload { pane } => {
+            let req = conn.req();
+            // An agent's reload asks the login shell (up to 20s) and waits for the agent (up to 60s).
+            conn.call_within(ClientMsg::PaneReload { req: Some(req), pane }, req, Duration::from_secs(90))
+                .await?;
+            Ok(())
         }
         PaneCommand::Home { pane, page } => {
             let req = conn.req();

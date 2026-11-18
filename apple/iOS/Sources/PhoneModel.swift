@@ -496,6 +496,7 @@ final class PhoneModel {
             Log.info("permission \(id) resolved: \(choice)")
         case let .paneReload(pane):
             webPanes[pane]?.reload()
+            browsers[pane]?.reload()
         case let .inspectPane(id, pane, op, arg, by):
             guard let browser = browsers[pane] else {
                 client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))

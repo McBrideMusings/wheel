@@ -8751,3 +8751,119 @@ async fn pane_info_waits_3_seconds_in_all_for_many_silent_browsers() {
     drop(silent);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// `pane_reload` starts each pane again on what it is on: an empty pane stays empty, a terminal
+/// gets a new shell in the directory the old one was in, a web pane is reloaded on every client
+/// and runs its refresh again, and a browser pane is reloaded on every client.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_starts_each_pane_again_on_what_it_is_on() {
+    let base = std::env::temp_dir().join(format!("wheel-reload-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("inner")).unwrap();
+    let base = base.canonicalize().unwrap();
+    let dash = base.join(".wheel/artifacts/dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("index.html"), "<p>dash</p>").unwrap();
+    register(&base, "dash", &dash, "title = \"Dash\"\ncommand = \"true\"\n");
+    let (url, _) = start_daemon(Some(base.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&base.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let empty = first_pane(&spaces[0].root);
+    let split = |req: u64, pane: &str| ClientMsg::PaneSplit {
+        req: Some(req),
+        pane: pane.into(),
+        dir: Some(Dir::Right),
+        focus: false,
+        site: None,
+    };
+    let reload = |req: u64, pane: &str| ClientMsg::PaneReload {
+        req: Some(req),
+        pane: pane.into(),
+    };
+
+    // An empty pane: nothing happens, and the reload succeeds.
+    ok(&mut ws, reload(10, &empty)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(matches!(find_kind(&spaces[0].root, &empty), Some(PaneKind::Empty { .. })));
+
+    // A terminal: a new shell, under a new id, in the directory the old one had moved to.
+    let term_pane = created(&mut ws, split(11, &empty)).await;
+    ok(&mut ws, terminal(&term_pane)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let old = term_of(&spaces[0], &term_pane).unwrap();
+    let inner = base.join("inner").to_string_lossy().to_string();
+    ok(
+        &mut ws,
+        ClientMsg::TermInput {
+            req: Some(12),
+            id: old.clone(),
+            data: wheel_proto::encode_bytes(format!("cd '{inner}'\n").as_bytes()),
+        },
+    )
+    .await;
+    // The pane saves the directory its shell is in once the shell has taken the `cd`.
+    let mut moved = false;
+    for _ in 0..100 {
+        let (spaces, _) = layout(&mut ws).await;
+        if matches!(find_kind(&spaces[0].root, &term_pane), Some(PaneKind::Terminal { cwd: Some(cwd), .. }) if *cwd == inner) {
+            moved = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(moved, "the shell never moved to {inner}");
+    ok(&mut ws, reload(13, &term_pane)).await;
+    let (spaces, terms) = layout(&mut ws).await;
+    let new = term_of(&spaces[0], &term_pane).expect("still a terminal pane");
+    assert_ne!(new, old, "a new shell, under a new id");
+    assert!(
+        terms.iter().all(|t| t.id != old || !t.alive),
+        "the old shell ended: {terms:?}"
+    );
+    let started = terms.iter().find(|t| t.id == new).expect("the new shell");
+    assert!(started.alive, "{started:?}");
+    assert_eq!(started.cwd, inner, "the new shell starts where the old one was");
+
+    // A web pane: every client reloads it, and its refresh runs again.
+    let web = created(&mut ws, split(14, &term_pane)).await;
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            home: None,
+            req: Some(15),
+            pane: web.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("dash".into()),
+            scope: None,
+            url: None,
+            plugin: None,
+        },
+    )
+    .await;
+    ran(&mut ws, &web, 1).await;
+    let mut other = connect(&url).await;
+    ok(&mut ws, reload(16, &web)).await;
+    reloaded(&mut other, &web).await;
+    ran(&mut ws, &web, 2).await;
+
+    // A browser pane: every client reloads it.
+    let browser = created(&mut ws, split(17, &web)).await;
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            home: None,
+            req: Some(18),
+            pane: browser.clone(),
+            kind: NewPaneKind::Browser,
+            artifact: None,
+            scope: None,
+            url: Some("https://example.com/".into()),
+            plugin: None,
+        },
+    )
+    .await;
+    ok(&mut ws, reload(19, &browser)).await;
+    reloaded(&mut other, &browser).await;
+    let _ = std::fs::remove_dir_all(&base);
+}

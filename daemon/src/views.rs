@@ -22,7 +22,7 @@ use crate::server::{AgentStart, AppState, CarriedView, Owner};
 use crate::spaces::{space_find, space_panes, PANE_COLS, PANE_ROWS};
 
 /// How long Claude Code in a terminal has to quit after SIGTERM before the switch gives up.
-const TUI_EXIT: Duration = Duration::from_secs(10);
+pub(crate) const TUI_EXIT: Duration = Duration::from_secs(10);
 
 impl AppState {
     /// Show `pane`'s conversation as `to` (when given), and say which view the pane is in and the
@@ -293,7 +293,7 @@ impl AppState {
     /// Give the agent view `agent` the model and mode `pane` had before it was a terminal, as
     /// soon as its agent is up. A choice the agent no longer offers is logged and left at the
     /// agent's default.
-    fn carry_options(&self, pane: &str, agent: &str, options: Vec<(String, String)>) {
+    pub(crate) fn carry_options(&self, pane: &str, agent: &str, options: Vec<(String, String)>) {
         let Ok(agent) = self.agent(agent) else {
             return;
         };
@@ -351,13 +351,13 @@ impl AppState {
 }
 
 /// Marks a pane as mid-switch for as long as it lives.
-struct Switching<'a> {
+pub(crate) struct Switching<'a> {
     state: &'a AppState,
     pane: String,
 }
 
 impl<'a> Switching<'a> {
-    fn begin(state: &'a AppState, pane: &str) -> Result<Switching<'a>, String> {
+    pub(crate) fn begin(state: &'a AppState, pane: &str) -> Result<Switching<'a>, String> {
         if !state
             .switching_views
             .lock()
@@ -386,7 +386,7 @@ impl Drop for Switching<'_> {
 }
 
 /// The model and mode of an agent view as (option id, current value).
-fn carried_options(config: &[wheel_proto::ConfigOption]) -> Vec<(String, String)> {
+pub(crate) fn carried_options(config: &[wheel_proto::ConfigOption]) -> Vec<(String, String)> {
     config
         .iter()
         .filter(|o| matches!(o.category.as_deref(), Some("model" | "mode")))

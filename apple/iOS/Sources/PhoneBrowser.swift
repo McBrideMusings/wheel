@@ -85,6 +85,11 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         load(url)
     }
 
+    /// `pane_reload`: load the page the browser is on again, or the last one it was sent to when none committed.
+    func reload() {
+        if view.url == nil { load(page) } else { view.reload() }
+    }
+
     private func load(_ url: String) {
         page = url
         guard let target = BrowserPanes.phonePage(url) ?? URL(string: url) else {

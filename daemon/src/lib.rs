@@ -37,6 +37,7 @@ mod proxy;
 mod push;
 pub mod pty;
 mod refresh;
+mod reload;
 pub mod remote;
 mod render;
 mod resume;

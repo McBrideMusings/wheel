@@ -2025,6 +2025,22 @@ async fn handle(
             None
         }
         // On a task of its own: a switch waits for the other view's process to stop.
+        ClientMsg::PaneReload { req, pane } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match state.pane_reload(&pane).await {
+                    Ok(()) => req.map(|req| ServerMsg::Ok { req }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %pane, %message, "pane reload failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::PaneView { req, pane, to } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {

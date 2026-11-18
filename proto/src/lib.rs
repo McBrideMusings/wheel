@@ -35,7 +35,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent). A client
 /// built against a higher one hides what needs it and asks for a server restart (ADR-0020). Raise
 /// it with each op or field a client relies on.
-pub const PROTOCOL_VERSION: u32 = 50;
+pub const PROTOCOL_VERSION: u32 = 51;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -1331,6 +1331,18 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
+    /// Start `pane` again on what it is on, and reply `ok`. An agent pane's agent ends and a new
+    /// one, under a new name the layout carries, starts on the same conversation, model, mode and
+    /// permissions, with its home asked of the login shell again unless the pane picked one;
+    /// refused while a turn runs or a message waits. A terminal pane's shell ends and a new one starts in the
+    /// directory the shell was last in, resuming the Claude Code, Codex or pi conversation it ran.
+    /// A web, browser or plugin pane gets `pane_reload` sent to every client, and a web pane's
+    /// artifact runs its refresh command. An empty pane is left as it is. `PROTOCOL_VERSION` 51.
+    PaneReload {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
     /// Write a PNG of what a client draws for `pane` to `path` on the daemon's machine. The daemon
     /// asks a connected client that offered rendering (`render_offer`) and showed the pane, waits
     /// for its image, writes the file whole, and replies `pane_shot` once it is complete. An error
@@ -2508,8 +2520,10 @@ pub enum ServerMsg {
         req: u64,
         clients: Vec<ClientInfo>,
     },
-    /// Sent to every connection: a file under web pane `pane`'s folder changed, so a client showing
-    /// it reloads. Changes within 200ms of each other send one.
+    /// Sent to every connection: a client showing `pane` reloads it. A web pane's page opens again,
+    /// sent when a file under its folder changes (changes within 200ms of each other send one) and
+    /// on `pane_reload`; a browser pane reloads the page each browser is on, and a plugin pane runs
+    /// its script again from the top with no state kept, both only on `pane_reload`.
     PaneReload {
         pane: String,
     },

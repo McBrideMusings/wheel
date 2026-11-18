@@ -122,6 +122,19 @@ public final class PluginPane {
         onUpdate?()
     }
 
+    /// Ends the running script and its state (`pane_reload`): the next `load` runs the script from the top, as the
+    /// first load did. The last view stays drawn until then, and the feeds stay subscribed.
+    public func restart() {
+        runtime = nil
+        loadFailed = false
+        changeMsgs = [:]
+        actionMsgs = [:]
+        lastGiven = [:]
+        restarts += 1
+    }
+    /// Times `restart` ended the script.
+    public private(set) var restarts = 0
+
     /// Takes the script's source and the package's other `.luau` files (path in the package to source) for its
     /// `require`: the first call starts the runtime, a later one reloads it with its state kept.
     public func load(source: String, modules: [String: String] = [:], chunk: String) {
