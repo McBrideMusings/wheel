@@ -497,13 +497,13 @@ final class PhoneModel {
         case let .paneReload(pane):
             webPanes[pane]?.reload()
             browsers[pane]?.reload()
-        case let .inspectPane(id, pane, op, arg, by):
+        case let .inspectPane(id, pane, op, arg):
             guard let browser = browsers[pane] else {
                 client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))
                 return
             }
             Task { [weak self] in
-                let reply: ClientMsg = switch await browser.run(op, arg: arg, by: by) {
+                let reply: ClientMsg = switch await browser.run(op, arg: arg) {
                 case let .text(text): .inspected(id: id, text: text)
                 case let .png(png): .rendered(id: id, png: png)
                 case let .film(film): .recorded(id: id, mov: film.mov, frames: film.frames, millis: film.millis)
@@ -511,13 +511,13 @@ final class PhoneModel {
                 }
                 self?.client?.send(reply)
             }
-        case let .renderPane(id, pane, full, by):
+        case let .renderPane(id, pane, full):
             guard let browser = browsers[pane] else {
                 client?.send(.renderRefused(id: id, message: RenderRefusal.notShown))
                 return
             }
             Task { [weak self] in
-                let reply: ClientMsg = switch await browser.shot(full: full, by: by) {
+                let reply: ClientMsg = switch await browser.shot(full: full) {
                 case let .success(png): .rendered(id: id, png: png)
                 case let .failure(refusal): .renderRefused(id: id, message: refusal.message)
                 }

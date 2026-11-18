@@ -2289,7 +2289,6 @@ async fn handle(
             pane,
             text,
             on,
-            from,
         } => {
             let side = match on.as_deref().map(|on| crate::render::Side::parse(Some(on))).transpose() {
                 Ok(side) => side,
@@ -2306,12 +2305,11 @@ async fn handle(
                 return req.map(|req| ServerMsg::Opened { req, pane, url });
             };
             // Asking that browser to go takes as long as the client takes to answer.
-            let by = from.as_deref().map(|p| state.asking_agent(p));
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
                 let moved = state
-                    .pane_inspect(&pane, "open", Some(url.clone()), None, side, by)
+                    .pane_inspect(&pane, "open", Some(url.clone()), None, side)
                     .await
                     .map(|_| ());
                 let reply = match moved {
@@ -2430,10 +2428,7 @@ async fn handle(
             arg,
             path,
             on,
-            from,
         } => {
-            // Who ran it, as a permission card names an asker: an agent pane's agent, else the pane.
-            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to answer.
             let state = state.clone();
             let out = out.clone();
@@ -2446,7 +2441,7 @@ async fn handle(
                     }
                 };
                 if action == "record" {
-                    let reply = match record_request(&state, &pane, arg, path.clone(), side, by).await {
+                    let reply = match record_request(&state, &pane, arg, path.clone(), side).await {
                         Ok((recorded_path, rec)) => req.map(|req| ServerMsg::PaneRecorded {
                             req,
                             pane,
@@ -2465,7 +2460,7 @@ async fn handle(
                     }
                     return;
                 }
-                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side, by).await {
+                let reply = match state.pane_inspect(&pane, &action, arg, path.clone(), side).await {
                     Ok(crate::render::InspectOutcome::Text(text)) => {
                         req.map(|req| ServerMsg::Inspected { req, pane, text })
                     }
@@ -2499,9 +2494,7 @@ async fn handle(
             path,
             on,
             full,
-            from,
         } => {
-            let by = from.as_deref().map(|p| state.asking_agent(p));
             // On a task of its own: a client takes as long as it takes to draw.
             let state = state.clone();
             let out = out.clone();
@@ -2513,7 +2506,7 @@ async fn handle(
                         return;
                     }
                 };
-                let reply = match state.pane_shot(&pane, &path, side, full, by).await {
+                let reply = match state.pane_shot(&pane, &path, side, full).await {
                     Ok(bytes) => req.map(|req| ServerMsg::PaneShot {
                         req,
                         pane,
@@ -3329,14 +3322,13 @@ async fn record_request(
     arg: Option<String>,
     path: Option<String>,
     side: crate::render::Side,
-    by: Option<String>,
 ) -> Result<(String, crate::render::Recording), String> {
     let path = path.ok_or("record needs a path")?;
     let seconds = arg
         .as_deref()
         .and_then(|a| a.trim().parse::<u64>().ok())
         .ok_or("record needs a whole number of seconds")?;
-    let recording = state.pane_record(pane, seconds, &path, side, by).await?;
+    let recording = state.pane_record(pane, seconds, &path, side).await?;
     Ok((path, recording))
 }
 

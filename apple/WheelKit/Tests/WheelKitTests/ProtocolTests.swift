@@ -243,7 +243,7 @@ struct ProtocolTests {
 
     /// The daemon asks for a pane drawn with `render_pane`; the client's answers carry the same id.
     @Test func rendersAPaneOnRequest() throws {
-        guard case let .renderPane(id, pane, full, _) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6","full":true}"#)
+        guard case let .renderPane(id, pane, full) = try ServerMsg.decode(#"{"ev":"render_pane","id":4,"pane":"p6","full":true}"#)
         else { Issue.record("wrong case"); return }
         #expect(id == 4 && pane == "p6" && full)
         #expect(try ClientMsg.renderOffer.json() == #"{"op":"render_offer"}"#)
@@ -254,14 +254,11 @@ struct ProtocolTests {
 
     /// `inspect_pane` asks for eval, dom or a selector shot; text answers carry the request's id.
     @Test func inspectsABrowserPaneOnRequest() throws {
-        guard case let .inspectPane(id, pane, op, arg, by) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":5,"pane":"p6","action":"dom","arg":"h1"}"#)
+        guard case let .inspectPane(id, pane, op, arg) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":5,"pane":"p6","action":"dom","arg":"h1"}"#)
         else { Issue.record("wrong case"); return }
-        #expect(id == 5 && pane == "p6" && op == "dom" && arg == "h1" && by == nil)
-        guard case let .inspectPane(_, _, _, _, named) = try ServerMsg.decode(#"{"ev":"inspect_pane","id":6,"pane":"p6","action":"dom","arg":"h1","by":"claude"}"#)
-        else { Issue.record("wrong case"); return }
-        #expect(named == "claude")
-        #expect(try ClientMsg.paneBrowserOpen(req: 7, pane: "p6", text: "example.com", on: "phone", from: "p2").json()
-                == #"{"from":"p2","on":"phone","op":"pane_browser_open","pane":"p6","req":7,"text":"example.com"}"#)
+        #expect(id == 5 && pane == "p6" && op == "dom" && arg == "h1")
+        #expect(try ClientMsg.paneBrowserOpen(req: 7, pane: "p6", text: "example.com", on: "phone").json()
+                == #"{"on":"phone","op":"pane_browser_open","pane":"p6","req":7,"text":"example.com"}"#)
         #expect(try ClientMsg.paneHome(req: 9, pane: "p6", url: "example.com").json()
                 == #"{"op":"pane_home","pane":"p6","req":9,"url":"example.com"}"#)
         #expect(try ClientMsg.paneHome(req: 10, pane: "p6").json() == #"{"op":"pane_home","pane":"p6","req":10}"#)
