@@ -476,7 +476,7 @@ impl Client {
                 }
             }
             Pending::SetKind(pane, kind) => self.set_kind(&pane, kind),
-            Pending::StartAgent(pane, agent) => self.send(&ClientMsg::PaneStart { req: None, pane, kind: StartKind::Agent, message: None, agent: Some(agent), model: None, permission_mode: None, sandbox: None }),
+            Pending::StartAgent(pane, agent) => self.send(&ClientMsg::PaneStart { req: None, pane, kind: StartKind::Agent, message: None, agent: Some(agent), model: None, permission_mode: None, sandbox: None, dir: None }),
             Pending::RemoveBuiltin(name) => self.remove_builtin(&name),
             Pending::CloseSession(session) => self.send_layout(|req| ClientMsg::SessionClose { req: Some(req), session }),
         }

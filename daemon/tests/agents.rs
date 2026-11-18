@@ -279,6 +279,7 @@ async fn start_agent_as(
             model: None,
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -345,6 +346,7 @@ async fn pane_start_reply(url: &str, pane: &str, message: &str) -> ServerMsg {
             model: None,
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -1328,6 +1330,74 @@ fn quick() -> wheeld::AgentTiming {
     timing.restart.backoff = Duration::from_millis(10);
     timing.restart.backoff_max = Duration::from_millis(40);
     timing
+}
+
+/// `pane_start` with `dir`, as the reply came.
+async fn pane_start_in(url: &str, pane: &str, dir: &str) -> ServerMsg {
+    let mut ws = connect(url).await;
+    send(
+        &mut ws,
+        ClientMsg::PaneStart {
+            req: Some(9006),
+            pane: pane.into(),
+            kind: StartKind::Agent,
+            message: None,
+            agent: None,
+            model: None,
+            permission_mode: None,
+            sandbox: None,
+            dir: Some(dir.into()),
+        },
+    )
+    .await;
+    loop {
+        if let reply @ (ServerMsg::Started { req: 9006, .. }
+        | ServerMsg::Error {
+            req: Some(9006), ..
+        }) = recv(&mut ws).await
+        {
+            return reply;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_started_with_a_directory_runs_there_and_the_pane_says_so() {
+    let url = start_daemon().await;
+    let worktree = std::env::temp_dir().join(format!("wheel-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&worktree).unwrap();
+    let (_, pane) = space(&url, "/tmp").await;
+
+    let relative = pane_start_in(&url, &pane, "some/where").await;
+    let ServerMsg::Error { message, .. } = relative else {
+        panic!("{relative:?}")
+    };
+    assert!(message.contains("not an absolute path"), "{message}");
+    let missing = pane_start_in(&url, &pane, "/no/such/dir/anywhere").await;
+    let ServerMsg::Error { message, .. } = missing else {
+        panic!("{missing:?}")
+    };
+    assert!(message.contains("not an existing directory"), "{message}");
+
+    let started = pane_start_in(&url, &pane, worktree.to_str().unwrap()).await;
+    assert!(matches!(started, ServerMsg::Started { .. }), "{started:?}");
+    let mut ws = connect(&url).await;
+    send(
+        &mut ws,
+        ClientMsg::PaneInfo {
+            req: Some(9007),
+            pane: pane.clone(),
+        },
+    )
+    .await;
+    let fields = loop {
+        if let ServerMsg::PaneInfo { fields, .. } = recv(&mut ws).await {
+            break fields;
+        }
+    };
+    let directory = fields.iter().find(|f| f.label == "Directory").map(|f| f.value.clone());
+    assert_eq!(directory.as_deref(), worktree.to_str());
+    std::fs::remove_dir(&worktree).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3868,6 +3938,7 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
             model: None,
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -3898,6 +3969,7 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
             model: None,
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -3936,6 +4008,7 @@ async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
             model: None,
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -3980,6 +4053,7 @@ async fn start_with_permissions(
             permission_mode: permission_mode.map(String::from),
             sandbox: sandbox.map(String::from),
             model: None,
+            dir: None,
         },
     )
     .await;
@@ -5086,6 +5160,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             model: Some("sonnet".into()),
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -5116,6 +5191,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             model: Some("no-such-model".into()),
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -5147,6 +5223,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             model: Some("no-such-model".into()),
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -5176,6 +5253,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
             model: Some("fake-codex-mini".into()),
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -5211,6 +5289,7 @@ async fn a_codex_agent_pane_restarts_in_the_approval_policy_a_person_chose() {
             model: None,
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;
@@ -5264,6 +5343,7 @@ async fn an_agent_pane_runs_on_its_model_again_after_a_restart() {
             model: Some("haiku".into()),
             permission_mode: None,
             sandbox: None,
+            dir: None,
         },
     )
     .await;

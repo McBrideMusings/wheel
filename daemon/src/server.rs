@@ -2067,6 +2067,7 @@ async fn handle(
             model,
             permission_mode,
             sandbox,
+            dir,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
@@ -2087,6 +2088,7 @@ async fn handle(
                                         approvals_reviewer: None,
                                         permission_profile: None,
                                     },
+                                    dir,
                                 },
                             )
                             .await

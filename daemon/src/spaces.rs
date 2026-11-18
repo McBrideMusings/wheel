@@ -646,6 +646,8 @@ pub struct StartOptions {
     pub agent: Option<String>,
     pub model: Option<String>,
     pub permissions: AgentPermissions,
+    /// For an agent pane: the directory it runs in, instead of its space's.
+    pub dir: Option<String>,
 }
 
 /// The conversation a forked agent copies, and where and under which account it was kept.
@@ -1708,7 +1710,20 @@ impl AppState {
             agent,
             model,
             permissions,
+            dir,
         } = options;
+        if kind == StartKind::Terminal && dir.is_some() {
+            return Err("a directory is only for an agent pane".into());
+        }
+        if let Some(dir) = &dir {
+            let path = std::path::Path::new(dir);
+            if !path.is_absolute() {
+                return Err(format!("dir {dir} is not an absolute path"));
+            }
+            if !path.is_dir() {
+                return Err(format!("dir {dir} is not an existing directory"));
+            }
+        }
         if kind == StartKind::Terminal && message.is_some() {
             return Err("a first message is only for an agent pane".into());
         }
@@ -1757,7 +1772,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message, model, permissions, None)
+                .start_agent(space, &pane, &agent, message, model, permissions, dir, None)
                 .await
                 .map(Some),
         };
@@ -1845,7 +1860,7 @@ impl AppState {
             home: source_home,
         };
         match self
-            .start_agent(&space, &new, &harness, None, model, permissions, Some(source))
+            .start_agent(&space, &new, &harness, None, model, permissions, None, Some(source))
             .await
         {
             Ok((started, state)) => Ok(Started {
@@ -2120,6 +2135,7 @@ impl AppState {
         message: Option<String>,
         model: Option<String>,
         permissions: AgentPermissions,
+        dir: Option<String>,
         fork: Option<ForkSource>,
     ) -> Result<(String, AgentState), (String, bool)> {
         // A second start on a pane whose first has not heard back from its agent would `install`
@@ -2132,11 +2148,10 @@ impl AppState {
                 .cwd
                 .clone()
         };
-        // A fork runs where the conversation it copies was kept, with the account that kept it.
-        let cwd = fork
-            .as_ref()
-            .and_then(|f| f.cwd.clone())
-            .unwrap_or_else(|| space_cwd.clone());
+        // A fork runs where the conversation it copies was kept, with the account that kept it;
+        // otherwise in the directory the start named, else the space's.
+        let pane_cwd = fork.as_ref().and_then(|f| f.cwd.clone()).or(dir);
+        let cwd = pane_cwd.clone().unwrap_or_else(|| space_cwd.clone());
         let name = self.new_id('w');
         let home = match &fork {
             Some(fork) => fork.home.clone(),
@@ -2162,7 +2177,6 @@ impl AppState {
             (Some(_), Some(h)) => [(h.home_var().to_string(), home.unwrap_or_default())].into(),
             _ => Default::default(),
         };
-        let fork_cwd = fork.and_then(|f| f.cwd);
         let new = PaneKind::Agent {
             agent: name.clone(),
             harness: harness.to_string(),
@@ -2172,7 +2186,7 @@ impl AppState {
             context: None,
             // A fork picks the account its conversation is kept in, so a restart finds it there;
             // a home the login shell gave is asked for again on restart.
-            place: wheel_proto::AgentPlace::boxed(fork_cwd, picked),
+            place: wheel_proto::AgentPlace::boxed(pane_cwd, picked),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
             extra: Extra::default(),

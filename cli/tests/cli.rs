@@ -891,6 +891,24 @@ async fn perm_answer_takes_an_agent_pane_in_place_of_a_request_id() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pane_start_dir_runs_an_agent_there_and_agent_send_messages_it() {
+    let d = daemon_with_agents().await;
+    let tmp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let worktree = tmp.join(format!("wheel-cli-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&worktree).unwrap();
+    ok(&d, &["space", "new", tmp.to_str().unwrap()]).await;
+    let pane = layout(&d).await["spaces"][0]["root"]["id"].as_str().unwrap().to_string();
+    ok(&d, &["pane", "start", &pane, "agent", "--dir", worktree.to_str().unwrap()]).await;
+    let info = ok(&d, &["pane", "info", &pane]).await;
+    assert!(info.contains(&format!("Directory: {}", worktree.display())), "{info}");
+    let reply = ok(&d, &["agent", "send", &pane, "hello worker"]).await;
+    assert!(!reply.is_empty());
+    let relative = wheel(&d, &["pane", "start", &pane, "agent", "--dir", "some/where"]).await;
+    assert!(!relative.status.success());
+    std::fs::remove_dir(&worktree).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn skill_prints_the_guide_and_help_points_at_it_without_a_daemon() {
     let skill = Command::new(env!("CARGO_BIN_EXE_wheel"))
         .arg("--skill")

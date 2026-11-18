@@ -224,7 +224,7 @@ impl Client {
                     "terminal" => self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None, plugin: None }),
                     "agent" => {
                         let Some(agent) = q("agent") else { return refuse(BAD, "agent=<name> is required") };
-                        self.send(&ClientMsg::PaneStart { req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None });
+                        self.send(&ClientMsg::PaneStart { req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None, dir: None });
                     }
                     _ => return refuse(BAD, "kind must be terminal or agent"),
                 }
