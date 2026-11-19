@@ -6,7 +6,9 @@
 # (wheel-zpa4.2.10.5: `pane console --on phone`, apart from the Mac's) and keeps what it wrote while its
 # connection was down (wheel-zpa4.2.10.10; a TCP relay cuts the phone off), a loopback page reaches
 # another loopback port that is a browser pane's home under CORS, as the Mac's browser would, and no
-# other port or site (wheel-zpa4.2.10.7), and a suspended app is "the phone is not attached".
+# other port or site (wheel-zpa4.2.10.7), the page sits under one row of back, forward, Home, Reload and a URL bar
+# whose typed text moves only the phone, with back and forward (wheel-zpa4.2.10.19), and a suspended app is "the phone is not
+# attached".
 #
 # Needs WHEEL_IOS_APP: the built Wheel.app for the simulator (WheelPhone scheme), and a pool
 # simulator. WHEEL_IOS_HOST (default: the Mac's first non-loopback IPv4 address) is the address the
@@ -427,37 +429,63 @@ before="$(connects)"; relay up
 check "phone.log names the pane and wheeld's refusal" poll 20 plog "browser pane $P3 console report refused: $P3 is not a browser pane"
 grep "console report refused" "$PLOG" | head -2
 
-# The bottom toolbar (wheel-zpa4.2.10.18): back, Home, Set as home and reload are the system's own buttons.
-# The app's debug route presses one as its tap does (it writes "<pane> <button>" to Documents/toolbar-press)
-# and logs each button's state, "on" or "off" (disabled).
+# The row (wheel-zpa4.2.10.19): back, forward, Home, Reload and the URL bar, nothing else. The app's debug route drives
+# the row through the calls its controls make (it reads "<pane> <word> [<text>]" from Documents/toolbar-press:
+# back, forward, home, reload, type <text>, submit, blur, state) and logs "toolbar <pane>: back=on|off/image
+# forward=… home=… reload=… typing=… field=<what the URL bar holds>". Unchecked: a real tap and the keyboard (simctl cannot tap).
 printf '<!doctype html><title>stamp</title><script>window.stamp = Math.random()</script>\n' >"$SITE/stamp.html"
-tb_lines() { grep -c "toolbar $PANE: $1" "$PLOG"; }
-tb_press() { local n; n="$(tb_lines "press $1")"; printf '%s %s' "$PANE" "$1" >"$DATA/Documents/toolbar-press"; poll 10 sh -c "[ \"\$(grep -c 'toolbar $PANE: press $1' '$PLOG')\" -gt $n ]"; }
-tb_state() { local n; n="$(tb_lines back=)"; printf '%s state' "$PANE" >"$DATA/Documents/toolbar-press"; poll 10 sh -c "[ \"\$(grep -c 'toolbar $PANE: back=' '$PLOG')\" -gt $n ]" && grep "toolbar $PANE: back=" "$PLOG" | tail -1; }
+tb_send() { printf "%s" "$1" >"$DATA/Documents/toolbar-press"; }
+tb_do() { local n; n="$(grep -c "toolbar $PANE: $1" "$PLOG")"; tb_send "$PANE $1"; poll 10 sh -c "[ \"\$(grep -c 'toolbar $PANE: $1' '$PLOG')\" -gt $n ]"; }
+tb_state() { local n; n="$(grep -c "toolbar $PANE: back=" "$PLOG")"; tb_send "$PANE state"; poll 10 sh -c "[ \"\$(grep -c 'toolbar $PANE: back=' '$PLOG')\" -gt $n ]" && grep "toolbar $PANE: back=" "$PLOG" | tail -1; }
 tb_is() { tb_state | grep -q -- "$1"; }
+mac_href() { "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" pane eval "$PANE" 'location.href' 2>&1; }
+phone_on() { "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" pane where "$PANE" --on phone 2>&1 | grep -q "^$1	"; }
 w pane page "$PANE" "http://localhost:$SPORT/index.html" --on phone >/dev/null
-check "the toolbar's page is the home: dom h1 --on phone returns Bicycle" poll 20 dom_is h1 '<h1>Bicycle</h1>'
-tb_images() { local s; s="$(tb_state)"; [ -n "$s" ] && ! printf %s "$s" | grep -q noimage; }
-check "every toolbar button has its SF Symbol (the state line has no noimage)" poll 10 tb_images
-check "(3) on the home page Set as home is disabled and the other buttons keep their slots" poll 10 tb_is "set-home=off/image"
+check "the row's page is the home: dom h1 --on phone returns Bicycle" poll 20 dom_is h1 '<h1>Bicycle</h1>'
+row_exact() { local s; s="$(tb_state)"; printf '%s\n' "$s" | grep -qE "toolbar $PANE: back=(on|off)/image forward=(on|off)/image home=on/image reload=on/image typing=false field=" && ! printf %s "$s" | grep -q 'set-home='; }
+check "(1) the row is back, forward, Home and Reload with their SF Symbols and the URL bar, no Set as home" poll 10 row_exact
+check "(4) the URL bar shows the page's address" poll 10 tb_is "field=http://localhost:$SPORT/index.html$"
 w pane page "$PANE" "http://localhost:$SPORT/two.html" --on phone >/dev/null
 check "the phone moved off the home: dom h1 --on phone returns Tandem" poll 20 dom_is h1 '<h1>Tandem</h1>'
-check "back is enabled after the phone moved on" poll 10 tb_is "back=on/"
-check "(3) off the home Set as home is enabled" poll 10 tb_is "set-home=on/"
-check "(2) the Home button is pressed" tb_press home
-check "(2) pane where --on phone names the home after Home" poll 20 sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane where '$PANE' --on phone 2>&1 | grep -q 'http://localhost:$SPORT/index.html'"
+check "(4) the URL bar follows the page to /two.html" poll 10 tb_is "field=http://localhost:$SPORT/two.html$"
+check "(7) back is enabled after the phone moved on" poll 10 tb_is "back=on/image forward=off/image"
+check "(7) the back button is pressed" tb_do back
+check "(7) back went to the page before: dom h1 returns Bicycle" poll 20 dom_is h1 '<h1>Bicycle</h1>'
+check "(7) forward is enabled after going back" poll 10 tb_is "forward=on/image"
+check "(7) the forward button is pressed" tb_do forward
+check "(7) forward returned: dom h1 returns Tandem" poll 20 dom_is h1 '<h1>Tandem</h1>'
+check "(7) forward is disabled at the newest page" poll 10 tb_is "forward=off/image"
+MAC="$(mac_href)"
+check "(2) the Home button is pressed" tb_do home
+check "(2) pane where --on phone names the home after Home" poll 20 phone_on "http://localhost:$SPORT/index.html"
+check "(2) the Mac's browser did not move on the phone's Home" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' location.href 2>&1)\" = '$MAC' ]"
+check "(6) typing into the URL bar holds the draft" tb_do "type http://localhost:$SPORT/two.html"
 w pane page "$PANE" "http://localhost:$SPORT/three.html" --on phone >/dev/null
-check "the phone moved to /three.html: dom h1 --on phone returns Unicycle" poll 20 dom_is h1 '<h1>Unicycle</h1>'
-check "(3) the Set as home button is pressed" tb_press set-home
-check "(3) pane home prints the page in view" poll 20 home_is "http://localhost:$SPORT/three.html"
-check "(3) on the new home Set as home is disabled" poll 10 tb_is "set-home=off/image"
+check "the phone moved to /three.html while the bar was being typed in: dom h1 returns Unicycle" poll 20 dom_is h1 '<h1>Unicycle</h1>'
+check "(6) the page landing left the draft alone" poll 10 tb_is "typing=true field=http://localhost:$SPORT/two.html$"
+check "(6) letting go of the bar is driven" tb_do blur
+check "(6) the bar shows the page's address again" poll 10 tb_is "typing=false field=http://localhost:$SPORT/three.html$"
+tb_do "type http://localhost:$SPORT/two.html" >/dev/null
+check "(5) Return in the URL bar is driven" tb_do submit
+check "(5) the phone logs what the bar submitted" poll 10 plog "browser pane $PANE URL bar submitted: http://localhost:$SPORT/two.html"
+check "(5) wheeld's opened reply reached the phone" poll 20 plog "pane $PANE opened http://localhost:$SPORT/two.html"
+check "(5) the phone's browser went there: dom h1 returns Tandem" poll 20 dom_is h1 '<h1>Tandem</h1>'
+check "(5) the URL bar shows the page wheeld read the text as" poll 10 tb_is "typing=false field=http://localhost:$SPORT/two.html$"
+check "(5) the Mac's browser did not move on the phone's URL bar" sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' location.href 2>&1)\" = '$MAC' ]"
+tb_do "type javascript:alert(1)" >/dev/null
+tb_do submit >/dev/null
+check "(5) text wheeld refuses reaches the phone as a refusal" poll 20 plog "pane op refused:"
+check "(5) after the refusal the bar shows the page's address" poll 10 tb_is "typing=false field=http://localhost:$SPORT/two.html$"
+grep "pane op refused" "$PLOG" | tail -1
+w pane page "$PANE" "about:blank" --on phone >/dev/null
+check "(4) on a blank page the URL bar is empty (its placeholder shows)" poll 20 tb_is "typing=false field=$"
 w pane page "$PANE" "http://localhost:$SPORT/stamp.html" --on phone >/dev/null
 stamp() { w pane eval "$PANE" 'window.stamp' --on phone 2>&1; }
 check "the stamp page loaded" poll 20 sh -c "[ \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane eval '$PANE' 'typeof window.stamp' --on phone 2>&1)\" = '\"number\"' ]"
 S1="$(stamp)"
-check "(4) the reload button is pressed" tb_press reload
+check "(3) the Reload button is pressed" tb_do reload
 stamp_changed() { local now; now="$(stamp)"; [ "$now" != "$S1" ] && [ "$now" != '"undefined"' ] && [ -n "$now" ]; }
-check "(4) the value the page writes on each load changed" poll 20 stamp_changed
+check "(3) the value the page writes on each load changed" poll 20 stamp_changed
 
 # The app suspended: page commands say so instead of waiting.
 xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1

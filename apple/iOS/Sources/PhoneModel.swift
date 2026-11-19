@@ -566,6 +566,12 @@ final class PhoneModel {
         case let .started(req, pane, agent):
             menuReqs.remove(req)
             Log.info("started \(pane) agent \(agent ?? "-")")
+        case let .opened(req, pane, url):
+            if menuReqs.remove(req) != nil {
+                Log.info("pane \(pane) opened \(url)")
+                // The phone's own browser goes there; the Mac's stays where it is.
+                browsers[pane]?.open(url)
+            }
         case let .created(req, id):
             if menuReqs.remove(req) != nil || spaceReqs.remove(req) != nil { Log.info("created \(id)") }
             if let agent = startWhenMade.removeValue(forKey: req) { startPane(id, .agent, agent: agent) }
@@ -586,7 +592,10 @@ final class PhoneModel {
                 Log.info("setting \(field.key) refused: \(message)")
             }
             if let req { startWhenMade[req] = nil }
-            if let req, menuReqs.remove(req) != nil { menuError = message }
+            if let req, menuReqs.remove(req) != nil {
+                menuError = message
+                Log.info("pane op refused: \(message)")
+            }
             if let req, spaceReqs.remove(req) != nil {
                 spaceError = message
                 showWhenMade[req] = nil
@@ -702,22 +711,22 @@ final class PhoneModel {
         return pane
     }
 
-    /// A press of `button` in browser pane `pane`'s toolbar; one the toolbar disables does nothing.
+    /// A press of `button` left of browser pane `pane`'s URL bar; a disabled one does nothing.
     func press(_ button: BrowserButton, in pane: String) {
         guard let browser = browsers[pane], browser.enabled(button) else { return }
         switch button {
         case .back: browser.goBack()
+        case .forward: browser.goForward()
         case .home: browser.goHome()
-        case .setHome: setHome(pane, browser.page)
         case .reload: browser.reload()
         }
     }
 
-    /// Make `url` browser pane `pane`'s home for the Mac's and the phone's browsers. wheeld saves
-    /// it with the layout; neither browser moves.
-    func setHome(_ pane: String, _ url: String) {
-        guard let client else { return }
-        client.send(.paneHome(req: client.req(), pane: pane, url: url))
+    /// Return in browser pane `pane`'s URL bar: what it holds goes to wheeld (`browse`).
+    func submitURL(in pane: String) {
+        guard let browser = browsers[pane] else { return }
+        Log.info("browser pane \(pane) URL bar submitted: \(browser.urlText)")
+        browse(pane, browser.urlText)
     }
 
     /// Keeps one `WebPane` per web pane in the layout, loading each new one.
@@ -1236,9 +1245,11 @@ final class PhoneModel {
     }
 
     #if DEBUG
-    /// A check presses a browser toolbar button by writing `<pane> <button>` to `Documents/toolbar-press`
-    /// (`<button>` is `back`, `home`, `set-home` or `reload`, or `state`). The press goes through the same
-    /// call the button's tap makes, and the app logs `toolbar <pane>: back=on|off home=… set-home=… reload=…`.
+    /// A check drives a browser pane's row by writing `<pane> <word> [<text>]` to `Documents/toolbar-press`:
+    /// `back`, `forward`, `home` or `reload` presses that button through the call its tap makes; `type <text>` puts the
+    /// URL bar in the person's hands holding `<text>`, as typing does; `submit` is Return in the bar
+    /// (the field's `onSubmit` call, then the keyboard let go); `blur` lets go with no Return; `state`
+    /// logs `toolbar <pane>: back=on|off/image|noimage forward=… home=… reload=… typing=true|false field=<what the bar holds>`.
     private func watchToolbarPresses() {
         guard let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
             .appendingPathComponent("toolbar-press") else { return }
@@ -1247,16 +1258,26 @@ final class PhoneModel {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self, let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
                 try? FileManager.default.removeItem(at: file)
-                let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
-                guard words.count == 2 else { continue }
-                if let button = BrowserButton(rawValue: words[1]) {
-                    Log.info("toolbar \(words[0]): press \(words[1])")
-                    press(button, in: words[0])
-                } else if words[1] == "state", let browser = browsers[words[0]] {
-                    let state = BrowserButton.allCases.map {
+                let words = text.split(separator: " ", maxSplits: 2).map(String.init)
+                guard words.count >= 2, let browser = browsers[words[0]] else { continue }
+                let pane = words[0]
+                Log.info("toolbar \(pane): \(words[1])\(words.count > 2 ? " \(words[2])" : "")")
+                switch words[1] {
+                case "type" where words.count == 3:
+                    browser.typing = true
+                    browser.urlText = words[2]
+                case "submit":
+                    submitURL(in: pane)
+                    browser.typing = false
+                case "blur":
+                    browser.typing = false
+                case "state":
+                    let images = BrowserButton.allCases.map {
                         "\($0.rawValue)=\(browser.enabled($0) ? "on" : "off")/\(UIImage(systemName: $0.symbol) == nil ? "noimage" : "image")"
                     }
-                    Log.info("toolbar \(words[0]): \(state.joined(separator: " "))")
+                    Log.info("toolbar \(pane): \(images.joined(separator: " ")) typing=\(browser.typing) field=\(browser.urlText)")
+                default:
+                    if let button = BrowserButton(rawValue: words[1]) { press(button, in: pane) }
                 }
             }
         }
@@ -1551,6 +1572,16 @@ final class PhoneModel {
     /// host becomes https. An empty text opens the homepage setting.
     func openBrowser(_ pane: String, _ text: String) {
         setKind(pane, .browser, url: text.isEmpty ? nil : text)
+    }
+    /// What the person typed into browser pane `pane`'s URL bar: wheeld reads it and this phone's
+    /// own browser goes there (the `opened` reply); the Mac's browser is not asked.
+    func browse(_ pane: String, _ text: String) {
+        guard client?.connection == .connected else {
+            menuError = "Not connected to wheeld"
+            Log.info("browser pane \(pane) URL bar: not connected to wheeld")
+            return
+        }
+        menuOp(clearsError: false) { .paneBrowserOpen(req: $0, pane: pane, text: text) }
     }
     func startPane(_ pane: String, _ kind: StartKind, agent: String? = nil) {
         menuOp { .paneStart(req: $0, pane: pane, kind: kind, message: nil, agent: agent) }
