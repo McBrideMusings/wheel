@@ -51,6 +51,19 @@ impl AppState {
         Ok(())
     }
 
+    /// The agent an agent pane names for `target` (the pane's id, or the agent's name) while that
+    /// agent is not running: a restore keeps it until the login shell answers.
+    pub(crate) fn unstarted_pane_agent(&self, target: &str) -> Option<String> {
+        let name = {
+            let spaces = self.spaces.lock().unwrap();
+            spaces.spaces.iter().find_map(|s| match space_find(s, target) {
+                Some(PaneKind::Agent { agent, .. }) => Some(agent.clone()),
+                _ => agent_panes(s).into_iter().find(|p| p.agent == target).map(|p| p.agent),
+            })?
+        };
+        self.agent(&name).is_err().then_some(name)
+    }
+
     /// The agent `target` names: an agent pane's id, or an agent name.
     pub(crate) fn resolve_agent(&self, target: &str) -> Result<AgentRef, String> {
         let pane_agent = {
