@@ -15,9 +15,16 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     let pane: String
     @ObservationIgnored let view: WKWebView
     /// The page the web view is on, as the Mac names it.
-    private(set) var page: String = ""
-    /// Whether the web view can go back.
-    private(set) var canGoBack = false
+    private(set) var page: String = "" {
+        didSet { if !typing { urlText = address } }
+    }
+    /// What the URL bar holds: the page's address, or what the person is typing while `typing`.
+    var urlText = ""
+    /// Whether the URL bar has the keyboard. While it does, a page landing leaves `urlText` alone;
+    /// when it lets go, the bar shows the page's address again.
+    var typing = false {
+        didSet { if !typing { urlText = address } }
+    }
     @ObservationIgnored private let relay = ConsoleRelay()
     @ObservationIgnored private let handler: PageSchemeHandler
     /// The page `load` sent the web view to, until its navigation starts: one the browser started.
@@ -28,6 +35,9 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// started leaves the later one's scripts alone.
     @ObservationIgnored private var scriptGeneration = 0
     @ObservationIgnored private var watches: [NSKeyValueObservation] = []
+    /// Whether the web view has a page behind and ahead of this one.
+    private(set) var canGoBack = false
+    private(set) var canGoForward = false
     /// Why the last load failed, shown over the page until the next one starts.
     private(set) var failure: String?
 
@@ -63,6 +73,9 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         watches.append(view.observe(\.canGoBack, options: [.new]) { [weak self] web, _ in
             MainActor.assumeIsolated { self?.canGoBack = web.canGoBack }
         })
+        watches.append(view.observe(\.canGoForward, options: [.new]) { [weak self] web, _ in
+            MainActor.assumeIsolated { self?.canGoForward = web.canGoForward }
+        })
         load(home)
     }
 
@@ -76,7 +89,10 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         load(home)
     }
 
-    /// Go to `url`, which wheeld resolved from an agent's `pane page`.
+    func goBack() { view.goBack() }
+    func goForward() { view.goForward() }
+
+    /// Go to `url`, which wheeld resolved from the URL bar or an agent's `pane page`.
     func open(_ url: String) {
         load(url)
     }
@@ -96,8 +112,6 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         browserLoad = target
         view.load(URLRequest(url: target))
     }
-
-    func goBack() { view.goBack() }
 
     /// The web view is on `url` now: `page` names the page it stands for.
     private func landed(_ url: URL?) {
@@ -219,90 +233,93 @@ struct PhoneBrowserBody: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
-/// The buttons of a browser pane's bottom toolbar, in the order they are drawn.
+/// The buttons left of a browser pane's URL bar, in the order they are drawn.
 enum BrowserButton: String, CaseIterable {
-    case back, home, setHome = "set-home", reload
+    case back, forward, home, reload
 
     var accessibilityID: String { "browser-\(rawValue)" }
     var label: String {
         switch self {
         case .back: "Back"
+        case .forward: "Forward"
         case .home: "Home"
-        case .setHome: "Set as home"
         case .reload: "Reload"
         }
     }
     var symbol: String {
         switch self {
         case .back: "chevron.backward"
+        case .forward: "chevron.forward"
         case .home: "house"
-        case .setHome: "house.and.flag"
         case .reload: "arrow.clockwise"
         }
     }
 }
 
 extension PhoneBrowser {
-    /// Whether `button` takes a press now: back needs a page to go back to, and the page in view
-    /// being the pane's home leaves nothing to set.
+    /// What the URL bar shows while the person is not typing in it: the page's address, nothing on
+    /// a blank page.
+    var address: String { page == "about:blank" ? "" : page }
+
+    /// Whether `button` takes a press now: back and forward need a page to go to. A disabled
+    /// button stays in its place, greyed.
     func enabled(_ button: BrowserButton) -> Bool {
         switch button {
         case .back: canGoBack
-        case .setHome: page != home
+        case .forward: canGoForward
         case .home, .reload: true
         }
     }
 }
 
-/// A browser pane on the phone: the phone's own page under the system navigation bar, whose title
-/// is the page's host, with back, Home, Set as home and reload in the system toolbar below it.
-/// UIKit's navigation controller draws both; a SwiftUI `NavigationStack` in each page of the
-/// carousel's pager asserts in `UINavigationBar.layoutSubviews` once a second page exists.
-struct BrowserPage: UIViewControllerRepresentable {
+/// A browser pane on the phone: one row of back, forward, Home, Reload and the URL bar above the
+/// phone's own page.
+/// What the person types goes to wheeld (`browse`), which reads it as an address and sends only the
+/// phone's browser there.
+struct BrowserPage: View {
     let model: PhoneModel
     let pane: String
-    let url: String
+    @FocusState private var typing: Bool
 
-    func makeUIViewController(context: Context) -> UINavigationController {
-        let root = UIHostingController(rootView: BrowserContent(browser: model.browsers[pane]))
-        let nav = UINavigationController(rootViewController: root)
-        nav.setToolbarHidden(false, animated: false)
-        root.navigationItem.titleView = nil
-        root.navigationItem.largeTitleDisplayMode = .never
-        return nav
+    private var browser: PhoneBrowser? { model.browsers[pane] }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let browser {
+                row(browser)
+                Divider()
+            }
+            BrowserContent(browser: browser)
+        }
     }
 
-    func updateUIViewController(_ nav: UINavigationController, context: Context) {
-        guard let root = nav.viewControllers.first as? UIHostingController<BrowserContent> else { return }
-        let browser = model.browsers[pane]
-        root.rootView = BrowserContent(browser: browser)
-        root.navigationItem.title = title(browser)
-        var items: [UIBarButtonItem] = []
-        for (index, button) in BrowserButton.allCases.enumerated() {
-            if index > 0 { items.append(UIBarButtonItem(systemItem: .flexibleSpace)) }
-            let item = UIBarButtonItem(image: UIImage(systemName: button.symbol), primaryAction: UIAction { [model, pane] _ in
-                model.press(button, in: pane)
-            })
-            item.isEnabled = browser?.enabled(button) == true
-            item.accessibilityLabel = button.label
-            item.accessibilityIdentifier = button.accessibilityID
-            items.append(item)
+    private func row(_ browser: PhoneBrowser) -> some View {
+        HStack(spacing: 4) {
+            ForEach(BrowserButton.allCases, id: \.self) { button in
+                Button { model.press(button, in: pane) } label: {
+                    Image(systemName: button.symbol).frame(width: 36, height: 36)
+                }
+                .disabled(!browser.enabled(button))
+                .accessibilityLabel(button.label)
+                .accessibilityIdentifier(button.accessibilityID)
+            }
+            TextField("Search or enter address", text: Binding(get: { browser.urlText }, set: { browser.urlText = $0 }))
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.go)
+                .focused($typing)
+                .onSubmit { model.submitURL(in: pane) }
+                .accessibilityIdentifier("browser-address")
         }
-        root.toolbarItems = items
-    }
-
-    /// The page's host, or the page itself for a file or a blank one.
-    private func title(_ browser: PhoneBrowser?) -> String {
-        let page = browser?.page.isEmpty == false ? browser!.page : url
-        switch BrowserPanes.shown(page) {
-        case .blank: return page
-        case let .web(_, host, _): return host
-        case .file, .other: return page
-        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .onChange(of: typing) { _, now in browser.typing = now }
     }
 }
 
-/// The page under the navigation bar: the web view, and why it could not open when it could not.
+/// The page under the row: the web view, and why it could not open when it could not.
 private struct BrowserContent: View {
     let browser: PhoneBrowser?
 
