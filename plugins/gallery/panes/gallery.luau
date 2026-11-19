@@ -52,8 +52,17 @@ local function concat(into, more)
     return into
 end
 
--- ---- table layout: fixed-width cells so the columns line up
+-- ---- table layout: fixed-width cells so the columns line up, where the pane is wide enough for them; a narrower pane
+-- (a phone) gets each row stacked: its names, its option, then its example, so nothing runs off the pane's edge.
 local W = { 130, 130, 230 }
+
+local function fits(wide, narrow)
+    return put("ViewThatFits", { wide, narrow }, { ["in"] = "horizontal" })
+end
+
+local function stacked(children)
+    return col({ col(children, { align = "start", modifiers = { { padding = { vertical = 8 } }, { frame = { maxWidth = "infinity", alignment = "leading" } } } }), put("Divider") })
+end
 
 local function cell(content, i)
     local mods
@@ -71,7 +80,7 @@ local function header()
     for i, t in ipairs({ "Component", "SwiftUI", "Option", "Example" }) do
         table.insert(cells, cell(secondary(t, "caption", { modifiers = { { fontWeight = "semibold" } } }), i - 1))
     end
-    return col({ row(cells, { justify = "start", align = "start" }), put("Divider") })
+    return fits(col({ row(cells, { justify = "start", align = "start" }), put("Divider") }), col({}))
 end
 
 -- One table row per option; the component's name and SwiftUI class on its first row only.
@@ -85,7 +94,13 @@ local function comp_rows(name, swiftui, options)
             cell(secondary(opt, "caption"), 2),
             cell(ex, 3),
         }
-        table.insert(rows, col({ row(cells, { justify = "start", align = "start" }), put("Divider") }))
+        local narrow = {}
+        if k == 1 then
+            table.insert(narrow, row({ txt(name, nil, { modifiers = { { fontWeight = "semibold" } } }), secondary(swiftui) }, { justify = "start", align = "start" }))
+        end
+        table.insert(narrow, secondary(opt, "caption"))
+        table.insert(narrow, ex)
+        table.insert(rows, fits(col({ row(cells, { justify = "start", align = "start" }), put("Divider") }), stacked(narrow)))
     end
     return rows
 end
@@ -335,14 +350,14 @@ local function mcell(content, i)
 end
 
 local function mrow(name, args, ex)
-    return col({
+    return fits(col({
         row({
             mcell(txt(name, nil, { modifiers = { { fontWeight = "semibold" } } }), 0),
             mcell(secondary(args, "caption"), 1),
             mcell(ex, 2),
         }, { justify = "start", align = "start" }),
         put("Divider"),
-    })
+    }), stacked({ txt(name, nil, { modifiers = { { fontWeight = "semibold" } } }), secondary(args, "caption"), ex }))
 end
 
 local function modifiers_class()
@@ -355,7 +370,7 @@ local function modifiers_class()
         table.insert(colours, mod(c, { foregroundStyle = c }))
     end
     local mrows = {
-        col({ row(head, { justify = "start", align = "start" }), put("Divider") }),
+        fits(col({ row(head, { justify = "start", align = "start" }), put("Divider") }), col({})),
         mrow("font", "a text style (caption, headline...) or {size, weight, design}", mod("monospaced 13", { font = { size = 13, design = "monospaced" } })),
         mrow("fontWeight", "light ... heavy", mod("semibold", { fontWeight = "semibold" })),
         mrow("monospacedDigit", "true", col({ mod("1111", { monospacedDigit = true }), mod("8888", { monospacedDigit = true }) }, { align = "start" })),
