@@ -160,6 +160,9 @@ pub enum DriverEvent {
     TurnEnd { stop_reason: String },
     /// The running turn ended in an error.
     TurnFailed { message: String },
+    /// The running turn was cancelled before the agent took its prompt in: the agent's
+    /// conversation holds nothing of the prompt, so it leaves the transcript.
+    TurnDropped,
     /// The process ended: `None` when it exited cleanly, else why it stopped.
     Exited { error: Option<String> },
 }
