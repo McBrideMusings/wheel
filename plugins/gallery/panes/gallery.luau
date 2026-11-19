@@ -400,8 +400,15 @@ local function modifiers_class()
         mrow("disabled", "true", put("Button", nil, { child = txt("Disabled button"), action = act(), modifiers = { { disabled = true } } })),
         mrow("tint", "a colour name", put("Button", nil, { child = txt("Confirm"), variant = "primary", action = act(), modifiers = { { tint = "green" } } })),
         mrow("help, accessibilityLabel", "a string", put("Button", nil, { child = put("Icon", nil, { name = "play.fill" }), action = act(), modifiers = { { help = "Run build" }, { accessibilityLabel = "Run build" } } })),
-        mrow("hoverEffect", "highlight: a rounded fill while hovered", put("Button", nil, { child = txt("Hover me"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "highlight" } } })),
-        mrow("hoverEffect (disabled)", "a disabled control never lights", put("Button", nil, { child = txt("Disabled"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "highlight" }, { disabled = true } } })),
+        mrow("(no hoverEffect)", "every control shows hover, pressed and focus with no call to the script; a borderless Button lights a rounded fill on macOS", row({
+            put("Button", nil, { key = "hover-default", child = txt("Hover me"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } } } }),
+            put("Button", nil, { child = txt("Bordered"), action = act() }),
+            put("Button", nil, { child = txt("Disabled"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { disabled = true } } }),
+        }, { justify = "start" })),
+        mrow("hoverEffect", "none: no hover feedback; highlight: the fill on any view, where the list puts it", row({
+            put("Button", nil, { key = "hover-none", child = txt("No hover"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "none" } } }),
+            mod("Highlighted text", { padding = { 2, 5 } }, { hoverEffect = "highlight" }),
+        }, { justify = "start" })),
         mrow("pointerStyle", "link: the pointing hand (macOS)", put("Button", nil, { child = txt("Pointing hand"), variant = "borderless", action = act(), modifiers = { { pointerStyle = "link" } } })),
         mrow("(unknown name)", "draws a red marker", mod("bad modifier", { frobnicate = 1 })),
     }

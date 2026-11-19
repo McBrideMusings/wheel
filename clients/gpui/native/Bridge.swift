@@ -1514,11 +1514,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's value
             // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`,
             // `agent_send` the text `value` through the composer of the agent chat embedding pane `component`, `stream_key` type the
-            // characters `value` on the VideoStream of stream `component` as its view takes a key, `stream_click` click its middle.
+            // characters `value` on the VideoStream of stream `component` as its view takes a key, `stream_click` click its middle,
+            // `hover` hold a pointer on `component` (no component takes it away; the client's hover state, with no call to the script).
+            // The reply's `hover.lit` is what the last draw lit; the held node shows in it from the next `state`, after SwiftUI draws.
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin else { return ["ok": false, "message": "no plugin pane"] }
             var ok = true
             switch value["action"] as? String {
             case "press": ok = (value["component"] as? String).map { plugin.press(component: $0) } ?? false
+            case "hover": ok = plugin.hover(component: value["component"] as? String)
             case "set":
                 ok = (value["component"] as? String).flatMap { c in value["value"].map { plugin.set(component: c, value: $0) } } ?? false
             case "raise":
@@ -1546,7 +1549,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             default: break
             }
             return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "restarts": plugin.restarts, "components": plugin.componentTexts, "feeds": plugin.feedJSON,
-                "fills": plugin.fillsPane,
+                "fills": plugin.fillsPane, "hover": ["held": plugin.tree.hover.held ?? NSNull(), "lit": plugin.tree.hover.lit.sorted()] as [String: Any],
                 "perf": ["update_ms": plugin.perf.updateMs, "view_ms": plugin.perf.viewMs, "reconcile_ms": plugin.perf.reconcileMs,
                          "nodes": plugin.perf.nodes, "renders": plugin.perf.renders, "bodies": ViewPerf.bodies, "cells": ViewPerf.cells] as [String: Any],
                 "scroll": (plugin.fillsPane ? nil : plugin.scrollMetrics).map { ["offset": $0.offset, "content": $0.content, "visible": $0.visible] as [String: Any] } ?? NSNull(),

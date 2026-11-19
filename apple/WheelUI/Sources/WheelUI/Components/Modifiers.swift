@@ -10,7 +10,8 @@ import SwiftUI
 // fixedSize: true | {horizontal, vertical}; overlay: {stroke: colour,
 // cornerRadius}; clipShape: {cornerRadius}; opacity; lineLimit; truncationMode (head, middle, tail); multilineTextAlignment; textSelection; textCase; tracking; help;
 // disabled, accessibilityLabel; hoverEffect: "highlight" (a rounded fill while the pointer is over an enabled control: SwiftUI's own
-// effect on iOS, drawn here on macOS, where SwiftUI has none); pointerStyle: "link" (the pointing-hand cursor, macOS).
+// effect on iOS, drawn here on macOS, where SwiftUI has none) or "none" (no hover feedback, the default one included: see
+// `paneHover`); pointerStyle: "link" (the pointing-hand cursor, macOS).
 // A name this does not map draws a visible marker, never nothing.
 
 /// The colour a modifier's colour name means.
@@ -127,6 +128,7 @@ private func alignment(_ name: String?) -> Alignment {
 /// Applies a component's `modifiers` list, in order.
 struct PaneModifiers: ViewModifier {
     let list: [JSONValue]
+    let id: String
 
     func body(content: Content) -> some View {
         var view = AnyView(content)
@@ -185,9 +187,16 @@ struct PaneModifiers: ViewModifier {
         case "hoverEffect":
             if arg.stringValue == "highlight" {
                 #if os(macOS)
-                return AnyView(v.modifier(HoverHighlight()))
+                return AnyView(v.modifier(HoverHighlight(id: id)))
                 #else
                 return AnyView(v.hoverEffect(.highlight))
+                #endif
+            }
+            if arg.stringValue == "none" {
+                #if os(macOS)
+                return v
+                #else
+                return AnyView(v.hoverEffectDisabled())
                 #endif
             }
         case "pointerStyle":
@@ -206,23 +215,70 @@ struct PaneModifiers: ViewModifier {
 
 #if os(macOS)
 /// `hoverEffect: "highlight"` on macOS: a rounded fill behind the view, at its own bounds, while the pointer is over it.
-/// A disabled control never lights. The fill adds no size, so nothing around the view moves.
+/// A disabled control never lights. The fill adds no size, so nothing around the view moves. `disabled` is the node's own
+/// `disabled` modifier, for a fill drawn outside it, where the environment does not see it.
 private struct HoverHighlight: ViewModifier {
+    let id: String
+    var disabled = false
     @State private var over = false
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.paneHoverProbe) private var probe
 
     func body(content: Content) -> some View {
+        let lit = (over || probe?.held == id) && enabled && !disabled
         content
-            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(over && enabled ? 0.16 : 0)))
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(lit ? 0.16 : 0)))
             .onHover { over = $0 }
+            .onChange(of: lit, initial: true) { _, on in
+                if on { probe?.lit.insert(id) } else { probe?.lit.remove(id) }
+            }
+            .onDisappear { probe?.lit.remove(id) }
     }
 }
 #endif
 
+/// The client's hover state for a check that has no pointer: `held` stands a pointer on the node with that id, as the chat's
+/// `ChatControlRegistry.hold(at:)` does, and `lit` lists the nodes whose hover fill is on, by a real pointer or a held one.
+@MainActor @Observable
+public final class PaneHoverProbe {
+    public var held: String?
+    @ObservationIgnored public var lit: Set<String> = []
+    public init() {}
+}
+
+private struct PaneHoverProbeKey: EnvironmentKey { static let defaultValue: PaneHoverProbe? = nil }
+extension EnvironmentValues {
+    var paneHoverProbe: PaneHoverProbe? {
+        get { self[PaneHoverProbeKey.self] }
+        set { self[PaneHoverProbeKey.self] = newValue }
+    }
+}
+
 extension View {
     /// The component's `modifiers` property, applied.
     func paneModified(_ node: ViewNode) -> some View {
-        modifier(PaneModifiers(list: node.props["modifiers"]?.arrayValue ?? []))
+        modifier(PaneModifiers(list: node.props["modifiers"]?.arrayValue ?? [], id: node.id))
     }
+
+    /// The hover feedback a control gets with no word from the script, drawn in the client with no call into it (ADR-0052). Pressed and
+    /// focus are SwiftUI's own on every control. Hover is too, except on macOS, where SwiftUI draws none for a borderless Button: that
+    /// one gets the `highlight` fill outside all its modifiers, so the fill covers the padding and frame the script gave it. A
+    /// `hoverEffect` modifier on the node replaces this: "none" turns it off, "highlight" draws it where the list puts it.
+    @ViewBuilder
+    func paneHover(_ node: ViewNode) -> some View {
+        #if os(macOS)
+        if let disabled = paneDefaultHighlight(node.component, node.props) { modifier(HoverHighlight(id: node.id, disabled: disabled)) } else { self }
+        #else
+        self
+        #endif
+    }
+}
+
+/// Whether a node gets the client's own hover fill on macOS (see `paneHover`): nil when it does not, else whether the node's own
+/// modifiers disable it.
+func paneDefaultHighlight(_ component: String, _ props: [String: JSONValue]) -> Bool? {
+    let mods = (props["modifiers"]?.arrayValue ?? []).compactMap(\.dictionaryValue)
+    guard component == "Button", props["variant"]?.stringValue == "borderless", !mods.contains(where: { $0["hoverEffect"] != nil }) else { return nil }
+    return mods.contains { $0["disabled"]?.boolValue == true }
 }
 

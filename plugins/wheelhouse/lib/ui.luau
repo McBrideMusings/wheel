@@ -149,8 +149,8 @@ end
 
 -- A library Button whose label is a Text (or an Icon when `e.icon`). `e`: style link or plain draws it borderless, primary
 -- draws it prominent; fill stretches it across; disabled disables it (hideOff also hides it); help is its hover text;
--- tint, tone; label_modifiers go on the label. Every enabled button shows the pointing hand; a borderless one also lights a rounded
--- fill on hover, padded so the fill clears its label.
+-- tint, tone; label_modifiers go on the label. Every enabled button shows the pointing hand; a borderless one is padded so the
+-- rounded fill the client lights on hover clears its label.
 function M.button(body, action, e)
     e = e or {}
     local child
@@ -160,12 +160,8 @@ function M.button(body, action, e)
         child = ui.Text{ text = body }
         if e.label_modifiers then child.modifiers = e.label_modifiers end
     end
-    -- The hover entries go first, so a later `disabled` wraps the fill and turns it off.
     local mods = {}
-    if e.style == "link" or e.style == "plain" then
-        table.insert(mods, { padding = { 2, 5 } })
-        table.insert(mods, { hoverEffect = "highlight" })
-    end
+    if e.style == "link" or e.style == "plain" then table.insert(mods, { padding = { 2, 5 } }) end
     if not e.disabled then table.insert(mods, { pointerStyle = "link" }) end
     if e.disabled then
         table.insert(mods, { disabled = true })
