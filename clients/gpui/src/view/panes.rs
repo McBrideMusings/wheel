@@ -263,7 +263,6 @@ impl Client {
                 items.push(item(format!("kind:agent:{}", agent.name), format!("Change Type ▸ {}", capitalized(&agent.name)), !current));
             }
             items.push(item("kind:browser".into(), "Change Type ▸ Browser".into(), leaf.kind != "browser"));
-            items.push(item("kind:artifact".into(), "Change Type ▸ Artifact…".into(), true));
             items.push(item("kind:empty".into(), "Change Type ▸ Empty".into(), leaf.kind != "empty"));
         }
         items.push(item("move-new-space".into(), "Move Pane to New Space".into(), true));
@@ -311,7 +310,6 @@ impl Client {
             "kind:shell" => self.ask_set_kind(&pane, NewPaneKind::Terminal),
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
             "kind:empty" => self.ask_set_kind(&pane, NewPaneKind::Empty),
-            "kind:artifact" => self.open_palette(&pane),
             "conversations" => {
                 self.open_conversations(&pane);
             }

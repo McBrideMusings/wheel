@@ -220,9 +220,11 @@ impl Client {
                     self.ask_set_kind(&pane, if id == "pane-terminal" { NewPaneKind::Terminal } else { NewPaneKind::Browser });
                 }
             }
+            // The pane picker lists every artifact: the pane empties (asking first when that ends
+            // what it runs) and its picker takes the keys.
             "pane-artifact" => {
                 if let Some(pane) = focused {
-                    self.open_palette(&pane);
+                    self.ask_set_kind(&pane, NewPaneKind::Empty);
                 }
             }
             "previous-space" | "next-space" => self.cycle_space(if id == "next-space" { 1 } else { -1 }),

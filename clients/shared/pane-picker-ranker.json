@@ -1,0 +1,232 @@
+{
+  "about": "The pane picker's ranker cases. Read by clients/gpui/src/pane_picker.rs and the Swift ranker's test; both must rank every query exactly as `expect` lists.",
+  "items": [
+    {
+      "id": "terminal",
+      "kind": "terminal",
+      "name": "Terminal",
+      "title": "Terminal"
+    },
+    {
+      "id": "agent:claude",
+      "kind": "agent",
+      "name": "Claude",
+      "title": "Claude"
+    },
+    {
+      "id": "agent:codex",
+      "kind": "agent",
+      "name": "Codex",
+      "title": "Codex"
+    },
+    {
+      "id": "agent:pi",
+      "kind": "agent",
+      "name": "Pi",
+      "title": "Pi"
+    },
+    {
+      "id": "browser",
+      "kind": "browser",
+      "name": "Browser",
+      "title": "Browser"
+    },
+    {
+      "id": "plugin:gallery/gallery",
+      "kind": "plugin",
+      "name": "A2UI gallery",
+      "title": "A2UI gallery"
+    },
+    {
+      "id": "plugin:harness/harness",
+      "kind": "plugin",
+      "name": "Harness",
+      "title": "Harness"
+    },
+    {
+      "id": "plugin:wheelhouse/beads",
+      "kind": "plugin",
+      "name": "Beads",
+      "title": "Beads"
+    },
+    {
+      "id": "plugin:wheelhouse/graph",
+      "kind": "plugin",
+      "name": "Graph",
+      "title": "Graph"
+    },
+    {
+      "id": "plugin:wheelhouse/repo",
+      "kind": "plugin",
+      "name": "Repo",
+      "title": "Repo"
+    },
+    {
+      "id": "plugin:wheelhouse/diff",
+      "kind": "plugin",
+      "name": "Diff",
+      "title": "Diff"
+    },
+    {
+      "id": "plugin:wheelhouse/prs",
+      "kind": "plugin",
+      "name": "PRs",
+      "title": "PRs"
+    },
+    {
+      "id": "plugin:wheelhouse/issues",
+      "kind": "plugin",
+      "name": "Issues",
+      "title": "Issues"
+    },
+    {
+      "id": "artifact:project/bead-description-flat",
+      "kind": "artifact",
+      "name": "bead-description-flat",
+      "title": "bead-description-flat"
+    },
+    {
+      "id": "artifact:project/beads-bulk-actions",
+      "kind": "artifact",
+      "name": "beads-bulk-actions",
+      "title": "Bulk actions on the Beads page"
+    },
+    {
+      "id": "artifact:project/beads-card-stretch",
+      "kind": "artifact",
+      "name": "beads-card-stretch",
+      "title": "beads-card-stretch"
+    },
+    {
+      "id": "artifact:project/beads-clear-with-chips",
+      "kind": "artifact",
+      "name": "beads-clear-with-chips",
+      "title": "beads-clear-with-chips"
+    },
+    {
+      "id": "artifact:project/beads-filter-row",
+      "kind": "artifact",
+      "name": "beads-filter-row",
+      "title": "beads-filter-row"
+    },
+    {
+      "id": "artifact:project/beads-search-width",
+      "kind": "artifact",
+      "name": "beads-search-width",
+      "title": "beads-search-width"
+    },
+    {
+      "id": "artifact:project/beads-views-width",
+      "kind": "artifact",
+      "name": "beads-views-width",
+      "title": "beads-views-width"
+    },
+    {
+      "id": "artifact:project/in-progress-beads",
+      "kind": "artifact",
+      "name": "in-progress-beads",
+      "title": "in-progress-beads"
+    },
+    {
+      "id": "artifact:project/voice-beads",
+      "kind": "artifact",
+      "name": "voice-beads",
+      "title": "voice-beads"
+    },
+    {
+      "id": "artifact:project/agent-mode",
+      "kind": "artifact",
+      "name": "agent-mode",
+      "title": "Code agent mode"
+    },
+    {
+      "id": "artifact:project/barcode",
+      "kind": "artifact",
+      "name": "barcode",
+      "title": "barcode"
+    },
+    {
+      "id": "artifact:project/card-overdue",
+      "kind": "artifact",
+      "name": "card-overdue",
+      "title": "card-overdue"
+    },
+    {
+      "id": "artifact:project/browser-home-model",
+      "kind": "artifact",
+      "name": "browser-home-model",
+      "title": "browser-home-model"
+    },
+    {
+      "id": "artifact:project/ask-question-card",
+      "kind": "artifact",
+      "name": "ask-question-card",
+      "title": "ask-question-card"
+    },
+    {
+      "id": "artifact:project/bg-tasks-visible",
+      "kind": "artifact",
+      "name": "bg-tasks-visible",
+      "title": "Background tasks have no marker"
+    },
+    {
+      "id": "artifact:project/arrow-keys-browser",
+      "kind": "artifact",
+      "name": "arrow-keys-browser",
+      "title": "arrow-keys-browser"
+    }
+  ],
+  "cases": [
+    {
+      "query": "bead",
+      "expect": [
+        "plugin:wheelhouse/beads",
+        "artifact:project/bead-description-flat",
+        "artifact:project/beads-bulk-actions",
+        "artifact:project/beads-card-stretch",
+        "artifact:project/beads-clear-with-chips",
+        "artifact:project/beads-filter-row",
+        "artifact:project/beads-search-width",
+        "artifact:project/beads-views-width",
+        "artifact:project/in-progress-beads",
+        "artifact:project/voice-beads"
+      ]
+    },
+    {
+      "query": "BEAD",
+      "expect": [
+        "plugin:wheelhouse/beads",
+        "artifact:project/bead-description-flat",
+        "artifact:project/beads-bulk-actions",
+        "artifact:project/beads-card-stretch",
+        "artifact:project/beads-clear-with-chips",
+        "artifact:project/beads-filter-row",
+        "artifact:project/beads-search-width",
+        "artifact:project/beads-views-width",
+        "artifact:project/in-progress-beads",
+        "artifact:project/voice-beads"
+      ]
+    },
+    {
+      "query": "xqzv",
+      "expect": []
+    },
+    {
+      "query": "cod",
+      "expect": [
+        "agent:codex",
+        "artifact:project/barcode",
+        "artifact:project/agent-mode",
+        "artifact:project/card-overdue",
+        "artifact:project/bg-tasks-visible",
+        "artifact:project/beads-bulk-actions"
+      ]
+    },
+    {
+      "query": "term",
+      "expect": [
+        "terminal"
+      ]
+    }
+  ]
+}

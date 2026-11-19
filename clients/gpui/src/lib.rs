@@ -23,7 +23,7 @@ pub mod pairing;
 pub mod perms;
 pub mod popped;
 pub mod saved;
-pub mod palette;
+pub mod pane_picker;
 pub mod pane_header;
 pub mod procs;
 pub mod running;

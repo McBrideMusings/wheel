@@ -4168,15 +4168,40 @@ async fn little_windows(run: Run, id1: String, cx: &mut AsyncApp) -> Result<(Run
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, little_report))
 }
 
-/// Web panes: artifacts under the `wheel-page` scheme, reloads, and the palette's artifacts.
+/// Empty pane `pane`'s picker as `/state` carries it.
+fn picker_state(window: ClientWindow, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    Ok(window.update(cx, |c, _, _| c.picker_json(pane).unwrap_or(Value::Null))?)
+}
+
+fn picker_ids(state: &Value) -> Vec<String> {
+    state["rows"].as_array().map(|r| r.iter().map(|x| x["id"].as_str().unwrap_or("").to_owned()).collect()).unwrap_or_default()
+}
+
+/// Wait until empty pane `pane`'s picker lists the space's artifacts and has drawn its rects;
+/// answers its state and the item count its placeholder names.
+async fn picker_listed(pane: &str, connection: &mut Connection, layouts: &mut usize, window: ClientWindow, cx: &mut AsyncApp) -> Result<(Value, usize)> {
+    let mut state = Value::Null;
+    for _ in 0..100 {
+        pump(connection, 100, layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        state = picker_state(window, pane, cx)?;
+        if picker_ids(&state).iter().any(|id| id.starts_with("artifact:")) && state["field"].is_array() {
+            let total = state["placeholder"].as_str().and_then(|p| p.split_whitespace().nth(1)).and_then(|n| n.parse().ok()).unwrap_or(0);
+            return Ok((state, total));
+        }
+    }
+    anyhow::bail!("the picker of {pane} never listed the space's artifacts: {state}")
+}
+
+/// Web panes: artifacts under the `wheel-page` scheme, reloads, and the pane picker.
 async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     // Web panes: an artifact's page opens under the client's own `wheel-page` scheme, fetched from
     // wheeld with the token in a header (never in the page's address), in a store of its own; the
     // page's script reached wheeld through `.wheel/client.js`; a file written into the folder
-    // reloads the pane; and the artifact palette, opened in a new empty pane with `a`, lists the
-    // space's artifacts, filters as typed and opens the selected one on Return.
+    // reloads the pane; and the pane picker of a new empty pane lists the space's artifacts,
+    // ranks them as typed and opens the selected one on Return.
     let html_pane = webs.iter().copied().find(|w| before["panes"][w.as_str()]["page"]["native"] != true).ok_or_else(|| anyhow::anyhow!("no HTML web pane"))?.clone();
     let address = before["panes"][html_pane.as_str()]["url"].as_str().unwrap_or("").to_owned();
     ensure!(address == format!("wheel-page://pages/artifacts/{html_pane}/"), "the HTML pane's address is {address:?}");
@@ -4226,31 +4251,125 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     tick(cx, 200).await;
     draw(window, None, cx)?;
     ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(new_pane.as_str()), "the click did not focus the empty pane");
-    native.call(json!({"op":"post_key","text":"a","code":keycode('a')}));
-    tick(cx, 200).await;
-    draw(window, None, cx)?;
-    ensure!(window.update(cx, |c, _, _| c.palette(&new_pane).is_some())?, "`a` in the empty pane opened no palette");
-    let mut listed: Vec<String> = vec![];
-    for _ in 0..100 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        if let Some(rows) = window.update(cx, |c, _, _| c.palette(&new_pane).filter(|p| !p.is_loading()).map(|p| p.rows.iter().map(|r| r.id()).collect::<Vec<_>>()))? {
-            listed = rows;
-            break;
-        }
-    }
-    let failure = window.update(cx, |c, _, _| c.palette(&new_pane).and_then(|p| p.failure().map(str::to_owned)))?;
+    // The pane picker: the empty pane lists the space's plugin panes and artifacts, its field has
+    // the keys from the start, and the button row and the field keep one rect in every state.
+    let (rest, total) = picker_listed(&new_pane, &mut connection, &mut layouts, window, cx).await?;
+    let listed: Vec<String> = picker_ids(&rest).into_iter().filter(|id| id.starts_with("artifact:")).collect();
     // The project's two artifacts; the fixture's machine file names none.
-    let want: Vec<String> = ["project/fixture-html", "project/fixture-page"].map(String::from).into();
-    ensure!(listed == want, "the palette listed {listed:?} (failure {failure:?})");
+    ensure!(listed == ["artifact:project/fixture-html", "artifact:project/fixture-page"], "the picker listed artifacts {listed:?}");
+    ensure!(picker_ids(&rest).iter().any(|id| id == "plugin:wheelhouse/beads"), "the picker lists no Beads plugin pane: {:?}", picker_ids(&rest));
+    ensure!(rest["field_focused"] == true && rest["query"] == "" && rest["count"] == "↩ Terminal", "the picker at rest: {rest}");
+    ensure!(rest["button_row"].is_array() && rest["field"].is_array(), "the picker recorded no rects: {rest}");
+    let rects = |v: &Value| (v["button_row"].clone(), v["field"].clone());
+    draw(window, Some(output.join("client-picker-rest.png")), cx)?;
     for ch in "html".chars() {
         native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
         tick(cx, 30).await;
     }
     draw(window, None, cx)?;
-    let (query, filtered, footer_text) = window.update(cx, |c, _, _| c.palette(&new_pane).map(|p| (p.query.clone(), p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), p.footer())).unwrap_or_default())?;
-    ensure!(query == "html" && filtered == ["project/fixture-html"], "typing html left query {query:?} and rows {filtered:?}");
-    ensure!(footer_text == format!("1 of {}", want.len()), "the palette's footer reads {footer_text:?}");
-    draw(window, Some(output.join("client-palette.png")), cx)?;
+    let typing = picker_state(window, &new_pane, cx)?;
+    let typed_rows = picker_ids(&typing);
+    ensure!(typing["query"] == "html" && typed_rows.first().map(String::as_str) == Some("artifact:project/fixture-html") && typing["selected"] == 0, "typing html left {typing}");
+    ensure!(typing["count"] == format!("{} of {total}", typed_rows.len()), "the typing count reads {}", typing["count"]);
+    ensure!(rects(&typing) == rects(&rest), "typing moved the buttons or the field: {:?} then {:?}", rects(&rest), rects(&typing));
+    draw(window, Some(output.join("client-picker-typing.png")), cx)?;
+    for _ in 0..4 {
+        native.call(json!({"op":"post_key","text":"\u{7f}","code":51}));
+        tick(cx, 30).await;
+    }
+    for ch in "xqzv".chars() {
+        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+        tick(cx, 30).await;
+    }
+    draw(window, None, cx)?;
+    let no_match = picker_state(window, &new_pane, cx)?;
+    ensure!(no_match["query"] == "xqzv" && picker_ids(&no_match).is_empty() && no_match["count"] == format!("0 of {total}"), "no match left {no_match}");
+    ensure!(rects(&no_match) == rects(&rest), "no match moved the buttons or the field: {:?} then {:?}", rects(&rest), rects(&no_match));
+    draw(window, Some(output.join("client-picker-no-match.png")), cx)?;
+    // Esc clears the query, then gives the keys back to the pane, which stays empty.
+    native.call(json!({"op":"post_key","text":"\u{1b}","code":53}));
+    tick(cx, 50).await;
+    let cleared = picker_state(window, &new_pane, cx)?;
+    ensure!(cleared["query"] == "" && cleared["field_focused"] == true, "the first Esc left {cleared}");
+    native.call(json!({"op":"post_key","text":"\u{1b}","code":53}));
+    tick(cx, 50).await;
+    draw(window, None, cx)?;
+    let left = picker_state(window, &new_pane, cx)?;
+    let kind_now = window.update(cx, |c, _, _| c.leaf(&new_pane).map(|l| l.kind))?;
+    ensure!(left["field_focused"] == false && kind_now.as_deref() == Some("empty"), "the second Esc left {left} with the pane {kind_now:?}");
+    // No agent found: every agent button stays in its slot, dimmed, and nothing moves.
+    let agents = window.update(cx, |c, _, _| c.agents.clone())?;
+    window.update(cx, |c, _, _| c.agents.iter_mut().for_each(|a| a.found = false))?;
+    draw(window, None, cx)?;
+    draw(window, None, cx)?;
+    let no_agents = picker_state(window, &new_pane, cx)?;
+    let buttons_off: Vec<bool> = no_agents["buttons"].as_array().map(|b| b.iter().map(|x| x["enabled"] == true).collect()).unwrap_or_default();
+    ensure!(buttons_off.len() == agents.len() + 2 && buttons_off[1..buttons_off.len() - 1].iter().all(|e| !e) && buttons_off[0] && buttons_off[buttons_off.len() - 1], "with no agent found the buttons are {}", no_agents["buttons"]);
+    ensure!(rects(&no_agents) == rects(&rest), "no agents moved the buttons or the field: {:?} then {:?}", rects(&rest), rects(&no_agents));
+    // The field back in focus, as a press on it gives, for the no-agents shot at rest.
+    let field = no_agents["field"].as_array().cloned().unwrap_or_default();
+    let field_at = [field[0].as_f64().unwrap_or(0.) + field[2].as_f64().unwrap_or(0.) / 2., field[1].as_f64().unwrap_or(0.) + field[3].as_f64().unwrap_or(0.) / 2.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":field_at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":field_at}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    ensure!(picker_state(window, &new_pane, cx)?["field_focused"] == true, "a press on the field did not give it the keys");
+    draw(window, Some(output.join("client-picker-no-agents.png")), cx)?;
+    window.update(cx, |c, _, _| c.agents = agents.clone())?;
+    draw(window, None, cx)?;
+    // Each of the other ways out, in a pane of its own split from this one: bead → Return opens the
+    // Beads plugin pane; Return at rest opens Terminal; ⌘N (the last button) opens Browser.
+    let mut opened_kinds = vec![];
+    for (how, want) in [("bead", "plugin"), ("return", "terminal"), ("cmd", "browser")] {
+        let out = run(&["pane", "split", &new_pane, "down"])?;
+        ensure!(out.status.success(), "pane split failed: {}", String::from_utf8_lossy(&out.stderr));
+        let other = String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or_default().trim().to_owned();
+        let (_, _) = picker_listed(&other, &mut connection, &mut layouts, window, cx).await?;
+        window.update(cx, |c, _, _| c.focus_pane(&other))?;
+        match how {
+            "bead" => {
+                for ch in "bead".chars() {
+                    native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+                    tick(cx, 30).await;
+                }
+                let first = picker_ids(&picker_state(window, &other, cx)?).first().cloned();
+                ensure!(first.as_deref() == Some("plugin:wheelhouse/beads"), "bead ranks {first:?} first");
+                native.call(json!({"op":"post_key","text":"\r","code":36}));
+            }
+            "return" => {
+                native.call(json!({"op":"post_key","text":"\r","code":36}));
+            }
+            _ => {
+                let n = (agents.len() + 2).to_string();
+                let ch = n.chars().next().unwrap_or('2');
+                native.call(json!({"op":"post_key","text":n,"code":keycode(ch),"command":true}));
+            }
+        }
+        let mut kind = None;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            kind = window.update(cx, |c, _, _| c.leaf(&other).map(|l| l.kind))?;
+            if kind.as_deref() == Some(want) {
+                break;
+            }
+        }
+        ensure!(kind.as_deref() == Some(want), "{how} in the picker left the pane {kind:?}, not {want}");
+        opened_kinds.push(json!({"how": how, "kind": kind}));
+        let closed = run(&["pane", "close", &other])?;
+        ensure!(closed.status.success(), "pane close failed: {}", String::from_utf8_lossy(&closed.stderr));
+        for _ in 0..50 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            if window.update(cx, |c, _, _| c.leaf(&other).is_none())? {
+                break;
+            }
+        }
+    }
+    // html and Return in the first pane: the artifact opens there.
+    window.update(cx, |c, _, _| c.focus_pane(&new_pane))?;
+    for ch in "html".chars() {
+        native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
+        tick(cx, 30).await;
+    }
     native.call(json!({"op":"post_key","text":"\r","code":36}));
     let mut kind_after = None;
     for _ in 0..100 {
@@ -4261,17 +4380,17 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
         }
     }
     ensure!(kind_after == Some(("web".into(), "fixture-html".into())), "after Return the pane is {kind_after:?}");
-    ensure!(window.update(cx, |c, _, _| c.palette(&new_pane).is_none())?, "the palette stayed open after opening an artifact");
+    ensure!(window.update(cx, |c, _, _| c.pane_picker(&new_pane).is_none())?, "the picker stayed after opening an artifact");
     draw(window, None, cx)?;
-    let opened = wait(&native, "the artifact opened from the palette", |s| web_ready(s, &new_pane), cx).await?;
+    let opened = wait(&native, "the artifact opened from the picker", |s| web_ready(s, &new_pane), cx).await?;
     let opened_address = opened["panes"][new_pane.as_str()]["url"].as_str().unwrap_or("").to_owned();
     ensure!(opened_address == format!("wheel-page://pages/artifacts/{new_pane}/"), "the opened pane's address is {opened_address:?}");
-    draw(window, Some(output.join("client-palette-opened.png")), cx)?;
-    // The pages' own pixels: the reloaded HTML artifact and the one the palette opened.
+    draw(window, Some(output.join("client-picker-opened.png")), cx)?;
+    // The pages' own pixels: the reloaded HTML artifact and the one the picker opened.
     shot(&native, &output.join("web"), cx).await?;
     let web_report = json!({"pane": html_pane, "address": address, "http_status": http_status, "store": store, "client_state": seen_text.trim(),
         "loads_before_change": loads_before, "reloads": reloads, "title_after_change": title_after,
-        "palette": {"pane": new_pane, "listed": listed, "query": query, "filtered": filtered, "footer": footer_text, "kind_after": kind_after, "opened_address": opened_address}});
+        "picker": {"pane": new_pane, "listed": listed, "total": total, "rest": rest, "typing": typing, "no_match": no_match, "no_agents": no_agents, "opened": opened_kinds, "kind_after": kind_after, "opened_address": opened_address}});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, web_report))
 }
 

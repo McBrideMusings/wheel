@@ -196,7 +196,7 @@ impl Client {
                 let value = json_value.or_else(|| q("value").map(Value::String));
                 Some(self.native.call(json!({"op":"plugin","pane":pane,"action":action,"component":q("component"),"path":q("path"),"value":value,"key":q("key"),"context":context})))
             }
-            // Presses the plugin button of an empty pane (`pane=<id>&plugin=<id>&plugin_pane=<id>`) through the button's own press,
+            // Presses the plugin pane row of an empty pane's picker (`pane=<id>&plugin=<id>&plugin_pane=<id>`) through the row's own press,
             // so it exists only while the pane is empty and the shown space's `plugin_ls` lists that plugin pane.
             "/empty/plugin" => {
                 let (Some(pane), Some(plugin), Some(plugin_pane)) = (q("pane"), q("plugin"), q("plugin_pane")) else { return refuse(BAD, "pane=, plugin= and plugin_pane= are required") };
@@ -257,21 +257,13 @@ impl Client {
                 None
             }
             "/palette" => {
-                if let Some(pane) = q("pane") {
-                    match q("action").as_deref() {
-                        Some("open") => self.open_palette(&pane),
-                        Some("close") => self.close_palette(&pane),
-                        _ => return refuse(BAD, "action must be open or close"),
-                    }
-                } else {
-                    match q("action").as_deref() {
-                        Some("open") => self.open_command_palette(if q("mode").as_deref() == Some("new_space") { crate::command_palette::Mode::NewSpace } else { crate::command_palette::Mode::Root }),
-                        Some("close") => self.close_command_palette(),
-                        Some("type") => self.command_palette_typed(&q("text").unwrap_or_default()),
-                        Some("select") => self.command_palette_select(q("index").and_then(|i| i.parse().ok()).unwrap_or(0)),
-                        Some("run") => self.command_palette_run(cx),
-                        _ => return refuse(BAD, "action must be open, close, type, select or run"),
-                    }
+                match q("action").as_deref() {
+                    Some("open") => self.open_command_palette(if q("mode").as_deref() == Some("new_space") { crate::command_palette::Mode::NewSpace } else { crate::command_palette::Mode::Root }),
+                    Some("close") => self.close_command_palette(),
+                    Some("type") => self.command_palette_typed(&q("text").unwrap_or_default()),
+                    Some("select") => self.command_palette_select(q("index").and_then(|i| i.parse().ok()).unwrap_or(0)),
+                    Some("run") => self.command_palette_run(cx),
+                    _ => return refuse(BAD, "action must be open, close, type, select or run"),
                 }
                 None
             }
@@ -663,7 +655,7 @@ impl Client {
                     "frame": placed.map(|p| json!([p.rect.x, p.rect.y, p.rect.w, p.rect.h])),
                     "opacity": self.grid_opacity(&leaf.id),
                     "native": self.native_panes.contains(&leaf.id), "holes": self.placed.get(&leaf.id).map(|(_, _, holes, _)| holes.clone()), "focused": self.focus.current.as_deref() == Some(leaf.id.as_str()),
-                    "palette": self.palettes.get(&leaf.id).map(|p| json!({"query": p.query, "rows": p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), "selected": p.selected})),
+                    "picker": self.picker_json(&leaf.id),
                     "browser": self.browsers.get(&leaf.id).map(|b| json!({"address": b.address, "failure": b.failure})),
                     "bridge": native["panes"][leaf.id.as_str()],
                 });

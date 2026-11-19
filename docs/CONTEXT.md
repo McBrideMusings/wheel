@@ -29,6 +29,11 @@ The JSON a phone scans or pastes to connect: the daemon's address, a one-time to
 A pane that owns one agent and shows its conversation as a chat. Every agent in Wheel is one.
 _Avoid_: lead, agent card
 
+**Pane picker**:
+What an empty pane shows: quick buttons for Terminal, each agent and Browser, a search field that has the keys from the moment the pane is empty, and one list of every plugin pane and artifact of the space, ranked as the field is typed in. Return with nothing typed opens Terminal.
+_Avoid_: artifact palette, chooser
+_applies-to_: clients/gpui/src/pane_picker.rs
+
 **Agent**:
 One coding agent's run in an agent pane, with an id like `w3179`. It survives restarts of its OS process.
 _Avoid_: session
