@@ -120,12 +120,6 @@ final class PhoneModel {
     private var consoleReqs: [UInt64: String] = [:]
     private static let consoleOutboxLimit = 500
     private var agentReqs: [UInt64: String] = [:]
-    /// The attaches among `agentReqs`, and the agents whose attach the daemon refused (a restore
-    /// keeps an agent's program unstarted until its program is found). Every client hears
-    /// `agent_state_changed` and `agent_config`, attached or not, so the first one naming a
-    /// refused agent is the signal to attach again.
-    private var attachReqs: Set<UInt64> = []
-    private var refusedAttach: Set<String> = []
     /// The Settings screen: every setting resolved for `settingsSpace`, each carrying this machine's
     /// value and that project's, as the Mac's window reads them.
     private(set) var settings: [SettingInfo] = []
@@ -306,8 +300,6 @@ final class PhoneModel {
         consoleOutbox = [:]
         consoleReqs = [:]
         agentReqs = [:]
-        attachReqs = []
-        refusedAttach = []
         logins = [:]
         settings = []
         settingsLoaded = false
@@ -446,10 +438,8 @@ final class PhoneModel {
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
         case let .agentStateChanged(agent, state):
             chats[agent]?.state = state
-            attachAgainIfRefused(agent)
         case let .agentAttached(req, agent, state, events, config, context, now):
-            if let req { agentReqs[req] = nil; attachReqs.remove(req) }
-            refusedAttach.remove(agent)
+            if let req { agentReqs[req] = nil }
             guard let chat = chats[agent] else { return }
             chat.state = state
             chat.reset(events, daemonNow: now)
@@ -460,7 +450,6 @@ final class PhoneModel {
             chat.title = nil
             Log.info("agent \(agent) attached, \(events.count) events")
         case let .agentConfig(agent, options):
-            attachAgainIfRefused(agent)
             chats[agent]?.setConfig(options)
         case let .agentContext(agent, context):
             chats[agent]?.context = context
@@ -617,7 +606,6 @@ final class PhoneModel {
             }
             if let req, let agent = agentReqs.removeValue(forKey: req) {
                 chats[agent]?.error = message
-                if attachReqs.remove(req) != nil { refusedAttach.insert(agent) }
             }
             Log.info("daemon error: \(message)")
         case let .spaceRecent(req, dirs):
@@ -895,20 +883,11 @@ final class PhoneModel {
         }
     }
 
-    /// The daemon has just said something about `agent`: when its attach was refused earlier, the
-    /// agent exists now, so attach again.
-    private func attachAgainIfRefused(_ agent: String) {
-        guard refusedAttach.remove(agent) != nil, let chat = chats[agent] else { return }
-        Log.info("agent \(agent) is there now; attaching again")
-        attach(chat)
-    }
-
     /// Stream an agent's conversation; `agent_attached` resets its transcript.
     private func attach(_ chat: AgentChat) {
         guard let client else { return }
         let req = client.req()
         agentReqs[req] = chat.name
-        attachReqs.insert(req)
         Log.info("attaching to agent \(chat.name)")
         client.send(.agentAttach(req: req, agent: chat.name))
     }

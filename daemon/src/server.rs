@@ -14,7 +14,7 @@ use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use wheel_proto::{decode_bytes, encode_bytes, AgentPermissions, ClientMsg, ContextUse, ServerMsg};
 
@@ -156,6 +156,8 @@ pub struct AppState {
     pub(crate) perms: Arc<Perms>,
     /// Every running agent by name: the ones agent panes own.
     pub(crate) agents: Mutex<HashMap<String, Arc<Agent>>>,
+    /// Sent each time a pane's agent joins `agents`, so an attach waiting on it streams at once.
+    pub(crate) agent_added: watch::Sender<()>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
     /// The connection that owns orchestrator, if any (`crate::orchestrator`).
     pub(crate) orchestrator_lease: Mutex<Option<SocketAddr>>,
@@ -382,6 +384,7 @@ impl AppState {
             global,
             status_events,
             agents: Mutex::new(HashMap::new()),
+            agent_added: watch::channel(()).0,
             agent_timing: Mutex::new(AgentTiming::default()),
             orchestrator_lease: Mutex::new(None),
             orchestrator_inboxes: Mutex::new(HashMap::new()),
@@ -814,6 +817,7 @@ impl AppState {
             self.global.clone(),
         );
         self.agents.lock().unwrap().insert(name.into(), agent);
+        self.agent_added.send_replace(());
         Ok(())
     }
 
@@ -1532,7 +1536,19 @@ async fn handle(
                 }
                 None
             }
-            Err(message) => Some(failed(req, message)),
+            // A pane names the agent but it has not started (a restore keeps it until the login
+            // shell answers): the attach streams once it does.
+            Err(message) => match state.unstarted_pane_agent(&agent) {
+                Some(name) => {
+                    tracing::info!(%peer, agent = %name, "agent attach waits for the agent to start");
+                    let task = attach_when_started(state.clone(), name.clone(), req, out.clone(), peer);
+                    if let Some(old) = forwards.insert(format!("agent:{name}"), task) {
+                        old.abort();
+                    }
+                    None
+                }
+                None => Some(failed(req, message)),
+            },
         },
         ClientMsg::Usage { req, due_only } => {
             // On a task of its own: a read calls the network.
@@ -1568,9 +1584,10 @@ async fn handle(
             None
         }
         ClientMsg::AgentDetach { agent } => {
-            let agent = state
-                .resolve_agent(&agent)
-                .map_or(agent, |a| a.agent.name.clone());
+            let agent = match state.resolve_agent(&agent) {
+                Ok(found) => found.agent.name.clone(),
+                Err(_) => state.unstarted_pane_agent(&agent).unwrap_or(agent),
+            };
             if let Some(task) = forwards.remove(&format!("agent:{agent}")) {
                 task.abort();
                 tracing::info!(%peer, %agent, "agent detach");
@@ -3660,119 +3677,158 @@ fn forward_agent(
     out: mpsc::Sender<ServerMsg>,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
+    tokio::spawn(stream_agent(agent, req, out, peer))
+}
+
+/// [`forward_agent`] for the agent `name` a pane names before it has started: waits for it to
+/// start, then streams it. Ends with the refusal an attach gets once no pane names the agent.
+fn attach_when_started(
+    state: Arc<AppState>,
+    name: String,
+    req: Option<u64>,
+    out: mpsc::Sender<ServerMsg>,
+    peer: SocketAddr,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        // Subscribed before the first look, so an agent that starts in between is not missed.
+        let mut added = state.agent_added.subscribe();
+        // A layout change on `global` can close the pane, which ends the wait.
+        let mut global = state.global.subscribe();
+        loop {
+            match state.agent(&name) {
+                Ok(agent) => return stream_agent(agent, req, out, peer).await,
+                Err(message) if state.unstarted_pane_agent(&name).is_none() => {
+                    let _ = out.send(failed(req, message)).await;
+                    return;
+                }
+                Err(_) => {}
+            }
+            tokio::select! {
+                changed = added.changed() => if changed.is_err() { return },
+                event = global.recv() => if let Err(broadcast::error::RecvError::Closed) = event { return },
+            }
+        }
+    })
+}
+
+/// [`forward_agent`]'s stream, run in the task that calls it.
+async fn stream_agent(
+    agent: Arc<Agent>,
+    req: Option<u64>,
+    out: mpsc::Sender<ServerMsg>,
+    peer: SocketAddr,
+) {
     let name = agent.name.clone();
     let weak = Arc::downgrade(&agent);
     drop(agent);
-    tokio::spawn(async move {
-        let mut req = req;
-        loop {
-            // Subscribed before the transcript is read, so a conversation that changes between the
-            // two is seen as a change rather than missed.
-            let Some((mut switched, attachment)) = weak
-                .upgrade()
-                .map(|s| (s.conversation_changes(), s.attach()))
-            else {
-                return;
-            };
-            let AgentAttachment {
+    let mut req = req;
+    loop {
+        // Subscribed before the transcript is read, so a conversation that changes between the
+        // two is seen as a change rather than missed.
+        let Some((mut switched, attachment)) = weak
+            .upgrade()
+            .map(|s| (s.conversation_changes(), s.attach()))
+        else {
+            return;
+        };
+        let AgentAttachment {
+            state,
+            events,
+            config,
+            context,
+            mut rx,
+        } = attachment;
+        tracing::info!(%peer, agent = %name, events = events.len(), config = config.len(), "agent attach");
+        if out
+            .send(ServerMsg::AgentAttached {
+                req: req.take(),
+                agent: name.clone(),
                 state,
                 events,
                 config,
                 context,
-                mut rx,
-            } = attachment;
-            tracing::info!(%peer, agent = %name, events = events.len(), config = config.len(), "agent attach");
-            if out
-                .send(ServerMsg::AgentAttached {
-                    req: req.take(),
-                    agent: name.clone(),
-                    state,
-                    events,
-                    config,
-                    context,
-                    now: wheel_proto::unix_ms_now(),
-                })
-                .await
-                .is_err()
-            {
+                now: wheel_proto::unix_ms_now(),
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        // Read when it is sent, not with the transcript: a dismissal landing in between has
+        // already told this connection it is down, and a copy taken earlier would put it back.
+        let commands = weak.upgrade().and_then(|s| s.commands());
+        if let Some(commands) = commands {
+            let up = ServerMsg::AgentCommands {
+                agent: name.clone(),
+                commands,
+            };
+            if out.send(up).await.is_err() {
                 return;
             }
-            // Read when it is sent, not with the transcript: a dismissal landing in between has
-            // already told this connection it is down, and a copy taken earlier would put it back.
-            let commands = weak.upgrade().and_then(|s| s.commands());
-            if let Some(commands) = commands {
-                let up = ServerMsg::AgentCommands {
-                    agent: name.clone(),
-                    commands,
-                };
-                if out.send(up).await.is_err() {
-                    return;
-                }
-            }
-            let footer = weak.upgrade().map(|s| s.footer());
-            if let Some(footer) = footer {
-                let up = ServerMsg::AgentFooter {
-                    agent: name.clone(),
-                    footer,
-                };
-                if out.send(up).await.is_err() {
-                    return;
-                }
-            }
-            let title = weak.upgrade().and_then(|s| s.title());
-            if let Some(title) = title {
-                let up = ServerMsg::AgentTitle {
-                    agent: name.clone(),
-                    title: Some(title),
-                };
-                if out.send(up).await.is_err() {
-                    return;
-                }
-            }
-            let notice = weak.upgrade().and_then(|s| s.notice());
-            if let Some(notice) = notice {
-                let up = ServerMsg::AgentNotice {
-                    agent: name.clone(),
-                    notice: Some(notice),
-                };
-                if out.send(up).await.is_err() {
-                    return;
-                }
-            }
-            loop {
-                // Biased to the events: an agent that ends drops both channels at once, and the
-                // `agent ended` error it queued first must reach the client before the closed
-                // watch ends this task.
-                let event = tokio::select! {
-                    biased;
-                    event = rx.recv() => event,
-                    changed = switched.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                        tracing::info!(%peer, agent = %name, "the agent is in another conversation; resending the transcript");
-                        break;
-                    }
-                };
-                match event {
-                    Ok(event) => {
-                        let msg = ServerMsg::Agent {
-                            agent: name.clone(),
-                            event,
-                        };
-                        if out.send(msg).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(%peer, agent = %name, skipped, "client fell behind an agent; resending the transcript");
-                        break;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
+        }
+        let footer = weak.upgrade().map(|s| s.footer());
+        if let Some(footer) = footer {
+            let up = ServerMsg::AgentFooter {
+                agent: name.clone(),
+                footer,
+            };
+            if out.send(up).await.is_err() {
+                return;
             }
         }
-    })
+        let title = weak.upgrade().and_then(|s| s.title());
+        if let Some(title) = title {
+            let up = ServerMsg::AgentTitle {
+                agent: name.clone(),
+                title: Some(title),
+            };
+            if out.send(up).await.is_err() {
+                return;
+            }
+        }
+        let notice = weak.upgrade().and_then(|s| s.notice());
+        if let Some(notice) = notice {
+            let up = ServerMsg::AgentNotice {
+                agent: name.clone(),
+                notice: Some(notice),
+            };
+            if out.send(up).await.is_err() {
+                return;
+            }
+        }
+        loop {
+            // Biased to the events: an agent that ends drops both channels at once, and the
+            // `agent ended` error it queued first must reach the client before the closed
+            // watch ends this task.
+            let event = tokio::select! {
+                biased;
+                event = rx.recv() => event,
+                changed = switched.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    tracing::info!(%peer, agent = %name, "the agent is in another conversation; resending the transcript");
+                    break;
+                }
+            };
+            match event {
+                Ok(event) => {
+                    let msg = ServerMsg::Agent {
+                        agent: name.clone(),
+                        event,
+                    };
+                    if out.send(msg).await.is_err() {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(%peer, agent = %name, skipped, "client fell behind an agent; resending the transcript");
+                    break;
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
