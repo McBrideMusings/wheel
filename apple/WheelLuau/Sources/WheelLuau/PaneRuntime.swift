@@ -39,10 +39,19 @@ public final class PaneRuntime {
     public struct FeedRead: Equatable {
         public var value: JSONValue
         public var stale: Bool
-        public init(value: JSONValue, stale: Bool = false) {
+        /// The feed's name and params as one string: a mounted view re-runs what read it when `flush(changed: "feed:<key>")`.
+        public var key: String?
+        public init(value: JSONValue, stale: Bool = false, key: String? = nil) {
             self.value = value
             self.stale = stale
+            self.key = key
         }
+    }
+
+    /// What a flush of a mounted view wrote, and the feed keys (`FeedRead.key`) its live computations read.
+    public struct Changes: Equatable {
+        public var ops: [ViewOp]
+        public var feeds: [String]
     }
 
     /// What the script reaches outside its VM.
@@ -100,6 +109,16 @@ public final class PaneRuntime {
     /// A weak-keyed set of the command lists the `ui` prelude recorded; `json(at:)` counts each
     /// one's values apart from the view's.
     private var canvasesRef: Int32 = 0
+    /// The prelude's own functions (`mount`, `unmount`, `flush`, `feed`) and `records`, the weak map from each `ui.state`
+    /// and `ui.computed` to its record, which `json(at:)` reads a value from.
+    private var internalsRef: Int32 = 0
+    private var recordsRef: Int32 = 0
+    /// Whether the last `view` bound a state, computed or each: it ran once, and `flush` writes what changes.
+    public private(set) var mounted = false
+    /// Times `view` ran.
+    public private(set) var viewRuns = 0
+    /// The feed keys the mounted view's live computations read, after the last `view` or `flush`.
+    public private(set) var feeds: [String] = []
     /// Entries the measure cache holds before it is cleared.
     private static let maxMeasureCache = 5_000
     /// Steps one uncached `measureText` call charges to the budget.
@@ -146,7 +165,8 @@ public final class PaneRuntime {
         limits.deallocate()
     }
 
-    /// Delivers `msg` to `update`; a module without `update` ignores it.
+    /// Delivers `msg` to `update`; a module without `update` ignores it. In a mounted view the states `update` set write
+    /// nothing until `flush`.
     public func send(_ msg: JSONValue) throws {
         guard push(function: "update") else { return }
         lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, stateRef)
@@ -161,13 +181,23 @@ public final class PaneRuntime {
 
     /// The tree `view(state, data)` returns. `data`'s fields reach the script as a table, beside
     /// `data.feed`.
+    /// A view that binds a `ui.state`, `ui.computed` or `ui.each` is mounted: it runs once, every node it returned carries a
+    /// handle, and later changes come from `flush`. Calling `view` again mounts it again from the top.
     public func view(_ data: JSONValue = .object([:])) throws -> PaneNode {
-        guard push(function: "view") else { throw Failure.module("the module has no view function") }
+        pushInternal("mount")
+        guard push(function: "view") else {
+            pop(1)
+            throw Failure.module("the module has no view function")
+        }
         lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, stateRef)
         if case .object = data { push(data) } else { lua_createtable(L, 0, 1) }
-        wheel_luau_pushhost(L, HostKind.feed.rawValue)
+        pushInternal("feed")
         lua_setfield(L, -2, "feed")
-        try call(args: 2, results: 1)
+        mounted = false
+        viewRuns += 1
+        try call(args: 3, results: 2)
+        let bound = lua_toboolean(L, -1) != 0
+        pop(1)
         let value: JSONValue
         do {
             value = try json(at: -1)
@@ -179,7 +209,47 @@ public final class PaneRuntime {
         guard let node = PaneNode(value) else {
             throw Failure.view("view returned something that is not a component tree")
         }
+        mounted = bound
+        feeds = []
+        if bound { feeds = try flush().feeds }
         return node
+    }
+
+    /// Runs every effect a state change made stale in the mounted view and returns the node writes, in order. `changed`
+    /// names an outside source first marked changed: `feed:<FeedRead.key>` or `size:<canvas key>`.
+    public func flush(changed source: String? = nil) throws -> Changes {
+        guard mounted else { return Changes(ops: [], feeds: []) }
+        pushInternal("flush")
+        if let source { push(.string(source)) } else { lua_pushnil(L) }
+        try call(args: 1, results: 2)
+        defer { pop(2) }
+        let ops: JSONValue
+        let live: JSONValue
+        do {
+            ops = try json(at: -2)
+            live = try json(at: -1)
+        } catch {
+            throw Failure.view("flush returned \(error)")
+        }
+        var out: [ViewOp] = []
+        for item in ops.arrayItems {
+            guard case let .object(op) = item, case let .number(node)? = op["node"] else { continue }
+            switch op["op"] {
+            case .string("set")?:
+                guard case let .string(prop)? = op["prop"] else { continue }
+                out.append(.set(node: Int(node), prop: prop, value: op["value"] ?? .null))
+            case .string("children")?:
+                var children: [PaneNode] = []
+                for c in op["children"]?.arrayItems ?? [] {
+                    guard let child = PaneNode(c) else { throw Failure.view("a ui.each item is not a component tree") }
+                    children.append(child)
+                }
+                out.append(.children(node: Int(node), children: children))
+            default: continue
+            }
+        }
+        feeds = live.arrayItems.compactMap { if case let .string(k) = $0 { k } else { nil } }
+        return Changes(ops: out, feeds: feeds)
     }
 
     /// Runs `source` as the pane's module, with `modules` for its `require`, and hands the current
@@ -210,6 +280,13 @@ public final class PaneRuntime {
             throw error
         }
         lua_unref(L, oldLoaded)
+        if mounted {
+            // The new module's view mounts from the top; the old one's effects stop.
+            pushInternal("unmount")
+            try? call(args: 0, results: 0)
+            mounted = false
+            feeds = []
+        }
         lua_unref(L, moduleRef)
         lua_unref(L, stateRef)
         moduleRef = module
@@ -259,18 +336,499 @@ public final class PaneRuntime {
     /// `ui`, whose fields build components under the names they are read by, and `wheel`, then
     /// the sandbox that freezes them with every library.
     private static let prelude = """
-    local measure_host, sizes, canvases = ...
+    local measure_host, sizes, canvases, feed_host = ...
     setmetatable(canvases, { __mode = 'k' })
     local buffer_len, type_of = buffer.len, typeof
+    -- ── fine-grained views: ui.state, ui.computed, ui.each ──
+    -- A record is a state, a computed, an effect (a write to a mounted node) or a scope (an owner of other records).
+    local records = setmetatable({}, { __mode = "k" })
+    local meta = setmetatable({}, { __mode = "k" })
+    local nodeOwner = setmetatable({}, { __mode = "k" })
+    -- A Canvas node's draw: a mounted view draws it again when its size changes.
+    local canvasDraw = setmetatable({}, { __mode = "k" })
+    local eachMarks = setmetatable({}, { __mode = "k" })
+    local current, owner = nil, nil
+    local queue, sources = {}, {}
+    local nextId, nextHandle = 0, 0
+    local sawBinding = false
+    local NONE = {}
+    local pendingSet, setOrder, pendingChildren = {}, {}, {}
+    local root = nil
+
+    local function record(kind, fn)
+        nextId += 1
+        local r = { kind = kind, id = nextId, fn = fn, subs = {}, deps = {}, versions = {}, depSet = {}, owned = {}, version = 0, stale = false, ran = false }
+        if kind ~= "state" and owner ~= nil then table.insert(owner.owned, r) end
+        return r
+    end
+
+    local function track(r)
+        local c = current
+        if c == nil or c.depSet[r] then return end
+        c.depSet[r] = true
+        table.insert(c.deps, r)
+        table.insert(c.versions, r.version)
+        r.subs[c] = true
+    end
+
+    local function unlink(c)
+        for _, r in c.deps do r.subs[c] = nil end
+        c.deps, c.versions, c.depSet = {}, {}, {}
+    end
+
+    local dispose
+    local function disposeOwned(r)
+        local owned = r.owned
+        r.owned = {}
+        for _, c in owned do dispose(c) end
+    end
+    dispose = function(r)
+        if r.disposed then return end
+        r.disposed = true
+        disposeOwned(r)
+        unlink(r)
+    end
+
+    local function markStale(r)
+        for c in r.subs do
+            if not c.stale then
+                c.stale = true
+                if c.kind == "effect" then table.insert(queue, c) end
+                markStale(c)
+            end
+        end
+    end
+
+    local function run(c)
+        disposeOwned(c)
+        unlink(c)
+        local prevC, prevO = current, owner
+        current, owner = c, c
+        local ok, value = pcall(c.fn)
+        current, owner = prevC, prevO
+        if not ok then
+            c.stale = true
+            error(value, 0)
+        end
+        if c.kind == "computed" then
+            if not c.ran or value ~= c.value or type(value) == "table" then
+                c.value = value
+                c.version += 1
+            end
+        else
+            if c.ran and c.changed and (c.always or value ~= c.value or type(value) == "table") then c.changed(value) end
+            c.value = value
+        end
+        c.ran = true
+    end
+
+    local function refresh(c)
+        if c.disposed or (c.ran and not c.stale) then return end
+        local changed = not c.ran
+        if not changed then
+            for i, r in c.deps do
+                if r.kind == "computed" then refresh(r) end
+                if r.version ~= c.versions[i] then changed = true break end
+            end
+        end
+        c.stale = false
+        if changed then run(c) end
+    end
+
+    local function untracked(fn, ...)
+        local prev = current
+        current = nil
+        local ok, a, b = pcall(fn, ...)
+        current = prev
+        if not ok then error(a, 0) end
+        return a, b
+    end
+
+    local function source(key)
+        local r = sources[key]
+        if r == nil then
+            local o = owner
+            owner = nil
+            r = record("state")
+            owner = o
+            sources[key] = r
+        end
+        return r
+    end
+    local function sizeOf(key) return source("size:" .. key) end
+
+    local State = { __metatable = false }
+    State.__index = State
+    function State.get(self)
+        local r = records[self]
+        track(r)
+        return r.value
+    end
+    function State.set(self, value)
+        local r = records[self]
+        if r == nil or r.kind ~= "state" then error("set is only for a ui.state", 2) end
+        if rawequal(r.value, value) and type(value) ~= "table" then return end
+        r.value = value
+        r.version += 1
+        markStale(r)
+    end
+
+    local Computed = { __metatable = false }
+    Computed.__index = Computed
+    function Computed.get(self)
+        local r = records[self]
+        refresh(r)
+        track(r)
+        return r.value
+    end
+
+    local function state(initial)
+        local obj = setmetatable({}, State)
+        local r = record("state")
+        r.value = initial
+        records[obj] = r
+        return obj
+    end
+
+    local function computed(fn)
+        if type(fn) ~= "function" then error("ui.computed takes a function", 2) end
+        local obj = setmetatable({}, Computed)
+        records[obj] = record("computed", fn)
+        return obj
+    end
+
+    local function isNode(v)
+        return type(v) == "table" and type(rawget(v, "component")) == "string"
+    end
+
+    -- Whether `v` is or holds a state or computed, outside any node it holds.
+    local function bound(v, depth)
+        if type(v) ~= "table" then return false end
+        if records[v] then return true end
+        if depth > 16 or isNode(v) or canvases[v] then return false end
+        for _, x in v do
+            if bound(x, depth + 1) then return true end
+        end
+        return false
+    end
+
+    -- `v` with every state and computed in it replaced by its value, read inside the running effect so a change re-runs it.
+    local function resolve(v, depth)
+        if type(v) ~= "table" then return v end
+        local r = records[v]
+        if r then
+            local x = if r.kind == "state" then State.get(v) else Computed.get(v)
+            if x == v or depth > 16 then return x end
+            return resolve(x, depth + 1)
+        end
+        if isNode(v) or canvases[v] or eachMarks[v] or depth > 16 then return v end
+        local out = nil
+        for k, x in v do
+            local y = resolve(x, depth + 1)
+            if not rawequal(y, x) then
+                out = out or table.clone(v)
+                out[k] = y
+            end
+        end
+        return out or v
+    end
+
+    local snapshot, ensureEach
+
+    local function snapValue(v, keep, depth)
+        if type(v) ~= "table" or canvases[v] or depth > 200 then return v end
+        if isNode(v) then return snapshot(v, keep) end
+        local out = nil
+        for k, x in v do
+            local y = snapValue(x, keep, depth + 1)
+            if not rawequal(y, x) then
+                out = out or table.clone(v)
+                out[k] = y
+            end
+        end
+        return out or v
+    end
+
+    local function queueSet(n, prop, value)
+        local props = pendingSet[n]
+        if props == nil then
+            props = {}
+            pendingSet[n] = props
+            table.insert(setOrder, n)
+        end
+        props[prop] = if value == nil then NONE else value
+    end
+
+    -- The node's handle and an effect per bound property, made the first time the node is drawn, owned by the scope or
+    -- computation that built the node.
+    local function register(n)
+        nextHandle += 1
+        local m = { h = nextHandle, props = {} }
+        meta[n] = m
+        local prevO = owner
+        owner = nodeOwner[n]
+        for k, v in n do
+            if k ~= "children" and k ~= "component" and bound(v, 0) then
+                local e = record("effect", function() return resolve(v, 0) end)
+                e.changed = function(value) queueSet(n, k, value) end
+                m.props[k] = e
+                local ok, err = pcall(run, e)
+                if not ok then owner = prevO error(err, 0) end
+            end
+        end
+        local draw = canvasDraw[n]
+        if draw and m.props.commands == nil then
+            -- The first run reads the size the commands were drawn at; a later one draws again.
+            local first = true
+            local e = record("effect", function()
+                if first then
+                    first = false
+                    track(sizeOf(n.canvasKey))
+                    return n.commands
+                end
+                return draw()
+            end)
+            e.changed = function(value) queueSet(n, "commands", value) end
+            e.always = true
+            m.props.commands = e
+            local ok, err = pcall(run, e)
+            if not ok then owner = prevO error(err, 0) end
+        end
+        owner = prevO
+        return m
+    end
+
+    local function childList(n, keep)
+        local list = {}
+        local children = rawget(n, "children")
+        if children == nil then return list end
+        for _, c in children do
+            if eachMarks[c] then
+                local each = ensureEach(c, n)
+                for _, k in each.order do table.insert(list, snapshot(each.items[k].node, keep)) end
+            else
+                table.insert(list, snapshot(c, keep))
+            end
+        end
+        return list
+    end
+
+    snapshot = function(n, keep)
+        local m = meta[n]
+        if m and m.drawn and keep then return { component = n.component, key = rawget(n, "key"), __node = m.h, __keep = true } end
+        m = m or register(n)
+        m.drawn = true
+        local s = { component = n.component, __node = m.h }
+        for k, v in n do
+            if k == "children" then
+                s.children = childList(n, keep)
+            elseif k ~= "component" then
+                local e = m.props[k]
+                s[k] = snapValue(if e then e.value else v, keep, 0)
+            end
+        end
+        return s
+    end
+
+    local function keyOf(each, item, i)
+        local key = each.key
+        local k = if type(key) == "function" then key(item, i)
+                  elseif type(key) == "string" and type(item) == "table" then item[key]
+                  else item
+        if type(k) ~= "string" and type(k) ~= "number" then
+            error("ui.each: the key of item " .. i .. " is a " .. type(k) .. ", not a string or a number", 0)
+        end
+        return k
+    end
+
+    -- The keyed list of `each`, kept by an effect: an item whose key stays keeps its node, its scope and its local states and
+    -- gets the new item through its state; a new key runs `fn`; a key that left is disposed.
+    ensureEach = function(each, parent)
+        if each.effect then return each end
+        each.parent = parent
+        local prevO = owner
+        owner = each.owner
+        each.holder = record("scope")
+        local e = record("effect", function()
+            local list = resolve(each.source, 0)
+            if type(list) ~= "table" then list = {} end
+            local keys, seen = {}, {}
+            untracked(function()
+                for i, item in list do
+                    local k = keyOf(each, item, i)
+                    if seen[k] then error("ui.each: two items have the key " .. tostring(k), 0) end
+                    seen[k] = true
+                    keys[i] = k
+                end
+            end)
+            local changed = #keys ~= #each.order
+            for i, item in list do
+                local k = keys[i]
+                local it = each.items[k]
+                if it then
+                    State.set(it.state, item)
+                else
+                    local scope
+                    do
+                        local o = owner
+                        owner = each.holder
+                        scope = record("scope")
+                        owner = o
+                    end
+                    local s = state(item)
+                    local o = owner
+                    owner = scope
+                    local ok, node = pcall(untracked, each.fn, s, k)
+                    owner = o
+                    if not ok then dispose(scope) error(node, 0) end
+                    if not isNode(node) then
+                        dispose(scope)
+                        error("ui.each: the function must return a component, it returned a " .. type(node), 0)
+                    end
+                    if rawget(node, "key") == nil then node.key = k end
+                    each.items[k] = { scope = scope, state = s, node = node }
+                    changed = true
+                end
+                if not changed and each.order[i] ~= k then changed = true end
+            end
+            for k, it in each.items do
+                if not seen[k] then
+                    dispose(it.scope)
+                    each.items[k] = nil
+                    changed = true
+                end
+            end
+            each.order = keys
+            return changed
+        end)
+        e.changed = function(changed) if changed then pendingChildren[parent] = true end end
+        e.always = true
+        each.effect = e
+        local ok, err = pcall(run, e)
+        owner = prevO
+        if not ok then error(err, 0) end
+        return each
+    end
+
+    local function each(source, key, fn)
+        if type(fn) ~= "function" then error("ui.each(source, key, fn): fn must be a function", 2) end
+        if type(key) ~= "string" and type(key) ~= "function" and key ~= nil then
+            error("ui.each(source, key, fn): key must be a field name or a function", 2)
+        end
+        sawBinding = true
+        local mark = { source = source, key = key, fn = fn, items = {}, order = {}, owner = owner }
+        eachMarks[mark] = true
+        return mark
+    end
+
+
+    local function feed(name, params)
+        local value, stale, key = feed_host(name, params)
+        if current ~= nil and type(key) == "string" then track(source("feed:" .. key)) end
+        return value, stale
+    end
+
+    local function liveFeeds()
+        local out = {}
+        for key, r in sources do
+            if string.sub(key, 1, 5) == "feed:" and next(r.subs) ~= nil then table.insert(out, string.sub(key, 6)) end
+        end
+        table.sort(out)
+        return out
+    end
+
+    local internals = { records = records, feed = feed }
+
+    -- Runs `view` once. A view that binds a state, a computed or an each is mounted: it returns its tree with a handle on
+    -- every node and keeps its effects; any other view is the whole-view model and returns its tree as it built it.
+    function internals.mount(view, st, data)
+        if root then dispose(root) end
+        root = nil
+        sawBinding = false
+        queue, pendingSet, setOrder, pendingChildren = {}, {}, {}, {}
+        local o = owner
+        owner = record("scope")
+        local scope = owner
+        local ok, tree = pcall(view, st, data)
+        owner = o
+        if not ok then dispose(scope) error(tree, 0) end
+        if not sawBinding then
+            dispose(scope)
+            return tree, false
+        end
+        root = scope
+        if not isNode(tree) then error("view returned something that is not a component tree", 0) end
+        local snap = snapshot(tree, false)
+        queue, pendingSet, setOrder, pendingChildren = {}, {}, {}, {}
+        return snap, true
+    end
+
+    function internals.unmount()
+        if root then dispose(root) end
+        root = nil
+        queue, pendingSet, setOrder, pendingChildren = {}, {}, {}, {}
+    end
+
+    -- Bumps the source `bump` names (`feed:<key>`, `size:<key>`), if any, then runs every stale effect and returns the
+    -- writes they made, and the feeds the mounted view reads now.
+    function internals.flush(bump)
+        if bump ~= nil and sources[bump] then
+            local r = sources[bump]
+            r.version += 1
+            markStale(r)
+        end
+        while #queue > 0 do
+            local batch = queue
+            queue = {}
+            table.sort(batch, function(a, b) return a.id < b.id end)
+            for i, e in batch do
+                local ok, err = pcall(refresh, e)
+                if not ok then
+                    for j = i + 1, #batch do table.insert(queue, batch[j]) end
+                    if e.stale then table.insert(queue, e) end
+                    error(err, 0)
+                end
+            end
+        end
+        local ops = {}
+        local order, sets, kids = setOrder, pendingSet, pendingChildren
+        pendingSet, setOrder, pendingChildren = {}, {}, {}
+        for _, n in order do
+            local m = meta[n]
+            if m and m.drawn then
+                for prop, v in sets[n] do
+                    table.insert(ops, { op = "set", node = m.h, prop = prop, value = if v == NONE then nil else snapValue(v, true, 0) })
+                end
+            end
+        end
+        local parents = {}
+        for n in kids do
+            local m = meta[n]
+            if m and m.drawn then table.insert(parents, n) end
+        end
+        table.sort(parents, function(a, b) return meta[a].h < meta[b].h end)
+        for _, n in parents do
+            table.insert(ops, { op = "children", node = meta[n].h, children = childList(n, true) })
+        end
+        return ops, liveFeeds()
+    end
+
+
     local function node(name, arg)
         local n = { component = name }
+        if owner ~= nil then nodeOwner[n] = owner end
         if type(arg) == "string" then
             n.text = arg
             return n
         end
         if type(arg) ~= "table" then return n end
+        -- Only a VM that made a state or computed can hold a binding, so a whole-view script pays nothing for the check.
+        local check = not sawBinding and next(records) ~= nil
         for k, v in arg do
-            if type(k) ~= "number" then n[k] = v end
+            if type(k) ~= "number" then
+                n[k] = v
+                if check and bound(v, 0) then sawBinding, check = true, false end
+            end
         end
         local children = {}
         for i, v in ipairs(arg) do
@@ -395,23 +953,32 @@ public final class PaneRuntime {
         if type(arg) ~= "table" or type(arg.draw) ~= "function" then return node("Canvas", arg) end
         local key = if arg.key == nil then "canvas" else arg.key
         local height = if arg.height == nil then 240 else arg.height
-        local size = sizes[key]
-        local commands = {}
-        arg.draw(recorder(commands), if size then size.w else 0, if size then size.h else height)
+        local function draw()
+            if current ~= nil then track(sizeOf(key)) end
+            local size = sizes[key]
+            local commands = {}
+            arg.draw(recorder(commands), if size then size.w else 0, if size then size.h else height)
+            canvases[commands] = true
+            return commands
+        end
         local n = node("Canvas", arg)
         n.draw, n.key, n.on_pointer = nil, nil, nil
-        canvases[commands] = true
-        n.commands, n.height, n.canvasKey, n.pointerAction = commands, height, key, arg.on_pointer
+        n.height, n.canvasKey, n.pointerAction = height, key, arg.on_pointer
+        n.commands = untracked(draw)
+        canvasDraw[n] = draw
         return n
     end
 
     return setmetatable({}, {
         __index = function(_, name)
             if name == "Canvas" then return canvas end
+            if name == "state" then return state end
+            if name == "computed" then return computed end
+            if name == "each" then return each end
             return function(arg) return node(name, arg) end
         end,
         __metatable = false,
-    })
+    }), internals
     """
 
     /// `require(path)`, called with the host's module loader and `require`'s table.
@@ -473,7 +1040,11 @@ public final class PaneRuntime {
         canvasesRef = lua_ref(L, -1)
         lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, canvasesRef)
         lua_remove(L, -2)
-        try call(args: 3, results: 1)
+        wheel_luau_pushhost(L, HostKind.feed.rawValue)
+        try call(args: 4, results: 2)
+        lua_rawgetfield(L, -1, "records")
+        recordsRef = popRef()
+        internalsRef = popRef()
         lua_setfield(L, WHEEL_LUA_GLOBALSINDEX, "ui")
         lua_createtable(L, 0, 2)
         lua_createtable(L, 0, 0)
@@ -556,6 +1127,13 @@ public final class PaneRuntime {
         return popRef()
     }
 
+    /// Pushes the prelude's own function `name`.
+    private func pushInternal(_ name: String) {
+        lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, internalsRef)
+        lua_rawgetfield(L, -1, name)
+        lua_remove(L, -2)
+    }
+
     /// Pushes the module's function `name`; false, pushing nothing, when the module has none.
     private func push(function name: String) -> Bool {
         lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, moduleRef)
@@ -633,7 +1211,8 @@ public final class PaneRuntime {
             let read = host.feed(name, args)
             push(read.value)
             lua_pushboolean(L, read.stale ? 1 : 0)
-            return 2
+            if let key = read.key { push(.string(key)) } else { lua_pushnil(L) }
+            return 3
         case .action:
             host.action(name, args)
             return 0
@@ -749,6 +1328,16 @@ public final class PaneRuntime {
                 var own = 0
                 return try json(at: index, depth: depth, visited: &own, limit: Self.maxCanvasValues, inCanvas: true)
             }
+            // A `ui.state` or `ui.computed` is its value.
+            lua_rawgeti(L, WHEEL_LUA_REGISTRYINDEX, recordsRef)
+            lua_pushvalue(L, index)
+            lua_rawget(L, -2)
+            if lua_type(L, -1) == LUA_TTABLE.rawValue {
+                lua_rawgetfield(L, -1, "value")
+                defer { pop(3) }
+                return try json(at: -1, depth: depth + 1, visited: &visited, limit: limit, inCanvas: inCanvas)
+            }
+            pop(2)
             var byIndex: [Int: JSONValue] = [:]
             var fields: [String: JSONValue] = [:]
             lua_pushnil(L)
@@ -798,4 +1387,8 @@ public final class PaneRuntime {
         pop(1)
         return ref
     }
+}
+
+private extension JSONValue {
+    var arrayItems: [JSONValue] { if case let .array(a) = self { a } else { [] } }
 }

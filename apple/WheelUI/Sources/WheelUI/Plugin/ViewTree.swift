@@ -31,11 +31,16 @@ public final class ViewNode: Identifiable {
     @ObservationIgnored var given: JSONValue?
     /// A Table row's own `id` field, read when a selection names rows.
     @ObservationIgnored public internal(set) var rowID = ""
+    /// The handle a mounted view gave the node, which its `ViewOp`s name.
+    @ObservationIgnored var handle: Int?
 
     init(id: String, component: String) {
         self.id = id
         self.component = component
     }
+
+    /// Every node directly under this one: children, embedded nodes and Table rows.
+    var below: [ViewNode] { children + Array(embedded.values) + rows }
 
     /// The nodes drawn as this component's content: its children, then its `child`, `trigger` and `content`.
     public var parts: [ViewNode] {
@@ -75,6 +80,8 @@ public final class ViewTree {
     @ObservationIgnored public private(set) var duplicate: String?
     @ObservationIgnored private var touched: Set<String> = []
     @ObservationIgnored private var reached: [String: ViewNode] = [:]
+    /// The nodes of a mounted view by handle.
+    @ObservationIgnored private var handles: [Int: ViewNode] = [:]
 
     public init() {}
 
@@ -95,21 +102,37 @@ public final class ViewTree {
         if root !== r { root = r }
         index = reached
         reached = [:]
+        handles = [:]
+        for n in index.values { if let h = n.handle { handles[h] = n } }
+        finish()
+        written = touched.count
+    }
+
+    /// The Modals shown and whether the view fills the pane, after the tree changed.
+    private func finish() {
         let presented = index.values.filter { $0.component == "Modal" && $0.props["presented"]?.boolValue == true }.sorted { $0.id < $1.id }
         if presented.map(\.id) != modals.map(\.id) || zip(presented, modals).contains(where: { $0 !== $1 }) { modals = presented }
         let fills = root.map(Self.fills) ?? false
         if fills != fillsPane { fillsPane = fills }
-        written = touched.count
     }
 
     /// The node for `pane` at `id`: `old` when it is the same component, else a new one; then its contents are brought up to date.
     private func place(_ pane: PaneNode, id: String, old: ViewNode?) -> ViewNode {
+        if pane.keep, let old, old.id == id, let h = pane.handle, handles[h] === old {
+            reach(old)
+            return old
+        }
         let node: ViewNode
         if let old, old.id == id, old.component == pane.component { node = old } else {
             node = ViewNode(id: id, component: pane.component)
             touched.insert(id)
         }
         reached[id] = node
+        if let h = pane.handle, node.handle != h {
+            if let was = node.handle, handles[was] === node { handles[was] = nil }
+            node.handle = h
+            handles[h] = node
+        }
         var embedded: [String: ViewNode] = [:]
         var props: [String: JSONValue] = [:]
         // A Table's sections are its rows' own: each row node lifts the components in its cells.
@@ -205,6 +228,12 @@ public final class ViewTree {
         })
     }
 
+    /// Marks a kept node and everything under it as reached.
+    private func reach(_ node: ViewNode) {
+        reached[node.id] = node
+        node.below.forEach(reach)
+    }
+
     private func write(_ node: ViewNode, draft: JSONValue) {
         guard node.draft != draft else { return }
         node.draft = draft
@@ -238,18 +267,101 @@ public final class ViewTree {
 
     // MARK: writes from outside a render
 
+    /// Applies a mounted view's writes in order; an op naming a handle no longer drawn is skipped. `written` counts the
+    /// nodes created or written.
+    func apply(_ ops: [ViewOp]) {
+        touched = []
+        duplicate = nil
+        var changed = false
+        for op in ops {
+            switch op {
+            case let .set(h, prop, value):
+                guard let node = handles[h] else { continue }
+                changed = assign(node, prop: prop, value: value == .null ? nil : value) || changed
+            case let .children(h, panes):
+                guard let node = handles[h] else { continue }
+                let old = node.children
+                edit(replacing: old) {
+                    let children = placeChildren(panes, parent: node)
+                    if !Self.same(node.children, children) { node.children = children; touched.insert(node.id) }
+                }
+                changed = true
+            }
+        }
+        if changed { finish() }
+        written = touched.count
+    }
+
     /// Writes one property of one node, as a fine-grained script does when a value it bound changes; nothing when it is equal.
     /// A bound control's `value` follows the render rule: a value the script did not give last replaces the draft.
     public func set(node: ViewNode, prop: String, value: JSONValue?) {
         touched = []
+        if assign(node, prop: prop, value: value) { finish() }
+        written = touched.count
+    }
+
+    /// Writes `prop` of `node`; true when the tree's shape may have changed (components inside the property, a Table's rows).
+    private func assign(_ node: ViewNode, prop: String, value: JSONValue?) -> Bool {
         if prop == "value", node.component == "TextField" || node.props["on_change"] != nil {
             if let value, value != node.given { write(node, draft: value) }
             node.given = value
-        } else if node.props[prop] != value {
-            node.props[prop] = value
-            touched.insert(node.id)
+            return false
         }
-        written = touched.count
+        let rowsChange = node.component == "Table" && prop == "sections"
+        let holdsNodes = value.map(Self.holdsComponent) ?? false
+        let under = node.embedded.filter { $0.key == prop || $0.key.hasPrefix(prop + ".") }
+        guard rowsChange || holdsNodes || !under.isEmpty else {
+            if node.props[prop] != value {
+                node.props[prop] = value
+                touched.insert(node.id)
+            }
+            return false
+        }
+        edit(replacing: Array(under.values) + (rowsChange ? node.rows : [])) {
+            var embedded = node.embedded.filter { !($0.key == prop || $0.key.hasPrefix(prop + ".")) }
+            var props = node.props
+            if rowsChange {
+                var rows: [ViewNode] = []
+                props[prop] = tableRows(value, table: node, into: &rows)
+                if !Self.same(node.rows, rows) { node.rows = rows; touched.insert(node.id) }
+            } else {
+                props[prop] = value.map { lift($0, host: node, path: prop, into: &embedded) }
+            }
+            if node.props != props { node.props = props; touched.insert(node.id) }
+            if node.embedded.count != embedded.count || embedded.contains(where: { node.embedded[$0.key] !== $0.value }) {
+                node.embedded = embedded
+                touched.insert(node.id)
+            }
+        }
+        return true
+    }
+
+    /// Runs `body`, which places new nodes in place of the subtrees under `old`, then brings the index and handles up to date:
+    /// what `body` reached is in, what was under `old` and was not reached is out.
+    private func edit(replacing old: [ViewNode], _ body: () -> Void) {
+        reached = [:]
+        var before: [ViewNode] = []
+        func collect(_ n: ViewNode) { before.append(n); n.below.forEach(collect) }
+        old.forEach(collect)
+        body()
+        for n in before where reached[n.id] !== n {
+            if index[n.id] === n { index[n.id] = nil }
+            if let h = n.handle, handles[h] === n { handles[h] = nil }
+        }
+        for (id, n) in reached {
+            index[id] = n
+            if let h = n.handle { handles[h] = n }
+        }
+        reached = [:]
+    }
+
+    private static func holdsComponent(_ v: JSONValue) -> Bool {
+        if PaneNode(v) != nil { return true }
+        switch v {
+        case let .array(items): return items.contains(where: holdsComponent)
+        case let .object(fields): return fields.values.contains(where: holdsComponent)
+        default: return false
+        }
     }
 
     // MARK: what a control does

@@ -106,6 +106,35 @@ Checks (Swift 6.4.2, Xcode with the macOS 27.2 SDK):
 - macOS, `swift test --package-path apple/WheelLuau`: 52 tests pass (the agent view package against a fake transcript; the Canvas recorder: every ctx command, style readback after restore, measureText, canvas sizes, drawImage buffers, their snapshot and their errors, the command and value limits, measureText limits and cost, unknown ctx members, on_pointer, the step budget inside draw, the canvas fixture; CanvasFont parsing; counter, reload keeping state, step budget, memory limit, absent `io`/`os`, `require` (a module drawn, run once, rerun after a reload, kept after a failed reload, a path out of the package, a missing module, a cycle, a module syntax error, a `..` that climbs back in), frozen libraries, syntax error and failing `init` on reload, bad module, bad view, host feed and action, a host call from a coroutine, flattening and its ids, a module with a hostile metatable, shared and cyclic tables, garbage from an earlier entry, table conversion).
 - iOS, `xcodebuild -scheme WheelLuau -destination 'generic/platform=iOS'` and `'generic/platform=iOS Simulator'` from `apple/WheelLuau`: `** BUILD SUCCEEDED **` for both; the device objects are `arm64`, `platform IOS`, `minos 18.0`, with `luau_compile`, `luau_load`, `lua_pcall`, `luaL_sandbox` and `wheel_luau_pcall` defined.
 
+### Bound state: `ui.state`, `ui.computed`, `ui.each`
+
+A view that binds a value runs once. The runtime records which computation read which value, and a change re-runs only those computations and writes what they return to the one node property that holds it (Fusion's model, <https://elttob.uk/Fusion/0.3/tutorials/roblox/hydration/>).
+
+```lua
+local function init(previous) return previous or { count = ui.state(0), order = ui.state({ "a", "b", "c" }) } end
+local function update(state, msg)
+    if msg.type == "inc" then state.count:set(state.count:get() + 1) end
+end
+local function view(state)
+    return ui.Column{
+        ui.Text{ text = ui.computed(function() return "Count " .. state.count:get() end) },
+        ui.Button{ label = "Add", action = { type = "inc" } },
+        ui.Column{ ui.each(state.order, nil, function(item, key) return ui.TextField{ label = key } end) },
+    }
+end
+return { init = init, update = update, view = view }
+```
+
+- `ui.state(value)` holds a value: `s:get()` reads it, `s:set(v)` changes it. Setting an equal number, string or boolean changes nothing; setting a table always counts as a change.
+- `ui.computed(fn)` is a value `fn` derives: `c:get()` runs `fn` the first time and again only after a value it read changed. A computed whose result is an equal number, string or boolean stops the change there.
+- A property whose value is a state or a computed, or a table holding one (a modifier's argument), is bound: the node gets an effect that reads it, and a change writes that property alone (`ViewOp.set`). A bound property that holds a component (a Button's `child` from a computed) swaps that component in place.
+- `ui.each(source, key, fn)` in a component's array part draws one child per item of the list in `source` (a state or computed). `key` is a field name, a function `(item, index) -> key`, or nil for the item itself; a key is a string or a number, and two items with one key raise `ui.each: two items have the key <k>`. `fn(item, key)` runs once per key and gets the item as a state, so a later list with a changed item for the same key sets that state and the item's bindings write; `key` becomes the child's `key` unless `fn` gave one. Its `ui.state` values live as long as the key. A list that adds, drops or reorders keys writes the parent's children once (`ViewOp.children`): kept children are named by handle (`keep`), and only new ones are sent whole.
+- A view that binds anything is mounted: `PaneRuntime.view` returns its tree with a handle on every node (`PaneNode.handle`) and sets `mounted`. After `send`, `PaneRuntime.flush(changed:)` runs the computations that went stale and returns the writes, in order; `changed` names an outside source first: `feed:<key>` when a feed's value changed, `size:<canvas key>` when a Canvas reported a new size. `WheelUI.ViewTree.apply` writes them by handle, so a click that sets one state writes one property and runs no `view` (`PluginPane.perf.flushes` counts flushes, `perf.renders` counts views).
+- Feeds: `data.feed(name, params)` read inside a computed is a dependency: a new value for that feed re-runs the computation. A mounted pane subscribes exactly the feeds its live computations read (`PaneRuntime.feeds`), so a computed that reads another feed (its params from a state) moves the subscription. A feed read outside a computed is read once.
+- A `Canvas` with `draw` draws again in a mounted view when its size changes, writing its `commands`.
+- A view that binds nothing keeps the whole-view model: `view` runs after every message and its tree is reconciled whole. A `update` that returns a new state table in a mounted view replaces the table, but the view keeps the states it bound.
+- A reload mounts the new script's `view` from the top; the states in the state table carry over through `init(previous)`. A computation that raises keeps the last good value on screen, puts the error in the pane header and runs again on the next flush.
+
 ### Canvas with a `draw` function
 
 `ui.Canvas{ draw = function(ctx, w, h) ... end }` draws with the Canvas 2D calls listed below. `ctx` has exactly those fields and methods: any other name, such as `fillRect`, `strokeRect`, `clearRect`, `clip`, `ellipse`, `setLineDash`, `lineCap`, `textAlign` or `strokeText`, raises `ctx has no field or method '<name>' (see docs/plugin-runtime.md for the Canvas 2D calls ctx has)`. While `view` runs, the `ui` prelude calls `draw(ctx, w, h)` under the same step budget as the rest of `view`, records every call, and writes the node as `{ component = "Canvas", commands = <list>, height, canvasKey, pointerAction?, modifiers, ... }`; `draw`, `key` and `on_pointer` are dropped and every other field passes through. A Canvas with no `draw` function is the ADR-0029 display-list Canvas, unchanged.

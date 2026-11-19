@@ -1,6 +1,7 @@
 -- The A2UI gallery pane: one page with a table per class of control. It draws the basic catalog's components with every
 -- option, the SwiftUI controls, the Table, the modifiers, then Wheel's own components. Nothing on it is wired to a
--- backend; every control raises `{ type = "act" }`, which `update` ignores.
+-- backend; every control raises `{ type = "act" }`, which `update` ignores, except the Bound state class's Add and Reverse,
+-- which set its two ui.state values. Those bindings mount the page: `view` runs once.
 --
 -- Every change to how the client draws a component, a property or a modifier updates this file in the same change.
 
@@ -221,18 +222,36 @@ local function pinned_list()
     })
 end
 
--- A keyed Column of fields: Reverse flips the order, and each field keeps what was typed in it, because its `key` (not its
--- place) is its identity.
-local function keyed_list(order)
-    local fields = {}
-    for _, k in ipairs(order) do
-        table.insert(fields, put("TextField", nil, { key = k, label = "Field " .. k, modifiers = { { frame = { width = 180 } } } }))
-    end
-    fields.key = "keyed"
-    return col({ col(fields, { align = "start" }), put("Button", nil, { child = txt("Reverse"), action = { type = "reverse" } }) }, { align = "start" })
+-- A keyed Column of fields drawn by ui.each over the `order` state: Reverse sets the state, the Column's children are
+-- written in the new order, and each field keeps what was typed in it, because its key (not its place) is its identity.
+local function keyed_list(state)
+    local fields = ui.each(state.order, nil, function(_, k)
+        return put("TextField", nil, { label = "Field " .. k, modifiers = { { frame = { width = 180 } } } })
+    end)
+    return col({ col({ fields }, { key = "keyed", align = "start" }), put("Button", nil, { child = txt("Reverse"), action = { type = "reverse" } }) }, { align = "start" })
 end
 
-local function layout_class(state)
+-- A Text bound to a ui.computed of the `count` state: Add sets the state, and only that Text's text is written.
+local function bound_counter(state)
+    local label = ui.computed(function() return "Count " .. state.count:get() end)
+    return row({ txt(label, nil, { modifiers = { { monospacedDigit = true }, { frame = { width = 90, alignment = "leading" } } } }),
+        put("Button", nil, { child = txt("Add"), action = { type = "inc" } }) }, { justify = "start" })
+end
+
+local function state_class(state)
+    return klass("Bound state", "A view that binds a ui.state or ui.computed runs once; a change writes only the properties and child lists that read it.", {
+        { "ui.computed", "@State", {
+            { "a Text whose text is a ui.computed reading the count state; Add sets the state from update, and the view does not run again",
+                bound_counter(state) },
+        } },
+        { "ui.each", "ForEach", {
+            { "ui.each(state, key, fn) over a list of keys; type in a field, then Reverse; each field moves with its text, and fn ran once per key",
+                keyed_list(state) },
+        } },
+    })
+end
+
+local function layout_class()
     local row_opts = {}
     for _, j in ipairs(JUSTIFY) do
         table.insert(row_opts, { "justify " .. j, row({ txt("one"), txt("two"), txt("three") }, { justify = j }) })
@@ -251,7 +270,6 @@ local function layout_class(state)
         }))
     end
     table.insert(col_opts, { "in a row beside a Table: keeps its own height", row(boxes, { justify = "start" }) })
-    table.insert(col_opts, { "children with a `key`: type in a field, then Reverse; each field moves with its text", keyed_list(state.order or { "a", "b", "c" }) })
 
     return klass("Containers and layout", "Arrange other components.", {
         { "Row", "HStack", row_opts },
@@ -628,16 +646,23 @@ end
 
 -- ───────────────────────────── the module ─────────────────────────────
 
+local function is_state(v) return type(v) == "table" and v.get ~= nil end
+
 local function init(previous)
-    return previous or {}
+    local s = previous or {}
+    if not is_state(s.order) then s.order = ui.state({ "a", "b", "c" }) end
+    if not is_state(s.count) then s.count = ui.state(0) end
+    return s
 end
 
 local function update(state, msg)
     if msg.type == "reverse" then
         local flipped = {}
-        local order = state.order or { "a", "b", "c" }
+        local order = state.order:get()
         for i = #order, 1, -1 do table.insert(flipped, order[i]) end
-        state.order = flipped
+        state.order:set(flipped)
+    elseif msg.type == "inc" then
+        state.count:set(state.count:get() + 1)
     end
     return state
 end
@@ -650,7 +675,8 @@ local function view(state, data)
         content_class(),
         controls_class(),
         inputs_class(),
-        layout_class(state),
+        layout_class(),
+        state_class(state),
         nav_class(),
         system_class(),
         table_class(),

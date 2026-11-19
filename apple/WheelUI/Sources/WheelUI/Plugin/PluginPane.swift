@@ -12,7 +12,9 @@ internal import WheelLuau
 /// `on_change` table (TextField, CheckBox, ChoicePicker, Slider, Stepper, DateTimeInput, ...) sends it with `value` set to
 /// what the control wrote. `view` gets `context` (the pane's ids and directory) as its `data`.
 /// A failure keeps the last good view and sets `error`; a good load clears it. A view with a duplicate `key` among siblings
-/// is drawn with the first of them and also sets `error`.
+/// is drawn with the first of them and also sets `error`. A view that binds a `ui.state`, `ui.computed` or `ui.each` is
+/// mounted: `view` runs once, and after each message, feed change or canvas size the runtime's flush writes only the props and
+/// child lists whose values changed.
 @MainActor @Observable
 public final class PluginPane {
     public let tree = ViewTree()
@@ -58,6 +60,8 @@ public final class PluginPane {
         public var reconcileMs = 0.0
         public var nodes = 0
         public var renders = 0
+        /// Flushes of a mounted view: each runs the effects that went stale and applies their writes, with no `view`.
+        public var flushes = 0
     }
     @ObservationIgnored public private(set) var perf = Perf()
 
@@ -100,7 +104,7 @@ public final class PluginPane {
     private func canvasSize(key: String, width w: Double, height h: Double) {
         guard let runtime, runtime.setCanvasSize(key: key, width: w, height: h) else { return }
         do {
-            try render()
+            try refresh(changed: "size:" + key)
             if !loadFailed { error = nil }
         } catch {
             fail(error)
@@ -175,7 +179,7 @@ public final class PluginPane {
                 feedValues[key] = .null
             }
             guard runtime != nil else { return }
-            try render()
+            try refresh(changed: "feed:" + Self.feedKey(key))
             if !loadFailed { error = nil }
         } catch {
             // The held value no longer matches wheeld's: drop it and read the feed again, so wheeld sends it whole.
@@ -242,7 +246,17 @@ public final class PluginPane {
         let params: JSONValue = given == .array([]) ? .object([:]) : given
         let key = FeedKey(name: name, params: Self.canonical(params))
         asked[key] = params
-        return PaneRuntime.FeedRead(value: feedValues[key] ?? .null, stale: staleFeeds.contains(key))
+        return PaneRuntime.FeedRead(value: feedValues[key] ?? .null, stale: staleFeeds.contains(key), key: Self.feedKey(key))
+    }
+
+    /// A feed's name and params as the runtime names it: `<name> <params as canonical JSON>`.
+    private static func feedKey(_ key: FeedKey) -> String { key.name + " " + key.params }
+
+    /// A mounted view keeps the feeds its live computations read (`live`, by `feedKey`): those are subscribed, the rest dropped.
+    private func syncLive(_ live: [String]) {
+        let keep = Set(live)
+        asked = asked.filter { keep.contains(Self.feedKey($0.key)) }
+        syncFeeds()
     }
 
     /// After a good render: subscribes the feeds it read that are new and unsubscribes those it no longer reads.
@@ -265,7 +279,7 @@ public final class PluginPane {
             let start = ContinuousClock.now
             try runtime.send(msg)
             perf.updateMs = Self.ms(since: start)
-            try render()
+            try refresh()
             if !loadFailed { error = nil }
         } catch {
             fail(error)
@@ -288,13 +302,29 @@ public final class PluginPane {
         var description: String { "view: duplicate key \(at)" }
     }
 
+    /// After a message, a feed change (`feed:<key>`) or a canvas size (`size:<key>`): a mounted view flushes the writes its
+    /// stale effects make; any other view renders whole.
+    private func refresh(changed source: String? = nil) throws {
+        guard let runtime else { return }
+        guard runtime.mounted else { return try render() }
+        let start = ContinuousClock.now
+        let changes = try runtime.flush(changed: source)
+        perf.viewMs = 0
+        tree.apply(changes.ops)
+        perf.reconcileMs = Self.ms(since: start)
+        perf.nodes = tree.written
+        perf.flushes += 1
+        syncLive(changes.feeds)
+        if let at = tree.duplicate { throw DuplicateKey(at: at) }
+    }
+
     private func render() throws {
         guard let runtime else { return }
         asked = [:]
         let viewStart = ContinuousClock.now
         let view = try runtime.view(.object(context))
         perf.viewMs = Self.ms(since: viewStart)
-        syncFeeds()
+        if runtime.mounted { syncLive(runtime.feeds) } else { syncFeeds() }
         let start = ContinuousClock.now
         tree.reconcile(view)
         perf.reconcileMs = Self.ms(since: start)
