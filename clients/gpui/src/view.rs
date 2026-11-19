@@ -2374,6 +2374,8 @@ impl Render for Client {
                 // A key with the composer's input focused went through `composer_key` before the
                 // input's own bindings.
                 if !this.composer_focused(window, cx) && this.key(e, cx) {
+                    // A key the view took goes no further: no keybinding also runs on it.
+                    cx.stop_propagation();
                     cx.notify();
                 }
             }))
