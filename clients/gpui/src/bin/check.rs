@@ -4245,7 +4245,8 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     }
     let new_rect = new_rect.ok_or_else(|| anyhow::anyhow!("the split pane {new_pane} never arrived as an empty pane"))?;
     draw(window, None, cx)?;
-    let body = [f64::from(new_rect.x + new_rect.w / 2.), f64::from(new_rect.y + new_rect.h / 2.)];
+    // Left of the pane picker's column, where a press lands on the pane itself.
+    let body = [f64::from(new_rect.x + 5.), f64::from(new_rect.y + new_rect.h / 2.)];
     native.call(json!({"op":"post_mouse","kind":"down","point":body}));
     native.call(json!({"op":"post_mouse","kind":"up","point":body}));
     tick(cx, 200).await;
@@ -4253,7 +4254,20 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(new_pane.as_str()), "the click did not focus the empty pane");
     // The pane picker: the empty pane lists the space's plugin panes and artifacts, its field has
     // the keys from the start, and the button row and the field keep one rect in every state.
-    let (rest, total) = picker_listed(&new_pane, &mut connection, &mut layouts, window, cx).await?;
+    // Zoomed, the picker has the room a person's pane gives it, for the states the shots keep.
+    window.update(cx, |c, _, _| c.toggle_zoom(&new_pane))?;
+    let (mut rest, total) = picker_listed(&new_pane, &mut connection, &mut layouts, window, cx).await?;
+    // The zoom animates the pane into place; the rects are measured once two frames agree.
+    for _ in 0..60 {
+        tick(cx, 50).await;
+        draw(window, None, cx)?;
+        let now = picker_state(window, &new_pane, cx)?;
+        let settled = now["button_row"] == rest["button_row"] && now["field"] == rest["field"];
+        rest = now;
+        if settled {
+            break;
+        }
+    }
     let listed: Vec<String> = picker_ids(&rest).into_iter().filter(|id| id.starts_with("artifact:")).collect();
     // The project's two artifacts; the fixture's machine file names none.
     ensure!(listed == ["artifact:project/fixture-html", "artifact:project/fixture-page"], "the picker listed artifacts {listed:?}");
@@ -4316,6 +4330,8 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     ensure!(picker_state(window, &new_pane, cx)?["field_focused"] == true, "a press on the field did not give it the keys");
     draw(window, Some(output.join("client-picker-no-agents.png")), cx)?;
     window.update(cx, |c, _, _| c.agents = agents.clone())?;
+    draw(window, None, cx)?;
+    window.update(cx, |c, _, _| c.toggle_zoom(&new_pane))?;
     draw(window, None, cx)?;
     // Each of the other ways out, in a pane of its own split from this one: bead → Return opens the
     // Beads plugin pane; Return at rest opens Terminal; ⌘N (the last button) opens Browser.
@@ -5015,7 +5031,8 @@ async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &m
     ensure!(window.update(cx, |c, _, _| c.keymap.action(&wheel_gpui::keymap::KeyChord::parse("cmd+d").unwrap()).map(str::to_owned))? == None, "⌘D is still bound after the setting moved it");
     // The empty pane the first split made has the keyboard; ⌘E splits it.
     let empty_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == split_pane).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("the split pane left"))?;
-    let empty_body = [f64::from(empty_rect.x + empty_rect.w / 2.), f64::from(empty_rect.y + empty_rect.h / 2.)];
+    // Left of the pane picker's column, where a press lands on the pane itself.
+    let empty_body = [f64::from(empty_rect.x + 5.), f64::from(empty_rect.y + empty_rect.h / 2.)];
     native.call(json!({"op":"post_mouse","kind":"down","point":empty_body}));
     native.call(json!({"op":"post_mouse","kind":"up","point":empty_body}));
     tick(cx, 200).await;

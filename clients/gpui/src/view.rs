@@ -258,6 +258,8 @@ pub struct Client {
     artifacts: HashMap<String, Vec<ArtifactInfo>>,
     /// The `artifact_ls` requests out for the pickers, by request id: the space each lists.
     artifact_reqs: HashMap<u64, String>,
+    /// wheeld's refusal of the last `artifact_ls` for a space, verbatim, until one succeeds.
+    artifact_errors: HashMap<String, String>,
     /// The next request id for a reply this window tells apart (`artifact_ls`, `pane_browser_open`).
     next_req: u64,
     /// Each browser pane's chrome state, as the bridge last emitted it.
@@ -503,7 +505,7 @@ impl Client {
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
-            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], pane_pickers: HashMap::new(), artifacts: HashMap::new(), artifact_reqs: HashMap::new(), next_req: 100_000,
+            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], pane_pickers: HashMap::new(), artifacts: HashMap::new(), artifact_reqs: HashMap::new(), artifact_errors: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
@@ -572,6 +574,7 @@ impl Client {
                         }
                         ServerMsg::Artifacts { req, artifacts, .. } => {
                             if let Some(space) = self.artifact_reqs.remove(req) {
+                                self.artifact_errors.remove(&space);
                                 self.artifacts.insert(space, artifacts.clone());
                             }
                             return false;
@@ -585,6 +588,7 @@ impl Client {
                             }
                             if let Some(space) = self.artifact_reqs.remove(req) {
                                 self.plugins_asked.remove(&space);
+                                self.artifact_errors.insert(space, message.clone());
                             }
                             // wheeld read typed text as no page: the field shows why.
                             if let Some((pane, text)) = self.open_reqs.remove(req) {
@@ -1558,7 +1562,7 @@ impl Client {
         }
     }
     /// Give `pane` the keyboard: its native view, or the GPUI view for a pane GPUI draws.
-    fn focus_pane(&mut self, pane: &str) {
+    pub fn focus_pane(&mut self, pane: &str) {
         // An address edit ends when the keyboard goes to another pane.
         if self.address_edit.as_ref().is_some_and(|(p, _)| p != pane) {
             self.address_edit = None;
@@ -1818,6 +1822,18 @@ impl Client {
         let artifacts = artifacts.into_iter().map(|a| pane_picker::Item::new(format!("artifact:{}/{}", pane_picker::scope_name(a.scope), a.name), pane_picker::Kind::Artifact, a.name.clone(), a.title.clone())).collect();
         (plugins, artifacts)
     }
+    /// wheeld's refusal of the artifacts of `pane`'s space, if the last listing failed.
+    pub fn picker_artifact_error(&self, pane: &str) -> Option<String> {
+        let space = self.spaces.iter().find(|s| s.shown().any(|l| l.id == pane))?.id.clone();
+        self.artifact_errors.get(&space).cloned()
+    }
+    /// List the plugins and artifacts of `pane`'s space again now (the failure's Try Again).
+    pub fn picker_relist(&mut self, pane: &str) {
+        if let Some(space) = self.spaces.iter().find(|s| s.shown().any(|l| l.id == pane)).map(|s| s.id.clone()) {
+            self.plugins_asked.remove(&space);
+        }
+        self.ask_plugins(false);
+    }
     /// Everything `pane`'s picker searches: the found quick buttons, the plugin panes, the artifacts.
     fn picker_items(&self, pane: &str) -> Vec<pane_picker::Item> {
         let (plugins, artifacts) = self.picker_list(pane);
@@ -1847,7 +1863,7 @@ impl Client {
             "count": pane_picker::count(&picker.query, shown, total), "placeholder": pane_picker::placeholder(total),
             "rows": rows.iter().map(|i| serde_json::json!({"id": i.id, "kind": i.kind.word(), "name": i.name})).collect::<Vec<_>>(),
             "buttons": self.picker_buttons().iter().map(|(i, found)| serde_json::json!({"id": i.id, "enabled": found})).collect::<Vec<_>>(),
-            "button_row": frame("picker-buttons"), "field": frame("picker-field"),
+            "button_row": frame("picker-buttons"), "field": frame("picker-field"), "artifact_error": self.picker_artifact_error(pane),
         }))
     }
     /// Open `item` in empty pane `pane`: Terminal and Browser set the kind, an agent starts, a

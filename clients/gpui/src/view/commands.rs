@@ -225,6 +225,8 @@ impl Client {
             "pane-artifact" => {
                 if let Some(pane) = focused {
                     self.ask_set_kind(&pane, NewPaneKind::Empty);
+                    // An already empty pane whose field gave the keys back takes them again.
+                    self.picker_focus_field(&pane);
                 }
             }
             "previous-space" | "next-space" => self.cycle_space(if id == "next-space" { 1 } else { -1 }),
@@ -393,7 +395,7 @@ impl Client {
             self.run_pending(pending.run);
         }
     }
-    pub(super) fn leaf(&self, pane: &str) -> Option<Leaf> {
+    pub fn leaf(&self, pane: &str) -> Option<Leaf> {
         self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane).cloned()
     }
     /// The question a pane that runs a shell or an agent asks before it stops running it.
