@@ -6,7 +6,7 @@ import Testing
 @testable import WheelUI
 
 @MainActor
-struct A2UITableWidthTests {
+struct TableWidthTests {
     private func tableColumns(width: CGFloat) async throws -> [CGFloat] {
         let pane = PluginPane()
         pane.load(source: """
@@ -16,7 +16,7 @@ struct A2UITableWidthTests {
         } end }
         """, chunk: "table.luau")
         #expect(pane.error == nil)
-        let view = A2UISurfaceView(tree: pane.tree).environment(\.a2uiPane, CGSize(width: width, height: 400))
+        let view = PaneTreeView(tree: pane.tree).environment(\.paneSize, CGSize(width: width, height: 400))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         let host = NSHostingView(rootView: view)
         window.contentView = host

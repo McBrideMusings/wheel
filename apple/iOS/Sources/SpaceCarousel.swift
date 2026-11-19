@@ -509,7 +509,7 @@ private struct PluginPage: View {
 
     var body: some View {
         PluginPaneView(pane: plugin)
-            .environment(\.a2uiPaneEmbed, { embed in AnyView(PluginEmbed(model: model, host: pane, embed: embed)) })
+            .environment(\.paneEmbed, { embed in AnyView(PluginEmbed(model: model, host: pane, embed: embed)) })
             .overlay(alignment: .top) {
                 if let error = plugin.error {
                     Text(error)
@@ -534,7 +534,7 @@ private struct PluginEmbed: View {
     let model: PhoneModel
     /// The plugin pane whose page this is.
     let host: String
-    let embed: A2UIPaneEmbed
+    let embed: PaneEmbed
 
     var body: some View {
         let kind = model.kind(ofPane: embed.pane)

@@ -4,5 +4,5 @@ version = "0.1.0"
 
 [[pane]]
 id = "gallery"
-title = "A2UI gallery"
+title = "Component gallery"
 script = "panes/gallery.luau"

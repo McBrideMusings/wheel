@@ -1,4 +1,4 @@
--- The A2UI gallery pane: one page with a table per class of control. It draws the basic catalog's components with every
+-- The component gallery pane: one page with a table per class of control. It draws the basic components with every
 -- option, the SwiftUI controls, the Table, the modifiers, then Wheel's own components. Nothing on it is wired to a
 -- backend; every control raises `{ type = "act" }`, which `update` ignores.
 --
@@ -659,8 +659,8 @@ end
 
 local function view(state, data)
     local page = col({
-        txt("A2UI component gallery", "h1"),
-        secondary("A table per class of control: the basic catalog's components with every option, the SwiftUI controls, modifiers, then Wheel's own component."),
+        txt("Component gallery", "h1"),
+        secondary("A table per class of control: the basic components with every option, the SwiftUI controls, modifiers, then Wheel's own component."),
         secondary("Updated with every change to a component or modifier. Body text is 13 pt on the Mac and the phone."),
         content_class(),
         controls_class(),

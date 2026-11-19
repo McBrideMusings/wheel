@@ -38,7 +38,7 @@ import WheelKit
     @Test func drawsEveryClass() throws {
         let all = try Self.components()
         let texts = Set(all.values.compactMap { f -> String? in if case let .string(t)? = f["text"] { t } else { nil } })
-        for heading in ["A2UI component gallery", "Content", "Buttons", "Selection and input", "Containers and layout",
+        for heading in ["Component gallery", "Content", "Buttons", "Selection and input", "Containers and layout",
                         "Navigation and presentation", "SwiftUI controls", "Table", "Modifiers", "Wheel's own component"] {
             #expect(texts.contains(heading), "no \(heading) heading")
         }

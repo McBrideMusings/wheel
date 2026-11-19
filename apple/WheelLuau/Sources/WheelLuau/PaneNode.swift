@@ -1,7 +1,7 @@
 import WheelKit
 
 /// One node of the tree a pane script's `view` returns: a WheelUI component under its own name
-/// (an A2UI basic-catalog component, a SwiftUI control, or `Canvas`; ADR-0031), its properties
+/// (a basic component, a SwiftUI control, or `Canvas`; ADR-0031), its properties
 /// (`modifiers` among them, ADR-0038), and the nodes in its array part.
 public struct PaneNode: Equatable, Sendable {
     public var component: String

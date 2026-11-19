@@ -1,41 +1,41 @@
 import AVKit
 import SwiftUI
 
-// The 18 components of A2UI's basic catalog, drawn as SwiftUI draws them. Each view draws one `ViewNode` and observes only that
+// The 18 basic components, drawn as SwiftUI draws them. Each view draws one `ViewNode` and observes only that
 // node. A control that holds a value shows the node's `value` and writes through `ViewTree.change`; one that raises an action
 // names the key path of the table the script put there (`ViewTree.raise`).
 
-/// Builds the view for a node: a basic component, one of Wheel's own, or a SwiftUI control (A2UISystemControls).
-struct A2UIChildView: View {
+/// Builds the view for a node: a basic component, one of Wheel's own, or a SwiftUI control (PaneSystemControls).
+struct PaneNodeView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
         ViewPerf.bodies += 1
-        return view.a2uiModified(node)
+        return view.paneModified(node)
     }
 
     @ViewBuilder
     private var view: some View {
         switch node.component {
-        case "Text": A2UIText(node: node)
-        case "Image": A2UIImage(node: node)
-        case "Icon": A2UIIcon(node: node)
-        case "Video": A2UIVideo(node: node)
-        case "AudioPlayer": A2UIUnsupportedView(name: "AudioPlayer")
-        case "Row": A2UIStack(node: node, tree: tree, horizontal: true)
-        case "Column": A2UIStack(node: node, tree: tree, horizontal: false)
-        case "List": A2UIList(node: node, tree: tree)
-        case "Card": GroupBox { if let c = node.parts.first { A2UIChildView(node: c, tree: tree) } }
-        case "Tabs": A2UITabs(node: node, tree: tree)
+        case "Text": PaneText(node: node)
+        case "Image": PaneImage(node: node)
+        case "Icon": PaneIcon(node: node)
+        case "Video": PaneVideo(node: node)
+        case "AudioPlayer": PaneUnsupportedView(name: "AudioPlayer")
+        case "Row": PaneStack(node: node, tree: tree, horizontal: true)
+        case "Column": PaneStack(node: node, tree: tree, horizontal: false)
+        case "List": PaneList(node: node, tree: tree)
+        case "Card": GroupBox { if let c = node.parts.first { PaneNodeView(node: c, tree: tree) } }
+        case "Tabs": PaneTabs(node: node, tree: tree)
         case "Divider": if node.props["axis"]?.stringValue == "vertical" { Divider().frame(height: 18) } else { Divider() }
-        case "Modal": A2UIModal(node: node, tree: tree)
-        case "Button": A2UIButton(node: node, tree: tree)
-        case "CheckBox": A2UICheckBox(node: node, tree: tree)
-        case "TextField": A2UITextField(node: node, tree: tree)
-        case "DateTimeInput": A2UIDateTimeInput(node: node, tree: tree)
-        case "ChoicePicker": A2UIChoicePicker(node: node, tree: tree)
-        case "Slider": A2UISlider(node: node, tree: tree)
-        default: WheelA2UICatalog().build(typeName: node.component, node: node, tree: tree)
+        case "Modal": PaneModal(node: node, tree: tree)
+        case "Button": PaneButton(node: node, tree: tree)
+        case "CheckBox": PaneCheckBox(node: node, tree: tree)
+        case "TextField": PaneTextField(node: node, tree: tree)
+        case "DateTimeInput": PaneDateTimeInput(node: node, tree: tree)
+        case "ChoicePicker": PaneChoicePicker(node: node, tree: tree)
+        case "Slider": PaneSlider(node: node, tree: tree)
+        default: PaneCatalog().build(typeName: node.component, node: node, tree: tree)
         }
     }
 }
@@ -49,16 +49,16 @@ public enum ViewPerf {
 }
 
 /// The page: the root component resolved, scrolled by the pane that holds it.
-struct A2UISurfaceView: View {
+struct PaneTreeView: View {
     let tree: ViewTree
     var body: some View {
         // The Mac's body size on every platform, so a page reads the same on a phone; a `font` modifier on a component still wins.
-        if let root = tree.root { A2UIChildView(node: root, tree: tree).font(.system(size: 13)) }
+        if let root = tree.root { PaneNodeView(node: root, tree: tree).font(.system(size: 13)) }
     }
 }
 
 // MARK: Text — `text`, `variant` (h1 to h5, body, caption). Body sets no font, so a `font` modifier on it takes effect.
-struct A2UIText: View {
+struct PaneText: View {
     let node: ViewNode
     var body: some View {
         // `markdown: true` reads the text as inline Markdown (bold, italic, code, links), as SwiftUI's own Text does.
@@ -79,7 +79,7 @@ struct A2UIText: View {
 }
 
 // MARK: Image — `url`, `fit`, `variant`
-struct A2UIImage: View {
+struct PaneImage: View {
     let node: ViewNode
     var body: some View {
         let size: CGFloat? = switch node.props["variant"]?.stringValue {
@@ -99,7 +99,7 @@ struct A2UIImage: View {
 }
 
 // MARK: Icon — `name`, an SF Symbol or one of the material names
-struct A2UIIcon: View {
+struct PaneIcon: View {
     let node: ViewNode
     private static let material = ["check": "checkmark", "close": "xmark", "add": "plus", "delete": "trash", "edit": "pencil", "home": "house",
                                    "search": "magnifyingglass", "settings": "gearshape", "star": "star", "info": "info.circle", "warning": "exclamationmark.triangle",
@@ -111,7 +111,7 @@ struct A2UIIcon: View {
 }
 
 // MARK: Video — `url`
-struct A2UIVideo: View {
+struct PaneVideo: View {
     let node: ViewNode
     @State private var player: AVPlayer?
     var body: some View {
@@ -121,7 +121,7 @@ struct A2UIVideo: View {
 }
 
 // MARK: Row and Column — `spacing` (VStack and HStack's own), `justify` (start, center, end, spaceBetween, spaceEvenly, spaceAround), `align` (start, center, end, stretch)
-struct A2UIStack: View {
+struct PaneStack: View {
     let node: ViewNode
     let tree: ViewTree
     let horizontal: Bool
@@ -145,7 +145,7 @@ struct A2UIStack: View {
         if justify == "end" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround" { Spacer(minLength: 0) }
         ForEach(kids, id: \.element.id) { i, k in
             if i > 0 && justify == "spaceBetween" || i > 0 && justify == "spaceEvenly" || i > 0 && justify == "spaceAround" { Spacer(minLength: 0) }
-            A2UIChildView(node: k, tree: tree)
+            PaneNodeView(node: k, tree: tree)
         }
         // The spacer that keeps a start-aligned stack at the top gives way to a Table, which takes the height left over.
         // A column gets none: in a card or a box a spacer made the stack take height and stretched it.
@@ -160,7 +160,7 @@ struct A2UIStack: View {
 // MARK: List — `direction` (vertical, horizontal); a vertical one takes LazyVStack's `pinnedViews` (["sectionHeaders",
 // "sectionFooters"]: a Section child's header stays at the top while its rows scroll) and ScrollViewReader's `scrollTo` (a child's
 // `key`, or its place counted from 1: the list scrolls it to the top whenever the value changes)
-struct A2UIList: View {
+struct PaneList: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -186,38 +186,38 @@ struct A2UIList: View {
         .fixedSize(horizontal: false, vertical: horizontal)
     }
     private var items: some View {
-        ForEach(node.parts) { k in A2UIChildView(node: k, tree: tree).id(k.id) }
+        ForEach(node.parts) { k in PaneNodeView(node: k, tree: tree).id(k.id) }
     }
 }
 
 // MARK: Tabs — `tabs` [{title, child}]
-struct A2UITabs: View {
+struct PaneTabs: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
         let titles = (node.props["tabs"]?.arrayValue ?? []).compactMap { $0.dictionaryValue?["title"]?.stringValue }
         TabView {
             ForEach(Array(node.parts.enumerated()), id: \.element.id) { i, k in
-                A2UIChildView(node: k, tree: tree).tabItem { Text(i < titles.count ? titles[i] : "") }
+                PaneNodeView(node: k, tree: tree).tabItem { Text(i < titles.count ? titles[i] : "") }
             }
         }
     }
 }
 
 // MARK: Modal — `trigger` opens a sheet holding `content`. With `presented` the server opens it: it dims and covers its own pane
-// (A2UIPresentedModals, drawn by the pane over the page), `dismissAction` is raised when it closes, and `actions` (component ids) sit in the footer beside Close.
-struct A2UIModal: View {
+// (PanePresentedModals, drawn by the pane over the page), `dismissAction` is raised when it closes, and `actions` (component ids) sit in the footer beside Close.
+struct PaneModal: View {
     let node: ViewNode
     let tree: ViewTree
     @State private var open = false
     var body: some View {
         if node.props["presented"] == nil, node.parts.count >= 2 {
-            A2UIChildView(node: node.parts[0], tree: tree)
+            PaneNodeView(node: node.parts[0], tree: tree)
                 .simultaneousGesture(TapGesture().onEnded { open = true })
                 .sheet(isPresented: $open) {
                     // The system's sheet: a title bar with Done, a grabber and medium and large heights on a phone.
                     NavigationStack {
-                        A2UIChildView(node: node.parts[1], tree: tree)
+                        PaneNodeView(node: node.parts[1], tree: tree)
                             .navigationTitle(node.props["title"]?.text ?? "")
                             #if os(iOS)
                             .navigationBarTitleDisplayMode(.inline)
@@ -235,7 +235,7 @@ struct A2UIModal: View {
 }
 
 /// The presented Modals of a surface, drawn over the pane that shows it: a dimmed scrim and a card that takes the pane's width inside a margin, so only that pane is covered.
-struct A2UIPresentedModals: View {
+struct PanePresentedModals: View {
     let tree: ViewTree
     var body: some View {
         ForEach(tree.modals) { node in card(node) }
@@ -249,7 +249,7 @@ struct A2UIPresentedModals: View {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(node.parts) { k in A2UIChildView(node: k, tree: tree) }
+                        ForEach(node.parts) { k in PaneNodeView(node: k, tree: tree) }
                     }
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading).padding(18)
@@ -263,7 +263,7 @@ struct A2UIPresentedModals: View {
                     HStack(spacing: 8) {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
-                                ForEach(actions) { action in A2UIChildView(node: action, tree: tree) }
+                                ForEach(actions) { action in PaneNodeView(node: action, tree: tree) }
                             }
                             .font(.system(size: 13))
                             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -275,7 +275,7 @@ struct A2UIPresentedModals: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(a2uiColor("controlBackground") ?? Color.gray.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+            .background(paneColor("controlBackground") ?? Color.gray.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
             .overlay(alignment: .topTrailing) {
                 // Close is an icon in the corner, apart from the footer's buttons; a click on the dimmed pane and Esc close too.
@@ -288,14 +288,14 @@ struct A2UIPresentedModals: View {
             .shadow(radius: 18)
             .padding(24)
         }
-        .accessibilityIdentifier("a2ui.modal")
+        .accessibilityIdentifier("pane.modal")
     }
 }
 
 // MARK: Button — `child`, `variant` (default, primary, borderless), `action` {event: {name, context}} calls the page's tool;
 // `action` {copy: {text}} puts the text on the pasteboard in the client and calls no tool (a button holding both copies
 // only). After a copy a tick is drawn over the label for 1.5 s; the label keeps its width, so nothing beside it moves.
-struct A2UIButton: View {
+struct PaneButton: View {
     let node: ViewNode
     let tree: ViewTree
     /// How many copies this button made; each one restarts the tick.
@@ -306,7 +306,7 @@ struct A2UIButton: View {
             if tree.activate(node) { copies += 1 }
         } label: {
             if let c = node.parts.first {
-                A2UIChildView(node: c, tree: tree)
+                PaneNodeView(node: c, tree: tree)
                     .opacity(copied ? 0 : 1)
                     .overlay { if copied { Image(systemName: "checkmark").accessibilityLabel("Copied") } }
             }
@@ -326,28 +326,28 @@ struct A2UIButton: View {
 }
 
 // MARK: CheckBox — `label`, `value`
-private struct A2UIInFormKey: EnvironmentKey { static let defaultValue = false }
+private struct PaneInFormKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     /// Whether a component is a row of a Form, where a choice draws as its own rows.
-    var a2uiInForm: Bool {
-        get { self[A2UIInFormKey.self] }
-        set { self[A2UIInFormKey.self] = newValue }
+    var paneInForm: Bool {
+        get { self[PaneInFormKey.self] }
+        set { self[PaneInFormKey.self] = newValue }
     }
 }
 
-private struct A2UIInMenuKey: EnvironmentKey { static let defaultValue = false }
+private struct PaneInMenuKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     /// Whether a component is an item of a Menu, where a Toggle draws as a tick row.
-    var a2uiInMenu: Bool {
-        get { self[A2UIInMenuKey.self] }
-        set { self[A2UIInMenuKey.self] = newValue }
+    var paneInMenu: Bool {
+        get { self[PaneInMenuKey.self] }
+        set { self[PaneInMenuKey.self] = newValue }
     }
 }
 
-struct A2UICheckBox: View {
+struct PaneCheckBox: View {
     let node: ViewNode
     let tree: ViewTree
-    @Environment(\.a2uiInMenu) private var inMenu
+    @Environment(\.paneInMenu) private var inMenu
     var body: some View {
         let binding = Binding<Bool>(get: { node.value?.boolValue ?? false }, set: { tree.change(node, .bool($0)) })
         let toggle = Toggle(node.props["label"]?.text ?? "", isOn: binding)
@@ -360,7 +360,7 @@ struct A2UICheckBox: View {
 }
 
 // MARK: TextField — `label`, `value`, `variant` (shortText, longText, number, obscured)
-struct A2UITextField: View {
+struct PaneTextField: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -381,7 +381,7 @@ struct A2UITextField: View {
 }
 
 // MARK: DateTimeInput — `label`, `value` (ISO 8601), `enableDate`, `enableTime`
-struct A2UIDateTimeInput: View {
+struct PaneDateTimeInput: View {
     let node: ViewNode
     let tree: ViewTree
     private static let formats = ["yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd", "'T'HH:mm:ss", "HH:mm:ss"]
@@ -406,11 +406,11 @@ struct A2UIDateTimeInput: View {
 }
 
 // MARK: ChoicePicker — `label`, `options` [{label, value}], `value` [selected], `variant` (mutuallyExclusive, multipleSelection), `displayStyle` (checkbox, chips, menu), `filterable`
-struct A2UIChoicePicker: View {
+struct PaneChoicePicker: View {
     let node: ViewNode
     let tree: ViewTree
     @State private var filter = ""
-    @Environment(\.a2uiInForm) private var inForm
+    @Environment(\.paneInForm) private var inForm
     var body: some View {
         let all = (node.props["options"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.map { (label: $0["label"]?.text ?? "", value: $0["value"]?.text ?? "") }
         let options = filter.isEmpty ? all : all.filter { $0.label.localizedCaseInsensitiveContains(filter) }
@@ -474,7 +474,7 @@ struct A2UIChoicePicker: View {
 }
 
 // MARK: Slider — `label`, `value`, `min`, `max`
-struct A2UISlider: View {
+struct PaneSlider: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {

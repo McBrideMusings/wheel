@@ -14,7 +14,7 @@ import SwiftUI
 // A name this does not map draws a visible marker, never nothing.
 
 /// The colour a modifier's colour name means.
-func a2uiColor(_ name: String?) -> Color? {
+func paneColor(_ name: String?) -> Color? {
     switch name {
     case "primary": return .primary
     #if os(macOS)
@@ -86,7 +86,7 @@ private func textStyle(_ name: String) -> Font? {
     }
 }
 
-func a2uiFont(_ v: JSONValue) -> Font? {
+func paneFont(_ v: JSONValue) -> Font? {
     if let s = v.stringValue { return textStyle(s) }
     guard let d = v.dictionaryValue else { return nil }
     let design: Font.Design = d["design"]?.stringValue == "monospaced" ? .monospaced : d["design"]?.stringValue == "serif" ? .serif : d["design"]?.stringValue == "rounded" ? .rounded : .default
@@ -95,7 +95,7 @@ func a2uiFont(_ v: JSONValue) -> Font? {
     return nil
 }
 
-func a2uiPadding(_ v: JSONValue) -> EdgeInsets? {
+func panePadding(_ v: JSONValue) -> EdgeInsets? {
     if let n = v.numberValue { return EdgeInsets(top: n, leading: n, bottom: n, trailing: n) }
     if let a = v.arrayValue?.compactMap({ $0.numberValue }) {
         if a.count == 2 { return EdgeInsets(top: a[0], leading: a[1], bottom: a[0], trailing: a[1]) }
@@ -125,7 +125,7 @@ private func alignment(_ name: String?) -> Alignment {
 }
 
 /// Applies a component's `modifiers` list, in order.
-struct A2UIModifiers: ViewModifier {
+struct PaneModifiers: ViewModifier {
     let list: [JSONValue]
 
     func body(content: Content) -> some View {
@@ -140,16 +140,16 @@ struct A2UIModifiers: ViewModifier {
     private func apply(_ name: String, _ arg: JSONValue, to v: AnyView) -> AnyView {
         switch name {
         case "font":
-            if let f = a2uiFont(arg) { return AnyView(v.font(f)) }
+            if let f = paneFont(arg) { return AnyView(v.font(f)) }
         case "fontWeight": return AnyView(v.fontWeight(fontWeight(arg.stringValue)))
         case "monospacedDigit": if arg.boolValue != false { return AnyView(v.monospacedDigit()) } else { return v }
-        case "tint": if let c = a2uiColor(arg.stringValue) { return AnyView(v.tint(c)) }
+        case "tint": if let c = paneColor(arg.stringValue) { return AnyView(v.tint(c)) }
         case "foregroundStyle":
-            if let c = a2uiColor(arg.stringValue) { return AnyView(v.foregroundStyle(c)) }
+            if let c = paneColor(arg.stringValue) { return AnyView(v.foregroundStyle(c)) }
         case "background":
-            if let c = a2uiColor(arg.stringValue) { return AnyView(v.background(c)) }
+            if let c = paneColor(arg.stringValue) { return AnyView(v.background(c)) }
         case "padding":
-            if let e = a2uiPadding(arg) { return AnyView(v.padding(e)) }
+            if let e = panePadding(arg) { return AnyView(v.padding(e)) }
         case "frame":
             if let d = arg.dictionaryValue {
                 return AnyView(v.frame(minWidth: length(d["minWidth"]), idealWidth: length(d["idealWidth"]), maxWidth: length(d["maxWidth"]),
@@ -158,7 +158,7 @@ struct A2UIModifiers: ViewModifier {
                     .frame(width: length(d["width"]), height: length(d["height"]), alignment: alignment(d["alignment"]?.stringValue)))
             }
         case "overlay":
-            if let d = arg.dictionaryValue, let c = a2uiColor(d["stroke"]?.stringValue) {
+            if let d = arg.dictionaryValue, let c = paneColor(d["stroke"]?.stringValue) {
                 let r = d["cornerRadius"]?.numberValue ?? 0
                 return AnyView(v.overlay(RoundedRectangle(cornerRadius: r, style: .continuous).strokeBorder(c)))
             }
@@ -221,8 +221,8 @@ private struct HoverHighlight: ViewModifier {
 
 extension View {
     /// The component's `modifiers` property, applied.
-    func a2uiModified(_ node: ViewNode) -> some View {
-        modifier(A2UIModifiers(list: node.props["modifiers"]?.arrayValue ?? []))
+    func paneModified(_ node: ViewNode) -> some View {
+        modifier(PaneModifiers(list: node.props["modifiers"]?.arrayValue ?? []))
     }
 }
 

@@ -135,7 +135,7 @@ impl Native {
     pub fn open_artifact(&self, pane: &str, name: &str, scope: &str, space: Option<&str>, cwd: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws}));
     }
-    /// Show plugin pane `pane` (ADR-0041): the bridge draws its Luau script as A2UI components, asking wheeld at `ws`
+    /// Show plugin pane `pane` (ADR-0041): the bridge draws its Luau script as WheelUI components, asking wheeld at `ws`
     /// for the script and again whenever it changes on disk. `label` is `<plugin>/<pane id>`; the script's `data` gets
     /// the pane, `space`, the space directory `cwd` and those two ids.
     pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, cwd: &str, ws: &str) {

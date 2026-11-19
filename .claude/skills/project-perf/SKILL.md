@@ -23,7 +23,7 @@ keeps each table.
 | hidden turns | `bash .claude/skills/project-verify/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
 | layout | `bash .claude/skills/project-verify/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 | build | `bash .claude/skills/project-verify/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
-| plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `A2UI`, `apple/WheelLuau`, `clients/gpui/native/Bridge.swift`'s plugin pane, or a wheelhouse pane script |
+| plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `Components`, `apple/WheelLuau`, `clients/gpui/native/Bridge.swift`'s plugin pane, or a wheelhouse pane script |
 
 ## chat
 

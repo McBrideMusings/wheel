@@ -75,7 +75,7 @@ final class Slot: NSView {
     /// for: its store and scheme handler are bound to both, so another of either is another view.
     var artifact: String?
     var cwd: String?
-    /// A plugin pane (ADR-0041): its Luau script drawn as A2UI components, and the plugin and pane it runs, as wheeld names them.
+    /// A plugin pane (ADR-0041): its Luau script drawn as WheelUI components, and the plugin and pane it runs, as wheeld names them.
     var plugin: PluginPane?
     var pluginView: NSHostingView<AnyView>?
     var pluginLabel: String?
@@ -904,7 +904,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 self?.sendAction(pane: id, action: action, args: args)
             }
             let surface = PluginPaneView(pane: plugin)
-                .environment(\.a2uiPaneEmbed, { [weak self] embed in self?.embedView(embed, hostPane: id) })
+                .environment(\.paneEmbed, { [weak self] embed in self?.embedView(embed, hostPane: id) })
             let view: NSHostingView<AnyView>
             if value["agent"] as? Bool == true {
                 let target = HostAgentTarget(agent: paneTargets[id]?["agent"])
@@ -1035,7 +1035,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
     /// `render_pane` relayed by the Rust side: the pane as a PNG, answered through `emit` with
     /// `rendered` or `refused`. A web or browser pane is WebKit's own render of the page (under
-    /// `full`, the whole document); a native A2UI page and a terminal are their views' pixels.
+    /// `full`, the whole document); a plugin pane and a terminal are their views' pixels.
     func render(_ value: [String: Any]) {
         let id = value["id"] as! UInt64
         let pane = value["pane"] as! String
@@ -1151,7 +1151,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         pageDaemon.token = token
     }
     /// What a plugin page's embedded pane draws as: the pane's terminal, or its agent's conversation.
-    func embedView(_ embed: A2UIPaneEmbed, hostPane: String) -> AnyView? {
+    func embedView(_ embed: PaneEmbed, hostPane: String) -> AnyView? {
         switch embed.kind {
         case .terminal: return AnyView(EmbeddedTerminal(native: self, hostPane: hostPane, pane: embed.pane))
         case .agentChat: return AnyView(EmbeddedAgentChat(native: self, hostPane: hostPane, pane: embed.pane))

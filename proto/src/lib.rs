@@ -2532,8 +2532,8 @@ pub enum ServerMsg {
         pane: String,
     },
     /// Sent to every connection: the MCP server behind web pane `pane` announced that a resource
-    /// changed (`notifications/resources/updated`), so a client drawing the server's A2UI layout
-    /// asks for its data again.
+    /// changed (`notifications/resources/updated`), so a client showing one of the server's resources
+    /// can read it again.
     McpUpdated {
         pane: String,
     },
