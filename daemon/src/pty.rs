@@ -306,6 +306,18 @@ impl Term {
             .map_err(|_| anyhow::anyhow!("terminal {} no longer accepts input", self.id))
     }
 
+    /// Type `line` into the shell and press Return, as a person typing it at the prompt: the shell
+    /// reads it once its startup files have run, and stays open after the line's program exits.
+    pub fn type_line(&self, line: &str) -> Result<()> {
+        self.write(format!("{line}\n").into_bytes())
+    }
+
+    /// Whether the shell itself holds the terminal's foreground: it is at its prompt, or still
+    /// running its startup files, with no program of its own running.
+    pub fn at_prompt(&self) -> bool {
+        self.pid.is_some() && self.foreground() == self.pid
+    }
+
     /// Resize the daemon's screen, then the PTY. In that order, the redraw the shell sends for
     /// the new size reaches a screen that already has it.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {

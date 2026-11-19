@@ -16,6 +16,7 @@ use wheel_proto::{
 };
 
 use crate::pty::Term;
+use crate::reload::Before;
 use crate::render::Side;
 use crate::resume::Harness;
 use crate::server::{AgentStart, AppState, Owner};
@@ -156,6 +157,10 @@ struct Saved {
     next_id: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent: Vec<wheel_proto::RecentDir>,
+    /// The panes whose agent was in a turn at this save ([`AppState::mid_turn_panes`]), so a
+    /// restore tells each one that the turn ended.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mid_turn: Vec<String>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -641,6 +646,8 @@ pub struct StartOptions {
     pub agent: Option<String>,
     pub model: Option<String>,
     pub permissions: AgentPermissions,
+    /// For an agent pane: the directory it runs in, instead of its space's.
+    pub dir: Option<String>,
 }
 
 /// The conversation a forked agent copies, and where and under which account it was kept.
@@ -747,6 +754,9 @@ impl AppState {
         let Some(path) = self.state_file.lock().unwrap().clone() else {
             return;
         };
+        if self.layout_final.load(Ordering::SeqCst) {
+            return;
+        }
         let mut spaces = spaces.clone();
         for space in &mut spaces.spaces {
             each_space_kind_mut(space, &mut |kind| {
@@ -766,6 +776,7 @@ impl AppState {
             });
         }
         let spaces = &spaces;
+        let mid_turn = self.mid_turn_panes(spaces);
         let extra = self.saved_extra.lock().unwrap().clone();
         let recent = self.recent.lock().unwrap().clone();
         match save(
@@ -773,9 +784,11 @@ impl AppState {
             spaces,
             self.next_id.load(Ordering::SeqCst),
             recent,
+            mid_turn.clone(),
             extra,
         ) {
             Ok(()) => {
+                *self.saved_mid_turn.lock().unwrap() = mid_turn;
                 self.saves.fetch_add(1, Ordering::SeqCst);
                 tracing::debug!(path = %path.display(), spaces = spaces.spaces.len(), "spaces saved")
             }
@@ -783,15 +796,46 @@ impl AppState {
         }
     }
 
+    /// The panes of `spaces` whose agent is in a turn now, read live: an agent pane's agent in a
+    /// turn ([`crate::agent::Agent::in_turn`]) or running background tasks, a terminal's agent
+    /// reporting it works or waits on the person; and those a restore has still to tell their turn
+    /// ended. Sorted, so an unchanged set writes the same file.
+    pub(crate) fn mid_turn_panes(&self, spaces: &Spaces) -> Vec<String> {
+        let pending = self.turn_ended.lock().unwrap().clone();
+        let reports = self.reports.lock().unwrap().clone();
+        let mut panes: Vec<String> = spaces
+            .spaces
+            .iter()
+            .flat_map(|space| space_panes(space))
+            .filter(|(pane, kind)| {
+                pending.contains_key(*pane)
+                    || match kind {
+                        PaneKind::Agent { agent, .. } => self
+                            .agent(agent)
+                            .is_ok_and(|a| a.in_turn() || a.background() > 0),
+                        PaneKind::Terminal { term, agent: Some(_), .. } => reports.get(term).is_some_and(|r| {
+                            matches!(r.status, wheel_proto::ReportedStatus::Working | wheel_proto::ReportedStatus::NeedsYou)
+                        }),
+                        _ => false,
+                    }
+            })
+            .map(|(pane, _)| pane.to_string())
+            .collect();
+        panes.sort();
+        panes
+    }
+
     /// Write the layout now, and let go of a coalesced save that was scheduled: the daemon is
     /// stopping, and a page a person navigated to in the last moment must be in the file they come
-    /// back to. Clearing the flag only stops this write being counted against the next burst; a
-    /// task already sleeping still writes once more, harmlessly, if the process outlives it.
+    /// back to. It is the last write: a coalesced save still sleeping, or one asked for as the
+    /// agents and shells end with the process, writes nothing, so the file keeps which panes were
+    /// in a turn.
     pub fn save_layout_now(&self) {
         self.sample_terminals();
         self.save_pending.store(false, Ordering::SeqCst);
         let spaces = self.spaces.lock().unwrap();
         self.save_state(&spaces);
+        self.layout_final.store(true, Ordering::SeqCst);
     }
 
     /// [`AppState::save_soon`] from a caller that does not hold the spaces lock.
@@ -1592,6 +1636,7 @@ impl AppState {
                     cwd: None,
                     agent: None,
                     env: Default::default(),
+                    command: None,
                     extra: Extra::default(),
                 }
             }
@@ -1665,7 +1710,20 @@ impl AppState {
             agent,
             model,
             permissions,
+            dir,
         } = options;
+        if kind == StartKind::Terminal && dir.is_some() {
+            return Err("a directory is only for an agent pane".into());
+        }
+        if let Some(dir) = &dir {
+            let path = std::path::Path::new(dir);
+            if !path.is_absolute() {
+                return Err(format!("dir {dir} is not an absolute path"));
+            }
+            if !path.is_dir() {
+                return Err(format!("dir {dir} is not an existing directory"));
+            }
+        }
         if kind == StartKind::Terminal && message.is_some() {
             return Err("a first message is only for an agent pane".into());
         }
@@ -1714,7 +1772,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message, model, permissions, None)
+                .start_agent(space, &pane, &agent, message, model, permissions, dir, None)
                 .await
                 .map(Some),
         };
@@ -1802,7 +1860,7 @@ impl AppState {
             home: source_home,
         };
         match self
-            .start_agent(&space, &new, &harness, None, model, permissions, Some(source))
+            .start_agent(&space, &new, &harness, None, model, permissions, None, Some(source))
             .await
         {
             Ok((started, state)) => Ok(Started {
@@ -1840,18 +1898,7 @@ impl AppState {
                 StartOptions::default(),
             )
             .await?;
-        let term = {
-            let spaces = self.spaces.lock().unwrap();
-            let held = &spaces.spaces[spaces.index(space)?];
-            match space_find(held, &started.pane) {
-                Some(PaneKind::Terminal { term, .. }) => term.clone(),
-                _ => return Err(format!("pane {} did not start a terminal", started.pane)),
-            }
-        };
-        self.term(&term)
-            .ok_or_else(|| format!("no terminal {term}"))?
-            .write(format!("{command}\n").into_bytes())
-            .map_err(|e| e.to_string())?;
+        self.start_command(&started.pane, &command)?;
         tracing::info!(%space, pane = %started.pane, %name, %command, "runner started");
         Ok(started.pane)
     }
@@ -1872,32 +1919,34 @@ impl AppState {
         let new = self
             .pane_split(pane, (!apart).then_some(Dir::Right), site)?
             .0;
-        let term = match self
+        let started = self
             .pane_set_kind(&new, NewPaneKind::Terminal, None, None, None, None)
             .await
-        {
-            Ok(PaneKind::Terminal { term, .. }) => term,
-            Ok(_) => {
-                let _ = self.pane_close(&new);
-                return Err(format!("pane {new} did not start a terminal"));
-            }
-            Err(e) => {
-                let _ = self.pane_close(&new);
-                return Err(e);
-            }
-        };
-        let typed = match self.term(&term) {
-            Some(t) => t
-                .write(format!("{command}\n").into_bytes())
-                .map_err(|e| e.to_string()),
-            None => Err(format!("no terminal {term}")),
-        };
-        if let Err(e) = typed {
+            .and_then(|_| self.start_command(&new, command));
+        if let Err(e) = started {
             let _ = self.pane_close(&new);
             return Err(e);
         }
         tracing::info!(%pane, new = %new, %command, "pane run");
         Ok(new)
+    }
+
+    /// Type `command` into terminal pane `pane`'s shell and keep it as the pane's command, saved
+    /// with the layout, so a restored pane types it again while it was still running
+    /// ([`Self::sample_terminals`] drops it once the shell is back at its prompt).
+    fn start_command(&self, pane: &str, command: &str) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        let Some(PaneKind::Terminal { term, command: kept, .. }) = space_find_mut(&mut spaces.spaces[index], pane) else {
+            return Err(format!("pane {pane} did not start a terminal"));
+        };
+        self.term(term)
+            .ok_or_else(|| format!("no terminal {term}"))?
+            .type_line(command)
+            .map_err(|e| e.to_string())?;
+        *kept = Some(command.to_string());
+        self.changed(&spaces);
+        Ok(())
     }
 
     /// The home each saved agent pane of `spaces` starts with, by pane: the value the pane picked
@@ -1993,7 +2042,36 @@ impl AppState {
                 permissions,
                 env: picked_besides_home(place.env, harness),
             },
-        )
+        )?;
+        if self.turn_ended.lock().unwrap().contains_key(&saved.pane) {
+            self.tell_turn_ended(&saved.pane, &saved.agent);
+        }
+        Ok(())
+    }
+
+    /// Once agent `agent` of pane `pane` is ready, with its conversation loaded, send it the
+    /// message the restore kept for the pane, as the person's message is sent. The message stays
+    /// kept, and saved with the layout, until it is sent, so a wheeld that stops first tells the
+    /// agent on its next start; taken when sent, it is never sent twice.
+    fn tell_turn_ended(&self, pane: &str, agent: &str) {
+        let Ok(live) = self.agent(agent) else {
+            return;
+        };
+        let (me, pane, agent) = (self.me.clone(), pane.to_string(), agent.to_string());
+        tokio::spawn(async move {
+            if let Err(e) = live.started().await {
+                tracing::warn!(%pane, %agent, error = %e, "agent did not start; its turn-ended message waits for the next start");
+                return;
+            }
+            let Some(state) = me.upgrade() else { return };
+            let Some(message) = state.turn_ended.lock().unwrap().remove(&pane) else {
+                return;
+            };
+            match live.send(message) {
+                Ok(turn) => tracing::info!(%pane, %agent, turn, "agent told its turn ended when wheeld stopped"),
+                Err(e) => tracing::warn!(%pane, %agent, error = %e, "could not tell the agent its turn ended"),
+            }
+        });
     }
 
     /// Start the agent panes a restore kept as saved: one whose home only the login shell can say,
@@ -2057,6 +2135,7 @@ impl AppState {
         message: Option<String>,
         model: Option<String>,
         permissions: AgentPermissions,
+        dir: Option<String>,
         fork: Option<ForkSource>,
     ) -> Result<(String, AgentState), (String, bool)> {
         // A second start on a pane whose first has not heard back from its agent would `install`
@@ -2069,11 +2148,10 @@ impl AppState {
                 .cwd
                 .clone()
         };
-        // A fork runs where the conversation it copies was kept, with the account that kept it.
-        let cwd = fork
-            .as_ref()
-            .and_then(|f| f.cwd.clone())
-            .unwrap_or_else(|| space_cwd.clone());
+        // A fork runs where the conversation it copies was kept, with the account that kept it;
+        // otherwise in the directory the start named, else the space's.
+        let pane_cwd = fork.as_ref().and_then(|f| f.cwd.clone()).or(dir);
+        let cwd = pane_cwd.clone().unwrap_or_else(|| space_cwd.clone());
         let name = self.new_id('w');
         let home = match &fork {
             Some(fork) => fork.home.clone(),
@@ -2099,7 +2177,6 @@ impl AppState {
             (Some(_), Some(h)) => [(h.home_var().to_string(), home.unwrap_or_default())].into(),
             _ => Default::default(),
         };
-        let fork_cwd = fork.and_then(|f| f.cwd);
         let new = PaneKind::Agent {
             agent: name.clone(),
             harness: harness.to_string(),
@@ -2109,7 +2186,7 @@ impl AppState {
             context: None,
             // A fork picks the account its conversation is kept in, so a restart finds it there;
             // a home the login shell gave is asked for again on restart.
-            place: wheel_proto::AgentPlace::boxed(fork_cwd, picked),
+            place: wheel_proto::AgentPlace::boxed(pane_cwd, picked),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
             extra: Extra::default(),
@@ -2453,15 +2530,18 @@ impl AppState {
 
     /// Load the layout saved at `path` (none yet is an empty layout) and save every change there
     /// from now on. Shells do not outlive the daemon, so each terminal pane gets a new one in its
-    /// space's directory. An agent pane whose home only the login shell can say is kept as saved and
-    /// started by a start of kept agents ([`Self::start_kept_agents`]) once the restore returns; a
-    /// start of kept agents waits until then.
+    /// space's directory, which types again the command the pane was started with while it still
+    /// ran. Each agent the file names as in a turn is told first that the turn ended. An agent
+    /// pane whose home only the login shell can say is kept as saved and started by a start of
+    /// kept agents ([`Self::start_kept_agents`]) once the restore returns; a start of kept agents
+    /// waits until then.
     pub async fn restore_spaces(&self, path: PathBuf) -> anyhow::Result<()> {
         self.sweep_removed_pane_dirs();
         let Saved {
             layout: mut loaded,
             next_id,
             recent,
+            mid_turn,
             mut extra,
         } = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -2470,6 +2550,7 @@ impl AppState {
                 layout: Spaces::default(),
                 next_id: 1,
                 recent: Vec::new(),
+                mid_turn: Vec::new(),
                 extra: Default::default(),
             },
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
@@ -2487,6 +2568,15 @@ impl AppState {
         *self.recent.lock().unwrap() = recent;
         let (mut respawned, mut agents) = (0, 0);
         let mut resumed_conversations = std::collections::HashSet::new();
+        // Every agent that was in a turn when the last wheeld stopped takes this first.
+        let turn_ended = turn_ended_message(jiff::Timestamp::now());
+        if !mid_turn.is_empty() {
+            tracing::info!(panes = ?mid_turn, "panes whose agent was in a turn when wheeld stopped");
+        }
+        *self.turn_ended.lock().unwrap() = mid_turn
+            .into_iter()
+            .map(|pane| (pane, turn_ended.clone()))
+            .collect();
         let named_web: Vec<String> = loaded
             .spaces
             .iter()
@@ -2522,12 +2612,20 @@ impl AppState {
             let mut ids = Vec::new();
             collect_terminal_panes(space, &mut ids);
             for pane in ids {
-                let (saved_cwd, saved_agent, picked) = match space_find(space, &pane) {
-                    Some(PaneKind::Terminal { cwd, agent, env, .. }) => (cwd.clone(), agent.clone(), env.clone()),
+                let (before, picked) = match space_find(space, &pane) {
+                    Some(PaneKind::Terminal { cwd, agent, env, command, .. }) => (
+                        Before {
+                            cwd: cwd.clone(),
+                            agent: agent.clone(),
+                            command: command.clone(),
+                            message: self.turn_ended.lock().unwrap().remove(&pane),
+                        },
+                        env.clone(),
+                    ),
                     _ => Default::default(),
                 };
                 let opened = self
-                    .reopen_shell(&pane, &space.cwd, (saved_cwd, saved_agent), &picked, &mut resumed_conversations)
+                    .reopen_shell(&pane, &space.cwd, before, &picked, &mut resumed_conversations)
                     .await;
                 let space_id = space.id.clone();
                 let Some(slot) = space_find_mut(space, &pane) else {
@@ -2540,6 +2638,7 @@ impl AppState {
                             term: id,
                             cwd,
                             agent,
+                            command,
                             ..
                         } = slot
                         {
@@ -2547,6 +2646,7 @@ impl AppState {
                             *id = shell.term.id.clone();
                             *cwd = Some(shell.dir);
                             *agent = shell.agent;
+                            *command = shell.command;
                         }
                         shell.outcome
                     }
@@ -2573,12 +2673,14 @@ impl AppState {
                     );
                     continue;
                 };
+                let told = self.turn_ended.lock().unwrap().contains_key(&pane);
                 match self.start_saved_agent(&space.cwd, space, saved, Ok(home)) {
                     Ok(()) => {
                         agents += 1;
+                        let told = if told { ", telling it its turn ended once ready" } else { "" };
                         outcomes.insert(
                             pane,
-                            format!("agent {agent} started, loading its saved conversation"),
+                            format!("agent {agent} started, loading its saved conversation{told}"),
                         );
                     }
                     // Kept as saved, so a later start with an agent command runs it again.
@@ -2663,7 +2765,7 @@ impl AppState {
             }
             (terms, saved)
         };
-        let samples: HashMap<String, (crate::resume::Sample, bool)> = terms
+        let samples: HashMap<String, (crate::resume::Sample, bool, bool)> = terms
             .iter()
             .filter(|t| t.info().alive)
             .map(|t| {
@@ -2684,7 +2786,7 @@ impl AppState {
                 // Once a program has run here, an agent that is not running has quit; before that
                 // it may still be starting, from a resume command typed into a new shell.
                 let settled = t.job_seen() || t.age() > RESUME_GRACE;
-                (t.id.clone(), (sample, settled))
+                (t.id.clone(), (sample, settled, t.at_prompt()))
             })
             .collect();
         let mut changed = false;
@@ -2693,14 +2795,23 @@ impl AppState {
         for space in &mut spaces.spaces {
             each_space_kind_mut(space, &mut |kind| {
                 let PaneKind::Terminal {
-                    term, cwd, agent, ..
+                    term, cwd, agent, command, ..
                 } = kind
                 else {
                     return;
                 };
-                let Some((sample, settled)) = samples.get(term.as_str()) else {
+                let Some((sample, settled, at_prompt)) = samples.get(term.as_str()) else {
                     return;
                 };
+                // The pane's command ended once the shell has its prompt back, read the way an
+                // agent's end is: after a program has held the terminal, or after the grace a new
+                // shell gets to read the line. A command that ended is not typed again on restore.
+                if *settled && *at_prompt {
+                    if let Some(ended) = command.take() {
+                        tracing::info!(%term, command = %ended, "terminal pane's command ended; a restore will not run it again");
+                        changed = true;
+                    }
+                }
                 let new_cwd = sample.cwd.clone().or_else(|| cwd.clone());
                 let new_agent = match &sample.agent {
                     Some(found) => Some(Box::new(found.clone())),
@@ -2823,6 +2934,15 @@ impl AppState {
         }
         changed
     }
+}
+
+/// What an agent that was in a turn when wheeld stopped is told first once wheeld, restarted at
+/// `restarted`, starts it again.
+pub(crate) fn turn_ended_message(restarted: jiff::Timestamp) -> String {
+    format!(
+        "wheeld restarted at {} UTC. The turn you were in ended when it stopped, and every process you ran stopped with it. Check what you were waiting on, start again what you still need, and continue.",
+        restarted.strftime("%Y-%m-%d %H:%M:%S")
+    )
 }
 
 fn pane_kind_name(kind: &PaneKind) -> &str {
@@ -2973,6 +3093,7 @@ fn save(
     layout: &Spaces,
     next_id: u64,
     recent: Vec<wheel_proto::RecentDir>,
+    mid_turn: Vec<String>,
     extra: serde_json::Map<String, serde_json::Value>,
 ) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -2983,6 +3104,7 @@ fn save(
         layout: layout.clone(),
         next_id,
         recent,
+        mid_turn,
         extra,
     };
     std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;

@@ -230,6 +230,16 @@ impl AppState {
             .filter_map(|s| s.status.map(|status| (s.id, status)))
             .collect();
         drop(book);
+        // The layout file says which panes are in a turn ([`AppState::mid_turn_panes`]), so a
+        // wheeld that stops by any means tells them so when it is back: every change of state can
+        // start or end a turn, and the file is written when the set differs from the one in it.
+        {
+            let spaces = self.spaces.lock().unwrap();
+            let written = self.saved_mid_turn.lock().unwrap().clone();
+            if self.mid_turn_panes(&spaces) != written {
+                self.save_state(&spaces);
+            }
+        }
         let changed = !sent.is_empty();
         for msg in sent {
             let _ = self.global.send(msg);
@@ -279,9 +289,12 @@ fn set_pane_statuses(node: &mut Node, by_pane: &HashMap<String, PaneStatus>) {
     }
 }
 
-/// Follow the events that change a status and recompute on each.
+/// Follow the events that change a status and recompute on each, from the first event the state
+/// sent: the subscription is the one taken when the state was made, so a turn an agent started
+/// and ended while a restore ran is still seen. A second call follows from now.
 pub(crate) fn follow(state: Arc<AppState>) {
-    let mut events = state.global.subscribe();
+    let taken = state.status_events.lock().unwrap().take();
+    let mut events = taken.unwrap_or_else(|| state.global.subscribe());
     tokio::spawn(async move {
         loop {
             match events.recv().await {

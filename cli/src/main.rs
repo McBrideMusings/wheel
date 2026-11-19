@@ -1038,6 +1038,14 @@ enum PaneCommand {
         /// For a Codex agent: its sandbox, read-only, workspace-write or danger-full-access.
         #[arg(long)]
         sandbox: Option<String>,
+        /// For an agent: the directory it runs in, an absolute path to an existing directory, such
+        /// as a git worktree. Without it, its space's directory. The pane keeps it across restarts.
+        /// To start a worker in a worktree and message it: `wheel pane split <pane> right
+        /// --background` prints a new pane id, `wheel pane start <new> agent --dir <worktree>
+        /// --message "<task>"` starts the agent in it, `wheel agent send <new> "<text>"` messages
+        /// it and `wheel agent wait`/`read` follow it.
+        #[arg(long)]
+        dir: Option<String>,
     },
     /// Show a pane's Claude Code, Codex or pi conversation the other way: `agent` turns a terminal
     /// running the agent into an agent pane on that conversation, `terminal` turns an agent pane
@@ -2761,10 +2769,10 @@ fn agent_rows(node: &wheel_proto::Node, space: &wheel_proto::SpaceInfo, out: &mu
             id,
             status,
             work,
-            kind: wheel_proto::PaneKind::Agent { agent, harness, model, .. },
+            kind: wheel_proto::PaneKind::Agent { agent, harness, model, place, .. },
         } => out.push(serde_json::json!({
             "space": space.name,
-            "cwd": space.cwd,
+            "cwd": place.as_ref().and_then(|p| p.cwd.as_deref()).unwrap_or(&space.cwd),
             "pane": id,
             "agent": agent,
             "harness": harness,
@@ -5938,8 +5946,10 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             model,
             permission_mode,
             sandbox,
+            dir,
         } => {
             let req = conn.req();
+            let wanted = dir.clone();
             let msg = ClientMsg::PaneStart {
                 req: Some(req),
                 pane,
@@ -5949,6 +5959,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 model,
                 permission_mode,
                 sandbox,
+                dir,
             };
             let ServerMsg::Started {
                 pane,
@@ -5959,6 +5970,23 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             else {
                 return Err(Fail::Other("unexpected reply to pane start".into()));
             };
+            // A wheeld from before `dir` ignores it and starts the agent in the space's
+            // directory, so the pane is asked where the agent runs.
+            if let Some(wanted) = wanted {
+                let req = conn.req();
+                let info = ClientMsg::PaneInfo { req: Some(req), pane: pane.clone() };
+                let ServerMsg::PaneInfo { fields, .. } = conn.call(info, req).await? else {
+                    return Err(Fail::Other("unexpected reply to pane info".into()));
+                };
+                let ran = fields.iter().find(|f| f.label == "Directory").map(|f| f.value.as_str());
+                if ran != Some(wanted.as_str()) {
+                    return Err(Fail::Other(format!(
+                        "agent {} runs in {}, not {wanted}: this wheeld predates --dir; restart it",
+                        agent.as_deref().unwrap_or("-"),
+                        ran.unwrap_or("an unknown directory"),
+                    )));
+                }
+            }
             let started = serde_json::json!({ "pane": pane, "agent": agent, "state": state });
             println!("{}", serde_json::to_string_pretty(&started).map_err(other)?);
             Ok(())

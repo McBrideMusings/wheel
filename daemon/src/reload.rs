@@ -19,12 +19,25 @@ use crate::pty::ReadEnd;
 use crate::views::{carried_options, Switching, TUI_EXIT};
 
 /// A terminal pane's new shell: the terminal, the directory it started in, the conversation it
-/// resumed, and one line saying what happened, for the log.
+/// resumed, the command it typed again, and one line saying what happened, for the log.
 pub(crate) struct Shell {
     pub(crate) term: Arc<Term>,
     pub(crate) dir: String,
     pub(crate) agent: Option<Box<TermAgent>>,
+    pub(crate) command: Option<String>,
     pub(crate) outcome: String,
+}
+
+/// What a terminal pane ran before its shell ended, which its new shell starts again: the
+/// directory it was in, the coding agent whose conversation it resumes, the command `pane_run` or
+/// a runner started it with, and the message a resumed agent takes first (a restore's word that
+/// its turn ended).
+#[derive(Default)]
+pub(crate) struct Before {
+    pub(crate) cwd: Option<String>,
+    pub(crate) agent: Option<Box<TermAgent>>,
+    pub(crate) command: Option<String>,
+    pub(crate) message: Option<String>,
 }
 
 /// What a reload did: started the pane again, or (an agent pane's while it is busy) queued the
@@ -400,13 +413,13 @@ impl AppState {
         if let Some(state) = self.me.upgrade() {
             let _ = tokio::task::spawn_blocking(move || state.sample_terminals()).await;
         }
-        let (space_cwd, old, cwd, mut agent, picked) = {
+        let (space_cwd, old, cwd, mut agent, command, picked) = {
             let spaces = self.spaces.lock().unwrap();
             let space = &spaces.spaces[spaces.holding(pane)?];
             match space_find(space, pane) {
                 Some(PaneKind::Terminal {
-                    term, cwd, agent, env, ..
-                }) => (space.cwd.clone(), term.clone(), cwd.clone(), agent.clone(), change.apply(env)),
+                    term, cwd, agent, env, command, ..
+                }) => (space.cwd.clone(), term.clone(), cwd.clone(), agent.clone(), command.clone(), change.apply(env)),
                 _ => return Err(format!("{pane} no longer shows a terminal")),
             }
         };
@@ -478,7 +491,7 @@ impl AppState {
             }
         }
         let shell = self
-            .reopen_shell(pane, &space_cwd, (cwd, agent), &picked, &mut HashSet::new())
+            .reopen_shell(pane, &space_cwd, Before { cwd, agent, command, message: None }, &picked, &mut HashSet::new())
             .await;
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.holding(pane).ok();
@@ -486,7 +499,7 @@ impl AppState {
         let result = match (slot, shell) {
             (
                 Some(PaneKind::Terminal {
-                    term, cwd, agent, env, ..
+                    term, cwd, agent, env, command, ..
                 }),
                 Ok(shell),
             ) if *term == old => {
@@ -494,6 +507,7 @@ impl AppState {
                 *term = shell.term.id.clone();
                 *cwd = Some(shell.dir);
                 *agent = shell.agent;
+                *command = shell.command;
                 *env = picked;
                 kept_home.map_or(Ok(()), Err)
             }
@@ -518,14 +532,16 @@ impl AppState {
     }
 
     /// Start a new shell for terminal pane `pane` of the space in `space_cwd`, with the environment
-    /// values `picked` for it: in `cwd` when it still exists, else the space's directory, typing
-    /// the resume command of `agent`'s conversation when the conversation is still there and
-    /// `resumed` does not hold it already.
+    /// values `picked` for it: in `before.cwd` when it still exists, else the space's directory,
+    /// typing the resume command of `before.agent`'s conversation (with `before.message` as its
+    /// first message) when the conversation is still there and `resumed` does not hold it already.
+    /// A pane with no agent types `before.command` again; a pane that ran an agent leaves that to
+    /// the resume, so the agent never starts twice.
     pub(crate) async fn reopen_shell(
         &self,
         pane: &str,
         space_cwd: &str,
-        (cwd, agent): (Option<String>, Option<Box<TermAgent>>),
+        Before { cwd, agent, command, message }: Before,
         picked: &BTreeMap<String, String>,
         resumed: &mut HashSet<(String, String)>,
     ) -> Result<Shell, String> {
@@ -552,6 +568,8 @@ impl AppState {
             )
             .await?;
         let mut kept = None;
+        let mut kept_command = None;
+        let ran_agent = agent.is_some();
         if let Some(agent) = agent {
             let key = (agent.name.clone(), agent.conversation.clone());
             if resumed.contains(&key) {
@@ -562,15 +580,20 @@ impl AppState {
                     "{outcome}; {} conversation {} is gone, so a plain shell",
                     agent.name, agent.conversation
                 );
-            } else if let Some(line) = crate::resume::resume_line(&agent) {
-                match term.write(format!("{line}\n").into_bytes()) {
+            } else if let Some(line) = crate::resume::resume_line(&agent, message.as_deref()) {
+                match term.type_line(&line) {
                     Ok(()) => {
                         outcome = format!(
                             "{outcome}; resumed {} conversation {}",
                             agent.name, agent.conversation
                         );
+                        if message.is_some() {
+                            outcome = format!("{outcome}, told its turn ended");
+                        }
                         resumed.insert(key);
                         kept = Some(agent);
+                        // Still the pane's command while the agent it started runs.
+                        kept_command = command.clone();
                     }
                     Err(e) => {
                         tracing::warn!(%pane, error = %e, "could not type the agent's resume command");
@@ -579,10 +602,23 @@ impl AppState {
                 }
             }
         }
+        if let (false, Some(command)) = (ran_agent, command) {
+            match term.type_line(&command) {
+                Ok(()) => {
+                    outcome = format!("{outcome}; reran {command}");
+                    kept_command = Some(command);
+                }
+                Err(e) => {
+                    tracing::warn!(%pane, %command, error = %e, "could not type the pane's command again");
+                    outcome = format!("{outcome}; could not rerun {command}");
+                }
+            }
+        }
         Ok(Shell {
             term,
             dir,
             agent: kept,
+            command: kept_command,
             outcome,
         })
     }

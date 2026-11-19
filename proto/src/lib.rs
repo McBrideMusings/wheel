@@ -1194,8 +1194,8 @@ pub enum ClientMsg {
         #[serde(default)]
         force: bool,
     },
-    /// Start a terminal or an agent in a pane, in its space's directory; whatever the pane showed
-    /// goes. An agent runs the daemon's agent command and takes `message` as its first message;
+    /// Start a terminal or an agent in a pane, in its space's directory (an agent in `dir` when
+    /// given); whatever the pane showed goes. An agent runs the daemon's agent command and takes `message` as its first message;
     /// the reply waits until the agent is ready or has given up, and is an error when it could
     /// not start. Replies `started`.
     PaneStart {
@@ -1224,6 +1224,11 @@ pub enum ClientMsg {
         /// `danger-full-access`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sandbox: Option<String>,
+        /// For `agent` only: the directory the agent runs in, an absolute path to an existing
+        /// directory (a git worktree, say); the space's directory without one. The pane keeps it:
+        /// a restart, `agent conversations` and `status` use it, not the space's directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
     },
     /// A client reports what its copy of a browser pane's page wrote to its console: `entries`,
     /// oldest first. With `reset`, that copy was just loaded, so the daemon drops what it kept for
@@ -4526,12 +4531,15 @@ pub enum PaneKind {
     /// A shell. `cwd` is the directory it was last in and `agent` the coding agent it was running,
     /// both sampled by the daemon and saved so a restart opens the shell there and resumes the agent.
     /// `env` is the environment values picked for the shell (`pane_reload`'s `set`), set again
-    /// after the person's startup files at every start.
+    /// after the person's startup files at every start. `command` is the line `pane_run` or a
+    /// runner typed into the shell, kept while it runs so a restart types it again; the daemon
+    /// drops it once the shell is back at its prompt.
     Terminal {
         term: String,
         cwd: Option<String>,
         agent: Option<Box<TermAgent>>,
         env: std::collections::BTreeMap<String, String>,
+        command: Option<String>,
         extra: Extra,
     },
     /// The artifact `artifact` names, served at `/artifacts/<pane>/` and reloaded when a file in
@@ -4681,6 +4689,8 @@ enum KnownPaneKind {
         agent: Option<Box<TermAgent>>,
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         env: std::collections::BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
     },
     Web {
         scope: ArtifactScope,
@@ -4732,6 +4742,7 @@ impl Serialize for PaneKind {
                 cwd,
                 agent,
                 env,
+                command,
                 extra,
             } => (
                 KnownPaneKind::Terminal {
@@ -4739,6 +4750,7 @@ impl Serialize for PaneKind {
                     cwd: cwd.clone(),
                     agent: agent.clone(),
                     env: env.clone(),
+                    command: command.clone(),
                 },
                 extra,
             ),
@@ -4843,11 +4855,12 @@ impl<'de> Deserialize<'de> for PaneKind {
         );
         Ok(match known {
             KnownPaneKind::Empty => PaneKind::Empty { extra },
-            KnownPaneKind::Terminal { term, cwd, agent, env } => PaneKind::Terminal {
+            KnownPaneKind::Terminal { term, cwd, agent, env, command } => PaneKind::Terminal {
                 term,
                 cwd,
                 agent,
                 env,
+                command,
                 extra,
             },
             // The same for a name no reference can hold, which only a hand-edited layout has.
