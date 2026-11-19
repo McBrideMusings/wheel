@@ -162,7 +162,7 @@ def fixture():
         (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
         notes = shlex.quote(str(built('examples/mcp_a2ui_test_server')))
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="exec {notes} stdio"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\n\n[artifacts.fixture-page]\nmcp="exec {notes} stdio"\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
         (root / 'machine.toml').write_text(machine_file())
         # The Wheelhouse and gallery packages, installed the way a machine installs one: a folder beside the machine file.
         (root / 'plugins').mkdir()

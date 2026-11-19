@@ -27,9 +27,10 @@ struct ArtifactPaletteTests {
     }
 
     @Test func encodesTheListingRequestAndDecodesItsReply() throws {
-        #expect(try ClientMsg.artifactLs(req: 3, space: "s1", paneOnly: true).json()
-            == #"{"op":"artifact_ls","pane":true,"req":3,"space":"s1"}"#)
-        let text = #"{"ev":"artifacts","req":3,"resolves":{"a":"project"},"artifacts":[{"scope":"project","name":"a","entry":"/p/wheel.toml","dir":"/p/a","page":"index.html","title":"A page","pane":true,"problems":[]},{"scope":"machine","name":"b","entry":"/m/wheel.toml","dir":"/m/b","title":"b","pane":true,"problems":["no index.html in /m/b"]}]}"#
+        #expect(try ClientMsg.artifactLs(req: 3, space: "s1").json()
+            == #"{"op":"artifact_ls","req":3,"space":"s1"}"#)
+        // The second record carries the `pane` an older wheeld still sends, which decoding ignores.
+        let text = #"{"ev":"artifacts","req":3,"resolves":{"a":"project"},"artifacts":[{"scope":"project","name":"a","entry":"/p/wheel.toml","dir":"/p/a","page":"index.html","title":"A page","problems":[]},{"scope":"machine","name":"b","entry":"/m/wheel.toml","dir":"/m/b","title":"b","pane":true,"problems":["no index.html in /m/b"]}]}"#
         guard case let .artifacts(req, artifacts) = try ServerMsg.decode(text) else { Issue.record("wrong case"); return }
         #expect(req == 3)
         #expect(artifacts.map(\.id) == ["project/a", "machine/b"])

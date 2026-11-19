@@ -150,7 +150,7 @@ private struct ArtifactPicker: View {
                 if let list = model.artifacts {
                     if list.isEmpty {
                         ContentUnavailableView("No artifacts for this space", systemImage: "doc.text",
-                                               description: Text(ArtifactPalette.emptyHelp))
+                                               description: Text("\(ArtifactPalette.emptyAsk) \(ArtifactPalette.emptyCommand)"))
                     } else {
                         List(list) { info in
                             Button { pick(info) } label: {

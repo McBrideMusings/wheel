@@ -25,8 +25,8 @@ chat_brief() { # <space id> : the fake agent's brief for a chat pane started in 
 # Two artifacts: chat agent.
 mkdir -p "$SCR/two"
 S2="$(w space new "$SCR/two")"
-w artifact new alpha --pane --space "$S2" --description "First page." >/dev/null
-w artifact new beta --pane --space "$S2" --description "Second page." >/dev/null
+w artifact new alpha --space "$S2" --description "First page." >/dev/null
+w artifact new beta --space "$S2" --description "Second page." >/dev/null
 SEEN="$(chat_brief "$S2")"
 echo "$SEEN" | grep -E "^artifacts:" | sed 's/^/     chat: /'
 expect_out "- alpha \(project\): First page\." "chat agent brief names alpha" echo "$SEEN"
@@ -53,7 +53,7 @@ fi
 mkdir -p "$SCR/many"
 S30="$(w space new "$SCR/many")"
 LONG="$(printf 'x%.0s' $(seq 1 190))"
-for i in $(seq -w 1 30); do w artifact new "art$i" --pane --space "$S30" --description "$LONG" >/dev/null; done
+for i in $(seq -w 1 30); do w artifact new "art$i" --space "$S30" --description "$LONG" >/dev/null; done
 SEEN="$(chat_brief "$S30")"
 SECTION="$(printf '%s\n' "$SEEN" | grep '^artifacts:' | sed 's/^artifacts: //')"
 echo "$SECTION" | cut -c1-100 | sed 's/^/     many: /'
@@ -66,7 +66,7 @@ check "the section is at most 2000 bytes" test "$BYTES" -le 2000
 # Thirty artifacts with short descriptions: exactly 20 shown, then the count.
 mkdir -p "$SCR/short"
 S30S="$(w space new "$SCR/short")"
-for i in $(seq -w 1 30); do w artifact new "s$i" --pane --space "$S30S" --description "d" >/dev/null; done
+for i in $(seq -w 1 30); do w artifact new "s$i" --space "$S30S" --description "d" >/dev/null; done
 SEEN="$(chat_brief "$S30S")"
 SECTION="$(printf '%s\n' "$SEEN" | grep '^artifacts:' | sed 's/^artifacts: //')"
 LISTED="$(printf '%s' "$SECTION" | grep -o -- '- s[0-9]* ' | wc -l | tr -d ' ')"

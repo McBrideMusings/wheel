@@ -223,7 +223,6 @@ private struct PaletteCard: View {
         VStack(spacing: 6) {
             Image(systemName: "rectangle.dashed").font(.system(size: 20)).foregroundStyle(.secondary)
             Text(ArtifactPalette.emptyTitle).font(.system(size: 13, weight: .semibold))
-            Text(ArtifactPalette.emptyHelp).font(.system(size: 12)).foregroundStyle(.secondary)
             // On one line when it fits, the command under the request when the pane is narrow.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 5) { emptyAsk; emptyCommand }

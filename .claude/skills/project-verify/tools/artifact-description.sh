@@ -13,8 +13,8 @@ start_daemon --state-file "$SCR/spaces.json"
 SPACES=(); while read -r id; do SPACES+=("$id"); done < <(mkspaces 16)
 S1="${SPACES[12]}"
 
-w artifact new described --pane --space "$S1" --description "Shows the swarm's builds." >/dev/null
-w artifact new plain --pane --space "$S1" >/dev/null
+w artifact new described --space "$S1" --description "Shows the swarm's builds." >/dev/null
+w artifact new plain --space "$S1" >/dev/null
 
 TXT="$(w artifact ls --space "$S1")"
 echo "$TXT" | sed 's/^/     ls: /'

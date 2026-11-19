@@ -27,7 +27,7 @@ w session rename "$SESSION" wheel >/dev/null
 A="$(w space new "$SCR/alpha" --session wheel)"
 w session new games >/dev/null
 C="$(w space new "$SCR/chess" --session games)"
-w artifact new dash --pane --space "$W" >/dev/null
+w artifact new dash --space "$W" >/dev/null
 P1="$(first_pane "$W")"
 P2="$(w pane split "$P1" right)"
 w pane start "$P1" agent >/dev/null
