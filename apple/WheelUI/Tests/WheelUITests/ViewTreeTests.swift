@@ -36,23 +36,23 @@ struct ViewTreeTests {
     @Test func idsComeFromKeysElseComponentAndPlace() throws {
         let pane = load(Self.search)
         let ids = pane.componentTexts.map { $0["id"] ?? "" }
-        #expect(ids == ["root", "root/Text0", "root/TextField0", "root/Column0", "root/Column0/apple", "root/Column0/banana", "root/Column0/cherry"])
+        #expect(ids == ["root", "root/Text0", "root/TextField0", "root/Column0", "root/Column0/=apple", "root/Column0/=banana", "root/Column0/=cherry"])
     }
 
     @Test func aKeystrokeWritesOnlyTheNodesThatChanged() throws {
         let pane = load(Self.search)
         let heading = try #require(pane.tree.node("root/Text0"))
-        let cherry = try #require(pane.tree.node("root/Column0/cherry"))
+        let cherry = try #require(pane.tree.node("root/Column0/=cherry"))
         // "an" keeps banana; the field's value comes back equal to its draft, so the field is not written again by the render.
         #expect(pane.set(component: "root/TextField0", value: "an"))
-        #expect(pane.tree.node("root/Column0/banana") != nil)
-        #expect(pane.tree.node("root/Column0/cherry") == nil)
+        #expect(pane.tree.node("root/Column0/=banana") != nil)
+        #expect(pane.tree.node("root/Column0/=cherry") == nil)
         // Only the list's child order changed: the list node is the one node written.
         #expect(pane.perf.nodes == 1)
         #expect(pane.tree.node("root/Text0") === heading)
         // Clearing the search brings cherry back as a new node; the heading is the same object throughout.
         #expect(pane.set(component: "root/TextField0", value: ""))
-        #expect(pane.tree.node("root/Column0/cherry") !== cherry)
+        #expect(pane.tree.node("root/Column0/=cherry") !== cherry)
         #expect(pane.perf.nodes == 3)
         #expect(pane.tree.node("root/Text0") === heading)
     }
@@ -76,11 +76,11 @@ struct ViewTreeTests {
             end,
         }
         """)
-        let b = try #require(pane.tree.node("root/list/b"))
-        #expect(pane.set(component: "root/list/b", value: "typed"))
+        let b = try #require(pane.tree.node("root/=list/=b"))
+        #expect(pane.set(component: "root/=list/=b", value: "typed"))
         #expect(pane.press(component: "root/Button0"))
-        #expect(pane.tree.node("root/list")?.children.map(\.id) == ["root/list/b", "root/list/a"])
-        #expect(pane.tree.node("root/list/b") === b)
+        #expect(pane.tree.node("root/=list")?.children.map(\.id) == ["root/=list/=b", "root/=list/=a"])
+        #expect(pane.tree.node("root/=list/=b") === b)
         #expect(b.value == .string("typed"))
     }
 
@@ -112,8 +112,31 @@ struct ViewTreeTests {
         return { view = function() return ui.Column{ ui.Text{ key = "x", text = "one" }, ui.Text{ key = "x", text = "two" } } end }
         """, chunk: "dup.luau")
         #expect(pane.error?.contains("duplicate key root x") == true)
-        #expect(pane.tree.node("root")?.children.map(\.id) == ["root/x"])
-        #expect(pane.tree.node("root/x")?.props["text"] == .string("one"))
+        #expect(pane.tree.node("root")?.children.map(\.id) == ["root/=x"])
+        #expect(pane.tree.node("root/=x")?.props["text"] == .string("one"))
+    }
+
+    @Test func aKeyNeverTakesAGeneratedIdOrAPath() throws {
+        let pane = load("""
+        return { view = function() return ui.Column{ ui.Text("plain"), ui.Text{ key = "Text0", text = "keyed" }, ui.Text{ key = "a/b@c", text = "odd" } } end }
+        """)
+        #expect(pane.tree.node("root")?.children.map(\.id) == ["root/Text0", "root/=Text0", "root/=a%2Fb%40c"])
+        #expect(pane.tree.node("root/Text0")?.props["text"] == .string("plain"))
+        #expect(pane.tree.node("root/=Text0")?.props["text"] == .string("keyed"))
+    }
+
+    @Test func presentedModalsStackInTheOrderTheViewGivesThem() throws {
+        let pane = load("""
+        return { view = function()
+            local cs = {}
+            for i = 1, 11 do table.insert(cs, ui.Modal{ presented = true, ui.Text("m" .. i) }) end
+            table.insert(cs, ui.Modal{ key = "a", presented = true, ui.Text("keyed") })
+            return ui.Column(cs)
+        end }
+        """)
+        var expected = (0..<11).map { "root/Modal\($0)" }
+        expected.append("root/=a")
+        #expect(pane.tree.modals.map(\.id) == expected)
     }
 
     @Test func raiseOnADroppedNodeReturnsFalse() throws {

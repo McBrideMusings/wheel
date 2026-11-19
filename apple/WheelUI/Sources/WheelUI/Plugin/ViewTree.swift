@@ -7,7 +7,7 @@ internal import WheelLuau
 // renders. `ViewTree.reconcile` takes each new `view` and writes only what changed, so SwiftUI redraws only the components whose
 // node changed (each component view observes its own node).
 //
-// Identity: the root is `root`; a child is `<parent>/<key>` when it has a `key`, else `<parent>/<Component><n>` with n its
+// Identity: the root is `root`; a child is `<parent>/=<key>` when it has a `key` (`%`, `/` and `@` in it percent-escaped), else `<parent>/<Component><n>` with n its
 // place among siblings of the same component; a component inside a property is `<parent>@<property path>` (`root@child`,
 // `root/Table0/b-12@cells.2.view`); a Table's row is `<table>/<row path, else row id, else section.row>`. A node whose
 // component changes is built again.
@@ -75,6 +75,8 @@ public final class ViewTree {
     @ObservationIgnored public private(set) var duplicate: String?
     @ObservationIgnored private var touched: Set<String> = []
     @ObservationIgnored private var reached: [String: ViewNode] = [:]
+    /// The presented Modals in the order the render reached them.
+    @ObservationIgnored private var presenting: [ViewNode] = []
 
     public init() {}
 
@@ -90,12 +92,14 @@ public final class ViewTree {
     func reconcile(_ tree: PaneNode) {
         touched = []
         reached = [:]
+        presenting = []
         duplicate = nil
         let r = place(tree, id: "root", old: root)
         if root !== r { root = r }
         index = reached
         reached = [:]
-        let presented = index.values.filter { $0.component == "Modal" && $0.props["presented"]?.boolValue == true }.sorted { $0.id < $1.id }
+        let presented = presenting
+        presenting = []
         if presented.map(\.id) != modals.map(\.id) || zip(presented, modals).contains(where: { $0 !== $1 }) { modals = presented }
         let fills = root.map(Self.fills) ?? false
         if fills != fillsPane { fillsPane = fills }
@@ -130,6 +134,7 @@ public final class ViewTree {
             node.embedded = embedded
             touched.insert(id)
         }
+        if node.component == "Modal", props["presented"]?.boolValue == true { presenting.append(node) }
         let children = placeChildren(pane.children, parent: node)
         if !Self.same(node.children, children) { node.children = children; touched.insert(id) }
         return node
@@ -149,7 +154,7 @@ public final class ViewTree {
                     UILog.info("viewtree duplicate key \(parent.id) \(key)")
                     continue
                 }
-                id = "\(parent.id)/\(key)"
+                id = Self.childID(parent.id, key: key)
             } else {
                 let n = counts[pane.component, default: 0]
                 counts[pane.component] = n + 1
@@ -209,6 +214,13 @@ public final class ViewTree {
         guard node.draft != draft else { return }
         node.draft = draft
         touched.insert(node.id)
+    }
+
+    /// A keyed child's id: `=` and the key with `%`, `/` and `@` escaped, so it never equals a generated `<Component><n>`
+    /// segment or reads as a deeper path or a property.
+    nonisolated static func childID(_ parent: String, key: String) -> String {
+        let escaped = key.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: "/", with: "%2F").replacingOccurrences(of: "@", with: "%40")
+        return "\(parent)/=\(escaped)"
     }
 
     private static func keyText(_ v: JSONValue) -> String {

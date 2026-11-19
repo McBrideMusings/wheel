@@ -169,7 +169,7 @@ struct A2UIList: View {
         let names = (node.props["pinnedViews"]?.arrayValue ?? []).compactMap(\.stringValue)
         let pinned: PinnedScrollableViews = [names.contains("sectionHeaders") ? .sectionHeaders : [], names.contains("sectionFooters") ? .sectionFooters : []]
         let target: String? = switch node.props["scrollTo"] {
-        case let .string(key)?: "\(node.id)/\(key)"
+        case let .string(key)?: ViewTree.childID(node.id, key: key)
         case let .number(n)?: node.parts.indices.contains(Int(n) - 1) ? node.parts[Int(n) - 1].id : nil
         default: nil
         }
