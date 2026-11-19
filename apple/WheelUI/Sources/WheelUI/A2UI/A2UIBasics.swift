@@ -1,61 +1,65 @@
 import AVKit
 import SwiftUI
 
-// The 18 components of A2UI's basic catalog, drawn as SwiftUI draws them. A control that holds a value reads and writes the surface's
-// data model at its path (`a2uiPath`); it never names an action or a tool.
+// The 18 components of A2UI's basic catalog, drawn as SwiftUI draws them. Each view draws one `ViewNode` and observes only that
+// node. A control that holds a value shows the node's `value` and writes through `ViewTree.change`; one that raises an action
+// names the key path of the table the script put there (`ViewTree.raise`).
 
 /// Builds the view for a node: a basic component, one of Wheel's own, or a SwiftUI control (A2UISystemControls).
 struct A2UIChildView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     var body: some View {
-        view.a2uiModified(node)
+        ViewPerf.bodies += 1
+        return view.a2uiModified(node)
     }
 
     @ViewBuilder
     private var view: some View {
-        switch node.instance.type {
+        switch node.component {
         case "Text": A2UIText(node: node)
         case "Image": A2UIImage(node: node)
         case "Icon": A2UIIcon(node: node)
         case "Video": A2UIVideo(node: node)
-        case "AudioPlayer": A2UIUnsupportedView(node: ComponentNode(instance: ComponentInstance(id: node.instance.id, type: "Unsupported", properties: ["name": .string("AudioPlayer")]), children: []))
-        case "Row": A2UIStack(node: node, surface: surface, horizontal: true)
-        case "Column": A2UIStack(node: node, surface: surface, horizontal: false)
-        case "List": A2UIList(node: node, surface: surface)
-        case "Card": GroupBox { if let c = node.children.first { A2UIChildView(node: c, surface: surface) } }
-        case "Tabs": A2UITabs(node: node, surface: surface)
-        case "Divider": if node.instance.properties["axis"]?.stringValue == "vertical" { Divider().frame(height: 18) } else { Divider() }
-        case "Modal": A2UIModal(node: node, surface: surface)
-        case "Button": A2UIButton(node: node, surface: surface)
-        case "CheckBox": A2UICheckBox(node: node, surface: surface)
-        case "TextField": A2UITextField(node: node, surface: surface)
-        case "DateTimeInput": A2UIDateTimeInput(node: node, surface: surface)
-        case "ChoicePicker": A2UIChoicePicker(node: node, surface: surface)
-        case "Slider": A2UISlider(node: node, surface: surface)
-        default: WheelA2UICatalog().build(typeName: node.instance.type, node: node, surface: surface)
+        case "AudioPlayer": A2UIUnsupportedView(name: "AudioPlayer")
+        case "Row": A2UIStack(node: node, tree: tree, horizontal: true)
+        case "Column": A2UIStack(node: node, tree: tree, horizontal: false)
+        case "List": A2UIList(node: node, tree: tree)
+        case "Card": GroupBox { if let c = node.parts.first { A2UIChildView(node: c, tree: tree) } }
+        case "Tabs": A2UITabs(node: node, tree: tree)
+        case "Divider": if node.props["axis"]?.stringValue == "vertical" { Divider().frame(height: 18) } else { Divider() }
+        case "Modal": A2UIModal(node: node, tree: tree)
+        case "Button": A2UIButton(node: node, tree: tree)
+        case "CheckBox": A2UICheckBox(node: node, tree: tree)
+        case "TextField": A2UITextField(node: node, tree: tree)
+        case "DateTimeInput": A2UIDateTimeInput(node: node, tree: tree)
+        case "ChoicePicker": A2UIChoicePicker(node: node, tree: tree)
+        case "Slider": A2UISlider(node: node, tree: tree)
+        default: WheelA2UICatalog().build(typeName: node.component, node: node, tree: tree)
         }
     }
 }
 
-/// The page: the root component resolved, scrolled by the pane that holds it.
-struct A2UISurfaceView: View {
-    let surface: SurfaceModel
-    var body: some View {
-        // The Mac's body size on every platform, so a page reads the same on a phone; a `font` modifier on a component still wins.
-        if let root = surface.root { A2UIChildView(node: root, surface: surface).font(.system(size: 13)) }
-    }
+/// Counts the component bodies SwiftUI evaluated, one per node drawn, for a check that compares two renders.
+@MainActor
+public enum ViewPerf {
+    public static var bodies = 0
+    /// Table cell bodies, counted apart: one per cell of a row drawn.
+    public static var cells = 0
 }
 
-/// What a control shows: the data model's value at its path, else the value the server sent in the component.
-@MainActor
-func a2uiValue(_ node: ComponentNode, _ surface: SurfaceModel) -> AnyCodable? {
-    surface.get(a2uiPath(of: node.instance, in: surface)) ?? node.props["value"]
+/// The page: the root component resolved, scrolled by the pane that holds it.
+struct A2UISurfaceView: View {
+    let tree: ViewTree
+    var body: some View {
+        // The Mac's body size on every platform, so a page reads the same on a phone; a `font` modifier on a component still wins.
+        if let root = tree.root { A2UIChildView(node: root, tree: tree).font(.system(size: 13)) }
+    }
 }
 
 // MARK: Text — `text`, `variant` (h1 to h5, body, caption). Body sets no font, so a `font` modifier on it takes effect.
 struct A2UIText: View {
-    let node: ComponentNode
+    let node: ViewNode
     var body: some View {
         // `markdown: true` reads the text as inline Markdown (bold, italic, code, links), as SwiftUI's own Text does.
         let raw = node.props["text"]?.text ?? ""
@@ -76,7 +80,7 @@ struct A2UIText: View {
 
 // MARK: Image — `url`, `fit`, `variant`
 struct A2UIImage: View {
-    let node: ComponentNode
+    let node: ViewNode
     var body: some View {
         let size: CGFloat? = switch node.props["variant"]?.stringValue {
         case "icon": 24
@@ -96,7 +100,7 @@ struct A2UIImage: View {
 
 // MARK: Icon — `name`, an SF Symbol or one of the material names
 struct A2UIIcon: View {
-    let node: ComponentNode
+    let node: ViewNode
     private static let material = ["check": "checkmark", "close": "xmark", "add": "plus", "delete": "trash", "edit": "pencil", "home": "house",
                                    "search": "magnifyingglass", "settings": "gearshape", "star": "star", "info": "info.circle", "warning": "exclamationmark.triangle",
                                    "play": "play.fill", "pause": "pause.fill", "refresh": "arrow.clockwise", "send": "paperplane", "share": "square.and.arrow.up"]
@@ -108,7 +112,7 @@ struct A2UIIcon: View {
 
 // MARK: Video — `url`
 struct A2UIVideo: View {
-    let node: ComponentNode
+    let node: ViewNode
     @State private var player: AVPlayer?
     var body: some View {
         VideoPlayer(player: player).frame(minHeight: 180)
@@ -118,13 +122,13 @@ struct A2UIVideo: View {
 
 // MARK: Row and Column — `spacing` (VStack and HStack's own), `justify` (start, center, end, spaceBetween, spaceEvenly, spaceAround), `align` (start, center, end, stretch)
 struct A2UIStack: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     let horizontal: Bool
 
     var body: some View {
         let justify = node.props["justify"]?.stringValue ?? "start"
-        let kids = Array(node.children.enumerated())
+        let kids = Array(node.parts.enumerated())
         let spacing = node.props["spacing"]?.numberValue.map { CGFloat($0) } ?? 8
         Group {
             if horizontal {
@@ -137,16 +141,15 @@ struct A2UIStack: View {
     }
 
     @ViewBuilder
-    private func content(_ kids: [(offset: Int, element: ComponentNode)], _ justify: String) -> some View {
+    private func content(_ kids: [(offset: Int, element: ViewNode)], _ justify: String) -> some View {
         if justify == "end" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround" { Spacer(minLength: 0) }
-        ForEach(kids, id: \.offset) { i, k in
+        ForEach(kids, id: \.element.id) { i, k in
             if i > 0 && justify == "spaceBetween" || i > 0 && justify == "spaceEvenly" || i > 0 && justify == "spaceAround" { Spacer(minLength: 0) }
-            A2UIChildView(node: k, surface: surface)
+            A2UIChildView(node: k, tree: tree)
         }
         // The spacer that keeps a start-aligned stack at the top gives way to a Table, which takes the height left over.
-        // Only the page column gets it: in a card or a box a spacer made the stack take height and stretched it.
-        let pinsTop = horizontal || node.instance.id == "page"
-        if pinsTop && (justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround") { Spacer(minLength: 0).layoutPriority(-1) }
+        // A column gets none: in a card or a box a spacer made the stack take height and stretched it.
+        if horizontal && (justify == "start" || justify == "center" || justify == "spaceEvenly" || justify == "spaceAround") { Spacer(minLength: 0).layoutPriority(-1) }
     }
 
     private func vertical(_ a: String?) -> VerticalAlignment { a == "start" ? .top : a == "end" ? .bottom : .center }
@@ -156,16 +159,20 @@ struct A2UIStack: View {
 
 // MARK: List — `direction` (vertical, horizontal); a vertical one takes LazyVStack's `pinnedViews` (["sectionHeaders",
 // "sectionFooters"]: a Section child's header stays at the top while its rows scroll) and ScrollViewReader's `scrollTo` (a child's
-// id: the list scrolls it to the top whenever the value changes)
+// `key`, or its place counted from 1: the list scrolls it to the top whenever the value changes)
 struct A2UIList: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     var body: some View {
         let horizontal = node.props["direction"]?.stringValue == "horizontal"
         let spacing = node.props["spacing"]?.numberValue.map { CGFloat($0) } ?? 8
         let names = (node.props["pinnedViews"]?.arrayValue ?? []).compactMap(\.stringValue)
         let pinned: PinnedScrollableViews = [names.contains("sectionHeaders") ? .sectionHeaders : [], names.contains("sectionFooters") ? .sectionFooters : []]
-        let target = node.props["scrollTo"]?.stringValue
+        let target: String? = switch node.props["scrollTo"] {
+        case let .string(key)?: "\(node.id)/\(key)"
+        case let .number(n)?: node.parts.indices.contains(Int(n) - 1) ? node.parts[Int(n) - 1].id : nil
+        default: nil
+        }
         ScrollViewReader { proxy in
             ScrollView(horizontal ? .horizontal : .vertical) {
                 if horizontal {
@@ -179,19 +186,19 @@ struct A2UIList: View {
         .fixedSize(horizontal: false, vertical: horizontal)
     }
     private var items: some View {
-        ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface).id(k.instance.id) }
+        ForEach(node.parts) { k in A2UIChildView(node: k, tree: tree).id(k.id) }
     }
 }
 
 // MARK: Tabs — `tabs` [{title, child}]
 struct A2UITabs: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     var body: some View {
         let titles = (node.props["tabs"]?.arrayValue ?? []).compactMap { $0.dictionaryValue?["title"]?.stringValue }
         TabView {
-            ForEach(Array(node.children.enumerated()), id: \.offset) { i, k in
-                A2UIChildView(node: k, surface: surface).tabItem { Text(i < titles.count ? titles[i] : "") }
+            ForEach(Array(node.parts.enumerated()), id: \.element.id) { i, k in
+                A2UIChildView(node: k, tree: tree).tabItem { Text(i < titles.count ? titles[i] : "") }
             }
         }
     }
@@ -200,17 +207,17 @@ struct A2UITabs: View {
 // MARK: Modal — `trigger` opens a sheet holding `content`. With `presented` the server opens it: it dims and covers its own pane
 // (A2UIPresentedModals, drawn by the pane over the page), `dismissAction` is raised when it closes, and `actions` (component ids) sit in the footer beside Close.
 struct A2UIModal: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     @State private var open = false
     var body: some View {
-        if node.instance.properties["presented"] == nil, node.children.count >= 2 {
-            A2UIChildView(node: node.children[0], surface: surface)
+        if node.props["presented"] == nil, node.parts.count >= 2 {
+            A2UIChildView(node: node.parts[0], tree: tree)
                 .simultaneousGesture(TapGesture().onEnded { open = true })
                 .sheet(isPresented: $open) {
                     // The system's sheet: a title bar with Done, a grabber and medium and large heights on a phone.
                     NavigationStack {
-                        A2UIChildView(node: node.children[1], surface: surface)
+                        A2UIChildView(node: node.parts[1], tree: tree)
                             .navigationTitle(node.props["title"]?.text ?? "")
                             #if os(iOS)
                             .navigationBarTitleDisplayMode(.inline)
@@ -229,23 +236,20 @@ struct A2UIModal: View {
 
 /// The presented Modals of a surface, drawn over the pane that shows it: a dimmed scrim and a card that takes the pane's width inside a margin, so only that pane is covered.
 struct A2UIPresentedModals: View {
-    let surface: SurfaceModel
+    let tree: ViewTree
     var body: some View {
-        let ids = surface.components.values.filter { $0.type == "Modal" && $0.properties["presented"]?.boolValue == true }.map(\.id).sorted()
-        ForEach(ids, id: \.self) { id in
-            if let node = surface.node(id) { card(node) }
-        }
+        ForEach(tree.modals) { node in card(node) }
     }
 
-    private func card(_ node: ComponentNode) -> some View {
-        let dismiss = node.instance.properties["dismissAction"]?.stringValue
-        let close = { if let dismiss { surface.dispatchAction(name: dismiss, sourceComponentId: node.instance.id) } }
+    private func card(_ node: ViewNode) -> some View {
+        let dismiss: String? = node.action("dismissAction").isEmpty ? nil : "dismissAction"
+        let close = { if let dismiss { tree.raise(node, dismiss) } }
         return ZStack {
             Color.black.opacity(0.4).onTapGesture(perform: close)
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(node.children.enumerated()), id: \.offset) { _, k in A2UIChildView(node: k, surface: surface) }
+                        ForEach(node.parts) { k in A2UIChildView(node: k, tree: tree) }
                     }
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading).padding(18)
@@ -253,13 +257,13 @@ struct A2UIPresentedModals: View {
                 }
                 // `actions` names components of the surface (buttons, a status line) drawn in the footer, left of Close.
                 // One that names no component is left out; a long row scrolls sideways so Close stays in view.
-                let actions = (node.props["actions"]?.arrayValue ?? []).compactMap(\.stringValue).compactMap { surface.node($0) }
+                let actions = (node.props["actions"]?.arrayValue ?? []).indices.compactMap { node.embedded["actions.\($0)"] }
                 if !actions.isEmpty {
                     Divider()
                     HStack(spacing: 8) {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
-                                ForEach(Array(actions.enumerated()), id: \.offset) { _, action in A2UIChildView(node: action, surface: surface) }
+                                ForEach(actions) { action in A2UIChildView(node: action, tree: tree) }
                             }
                             .font(.system(size: 13))
                             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -292,17 +296,17 @@ struct A2UIPresentedModals: View {
 // `action` {copy: {text}} puts the text on the pasteboard in the client and calls no tool (a button holding both copies
 // only). After a copy a tick is drawn over the label for 1.5 s; the label keeps its width, so nothing beside it moves.
 struct A2UIButton: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     /// How many copies this button made; each one restarts the tick.
     @State private var copies = 0
     @State private var copied = false
     var body: some View {
         let button = Button {
-            if surface.activate(node.instance) { copies += 1 }
+            if tree.activate(node) { copies += 1 }
         } label: {
-            if let c = node.children.first {
-                A2UIChildView(node: c, surface: surface)
+            if let c = node.parts.first {
+                A2UIChildView(node: c, tree: tree)
                     .opacity(copied ? 0 : 1)
                     .overlay { if copied { Image(systemName: "checkmark").accessibilityLabel("Copied") } }
             }
@@ -341,12 +345,11 @@ extension EnvironmentValues {
 }
 
 struct A2UICheckBox: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     @Environment(\.a2uiInMenu) private var inMenu
     var body: some View {
-        let path = a2uiPath(of: node.instance, in: surface)
-        let binding = Binding<Bool>(get: { a2uiValue(node, surface)?.boolValue ?? false }, set: { surface.set(path, .bool($0)) })
+        let binding = Binding<Bool>(get: { node.value?.boolValue ?? false }, set: { tree.change(node, .bool($0)) })
         let toggle = Toggle(node.props["label"]?.text ?? "", isOn: binding)
         #if os(macOS)
         if inMenu { toggle } else { toggle.toggleStyle(.checkbox) }
@@ -358,12 +361,11 @@ struct A2UICheckBox: View {
 
 // MARK: TextField — `label`, `value`, `variant` (shortText, longText, number, obscured)
 struct A2UITextField: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     var body: some View {
-        let path = a2uiPath(of: node.instance, in: surface)
         let label = node.props["label"]?.text ?? ""
-        let binding = Binding<String>(get: { a2uiValue(node, surface)?.text ?? "" }, set: { surface.set(path, .string($0)) })
+        let binding = Binding<String>(get: { node.value?.text ?? "" }, set: { tree.change(node, .string($0)) })
         switch node.props["variant"]?.stringValue {
         case "longText": TextEditor(text: binding).frame(minHeight: 60).overlay(alignment: .topLeading) { if binding.wrappedValue.isEmpty { Text(label).foregroundStyle(.tertiary).padding(6) } }
         case "obscured": SecureField(label, text: binding)
@@ -380,16 +382,15 @@ struct A2UITextField: View {
 
 // MARK: DateTimeInput — `label`, `value` (ISO 8601), `enableDate`, `enableTime`
 struct A2UIDateTimeInput: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     private static let formats = ["yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd", "'T'HH:mm:ss", "HH:mm:ss"]
     var body: some View {
-        let path = a2uiPath(of: node.instance, in: surface)
         let date = node.props["enableDate"]?.boolValue ?? true, time = node.props["enableTime"]?.boolValue ?? false
         let components: DatePickerComponents = date && time ? [.date, .hourAndMinute] : time ? [.hourAndMinute] : [.date]
         let binding = Binding<Date>(
-            get: { Self.parse(a2uiValue(node, surface)?.stringValue) },
-            set: { surface.set(path, .string(Self.format($0, date: date, time: time))) })
+            get: { Self.parse(node.value?.stringValue) },
+            set: { tree.change(node, .string(Self.format($0, date: date, time: time))) })
         DatePicker(node.props["label"]?.text ?? "", selection: binding, displayedComponents: components)
     }
     private static func parse(_ s: String?) -> Date {
@@ -406,17 +407,16 @@ struct A2UIDateTimeInput: View {
 
 // MARK: ChoicePicker — `label`, `options` [{label, value}], `value` [selected], `variant` (mutuallyExclusive, multipleSelection), `displayStyle` (checkbox, chips, menu), `filterable`
 struct A2UIChoicePicker: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     @State private var filter = ""
     @Environment(\.a2uiInForm) private var inForm
     var body: some View {
-        let path = a2uiPath(of: node.instance, in: surface)
         let all = (node.props["options"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.map { (label: $0["label"]?.text ?? "", value: $0["value"]?.text ?? "") }
         let options = filter.isEmpty ? all : all.filter { $0.label.localizedCaseInsensitiveContains(filter) }
-        let selected = (a2uiValue(node, surface)?.arrayValue ?? []).map(\.text)
+        let selected = (node.value?.arrayValue ?? []).map(\.text)
         let multiple = node.props["variant"]?.stringValue == "multipleSelection"
-        let single = Binding<String>(get: { selected.first ?? "" }, set: { surface.set(path, .array([.string($0)])) })
+        let single = Binding<String>(get: { selected.first ?? "" }, set: { tree.change(node, .array([.string($0)])) })
         let title = node.props["label"]?.text ?? ""
         if inForm {
             // In a Form each option is its own row: a tick for one of several, and a labelled menu row for a single choice.
@@ -426,7 +426,7 @@ struct A2UIChoicePicker: View {
                     Button {
                         var next = selected.filter { $0 != o.value }
                         if !on { next.append(o.value) }
-                        surface.set(path, .array(next.map { .string($0) }))
+                        tree.change(node, .array(next.map { .string($0) }))
                     } label: {
                         HStack { Text(o.label); Spacer(); if on { Image(systemName: "checkmark").foregroundStyle(.tint).fontWeight(.semibold) } }
                             .contentShape(Rectangle())
@@ -441,9 +441,9 @@ struct A2UIChoicePicker: View {
             if node.props["filterable"]?.boolValue == true { TextField("Filter", text: $filter) }
             if multiple {
                 if node.props["displayStyle"]?.stringValue == "chips" {
-                    HStack { ForEach(options, id: \.value) { o in toggle(o, selected, path, chip: true) } }
+                    HStack { ForEach(options, id: \.value) { o in toggle(o, selected, chip: true) } }
                 } else {
-                    VStack(alignment: .leading) { ForEach(options, id: \.value) { o in toggle(o, selected, path, chip: false) } }
+                    VStack(alignment: .leading) { ForEach(options, id: \.value) { o in toggle(o, selected, chip: false) } }
                 }
             } else if node.props["displayStyle"]?.stringValue == "chips" {
                 // A segmented control, at every width: a page that wants a menu when it does not fit sends a `ViewThatFits` of both.
@@ -457,12 +457,12 @@ struct A2UIChoicePicker: View {
     }
 
     @ViewBuilder
-    private func toggle(_ o: (label: String, value: String), _ selected: [String], _ path: String, chip: Bool) -> some View {
+    private func toggle(_ o: (label: String, value: String), _ selected: [String], chip: Bool) -> some View {
         let on = selected.contains(o.value)
         let binding = Binding<Bool>(get: { on }, set: { new in
             var next = selected.filter { $0 != o.value }
             if new { next.append(o.value) }
-            surface.set(path, .array(next.map { .string($0) }))
+            tree.change(node, .array(next.map { .string($0) }))
         })
         if chip { Toggle(o.label, isOn: binding).toggleStyle(.button) } else {
             Toggle(o.label, isOn: binding)
@@ -475,12 +475,11 @@ struct A2UIChoicePicker: View {
 
 // MARK: Slider — `label`, `value`, `min`, `max`
 struct A2UISlider: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     var body: some View {
-        let path = a2uiPath(of: node.instance, in: surface)
         let lo = node.props["min"]?.numberValue ?? 0, hi = node.props["max"]?.numberValue ?? 100
-        let binding = Binding<Double>(get: { a2uiValue(node, surface)?.numberValue ?? lo }, set: { surface.set(path, .number($0)) })
+        let binding = Binding<Double>(get: { node.value?.numberValue ?? lo }, set: { tree.change(node, .number($0)) })
         Slider(value: binding, in: lo...hi) { Text(node.props["label"]?.text ?? "") }
     }
 }

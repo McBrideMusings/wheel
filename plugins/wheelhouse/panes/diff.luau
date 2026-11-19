@@ -25,12 +25,6 @@ local TOTALS = 210
 -- Rows the narrow layout's file table shows before it scrolls (its header row included in the height).
 local TABLE_ROWS = 7
 
--- Node ids are positional (`root`, then the parent's id and the child's place), and a List's `scrollTo` names one, so the page
--- keeps its slots fixed: root holds [problem, top, layout, note]; layout holds [wide, narrow]; wide holds [split]; the split holds
--- [side, stream]; narrow holds [files, nav, lines].
-local WIDE_STREAM = "root.2.0.0.1"
-local NARROW_LINES = "root.2.1.2"
-
 -- ───────────────────────────── the data ─────────────────────────────
 
 local function scope_of(snap, st)
@@ -294,7 +288,7 @@ local function wide_layout(scope, sel)
     stream.spacing = 0
     stream.pinnedViews = { "sectionHeaders" }
     stream.modifiers = { { frame = { minWidth = 280, maxWidth = "infinity", maxHeight = "infinity" } } }
-    if at then stream.scrollTo = WIDE_STREAM .. "." .. (at - 1) end
+    if at then stream.scrollTo = at end
     local split = ui.HSplitView{ side, ui.List(stream), modifiers = { { frame = { maxHeight = "infinity" } } } }
     local wide = kit.box("v", { split }, { spacing = 0 })
     return kit.modify(wide, { frame = { minWidth = WIDE, idealWidth = WIDE, maxWidth = "infinity", maxHeight = "infinity" } })
@@ -331,7 +325,7 @@ local function narrow_layout(scope, sel)
     lines.spacing = 0
     lines.modifiers = { { frame = { maxHeight = "infinity" } } }
     -- A file's first line, so a newly opened file starts at its top (a binary file's first line is its note).
-    if #lines > 0 then lines.scrollTo = NARROW_LINES .. ".0" end
+    if #lines > 0 then lines.scrollTo = 1 end
     local list = ui.List(lines)
     local narrow = kit.box("v", { files, nav, list }, { spacing = 4 })
     return kit.modify(narrow, { frame = { maxHeight = "infinity" } })

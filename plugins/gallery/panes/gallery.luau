@@ -199,13 +199,6 @@ end
 local JUSTIFY = { "start", "center", "end", "spaceBetween", "spaceEvenly" }
 local ALIGN = { "start", "center", "end" }
 
--- The positional id of the pinned List, for its `scrollTo`. The page is `root` > `root.0`, whose children are the
--- heading, two lines, then the classes, so Containers and layout is `root.0.6`; its Card's `child` holds the table, whose
--- children are the title, the blurb, the header, then one row per option (Row, Column, then List's third option); a
--- row's cell 3 holds the example. Reordering the classes or the options above it moves this id.
-local LAYOUT_AT = "root.0.6"
-local PINNED_LIST_AT = LAYOUT_AT .. ".0@child." .. (3 + (#JUSTIFY + 1) + (#ALIGN + 1) + 2) .. ".0.3.0"
-
 local function pinned_list()
     local secs = {}
     for _, f in ipairs({ "a.rs", "b.rs", "c.rs" }) do
@@ -223,12 +216,23 @@ local function pinned_list()
     return put("List", secs, {
         spacing = 0,
         pinnedViews = { "sectionHeaders" },
-        scrollTo = PINNED_LIST_AT .. ".1",
+        scrollTo = 2,
         modifiers = { { frame = { height = 140 } } },
     })
 end
 
-local function layout_class()
+-- A keyed Column of fields: Reverse flips the order, and each field keeps what was typed in it, because its `key` (not its
+-- place) is its identity.
+local function keyed_list(order)
+    local fields = {}
+    for _, k in ipairs(order) do
+        table.insert(fields, put("TextField", nil, { key = k, label = "Field " .. k, modifiers = { { frame = { width = 180 } } } }))
+    end
+    fields.key = "keyed"
+    return col({ col(fields, { align = "start" }), put("Button", nil, { child = txt("Reverse"), action = { type = "reverse" } }) }, { align = "start" })
+end
+
+local function layout_class(state)
     local row_opts = {}
     for _, j in ipairs(JUSTIFY) do
         table.insert(row_opts, { "justify " .. j, row({ txt("one"), txt("two"), txt("three") }, { justify = j }) })
@@ -247,6 +251,7 @@ local function layout_class()
         }))
     end
     table.insert(col_opts, { "in a row beside a Table: keeps its own height", row(boxes, { justify = "start" }) })
+    table.insert(col_opts, { "children with a `key`: type in a field, then Reverse; each field moves with its text", keyed_list(state.order or { "a", "b", "c" }) })
 
     return klass("Containers and layout", "Arrange other components.", {
         { "Row", "HStack", row_opts },
@@ -255,7 +260,7 @@ local function layout_class()
             { "vertical, with a frame height here: that tall, scrolling itself; with no frame a vertical List fills the pane under the rest of the page, which then stays put (a Luau agent view keeps its composer under its transcript this way)",
                 put("List", { txt("alpha"), txt("beta"), txt("gamma") }, { direction = "vertical", modifiers = { { frame = { height = 80 } } } }) },
             { "horizontal", put("List", { txt("alpha"), txt("beta"), txt("gamma") }, { direction = "horizontal" }) },
-            { "pinnedViews sectionHeaders, scrollTo: each Section's header stays at the top while its rows scroll; scrollTo names the child scrolled to the top when it changes (here the second section)",
+            { "pinnedViews sectionHeaders, scrollTo: each Section's header stays at the top while its rows scroll; scrollTo names the child scrolled to the top when it changes, by its key or its place (here the second section)",
                 pinned_list() },
         } },
         { "ViewThatFits", "ViewThatFits", {
@@ -628,6 +633,12 @@ local function init(previous)
 end
 
 local function update(state, msg)
+    if msg.type == "reverse" then
+        local flipped = {}
+        local order = state.order or { "a", "b", "c" }
+        for i = #order, 1, -1 do table.insert(flipped, order[i]) end
+        state.order = flipped
+    end
     return state
 end
 
@@ -639,7 +650,7 @@ local function view(state, data)
         content_class(),
         controls_class(),
         inputs_class(),
-        layout_class(),
+        layout_class(state),
         nav_class(),
         system_class(),
         table_class(),

@@ -8,11 +8,15 @@ import Testing
 @MainActor
 struct A2UITableWidthTests {
     private func tableColumns(width: CGFloat) async throws -> [CGFloat] {
-        let comps = ##"[{"id":"root","component":"Table","columns":[{"key":"id","label":"ID","width":80},{"key":"title","label":"Title","width":null},{"key":"labels","label":"Labels","width":120},{"key":"who","label":"Author","width":100}],"sections":[{"title":"","count":1,"rows":[{"id":"1","path":"1","cells":[{"key":"id","text":"#1"},{"key":"title","text":"Wrong icon in sidebar"},{"key":"labels","text":"bug"},{"key":"who","text":"pierce"}]}]}]}]"##
-        let json = #"[{"createSurface":{"surfaceId":"s"}},{"updateComponents":{"components":"# + comps + "}}]"
-        let model = SurfaceModel()
-        #expect(model.process(try JSONDecoder().decode([[String: AnyCodable]].self, from: Data(json.utf8))).isEmpty)
-        let view = A2UISurfaceView(surface: model).environment(\.a2uiPane, CGSize(width: width, height: 400))
+        let pane = PluginPane()
+        pane.load(source: """
+        return { view = function() return ui.Table{
+            columns = { { key = "id", label = "ID", width = 80 }, { key = "title", label = "Title" }, { key = "labels", label = "Labels", width = 120 }, { key = "who", label = "Author", width = 100 } },
+            sections = { { title = "", count = 1, rows = { { id = "1", path = "1", cells = { { key = "id", text = "#1" }, { key = "title", text = "Wrong icon in sidebar" }, { key = "labels", text = "bug" }, { key = "who", text = "pierce" } } } } } },
+        } end }
+        """, chunk: "table.luau")
+        #expect(pane.error == nil)
+        let view = A2UISurfaceView(tree: pane.tree).environment(\.a2uiPane, CGSize(width: width, height: 400))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         let host = NSHostingView(rootView: view)
         window.contentView = host

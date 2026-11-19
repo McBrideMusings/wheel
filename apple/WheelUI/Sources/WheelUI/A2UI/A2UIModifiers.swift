@@ -1,3 +1,4 @@
+import WheelKit
 import SwiftUI
 
 // A component's optional `modifiers` property is a list of SwiftUI modifiers applied in order, each named as SwiftUI names it
@@ -85,7 +86,7 @@ private func textStyle(_ name: String) -> Font? {
     }
 }
 
-func a2uiFont(_ v: AnyCodable) -> Font? {
+func a2uiFont(_ v: JSONValue) -> Font? {
     if let s = v.stringValue { return textStyle(s) }
     guard let d = v.dictionaryValue else { return nil }
     let design: Font.Design = d["design"]?.stringValue == "monospaced" ? .monospaced : d["design"]?.stringValue == "serif" ? .serif : d["design"]?.stringValue == "rounded" ? .rounded : .default
@@ -94,7 +95,7 @@ func a2uiFont(_ v: AnyCodable) -> Font? {
     return nil
 }
 
-func a2uiPadding(_ v: AnyCodable) -> EdgeInsets? {
+func a2uiPadding(_ v: JSONValue) -> EdgeInsets? {
     if let n = v.numberValue { return EdgeInsets(top: n, leading: n, bottom: n, trailing: n) }
     if let a = v.arrayValue?.compactMap({ $0.numberValue }) {
         if a.count == 2 { return EdgeInsets(top: a[0], leading: a[1], bottom: a[0], trailing: a[1]) }
@@ -107,7 +108,7 @@ func a2uiPadding(_ v: AnyCodable) -> EdgeInsets? {
                       bottom: d["bottom"]?.numberValue ?? vv, trailing: d["trailing"]?.numberValue ?? h)
 }
 
-private func length(_ v: AnyCodable?) -> CGFloat? {
+private func length(_ v: JSONValue?) -> CGFloat? {
     if v?.stringValue == "infinity" { return .infinity }
     return v?.numberValue.map { CGFloat($0) }
 }
@@ -125,7 +126,7 @@ private func alignment(_ name: String?) -> Alignment {
 
 /// Applies a component's `modifiers` list, in order.
 struct A2UIModifiers: ViewModifier {
-    let list: [AnyCodable]
+    let list: [JSONValue]
 
     func body(content: Content) -> some View {
         var view = AnyView(content)
@@ -136,7 +137,7 @@ struct A2UIModifiers: ViewModifier {
         return view
     }
 
-    private func apply(_ name: String, _ arg: AnyCodable, to v: AnyView) -> AnyView {
+    private func apply(_ name: String, _ arg: JSONValue, to v: AnyView) -> AnyView {
         switch name {
         case "font":
             if let f = a2uiFont(arg) { return AnyView(v.font(f)) }
@@ -220,8 +221,8 @@ private struct HoverHighlight: ViewModifier {
 
 extension View {
     /// The component's `modifiers` property, applied.
-    func a2uiModified(_ node: ComponentNode) -> some View {
-        modifier(A2UIModifiers(list: node.instance.properties["modifiers"]?.arrayValue ?? []))
+    func a2uiModified(_ node: ViewNode) -> some View {
+        modifier(A2UIModifiers(list: node.props["modifiers"]?.arrayValue ?? []))
     }
 }
 

@@ -30,7 +30,7 @@ import WheelKit
 
     func texts(_ pane: PluginPane) -> [String] { pane.componentTexts.compactMap { $0["text"] } }
     func button(_ pane: PluginPane) -> String? {
-        pane.surface.components.values.first { $0.type == "Button" }?.id
+        pane.tree.all.first { $0.component == "Button" }?.id
     }
 
     @Test func aLoadDrawsTheScriptsView() {
@@ -54,8 +54,8 @@ import WheelKit
     @Test func aTextFieldChangeUpdatesTheState() throws {
         let pane = PluginPane()
         pane.load(source: Self.sample, chunk: "sample/main.luau")
-        let field = try #require(pane.surface.components.values.first { $0.type == "TextField" })
-        pane.set(path: "/" + field.id, value: "Ada")
+        let field = try #require(pane.tree.all.first { $0.component == "TextField" })
+        pane.set(component: field.id, value: "Ada")
         #expect(pane.stateJSON == #"{"count":0,"name":"Ada"}"#)
         #expect(texts(pane).last == "Hello, Ada")
     }
@@ -114,7 +114,7 @@ import WheelKit
     """
 
     func component(_ pane: PluginPane, _ type: String) throws -> String {
-        try #require(pane.surface.components.values.first { $0.type == type }?.id)
+        try #require(pane.tree.all.first { $0.component == type }?.id)
     }
 
     @Test func viewGetsThePanesContext() {
@@ -132,22 +132,23 @@ import WheelKit
         #expect(pane.raise(component: table, key: "rowAction", context: ["id": "a"]))
         #expect(pane.raise(component: table, key: "sortAction", context: ["key": "t", "asc": false]))
         #expect(pane.raise(component: table, key: "foldAction", context: ["path": "a"]))
-        #expect(pane.raise(component: table, key: "sections.0.rows.0.menu.0.action", context: [:]))
+        #expect(pane.raise(component: table + "/a", key: "menu.0.action", context: [:]))
         #expect(pane.raise(component: canvas, key: "hits.0.action", context: ["id": "n1"]))
         #expect(pane.raise(component: canvas, key: "hits.0.doubleAction", context: ["id": "other"]))
         #expect(pane.raise(component: modal, key: "dismissAction", context: nil))
         #expect(!pane.raise(component: table, key: "selectAction", context: nil))
         #expect(pane.stateJSON == #"{"log":["id=a,type=open","asc=false,key=t,type=sort","path=a,type=fold","id=a,type=drop","id=n1,type=hit","id=n1,type=open","type=dismiss"]}"#)
-        // The Table draws the names, never the tables.
-        let props = try #require(pane.surface.components[table]?.properties)
-        #expect(props["rowAction"]?.stringValue == "plugin:\(table)/rowAction")
+        // The Table keeps the tables the script wrote, and each row is its own node.
+        let props = try #require(pane.tree.node(table)?.props)
+        #expect(props["rowAction"] == .object(["type": .string("open")]))
+        #expect(props["sections"]?.arrayValue?.first?.dictionaryValue?["rows"] == .array([.string(table + "/a")]))
     }
 
     @Test func everyBoundControlSendsItsOnChange() throws {
         let pane = PluginPane()
         pane.load(source: Self.controls, chunk: "controls.luau")
-        pane.set(path: "/" + (try component(pane, "CheckBox")), value: true)
-        pane.set(path: "/" + (try component(pane, "ChoicePicker")), value: ["a"])
+        pane.set(component: try component(pane, "CheckBox"), value: true)
+        pane.set(component: try component(pane, "ChoicePicker"), value: ["a"])
         #expect(pane.stateJSON == #"{"log":["type=done,value=true","type=pick,value=[1]"]}"#)
     }
 
@@ -166,14 +167,14 @@ import WheelKit
             end,
         }
         """, chunk: "echo.luau")
-        let picker = "/" + (try component(pane, "ChoicePicker")), field = "/" + (try component(pane, "TextField"))
-        pane.set(path: picker, value: ["a"])
-        pane.set(path: field, value: "Ada")
-        #expect(pane.surface.get(picker) == .array([.string("a")]))
-        #expect(pane.surface.get(field) == .string("Ada"))
+        let picker = try component(pane, "ChoicePicker"), field = try component(pane, "TextField")
+        pane.set(component: picker, value: ["a"])
+        pane.set(component: field, value: "Ada")
+        #expect(pane.tree.node(picker)?.value == .array([.string("a")]))
+        #expect(pane.tree.node(field)?.value == .string("Ada"))
         // A value the script changes is written over the edit.
         #expect(pane.press(component: try component(pane, "Button")))
-        #expect(pane.surface.get(field) == .string("fresh"))
+        #expect(pane.tree.node(field)?.value == .string("fresh"))
     }
 
     @Test func dataUnderAnActionKeyAndACopyStayAsWritten() throws {
@@ -188,11 +189,11 @@ import WheelKit
             end,
         }
         """, chunk: "data.luau")
-        let canvas = try #require(pane.surface.components[try component(pane, "Canvas")]?.properties)
+        let canvas = try #require(pane.tree.node(try component(pane, "Canvas"))?.props)
         let hit = try #require(canvas["hits"]?.arrayValue?.first?.dictionaryValue)
-        #expect(hit["action"]?.stringValue != nil)
+        #expect(hit["action"] == .object(["type": .string("hit")]))
         #expect(hit["context"]?.dictionaryValue?["action"]?.dictionaryValue?["type"]?.stringValue == "data")
-        let button = try #require(pane.surface.components[try component(pane, "Button")]?.properties)
+        let button = try #require(pane.tree.node(try component(pane, "Button"))?.props)
         #expect(button["action"]?.dictionaryValue?["copy"]?.dictionaryValue?["text"]?.stringValue == "wheel-1")
     }
 

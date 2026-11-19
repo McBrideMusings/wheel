@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WheelKit
 @testable import WheelUI
 
 @Suite struct A2UICanvasTests {
@@ -18,8 +19,8 @@ import Testing
     }
 
     @Test func aSceneReadsItsOpsHitsAndBounds() throws {
-        let json = #"{"ops":[{"op":"rect","r":[[0,0,10,5]],"fill":"fill","radius":2,"minZoom":0.5},{"op":"circle","c":[[3,3,2],[8,8,1]],"fill":"ok"},{"op":"text","t":[[1,1,"hi"]],"size":11,"anchor":"middle"}],"hits":[{"id":"a","circle":[3,3,2],"action":"pick","context":{"k":"v"},"slop":4}],"bounds":[0,0,20,10],"focus":{"x":1,"y":2,"w":3,"h":4,"key":"k1"},"emptyAction":"none"}"#
-        let props = try JSONDecoder().decode([String: AnyCodable].self, from: Data(json.utf8))
+        let json = #"{"ops":[{"op":"rect","r":[[0,0,10,5]],"fill":"fill","radius":2,"minZoom":0.5},{"op":"circle","c":[[3,3,2],[8,8,1]],"fill":"ok"},{"op":"text","t":[[1,1,"hi"]],"size":11,"anchor":"middle"}],"hits":[{"id":"a","circle":[3,3,2],"action":{"type":"pick"},"context":{"k":"v"},"slop":4}],"bounds":[0,0,20,10],"focus":{"x":1,"y":2,"w":3,"h":4,"key":"k1"},"emptyAction":{"type":"none"}}"#
+        let props = try JSONDecoder().decode([String: JSONValue].self, from: Data(json.utf8))
         let scene = CanvasScene(props)
         #expect(scene.ops.map(\.kind) == ["rect", "circle", "text"])
         #expect(scene.ops[0].style.minZoom == 0.5)
@@ -30,7 +31,7 @@ import Testing
         #expect(scene.bounds == CGRect(x: 0, y: 0, width: 20, height: 10))
         #expect(scene.focus == CGRect(x: 1, y: 2, width: 3, height: 4))
         #expect(scene.focusKey == "k1")
-        #expect(scene.emptyAction == "none")
+        #expect(scene.emptyAction == "emptyAction" && scene.hits.first?.action == "hits.0.action")
     }
 
     @Test func aScreenSizeIsClampedToItsRange() {
@@ -49,16 +50,16 @@ import Testing
     }
 
     @Test func aSceneReadsScreenSizesTipsAndKeys() throws {
-        let json = #"{"ops":[{"op":"circle","c":[[3,3,8]],"rpx":[1.4,5.5]},{"op":"rect","r":[[0,0,9,9]],"hpx":[1.5,26],"wpx":[20,1000]},{"op":"text","t":[[1,1,"hi"]],"sizepx":[8,14],"maxw":90,"minx":8},{"op":"path","d":["M0 0 L10 5"]}],"hits":[{"id":"a","rect":[0,0,5,5],"action":"pick","tip":["one",[{"t":"x","tone":"ok","mono":true}]],"doubleAction":"open","fit":[0,0,9,9],"label":"A"}],"focus":{"rect":[1,2,3,4],"key":"k","zoom":1},"fitKey":"f","sizeAction":"w","sizeKnown":900,"escapeAction":"esc","enterAction":"go","wheel":"pan","emptyContext":{"id":""}}"#
-        let scene = CanvasScene(try JSONDecoder().decode([String: AnyCodable].self, from: Data(json.utf8)))
+        let json = #"{"ops":[{"op":"circle","c":[[3,3,8]],"rpx":[1.4,5.5]},{"op":"rect","r":[[0,0,9,9]],"hpx":[1.5,26],"wpx":[20,1000]},{"op":"text","t":[[1,1,"hi"]],"sizepx":[8,14],"maxw":90,"minx":8},{"op":"path","d":["M0 0 L10 5"]}],"hits":[{"id":"a","rect":[0,0,5,5],"action":{"type":"pick"},"tip":["one",[{"t":"x","tone":"ok","mono":true}]],"doubleAction":{"type":"open"},"fit":[0,0,9,9],"label":"A"}],"focus":{"rect":[1,2,3,4],"key":"k","zoom":1},"fitKey":"f","sizeAction":{"type":"w"},"sizeKnown":900,"escapeAction":{"type":"esc"},"enterAction":{"type":"go"},"wheel":"pan","emptyContext":{"id":""}}"#
+        let scene = CanvasScene(try JSONDecoder().decode([String: JSONValue].self, from: Data(json.utf8)))
         #expect(scene.ops[0].style.rpx == [1.4, 5.5])
         #expect(scene.ops[1].style.hpx == [1.5, 26] && scene.ops[1].style.wpx == [20, 1000])
         #expect(scene.ops[2].style.sizepx == [8, 14] && scene.ops[2].style.maxw == 90 && scene.ops[2].style.minx == 8)
         #expect(scene.ops[3].paths.first?.bounds == CGRect(x: 0, y: 0, width: 10, height: 5))
         #expect(scene.hits[0].tip.count == 2 && scene.hits[0].tip[1][0].mono && scene.hits[0].tip[1][0].tone == "ok")
-        #expect(scene.hits[0].doubleAction == "open" && scene.hits[0].fit == CGRect(x: 0, y: 0, width: 9, height: 9) && scene.hits[0].label == "A")
-        #expect(scene.focusZoom == 1 && scene.fitKey == "f" && scene.sizeAction == "w" && scene.sizeKnown == 900)
-        #expect(scene.escapeAction == "esc" && scene.enterAction == "go" && scene.wheelPans && scene.emptyContext["id"]?.stringValue == "")
+        #expect(scene.hits[0].doubleAction == "hits.0.doubleAction" && scene.hits[0].fit == CGRect(x: 0, y: 0, width: 9, height: 9) && scene.hits[0].label == "A")
+        #expect(scene.focusZoom == 1 && scene.fitKey == "f" && scene.sizeAction == "sizeAction" && scene.sizeKnown == 900)
+        #expect(scene.escapeAction == "escapeAction" && scene.enterAction == "enterAction" && scene.wheelPans && scene.emptyContext["id"]?.stringValue == "")
     }
 
     @Test func aFocusAtZoomCentresTheRectButStopsAtTheScenesEdges() {

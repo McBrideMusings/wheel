@@ -86,7 +86,7 @@ wait_for() {
 }
 
 wait_for 30 'e == "None" and t.startswith("Tick")' && pass "0a the pane loaded its script: $(snap)" || fail "0a the pane never loaded: $(snap)"
-dbg --data-urlencode action=press --data-urlencode component=root.4 > "$T/press.json"
+dbg --data-urlencode action=press --data-urlencode component=root/Button0 > "$T/press.json"
 wait_for 20 'o == "result: 1"' && pass "0b Echo pressed: $(snap)" || fail "0b Echo did not set the state: $(snap) $(cat "$T/press.json")"
 # The window snapshot pastes the bridge's own drawing of each native pane over GPUI's frame; the reply says which it drew.
 shot() {

@@ -71,7 +71,7 @@ import WheelKit
         #expect(list.component == "List")
         // user, text, thought, tool card, plan, error
         #expect(list.children.count == 6)
-        #expect(list.props["scrollTo"] == .string("root.1.5"))
+        #expect(list.props["scrollTo"] == .number(6))
         let all = Self.texts(list)
         #expect(all.contains("fix the bug"))
         #expect(all.contains("On it."))
@@ -107,7 +107,7 @@ import WheelKit
         let tree = try runtime.view(.object(["pane": .string("p3")]))
         #expect(tree.children[1].children.count == 1)
         #expect(Self.texts(tree.children[1]) == ["Give this agent a task."])
-        #expect(tree.children[1].props["scrollTo"] == .string("root.1.0"))
+        #expect(tree.children[1].props["scrollTo"] == .number(1))
     }
 
     @Test func aLargeDiffIsNotDiffedAndALongTextIsCapped() throws {

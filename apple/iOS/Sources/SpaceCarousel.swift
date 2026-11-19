@@ -157,8 +157,6 @@ struct SpaceCarousel: View {
                 .background(SwipeArea.tint)
         } else if let link = model.pluginPanes[pane.id] {
             PluginPage(model: model, pane: link.pane, plugin: link.plugin)
-        } else if let a2ui = model.a2uiPanes[pane.id], a2ui.isNative {
-            A2UIPaneView(pane: a2ui)
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
         } else if case .browser = pane.kind {
@@ -408,7 +406,7 @@ struct SpaceCarousel: View {
         // it would, once its script has loaded.
         if let ids = env["WHEEL_PLUGIN_PRESS"] {
             for _ in 0 ..< 30 {
-                if let link = model.pluginPanes.values.sorted(by: { $0.pane < $1.pane }).first, !link.plugin.surface.components.isEmpty {
+                if let link = model.pluginPanes.values.sorted(by: { $0.pane < $1.pane }).first, link.plugin.tree.root != nil {
                     for id in ids.split(separator: ",").map(String.init) {
                         Log.info("plugin pane \(link.pane): press \(id) -> \(link.plugin.press(component: id))")
                     }

@@ -1,6 +1,6 @@
 ---
 name: project-perf
-description: "wheel: the cost scenarios (chat, live, spaces, hidden turns, layout, build) a diff must run after project-verify, and the limits that fail it."
+description: "wheel: the cost scenarios (chat, live, spaces, hidden turns, layout, build, plugin keystroke) a diff must run after project-verify, and the limits that fail it."
 ---
 
 # Performance
@@ -23,6 +23,7 @@ keeps each table.
 | hidden turns | `bash .claude/skills/project-verify/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
 | layout | `bash .claude/skills/project-verify/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 | build | `bash .claude/skills/project-verify/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
+| plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `A2UI`, `apple/WheelLuau`, `clients/gpui/native/Bridge.swift`'s plugin pane, or a wheelhouse pane script |
 
 ## chat
 
@@ -104,6 +105,20 @@ recompile each other's crates on every run.
 | --- | --- | --- | --- |
 | crates the test run compiles | 0 | 0 | 15 (ring, rustls, rcgen, ureq, wheeld …: `CARGO_MANIFEST_DIR` passed on) |
 | crates the build after it compiles | 0 | 0 | 7 |
+
+## plugin keystroke
+
+`perf-plugin.sh` (needs `clients/gpui/tools/build.py dev` and `cargo build -p wheeld -p wheel-cli -p wheelhouse`) opens the
+wheelhouse Beads pane over this repo's beads (441 rows, 537 components) in the hidden GPUI app against its own wheeld,
+types "w" to "wheel" into the search field and clears it, then presses a status box five times. Per event it prints the
+Luau `update` and `view` ms, the reconcile ms, the view-tree nodes written, and the component and Table cell bodies
+SwiftUI evaluated in the second after it, and fails an event over the limits. Times follow the machine's load; the
+limits are counts, which do not.
+
+| Measure | Limit | Now | Broken |
+| --- | --- | --- | --- |
+| view-tree nodes written per keystroke or press | 20 | 0-9 | 96 (every component rewritten each render) |
+| component bodies per keystroke or press | 12 | 0-5 | 24-27 |
 
 ## Adding a measure
 
