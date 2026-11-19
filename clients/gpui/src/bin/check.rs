@@ -4164,7 +4164,7 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     // wheeld with the token in a header (never in the page's address), in a store of its own; the
     // page's script reached wheeld through `.wheel/client.js`; a file written into the folder
     // reloads the pane; and the artifact palette, opened in a new empty pane with `a`, lists the
-    // space's `pane = true` artifacts, filters as typed and opens the selected one on Return.
+    // space's artifacts, filters as typed and opens the selected one on Return.
     let html_pane = webs.first().copied().ok_or_else(|| anyhow::anyhow!("no web pane"))?.clone();
     let address = before["panes"][html_pane.as_str()]["url"].as_str().unwrap_or("").to_owned();
     ensure!(address == format!("wheel-page://pages/artifacts/{html_pane}/"), "the HTML pane's address is {address:?}");

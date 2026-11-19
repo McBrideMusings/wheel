@@ -43,7 +43,7 @@ public struct ArtifactPalette: Sendable, Equatable {
     public enum Listing: Sendable, Equatable {
         /// `artifact_ls` is out and unanswered.
         case loading
-        /// The daemon's `pane = true` artifacts for this pane's space.
+        /// The daemon's artifacts for this pane's space.
         case ready([ArtifactInfo])
         /// The daemon refused; its message, verbatim.
         case failed(String)
@@ -76,9 +76,8 @@ public struct ArtifactPalette: Sendable, Equatable {
     public static let noArtifactsField = "No artifacts to search"
     public static let unavailableField = "Search unavailable"
     public static let emptyTitle = "No artifacts for this space"
-    public static let emptyHelp = "An artifact is offered here when its wheel.toml entry says pane = true."
     public static let emptyAsk = "Ask an agent to make one, or run"
-    public static let emptyCommand = "wheel artifact new dash --pane"
+    public static let emptyCommand = "wheel artifact new dash"
     public static let failedTitle = "Couldn’t list artifacts"
     public static let failedLead = "wheeld refused the request and said:"
     public static let retry = "Try Again"

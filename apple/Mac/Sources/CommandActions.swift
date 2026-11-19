@@ -284,7 +284,7 @@ extension AppModel {
         guard connection == .connected, let space = active else { return }
         let req = client.req()
         paletteArtifactsReq = req
-        client.send(.artifactLs(req: req, space: space, paneOnly: true))
+        client.send(.artifactLs(req: req, space: space))
     }
 
     /// What a pane is called in the palette.

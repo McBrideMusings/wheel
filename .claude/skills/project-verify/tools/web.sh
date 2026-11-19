@@ -195,12 +195,9 @@ expect_exit_out 6 '--path' "--expires with --path exits 6" w artifact new bad2 -
 env -u WHEEL_PANE "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" artifact new bad3 --ends-with-agent >/dev/null 2>&1
 eq "--ends-with-agent outside an agent pane exits 3" "$?" "3"
 
-w artifact new flagged --pane >/dev/null 2>&1
-eq "artifact show --json reports pane: true for --pane" "$(w artifact show flagged --json | jget pane)" "true"
-expect_out 'in the pane picker' "plain artifact show marks the flagged one" w artifact show flagged
-eq "artifact show --json reports pane: false by default" "$(w artifact show dash --json | jget pane)" "false"
-eq "artifact ls --pane lists the flagged project one and the machine ones asking" \
-  "$(w artifact ls --pane --json | jget artifacts.0.name)" "flagged"
+eq "artifact show --json carries no pane key" "$(w artifact show dash --json | jq 'has("pane")')" "false"
+expect_exit 2 "artifact new --pane is an unknown flag" w artifact new flagged --pane
+expect_exit 2 "artifact ls --pane is an unknown flag" w artifact ls --pane
 
 LSJSON="$(w artifact ls --json)"
 check "artifact ls --json carries resolves" bash -c "printf %s '$LSJSON' | grep -q resolves"
@@ -219,7 +216,7 @@ rmdir "$SCR/emptyfolder/data"
 
 # add / remove
 mkdir -p "$SCR/course"; printf '<html>c</html>\n' >"$SCR/course/index.html"
-w artifact add "$SCR/course" --pane >/dev/null 2>&1
+w artifact add "$SCR/course" >/dev/null 2>&1
 check "artifact add writes the entry named for the folder" grep -q '^\[artifacts.course\]' "$PROJ/wheel.toml"
 expect_exit_out 6 'already' "artifact add of the same name again exits 6" w artifact add "$SCR/course"
 printf 'not html\n' >"$SCR/plain.txt"

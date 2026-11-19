@@ -149,10 +149,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// The phone's Apple push token (hex), for the notifications the daemon sends. Paired devices
     /// only; the daemon answers `ok`. Needs a server speaking protocol 8.
     case pushRegister(req: UInt64?, token: String)
-    /// The artifacts of `space` (the machine's only, with none), project first then machine. With
-    /// `paneOnly`, only the ones whose entry says `pane = true`: what a pane picker offers.
-    /// Replies `artifacts`.
-    case artifactLs(req: UInt64?, space: String?, paneOnly: Bool)
+    /// The artifacts of `space` (the machine's only, with none), project first then machine: what a
+    /// pane picker offers. Replies `artifacts`.
+    case artifactLs(req: UInt64?, space: String?)
     /// The tools of the MCP server artifact `name` names, as the server listed them; replies `tools`.
     case artifactTools(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?)
     /// Call `tool` of that server with `arguments` (the text of a JSON object); replies `toolResult`.
@@ -390,10 +389,9 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "device_revoke", "id": id]; put(req)
         case let .pushRegister(req, token):
             o = ["op": "push_register", "token": token]; put(req)
-        case let .artifactLs(req, space, paneOnly):
+        case let .artifactLs(req, space):
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
-            if paneOnly { o["pane"] = true }
         case let .artifactTools(req, name, scope, space, pane):
             o = ["op": "artifact_tools", "name": name]; put(req)
             if let scope { o["scope"] = scope.rawValue }

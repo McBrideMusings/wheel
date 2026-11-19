@@ -1593,7 +1593,7 @@ final class PhoneModel {
         artifacts = nil
         let req = client.req()
         artifactReq = req
-        client.send(.artifactLs(req: req, space: activeSpace?.id, paneOnly: true))
+        client.send(.artifactLs(req: req, space: activeSpace?.id))
     }
 
     /// The other way `kind` can show its conversation: a chat for a terminal running Claude Code

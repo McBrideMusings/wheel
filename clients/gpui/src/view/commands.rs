@@ -547,7 +547,7 @@ impl Client {
         let (true, Some(space)) = (self.link == Link::Up, self.space_id.clone()) else { return };
         let req = self.req();
         self.palette_reqs.artifacts = Some(req);
-        self.send(&ClientMsg::ArtifactLs { req: Some(req), space: Some(space), pane: true });
+        self.send(&ClientMsg::ArtifactLs { req: Some(req), space: Some(space) });
     }
     fn ask_roots(&mut self) {
         if self.link != Link::Up {

@@ -278,12 +278,6 @@ pub struct ArtifactInfo {
     /// How often, in seconds, the entry asks for a refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<u64>,
-    /// Whether the entry says `pane = true`: this artifact asks to be offered in a pane picker.
-    /// False is a one-off — still openable by name, by a person or an agent, and listed by no
-    /// picker. A picker is a filter over these records, so the two registries are the scopes: a
-    /// `machine` artifact is every project's on this machine, a `project` one is the project's own.
-    #[serde(default)]
-    pub pane: bool,
     /// The agent pane whose agent ends this artifact: the daemon deletes the artifact when that
     /// pane closes. None for an artifact nothing ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1484,9 +1478,6 @@ pub enum ClientMsg {
     ArtifactNew {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        /// Write `pane = true` into the entry: offer this artifact in a pane picker.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        pane: bool,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ArtifactScope>,
@@ -1762,15 +1753,13 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail: Option<usize>,
     },
-    /// Every artifact of every scope, each read off disk. With `pane`, only the ones whose
-    /// entry says `pane = true` — what a pane picker asks for. Replies `artifacts`.
+    /// Every artifact of every scope, each read off disk: what a pane picker offers. Replies
+    /// `artifacts`.
     ArtifactLs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        pane: bool,
     },
     /// Register a page that already exists, wherever it is, as an artifact: write its entry into
     /// the scope's `wheel.toml` and touch nothing in its folder. `path` is absolute and names a
@@ -1800,9 +1789,6 @@ pub enum ClientMsg {
         /// Seconds between timed refreshes; needs `command`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         every: Option<u64>,
-        /// Offer this artifact in a pane picker.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        pane: bool,
     },
     /// Delete one artifact's entry from its `wheel.toml`, leaving every file it names where it is:
     /// in `scope` when given, else the scope a bare name resolves to. Replies `artifact` with the
@@ -1817,7 +1803,7 @@ pub enum ClientMsg {
         space: Option<String>,
     },
     /// Make an ad hoc artifact permanent in scope `to`: its entry is rewritten there with no
-    /// `ends_with_pane` and no `expires_at` and with `pane = true`, and a project-or-machine move
+    /// `ends_with_pane` and no `expires_at`, and a project-or-machine move
     /// deletes the entry it leaves. Its folder is not moved. The daemon first asks a person through
     /// a permission request, shown under the `from` pane's name when given; a denial changes
     /// nothing. `scope` pins which scope the artifact is in now, else the scope a bare name

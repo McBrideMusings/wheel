@@ -28,7 +28,7 @@ printf '{"cwd":"%s/beta","type":"user"}\n' "$SCR" >"$ROOTS/b/s-beta.jsonl"
 config() { printf '{"source":"%s","roots":["%s"],"character":"%s","max":8}\n' "$1" "$ROOTS" "${2:-robot}" >"$CO/config.json"; }
 
 use_fake_agent
-printf '[artifacts.companion]\npath = "%s"\ncommand = "WHEEL_BIN=%s /bin/bash %s/sessions.sh"\nevery = 1\npane = true\n' \
+printf '[artifacts.companion]\npath = "%s"\ncommand = "WHEEL_BIN=%s /bin/bash %s/sessions.sh"\nevery = 1\n' \
   "$CO" "$WHEEL" "$CO" >>"$INST/wheel.toml"
 config wheel
 start_daemon --state-file "$SCR/spaces.json"
