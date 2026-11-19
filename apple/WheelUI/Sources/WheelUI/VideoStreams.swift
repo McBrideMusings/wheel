@@ -2,6 +2,7 @@
 import AppKit
 import AVFoundation
 import GameController
+import os
 import SwiftUI
 import WheelKit
 
@@ -64,6 +65,22 @@ public final class VideoStreams {
                                                windowNumber: view.window?.windowNumber ?? 0, context: nil, characters: characters,
                                                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 0) else { return false }
             if type == .keyDown { view.keyDown(with: event) } else { view.keyUp(with: event) }
+        }
+        return true
+    }
+
+    /// A left click at the middle of stream `stream` of plugin pane `pane`, as its view takes one: a mouse down and up event
+    /// handed to the view's own handlers, on the first such stream that takes input. For a check; false when no such stream is
+    /// shown or the view is in no window.
+    public func click(pane: String, stream: String) -> Bool {
+        guard let view = live.values.first(where: { $0.pane == pane && $0.stream == stream && $0.input })?.view,
+              let window = view.window else { return false }
+        let middle = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: middle, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+            else { return false }
+            if type == .leftMouseDown { view.mouseDown(with: event) } else { view.mouseUp(with: event) }
         }
         return true
     }
@@ -381,37 +398,37 @@ final class StreamAudio {
 }
 
 /// Interleaved samples waiting to play, shared by the read thread and the render thread.
-final class StreamAudioRing: @unchecked Sendable {
-    private var lock = os_unfair_lock()
-    private var samples: [Float] = []
-    private var head = 0
+final class StreamAudioRing: Sendable {
+    private struct Queue {
+        var samples: [Float] = []
+        var head = 0
+    }
+    private let queue = OSAllocatedUnfairLock(initialState: Queue())
 
     func push(_ more: [Float], keep: Int) {
-        os_unfair_lock_lock(&lock)
-        samples.removeFirst(head)
-        head = 0
-        samples += more
-        if samples.count > keep { samples.removeFirst(samples.count - keep) }
-        os_unfair_lock_unlock(&lock)
+        queue.withLock { q in
+            q.samples.removeFirst(q.head)
+            q.head = 0
+            q.samples += more
+            if q.samples.count > keep { q.samples.removeFirst(q.samples.count - keep) }
+        }
     }
 
     /// Fills each channel's buffer with the next `frames` frames, silence where none wait.
     func pull(into buffers: UnsafeMutableAudioBufferListPointer, frames: Int, channels: Int) {
-        os_unfair_lock_lock(&lock)
-        let have = min(frames, (samples.count - head) / max(channels, 1))
-        for (ch, buffer) in buffers.enumerated() {
-            guard let out = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
-            for i in 0..<frames { out[i] = i < have && ch < channels ? samples[head + i * channels + ch] : 0 }
+        // Unchecked: the buffers are the render thread's own and never leave this call.
+        queue.withLockUnchecked { q in
+            let have = min(frames, (q.samples.count - q.head) / max(channels, 1))
+            for (ch, buffer) in buffers.enumerated() {
+                guard let out = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                for i in 0..<frames { out[i] = i < have && ch < channels ? q.samples[q.head + i * channels + ch] : 0 }
+            }
+            q.head += have * channels
         }
-        head += have * channels
-        os_unfair_lock_unlock(&lock)
     }
 
     func clear() {
-        os_unfair_lock_lock(&lock)
-        samples = []
-        head = 0
-        os_unfair_lock_unlock(&lock)
+        queue.withLock { $0 = Queue() }
     }
 }
 

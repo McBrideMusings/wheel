@@ -4593,6 +4593,16 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
                 if last.iter().any(|t| t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)) { break; }
             }
             ensure!(last.iter().any(|t| t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)), "the key typed on the stream never reached the backend: {last:?}");
+            let clicked = native.call(json!({"op":"plugin","pane":pane,"action":"stream_click","component":"gallery.demo"}));
+            ensure!(clicked["ok"] == true, "stream_click on gallery.demo: {clicked}");
+            let mut pointer = Vec::new();
+            for _ in 0..100 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                pointer = texts(&state(&native)).into_iter().filter(|t| t.contains("last: pointer")).collect();
+                if pointer.iter().any(|t| t.contains(r#""kind":"up""#)) { break; }
+            }
+            ensure!(pointer.iter().any(|t| t.contains(r#""button":0"#) && t.contains(r#""kind":"up""#) && t.contains(r#""x":160"#) && t.contains(r#""y":90"#)),
+                "a click at the middle of the stream should reach the backend at (160, 90): {pointer:?}");
             let png = output.join("client-plugin-gallery-stream.png");
             let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
             ensure!(ok, "pane shot of the gallery: {err}");

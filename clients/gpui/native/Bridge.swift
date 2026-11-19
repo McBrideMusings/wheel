@@ -1514,7 +1514,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's value
             // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`,
             // `agent_send` the text `value` through the composer of the agent chat embedding pane `component`, `stream_key` type the
-            // characters `value` on the VideoStream of stream `component` as its view takes a key.
+            // characters `value` on the VideoStream of stream `component` as its view takes a key, `stream_click` click its middle.
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin else { return ["ok": false, "message": "no plugin pane"] }
             var ok = true
             switch value["action"] as? String {
@@ -1541,6 +1541,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 if let chat = embed?.chat, let text = value["value"] as? String { chat.draft = text; sendAgent(chat) } else { ok = false }
             case "stream_key":
                 ok = (value["component"] as? String).flatMap { s in (value["value"] as? String).map { videoStreams?.type(pane: pane, stream: s, characters: $0) ?? false } } ?? false
+            case "stream_click":
+                ok = (value["component"] as? String).map { videoStreams?.click(pane: pane, stream: $0) ?? false } ?? false
             default: break
             }
             return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "restarts": plugin.restarts, "components": plugin.componentTexts, "feeds": plugin.feedJSON,

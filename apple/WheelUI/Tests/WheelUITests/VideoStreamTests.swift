@@ -86,4 +86,32 @@ struct VideoStreamTests {
         #expect(decoder.lastError == nil)
         #expect(decoded["frames"] == frames.count)
     }
+
+    @Test func videoToolboxDecodesAnHEVCClip() async throws {
+        let units = StreamFrame.nalUnits(try Data(contentsOf: hevcClip))
+        let kind = { (u: Data) in Int((u[0] >> 1) & 0x3F) }
+        // VPS, SPS and PPS, the first of each.
+        let params = [32, 33, 34].compactMap { t in units.first { kind($0) == t } }
+        var frames: [[Data]] = []
+        var pending: [Data] = []
+        for unit in units where !(32...34).contains(kind(unit)) {
+            pending.append(unit)
+            if kind(unit) < 32 { frames.append(pending); pending = [] }
+        }
+        #expect(params.count == 3 && frames.count == 30)
+        let decoded = StreamStats()
+        let decoder = StreamDecoder { sample in
+            if CMSampleBufferGetImageBuffer(sample) != nil { decoded.add("frames") }
+        }
+        #expect(decoder.parameterSets(codec: .hevc, units: params))
+        #expect(decoder.dimensions.map { [$0.width, $0.height] } == [320, 180])
+        for (i, units) in frames.enumerated() { decoder.decode(time: UInt64(i) * 33_333, units: units) }
+        for _ in 0..<100 where decoded["frames"] < frames.count { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(decoder.lastError == nil)
+        #expect(decoded["frames"] == frames.count)
+    }
 }
+
+/// 1 s of 320x180 HEVC at 30 fps, Annex-B.
+private let hevcClip = clip.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    .appendingPathComponent("tools/fixtures/streams/demo.hevc")
