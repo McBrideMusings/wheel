@@ -1800,7 +1800,7 @@ impl Client {
         self.focus_pane(pane);
         self.ask_artifacts(pane);
     }
-    /// List again for `pane`'s palette: the `pane = true` artifacts of the space the pane is in.
+    /// List again for `pane`'s palette: the artifacts of the space the pane is in.
     fn ask_artifacts(&mut self, pane: &str) {
         let space = self.spaces.iter().find(|s| s.shown().any(|l| l.id == pane)).map(|s| s.id.clone());
         let req = self.next_req;
@@ -1813,7 +1813,7 @@ impl Client {
             return;
         };
         palette.req = Some(req);
-        self.send(&ClientMsg::ArtifactLs { req: Some(req), space: Some(space), pane: true });
+        self.send(&ClientMsg::ArtifactLs { req: Some(req), space: Some(space) });
     }
     pub fn close_palette(&mut self, pane: &str) {
         self.palettes.remove(pane);
@@ -2540,7 +2540,7 @@ fn palette_overlay(pane: &str, palette: &Palette, width: f32, height: f32, cx: &
                         cx.notify();
                     }))).into_any_element()
         }
-        palette::Listing::Ready(list) if list.is_empty() => note(palette::EMPTY_TITLE, vec![palette::EMPTY_HELP.into(), format!("{} {}", palette::EMPTY_ASK, palette::EMPTY_COMMAND)]).into_any_element(),
+        palette::Listing::Ready(list) if list.is_empty() => note(palette::EMPTY_TITLE, vec![format!("{} {}", palette::EMPTY_ASK, palette::EMPTY_COMMAND)]).into_any_element(),
         palette::Listing::Ready(_) if palette.rows.is_empty() => note(&format!("No artifact matches “{}”", palette.query), vec![palette.no_match_detail()]).into_any_element(),
         palette::Listing::Ready(_) => {
             let mut list = div().id(gpui::ElementId::Name(format!("palette-{pane}").into())).overflow_y_scroll().flex().flex_col().pb_1();

@@ -461,10 +461,6 @@ enum ArtifactCommand {
     New {
         /// One plain name, never a path.
         name: String,
-        /// Write `pane = true` into the entry: offer this artifact in a pane picker. Leave it off
-        /// for a one-off nobody needs to find in a menu.
-        #[arg(long)]
-        pane: bool,
         /// Which root to put it under: project (in the project's directory, the default) or machine
         /// (every project on this machine).
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
@@ -537,9 +533,6 @@ enum ArtifactCommand {
         /// Seconds between timed refreshes; needs --command.
         #[arg(long)]
         every: Option<u64>,
-        /// Offer this artifact in a pane picker.
-        #[arg(long)]
-        pane: bool,
         /// Print the record as JSON.
         #[arg(long)]
         json: bool,
@@ -555,7 +548,7 @@ enum ArtifactCommand {
         space: Option<String>,
     },
     /// Make an ad hoc artifact permanent in the `project` or `machine` scope: its entry stops
-    /// expiring and is offered in the pane picker, and its folder stays where it is. Waits for a
+    /// expiring, and its folder stays where it is. Waits for a
     /// person to allow it in Wheel; a denial changes nothing.
     Promote {
         name: String,
@@ -575,9 +568,6 @@ enum ArtifactCommand {
     Ls {
         #[arg(long)]
         space: Option<String>,
-        /// Only the artifacts whose entry says `pane = true`: what a pane picker offers.
-        #[arg(long)]
-        pane: bool,
         /// Print the records as JSON.
         #[arg(long)]
         json: bool,
@@ -3687,10 +3677,7 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
 /// wheel.toml holds its entry, what the entry asks for, and every problem it has — a problem is part of the record, so it
 /// prints here as well as in `--json`, never only in the daemon's log.
 fn print_artifact(a: &wheel_proto::ArtifactInfo) {
-    // The flag is on the name's own line, because what it answers — would a pane picker offer
-    // this? — is a property of the artifact rather than a line of its configuration.
-    let offered = if a.pane { "  (in the pane picker)" } else { "" };
-    println!("{} {} — {}{offered}", a.scope.name(), a.name, a.title);
+    println!("{} {} — {}", a.scope.name(), a.name, a.title);
     if let Some(description) = &a.description {
         println!("  {description}");
     }
@@ -3767,7 +3754,6 @@ fn parse_duration(text: &str) -> Result<u64, String> {
 async fn artifact_new(
     conn: &mut Conn,
     name: String,
-    pane: bool,
     scope: Option<ArtifactScope>,
     space: Option<String>,
     path: Option<PathBuf>,
@@ -3784,7 +3770,6 @@ async fn artifact_new(
     let files = post_files(files)?;
     let artifact = artifact_of(conn, |req| ClientMsg::ArtifactNew {
         req: Some(req),
-        pane,
         name,
         scope,
         space,
@@ -3979,7 +3964,6 @@ async fn artifact_add(
     description: Option<String>,
     command: Option<String>,
     every: Option<u64>,
-    pane: bool,
     json: bool,
 ) -> Result<(), Fail> {
     let path = from_here(path)?.display().to_string();
@@ -3993,7 +3977,6 @@ async fn artifact_add(
         description,
         command,
         every,
-        pane,
     })
     .await?;
     if json {
@@ -4622,7 +4605,6 @@ async fn plugin_action(conn: &mut Conn, pane: String, action: String, args: Stri
 async fn artifact_ls(
     conn: &mut Conn,
     space: Option<String>,
-    pane: bool,
     json: bool,
 ) -> Result<(), Fail> {
     let req = conn.req();
@@ -4635,7 +4617,6 @@ async fn artifact_ls(
             ClientMsg::ArtifactLs {
                 req: Some(req),
                 space,
-                pane,
             },
             req,
         )
@@ -4649,11 +4630,7 @@ async fn artifact_ls(
         return Ok(());
     }
     if artifacts.is_empty() {
-        if pane {
-            eprintln!("[no artifact in any scope asks for the pane picker]");
-        } else {
-            eprintln!("[no artifacts in any scope]");
-        }
+        eprintln!("[no artifacts in any scope]");
         return Ok(());
     }
     for artifact in &artifacts {
@@ -6572,7 +6549,6 @@ async fn main() -> ExitCode {
             Command::File(command) => file(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {
                 name,
-                pane,
                 scope,
                 space,
                 path,
@@ -6595,7 +6571,7 @@ async fn main() -> ExitCode {
                 } else {
                     None
                 };
-                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify, description, url).await
+                artifact_new(&mut conn, name, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify, description, url).await
             }
             Command::Artifact(ArtifactCommand::Add {
                 path,
@@ -6606,12 +6582,11 @@ async fn main() -> ExitCode {
                 description,
                 command,
                 every,
-                pane,
                 json,
             }) => {
                 let space = default_space(&mut conn, space).await?;
                 artifact_add(
-                    &mut conn, path, name, scope, space, title, description, command, every, pane, json,
+                    &mut conn, path, name, scope, space, title, description, command, every, json,
                 )
                 .await
             }
@@ -6629,9 +6604,9 @@ async fn main() -> ExitCode {
                 let space = default_space(&mut conn, space).await?;
                 artifact_promote(&mut conn, name, to, scope, space, from).await
             }
-            Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
+            Command::Artifact(ArtifactCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space).await?;
-                artifact_ls(&mut conn, space, pane, json).await
+                artifact_ls(&mut conn, space, json).await
             }
             Command::Plugin(PluginCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space).await?;

@@ -9,8 +9,6 @@ local composer = require("lib/composer")
 -- The last value of each feed. A params set reads nil until the feed answers; the view draws these meanwhile.
 local LAST = {}
 
-local TRANSCRIPT_AT = "root.1"
-
 local function init(previous)
     local state = previous or {}
     composer.init(state)
@@ -39,7 +37,7 @@ local function view(state, data)
         spacing = 0,
         children = {
             status_header.view(pane, status, stale),
-            transcript.view(events, requests, TRANSCRIPT_AT),
+            transcript.view(events, requests),
             composer.view(state),
             composer.note(state),
         },

@@ -1248,6 +1248,19 @@ async fn artifact_new_outside_a_pane_without_space_fails_naming_space() {
     assert!(err.contains("--space"), "{err}");
 }
 
+/// Every artifact is offered to a pane, so neither `artifact new` nor `artifact ls` takes `--pane`:
+/// clap refuses it as an unknown flag (exit 2) before anything reaches wheeld.
+#[tokio::test(flavor = "multi_thread")]
+async fn artifact_new_and_ls_refuse_pane() {
+    let d = daemon().await;
+    for args in [&["artifact", "new", "x", "--pane"][..], &["artifact", "ls", "--pane"][..]] {
+        let o = wheel(&d, args).await;
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {err}");
+        assert!(err.contains("unexpected argument '--pane'"), "{args:?}: {err}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn client_ls_prints_a_json_array_of_the_clients_that_reported_a_view() {
     let d = daemon().await;

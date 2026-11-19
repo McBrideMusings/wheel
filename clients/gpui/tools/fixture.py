@@ -10,9 +10,8 @@ import contextlib, json, os, pathlib, shlex, shutil, socket, subprocess, tempfil
 REPO = pathlib.Path(__file__).resolve().parents[3]
 # The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
 TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
-# `-p wheeld` builds every binary of that package, `wheel-fake-agent` included, and the
-# `mcp_a2ui_test_server` example serves the project's A2UI page artifact.
-BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse --bins --example mcp_a2ui_test_server'
+# `-p wheeld` builds every binary of that package, `wheel-fake-agent` included.
+BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse --bins'
 # The plugin panes the check opens in the GPUI client, one after another in one pane, as `<plugin>/<pane>`:
 # the Wheelhouse views and the component gallery whole.
 PLUGIN_PANES = ['wheelhouse/beads', 'wheelhouse/issues', 'wheelhouse/repo', 'wheelhouse/graph', 'gallery/gallery']
@@ -161,8 +160,7 @@ def fixture():
         pages.mkdir()
         (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
-        notes = shlex.quote(str(built('examples/mcp_a2ui_test_server')))
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\nmcp="exec {notes} stdio"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\n\n[artifacts.fixture-page]\npath="html"\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
         (root / 'machine.toml').write_text(machine_file())
         # The Wheelhouse and gallery packages, installed the way a machine installs one: a folder beside the machine file.
         (root / 'plugins').mkdir()

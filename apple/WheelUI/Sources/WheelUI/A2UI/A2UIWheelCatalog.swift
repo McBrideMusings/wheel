@@ -1,3 +1,4 @@
+import WheelKit
 import SwiftUI
 
 /// The names Wheel adds to the basic catalog.
@@ -26,7 +27,7 @@ struct WheelPalette {
 func weightOf(_ s: String?) -> Font.Weight {
     switch s { case "bold": return .bold; case "semibold": return .semibold; case "medium": return .medium; default: return .regular }
 }
-func insets(_ v: AnyCodable?) -> EdgeInsets {
+func insets(_ v: JSONValue?) -> EdgeInsets {
     guard let a = v?.arrayValue?.compactMap({ $0.numberValue }) else { return EdgeInsets() }
     if a.count == 2 { return EdgeInsets(top: a[0], leading: a[1], bottom: a[0], trailing: a[1]) }
     if a.count == 4 { return EdgeInsets(top: a[0], leading: a[3], bottom: a[2], trailing: a[1]) }
@@ -38,38 +39,38 @@ func insets(_ v: AnyCodable?) -> EdgeInsets {
 @MainActor
 struct WheelA2UICatalog {
     @ViewBuilder
-    func build(typeName: String, node: ComponentNode, surface: SurfaceModel) -> some View {
+    func build(typeName: String, node: ViewNode, tree: ViewTree) -> some View {
         switch typeName {
-        case "Table": A2UITableView(node: node, surface: surface)
-        case "Canvas": A2UICanvasView(node: node, surface: surface)
+        case "Table": A2UITableView(node: node, tree: tree)
+        case "Canvas": A2UICanvasView(node: node, tree: tree)
         case "Terminal": A2UIPaneEmbedView(kind: .terminal, node: node)
         case "AgentChat": A2UIPaneEmbedView(kind: .agentChat, node: node)
         case "WebView": A2UIWebViewView(node: node)
-        case "Unsupported": A2UIUnsupportedView(node: node)
+        case "Unsupported": A2UIUnsupportedView(name: node.props["name"]?.stringValue ?? "?")
         case "ProgressView": A2UIProgressViewView(node: node)
         case "Gauge": A2UIGaugeView(node: node)
-        case "Menu": A2UIMenuView(node: node, surface: surface)
+        case "Menu": A2UIMenuView(node: node, tree: tree)
         case "Link": A2UILinkView(node: node)
-        case "Form": A2UIFormView(node: node, surface: surface)
-        case "Section": A2UISectionView(node: node, surface: surface)
-        case "LabeledContent": A2UILabeledContentView(node: node, surface: surface)
-        case "Grid": A2UIGridView(node: node, surface: surface)
-        case "GridRow": A2UIGridRowView(node: node, surface: surface)
-        case "Stepper": A2UIStepperView(node: node, surface: surface)
-        case "ColorPicker": A2UIColorPickerView(node: node, surface: surface)
-        case "Popover": A2UIPopoverView(node: node, surface: surface)
-        case "Alert": A2UIAlertView(node: node, surface: surface)
-        case "ConfirmationDialog": A2UIConfirmationDialogView(node: node, surface: surface)
-        case "NavigationSplitView": A2UINavigationSplitViewView(node: node, surface: surface)
-        case "NavigationStack": A2UINavigationStackView(node: node, surface: surface)
-        case "ViewThatFits": A2UIViewThatFitsView(node: node, surface: surface)
-        case "HSplitView": A2UIHSplitViewView(node: node, surface: surface)
-        case "VSplitView": A2UIVSplitViewView(node: node, surface: surface)
-        case "Toolbar": A2UIToolbarView(node: node, surface: surface)
+        case "Form": A2UIFormView(node: node, tree: tree)
+        case "Section": A2UISectionView(node: node, tree: tree)
+        case "LabeledContent": A2UILabeledContentView(node: node, tree: tree)
+        case "Grid": A2UIGridView(node: node, tree: tree)
+        case "GridRow": A2UIGridRowView(node: node, tree: tree)
+        case "Stepper": A2UIStepperView(node: node, tree: tree)
+        case "ColorPicker": A2UIColorPickerView(node: node, tree: tree)
+        case "Popover": A2UIPopoverView(node: node, tree: tree)
+        case "Alert": A2UIAlertView(node: node, tree: tree)
+        case "ConfirmationDialog": A2UIConfirmationDialogView(node: node, tree: tree)
+        case "NavigationSplitView": A2UINavigationSplitViewView(node: node, tree: tree)
+        case "NavigationStack": A2UINavigationStackView(node: node, tree: tree)
+        case "ViewThatFits": A2UIViewThatFitsView(node: node, tree: tree)
+        case "HSplitView": A2UIHSplitViewView(node: node, tree: tree)
+        case "VSplitView": A2UIVSplitViewView(node: node, tree: tree)
+        case "Toolbar": A2UIToolbarView(node: node, tree: tree)
         case "Chart": A2UIChartView(node: node)
         case "Map": A2UIMapView(node: node)
         case "ShareLink": A2UIShareLinkView(node: node)
-        case "PasteButton": A2UIPasteButtonView(node: node, surface: surface)
+        case "PasteButton": A2UIPasteButtonView(node: node, tree: tree)
         default: EmptyView()
         }
     }
@@ -78,9 +79,8 @@ struct WheelA2UICatalog {
 /// What stands where a component outside the catalog was asked for, so the layout is not silently
 /// shorter than the server meant it.
 struct A2UIUnsupportedView: View {
-    let node: ComponentNode
+    let name: String
     var body: some View {
-        let name = node.instance.properties["name"]?.stringValue ?? "?"
         Label("Unsupported component: \(name)", systemImage: "questionmark.square.dashed")
             .font(.system(size: 12))
             .foregroundStyle(.secondary)

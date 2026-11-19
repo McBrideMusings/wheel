@@ -80,7 +80,12 @@ async fn recv(ws: &mut Ws) -> ServerMsg {
 
 /// Send a request and return its reply, skipping broadcasts.
 async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
-    ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+    call_json(ws, serde_json::to_value(&msg).unwrap()).await
+}
+
+/// [`call`] for a request written as JSON, for a frame no [`ClientMsg`] can say.
+async fn call_json(ws: &mut Ws, msg: serde_json::Value) -> ServerMsg {
+    ws.send(Message::Text(msg.to_string().into()))
         .await
         .unwrap();
     loop {
@@ -1528,7 +1533,6 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
         description: None,
         command: None,
         every: None,
-        pane: false,
     };
     let entries = |file: &std::path::Path| -> toml::Table {
         std::fs::read_to_string(file).unwrap().parse().unwrap()
@@ -1577,7 +1581,6 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
             description: None,
             command: command.map(str::to_string),
             every,
-            pane: false,
         };
     for (msg, says) in [
         (add(&course, None), "already"),
@@ -1638,7 +1641,6 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
             description: Some("  The interview sheet a candidate fills in.  ".into()),
             command: Some("true".into()),
             every: Some(30),
-            pane: true,
         },
     )
     .await;
@@ -1651,8 +1653,8 @@ async fn an_existing_page_is_registered_and_removed_without_touching_it() {
         ("sheet", "Interview sheet", Some("sheet.html"))
     );
     assert_eq!(
-        (sheet.command.as_deref(), sheet.every, sheet.pane),
-        (Some("true"), Some(30), true)
+        (sheet.command.as_deref(), sheet.every),
+        (Some("true"), Some(30))
     );
     assert_eq!(
         sheet.description.as_deref(),
@@ -1774,26 +1776,6 @@ fn make(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
         scope,
         space: None,
         path: None,
-        pane: false,
-    }
-}
-
-fn make_for_pane(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
-    ClientMsg::ArtifactNew {
-        renderer: None,
-        files: vec![],
-        reply_to: None,
-        webhook: None,
-        description: None,
-        url: None,
-        ends_with_pane: None,
-        expires_in: None,
-        req: Some(22),
-        name: name.into(),
-        scope,
-        space: None,
-        path: None,
-        pane: true,
     }
 }
 
@@ -1806,12 +1788,13 @@ fn show(name: &str, scope: Option<ArtifactScope>) -> ClientMsg {
     }
 }
 
-/// `pane = true` in an entry is what offers an artifact in a pane picker, and the registries are
-/// the scopes: a flagged `machine` artifact is offered in every space, a flagged `project` one only in
-/// its own project, and an artifact with no flag is offered nowhere while staying openable by name.
+/// Every artifact a space has is offered to a pane, and the registries are the scopes: a `machine`
+/// artifact is offered in every space, a `project` one only in its own project. An entry carries no
+/// `pane` key, and one written before that still says `pane = true` lists with the problem any
+/// unknown key has.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_artifact_opts_into_the_pane_picker() {
-    let base = std::env::temp_dir().join(format!("wheel-pane-flag-test-{}", std::process::id()));
+async fn every_artifact_is_offered_to_a_pane() {
+    let base = std::env::temp_dir().join(format!("wheel-pane-offer-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let base = base.canonicalize().unwrap();
@@ -1825,39 +1808,13 @@ async fn an_artifact_opts_into_the_pane_picker() {
     let (spaces, _) = layout(&mut ws).await;
     let first = spaces[0].id.clone();
 
-    // Made without the flag, an artifact is a one-off: the record says so and no picker list has
-    // it, though showing it by name still works.
-    let plain = artifact(&mut ws, make("scratch", None)).await;
-    assert!(!plain.pane, "{plain:?}");
-    let flagged = artifact(&mut ws, make_for_pane("dash", None)).await;
-    assert!(flagged.pane, "{flagged:?}");
-    // The flag is in the entry it wrote, and a one-off's entry carries the key too, set false, so
-    // the next person to open the file can see it exists.
-    let written: toml::Table = std::fs::read_to_string(one.join("wheel.toml"))
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert_eq!(written["artifacts"]["dash"]["pane"].as_bool(), Some(true));
-    assert_eq!(
-        written["artifacts"]["scratch"]["pane"].as_bool(),
-        Some(false)
-    );
+    artifact(&mut ws, make("scratch", None)).await;
+    artifact(&mut ws, make("dash", None)).await;
+    let written = std::fs::read_to_string(one.join("wheel.toml")).unwrap();
+    assert!(!written.contains("pane"), "no entry writes a pane key:\n{written}");
 
-    // A one-off is openable by name, which is the whole point of it not being listed: this is
-    // asserted on a clean entry, before the bad-value case below touches it.
-    let shown = artifact(&mut ws, show("scratch", None)).await;
-    assert_eq!(
-        (shown.name.as_str(), shown.pane, shown.problems.as_slice()),
-        ("scratch", false, &[][..]),
-        "{shown:?}"
-    );
-
-    // A machine-wide artifact, flagged, and a second project.
-    artifact(
-        &mut ws,
-        make_for_pane("viewer", Some(ArtifactScope::Machine)),
-    )
-    .await;
+    // A machine-wide artifact and a second project with one of its own.
+    artifact(&mut ws, make("viewer", Some(ArtifactScope::Machine))).await;
     created(&mut ws, new_space(&two.to_string_lossy())).await;
     let (spaces, _) = layout(&mut ws).await;
     let second = spaces
@@ -1866,55 +1823,42 @@ async fn an_artifact_opts_into_the_pane_picker() {
         .expect("the second space")
         .id
         .clone();
-    let in_second = ClientMsg::ArtifactNew {
-        renderer: None,
-        files: vec![],
-        reply_to: None,
-        webhook: None,
-        description: None,
-        url: None,
-        ends_with_pane: None,
-        expires_in: None,
-        req: Some(26),
-        name: "other".into(),
-        scope: Some(ArtifactScope::Project),
-        space: Some(second.clone()),
-        path: None,
-        pane: true,
-    };
+    let mut in_second = make("other", Some(ArtifactScope::Project));
+    if let ClientMsg::ArtifactNew { space, .. } = &mut in_second {
+        *space = Some(second.clone());
+    }
     artifact(&mut ws, in_second).await;
 
-    // What each space's picker is offered: its own flagged artifacts and the machine-wide ones,
-    // never another project's, and never a one-off.
+    // What each space is offered: all of its own artifacts and the machine-wide ones, never another
+    // project's.
     let offered = |all: Vec<wheel_proto::ArtifactInfo>| {
         all.iter()
             .map(|a| format!("{} {}", a.scope.name(), a.name))
             .collect::<Vec<_>>()
     };
-    let (all, _) = artifacts_of(&mut ws, Some(&first), true).await;
-    assert_eq!(offered(all), ["project dash", "machine viewer"]);
-    let (all, _) = artifacts_of(&mut ws, Some(&second), true).await;
+    let (all, _) = artifacts_of(&mut ws, Some(&first)).await;
+    assert_eq!(offered(all), ["project dash", "project scratch", "machine viewer"]);
+    let (all, _) = artifacts_of(&mut ws, Some(&second)).await;
     assert_eq!(offered(all), ["project other", "machine viewer"]);
-    // Unfiltered, the one-off is there too, and every record carries the flag.
-    let (all, _) = artifacts_of(&mut ws, Some(&first), false).await;
-    assert_eq!(
-        offered(all.clone()),
-        ["project dash", "project scratch", "machine viewer"]
-    );
-    assert_eq!(
-        all.iter().map(|a| a.pane).collect::<Vec<_>>(),
-        [true, false, true]
-    );
 
-    // A `pane` that is not a boolean is a problem like any other, and the artifact still opens:
-    // an entry a person got wrong must not take the artifact away from them.
+    // An older client still sends `pane: true`; wheeld ignores the field it no longer has and
+    // lists everything, so removing it needs no protocol level.
+    let older = serde_json::json!({"op": "artifact_ls", "req": 27, "space": first, "pane": true});
+    match call_json(&mut ws, older).await {
+        ServerMsg::Artifacts { artifacts, .. } => {
+            assert_eq!(offered(artifacts), ["project dash", "project scratch", "machine viewer"])
+        }
+        other => panic!("expected artifacts, got {other:?}"),
+    }
+
+    // An entry written before that says `pane = true` still lists and opens, with the problem any
+    // key nothing reads has.
     register(
         &one,
         "scratch",
         std::path::Path::new(".wheel/artifacts/scratch"),
-        "title = \"Scratch\"\npane = \"yes\"\n",
+        "title = \"Scratch\"\npane = true\n",
     );
-    // Named by space, because the space being shown is the second one by now.
     let in_first = ClientMsg::ArtifactShow {
         req: Some(24),
         name: "scratch".into(),
@@ -1922,49 +1866,30 @@ async fn an_artifact_opts_into_the_pane_picker() {
         space: Some(first.clone()),
     };
     let shown = artifact(&mut ws, in_first).await;
-    assert_eq!(shown.problems, ["pane is not true or false"], "{shown:?}");
-    assert!(!shown.pane, "a value it could not read offers nothing");
-    let (all, _) = artifacts_of(&mut ws, Some(&first), true).await;
-    assert_eq!(offered(all), ["project dash", "machine viewer"]);
+    assert_eq!(shown.problems, ["unknown key pane, which nothing reads"], "{shown:?}");
+    let (all, _) = artifacts_of(&mut ws, Some(&first)).await;
+    assert_eq!(offered(all), ["project dash", "project scratch", "machine viewer"]);
 
-    // `resolves` answers what a bare name means whether or not the filter is on: a one-off still
-    // shadows a flagged artifact of the same name in a later scope, and a picker has to know.
-    let shadowing = ClientMsg::ArtifactNew {
-        renderer: None,
-        files: vec![],
-        reply_to: None,
-        webhook: None,
-        description: None,
-        url: None,
-        ends_with_pane: None,
-        expires_in: None,
-        req: Some(25),
-        name: "viewer".into(),
-        scope: Some(ArtifactScope::Project),
-        space: Some(first.clone()),
-        path: None,
-        pane: false,
-    };
+    // `resolves` answers what a bare name means: a project artifact shadows a machine one of the
+    // same name, and both are listed.
+    let mut shadowing = make("viewer", Some(ArtifactScope::Project));
+    if let ClientMsg::ArtifactNew { space, .. } = &mut shadowing {
+        *space = Some(first.clone());
+    }
     artifact(&mut ws, shadowing).await;
-    let (all, resolves) = artifacts_of(&mut ws, Some(&first), true).await;
-    assert_eq!(
-        resolves.get("viewer"),
-        Some(&ArtifactScope::Project),
-        "the unflagged project one is what the bare name means"
-    );
+    let (all, resolves) = artifacts_of(&mut ws, Some(&first)).await;
+    assert_eq!(resolves.get("viewer"), Some(&ArtifactScope::Project));
     assert_eq!(
         offered(all),
-        ["project dash", "machine viewer"],
-        "and it is not offered: {resolves:?}"
+        ["project dash", "project scratch", "project viewer", "machine viewer"]
     );
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Every artifact as the daemon lists them for `space`, filtered to the picker's own when `pane`.
+/// Every artifact as the daemon lists them for `space`.
 async fn artifacts_of(
     ws: &mut Ws,
     space: Option<&str>,
-    pane: bool,
 ) -> (
     Vec<wheel_proto::ArtifactInfo>,
     std::collections::BTreeMap<String, ArtifactScope>,
@@ -1972,7 +1897,6 @@ async fn artifacts_of(
     let msg = ClientMsg::ArtifactLs {
         req: Some(23),
         space: space.map(str::to_string),
-        pane,
     };
     match call(ws, msg).await {
         ServerMsg::Artifacts {
@@ -2007,7 +1931,6 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             ClientMsg::ArtifactLs {
                 req: Some(19),
                 space: None,
-                pane: false,
             }
         )
         .await,
@@ -2071,7 +1994,6 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             scope: None,
             space: None,
             path: Some(elsewhere.display().to_string()),
-            pane: false,
         },
     )
     .await;
@@ -2099,7 +2021,6 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         scope: None,
         space: None,
         path: Some("rel".into()),
-        pane: false,
     };
     assert!(matches!(
         call(&mut ws, relative).await,
@@ -2124,7 +2045,6 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             scope: None,
             space: None,
             path: Some(format!("{}/a/b/..", fresh.display())),
-            pane: false,
         },
     )
     .await
@@ -2152,7 +2072,6 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
             scope: None,
             space: None,
             path: Some(format!("{}/gone/../kept/..", base.display())),
-            pane: false,
         },
     )
     .await;
@@ -2206,7 +2125,6 @@ async fn artifacts_are_made_listed_and_shown_from_their_entries() {
         ClientMsg::ArtifactLs {
             req: Some(22),
             space: None,
-            pane: false,
         },
     )
     .await;
@@ -5404,7 +5322,6 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
                 description: None,
                 command: None,
                 every: None,
-                pane: false,
             },
         )
         .await,
@@ -5470,7 +5387,6 @@ async fn a_project_wheel_toml_linking_outside_its_space_is_never_written() {
             description: None,
             command: None,
             every: None,
-            pane: false,
         },
     )
     .await;
@@ -6594,7 +6510,7 @@ async fn declared_work_shows_in_the_layout_survives_a_restart_and_goes_with_the_
 }
 
 fn make_url(name: &str, url: &str, expires_in: Option<u64>) -> ClientMsg {
-    let mut msg = make_for_pane(name, None);
+    let mut msg = make(name, None);
     if let ClientMsg::ArtifactNew {
         url: u,
         expires_in: e,
@@ -6683,8 +6599,8 @@ async fn a_url_artifact_opens_a_browser_pane() {
 }
 
 /// Promoting an ad hoc artifact asks a person first: a denial leaves the entry and its expiry as
-/// they were, an allowance rewrites it in the target scope with no expiry and `pane = true`, and
-/// the folder stays where it was.
+/// they were, an allowance rewrites it in the target scope with no expiry, and the folder stays
+/// where it was.
 #[tokio::test(flavor = "multi_thread")]
 async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
     let base = std::env::temp_dir().join(format!("wheel-promote-test-{}", std::process::id()));
@@ -6711,7 +6627,6 @@ async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
         scope: Some(ArtifactScope::Project),
         space: None,
         path: None,
-        pane: false,
     };
     let made = artifact(&mut ws, adhoc).await;
     assert!(made.expires_at.is_some(), "{made:?}");
@@ -6755,8 +6670,8 @@ async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
     assert!(matches!(denied, ServerMsg::Error { .. }), "{denied:?}");
     let still = artifact(&mut ws, show("scratch", None)).await;
     assert_eq!(
-        (still.scope, still.expires_at, still.pane),
-        (ArtifactScope::Project, made.expires_at, false),
+        (still.scope, still.expires_at),
+        (ArtifactScope::Project, made.expires_at),
         "{still:?}"
     );
 
@@ -6765,10 +6680,13 @@ async fn promoting_an_ad_hoc_artifact_waits_for_a_person() {
         panic!("promotion was refused");
     };
     assert_eq!(
-        (kept.scope, kept.expires_at, kept.pane),
-        (ArtifactScope::Machine, None, true),
+        (kept.scope, kept.expires_at, kept.problems.as_slice()),
+        (ArtifactScope::Machine, None, &[][..]),
         "{kept:?}"
     );
+    let machine = std::fs::read_to_string(base.join("wheel.toml")).unwrap();
+    assert!(machine.contains("[artifacts.scratch]"), "{machine}");
+    assert!(!machine.contains("pane"), "promote writes no pane key:\n{machine}");
     assert_eq!(kept.dir, made.dir);
     assert!(std::path::Path::new(&kept.dir).is_dir());
     let listed = artifact(&mut ws, show("scratch", None)).await;
@@ -6976,7 +6894,6 @@ async fn an_artifact_verb_with_no_space_is_refused_naming_space() {
             description: None,
             url: None,
             req: Some(70),
-            pane: false,
             name: "scratch".into(),
             scope: Some(wheel_proto::ArtifactScope::Project),
             space: None,
@@ -7607,7 +7524,7 @@ async fn an_mcp_resource_read_after_the_server_exited_reconnects() {
     std::fs::create_dir_all(base.join("inst")).unwrap();
     let base = base.canonicalize().unwrap();
     let pids = base.join("pids");
-    let server = mcp_example().with_file_name("mcp_a2ui_test_server");
+    let server = mcp_example().with_file_name("mcp_ui_test_server");
     let command = format!("echo $$ >> {}; exec {} stdio", pids.display(), server.display());
     std::fs::write(
         base.join("wheel.toml"),
@@ -7623,7 +7540,7 @@ async fn an_mcp_resource_read_after_the_server_exited_reconnects() {
         scope: None,
         space: Some(space.clone()),
         pane: None,
-        uri: "a2ui://notes".into(),
+        uri: "ui://test/view".into(),
     };
     assert!(matches!(call(&mut ws, read(50)).await, ServerMsg::Resource { .. }));
     let text = std::fs::read_to_string(&pids).unwrap();
@@ -7656,62 +7573,6 @@ async fn an_mcp_server_over_http_lists_and_calls_its_tools() {
     let entry = format!("mcp_url = \"http://127.0.0.1:{port}/mcp\"\n");
     mcp_session_works(&entry, "http").await;
     let _ = server.kill().await;
-}
-
-/// An A2UI-over-MCP server reaches a client through the three ops it already has plus
-/// `artifact_read`: the tool list carries `_meta.ui` naming the layout resource, the resource
-/// reads back as `application/a2ui+json`, and a call returns the data model as an embedded
-/// resource of that type.
-#[tokio::test]
-async fn an_a2ui_over_mcp_server_gives_a_client_its_layout_and_data() {
-    let base = std::env::temp_dir().join(format!("wheel-mcp-a2ui-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(base.join("inst")).unwrap();
-    let base = base.canonicalize().unwrap();
-    let server = mcp_example().with_file_name("mcp_a2ui_test_server");
-    std::fs::write(
-        base.join("wheel.toml"),
-        format!(
-            "[artifacts.notes]\nmcp = {}\n",
-            toml::Value::from(format!("exec {} stdio", server.display())),
-        ),
-    )
-    .unwrap();
-    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
-    let mut ws = connect(&url).await;
-    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
-
-    let tools = mcp_tools(&mut ws, "notes", &space).await.unwrap();
-    let get = tools.iter().find(|t| t.name == "get_notes").unwrap();
-    let meta = get.meta.as_ref().unwrap();
-    assert_eq!(meta["ui"]["resourceUri"], "a2ui://notes");
-    assert_eq!(meta["ui"]["mimeType"], "application/a2ui+json");
-
-    let read = ClientMsg::ArtifactRead {
-        req: Some(42),
-        name: "notes".into(),
-        scope: None,
-        space: Some(space.clone()),
-        pane: None,
-        uri: "a2ui://notes".into(),
-    };
-    let ServerMsg::Resource { contents, .. } = call(&mut ws, read).await else {
-        panic!("expected a resource")
-    };
-    assert_eq!(contents[0]["mimeType"], "application/a2ui+json");
-    let layout: serde_json::Value =
-        serde_json::from_str(contents[0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(layout[0]["createSurface"]["surfaceId"], "notes");
-
-    let args = Some(serde_json::json!({"text": "hello"}));
-    let saved = mcp_call(&mut ws, "notes", &space, "save_note", args).await.unwrap();
-    assert_eq!(saved.content[0]["resource"]["mimeType"], "application/a2ui+json");
-    let data: serde_json::Value =
-        serde_json::from_str(saved.content[0]["resource"]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(data[0]["updateDataModel"]["path"], "/status");
-    assert_eq!(data[0]["updateDataModel"]["value"], "saved: hello");
-    assert_eq!(data[1]["updateDataModel"]["value"], "1 notes");
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// A raw request with a JSON body to the daemon's HTTP side, carrying the token as a bearer.

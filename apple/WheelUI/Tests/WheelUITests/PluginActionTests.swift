@@ -39,7 +39,7 @@ import WheelKit
     func shown(_ pane: PluginPane) -> String? { pane.componentTexts.compactMap { $0["text"] }.first }
 
     func go(_ pane: PluginPane) {
-        let button = pane.surface.components.values.first { $0.type == "Button" }!.id
+        let button = pane.tree.all.first { $0.component == "Button" }!.id
         #expect(pane.press(component: button))
     }
 

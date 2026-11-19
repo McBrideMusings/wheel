@@ -85,7 +85,7 @@ import WheelKit
         #expect(pane.feeds.isEmpty)
         calls.sub = []
         // Any render that reads the feed again subscribes it again: pressing a button renders.
-        let buttons = pane.surface.components.values.filter { $0.type == "Button" }.map(\.id).sorted()
+        let buttons = pane.tree.all.filter { $0.component == "Button" }.map(\.id).sorted()
         #expect(pane.press(component: buttons[1]))
         #expect(calls.sub == ["x.y"])
         #expect(pane.feeds.map(\.0) == ["x.y"])
@@ -94,7 +94,7 @@ import WheelKit
     @Test func aSecondFeedSubscribesAndADroppedOneUnsubscribes() {
         let calls = Calls()
         let pane = make(calls)
-        let buttons = pane.surface.components.values.filter { $0.type == "Button" }.map(\.id).sorted()
+        let buttons = pane.tree.all.filter { $0.component == "Button" }.map(\.id).sorted()
         #expect(buttons.count == 2)
         // The first button's action is `more`, the second's `less`, in the order the script lists them.
         #expect(pane.press(component: buttons[0]))

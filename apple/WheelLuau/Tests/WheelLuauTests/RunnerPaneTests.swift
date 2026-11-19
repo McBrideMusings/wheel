@@ -183,14 +183,14 @@ import WheelKit
         tree = try Self.press(runtime, tree, help: "Open the log of Build")
         #expect(tree.children.count == 3 && tree.children[2].component == "List")
         #expect(Self.texts(tree.children[2]) == lines)
-        #expect(tree.children[2].props["scrollTo"] == .string("root.2.1"))
+        #expect(tree.children[2].props["scrollTo"] == .number(2))
         let head = Self.texts(tree.children[0])
         #expect(head.contains("Back") && head.contains("Build") && head.contains("running 1:00") && head.contains("Stop"))
         // The log grows: the view follows its last line.
         lines.append("12:00:03  three")
         tree = try runtime.view(Self.data)
         #expect(Self.texts(tree.children[2]).last == "12:00:03  three")
-        #expect(tree.children[2].props["scrollTo"] == .string("root.2.2"))
+        #expect(tree.children[2].props["scrollTo"] == .number(3))
         // Stop asks the backend to end that run.
         tree = try Self.press(runtime, tree, help: "Stop Build")
         #expect(actions.count == 1 && actions[0].0 == "runner.stop")

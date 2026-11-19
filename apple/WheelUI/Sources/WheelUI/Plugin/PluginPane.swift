@@ -4,19 +4,18 @@ import SwiftUI
 import WheelKit
 internal import WheelLuau
 
-/// A plugin pane's body (ADR-0041): the Luau script's `view` drawn as A2UI components. The pane owns the
-/// script's `PaneRuntime` and a `SurfaceModel`. Every table the script puts under a key named `action` or ending in
-/// `Action`, at any depth of a component's properties (a Button's `action`, a Table's `rowAction`, a row's `menu[].action`, a
-/// Canvas hit's `action` and `doubleAction`, a Modal's `dismissAction`), is sent to the script's `update` when the
-/// component raises it, with the component's own fields for the event (a row's `id`, a sort's `key` and `asc`, a hit's
-/// `id`) added where the table has no such key: a pane script never speaks A2UI's action shape. A control with an
+/// A plugin pane's body (ADR-0041): the Luau script's `view` reconciled into a `ViewTree` after every send or reload, so only
+/// the components whose properties changed are drawn again. Every table the script puts where a component raises one (a
+/// Button's `action`, a Table's `rowAction`, a row's `menu[].action`, a Canvas hit's `action` and `doubleAction`, a Modal's
+/// `dismissAction`) is sent to the script's `update` when the component raises it, with the component's own fields for the
+/// event (a row's `id`, a sort's `key` and `asc`, a hit's `id`) added where the table has no such key. A control with an
 /// `on_change` table (TextField, CheckBox, ChoicePicker, Slider, Stepper, DateTimeInput, ...) sends it with `value` set to
 /// what the control wrote. `view` gets `context` (the pane's ids and directory) as its `data`.
-/// After every send or reload the script's `view` is drawn again. A failure keeps the last good view and sets
-/// `error`; a good load clears it.
+/// A failure keeps the last good view and sets `error`; a good load clears it. A view with a duplicate `key` among siblings
+/// is drawn with the first of them and also sets `error`.
 @MainActor @Observable
 public final class PluginPane {
-    public let surface = SurfaceModel()
+    public let tree = ViewTree()
     /// The last failure as one readable line, or nil.
     public private(set) var error: String?
     /// Reloads that took the new source, not counting the first load.
@@ -26,7 +25,7 @@ public final class PluginPane {
 
     /// The scroll the host last asked for; the pane's ScrollView applies each new `id` once.
     public private(set) var scrollRequest = ScrollRequest(id: 0, to: .by(0))
-    /// Where the pane's ScrollView stands as last reported; stale once the surface fills the pane, so read it with `fillsPane`.
+    /// Where the pane's ScrollView stands as last reported; stale once the view fills the pane, so read it with `fillsPane`.
     public internal(set) var scrollMetrics: ScrollMetrics?
 
     /// A scroll asked from outside the pointer: to an edge, or by a distance in points (positive is down).
@@ -43,23 +42,28 @@ public final class PluginPane {
         public var visible: Double
     }
 
-    /// Whether the surface takes the pane's height itself (a frame-less Table or vertical List), so the pane has no ScrollView.
-    public var fillsPane: Bool { surface.fillsPane }
+    /// Whether the view takes the pane's height itself (a frame-less Table or vertical List), so the pane has no ScrollView.
+    public var fillsPane: Bool { tree.fillsPane }
 
-    /// Asks the pane's ScrollView to move; a surface that fills the pane has none and ignores it.
+    /// Asks the pane's ScrollView to move; a view that fills the pane has none and ignores it.
     public func scroll(_ to: ScrollRequest.Target) {
         scrollRequest = ScrollRequest(id: scrollRequest.id + 1, to: to)
     }
 
+    /// What the last render cost, for a check: Luau `update` and `view` in ms, the reconcile into the tree in ms, the nodes
+    /// it created or wrote, and how many renders ran since the pane started.
+    public struct Perf: Equatable, Sendable {
+        public var updateMs = 0.0
+        public var viewMs = 0.0
+        public var reconcileMs = 0.0
+        public var nodes = 0
+        public var renders = 0
+    }
+    @ObservationIgnored public private(set) var perf = Perf()
+
     @ObservationIgnored private var runtime: PaneRuntime?
     /// Whether `error` came from loading the script: the file is still broken, so a message the script handles does not clear it.
     @ObservationIgnored private var loadFailed = false
-    /// For each control's data path, the table its `on_change` names.
-    @ObservationIgnored private var changeMsgs: [String: JSONValue] = [:]
-    /// For each action name the last render gave a component, the table the script wrote there.
-    @ObservationIgnored private var actionMsgs: [String: JSONValue] = [:]
-    /// For each bound control's data path, the `value` the script gave at the last render.
-    @ObservationIgnored private var lastGiven: [String: AnyCodable] = [:]
     /// The fields `view` gets in `data` besides `feed`: the host sets `pane`, `space`, `cwd`, `plugin` and `plugin_pane`.
     @ObservationIgnored public var context: [String: JSONValue] = [:]
     /// Called after every load, send and failure, for a host that reports `error`.
@@ -87,32 +91,14 @@ public final class PluginPane {
     @ObservationIgnored private var asked: [FeedKey: JSONValue] = [:]
 
     public init() {
-        surface.onAction = { [weak self] action in
-            guard let self else { return }
-            if action.name.hasPrefix(canvasSizePrefix) {
-                self.canvasSize(key: String(action.name.dropFirst(canvasSizePrefix.count)), context: action.context)
-                return
-            }
-            guard let template = self.actionMsgs[action.name] else { return }
-            var msg: [String: JSONValue] = [:]
-            if case let .object(fields) = template { msg = fields }
-            for (key, value) in action.context where msg[key] == nil { msg[key] = Self.json(value) }
-            self.deliver(.object(msg))
-        }
-        surface.onChange = { [weak self] change in
-            guard let self, let template = self.changeMsgs[change.path] else { return }
-            var msg: [String: JSONValue] = [:]
-            if case let .object(fields) = template { msg = fields }
-            msg["value"] = Self.json(change.value)
-            self.deliver(.object(msg))
-        }
+        tree.onRaise = { [weak self] msg in self?.deliver(msg) }
+        tree.onCanvasSize = { [weak self] key, w, h in self?.canvasSize(key: key, width: w, height: h) }
     }
 
     /// A command Canvas measured itself: the runtime keeps the size for `draw`, and the view is drawn again only when it changed.
     /// The report never reaches `update`.
-    private func canvasSize(key: String, context: [String: AnyCodable]) {
-        guard let runtime, let w = context["w"]?.numberValue, let h = context["h"]?.numberValue,
-              runtime.setCanvasSize(key: key, width: w, height: h) else { return }
+    private func canvasSize(key: String, width w: Double, height h: Double) {
+        guard let runtime, runtime.setCanvasSize(key: key, width: w, height: h) else { return }
         do {
             try render()
             if !loadFailed { error = nil }
@@ -127,9 +113,7 @@ public final class PluginPane {
     public func restart() {
         runtime = nil
         loadFailed = false
-        changeMsgs = [:]
-        actionMsgs = [:]
-        lastGiven = [:]
+        tree.forgetGiven()
         restarts += 1
     }
     /// Times `restart` ended the script.
@@ -278,7 +262,9 @@ public final class PluginPane {
     private func deliver(_ msg: JSONValue) {
         guard let runtime else { return }
         do {
+            let start = ContinuousClock.now
             try runtime.send(msg)
+            perf.updateMs = Self.ms(since: start)
             try render()
             if !loadFailed { error = nil }
         } catch {
@@ -296,84 +282,25 @@ public final class PluginPane {
         text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
     }
 
+    /// A key the view gave two siblings: the first is drawn, the rest are left out.
+    struct DuplicateKey: Error, CustomStringConvertible {
+        let at: String
+        var description: String { "view: duplicate key \(at)" }
+    }
+
     private func render() throws {
         guard let runtime else { return }
         asked = [:]
-        let tree = try runtime.view(.object(context))
-        var changes: [String: JSONValue] = [:]
-        var actions: [String: JSONValue] = [:]
-        var data: [String: AnyCodable] = [:]
-        var values: [String: AnyCodable] = [:]
-        var components: [AnyCodable] = []
-        for case var .object(fields) in tree.a2uiComponents(rootID: "root") {
-            guard case let .string(id)? = fields["id"], case let .string(type)? = fields["component"] else { continue }
-            let template = fields.removeValue(forKey: "on_change")
-            Self.name(&fields, id: id, type: type, into: &actions)
-            if type == "TextField" || template != nil {
-                // The data model holds what the control shows: the script's `value` is written only when it differs from the
-                // one the script gave last render, so a script that does not echo an edit back never undoes it.
-                let path = "/" + id
-                let given = fields["value"].map(Self.any)
-                if let given, given != lastGiven[path] { data[path] = given }
-                else if given == nil, lastGiven[path] == nil, type == "TextField" { data[path] = .string("") }
-                given.map { values[path] = $0 }
-                fields["value"] = .object(["path": .string(path)])
-                if let template { changes[path] = template }
-            }
-            components.append(Self.any(.object(fields)))
-        }
+        let viewStart = ContinuousClock.now
+        let view = try runtime.view(.object(context))
+        perf.viewMs = Self.ms(since: viewStart)
         syncFeeds()
-        // Nothing above throws after this point, so a failed view leaves the surface and its handlers as they were.
-        changeMsgs = changes
-        actionMsgs = actions
-        lastGiven = values
-        surface.process([["updateComponents": .dictionary(["components": .array(components)])]])
-        for (path, value) in data.sorted(by: { $0.key < $1.key }) {
-            if surface.get(path) == value { continue }
-            surface.process([["updateDataModel": .dictionary(["path": .string(path), "value": value])]])
-        }
-    }
-
-    /// Replaces each table the script put where a component raises an action with a name unique to its place
-    /// (`plugin:<id>/<key path>`), recorded in `names` with the table: a property named `action` or ending in `Action`,
-    /// a Canvas hit's `action` and `doubleAction` (`hits`), a dialog button's `action` (`buttons`) and a Table row's
-    /// `menu[].action` (`sections[].rows[].menu`). A Button raises its name as A2UI's event; a Button `action`
-    /// `{copy = {text = ...}}` stays the clipboard copy it is in A2UI.
-    private static func name(_ fields: inout [String: JSONValue], id: String, type: String, into names: inout [String: JSONValue]) {
-        func take(_ value: JSONValue, _ path: String) -> JSONValue {
-            guard case .object = value else { return value }
-            names[path] = value
-            return .string(path)
-        }
-        func each(_ value: JSONValue?, _ body: (JSONValue, Int) -> JSONValue) -> JSONValue? {
-            guard case let .array(items)? = value else { return value }
-            return .array(items.enumerated().map { body($0.element, $0.offset) })
-        }
-        func setting(_ value: JSONValue, _ keys: [String], _ path: String) -> JSONValue {
-            guard case var .object(o) = value else { return value }
-            for k in keys { if let v = o[k] { o[k] = take(v, "\(path).\(k)") } }
-            return .object(o)
-        }
-        let base = "plugin:\(id)/"
-        for key in fields.keys where key == "action" || key.hasSuffix("Action") {
-            guard let value = fields[key] else { continue }
-            if type == "Button", key == "action", case let .object(o) = value, o["copy"] != nil { continue }
-            fields[key] = take(value, base + key)
-            if type == "Button", key == "action", case let .string(n)? = fields[key], names[n] != nil {
-                fields[key] = .object(["event": .object(["name": .string(n)])])
-            }
-        }
-        fields["hits"] = each(fields["hits"]) { setting($0, ["action", "doubleAction"], base + "hits.\($1)") }
-        fields["buttons"] = each(fields["buttons"]) { setting($0, ["action"], base + "buttons.\($1)") }
-        fields["sections"] = each(fields["sections"]) { sec, si in
-            guard case var .object(so) = sec else { return sec }
-            so["rows"] = each(so["rows"]) { row, ri in
-                guard case var .object(ro) = row else { return row }
-                ro["menu"] = each(ro["menu"]) { setting($0, ["action"], base + "sections.\(si).rows.\(ri).menu.\($1)") }
-                return .object(ro)
-            }
-            return .object(so)
-        }
+        let start = ContinuousClock.now
+        tree.reconcile(view)
+        perf.reconcileMs = Self.ms(since: start)
+        perf.nodes = tree.written
+        perf.renders += 1
+        if let at = tree.duplicate { throw DuplicateKey(at: at) }
     }
 
     // MARK: for a check
@@ -388,39 +315,41 @@ public final class PluginPane {
 
     /// The drawn components in order, each as its id, type and text (a Text's text, a TextField's label and value).
     /// A Modal's `actions` (its footer buttons) follow its content, a Button carries `disabled` when a modifier disables it,
-    /// and a Table adds one `TableRow` entry per row: its id (the row's `path`, else its `id`, else `<section>.<row>`), its section's title
-    /// and its cells' texts in column order joined by ` | ` under `cells`.
+    /// and a Table adds one `TableRow` entry per row: its id (the row's `path`, else its `id`, else `<section>.<row>`), its node id under
+    /// `node`, its table, its section's title and its cells' texts in
+    /// column order joined by ` | ` under `cells`.
     public var componentTexts: [[String: String]] {
         var out: [[String: String]] = []
-        func walk(_ n: ComponentNode, _ depth: Int = 0) {
+        func walk(_ n: ViewNode, _ depth: Int = 0) {
             guard depth < 64 else { return }
-            var row = ["id": n.instance.id, "type": n.instance.type]
+            var row = ["id": n.id, "type": n.component]
             if let t = n.string("text") { row["text"] = t }
             if let l = n.string("label") { row["label"] = l }
-            if n.instance.type == "TextField" { row["value"] = n.props["value"]?.text ?? "" }
-            if n.instance.type == "Button" {
+            if n.component == "TextField" { row["value"] = n.value?.text ?? "" }
+            if n.component == "Button" {
                 let mods = (n.props["modifiers"]?.arrayValue ?? []).compactMap(\.dictionaryValue)
                 if mods.contains(where: { $0["disabled"]?.boolValue == true }) { row["disabled"] = "true" }
             }
             out.append(row)
-            if n.instance.type == "Table" { out += Self.tableRows(n) }
-            n.children.forEach { walk($0, depth + 1) }
-            for id in (n.props["actions"]?.arrayValue ?? []).compactMap(\.stringValue) {
-                if let a = surface.node(id) { walk(a, depth + 1) }
+            if n.component == "Table" { out += Self.tableRows(n) }
+            n.parts.forEach { walk($0, depth + 1) }
+            for i in (n.props["actions"]?.arrayValue ?? []).indices {
+                if let a = n.embedded["actions.\(i)"] { walk(a, depth + 1) }
             }
         }
-        if let root = surface.root { walk(root) }
+        if let root = tree.root { walk(root) }
         return out
     }
 
-    private static func tableRows(_ table: ComponentNode) -> [[String: String]] {
+    private static func tableRows(_ table: ViewNode) -> [[String: String]] {
         let keys = (table.props["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue?["key"]?.stringValue }
+        let byId = Dictionary(table.rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var out: [[String: String]] = []
-        for (si, sec) in (table.props["sections"]?.arrayValue ?? []).compactMap(\.dictionaryValue).enumerated() {
-            for (ri, r) in (sec["rows"]?.arrayValue ?? []).compactMap(\.dictionaryValue).enumerated() {
-                let cells = (r["cells"]?.arrayValue ?? []).compactMap(\.dictionaryValue)
+        for sec in (table.props["sections"]?.arrayValue ?? []).compactMap(\.dictionaryValue) {
+            for r in (sec["rows"]?.arrayValue ?? []).compactMap({ $0.stringValue.flatMap { byId[$0] } }) {
+                let cells = (r.props["cells"]?.arrayValue ?? []).compactMap(\.dictionaryValue)
                 let text = keys.map { k in cells.first { $0["key"]?.stringValue == k }?["text"]?.text ?? "" }
-                var row = ["id": r["path"]?.stringValue ?? r["id"]?.stringValue ?? "\(si).\(ri)", "type": "TableRow", "table": table.instance.id, "cells": text.joined(separator: " | ")]
+                var row = ["id": String(r.id.dropFirst(table.id.count + 1)), "node": r.id, "type": "TableRow", "table": table.id, "cells": text.joined(separator: " | ")]
                 if let t = sec["title"]?.stringValue, !t.isEmpty { row["section"] = t }
                 out.append(row)
             }
@@ -428,29 +357,36 @@ public final class PluginPane {
         return out
     }
 
-    /// Presses the component as its button would; false when there is none.
+    /// Presses the component as its button would; false when the view has no node `id`.
     @discardableResult
     public func press(component id: String) -> Bool {
-        guard let c = surface.components[id] else { return false }
-        surface.activate(c)
+        guard let node = tree.node(id) else { return false }
+        tree.activate(node)
         return true
     }
 
-    /// Writes a control's value as the control would; `value` is what JSONSerialization returns.
-    public func set(path: String, value: Any) {
-        surface.set(path, Self.any(Self.jsonValue(value)))
+    /// Writes a control's value as the control would; `value` is what JSONSerialization returns. False when the view has no
+    /// node `id`.
+    @discardableResult
+    public func set(component id: String, value: Any) -> Bool {
+        guard let node = tree.node(id) else { return false }
+        tree.change(node, Self.jsonValue(value))
+        return true
     }
 
-    /// Raises the action the script put at `key` of component `id` (`rowAction`, `hits.0.doubleAction`), with the
-    /// event's own fields in `context`, as the component does; false when the last render put no action there.
+    /// Raises the action the script put at `key` of node `id` (`rowAction`, `hits.0.doubleAction`, a row's `menu.1.action`),
+    /// with the event's own fields in `context`, as the component does; false when the last render put no action there.
     @discardableResult
     public func raise(component id: String, key: String, context: Any?) -> Bool {
-        let name = "plugin:\(id)/\(key)"
-        guard surface.components[id] != nil, actionMsgs[name] != nil else { return false }
+        guard let node = tree.node(id) else { return false }
         var fields: [String: JSONValue] = [:]
         if case let .object(given) = Self.jsonValue(context ?? NSNull()) { fields = given }
-        surface.dispatchAction(name: name, sourceComponentId: id, context: fields.mapValues(Self.any))
-        return true
+        return tree.raise(node, key, fields)
+    }
+
+    private static func ms(since start: ContinuousClock.Instant) -> Double {
+        let d = ContinuousClock.now - start
+        return Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
     }
 
     // MARK: JSON conversion
@@ -473,32 +409,9 @@ public final class PluginPane {
         guard let data = try? JSONSerialization.data(withJSONObject: v.foundation, options: [.sortedKeys, .fragmentsAllowed]) else { return "null" }
         return String(decoding: data, as: UTF8.self)
     }
-
-    static func any(_ v: JSONValue) -> AnyCodable {
-        switch v {
-        case .null: .null
-        case let .bool(b): .bool(b)
-        case let .number(n): .number(n)
-        case let .string(s): .string(s)
-        case let .array(a): .array(a.map(any))
-        case let .object(o): .dictionary(o.mapValues(any))
-        }
-    }
-
-    static func json(_ v: AnyCodable) -> JSONValue {
-        switch v {
-        case .null: .null
-        case let .bool(b): .bool(b)
-        case let .number(n): .number(n)
-        case let .string(s): .string(s)
-        case let .array(a): .array(a.map(json))
-        case let .dictionary(o): .object(o.mapValues(json))
-        }
-    }
 }
 
-/// A plugin pane drawn like an A2UI pane: the surface, scrolling when it is taller than the pane. A failure
-/// shows in the pane's header, not here.
+/// A plugin pane's view, scrolling when it is taller than the pane. A failure shows in the pane's header, not here.
 public struct PluginPaneView: View {
     let pane: PluginPane
     @Environment(\.colorScheme) private var scheme
@@ -510,14 +423,13 @@ public struct PluginPaneView: View {
         let palette = WheelPalette(dark: scheme == .dark)
         GeometryReader { geo in
             Group {
-                // The same decision as A2UIPaneView: a frame-less Table or vertical List takes the pane's height and
-                // scrolls itself; any other surface scrolls as a whole.
-                if pane.surface.fillsPane {
-                    A2UISurfaceView(surface: pane.surface)
+                // A frame-less Table or vertical List takes the pane's height and scrolls itself; any other view scrolls as a whole.
+                if pane.tree.fillsPane {
+                    A2UISurfaceView(tree: pane.tree)
                         .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
                 } else {
                     ScrollView {
-                        A2UISurfaceView(surface: pane.surface)
+                        A2UISurfaceView(tree: pane.tree)
                             .frame(maxWidth: .infinity, alignment: .top)
                     }
                     .scrollPosition($position)
@@ -537,7 +449,7 @@ public struct PluginPaneView: View {
             }
             .environment(\.a2uiPane, geo.size)
             .environment(\.a2uiCanvasSizes, true)
-            .overlay { A2UIPresentedModals(surface: pane.surface) }
+            .overlay { A2UIPresentedModals(tree: pane.tree) }
         }
         .background(palette.bg)
         .accessibilityIdentifier("plugin.pane")

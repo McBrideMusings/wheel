@@ -4,29 +4,24 @@ import Testing
 
 @MainActor
 struct A2UIFillTests {
-    private func surface(_ components: String) throws -> SurfaceModel {
-        let json = #"[{"createSurface":{"surfaceId":"s"}},{"updateComponents":{"components":"# + components + "}}]"
-        let model = SurfaceModel()
-        #expect(model.process(try JSONDecoder().decode([[String: AnyCodable]].self, from: Data(json.utf8))).isEmpty)
-        return model
+    private func pane(_ view: String) -> PluginPane {
+        let pane = PluginPane()
+        pane.load(source: "return { view = function() return \(view) end }", chunk: "fill.luau")
+        #expect(pane.error == nil)
+        return pane
     }
 
-    @Test func aFramelessVerticalListFillsThePane() throws {
-        let m = try surface(#"[{"id":"root","component":"Column","children":["l","c"]},{"id":"l","component":"List","children":["a"]},{"id":"a","component":"Text","text":"a"},{"id":"c","component":"Text","text":"composer"}]"#)
-        #expect(m.fillsPane)
+    @Test func aFramelessVerticalListFillsThePane() {
+        #expect(pane(#"ui.Column{ ui.List{ ui.Text("a") }, ui.Text("composer") }"#).fillsPane)
     }
 
-    @Test func aListWithAFrameOrAHorizontalListDoesNotFill() throws {
-        let framed = try surface(#"[{"id":"root","component":"List","children":["a"],"modifiers":[{"frame":{"height":80}}]},{"id":"a","component":"Text","text":"a"}]"#)
-        #expect(!framed.fillsPane)
-        let across = try surface(#"[{"id":"root","component":"List","direction":"horizontal","children":["a"]},{"id":"a","component":"Text","text":"a"}]"#)
-        #expect(!across.fillsPane)
-        let plain = try surface(#"[{"id":"root","component":"Text","text":"a"}]"#)
-        #expect(!plain.fillsPane)
+    @Test func aListWithAFrameOrAHorizontalListDoesNotFill() {
+        #expect(!pane(#"ui.List{ ui.Text("a"), modifiers = { { frame = { height = 80 } } } }"#).fillsPane)
+        #expect(!pane(#"ui.List{ ui.Text("a"), direction = "horizontal" }"#).fillsPane)
+        #expect(!pane(#"ui.Text("a")"#).fillsPane)
     }
 
-    @Test func aFramelessTableFillsThePane() throws {
-        let m = try surface(#"[{"id":"root","component":"Table","columns":[],"sections":[]}]"#)
-        #expect(m.fillsPane)
+    @Test func aFramelessTableFillsThePane() {
+        #expect(pane(#"ui.Table{ columns = {}, sections = {} }"#).fillsPane)
     }
 }

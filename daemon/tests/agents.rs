@@ -3724,7 +3724,6 @@ fn lived(name: &str, ends_with_pane: Option<&str>, expires_in: Option<u64>) -> C
         description: None,
         url: None,
         req: Some(70),
-        pane: false,
         name: name.into(),
         scope: Some(wheel_proto::ArtifactScope::Project),
         space: None,

@@ -268,9 +268,6 @@ local function list_view(st, data, snap)
     }
 end
 
--- The positional id of the log List in `log_view`'s root, for `scrollTo`.
-local LOG_AT = "root.2"
-
 local function log_view(st, data, snap, log)
     local now = snap.now or 0
     st.dir, st.pane = data.cwd, data.pane
@@ -305,7 +302,7 @@ local function log_view(st, data, snap, log)
     end
     lines.spacing = 1
     lines.modifiers = { { padding = { 4, 10 } } }
-    lines.scrollTo = LOG_AT .. "." .. (#lines - 1)
+    lines.scrollTo = #lines
     return ui.Column{
         spacing = 0,
         children = {

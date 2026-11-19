@@ -618,7 +618,7 @@ impl AppState {
     /// and the pane's brief file (`WHEEL_BRIEF_FILE`) written with it. A listing that cannot be
     /// read is said so in the section, not left out.
     pub(crate) fn pane_brief(&self, pane: &str, space_cwd: &str) -> String {
-        let section = match self.artifact_ls_in(space_cwd, false) {
+        let section = match self.artifact_ls_in(space_cwd) {
             Ok((artifacts, _)) => crate::brief::artifacts_section(&artifacts),
             Err(e) => {
                 tracing::warn!(%pane, error = %e, "the brief cannot list the artifacts");
@@ -2578,7 +2578,6 @@ async fn handle(
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::ArtifactNew {
             req,
-            pane,
             name,
             scope,
             space,
@@ -2597,7 +2596,6 @@ async fn handle(
                 &name,
                 scope,
                 space.as_deref(),
-                pane,
                 path.as_deref(),
                 (ends_with_pane.as_deref(), expires_in),
                 crate::artifacts::Post {
@@ -2621,7 +2619,6 @@ async fn handle(
             description,
             command,
             every,
-            pane,
         } => one_artifact(
             req,
             state.artifact_add(
@@ -2634,7 +2631,6 @@ async fn handle(
                     description,
                     command,
                     every,
-                    pane,
                     ..Default::default()
                 },
             ),
@@ -3105,8 +3101,8 @@ async fn handle(
                 }
             }
         }
-        ClientMsg::ArtifactLs { req, space, pane } => {
-            match state.artifact_ls(space.as_deref(), pane) {
+        ClientMsg::ArtifactLs { req, space } => {
+            match state.artifact_ls(space.as_deref()) {
                 Ok((artifacts, resolves)) => req.map(|req| ServerMsg::Artifacts {
                     req,
                     artifacts,

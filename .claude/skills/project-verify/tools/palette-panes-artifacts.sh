@@ -17,7 +17,7 @@ w space new "$SCR/one" >/dev/null
 w space new "$SCR/two" >/dev/null
 S1="$(w space ls | jget spaces.0.id)"
 S2="$(w space ls | jget spaces.1.id)"
-w artifact new status --pane --space "$S2" >/dev/null
+w artifact new status --space "$S2" >/dev/null
 printf '<!doctype html><title>status</title><p>palette-artifact</p>' >"$SCR/two/.wheel/artifacts/status/index.html" 2>/dev/null
 P1="$(w space ls | jq -r --arg s "$S1" '[.spaces[] | select(.id == $s)][0] | [.. | objects | select(.id? and .kind?) | .id] | first')"; w pane split "$P1" right >/dev/null
 prefs_reset

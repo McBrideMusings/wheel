@@ -1,11 +1,12 @@
 import Foundation
 import SwiftUI
 import Testing
+import WheelKit
 @testable import WheelUI
 
 @Suite struct A2UIModifiersTests {
-    private func value(_ json: String) throws -> AnyCodable {
-        try JSONDecoder().decode(AnyCodable.self, from: Data(json.utf8))
+    private func value(_ json: String) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
     }
 
     @Test func colourNamesAreSwiftUIsOwn() {

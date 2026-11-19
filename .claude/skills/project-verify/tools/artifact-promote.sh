@@ -2,7 +2,7 @@
 # § `wheel artifact promote` makes an ad hoc artifact permanent (wheel-3svn): the CLI against a running
 # wheeld asks a person, who answers on the Mac app's card (the debug server's /perm, the card's own
 # path). A denial changes nothing; an allow rewrites the entry in the target scope with no
-# ends_with_pane, no expires_at and pane = true, leaves the folder where it was, and removes the entry
+# ends_with_pane, no expires_at and no pane key, leaves the folder where it was, and removes the entry
 # from the scope it left. Drives the real Mac app against this script's own daemon and the fake agent.
 # WHEEL_SHOTS=<dir> keeps the window snapshot of the waiting card.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -64,13 +64,13 @@ eq "denied: the project entry is exactly as it was" "$(entry agent-page project)
 eq "denied: no machine entry appeared" "$(entry agent-page machine)" null
 eq "denied: the app's waiting count is back to 0" "$(st '.waiting_count')" 0
 
-# 2. The same entry, allowed to project: it stays in the project scope, loses ends_with_pane, gains pane.
+# 2. The same entry, allowed to project: it stays in the project scope, loses ends_with_pane.
 DIR="$(field agent-page project dir)"
 promote agent-page allow --to project
 eq "allowed to project: the CLI exits 0" "$RC" 0
 eq "allowed to project: the CLI prints the folder" "$OUT" "$(printf '%s\n[promoted project artifact agent-page in %s; its folder is left as it was]' "$DIR" "$(field agent-page project entry)")"
 eq "to project: ends_with_pane is cleared" "$(field agent-page project ends_with_pane)" null
-eq "to project: pane is true" "$(field agent-page project pane)" true
+eq "to project: no pane key" "$(field agent-page project pane)" null
 eq "to project: still listed in the project scope" "$(field agent-page project name)" agent-page
 eq "to project: the folder is the same" "$(field agent-page project dir)" "$DIR"
 check "to project: the folder's index.html is intact" test -s "$DIR/index.html"
@@ -83,7 +83,7 @@ promote timed allow --to machine
 eq "allowed to machine: the CLI exits 0" "$RC" 0
 eq "to machine: listed in the machine scope" "$(field timed machine name)" timed
 eq "to machine: expires_at is cleared" "$(field timed machine expires_at)" null
-eq "to machine: pane is true" "$(field timed machine pane)" true
+eq "to machine: no pane key" "$(field timed machine pane)" null
 eq "to machine: the project scope no longer lists it" "$(entry timed project)" null
 eq "to machine: the folder is the same" "$(field timed machine dir)" "$DIR"
 check "to machine: the folder's index.html is intact" test -s "$DIR/index.html"

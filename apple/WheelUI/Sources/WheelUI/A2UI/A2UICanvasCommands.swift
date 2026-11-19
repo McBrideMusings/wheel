@@ -1,3 +1,4 @@
+import WheelKit
 import SwiftUI
 internal import WheelLuau
 #if os(macOS)
@@ -27,7 +28,7 @@ enum CanvasCommand: Equatable {
 }
 
 /// The commands in `list` that parse, in order.
-func canvasCommands(_ list: [AnyCodable]) -> [CanvasCommand] {
+func canvasCommands(_ list: [JSONValue]) -> [CanvasCommand] {
     list.compactMap { item -> CanvasCommand? in
         guard let a = item.arrayValue, let name = a.first?.stringValue else { return nil }
         let rest = Array(a.dropFirst())
@@ -316,12 +317,12 @@ struct CanvasPlayer {
 /// The player for a command list, kept while the list stays the same: a re-run that hands the stage an equal list neither parses
 /// nor replays it again.
 final class CanvasPlayerCache {
-    private var commands: [AnyCodable]?
+    private var commands: [JSONValue]?
     private var fg: Color?
     private var cached: CanvasPlayer?
     private(set) var builds = 0
 
-    func player(for list: [AnyCodable], fg: Color) -> CanvasPlayer {
+    func player(for list: [JSONValue], fg: Color) -> CanvasPlayer {
         if let cached, commands == list, self.fg == fg { return cached }
         let made = CanvasPlayer(canvasCommands(list), fg: fg)
         commands = list
@@ -389,11 +390,11 @@ extension EnvironmentValues {
 /// controls, background or border. It reports its size as `canvas-size:<key>` and, with a `pointerAction`, raises it for pointer
 /// events with `{kind, x, y, button, dx, dy}`.
 struct CanvasCommandStage: View {
-    let commands: [AnyCodable]
+    let commands: [JSONValue]
     let height: Double
     let key: String
     let pointerAction: String?
-    let fire: (String, [String: AnyCodable]) -> Void
+    let fire: (String, [String: JSONValue]) -> Void
     @State private var reportedSize: CGSize?
     @State private var last: CGPoint?
     @State private var pressed = false
@@ -402,7 +403,7 @@ struct CanvasCommandStage: View {
     @State private var coalescer = CanvasPointerCoalescer()
     @Environment(\.a2uiCanvasSizes) private var reportsSize
 
-    init(commands: [AnyCodable], height: Double, key: String, pointerAction: String?, fire: @escaping (String, [String: AnyCodable]) -> Void) {
+    init(commands: [JSONValue], height: Double, key: String, pointerAction: String?, fire: @escaping (String, [String: JSONValue]) -> Void) {
         self.commands = commands
         self.height = height
         self.key = key

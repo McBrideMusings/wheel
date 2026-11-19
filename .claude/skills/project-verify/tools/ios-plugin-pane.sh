@@ -38,7 +38,7 @@ plog() { grep -q -- "$1" "$PLOG" 2>/dev/null; }
 shot() { [ -n "${WHEEL_SHOTS:-}" ] && mkdir -p "$WHEEL_SHOTS" && xcrun simctl io "$UDID" screenshot "$WHEEL_SHOTS/ios-plugin-$1.png" >/dev/null 2>&1; return 0; }
 
 code="$(w remote pair --address 127.0.0.1)"
-SIMCTL_CHILD_WHEEL_PAIR_JSON="$code" SIMCTL_CHILD_WHEEL_PLUGIN_PRESS="root.1,root.1" xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
+SIMCTL_CHILD_WHEEL_PAIR_JSON="$code" SIMCTL_CHILD_WHEEL_PLUGIN_PRESS="root/Button0,root/Button0" xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null
 check "the phone pairs" poll 40 plog "connected to wss://127.0.0.1:$RPORT/ws"
 check "the phone holds the plugin pane" poll 20 plog "plugin pane $PANE: sample/counter in "
 check "the script loads with no error" poll 20 plog "plugin pane $PANE: sample/main.luau, reloads 0, error none, state {\"count\":0"

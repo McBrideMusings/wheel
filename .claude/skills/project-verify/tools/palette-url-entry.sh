@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # § A saved URL registers as an artifact that opens in a browser pane (wheel-47eg): a `url` entry
-# with `pane = true` is a row in the pane picker, and choosing it in an empty pane makes that pane a
+# is a row in the pane picker, and choosing it in an empty pane makes that pane a
 # browser pane on the URL. Drives the real Mac app against this script's own daemon and a local
 # HTTP server standing in for serve-sim. WHEEL_SHOTS=<dir> keeps the window snapshot.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -20,7 +20,7 @@ URL="http://127.0.0.1:$SITE_PORT/"
 start_daemon --state-file "$SCR/spaces.json"
 mkdir -p "$SCR/proj1"
 S1="$(w space new "$SCR/proj1")"
-w artifact new sim --page "$URL" --pane --space "$S1" >/dev/null
+w artifact new sim --page "$URL" --space "$S1" >/dev/null
 echo "     ls: $(w artifact ls --space "$S1" --json | jq -c "(.artifacts // .) | [.[] | {name, url}]")"
 eq "ls --json carries the entry's url" "$(w artifact ls --space "$S1" --json | jq -r "(.artifacts // .) | .[] | select(.name == \"sim\") | .url")" "$URL"
 

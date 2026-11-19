@@ -33,10 +33,9 @@ fn thread_cpu_ms() -> f64 {
 async fn tick(cx: &mut AsyncApp, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
-/// A web pane is ready when its page loaded, or when its artifact's A2UI page is drawn natively.
+/// A web pane is ready when its page loaded.
 fn web_ready(s: &Value, pane: &str) -> bool {
-    let p = &s["panes"][pane];
-    p["loads"].as_array().is_some_and(|a| !a.is_empty()) || p["page"]["native"] == true
+    s["panes"][pane]["loads"].as_array().is_some_and(|a| !a.is_empty())
 }
 
 async fn wait(native: &Native, what: &str, pred: impl Fn(&Value) -> bool, cx: &mut AsyncApp) -> Result<Value> {
@@ -296,10 +295,9 @@ async fn type_text(native: &Native, text: &str, cx: &mut AsyncApp) {
 /// Runs each step in order. A step takes the shared `Run` and what it reads from earlier steps, and
 /// hands back the `Run` and what later steps and the report read.
 async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
-    let (run, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file) = layout_and_terminals(output, cx).await?;
+    let (run, first, native_panes, loaded, before, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file) = layout_and_terminals(output, cx).await?;
     let webs: Vec<&String> = native_panes.iter().filter(|p| p.1 == "web").map(|p| &p.0).collect();
     let terms: Vec<&String> = native_panes.iter().filter(|p| p.1 == "terminal").map(|p| &p.0).collect();
-    let native_pages: Vec<&String> = webs.iter().copied().filter(|w| before["panes"][w.as_str()]["page"]["native"] == true).collect();
     let target = terms[1];
     let (run, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
@@ -371,7 +369,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         native_panes.iter().map(|(id, kind)| (id.clone(), json!({"kind":kind,"frame":frame(s,id),"grid":last_grid(s,id)}))).collect::<serde_json::Map<_, _>>().into()
     };
     let mut report = json!({
-        "host_pid": std::process::id(), "layouts_received": layouts, "page": {"pane": native_pages[0], "state": page_state, "png_bytes": page_bytes}, "first_layout": first,
+        "host_pid": std::process::id(), "layouts_received": layouts, "first_layout": first,
         "native_panes": native_panes, "loaded_at_start": loaded["panes"],
         "native_aligned_with_panes": aligned, "own_session_only": own,
         "keyboard": {"clicked": target, "click": click, "focused": focused, "typed_viewport": viewport(&typed, target), "leaked_to_first": leaked},
@@ -425,7 +423,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
 
 /// Layout from wheeld, one native view per pane on its body, separate terminal sessions,
 /// keyboard focus by a click, a dropped path and the `terminal.*` settings restyling the surface.
-async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Value, Value, Value, u64, Vec<(String, Rect)>, Vec<(String, bool)>, Vec<(String, bool, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
+async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Value, Value, Vec<(String, Rect)>, Vec<(String, bool)>, Vec<(String, bool, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
     let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
     let mut connection = Connection::open(endpoint.clone());
@@ -465,16 +463,6 @@ async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run
     draw(window, Some(output.join("client-before.png")), cx)?;
     shot(&native, &output.join("before"), cx).await?;
     let before = native.status();
-    // A web pane on an A2UI artifact draws the page natively, from the layout its MCP server sent,
-    // and not the WKWebView; a plain HTML artifact keeps its WKWebView.
-    let native_pages: Vec<&String> = webs.iter().copied().filter(|w| before["panes"][w.as_str()]["page"]["native"] == true).collect();
-    ensure!(native_pages.len() == 1, "exactly one web pane should draw an A2UI page: {:?}", before["panes"]);
-    ensure!(before["panes"][webs[0].as_str()]["page"]["native"] != true || native_pages[0] != webs[0], "the HTML artifact must stay in its web view");
-    let page_state = before["panes"][native_pages[0].as_str()]["page"]["state"].clone();
-    ensure!(page_state == "ready", "the native page is not ready: {page_state}");
-    let page_png = output.join("before").join(format!("{}-page.png", native_pages[0]));
-    let page_bytes = std::fs::metadata(&page_png).map(|m| m.len()).unwrap_or(0);
-    ensure!(page_bytes > 5000, "the native page's picture is missing or blank: {} ({page_bytes} bytes)", page_png.display());
     // Every native view sits on its pane's body.
     let rects = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.rect)).collect::<Vec<_>>())?;
     let aligned: Vec<(String, bool)> = native_panes.iter().map(|(id, kind)| (id.clone(), on_body(frame(&before, id), rects.iter().find(|r| &r.0 == id).unwrap().1, kind))).collect();
@@ -573,7 +561,7 @@ async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run
     let terminal_report = json!({"dropped": dropped, "drop_line": drop_line, "target_viewport": viewport(&after_drop, target),
         "other_viewport": viewport(&after_drop, other_term), "config_before": look_before, "config_restyled": config_of(&restyled, target),
         "config_after": look_after, "grids": terms.iter().map(|t| (t.to_string(), last_grid(&restyled, t))).collect::<serde_json::Map<_, _>>()});
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first, native_panes, loaded, before, page_state, page_bytes, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file))
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first, native_panes, loaded, before, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file))
 }
 
 /// Command-] and command-[ move the keyboard; a divider drag and a window resize hold the
@@ -4176,8 +4164,8 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     // wheeld with the token in a header (never in the page's address), in a store of its own; the
     // page's script reached wheeld through `.wheel/client.js`; a file written into the folder
     // reloads the pane; and the artifact palette, opened in a new empty pane with `a`, lists the
-    // space's `pane = true` artifacts, filters as typed and opens the selected one on Return.
-    let html_pane = webs.iter().copied().find(|w| before["panes"][w.as_str()]["page"]["native"] != true).ok_or_else(|| anyhow::anyhow!("no HTML web pane"))?.clone();
+    // space's artifacts, filters as typed and opens the selected one on Return.
+    let html_pane = webs.first().copied().ok_or_else(|| anyhow::anyhow!("no web pane"))?.clone();
     let address = before["panes"][html_pane.as_str()]["url"].as_str().unwrap_or("").to_owned();
     ensure!(address == format!("wheel-page://pages/artifacts/{html_pane}/"), "the HTML pane's address is {address:?}");
     let http_status = before["panes"][html_pane.as_str()]["status"].clone();
