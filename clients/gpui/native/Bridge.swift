@@ -1513,7 +1513,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "plugin":
             // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's value
             // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`,
-            // `agent_send` the text `value` through the composer of the agent chat embedding pane `component`.
+            // `agent_send` the text `value` through the composer of the agent chat embedding pane `component`, `stream_key` type the
+            // characters `value` on the VideoStream of stream `component` as its view takes a key.
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin else { return ["ok": false, "message": "no plugin pane"] }
             var ok = true
             switch value["action"] as? String {
@@ -1538,6 +1539,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 // The embedded agent chat of pane `component` sends `value` as its composer's Send would.
                 let embed = agentEmbeds.values.first { $0.hostPane == pane && $0.pane == value["component"] as? String }
                 if let chat = embed?.chat, let text = value["value"] as? String { chat.draft = text; sendAgent(chat) } else { ok = false }
+            case "stream_key":
+                ok = (value["component"] as? String).flatMap { s in (value["value"] as? String).map { videoStreams?.type(pane: pane, stream: s, characters: $0) ?? false } } ?? false
             default: break
             }
             return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "restarts": plugin.restarts, "components": plugin.componentTexts, "feeds": plugin.feedJSON,

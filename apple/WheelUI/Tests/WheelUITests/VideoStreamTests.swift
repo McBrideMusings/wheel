@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreMedia
 import Foundation
 import Testing
@@ -47,6 +48,22 @@ struct VideoStreamTests {
         let body = try JSONSerialization.jsonObject(with: bytes.subdata(in: 5..<bytes.count)) as? [String: Any]
         #expect(body?["kind"] as? String == "down")
     }
+
+    #if os(macOS)
+    @Test func theAudioRingKeepsTheNewestAndPlaysSilenceWhenEmpty() {
+        let ring = StreamAudioRing()
+        ring.push([1, -1, 2, -2, 3, -3], keep: 4)
+        let left = UnsafeMutablePointer<Float>.allocate(capacity: 3), right = UnsafeMutablePointer<Float>.allocate(capacity: 3)
+        defer { left.deallocate(); right.deallocate() }
+        let list = AudioBufferList.allocate(maximumBuffers: 2)
+        defer { free(list.unsafeMutablePointer) }
+        list[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: 12, mData: left)
+        list[1] = AudioBuffer(mNumberChannels: 1, mDataByteSize: 12, mData: right)
+        ring.pull(into: list, frames: 3, channels: 2)
+        #expect(Array(UnsafeBufferPointer(start: left, count: 3)) == [2, 3, 0])
+        #expect(Array(UnsafeBufferPointer(start: right, count: 3)) == [-2, -3, 0])
+    }
+    #endif
 
     @Test func videoToolboxDecodesEveryFrameOfTheClip() async throws {
         let units = StreamFrame.nalUnits(try Data(contentsOf: clip))

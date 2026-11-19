@@ -53,6 +53,21 @@ public final class VideoStreams {
         live.values.filter { $0.pane == pane }.map { $0.state }
     }
 
+    /// A key typed on stream `stream` of plugin pane `pane`, as its view takes one: a key down and a key up event for
+    /// `characters` handed to the view's own handlers, on the first such stream that takes input. For a check, which never
+    /// sends real input; false when no such stream
+    /// is shown.
+    public func type(pane: String, stream: String, characters: String) -> Bool {
+        guard let view = live.values.first(where: { $0.pane == pane && $0.stream == stream && $0.input })?.view else { return false }
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: view.window?.windowNumber ?? 0, context: nil, characters: characters,
+                                               charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 0) else { return false }
+            if type == .keyDown { view.keyDown(with: event) } else { view.keyUp(with: event) }
+        }
+        return true
+    }
+
     func appear(_ session: StreamSession) {
         live[ObjectIdentifier(session)] = session
         session.retry = { [weak self, weak session] in
@@ -185,6 +200,8 @@ final class StreamLink: @unchecked Sendable {
     private var fd: Int32 = -1
     private var closed = false
     private var size: CGSize?
+    /// Whether this connection has shown a frame yet; each new connection reports its first.
+    private var showing = false
     var onFirstFrame: (@Sendable () -> Void)?
     var onEnd: (@Sendable (String) -> Void)?
 
@@ -241,7 +258,11 @@ final class StreamLink: @unchecked Sendable {
         if renderer.status == .failed { renderer.flush() }
         renderer.enqueue(sample)
         stats.add("frames")
-        if stats["frames"] == 1 { onFirstFrame?() }
+        let first = lock.withLock { () -> Bool in
+            defer { showing = true }
+            return !showing
+        }
+        if first { onFirstFrame?() }
     }
 
     /// Connects and reads until the stream ends; returns why it ended.
@@ -300,55 +321,97 @@ final class StreamLink: @unchecked Sendable {
     }
 }
 
-/// A stream's audio: interleaved s16 PCM converted to float and scheduled on one player node. Used from the read thread.
+/// A stream's audio: interleaved s16 PCM converted to float into a ring the engine's render thread pulls from through an
+/// `AVAudioSourceNode`. Nothing here calls a player's `play()`, which raises an Objective-C exception Swift cannot catch when
+/// the engine has not run an I/O cycle yet. The ring holds at most `backlogSeconds`; past it the oldest samples go, so sound
+/// never lags the picture. `play` runs on the read thread.
 final class StreamAudio {
     private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
-    private var format: AVAudioFormat?
-    private let queued = StreamStats()
-    private var failed = false
-    /// At most this many chunks wait to play; past it a chunk is dropped, so audio never falls behind the picture.
-    static let backlog = 8
+    private var source: AVAudioSourceNode?
+    private var rate = 0.0
+    private var channels = 0
+    private var running = false
+    private let ring = StreamAudioRing()
+    static let backlogSeconds = 0.25
 
-    init() { engine.attach(player) }
-
-    /// Plays one chunk; false when it was dropped or no audio device took it.
+    /// Queues one chunk; false when no audio device took the stream.
     func play(rate: Double, channels: Int, pcm: Data) -> Bool {
-        if format?.sampleRate != rate || format.map({ Int($0.channelCount) }) != channels {
-            guard let made = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: AVAudioChannelCount(channels),
-                                           interleaved: false) else { return false }
-            player.stop()
-            engine.stop()
-            engine.connect(player, to: engine.mainMixerNode, format: made)
-            format = made
-            do {
-                try engine.start()
-                player.play()
-                failed = false
-            } catch {
-                failed = true
-            }
-        }
+        if rate != self.rate || channels != self.channels { start(rate: rate, channels: channels) }
+        guard running else { return false }
         let frames = pcm.count / (2 * channels)
-        guard !failed, let format, frames > 0, queued["n"] < Self.backlog,
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-              let out = buffer.floatChannelData else { return false }
-        buffer.frameLength = AVAudioFrameCount(frames)
+        var samples = [Float](repeating: 0, count: frames * channels)
         pcm.withUnsafeBytes { raw in
-            for ch in 0..<channels {
-                for i in 0..<frames {
-                    out[ch][i] = Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: (i * channels + ch) * 2, as: Int16.self))) / 32768
-                }
+            for i in 0..<(frames * channels) {
+                samples[i] = Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: i * 2, as: Int16.self))) / 32768
             }
         }
-        queued.add("n")
-        player.scheduleBuffer(buffer) { [queued] in queued.add("n", -1) }
+        ring.push(samples, keep: Int(rate * Self.backlogSeconds) * channels)
         return true
     }
 
+    private func start(rate: Double, channels: Int) {
+        stop()
+        self.rate = rate
+        self.channels = channels
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: AVAudioChannelCount(channels),
+                                         interleaved: false) else { return }
+        let ring = self.ring
+        let node = AVAudioSourceNode(format: format) { _, _, frameCount, buffers -> OSStatus in
+            ring.pull(into: UnsafeMutableAudioBufferListPointer(buffers), frames: Int(frameCount), channels: channels)
+            return noErr
+        }
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode, format: format)
+        source = node
+        do {
+            try engine.start()
+            running = true
+        } catch {
+            running = false
+        }
+    }
+
     func stop() {
-        player.stop()
         engine.stop()
+        if let source { engine.detach(source) }
+        source = nil
+        running = false
+        ring.clear()
+    }
+}
+
+/// Interleaved samples waiting to play, shared by the read thread and the render thread.
+final class StreamAudioRing: @unchecked Sendable {
+    private var lock = os_unfair_lock()
+    private var samples: [Float] = []
+    private var head = 0
+
+    func push(_ more: [Float], keep: Int) {
+        os_unfair_lock_lock(&lock)
+        samples.removeFirst(head)
+        head = 0
+        samples += more
+        if samples.count > keep { samples.removeFirst(samples.count - keep) }
+        os_unfair_lock_unlock(&lock)
+    }
+
+    /// Fills each channel's buffer with the next `frames` frames, silence where none wait.
+    func pull(into buffers: UnsafeMutableAudioBufferListPointer, frames: Int, channels: Int) {
+        os_unfair_lock_lock(&lock)
+        let have = min(frames, (samples.count - head) / max(channels, 1))
+        for (ch, buffer) in buffers.enumerated() {
+            guard let out = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            for i in 0..<frames { out[i] = i < have && ch < channels ? samples[head + i * channels + ch] : 0 }
+        }
+        head += have * channels
+        os_unfair_lock_unlock(&lock)
+    }
+
+    func clear() {
+        os_unfair_lock_lock(&lock)
+        samples = []
+        head = 0
+        os_unfair_lock_unlock(&lock)
     }
 }
 

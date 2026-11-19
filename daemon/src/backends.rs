@@ -1151,7 +1151,9 @@ async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
         .kill_on_drop(true)
         .process_group(0);
     if let Some(dir) = &spec.stream_dir {
+        use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         command.env("WHEEL_PLUGIN_STREAM_DIR", dir);
     }
     let listener = match spec.transport {
@@ -1913,9 +1915,9 @@ async fn settle(backend: Arc<Backend>) -> Result<Arc<Backend>, String> {
 const SOCKET_PATH_MAX: usize = 103;
 
 /// The folder a backend serves its video streams in, one per package key: under wheeld's support
-/// directory, or under `/tmp` when that leaves too little room for a stream's socket name
-/// (`<name>.sock`, 40 bytes kept for it). Not the user's temp directory, whose path alone is about
-/// 50 bytes on macOS.
+/// directory, or as `wv-<hash>` in the user's own temp directory when that leaves too little room
+/// for a stream's socket name (`<name>.sock`, 40 bytes kept for it). Never a folder other users can
+/// write to: the client sends the person's input to whatever listens there.
 fn stream_dir(support: &Path, key: &str) -> PathBuf {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(key.as_bytes());
@@ -1924,7 +1926,7 @@ fn stream_dir(support: &Path, key: &str) -> PathBuf {
     if dir.as_os_str().len() + 40 <= SOCKET_PATH_MAX {
         dir
     } else {
-        Path::new("/tmp").join(format!("wheel-v-{name}"))
+        std::env::temp_dir().join(format!("wv-{name}"))
     }
 }
 
