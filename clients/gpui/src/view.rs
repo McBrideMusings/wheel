@@ -12,6 +12,7 @@ mod composer;
 mod composer_tests;
 mod conversations;
 mod debug;
+mod fields;
 pub mod float;
 mod little;
 mod menubar;
@@ -41,7 +42,7 @@ pub use commands::{Confirmation, Pending};
 pub use title::{BOTTOM, MenuRow, Symbols, TitleMenu, symbol};
 pub use debug::Answer as DebugAnswer;
 pub use settings::{SettingsEdit, SettingsReqs};
-use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::{Focus, Typed, type_into}, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, popped::{Card, CardDrag, GRIP, Layer}, status, transcript::{Kind, ToolRow, Transcript}};
+use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, daemon::{Endpoint, Event}, focus::Focus, footer, header::{self, Hit}, keymap::Keymap, layout::*, markdown::{self, Block, Mark, Run, Text}, native::{Answer, Bridge, BrowserEvent, BrowserState, Frame, Native}, palette::{self, Palette}, popped::{Card, CardDrag, GRIP, Layer}, status, transcript::{Kind, ToolRow, Transcript}};
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FollowMode, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, list, prelude::*, px, rgb, rgba};
 use wheel_proto::{PluginInfo, TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
 use gpui_component::{Root, input::{Input, InputEvent, InputState}};
@@ -201,6 +202,8 @@ pub struct Client {
     /// Each agent's composer text input, made when its composer is first drawn. `drafts` stays
     /// the model every other piece reads; an edit in the input copies into it.
     inputs: HashMap<String, gpui::Entity<InputState>>,
+    /// Each open one-line field's input and the placeholder it shows (`fields`).
+    fields: HashMap<fields::FieldId, (gpui::Entity<InputState>, String)>,
     /// Agents whose draft changed by the client (a picked command, a restored message, a send)
     /// and whose input has not taken the new text yet.
     stale_inputs: HashSet<String>,
@@ -497,7 +500,7 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
+            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
@@ -1374,7 +1377,7 @@ impl Client {
         }
     }
     /// A key typed while `pane`'s address field is being edited. Returns false when it is not.
-    fn address_key(&mut self, pane: &str, key: &str, text: Option<&str>) -> bool {
+    fn address_key(&mut self, pane: &str, key: &str) -> bool {
         let Some((editing, draft)) = self.address_edit.as_mut().filter(|(p, _)| p == pane) else { return false };
         let editing = editing.clone();
         match key {
@@ -1388,14 +1391,7 @@ impl Client {
                 self.native.focus(&editing);
                 self.native.browser(&editing, "open", serde_json::json!({"text": typed}));
             }
-            "backspace" => {
-                draft.pop();
-            }
-            _ => {
-                if let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) {
-                    draft.push_str(t);
-                }
-            }
+            _ => {}
         }
         true
     }
@@ -1589,8 +1585,14 @@ impl Client {
 
     pub fn key(&mut self, e: &KeyDownEvent, cx: &mut App) -> bool {
         let k = &e.keystroke;
+        // An open field's input takes the keys that edit its text; Backspace in the command
+        // palette's empty search leaves its stage instead.
+        let palette_back = k.key == "backspace" && self.command_palette.as_ref().is_some_and(|p| p.query.is_empty());
+        if self.typing_in_field() && fields::edits_text(k) && !palette_back {
+            return false;
+        }
         // A name field takes every key while it is up.
-        if self.name_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
+        if self.name_key(&k.key, k.modifiers.platform || k.modifiers.control) {
             return true;
         }
         // Esc closes the shortcut sheet wherever the keyboard is; the overlays take their keys.
@@ -1599,7 +1601,7 @@ impl Client {
                 self.close_command_palette();
                 return true;
             }
-            return self.command_palette_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control, cx);
+            return self.command_palette_key(&k.key, cx);
         }
         // The Settings window takes every key while it is open, except its own chord, which closes it.
         if self.settings_open {
@@ -1608,7 +1610,7 @@ impl Client {
                 return true;
             }
             if self.confirmation.is_none() {
-                return self.settings_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control, cx);
+                return self.settings_key(&k.key);
             }
         }
         // The sheet's own chord closes it, as the Swift app's toggle does.
@@ -1630,27 +1632,18 @@ impl Client {
         }
         // The process card takes every key while it is open and nothing is over it: its filter, and Esc to close.
         if self.procs.open.is_some() && self.confirmation.is_none() {
-            self.procs_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control);
+            self.procs_key(&k.key);
             return true;
         }
         if self.pane_info.is_some() && self.confirmation.is_none() && k.key == "escape" {
             self.close_pane_info();
             return true;
         }
-        // The Conversations popover takes typed keys while it is open: its search, ⌘V pasting into
-        // it, and Esc to close. Other chords (⌘W, ⌘K, ⌘Q) go on to their actions.
-        if self.conversations.open.is_some() && self.confirmation.is_none() {
-            let chord = k.modifiers.platform || k.modifiers.control;
-            if k.modifiers.platform && k.key == "v" {
-                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                    self.conversations_key("", Some(&text.replace(['\n', '\r'], " ")), false);
-                }
-                return true;
-            }
-            if !chord {
-                self.conversations_key(&k.key, k.key_char.as_deref(), false);
-                return true;
-            }
+        // The Conversations popover takes the keys its search does not: Esc closes it. Chords
+        // (⌘W, ⌘K, ⌘Q) go on to their actions.
+        if self.conversations.open.is_some() && self.confirmation.is_none() && !(k.modifiers.platform || k.modifiers.control) {
+            self.conversations_key(&k.key);
+            return true;
         }
         if self.overlay_key(&k.key) {
             return true;
@@ -1688,7 +1681,7 @@ impl Client {
             self.close_space_menu();
             return true;
         }
-        if self.rename_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control) {
+        if self.rename_key(&k.key, k.modifiers.platform || k.modifiers.control) {
             return true;
         }
         // A native view may have taken the keyboard by a click GPUI never saw: an action on
@@ -1718,7 +1711,7 @@ impl Client {
             && !k.modifiers.platform
             && !k.modifiers.control
         {
-            if self.address_key(&leaf.id, &k.key, k.key_char.as_deref()) || self.palette_key(&leaf.id, &k.key, k.key_char.as_deref()) {
+            if self.address_key(&leaf.id, &k.key) || self.palette_key(&leaf.id, &k.key) {
                 return true;
             }
             // The empty pane's chooser: `a` opens the artifact palette.
@@ -1819,7 +1812,7 @@ impl Client {
         self.palettes.remove(pane);
     }
     /// A key typed while `pane`'s palette is open. Returns false when the pane has none.
-    fn palette_key(&mut self, pane: &str, key: &str, text: Option<&str>) -> bool {
+    fn palette_key(&mut self, pane: &str, key: &str) -> bool {
         let Some(palette) = self.palettes.get_mut(pane) else { return false };
         match key {
             "escape" => {
@@ -1838,19 +1831,7 @@ impl Client {
                     self.show_artifact(pane, &info);
                 }
             }
-            "backspace" => {
-                let mut query = palette.query.clone();
-                query.pop();
-                palette.type_text(&query);
-            }
-            _ => {
-                if palette.searchable()
-                    && let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control))
-                {
-                    let query = format!("{}{t}", palette.query);
-                    palette.type_text(&query);
-                }
-            }
+            _ => {}
         }
         true
     }
@@ -2042,8 +2023,8 @@ impl Client {
         let body = if self.quarantine.isolates_pane(&p.leaf.id) { self.quarantine_card(&p.leaf.id, &p.leaf.kind, cx) } else { match p.leaf.kind.as_str() {
             "browser" if native => {
                 let state = self.browsers.get(&p.leaf.id).cloned().unwrap_or_default();
-                let editing = self.address_edit.as_ref().filter(|(pane, _)| pane == &p.leaf.id).map(|(_, d)| d.clone());
-                let mut body = div().flex().flex_col().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().child(browser::chrome(&p.leaf.id, &state, r.w, editing.as_deref(), &self.controls, cx));
+                let editing = self.address_edit.as_ref().filter(|(pane, _)| pane == &p.leaf.id).map(|(pane, d)| self.field_element(&fields::FieldId::Address(pane.clone()), d));
+                let mut body = div().flex().flex_col().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().child(browser::chrome(&p.leaf.id, &state, r.w, editing, &self.controls, cx));
                 if let Some(failure) = &state.failure {
                     body = body.child(div().flex_1().min_h(px(0.)).w(px(r.w)).overflow_hidden().child(browser::failure_card(&p.leaf.id, failure, &self.controls, cx)));
                 }
@@ -2222,7 +2203,7 @@ impl Client {
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()))))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
             .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
-            .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, r.w, r.h - TITLE, cx)))
+            .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, self.field_element(&fields::FieldId::ArtifactSearch(p.leaf.id.clone()), &palette.query), r.w, r.h - TITLE, cx)))
     }
     /// A card's resize corner, over its panes and their views.
     fn card_grip(&self, card: &Card, cx: &mut Context<Self>) -> gpui::Div {
@@ -2316,11 +2297,12 @@ impl Render for Client {
         self.tick_pairing(cx);
         self.tick_procs(cx);
         self.tick_preview(cx);
+        self.sync_fields(window, cx);
         let mut root = div().relative().track_focus(&self.handle)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 // A key with the composer's input focused went through `composer_key` before the
                 // input's own bindings.
-                if !this.composer_focused(window, cx) && this.key(e, cx) {
+                if this.focused_input(window, cx).is_none() && this.key(e, cx) {
                     cx.notify();
                 }
             }))
@@ -2442,7 +2424,7 @@ impl Render for Client {
             root = root.child(self.pane_info_overlay(w, h, cx));
         }
         if let Some(palette) = &self.command_palette {
-            root = root.child(commands::command_palette_overlay(palette, w, h, cx));
+            root = root.child(commands::command_palette_overlay(palette, self.field_element(&fields::FieldId::CommandSearch, &palette.query), w, h, cx));
         }
         if self.shortcuts_open {
             let groups = self.shortcut_sheet();
@@ -2496,7 +2478,7 @@ fn file_url_path(path: &str) -> String {
     out
 }
 
-fn palette_overlay(pane: &str, palette: &Palette, width: f32, height: f32, cx: &mut Context<Client>) -> gpui::Div {
+fn palette_overlay(pane: &str, palette: &Palette, field: gpui::AnyElement, width: f32, height: f32, cx: &mut Context<Client>) -> gpui::Div {
     let narrow = width < 420.;
     let compact = height < 340.;
     let inset = if narrow { 8. } else { 10. };
@@ -2507,16 +2489,11 @@ fn palette_overlay(pane: &str, palette: &Palette, width: f32, height: f32, cx: &
         cx.stop_propagation();
         cx.notify();
     });
-    let field: gpui::Div = if palette.query.is_empty() {
-        div().text_color(rgb(0x6f8a7d)).child(palette.field_placeholder())
-    } else {
-        div().text_color(rgb(0xd9e8e1)).child(palette.query.clone())
-    };
     let mut card = div().w(px(card_w)).max_h(px(height - 2. * inset)).flex().flex_col().rounded_md().bg(rgb(0x17201c)).border_1().border_color(rgb(0x3d5247))
         .text_color(rgb(0xd9e8e1)).overflow_hidden()
         .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
         .child(div().h(px(if compact { 34. } else { 40. })).px_3().flex().items_center().gap_2().border_b_1().border_color(rgb(0x2c3d34))
-            .child(div().text_color(rgb(0x6f8a7d)).child("⌕")).child(field.flex_1().overflow_hidden().whitespace_nowrap()));
+            .child(div().text_color(rgb(0x6f8a7d)).child("⌕")).child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(field)));
     let note = |title: &str, lines: Vec<String>| {
         let mut n = div().flex_1().min_h_0().p(px(if compact { 12. } else { 18. })).flex().flex_col().gap_1().items_center().text_center()
             .child(div().font_weight(FontWeight::SEMIBOLD).child(title.to_owned()));

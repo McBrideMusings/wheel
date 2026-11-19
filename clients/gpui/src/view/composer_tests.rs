@@ -65,7 +65,7 @@ impl Rig {
 #[gpui::test]
 fn the_composer_input_holds_the_keyboard(cx: &mut TestAppContext) {
     let mut rig = rig(cx);
-    let focused = rig.window.update(&mut rig.cx, |c, window, cx| c.composer_focused(window, cx)).unwrap();
+    let focused = rig.window.update(&mut rig.cx, |c, window, cx| c.focused_input(window, cx).is_some()).unwrap();
     assert!(focused, "the agent pane's input does not hold the keyboard");
 }
 

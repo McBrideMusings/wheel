@@ -235,7 +235,7 @@ impl Client {
     }
 
     /// Ask wheeld for the folders a home field's agent could use and what the field's folder holds.
-    fn ask_homes(&mut self, field: &Field) {
+    pub(super) fn ask_homes(&mut self, field: &Field) {
         let Some(agent) = model::home_agent(&field.key).map(str::to_owned) else { return };
         if self.link != Link::Up {
             return;
@@ -562,21 +562,14 @@ impl Client {
         }
     }
 
-    /// The window's keys: Esc puts a field back then closes the window, Return saves the field,
-    /// and anything else types into the field or the page's search.
-    pub fn settings_key(&mut self, key: &str, text: Option<&str>, chord: bool, cx: &mut App) -> bool {
+    /// The window's keys the field and the search leave to it: Esc puts a field back then closes
+    /// the window, Return saves the field.
+    pub fn settings_key(&mut self, key: &str) -> bool {
         if !self.settings_open {
             return false;
         }
-        // ⌘V pastes into the field or the search, as a TextField takes it.
-        let pasted = (chord && key == "v").then(|| cx.read_from_clipboard().and_then(|item| item.text())).flatten();
         match self.settings_edit.clone() {
             Some(SettingsEdit::Field(field)) => match key {
-                "v" if pasted.is_some() => {
-                    let typed = format!("{}{}", self.settings.text(&field), pasted.unwrap_or_default());
-                    self.settings.type_text(&field, &typed);
-                    self.ask_homes(&field);
-                }
                 "escape" => {
                     self.settings.revert(&field);
                     self.settings_edit = None;
@@ -585,32 +578,13 @@ impl Client {
                     self.save_setting(&field);
                     self.settings_edit = None;
                 }
-                "backspace" => {
-                    let mut t = self.settings.text(&field);
-                    t.pop();
-                    self.settings.type_text(&field, &t);
-                    self.ask_homes(&field);
-                }
-                _ => {
-                    if !chord && let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) {
-                        let typed = format!("{}{t}", self.settings.text(&field));
-                        self.settings.type_text(&field, &typed);
-                        self.ask_homes(&field);
-                    }
-                }
+                _ => {}
             },
-            Some(SettingsEdit::Search(topic)) => match key {
-                "v" if pasted.is_some() => self.settings.page_mut(topic).query.push_str(&pasted.unwrap_or_default()),
-                "escape" | "enter" => self.settings_edit = None,
-                "backspace" => {
-                    self.settings.page_mut(topic).query.pop();
+            Some(SettingsEdit::Search(_)) => {
+                if matches!(key, "escape" | "enter") {
+                    self.settings_edit = None;
                 }
-                _ => {
-                    if !chord && let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) {
-                        self.settings.page_mut(topic).query.push_str(t);
-                    }
-                }
-            },
+            }
             None => {
                 if key == "escape" {
                     self.close_settings();
@@ -810,7 +784,7 @@ impl Client {
         };
         let mut line = div().flex().items_center().gap_3().px_3().py_2()
             .child(div().w(px(96.)).flex_none().overflow_hidden().whitespace_nowrap().child(model::row_label(&setting.key)))
-            .child(text_field(&text, &inherited, editing, refusal.is_some(), saving, click(cx, {
+            .child(text_field(&text, &inherited, editing.then(|| self.field_element(&super::fields::FieldId::SettingValue(field.clone()), &text)), refusal.is_some(), saving, click(cx, {
                 let field = field.clone();
                 move |this| this.edit_setting(field.clone())
             })));
@@ -1046,7 +1020,7 @@ impl Client {
         let project_name = self.spaces.iter().find(|s| Some(&s.id) == self.settings.project.as_ref()).map(|s| s.name.clone()).unwrap_or_else(|| "none".into());
         let searching = self.settings_edit == Some(SettingsEdit::Search(topic));
         let head = div().flex().items_center().gap_2()
-            .child(div().flex_1().child(text_field(&query, "Search settings", searching, false, false, click(cx, move |this| {
+            .child(div().flex_1().child(text_field(&query, "Search settings", searching.then(|| self.field_element(&super::fields::FieldId::SettingsSearch(topic), &query)), false, false, click(cx, move |this| {
                 this.settings_edit = Some(SettingsEdit::Search(topic));
             }))))
             .child(segmented(&[("Machine", layer == Layer::Global), (&format!("Project · {project_name}"), layer == Layer::Project)], self.settings.project.is_none(), cx, move |this, index| {
@@ -1138,7 +1112,7 @@ impl Client {
                     let field = field.clone();
                     move |this| this.edit_setting(field.clone())
                 });
-                div().flex().items_center().gap_1().child(div().w(px(64.)).child(text_field(&shown, "", editing, false, false, edit))).child(minus).child(plus)
+                div().flex().items_center().gap_1().child(div().w(px(64.)).child(text_field(&shown, "", editing.then(|| self.field_element(&super::fields::FieldId::SettingValue(field.clone()), &shown)), false, false, edit))).child(minus).child(plus)
             }
             SettingKind::Ordered => {
                 let words = setting.choices.clone();
@@ -1168,7 +1142,7 @@ impl Client {
                 let text = self.settings.text(&field);
                 let shown = if text.is_empty() && !editing { value.clone() } else { text };
                 let f = field.clone();
-                div().w(px(180.)).child(text_field(&shown, "", editing, self.settings.refusals.contains_key(&field), false, click(cx, move |this| {
+                div().w(px(180.)).child(text_field(&shown, "", editing.then(|| self.field_element(&super::fields::FieldId::SettingValue(field.clone()), &shown)), self.settings.refusals.contains_key(&field), false, click(cx, move |this| {
                     this.edit_setting(f.clone());
                 })))
             }
@@ -1519,24 +1493,20 @@ fn button_state(label: &str, disabled: bool, on: impl Fn(&MouseDownEvent, &mut W
     div().px_2().py(px(2.)).rounded_sm().text_xs().bg(rgb(if disabled { BOX } else { ACCENT })).text_color(rgb(if disabled { DIM } else { TEXT })).cursor_pointer().child(label.to_owned()).on_mouse_down(MouseButton::Left, on)
 }
 
-/// A one-line field: its text, or its placeholder greyed and italic when it is empty; a caret while
-/// it is edited, a red border when refused.
-fn text_field(text: &str, placeholder: &str, editing: bool, refused: bool, saving: bool, on: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> gpui::Div {
+/// A one-line field: its text, or its placeholder greyed and italic when it is empty; its input
+/// (`fields`) while it is edited, a red border when refused.
+fn text_field(text: &str, placeholder: &str, editing: Option<gpui::AnyElement>, refused: bool, saving: bool, on: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> gpui::Div {
     let empty = text.is_empty();
-    let mut f = div().flex_1().min_w(px(0.)).px_2().py(px(3.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(if refused { RED } else if editing { 0x7fb89a } else { LINE }))
+    let mut f = div().flex_1().min_w(px(0.)).px_2().py(px(3.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(if refused { RED } else if editing.is_some() { 0x7fb89a } else { LINE }))
         .overflow_hidden().whitespace_nowrap().flex().items_center().cursor_text().on_mouse_down(MouseButton::Left, on);
     if saving {
         f = f.text_color(rgb(DIM));
     }
-    if empty && !editing {
-        f = f.child(div().text_color(rgb(0x5a7266)).italic().child(placeholder.to_owned()));
-    } else {
-        f = f.child(text.to_owned());
+    match editing {
+        Some(input) => f.child(div().flex_1().min_w(px(0.)).child(input)),
+        None if empty => f.child(div().text_color(rgb(0x5a7266)).italic().child(placeholder.to_owned())),
+        None => f.child(text.to_owned()),
     }
-    if editing {
-        f = f.child(div().w(px(1.)).h(px(14.)).bg(rgb(TEXT)));
-    }
-    f
 }
 
 /// A row of chips, one lit; `pick` gets the index pressed.

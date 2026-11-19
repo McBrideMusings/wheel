@@ -510,7 +510,18 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         // GPUI view's, so a native pane hands the window's keyboard back to it for those.
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.routeKey(event)
+            if event.modifierFlags.contains(.command), let k = event.charactersIgnoringModifiers, ["c", "v", "x"].contains(k) {
+                let fr = event.window?.firstResponder
+                let item = Self.menuItem(NSApp.mainMenu, key: k, modifiers: .command)
+                let target = item?.action.flatMap { NSApp.target(forAction: $0) } as? NSObject
+                let valid = target.flatMap { t in item.map { Self.validates(t, $0) } }
+                self?.log("WHEELDIAG key cmd-\(k) window=\(String(describing: event.window.map { type(of: $0) })) key=\(NSApp.keyWindow === event.window) fr=\(String(describing: fr.map { type(of: $0) })) item=\(item?.title ?? "none") enabled=\(item?.isEnabled == true) action=\(item?.action.map(NSStringFromSelector) ?? "none") target=\(String(describing: target.map { type(of: $0) })) valid=\(String(describing: valid))")
+            }
             return event
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didSendActionNotification, object: nil, queue: nil) { [weak self] note in
+            let item = note.userInfo?["MenuItem"] as? NSMenuItem
+            MainActor.assumeIsolated { self?.log("WHEELDIAG menu sent \(item?.title ?? "?") action=\(item?.action.map(NSStringFromSelector) ?? "none")") }
         }
         // A press lands on a native view before GPUI sees it, so the GPUI view hears of it here
         // and closes what a press away closes (its popovers), as a Swift popover closes on one.
@@ -1610,6 +1621,22 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // What a drop of these files does, for the check: the drag itself needs a real pointer.
             guard let terminal = panes[value["pane"] as! String]?.terminal else { return ["dropped": false] }
             return ["dropped": terminal.drop(value["paths"] as? [String] ?? [])]
+        case "app_key":
+            // A ⌘ key posted to the app's event queue, so it takes a hardware key's whole path:
+            // the key monitors, the window's key equivalents, WebKit handing it back, the main
+            // menu. The hidden window is made the app's key window, which neither activates the
+            // app nor orders a window front.
+            let key = value["key"] as! String
+            let code = UInt16(value["code"] as? Int ?? 0)
+            guard let window = root.window else { return ["error": "no window"] }
+            if !window.isKeyWindow { window.makeKey() }
+            for eventType in [NSEvent.EventType.keyDown, .keyUp] {
+                if let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code) {
+                    NSApp.postEvent(event, atStart: false)
+                }
+            }
+            return ["key_window": window.isKeyWindow, "app_key_window": NSApp.keyWindow === window, "first_responder": window.firstResponder.map { String(describing: type(of: $0)) } as Any? ?? NSNull()]
         case "post_key":
             // Real NSEvents to NSWindow.sendEvent: first-responder routing and the views' own key
             // handling run as for hardware events; nothing touches the OS keyboard or focus.

@@ -170,14 +170,15 @@ impl Client {
         input
     }
 
-    /// The composer input that holds the keyboard, if one does.
+    /// The input that holds the keyboard, a composer's or a field's, if one does.
     pub fn focused_input(&self, window: &Window, cx: &App) -> Option<gpui::Entity<InputState>> {
-        self.inputs.values().find(|i| i.read(cx).focus_handle(cx).is_focused(window)).cloned()
+        self.inputs.values().chain(self.fields.values().map(|(i, _)| i)).find(|i| i.read(cx).focus_handle(cx).is_focused(window)).cloned()
     }
 
-    /// Whether a composer input holds the keyboard.
-    pub fn composer_focused(&self, window: &Window, cx: &App) -> bool {
-        self.focused_input(window, cx).is_some()
+    /// The input the keyboard belongs in now: an open field's, else the composer's that
+    /// `composer_agent` names.
+    pub fn wanted_input(&self) -> Option<gpui::Entity<InputState>> {
+        self.keyboard_field().or_else(|| self.composer_agent().and_then(|a| self.inputs.get(&a).cloned()))
     }
 
     /// The agent whose composer takes typed keys: the focused pane's, while nothing else that
@@ -191,10 +192,9 @@ impl Client {
         self.focused_agent().map(|(agent, _)| agent)
     }
 
-    /// Put the keyboard where `composer_agent` says: the agent's input, else the root.
+    /// Put the keyboard where `wanted_input` says, else on the root.
     pub(super) fn sync_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = self.composer_agent().and_then(|a| self.inputs.get(&a).cloned());
-        match input {
+        match self.wanted_input() {
             Some(input) => {
                 let handle = input.read(cx).focus_handle(cx);
                 if !handle.is_focused(window) {
