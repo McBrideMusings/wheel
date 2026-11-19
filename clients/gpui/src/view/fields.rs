@@ -150,6 +150,11 @@ impl Client {
         }
     }
 
+    /// Each open field and the text the client holds for it, keyboard holder first, for `/state`.
+    pub fn fields_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.open_fields().into_iter().map(|(id, text, _)| serde_json::json!({"field": format!("{id:?}"), "text": text})).collect())
+    }
+
     /// The input of the field that holds the keyboard, when a field is open.
     pub fn keyboard_field(&self) -> Option<gpui::Entity<InputState>> {
         self.open_fields().first().and_then(|(id, _, _)| self.fields.get(id)).map(|(input, _)| input.clone())

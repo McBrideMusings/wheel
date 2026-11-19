@@ -2302,8 +2302,21 @@ impl Render for Client {
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 // A key with the composer's input focused went through `composer_key` before the
                 // input's own bindings.
-                if this.focused_input(window, cx).is_none() && this.key(e, cx) {
-                    cx.notify();
+                if this.focused_input(window, cx).is_none() {
+                    if this.key(e, cx) {
+                        cx.notify();
+                    } else if this.typing_in_field() && fields::edits_text(&e.keystroke) {
+                        // A key typed in the frame a field opened, before its input took the keyboard:
+                        // the input gets it once it has.
+                        let k = e.keystroke.clone();
+                        cx.defer_in(window, move |this, window, cx| {
+                            this.sync_fields(window, cx);
+                            this.sync_focus(window, cx);
+                            if this.focused_input(window, cx).is_some() {
+                                window.dispatch_keystroke(k, cx);
+                            }
+                        });
+                    }
                 }
             }))
             .on_key_up(cx.listener(|this, _: &gpui::KeyUpEvent, _, _| this.key_down = None))

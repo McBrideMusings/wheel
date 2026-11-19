@@ -11,6 +11,9 @@ from fixture import fixture  # noqa: E402
 
 app = here.parent / 'target/app/Wheel Dev.app/Contents/MacOS'
 PORT = int(os.environ.get('PROBE_PORT', '7499'))
+MODE = os.environ.get('PROBE_MODE', 'post')
+MAKE_KEY = os.environ.get('PROBE_MAKE_KEY', '1') == '1'
+PRETEND = os.environ.get('PROBE_PRETEND', '0') == '1'
 out = here.parent / 'target/paste-probe'
 out.mkdir(parents=True, exist_ok=True)
 
@@ -62,7 +65,7 @@ def main():
                     js(f"(() => {{ const f = document.getElementById('f'); f.focus(); {before}; return 1; }})()")
                     if key == 'c':
                         native({'op': 'pasteboard', 'set': 'untouched'})
-                    sent = native({'op': 'app_key', 'key': key, 'code': code})
+                    sent = native({'op': 'app_key', 'key': key, 'code': code, 'mode': MODE, 'make_key': MAKE_KEY, 'pretend_key': PRETEND})
                     time.sleep(1.0)
                     steps.append({'key': f'cmd-{key}', 'sent': sent, 'field': js("document.getElementById('f').value"),
                                   'pasteboard': native({'op': 'pasteboard'}).get('text'), 'events': js("ev.join(' ')")})

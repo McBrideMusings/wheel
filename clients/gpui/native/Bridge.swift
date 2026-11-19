@@ -470,6 +470,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var logs: [String] = []
     func log(_ line: String) {
         logs.append(line)
+        if line.hasPrefix("WHEELDIAG") { FileHandle.standardError.write(Data("\(line)\n".utf8)) }
         if logs.count > 200 { logs.removeFirst(logs.count - 200) }
     }
     var overlay: CGRect?
@@ -593,6 +594,34 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         return nil
     }
 
+    /// Test mode only: AppKit treats `window` as the key window (`NSApp.keyWindow`, `isKeyWindow`),
+    /// so a key sent with `NSApp.sendEvent` takes a hardware key's route (the window's key
+    /// equivalents, WebKit's resend, the main menu's nil-targeted actions) while the OS keyboard
+    /// stays with the person's app.
+    static weak var pretendKeyWindow: NSWindow?
+    static func pretendKey(_ window: NSWindow) {
+        let first = pretendKeyWindow == nil
+        pretendKeyWindow = window
+        guard first else { return }
+        let keySel = #selector(getter: NSApplication.keyWindow)
+        if let m = class_getInstanceMethod(NSApplication.self, keySel) {
+            typealias Imp = @convention(c) (NSApplication, Selector) -> NSWindow?
+            let base = unsafeBitCast(method_getImplementation(m), to: Imp.self)
+            let block: @convention(block) (NSApplication) -> NSWindow? = { app in pretendKeyWindow ?? base(app, keySel) }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        }
+        let isKeySel = #selector(getter: NSWindow.isKeyWindow)
+        if let m = class_getInstanceMethod(NSWindow.self, isKeySel) {
+            typealias Imp = @convention(c) (NSWindow, Selector) -> Bool
+            let base = unsafeBitCast(method_getImplementation(m), to: Imp.self)
+            let block: @convention(block) (NSWindow) -> Bool = { w in w === pretendKeyWindow || base(w, isKeySel) }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        }
+        // What AppKit does when a window becomes key: WebKit marks its pages focused and active
+        // from this, and a page fires key events only then.
+        window.becomeKey()
+    }
+
     /// GPUI's view classes whose `performKeyEquivalent:` `keyEquivalentsFollowTheKeyboard` replaced.
     static var keyEquivalentClasses = Set<ObjectIdentifier>()
 
@@ -612,8 +641,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let nsview = unsafeBitCast(method_getImplementation(base), to: Imp.self)
         let block: @convention(block) (NSView, NSEvent) -> Bool = { view, event in
             // A native pane's view inside GPUI's holds the keyboard: the key is that view's.
-            if let held = view.window?.firstResponder as? NSView, held !== view, held.isDescendant(of: view) { return nsview(view, sel, event) }
-            return gpui(view, sel, event)
+            let diag = event.modifierFlags.contains(.command) && ["c", "v", "x"].contains(event.charactersIgnoringModifiers ?? "")
+            if let held = view.window?.firstResponder as? NSView, held !== view, held.isDescendant(of: view) {
+                let taken = nsview(view, sel, event)
+                if diag { FileHandle.standardError.write(Data("WHEELDIAG pke views held=\(type(of: held)) taken=\(taken) current=\(NSApp.currentEvent === event)\n".utf8)) }
+                return taken
+            }
+            let taken = gpui(view, sel, event)
+            if diag { FileHandle.standardError.write(Data("WHEELDIAG pke gpui fr=\(String(describing: view.window?.firstResponder.map { type(of: $0) })) taken=\(taken)\n".utf8)) }
+            return taken
         }
         method_setImplementation(own, imp_implementationWithBlock(block))
     }
@@ -1629,11 +1665,28 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let key = value["key"] as! String
             let code = UInt16(value["code"] as? Int ?? 0)
             guard let window = root.window else { return ["error": "no window"] }
-            if !window.isKeyWindow { window.makeKey() }
+            let mode = value["mode"] as? String ?? "post"
+            log("WHEELDIAG app_key \(key) mode=\(mode) makeKey=\(value["make_key"] as? Bool ?? true) key_before=\(window.isKeyWindow)")
+            if value["make_key"] as? Bool ?? true, !window.isKeyWindow { window.makeKey() }
+            if value["pretend_key"] as? Bool == true { Self.pretendKey(window) }
+            log("WHEELDIAG app_key after makeKey key=\(window.isKeyWindow) appKey=\(NSApp.keyWindow === window)")
+            if mode == "none" { return ["key_window": window.isKeyWindow] }
             for eventType in [NSEvent.EventType.keyDown, .keyUp] {
                 if let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
                     windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code) {
-                    NSApp.postEvent(event, atStart: false)
+                    if mode == "current" {
+                        // As the run loop delivers a hardware key: it becomes the current event,
+                        // which WebKit compares against before it takes a key equivalent.
+                        log("WHEELDIAG app_key current+sendEvent \(eventType == .keyDown ? "down" : "up")")
+                        _ = NSApp.perform(NSSelectorFromString("_setCurrentEvent:"), with: event)
+                        NSApp.sendEvent(event)
+                    } else if mode == "send" {
+                        log("WHEELDIAG app_key sendEvent \(eventType == .keyDown ? "down" : "up")")
+                        NSApp.sendEvent(event)
+                        log("WHEELDIAG app_key sendEvent returned")
+                    } else {
+                        NSApp.postEvent(event, atStart: false)
+                    }
                 }
             }
             return ["key_window": window.isKeyWindow, "app_key_window": NSApp.keyWindow === window, "first_responder": window.firstResponder.map { String(describing: type(of: $0)) } as Any? ?? NSNull()]
