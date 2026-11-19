@@ -128,6 +128,27 @@ struct FineGrainedPaneTests {
         #expect(pane.tree.node("root/Button0@child")?.component == "Image")
     }
 
+    @Test func aBoundPresentedShowsAndHidesTheModal() throws {
+        let source = """
+        local function init(p) return p or { open = ui.state(false) } end
+        local function update(state) state.open:set(not state.open:get()) end
+        local function view(state)
+            return ui.Column{
+                ui.Button{ label = "Open", action = { type = "flip" } },
+                ui.Modal{ presented = state.open, content = ui.Text("inside") },
+            }
+        end
+        return { init = init, update = update, view = view }
+        """
+        let pane = PluginPane()
+        pane.load(source: source, chunk: "t.luau")
+        #expect(pane.tree.modals.isEmpty)
+        #expect(pane.press(component: "root/Button0"))
+        #expect(pane.tree.modals.map(\.id) == ["root/Modal0"])
+        #expect(pane.press(component: "root/Button0"))
+        #expect(pane.tree.modals.isEmpty)
+    }
+
     @Test func aFeedChangeRewritesItsReader() throws {
         let source = """
         local function view(state, data)

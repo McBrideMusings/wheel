@@ -288,7 +288,8 @@ public final class ViewTree {
                 changed = true
             }
         }
-        if changed { finish() }
+        // A written `presented`, `modifiers` or `direction` changes the Modals shown and whether the view fills the pane.
+        if changed || !touched.isEmpty { finish() }
         written = touched.count
     }
 
@@ -296,7 +297,7 @@ public final class ViewTree {
     /// A bound control's `value` follows the render rule: a value the script did not give last replaces the draft.
     public func set(node: ViewNode, prop: String, value: JSONValue?) {
         touched = []
-        if assign(node, prop: prop, value: value) { finish() }
+        if assign(node, prop: prop, value: value) || !touched.isEmpty { finish() }
         written = touched.count
     }
 

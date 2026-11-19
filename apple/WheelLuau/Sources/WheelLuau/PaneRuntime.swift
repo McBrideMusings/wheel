@@ -407,9 +407,11 @@ public final class PaneRuntime {
         local ok, value = pcall(c.fn)
         current, owner = prevC, prevO
         if not ok then
-            c.stale = true
+            -- It ran with no dependencies kept: the next refresh runs it again.
+            c.stale, c.failed = true, true
             error(value, 0)
         end
+        c.failed = false
         if c.kind == "computed" then
             if not c.ran or value ~= c.value or type(value) == "table" then
                 c.value = value
@@ -424,7 +426,7 @@ public final class PaneRuntime {
 
     local function refresh(c)
         if c.disposed or (c.ran and not c.stale) then return end
-        local changed = not c.ran
+        local changed = not c.ran or c.failed
         if not changed then
             for i, r in c.deps do
                 if r.kind == "computed" then refresh(r) end
@@ -477,8 +479,10 @@ public final class PaneRuntime {
     Computed.__index = Computed
     function Computed.get(self)
         local r = records[self]
-        refresh(r)
+        local ok, err = pcall(refresh, r)
+        -- Tracked even when it failed, so its reader runs again once it succeeds.
         track(r)
+        if not ok then error(err, 0) end
         return r.value
     end
 

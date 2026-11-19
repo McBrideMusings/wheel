@@ -228,6 +228,29 @@ import WheelKit
         #expect(ops.count == 1)
         if case let .set(_, _, value) = ops.first { #expect(value == .string("2")) }
     }
+
+    @Test func aComputedThatFailedRunsAgainOnceItsInputIsFixed() throws {
+        let source = """
+        local function view(state)
+            state.n = ui.state({ x = "one" })
+            local c = ui.computed(function() return state.n:get().x end)
+            return ui.Column{ ui.Text{ text = c } }
+        end
+        local function update(state, msg) state.n:set(msg.x and { x = msg.x } or nil) end
+        return { view = view, update = update }
+        """
+        let rt = try PaneRuntime(source: source)
+        _ = try rt.view()
+        try rt.send(.object([:]))
+        #expect(throws: PaneRuntime.Failure.self) { try rt.flush() }
+        try rt.send(.object(["x": .string("two")]))
+        let ops = try rt.flush().ops
+        #expect(ops.count == 1)
+        if case let .set(_, _, value) = ops.first { #expect(value == .string("two")) }
+        try rt.send(.object(["x": .string("three")]))
+        if case let .set(_, _, value) = try rt.flush().ops.first { #expect(value == .string("three")) }
+        else { Issue.record("no write after the retry") }
+    }
 }
 
 private extension JSONValue {
