@@ -915,19 +915,10 @@ impl Agent {
             self.cmds
                 .send(Cmd::Cancel { turn })
                 .map_err(|_| format!("agent {} is not running", self.name))?;
-            let mut text = None;
-            inner.events.retain(|e| match &e.event {
-                AgentEvent::User { turn: t, text: body } if *t == turn => {
-                    text = Some(body.clone());
-                    false
-                }
-                AgentEvent::TurnStart { turn: t } => *t != turn,
-                _ => true,
-            });
-            inner.event_bytes = inner.events.iter().map(|e| event_bytes(&e.event)).sum();
+            let text = Self::remove_message_locked(&mut inner, turn);
             inner.unsent = Some(turn);
             tracing::info!(agent = %self.name, turn, "running message unsent before any event");
-            text.unwrap_or_default()
+            text
         } else {
             return Err(format!(
                 "agent {} has no unanswered message for turn {turn}",
@@ -936,6 +927,31 @@ impl Agent {
         };
         self.retracted_locked(&mut inner, &[turn]);
         Ok(text)
+    }
+
+    /// Take the message of `turn` and its `turn_start` out of the transcript; returns its text.
+    fn remove_message_locked(inner: &mut Inner, turn: u64) -> String {
+        let mut text = None;
+        inner.events.retain(|e| match &e.event {
+            AgentEvent::User { turn: t, text: body } if *t == turn => {
+                text = Some(body.clone());
+                false
+            }
+            AgentEvent::TurnStart { turn: t } => *t != turn,
+            _ => true,
+        });
+        inner.event_bytes = inner.events.iter().map(|e| event_bytes(&e.event)).sum();
+        text.unwrap_or_default()
+    }
+
+    /// The running turn ended with the agent keeping nothing of its message: the message leaves
+    /// the transcript and every client is sent `retract`, so no one sees a message the agent never
+    /// had.
+    fn end_dropped(&self, turn: u64) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.running = None;
+        Self::remove_message_locked(&mut inner, turn);
+        self.retracted_locked(&mut inner, &[turn]);
     }
 
     /// Take back every message still waiting in the queue; returns how many. The turn running is
@@ -2141,7 +2157,7 @@ impl Agent {
                             self.set_state(AgentState::Busy { queued: queue.len() + steered.len() });
                         }
                     }
-                    Some(DriverEvent::TurnEnd { .. } | DriverEvent::TurnFailed { .. })
+                    Some(DriverEvent::TurnEnd { .. } | DriverEvent::TurnFailed { .. } | DriverEvent::TurnDropped)
                         if running.is_none() && unprompted =>
                     {
                         tracing::info!(agent = %self.name, "turn started by the agent ended");
@@ -2164,6 +2180,17 @@ impl Agent {
                             self.end_turn(AgentEvent::TurnEnd { turn, stop_reason });
                             self.set_state(idle(queue.len() + steered.len()));
                             self.refresh_git();
+                        }
+                    }
+                    Some(DriverEvent::TurnDropped) => {
+                        if let Some(turn) = running.take() {
+                            perms.drop_agent(&self.name);
+                            tracing::info!(agent = %self.name, turn, "prompt end: cancelled before the agent took it in; message dropped");
+                            self.end_merged(merged, "cancelled");
+                            if !self.end_unsent(turn) {
+                                self.end_dropped(turn);
+                            }
+                            self.set_state(idle(queue.len() + steered.len()));
                         }
                     }
                     Some(DriverEvent::TurnFailed { message }) => {

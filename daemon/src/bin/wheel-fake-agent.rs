@@ -32,6 +32,8 @@
 //!   joined by " | ">` (`-` when there is none), then `wheel: env=… space=… pane=… url=… token_file=… path=…
 //!   allowed=…`: the `WHEEL_*` variables, the first `PATH` entry, and `--allowedTools` and
 //!   `--disallowedTools` as `<allowed> denied=<disallowed>`, each `-` when unset;
+//! - "slow start" (sent with a `uuid`) is held unread for up to five seconds; an `interrupt`
+//!   meanwhile drops it, names it in `still_queued` and ends the turn with nothing of it kept;
 //! - "show model" reports `model: <the --model flag>` (`-` when there is none);
 //! - "permission" calls Bash `rm -rf build` as tool call "call-1", asks permission for it with a
 //!   `can_use_tool` request suggesting a rule that allows Bash for the session, and reports
@@ -288,6 +290,8 @@ struct State {
     interrupt: Notify,
     /// The ids of messages read from stdin and not taken in yet.
     waiting: Mutex<HashSet<String>>,
+    /// The id of a "slow start" prompt that has not been taken in yet: an interrupt now drops it.
+    starting: Mutex<Option<String>>,
 }
 
 /// A user message read from stdin.
@@ -959,6 +963,7 @@ async fn main() {
         interrupted: AtomicBool::new(false),
         interrupt: Notify::new(),
         waiting: Mutex::new(HashSet::new()),
+        starting: Mutex::new(None),
     });
     let (prompts, mut prompts_rx) = mpsc::unbounded_channel::<Prompt>();
     let reader_out = out.clone();
@@ -984,6 +989,10 @@ async fn main() {
                     let uuid = message["uuid"].as_str().map(String::from);
                     if let Some(uuid) = &uuid {
                         reader_state.waiting.lock().unwrap().insert(uuid.clone());
+                        // Marked here, ahead of any interrupt read after it.
+                        if text.contains("slow start") {
+                            *reader_state.starting.lock().unwrap() = Some(uuid.clone());
+                        }
                     }
                     let now = message["priority"] == "now";
                     if now {
@@ -1035,6 +1044,24 @@ async fn main() {
                 None => break,
             },
         };
+        if next.text.contains("slow start") {
+            if let Some(uuid) = &next.uuid {
+                if !slow_start(&state, uuid).await {
+                    // Interrupted before it was taken in: the turn ends with nothing of the prompt kept.
+                    let entry = user_entry(json!([{"type": "text", "text": "[Request interrupted by user]"}]));
+                    keep(&session, entry.clone());
+                    out.send(entry);
+                    out.send(json!({
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": true,
+                        "session_id": session,
+                        "result": "",
+                    }));
+                    continue;
+                }
+            }
+        }
         let Some(text) = taken(&out, &state, &session, next) else {
             continue;
         };
@@ -1111,6 +1138,17 @@ async fn main() {
     }
 }
 
+/// Hold the prompt `uuid` unread for up to five seconds, as Claude Code does while it starts up;
+/// false when an interrupt dropped it meanwhile.
+async fn slow_start(state: &State, uuid: &str) -> bool {
+    let interrupted = state.interrupt.notified();
+    if state.waiting.lock().unwrap().contains(uuid) {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), interrupted).await;
+    }
+    state.starting.lock().unwrap().take();
+    state.waiting.lock().unwrap().contains(uuid)
+}
+
 /// Take in `prompt`: its text, or none when it was withdrawn first. A message with an id is echoed
 /// back as the host asked for with `--replay-user-messages`.
 fn taken(out: &Out, state: &State, session: &str, prompt: Prompt) -> Option<String> {
@@ -1169,8 +1207,17 @@ fn control(out: &Out, state: &State, message: &Value) {
         }
         Some("interrupt") => {
             state.interrupted.store(true, Ordering::SeqCst);
+            // A prompt not taken in yet is dropped, and named, as Claude Code does.
+            let held: Vec<String> = state
+                .starting
+                .lock()
+                .unwrap()
+                .take()
+                .filter(|uuid| state.waiting.lock().unwrap().remove(uuid))
+                .into_iter()
+                .collect();
             state.interrupt.notify_waiters();
-            success(json!({"still_queued": []}));
+            success(json!({"still_queued": held}));
         }
         Some("cancel_async_message") => {
             let uuid = request["message_uuid"].as_str().unwrap_or_default();

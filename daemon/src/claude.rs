@@ -273,6 +273,8 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         last_usage: None,
         reset_from: None,
         steered: HashMap::new(),
+        prompt: None,
+        dropped: false,
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
     Ok(DriverHandle {
@@ -395,6 +397,11 @@ struct Driver {
     reset_from: Option<String>,
     /// Messages written mid-turn that the agent has not taken in, by their turn.
     steered: HashMap<u64, Steered>,
+    /// The id the running turn's prompt was sent under, until the agent echoes it back as taken in.
+    prompt: Option<String>,
+    /// The running turn was interrupted before the agent took its prompt in, so the agent keeps
+    /// nothing of the prompt.
+    dropped: bool,
 }
 
 impl Driver {
@@ -471,7 +478,12 @@ impl Driver {
             Input::Prompt(text) => {
                 self.in_turn = true;
                 self.interrupted = false;
-                self.write(json!({"type": "user", "message": {"role": "user", "content": text}}))
+                self.dropped = false;
+                // Sent under an id so the agent's echo, or its answer to an interrupt, says
+                // whether it took the prompt in.
+                let uuid = new_conversation_id();
+                self.prompt = Some(uuid.clone());
+                self.write(json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": text}}))
                     .await
             }
             Input::Steer { turn, text } => {
@@ -599,6 +611,10 @@ impl Driver {
                 // A steered message echoes back when the agent takes it in.
                 if message["isReplay"] == true {
                     let uuid = message["uuid"].as_str().unwrap_or_default();
+                    if self.prompt.as_deref() == Some(uuid) {
+                        self.prompt = None;
+                        return Ok(());
+                    }
                     let turn = self
                         .steered
                         .iter()
@@ -853,7 +869,12 @@ impl Driver {
                 self.emit(DriverEvent::Context(Some(ContextUse { used, size })));
             }
         }
+        self.prompt = None;
         let interrupted = std::mem::take(&mut self.interrupted);
+        if std::mem::take(&mut self.dropped) {
+            self.emit(DriverEvent::TurnDropped);
+            return;
+        }
         if interrupted {
             self.emit(DriverEvent::TurnEnd {
                 stop_reason: "cancelled".into(),
@@ -1042,7 +1063,19 @@ impl Driver {
                     self.emit(DriverEvent::Commands(names.collect()));
                 }
             }
-            Pending::Interrupt => {}
+            Pending::Interrupt => {
+                // A prompt the agent still held unread is dropped with the turn: Claude Code
+                // writes nothing of it to the conversation.
+                let held = response["response"]["still_queued"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|id| id.as_str().is_some() && id.as_str() == self.prompt.as_deref());
+                if held {
+                    tracing::info!(pid = self.pid, "interrupted before the agent took the prompt in");
+                    self.dropped = true;
+                }
+            }
             Pending::SetOption { id, value, reply } => {
                 let answer = match refused {
                     Some(e) => Err(e),

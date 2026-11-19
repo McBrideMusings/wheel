@@ -773,6 +773,55 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_cancelled_before_the_agent_takes_it_in_leaves_the_transcript() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = ready_agent(&url).await;
+    attach_and_send(&mut ws, &agent, "slow start then essay").await;
+    while !matches!(
+        recv(&mut ws).await,
+        ServerMsg::Agent { event: StampedEvent { event: AgentEvent::TurnStart { turn: 1 }, .. }, .. }
+    ) {}
+    assert!(matches!(agent_cancel(&mut ws, &agent, 30).await, ServerMsg::Ok { .. }));
+    // The agent kept nothing of the prompt, so every client is told to drop it, and the turn
+    // ends with no `turn_end` of its own.
+    loop {
+        if let ServerMsg::Agent { event, .. } = recv(&mut ws).await {
+            match event.event {
+                AgentEvent::Retract { turn: 1 } => break,
+                AgentEvent::TurnEnd { turn: 1, stop_reason } => {
+                    panic!("the dropped prompt's turn ended as {stop_reason}")
+                }
+                _ => {}
+            }
+        }
+    }
+    send(&mut ws, ClientMsg::AgentSend { agent: agent.clone(), req: None, text: "second".into() }).await;
+    while !matches!(
+        recv(&mut ws).await,
+        ServerMsg::Agent { event: StampedEvent { event: AgentEvent::TurnEnd { turn: 2, .. }, .. }, .. }
+    ) {}
+    // A client attaching now sees only the message the agent has.
+    let mut late = connect(&url).await;
+    send(&mut late, ClientMsg::AgentAttach { req: Some(31), agent: agent.clone() }).await;
+    let events = loop {
+        if let ServerMsg::AgentAttached { req: Some(31), events, .. } = recv(&mut late).await {
+            break events;
+        }
+    };
+    let shown: Vec<String> = events
+        .iter()
+        .filter_map(|e| match &e.event {
+            AgentEvent::User { turn, text } => Some(format!("{turn} {text}")),
+            AgentEvent::TurnStart { turn } => Some(format!("turn_start {turn}")),
+            AgentEvent::TurnEnd { turn, .. } => Some(format!("turn_end {turn}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, ["2 second", "turn_start 2", "turn_end 2"]);
+}
+
 async fn attach_and_send(ws: &mut Ws, agent: &str, text: &str) {
     send(
         ws,
