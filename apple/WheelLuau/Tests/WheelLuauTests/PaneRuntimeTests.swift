@@ -196,7 +196,7 @@ private func text(_ node: PaneNode) -> String? {
 }
 
 @Suite struct PaneNodeTests {
-    @Test func flattensToA2UIComponentsWithIDs() throws {
+    @Test func aViewIsATreeWithNodesInsideProperties() throws {
         let pane = try PaneRuntime(source: """
         return { view = function()
             return ui.VStack{
@@ -206,65 +206,14 @@ private func text(_ node: PaneNode) -> String? {
             }
         end }
         """)
-        let components = try pane.view().a2uiComponents()
-        #expect(components == [
-            .object(["id": .string("root"), "component": .string("VStack"),
-                     "modifiers": .array([.object(["padding": .number(12)])]),
-                     "children": .array([.string("root.0"), .string("root.1")])]),
-            .object(["id": .string("root.0"), "component": .string("Text"), "text": .string("Hello")]),
-            .object(["id": .string("root.1"), "component": .string("Button"),
-                     "action": .object(["type": .string("go")]), "child": .string("root.1@child")]),
-            .object(["id": .string("root.1@child"), "component": .string("Text"), "text": .string("Go")]),
-        ])
-    }
-
-    @Test func liftsANodeInATableOfAList() throws {
-        let pane = try PaneRuntime(source: """
-        return { view = function()
-            return ui.Tabs{ tabs = { { title = "One", child = ui.Text("First") }, { title = "Two" } } }
-        end }
-        """)
-        let components = try pane.view().a2uiComponents()
-        #expect(components == [
-            .object(["id": .string("root"), "component": .string("Tabs"), "tabs": .array([
-                .object(["title": .string("One"), "child": .string("root@tabs.0@child")]),
-                .object(["title": .string("Two")]),
-            ])]),
-            .object(["id": .string("root@tabs.0@child"), "component": .string("Text"), "text": .string("First")]),
-        ])
-    }
-
-    @Test func liftsANodeAtAnyDepthOfAProperty() throws {
-        let pane = try PaneRuntime(source: """
-        return { view = function()
-            return { component = "Table", sections = { { rows = { { cells = {
-                { key = "pr", text = "#1", view = ui.Link{ title = "#1", destination = "https://github.com" } },
-                { key = "ci", text = "ok" },
-            } } } } } }
-        end }
-        """)
-        let components = try pane.view().a2uiComponents()
-        let cellView = "root@sections.0@rows.0@cells.0@view"
-        #expect(components == [
-            .object(["id": .string("root"), "component": .string("Table"), "sections": .array([
-                .object(["rows": .array([.object(["cells": .array([
-                    .object(["key": .string("pr"), "text": .string("#1"), "view": .string(cellView)]),
-                    .object(["key": .string("ci"), "text": .string("ok")]),
-                ])])])]),
-            ])]),
-            .object(["id": .string(cellView), "component": .string("Link"),
-                     "title": .string("#1"), "destination": .string("https://github.com")]),
-        ])
-    }
-
-    @Test func generatedIDsWinOverScriptProps() throws {
-        let pane = try PaneRuntime(source: """
-        return { view = function() return ui.VStack{ ui.Text{ id = "root", text = "a" } } end }
-        """)
-        let ids = try pane.view().a2uiComponents().map { value -> JSONValue? in
-            if case let .object(f) = value { f["id"] } else { nil }
-        }
-        #expect(ids == [.string("root"), .string("root.0")])
+        let root = try pane.view()
+        #expect(root.component == "VStack")
+        #expect(root.props["modifiers"] == .array([.object(["padding": .number(12)])]))
+        #expect(root.children.map(\.component) == ["Text", "Button"])
+        #expect(root.children[0].props["text"] == .string("Hello"))
+        let button = root.children[1]
+        #expect(button.props["action"] == .object(["type": .string("go")]))
+        #expect(button.props["child"].flatMap(PaneNode.init) == PaneNode(component: "Text", props: ["text": .string("Go")]))
     }
 }
 

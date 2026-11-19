@@ -1,10 +1,11 @@
 import Foundation
 import SwiftUI
 import Testing
+import WheelKit
 @testable import WheelUI
 
-private func cmds(_ json: String) throws -> [AnyCodable] {
-    try JSONDecoder().decode([AnyCodable].self, from: Data(json.utf8))
+private func cmds(_ json: String) throws -> [JSONValue] {
+    try JSONDecoder().decode([JSONValue].self, from: Data(json.utf8))
 }
 
 private func close(_ a: (Double, Double, Double, Double)?, _ b: (Double, Double, Double, Double)) -> Bool {
@@ -145,13 +146,8 @@ private func close(_ a: (Double, Double, Double, Double)?, _ b: (Double, Double,
     }
     """
 
-    func canvas(_ pane: PluginPane) throws -> ComponentNode {
-        func find(_ n: ComponentNode) -> ComponentNode? {
-            if n.instance.type == "Canvas" { return n }
-            for c in n.children { if let f = find(c) { return f } }
-            return nil
-        }
-        return try #require(pane.surface.root.flatMap(find))
+    func canvas(_ pane: PluginPane) throws -> ViewNode {
+        try #require(pane.tree.all.first { $0.component == "Canvas" })
     }
 
     func fillTexts(_ pane: PluginPane) throws -> [String] {
@@ -167,8 +163,8 @@ private func close(_ a: (Double, Double, Double, Double)?, _ b: (Double, Double,
         #expect(pane.error == nil)
         #expect(try fillTexts(pane) == ["0"])
         let node = try canvas(pane)
-        pane.surface.dispatchAction(name: "canvas-size:c", sourceComponentId: node.instance.id,
-                                    context: ["w": .number(300), "h": .number(240)])
+        _ = node
+        pane.tree.onCanvasSize?("c", 300, 240)
         #expect(try fillTexts(pane) == ["300"])
         #expect(pane.stateJSON == #"{"got":false}"#)
     }
@@ -179,7 +175,7 @@ private func close(_ a: (Double, Double, Double, Double)?, _ b: (Double, Double,
         #expect(pane.error == nil)
         let node = try canvas(pane)
         #expect(node.props["pointerAction"] != nil)
-        #expect(pane.raise(component: node.instance.id, key: "pointerAction",
+        #expect(pane.raise(component: node.id, key: "pointerAction",
                            context: ["kind": "down", "x": 3, "y": 4, "button": 0, "dx": 0, "dy": 0]))
         #expect(pane.stateJSON == #"{"log":["pointer down 3 4"]}"#)
     }
@@ -235,13 +231,13 @@ private func close(_ a: (Double, Double, Double, Double)?, _ b: (Double, Double,
 
 @Suite struct CanvasPlayerCacheTests {
     @Test func anEqualListIsParsedOnce() throws {
-        let list = try JSONDecoder().decode([AnyCodable].self, from: Data(#"[["beginPath"],["rect",1,2,3,4],["fill"]]"#.utf8))
+        let list = try JSONDecoder().decode([JSONValue].self, from: Data(#"[["beginPath"],["rect",1,2,3,4],["fill"]]"#.utf8))
         let cache = CanvasPlayerCache()
         let a = cache.player(for: list, fg: .red)
         _ = cache.player(for: list, fg: .red)
         #expect(cache.builds == 1)
         #expect(a.paints.count == 1)
-        let other = try JSONDecoder().decode([AnyCodable].self, from: Data(#"[["fill"]]"#.utf8))
+        let other = try JSONDecoder().decode([JSONValue].self, from: Data(#"[["fill"]]"#.utf8))
         _ = cache.player(for: other, fg: .red)
         #expect(cache.builds == 2)
     }

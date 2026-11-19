@@ -65,10 +65,9 @@ try:
     d = json.loads(text)
 except Exception:
     sys.exit(1)
-import re
-texts = [c.get('text', '') for c in d.get('components', [])]
-print('pane text:', [t for t in texts if re.search(r'listed', t)], 'error:', d.get('error'))
-sys.exit(0 if any(re.fullmatch(r'\d+ listed.*', t) for t in texts) and d.get('error') is None else 1)
+rows = [c for c in d.get('components', []) if c.get('type') == 'TableRow']
+print('bead rows:', len(rows), 'error:', d.get('error'))
+sys.exit(0 if rows and d.get('error') is None else 1)
 PY
   then LOADED=yes; break; fi
   sleep 0.5
@@ -88,7 +87,7 @@ curl -s -H "Authorization: Bearer $(cat "$T/support/token")" -X POST "http://127
 echo "snapshot: $T/pane.png"
 AUTH="Authorization: Bearer $(cat "$T/support/token")"
 PICKER=$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(next(c["id"] for c in d["components"] if c["type"] == "ChoicePicker"))' "$T/pane.json")
-curl -s -G -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/plugin" --data-urlencode "pane=$PANE" --data-urlencode "action=set" --data-urlencode "path=/$PICKER" --data-urlencode 'json=["graph"]' > "$T/set.json"
+curl -s -G -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/plugin" --data-urlencode "pane=$PANE" --data-urlencode "action=set" --data-urlencode "component=$PICKER" --data-urlencode 'json=["graph"]' > "$T/set.json"
 GRAPH=no
 for _ in $(seq 1 60); do
   curl -s -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/plugin?pane=$PANE&action=state" > "$T/graph.json"

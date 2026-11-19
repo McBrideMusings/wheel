@@ -1,3 +1,4 @@
+import WheelKit
 import SwiftUI
 #if os(macOS)
 import AppKit
@@ -62,13 +63,18 @@ struct CanvasTipRun {
 
 struct CanvasHit {
     var id: String, action: String, label: String
-    var context: [String: AnyCodable]
+    var context: [String: JSONValue]
     var rect: CGRect?, circle: (Double, Double, Double)?
     var slop = 0.0, minZoom = 0.0, maxZoom = Double.infinity
     var rpx: [Double]?
     var tip: [[CanvasTipRun]] = []
-    var doubleAction = "", doubleContext: [String: AnyCodable] = [:]
+    var doubleAction = "", doubleContext: [String: JSONValue] = [:]
     var fit: CGRect?
+}
+
+/// `key` when `p` holds a table there for the Canvas to raise, else "".
+func actionKey(_ p: [String: JSONValue], _ key: String) -> String {
+    p[key]?.dictionaryValue != nil ? key : ""
 }
 
 struct CanvasScene {
@@ -79,15 +85,15 @@ struct CanvasScene {
     var focusKey = "", focusZoom: Double?
     var fitKey = ""
     var controls = true
-    var emptyAction = "", emptyContext: [String: AnyCodable] = [:]
+    var emptyAction = "", emptyContext: [String: JSONValue] = [:]
     var sizeAction = "", sizeKnown = 0.0
-    var escapeAction = "", enterAction = "", enterContext: [String: AnyCodable] = [:]
+    var escapeAction = "", enterAction = "", enterContext: [String: JSONValue] = [:]
     var wheelPans = false
 
-    init(_ p: [String: AnyCodable]) {
-        func nums(_ v: AnyCodable?) -> [Double] { (v?.arrayValue ?? []).compactMap { $0.numberValue } }
-        func range(_ v: AnyCodable?) -> [Double]? { let n = nums(v); return n.count == 2 ? n : nil }
-        func rectOf(_ v: AnyCodable?) -> CGRect? { let n = nums(v); return n.count == 4 ? CGRect(x: n[0], y: n[1], width: n[2], height: n[3]) : nil }
+    init(_ p: [String: JSONValue]) {
+        func nums(_ v: JSONValue?) -> [Double] { (v?.arrayValue ?? []).compactMap { $0.numberValue } }
+        func range(_ v: JSONValue?) -> [Double]? { let n = nums(v); return n.count == 2 ? n : nil }
+        func rectOf(_ v: JSONValue?) -> CGRect? { let n = nums(v); return n.count == 4 ? CGRect(x: n[0], y: n[1], width: n[2], height: n[3]) : nil }
         ops = (p["ops"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.map { d in
             var st = CanvasStyle()
             st.fill = d["fill"]?.stringValue; st.stroke = d["stroke"]?.stringValue
@@ -113,15 +119,15 @@ struct CanvasScene {
             }
             return op
         }
-        hits = (p["hits"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.map { d in
-            var h = CanvasHit(id: d["id"]?.stringValue ?? "", action: d["action"]?.stringValue ?? "", label: d["label"]?.stringValue ?? "",
+        hits = (p["hits"]?.arrayValue ?? []).enumerated().compactMap { i, v in v.dictionaryValue.map { (i, $0) } }.map { i, d in
+            var h = CanvasHit(id: d["id"]?.stringValue ?? "", action: d["action"]?.dictionaryValue != nil ? "hits.\(i).action" : "", label: d["label"]?.stringValue ?? "",
                               context: d["context"]?.dictionaryValue ?? [:])
             h.rect = rectOf(d["rect"])
             let c = nums(d["circle"]); if c.count == 3 { h.circle = (c[0], c[1], c[2]) }
             h.slop = d["slop"]?.numberValue ?? 0
             h.minZoom = d["minZoom"]?.numberValue ?? 0; h.maxZoom = d["maxZoom"]?.numberValue ?? .infinity
             h.rpx = range(d["rpx"])
-            h.doubleAction = d["doubleAction"]?.stringValue ?? ""; h.doubleContext = d["doubleContext"]?.dictionaryValue ?? [:]
+            h.doubleAction = d["doubleAction"]?.dictionaryValue != nil ? "hits.\(i).doubleAction" : ""; h.doubleContext = d["doubleContext"]?.dictionaryValue ?? [:]
             h.fit = rectOf(d["fit"])
             h.tip = (d["tip"]?.arrayValue ?? []).map { line in
                 if let s = line.stringValue { return [CanvasTipRun(text: s, tone: nil, mono: false, bold: false)] }
@@ -140,10 +146,10 @@ struct CanvasScene {
         }
         fitKey = p["fitKey"]?.stringValue ?? ""
         controls = p["controls"]?.boolValue ?? true
-        emptyAction = p["emptyAction"]?.stringValue ?? ""; emptyContext = p["emptyContext"]?.dictionaryValue ?? [:]
-        sizeAction = p["sizeAction"]?.stringValue ?? ""; sizeKnown = p["sizeKnown"]?.numberValue ?? 0
-        escapeAction = p["escapeAction"]?.stringValue ?? ""
-        enterAction = p["enterAction"]?.stringValue ?? ""; enterContext = p["enterContext"]?.dictionaryValue ?? [:]
+        emptyAction = actionKey(p, "emptyAction"); emptyContext = p["emptyContext"]?.dictionaryValue ?? [:]
+        sizeAction = actionKey(p, "sizeAction"); sizeKnown = p["sizeKnown"]?.numberValue ?? 0
+        escapeAction = actionKey(p, "escapeAction")
+        enterAction = actionKey(p, "enterAction"); enterContext = p["enterContext"]?.dictionaryValue ?? [:]
         wheelPans = p["wheel"]?.stringValue == "pan"
     }
 }
@@ -242,20 +248,24 @@ func canvasColor(_ name: String?) -> Color? {
 }
 
 struct A2UICanvasView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     @Environment(\.a2uiViewport) private var viewport
     var body: some View {
-        let p = node.instance.properties
+        let p = node.props
         if let commands = p["commands"]?.arrayValue {
             CanvasCommandStage(commands: commands, height: p["height"]?.numberValue ?? 240, key: p["canvasKey"]?.stringValue ?? "canvas",
-                               pointerAction: p["pointerAction"]?.stringValue) { name, context in
-                surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+                               pointerAction: node.action("pointerAction")) { name, context in
+                if name.hasPrefix(canvasSizePrefix), let w = context["w"]?.numberValue, let h = context["h"]?.numberValue {
+                    tree.onCanvasSize?(String(name.dropFirst(canvasSizePrefix.count)), w, h)
+                } else {
+                    tree.raise(node, name, context)
+                }
             }
         } else {
             let height = p["height"]?.numberValue ?? max(p["minHeight"]?.numberValue ?? 480, viewport - (p["reserve"]?.numberValue ?? 0))
             CanvasStage(scene: CanvasScene(p), height: height) { name, context in
-                surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+                tree.raise(node, name, context)
             }
         }
     }
@@ -264,7 +274,7 @@ struct A2UICanvasView: View {
 private struct CanvasStage: View {
     let scene: CanvasScene
     let height: Double
-    let fire: (String, [String: AnyCodable]) -> Void
+    let fire: (String, [String: JSONValue]) -> Void
     @State private var cam = CanvasCamera()
     @State private var dragFrom: CanvasCamera?
     @State private var dragMoved = false

@@ -20,10 +20,10 @@ public extension EnvironmentValues {
 /// `Terminal{pane, height?}` and `AgentChat{pane, height?}`: the host's view of that pane, `height` points tall (default 320).
 struct A2UIPaneEmbedView: View {
     let kind: A2UIPaneEmbed.Kind
-    let node: ComponentNode
+    let node: ViewNode
     @Environment(\.a2uiPaneEmbed) private var embed
     var body: some View {
-        let p = node.instance.properties
+        let p = node.props
         let pane = p["pane"]?.stringValue ?? ""
         let height = p["height"]?.numberValue ?? 320
         Group {
@@ -45,10 +45,10 @@ struct A2UIPaneEmbedView: View {
 /// `WebView{url, height?}`: WebKit's view of an http or https address, `height` points tall (default 320). Links inside it
 /// navigate in place and only to http or https; another `url` loads that address.
 struct A2UIWebViewView: View {
-    let node: ComponentNode
+    let node: ViewNode
     @Environment(\.a2uiPaneEmbed) private var embed
     var body: some View {
-        let p = node.instance.properties
+        let p = node.props
         let raw = p["url"]?.stringValue ?? ""
         let artifact = p["artifact"]?.stringValue ?? ""
         let height = p["height"]?.numberValue ?? 320

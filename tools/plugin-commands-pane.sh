@@ -87,20 +87,20 @@ wait_for 5 "^Now [0-9]+$" && sleep 2.2 && N2=$(now_text)
 [ -n "${N1:-}" ] && [ -n "${N2:-}" ] && [ "$N1" != "$N2" ] && pass "1b the value changes on the interval: $N1 -> $N2" || fail "1b $N1 -> ${N2:-}"
 wait_for 5 '^Note lines: 0, last: none$' && pass "1c the note feed starts empty" || fail "1c $(texts | tr '\n' '|')"
 
-# Case 2: Write (root.4.0) runs `write` with the draft as ARG_TEXT; the result shows and the note reruns.
-dbg --data-urlencode action=press --data-urlencode component=root.4.0 > "$T/press-write.json"
+# Case 2: Write (root/Row0/Button0) runs `write` with the draft as ARG_TEXT; the result shows and the note reruns.
+dbg --data-urlencode action=press --data-urlencode component=root/Row0/Button0 > "$T/press-write.json"
 wait_for 10 '^result: wrote $' && pass "2a the action's result shows: result: wrote" || fail "2a $(texts | tr '\n' '|') $(cat "$T/press-write.json")"
 wait_for 10 '^Note lines: 1, last: $' && pass "2b the note feed ran again after the action: Note lines: 1" || fail "2b $(texts | tr '\n' '|')"
 shot case2
 
-# Case 3: Break (root.4.1) sends why = "on purpose"; the note feed fails with its stderr; Mend clears it.
-dbg --data-urlencode action=press --data-urlencode component=root.4.1 > /dev/null
+# Case 3: Break (root/Row0/Button1) sends why = "on purpose"; the note feed fails with its stderr; Mend clears it.
+dbg --data-urlencode action=press --data-urlencode component=root/Row0/Button1 > /dev/null
 wait_for 10 '^Note error: exit 4: note is broken: on purpose$' && pass "3a the failing run's stderr is the pane's error" || fail "3a $(texts | tr '\n' '|')"
 texts | grep -q '^Note lines: 1, last: $' && pass "3b the last good value stays while it fails" || fail "3b $(texts | tr '\n' '|')"
 shot case3
-dbg --data-urlencode action=press --data-urlencode component=root.4.2 > /dev/null
+dbg --data-urlencode action=press --data-urlencode component=root/Row0/Button2 > /dev/null
 wait_for 10 '^Note error: none$' && pass "3c the next good run clears the error" || fail "3c $(texts | tr '\n' '|')"
-dbg --data-urlencode action=press --data-urlencode component=root.4.3 > /dev/null
+dbg --data-urlencode action=press --data-urlencode component=root/Row0/Button3 > /dev/null
 wait_for 10 '^exit 7: refused: no$' && pass "3d a failing action's exit code and stderr show" || fail "3d $(texts | tr '\n' '|')"
 shot case3-cleared
 

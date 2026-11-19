@@ -4,21 +4,35 @@ import WheelKit
 @testable import WheelLuau
 
 /// The component gallery (`plugins/gallery/panes/gallery.luau`) run through the pane runtime under
-/// its default limits and flattened the way a client draws it.
+/// its default limits, every node of its tree (children and nodes inside properties) listed by its path.
 @Suite struct GalleryPaneTests {
     static let script = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("plugins/gallery/panes/gallery.luau")
 
-    static func components() throws -> [String: [String: JSONValue]] {
+    static func nodes() throws -> [String: PaneNode] {
         let source = try String(contentsOf: script, encoding: .utf8)
-        let pane = try PaneRuntime(source: source)
-        var out: [String: [String: JSONValue]] = [:]
-        for case let .object(fields) in try pane.view().a2uiComponents() {
-            if case let .string(id)? = fields["id"] { out[id] = fields }
+        var out: [String: PaneNode] = [:]
+        func walk(_ n: PaneNode, _ id: String) {
+            out[id] = n
+            for (i, c) in n.children.enumerated() { walk(c, "\(id).\(i)") }
+            for (k, v) in n.props { lift(v, "\(id)@\(k)") }
         }
+        func lift(_ v: JSONValue, _ id: String) {
+            if let n = PaneNode(v) { walk(n, id); return }
+            switch v {
+            case let .array(a): for (i, x) in a.enumerated() { lift(x, "\(id).\(i)") }
+            case let .object(o): for (k, x) in o { lift(x, "\(id).\(k)") }
+            default: break
+            }
+        }
+        walk(try PaneRuntime(source: source).view(), "root")
         return out
+    }
+
+    static func components() throws -> [String: [String: JSONValue]] {
+        try nodes().mapValues { n in n.props.merging(["component": .string(n.component)]) { a, _ in a } }
     }
 
     @Test func drawsEveryClass() throws {
@@ -30,7 +44,7 @@ import WheelKit
         }
     }
 
-    /// A vertical List or a Table with no frame makes the surface fill the pane (SurfaceModel.fillsPane),
+    /// A vertical List or a Table with no frame makes the view fill the pane (ViewTree.fillsPane),
     /// and a page that fills never scrolls past its first screen.
     @Test func theGalleryScrollsAsAWhole() throws {
         for (id, f) in try Self.components() {
@@ -42,16 +56,18 @@ import WheelKit
         }
     }
 
-    @Test func everyIDAPropertyNamesExists() throws {
-        let all = try Self.components()
-        let tabs = try #require(all.values.first { $0["component"] == .string("Tabs") })
-        guard case let .array(list)? = tabs["tabs"] else { Issue.record("Tabs has no tabs"); return }
+    @Test func everyNodeAPropertyNamesExists() throws {
+        let all = try Self.nodes()
+        let tabs = try #require(all.values.first { $0.component == "Tabs" })
+        guard case let .array(list)? = tabs.props["tabs"] else { Issue.record("Tabs has no tabs"); return }
         for case let .object(tab) in list {
-            guard case let .string(child)? = tab["child"] else { Issue.record("a tab has no child id: \(tab)"); continue }
-            #expect(all[child] != nil, "tab child \(child) is not a component")
+            guard let child = tab["child"] else { Issue.record("a tab has no child: \(tab)"); continue }
+            #expect(PaneNode(child) != nil, "tab child \(child) is not a component")
         }
-        let pinned = try #require(all.values.first { $0["scrollTo"] != nil })
-        guard case let .string(target)? = pinned["scrollTo"] else { Issue.record("scrollTo is not an id"); return }
-        #expect(all[target]?["component"] == .string("Section"), "scrollTo names \(target), not a Section")
+        let pinned = try #require(all.values.first { $0.props["scrollTo"] != nil })
+        guard case let .number(place)? = pinned.props["scrollTo"] else { Issue.record("scrollTo is not a place"); return }
+        let target = Int(place) - 1
+        #expect(pinned.children.indices.contains(target) && pinned.children[target].component == "Section",
+                "scrollTo names place \(Int(place)), not a Section")
     }
 }

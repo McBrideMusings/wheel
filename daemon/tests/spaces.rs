@@ -7524,7 +7524,7 @@ async fn an_mcp_resource_read_after_the_server_exited_reconnects() {
     std::fs::create_dir_all(base.join("inst")).unwrap();
     let base = base.canonicalize().unwrap();
     let pids = base.join("pids");
-    let server = mcp_example().with_file_name("mcp_a2ui_test_server");
+    let server = mcp_example().with_file_name("mcp_ui_test_server");
     let command = format!("echo $$ >> {}; exec {} stdio", pids.display(), server.display());
     std::fs::write(
         base.join("wheel.toml"),
@@ -7540,7 +7540,7 @@ async fn an_mcp_resource_read_after_the_server_exited_reconnects() {
         scope: None,
         space: Some(space.clone()),
         pane: None,
-        uri: "a2ui://notes".into(),
+        uri: "ui://test/view".into(),
     };
     assert!(matches!(call(&mut ws, read(50)).await, ServerMsg::Resource { .. }));
     let text = std::fs::read_to_string(&pids).unwrap();
@@ -7573,62 +7573,6 @@ async fn an_mcp_server_over_http_lists_and_calls_its_tools() {
     let entry = format!("mcp_url = \"http://127.0.0.1:{port}/mcp\"\n");
     mcp_session_works(&entry, "http").await;
     let _ = server.kill().await;
-}
-
-/// An A2UI-over-MCP server reaches a client through the three ops it already has plus
-/// `artifact_read`: the tool list carries `_meta.ui` naming the layout resource, the resource
-/// reads back as `application/a2ui+json`, and a call returns the data model as an embedded
-/// resource of that type.
-#[tokio::test]
-async fn an_a2ui_over_mcp_server_gives_a_client_its_layout_and_data() {
-    let base = std::env::temp_dir().join(format!("wheel-mcp-a2ui-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(base.join("inst")).unwrap();
-    let base = base.canonicalize().unwrap();
-    let server = mcp_example().with_file_name("mcp_a2ui_test_server");
-    std::fs::write(
-        base.join("wheel.toml"),
-        format!(
-            "[artifacts.notes]\nmcp = {}\n",
-            toml::Value::from(format!("exec {} stdio", server.display())),
-        ),
-    )
-    .unwrap();
-    let (url, _) = start_daemon(Some(base.join("inst/spaces.json"))).await;
-    let mut ws = connect(&url).await;
-    let space = created(&mut ws, new_space(&base.to_string_lossy())).await;
-
-    let tools = mcp_tools(&mut ws, "notes", &space).await.unwrap();
-    let get = tools.iter().find(|t| t.name == "get_notes").unwrap();
-    let meta = get.meta.as_ref().unwrap();
-    assert_eq!(meta["ui"]["resourceUri"], "a2ui://notes");
-    assert_eq!(meta["ui"]["mimeType"], "application/a2ui+json");
-
-    let read = ClientMsg::ArtifactRead {
-        req: Some(42),
-        name: "notes".into(),
-        scope: None,
-        space: Some(space.clone()),
-        pane: None,
-        uri: "a2ui://notes".into(),
-    };
-    let ServerMsg::Resource { contents, .. } = call(&mut ws, read).await else {
-        panic!("expected a resource")
-    };
-    assert_eq!(contents[0]["mimeType"], "application/a2ui+json");
-    let layout: serde_json::Value =
-        serde_json::from_str(contents[0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(layout[0]["createSurface"]["surfaceId"], "notes");
-
-    let args = Some(serde_json::json!({"text": "hello"}));
-    let saved = mcp_call(&mut ws, "notes", &space, "save_note", args).await.unwrap();
-    assert_eq!(saved.content[0]["resource"]["mimeType"], "application/a2ui+json");
-    let data: serde_json::Value =
-        serde_json::from_str(saved.content[0]["resource"]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(data[0]["updateDataModel"]["path"], "/status");
-    assert_eq!(data[0]["updateDataModel"]["value"], "saved: hello");
-    assert_eq!(data[1]["updateDataModel"]["value"], "1 notes");
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// A raw request with a JSON body to the daemon's HTTP side, carrying the token as a bearer.

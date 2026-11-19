@@ -53,7 +53,7 @@ import WheelKit
         #expect(wire.sent == [.pluginSource(req: 1, pane: "p1")])
         #expect(link.handle(try source(Self.script, req: 1)))
         #expect(texts(link).first == "Count 0")
-        #expect(link.plugin.press(component: "root.1"))
+        #expect(link.plugin.press(component: "root/Button0"))
         #expect(texts(link).first == "Count 1")
         // A save on the Mac: pushed with no req, the counter kept.
         #expect(link.handle(try source(Self.script.replacingOccurrences(of: "\"Count \"", with: "\"Total \""))))
@@ -78,7 +78,7 @@ import WheelKit
         let wire = Wire()
         let link = make(wire)
         link.handle(try source(Self.script, req: 1))
-        #expect(link.plugin.press(component: "root.1"))
+        #expect(link.plugin.press(component: "root/Button0"))
         #expect(texts(link).first == "Count 1")
         // Another pane's reload is not this one's.
         #expect(!link.handle(try msg(#"{"ev":"pane_reload","pane":"p2"}"#)))
@@ -104,11 +104,11 @@ import WheelKit
         // A null value is a value: the backend has sent none yet.
         #expect(link.handle(try msg(#"{"ev":"feed_update","pane":"p1","feed":"p.f","params":{"k":1},"value":null}"#)))
         #expect(texts(link)[2] == "feed nil")
-        link.plugin.press(component: "root.1")
+        link.plugin.press(component: "root/Button0")
         #expect(wire.sent.last == .pluginAction(req: 3, pane: "p1", action: "p.go", args: .object(["n": .number(1)])))
         #expect(link.handle(try msg(#"{"ev":"plugin_action","req":3,"pane":"p1","action":"p.go","result":{"ok":true}}"#)))
         #expect(texts(link)[3] == "done true")
-        link.plugin.press(component: "root.1")
+        link.plugin.press(component: "root/Button0")
         #expect(link.handle(try msg(#"{"ev":"error","req":4,"message":"refused"}"#)))
         #expect(texts(link)[3] == "failed: refused")
         // An error for a request this pane did not send is not its.
@@ -119,7 +119,7 @@ import WheelKit
         let wire = Wire()
         let link = make(wire)
         link.handle(try source(Self.script, req: 1))
-        link.plugin.press(component: "root.1")
+        link.plugin.press(component: "root/Button0")
         link.dropped()
         #expect(link.plugin.error == "lost the connection to wheeld, retrying")
         #expect(texts(link)[3] == "failed: lost the connection to wheeld")
@@ -127,7 +127,7 @@ import WheelKit
         #expect(!link.handle(try msg(#"{"ev":"plugin_action","req":3,"pane":"p1","action":"p.go","result":{"ok":true}}"#)))
         // An action while no connection is up fails without being sent.
         wire.sent = []
-        link.plugin.press(component: "root.1")
+        link.plugin.press(component: "root/Button0")
         #expect(wire.sent.isEmpty)
         try await Task.sleep(nanoseconds: 50_000_000)
         #expect(texts(link)[3] == "failed: no connection to wheeld")

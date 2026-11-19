@@ -1,9 +1,11 @@
+import WheelKit
 import SwiftUI
 
 // MARK: Table — SwiftUI's Table of rows under section titles (ADR-0029: it knows nothing of what the rows are)
 // column {key, label, width|null, tree, wide}; section {title, count, rows}; row {id, path, depth, kids, collapsed, dim, sel,
 // cells [{key, text, sort, tone, mono, chip, view}], menu [{label, action, context}]}. A `wide` column shows only when the pane is 640 pt across.
-// A cell with a `view` (a component's id) draws that component instead of its text; its `text` and `sort` still sort the column.
+// Each row is its own `TableRow` node (`ViewTree`), and each cell a view that observes only its row, so a changed row redraws its
+// cells and nothing else. A cell with a `view` (a component) draws that component instead of its text; its `text` and `sort` still sort the column.
 // A column with `sortable: true` sorts the rows of each section when its header is clicked, by each cell's `sort` (a number or a
 // string) or its `text`; the rows stay in the page's order until a header is clicked, and a column without it never sorts.
 // Raises the table's `rowAction` with {id} when a row is picked, its `foldAction` with {path} when a tree row is folded, and a
@@ -14,15 +16,15 @@ import SwiftUI
 // or Escape raises `selectAction` with {ids} (every row selected now), and a double-click or Return raises `rowAction` with
 // the row's {id}; without one a plain click raises `rowAction`.
 struct A2UITableView: View {
-    let node: ComponentNode
-    let surface: SurfaceModel
+    let node: ViewNode
+    let tree: ViewTree
     @Environment(\.a2uiPane) private var pane
 
     /// One line of the table: a section's title, or a row.
     private struct Line: Identifiable {
         let id: String
         let title: String?
-        let row: [String: AnyCodable]
+        let row: ViewNode?
     }
 
     /// Orders two rows by one column's cells: numbers by value, text the way Finder does.
@@ -31,13 +33,13 @@ struct A2UITableView: View {
         var key: String
         var order: SortOrder = .forward
 
-        private static func value(_ row: [String: AnyCodable], _ key: String) -> (Double?, String) {
+        private static func value(_ row: [String: JSONValue], _ key: String) -> (Double?, String) {
             let cell = (row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.first { $0["key"]?.stringValue == key } ?? [:]
             if let n = cell["sort"]?.numberValue { return (n, "") }
             return (nil, cell["sort"]?.stringValue ?? cell["text"]?.stringValue ?? "")
         }
 
-        func rows(_ a: [String: AnyCodable], _ b: [String: AnyCodable]) -> ComparisonResult {
+        func rows(_ a: [String: JSONValue], _ b: [String: JSONValue]) -> ComparisonResult {
             if key.isEmpty { return .orderedSame }
             let (x, y) = (Self.value(a, key), Self.value(b, key))
             var result: ComparisonResult = .orderedSame
@@ -46,39 +48,41 @@ struct A2UITableView: View {
             return order == .forward ? result : (result == .orderedAscending ? .orderedDescending : result == .orderedDescending ? .orderedAscending : .orderedSame)
         }
 
-        func compare(_ a: Line, _ b: Line) -> ComparisonResult { rows(a.row, b.row) }
+        func compare(_ a: Line, _ b: Line) -> ComparisonResult { MainActor.assumeIsolated { rows(a.row?.props ?? [:], b.row?.props ?? [:]) } }
     }
 
     @State private var sortOrder: [CellSort] = []
 
-    private func fire(_ name: String, _ context: [String: AnyCodable]) {
-        surface.dispatchAction(name: name, sourceComponentId: node.instance.id, context: context)
+    private func fire(_ name: String, _ context: [String: JSONValue]) {
+        tree.raise(node, name, context)
     }
 
-    private static func lines(_ sections: [[String: AnyCodable]], sort: CellSort?) -> [Line] {
+    /// The lines of every section, each row the node its id names. Only a table sorted here reads the rows' cells.
+    private static func lines(_ sections: [[String: JSONValue]], rows byId: [String: ViewNode], sort: CellSort?) -> [Line] {
         var lines: [Line] = []
         for (si, sec) in sections.enumerated() {
-            var rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-            if let sort { rows.sort { sort.rows($0, $1) == .orderedAscending } }
+            var rows = (sec["rows"]?.arrayValue ?? []).compactMap { $0.stringValue.flatMap { byId[$0] } }
+            if let sort { rows.sort { sort.rows($0.props, $1.props) == .orderedAscending } }
             if let title = sec["title"]?.stringValue, !title.isEmpty {
-                lines.append(Line(id: "s\(si)", title: "\(title)  \(Int(sec["count"]?.numberValue ?? 0))", row: [:]))
+                lines.append(Line(id: "s\(si)", title: "\(title)  \(Int(sec["count"]?.numberValue ?? 0))", row: nil))
             }
-            for (ri, r) in rows.enumerated() { lines.append(Line(id: r["path"]?.stringValue ?? "r\(si).\(ri)", title: nil, row: r)) }
+            for r in rows { lines.append(Line(id: r.id, title: nil, row: r)) }
         }
         return lines
     }
 
     var body: some View {
-        let p = node.instance.properties
+        let p = node.props
         let narrow = pane.width < 640
         let cols = (p["columns"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.filter { !(narrow && $0["wide"]?.boolValue == true) }
         let sections = (p["sections"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-        let sortAction = p["sortAction"]?.stringValue ?? ""
-        let lines = Self.lines(sections, sort: sortAction.isEmpty ? sortOrder.first : nil)
-        let rowAction = p["rowAction"]?.stringValue ?? ""
-        let foldAction = p["foldAction"]?.stringValue ?? ""
-        let selectAction = p["selectAction"]?.stringValue ?? ""
-        let rowId = { (line: Line) in line.row["id"]?.stringValue ?? "" }
+        let sortAction = node.action("sortAction")
+        let byId = Dictionary(node.rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let lines = Self.lines(sections, rows: byId, sort: sortAction.isEmpty ? sortOrder.first : nil)
+        let rowAction = node.action("rowAction")
+        let foldAction = node.action("foldAction")
+        let selectAction = node.action("selectAction")
+        let rowId = { (line: Line) in line.row?.rowID ?? "" }
         // The Table selects by line id (a row's path); the page names rows by id.
         let pageSelected = Set((p["selected"]?.arrayValue ?? []).compactMap { $0.stringValue })
         let selected = Binding<Set<String>>(
@@ -120,14 +124,14 @@ struct A2UITableView: View {
     }
 
     /// A column with a width: that width fixed, shrinkable to 40 pt. nil for a column that fills what is left.
-    private static func columnWidth(_ c: [String: AnyCodable]) -> (min: CGFloat, fixed: CGFloat)? {
+    private static func columnWidth(_ c: [String: JSONValue]) -> (min: CGFloat, fixed: CGFloat)? {
         guard let w = c["width"]?.numberValue.map({ CGFloat($0) }) else { return nil }
         return (min(40, w), w)
     }
 
     /// The Mac draws SwiftUI's Table. On a phone a Table shows only its first column, so a List of one-line rows draws the same cells.
     @ViewBuilder
-    private func grid(_ lines: [Line], _ cols: [[String: AnyCodable]], selected: Binding<Set<String>>, order: Binding<[CellSort]>, rowAction: String, foldAction: String, open: @escaping (Set<String>) -> Void) -> some View {
+    private func grid(_ lines: [Line], _ cols: [[String: JSONValue]], selected: Binding<Set<String>>, order: Binding<[CellSort]>, rowAction: String, foldAction: String, open: @escaping (Set<String>) -> Void) -> some View {
         let first = cols.first?["key"]?.stringValue ?? ""
         #if os(macOS)
         // A table with a sortable column shows sort arrows on every header; one without draws plain headers and never sorts.
@@ -151,11 +155,7 @@ struct A2UITableView: View {
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
-            if let id = ids.first, let line = lines.first(where: { $0.id == id }) {
-                ForEach(Array((line.row["menu"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.enumerated()), id: \.offset) { _, item in
-                    Button(item["label"]?.stringValue ?? "") { fire(item["action"]?.stringValue ?? "", item["context"]?.dictionaryValue ?? [:]) }
-                }
-            }
+            if let id = ids.first, let row = lines.first(where: { $0.id == id })?.row { A2UIRowMenu(row: row, tree: tree) }
         } primaryAction: { ids in open(ids) }
         // Escape clears a selection the page owns.
         .onExitCommand { if !selected.wrappedValue.isEmpty { selected.wrappedValue = [] } }
@@ -173,12 +173,8 @@ struct A2UITableView: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .onTapGesture { fire(rowAction, ["id": .string(line.row["id"]?.stringValue ?? "")]) }
-                .contextMenu {
-                    ForEach(Array((line.row["menu"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }.enumerated()), id: \.offset) { _, item in
-                        Button(item["label"]?.stringValue ?? "") { fire(item["action"]?.stringValue ?? "", item["context"]?.dictionaryValue ?? [:]) }
-                    }
-                }
+                .onTapGesture { fire(rowAction, ["id": .string(line.row?.rowID ?? "")]) }
+                .contextMenu { if let row = line.row { A2UIRowMenu(row: row, tree: tree) } }
             }
         }
         .listStyle(.plain)
@@ -186,37 +182,66 @@ struct A2UITableView: View {
     }
 
     @ViewBuilder
-    private func cell(_ line: Line, _ c: [String: AnyCodable], _ foldAction: String, first: String) -> some View {
+    private func cell(_ line: Line, _ c: [String: JSONValue], _ foldAction: String, first: String) -> some View {
         let key = c["key"]?.stringValue ?? ""
         if let title = line.title {
             if key == first { Text(title).font(.system(size: 13, weight: .semibold)) } else { Text("") }
-        } else {
-            let cells = (line.row["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
-            let cell = cells.first { $0["key"]?.stringValue == key } ?? [:]
-            HStack(spacing: 0) {
-                if c["tree"]?.boolValue == true {
-                    Color.clear.frame(width: CGFloat(line.row["depth"]?.numberValue ?? 0) * 18, height: 1)
-                    if line.row["kids"]?.boolValue == true {
-                        Button(line.row["collapsed"]?.boolValue == true ? "▸" : "▾") {
-                            fire(foldAction, ["path": .string(line.row["path"]?.stringValue ?? "")])
-                        }
-                        .buttonStyle(.borderless).frame(width: 16)
-                    } else { Color.clear.frame(width: 16, height: 1) }
-                }
-                if let view = cell["view"]?.stringValue.flatMap({ surface.node($0) }) {
-                    A2UIChildView(node: view, surface: surface)
-                } else {
-                    Text(cell["text"]?.text ?? "")
-                        // Point sizes, not text styles: a text style is 17 pt on a phone and 13 pt on a Mac.
-                        .font(cell["mono"]?.boolValue == true ? .system(size: 11, design: .monospaced) : cell["chip"]?.boolValue == true ? .system(size: 12, weight: .semibold) : .system(size: 13))
-                        .foregroundStyle(cellColor(cell, dim: line.row["dim"]?.boolValue == true))
-                        .lineLimit(1).truncationMode(.tail)
-                }
+        } else if let row = line.row {
+            A2UITableCell(row: row, column: c, tree: tree, table: node, foldAction: foldAction)
+        }
+    }
+}
+
+/// A row's context menu: each item raises its own `action` on the row, with its `context`.
+private struct A2UIRowMenu: View {
+    let row: ViewNode
+    let tree: ViewTree
+    var body: some View {
+        let items = (row.props["menu"]?.arrayValue ?? []).enumerated().compactMap { i, v in v.dictionaryValue.map { (i, $0) } }
+        ForEach(items, id: \.0) { i, item in
+            Button(item["label"]?.stringValue ?? "") { tree.raise(row, "menu.\(i).action", item["context"]?.dictionaryValue ?? [:]) }
+        }
+    }
+}
+
+/// One cell of one row. It reads only its row's node, so another row changing never draws it again.
+private struct A2UITableCell: View {
+    let row: ViewNode
+    let column: [String: JSONValue]
+    let tree: ViewTree
+    let table: ViewNode
+    let foldAction: String
+
+    var body: some View {
+        ViewPerf.cells += 1
+        let r = row.props
+        let key = column["key"]?.stringValue ?? ""
+        let cells = (r["cells"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
+        let index = cells.firstIndex { $0["key"]?.stringValue == key }
+        let cell = index.map { cells[$0] } ?? [:]
+        return HStack(spacing: 0) {
+            if column["tree"]?.boolValue == true {
+                Color.clear.frame(width: CGFloat(r["depth"]?.numberValue ?? 0) * 18, height: 1)
+                if r["kids"]?.boolValue == true {
+                    Button(r["collapsed"]?.boolValue == true ? "▸" : "▾") {
+                        tree.raise(table, foldAction, ["path": .string(r["path"]?.stringValue ?? "")])
+                    }
+                    .buttonStyle(.borderless).frame(width: 16)
+                } else { Color.clear.frame(width: 16, height: 1) }
+            }
+            if let view = index.flatMap({ row.embedded["cells.\($0).view"] }) {
+                A2UIChildView(node: view, tree: tree)
+            } else {
+                Text(cell["text"]?.text ?? "")
+                    // Point sizes, not text styles: a text style is 17 pt on a phone and 13 pt on a Mac.
+                    .font(cell["mono"]?.boolValue == true ? .system(size: 11, design: .monospaced) : cell["chip"]?.boolValue == true ? .system(size: 12, weight: .semibold) : .system(size: 13))
+                    .foregroundStyle(Self.color(cell, dim: r["dim"]?.boolValue == true))
+                    .lineLimit(1).truncationMode(.tail)
             }
         }
     }
 
-    private func cellColor(_ cell: [String: AnyCodable], dim: Bool) -> Color {
+    private static func color(_ cell: [String: JSONValue], dim: Bool) -> Color {
         switch cell["tone"]?.stringValue {
         case "ok": .green
         case "warn": .orange

@@ -553,23 +553,23 @@ import WheelKit
         let stream = try Self.node(tree, "root.2.0.0.1")
         #expect(stream.component == "List")
         #expect(stream.children.count == 3 && stream.children.allSatisfy { $0.component == "Section" })
-        #expect(stream.props["scrollTo"] == .string("root.2.0.0.1.0"))
+        #expect(stream.props["scrollTo"] == .number(1))
         let lines = try Self.node(tree, "root.2.1.2")
         #expect(lines.component == "List")
-        #expect(lines.props["scrollTo"] == .string("root.2.1.2.0"))
+        #expect(lines.props["scrollTo"] == .number(1))
         // The stream's side is the file table the split holds before it.
         #expect(try Self.all(Self.node(tree, "root.2.0.0.0"), "Table").count == 1)
         // Selecting the third file scrolls the stream to its section, and that section is its header and lines.
         try runtime.send(Self.msg("select_file", ["id": .string("src/f2.rs")]))
         tree = try runtime.view(Self.data)
         let moved = try Self.node(tree, "root.2.0.0.1")
-        #expect(moved.props["scrollTo"] == .string("root.2.0.0.1.2"))
+        #expect(moved.props["scrollTo"] == .number(3))
         let section = try Self.node(tree, "root.2.0.0.1.2")
         #expect(section.component == "Section")
         #expect(Self.texts(Self.jsonOf(section)).contains("src/f2.rs"))
         // The narrow list draws the open file's lines: its first one is what scrollTo names.
         let narrow = try Self.node(tree, "root.2.1.2")
-        #expect(narrow.props["scrollTo"] == .string("root.2.1.2.0"))
+        #expect(narrow.props["scrollTo"] == .number(1))
         #expect(Self.texts(Self.jsonOf(narrow)).first?.hasPrefix("@@ ") == true)
     }
 
@@ -583,6 +583,6 @@ import WheelKit
         tree = try runtime.view(Self.data)
         let stream = try Self.node(tree, "root.2.0.0.1")
         #expect(stream.children.count == 201)
-        #expect(stream.props["scrollTo"] == .string("root.2.0.0.1.200"))
+        #expect(stream.props["scrollTo"] == .number(201))
     }
 }

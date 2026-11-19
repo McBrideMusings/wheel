@@ -71,9 +71,8 @@ local function row(item, waiting)
     end
 end
 
--- `transcript`: the wheel.agent.transcript value; `requests`: the wheel.agent.requests value. `at`: the transcript's
--- positional id (the List's place in its parent), so scrollTo can name its last row.
-function M.view(transcript, requests, at)
+-- `transcript`: the wheel.agent.transcript value; `requests`: the wheel.agent.requests value.
+function M.view(transcript, requests)
     local waiting = {}
     for _, r in (requests and requests.requests) or {} do
         if r.tool_call then waiting[r.tool_call] = true end
@@ -92,7 +91,7 @@ function M.view(transcript, requests, at)
     rows.spacing = 8
     -- Padding, not a frame: a List with no frame fills the pane under the header and over the composer.
     rows.modifiers = { { padding = { 4, 10 } } }
-    rows.scrollTo = at .. "." .. (#rows - 1)
+    rows.scrollTo = #rows
     return ui.List(rows)
 end
 

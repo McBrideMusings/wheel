@@ -92,13 +92,14 @@ wait_for 40 'd.get("error") is None and any(t.startswith("This folder (proj)") f
   fail "the pane: $(q '(d.get("error"), texts[:6])')"
 
 CHIPS=$(q 'comp("ChoicePicker")["id"]')
-dbg --data-urlencode action=set --data-urlencode "path=/$CHIPS" --data-urlencode 'json=["skills"]' > /dev/null
+dbg --data-urlencode action=set --data-urlencode "component=$CHIPS" --data-urlencode 'json=["skills"]' > /dev/null
 wait_for 20 'any(r["cells"].startswith("kplug-demo | 1 files") for r in rows)' && pass "Skills lists the project's skill" || fail "Skills: $(q 'rows')"
 shot skills
 
 # The first table row is the project's one skill; its menu's first item moves it into the vault.
-TABLE=$(q 'comp("Table")["id"]')
-raise "$TABLE" "sections.0.rows.0.menu.0.action"
+# A row's menu is raised on the row's own node (`<table>/<row key>`), keyed `menu.N.action`; read it again after each change.
+row0() { q 'rows[0]["node"]'; }
+raise "$(row0)" "menu.0.action"
 wait_for 10 'state.get("confirm", {}).get("label") == "Move into the vault" and "moves the original folder to the Trash" in state["confirm"]["ask"]' &&
   pass "Move into the vault asks first" || fail "no confirmation: $(q 'state') $(cat "$T/raise.json")"
 shot confirm
@@ -115,7 +116,7 @@ ORIG=$(q 'next((t for t in texts if t.startswith("Added")), "")' | sed -n 's/.*O
 [ -n "$ORIG" ] && grep -qs "$MARK" "$HOME$ORIG/SKILL.md" && rm -rf "$HOME$ORIG"
 shot added
 
-raise "$TABLE" "sections.0.rows.0.menu.1.action"
+raise "$(row0)" "menu.1.action"
 wait_for 20 'state.get("file", {}).get("path", "").endswith("kplug-demo/SKILL.md") and len(rows) == 1' &&
   pass "History of SKILL.md lists its one commit: $(q 'rows[0]["cells"]')" || fail "history: $(q 'state, rows')"
 shot history
@@ -125,15 +126,15 @@ wait_for 20 'any(t.startswith("at ") for t in texts) and any("hi" in t and "kplu
   pass "a commit row shows the file at that commit" || fail "file at commit: $(q 'texts')"
 shot file
 
-dbg --data-urlencode action=set --data-urlencode "path=/$CHIPS" --data-urlencode 'json=["vault"]' > /dev/null
+dbg --data-urlencode action=set --data-urlencode "component=$CHIPS" --data-urlencode 'json=["vault"]' > /dev/null
 wait_for 20 'state.get("file") is None and any(r["cells"].startswith("kplug-demo | 1 files") for r in rows)' && pass "Vault lists the skill" || fail "Vault: $(q 'rows')"
 shot vault
 # The skill's menu: install globally, install here, copy here, remove. Copy names the folder the link already holds, so
 # the gate refuses it; Remove asks first, then kennel refuses while the link points at the item.
-raise "$(q 'comp("Table")["id"]')" "sections.0.rows.0.menu.2.action"
+raise "$(row0)" "menu.2.action"
 wait_for 20 'state.get("out", "").startswith("exit 2: ") and "already exists" in state["out"]' &&
   pass "Copy into this project goes through the gate: $(q 'state["out"]')" || fail "copy: $(q 'state.get("out")')"
-raise "$(q 'comp("Table")["id"]')" "sections.0.rows.0.menu.3.action"
+raise "$(row0)" "menu.3.action"
 wait_for 10 'state.get("confirm", {}).get("label") == "Remove from the vault"' && pass "Remove from the vault asks first" ||
   fail "remove: $(q 'state')"
 raise "$(q 'comp("ConfirmationDialog")["id"]')" "buttons.0.action"
