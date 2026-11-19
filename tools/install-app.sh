@@ -51,19 +51,36 @@ DERIVED="$ROOT/DerivedData-deploy-release.noindex"
 
 ( cd "$ROOT" && xcodegen generate --spec apple/project.yml --project apple )
 BUILD_LOG="$LOG_DIR/deploy-$VARIANT-xcodebuild.log"
-say "building the Swift Release objects; xcodebuild's output is in $BUILD_LOG"
+SERVER_LOG="$LOG_DIR/deploy-$VARIANT-server.log"
+RUST_LOG="$LOG_DIR/deploy-$VARIANT-client-rust.log"
+# The Rust builds need nothing from the Swift one, so all three run at once; the later steps find
+# their binaries built.
+[ "$VARIANT" = release ] && CONFIGURATION=Release || CONFIGURATION=Debug
+say "building wheeld, wheel and wheel-runner ($CONFIGURATION); cargo's output is in $SERVER_LOG"
+bash "$ROOT/tools/build-server.sh" "$CONFIGURATION" >"$SERVER_LOG" 2>&1 &
+server_pid=$!
+say "building the GPUI client's Rust; cargo's output is in $RUST_LOG"
+python3 "$ROOT/clients/gpui/tools/build.py" "$VARIANT" --rust-only >"$RUST_LOG" 2>&1 &
+rust_pid=$!
+say "building the Swift bridge (WheelGpuiBridge, Release); xcodebuild's output is in $BUILD_LOG"
 # The generated workspace records the package versions once resolved; reading them back skips a
 # network round trip per build. A project that was never resolved resolves on its first build.
 RESOLVE=()
 [ -f "$ROOT/apple/Wheel.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved" ] \
   && RESOLVE=(-disableAutomaticPackageResolution)
 status=0
-xcodebuild -project "$ROOT/apple/Wheel.xcodeproj" -scheme Wheel -configuration Release \
+xcodebuild -project "$ROOT/apple/Wheel.xcodeproj" -scheme WheelGpuiBridge -configuration Release \
   -destination platform=macOS -derivedDataPath "$DERIVED" ${RESOLVE[@]+"${RESOLVE[@]}"} -showBuildTimingSummary build "${SETTINGS[@]}" >"$BUILD_LOG" 2>&1 || status=$?
 say "xcodebuild finished (exit $status)"
-grep -E '(: error:|^error:|^\*\* |^embedded wheeld)' "$BUILD_LOG" || true
-if [ "$status" -ne 0 ]; then
-  say "build failed (xcodebuild exited $status); nothing was installed"
+grep -E '(: error:|^error:|^\*\* )' "$BUILD_LOG" || true
+server_status=0; wait "$server_pid" || server_status=$?
+say "wheeld build finished (exit $server_status)"
+rust_status=0; wait "$rust_pid" || rust_status=$?
+say "GPUI client Rust build finished (exit $rust_status)"
+if [ "$status" -ne 0 ] || [ "$server_status" -ne 0 ] || [ "$rust_status" -ne 0 ]; then
+  [ "$server_status" -ne 0 ] && tail -5 "$SERVER_LOG"
+  [ "$rust_status" -ne 0 ] && tail -5 "$RUST_LOG"
+  say "build failed (xcodebuild $status, wheeld $server_status, client Rust $rust_status); nothing was installed"
   exit 1
 fi
 

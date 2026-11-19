@@ -28,11 +28,11 @@ Run the full `cargo test` once per round of edits, not after every file.
 
 ## The GPUI app a check runs
 
-`clients/gpui/tools/build.py` links the Swift bridge against the Release products in
+`clients/gpui/tools/build.py` copies the Swift bridge, `libWheelGpuiBridge.dylib`, from the Release products in
 `DerivedData-deploy-release.noindex`, which defaults to the checkout's own copy. The main
-checkout's copy is not kept current, and a bridge built against a stale one fails to compile.
+checkout's copy is not kept current, and a stale bridge does not match your Swift.
 Build your own: `xcodegen generate` in `apple/`, then `xcodebuild -project apple/Wheel.xcodeproj
--scheme Wheel -configuration Release -derivedDataPath <worktree>/DerivedData-deploy-release.noindex build`,
+-scheme WheelGpuiBridge -configuration Release -derivedDataPath <worktree>/DerivedData-deploy-release.noindex build`,
 then `python3 clients/gpui/tools/build.py dev` (or set `WHEEL_NATIVE_PRODUCTS=<dd>/Build/Products/Release`).
 The installed Wheel Dev.app predates plugin panes; a check that draws one uses the app built here.
 

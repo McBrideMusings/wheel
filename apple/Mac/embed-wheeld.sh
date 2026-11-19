@@ -6,11 +6,11 @@
 set -euo pipefail
 
 if [ "$CONFIGURATION" = "Release" ]; then
-  PROFILE=release CARGO_FLAGS=--release
+  PROFILE=release
   INSTANCE=wheel LISTEN=127.0.0.1:7420 LABEL=com.piercemakes.wheel.daemon
   BUNDLE_ID=com.piercemakes.wheel.daemon SERVER_NAME="Wheel Server"
 else
-  PROFILE=debug CARGO_FLAGS=
+  PROFILE=debug
   INSTANCE=wheel-dev LISTEN=127.0.0.1:7422 LABEL=com.piercemakes.wheel.dev.daemon
   BUNDLE_ID=com.piercemakes.wheel.dev.daemon SERVER_NAME="Wheel Dev Server"
 fi
@@ -18,11 +18,7 @@ fi
 REPO="$SRCROOT/.."
 CONTENTS="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH"
 
-# Xcode's environment (SDKROOT, deployment targets, its own PATH) leaks into cargo's C and Zig
-# builds; build from a clean one.
-env -i HOME="$HOME" USER="$USER" \
-  PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-  cargo build --manifest-path "$REPO/Cargo.toml" -p wheeld --bin wheeld -p wheel-cli --bin wheel -p wheel-runner --bin wheel-runner $CARGO_FLAGS
+bash "$REPO/tools/build-server.sh" "$CONFIGURATION"
 
 # wheeld ships as its own bundle, Wheel Server: macOS names that bundle (its Info.plist name,
 # icon and folder usage strings) in Privacy & Security, and a grant to it is what terminals and

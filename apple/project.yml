@@ -55,6 +55,35 @@ targets:
       - name: Embed wheeld and its launch agent
         script: '"$SRCROOT/Mac/embed-wheeld.sh"'
         basedOnDependencyAnalysis: false
+  # The Swift half of the GPUI client (ADR-0040): clients/gpui/tools/build.py copies this dylib into
+  # the app, so a deploy builds what ships and never the SwiftUI Mac app above.
+  WheelGpuiBridge:
+    type: library.dynamic
+    platform: macOS
+    sources:
+      - ../clients/gpui/native/Bridge.swift
+      - Shared/TerminalStyle.swift
+      - Mac/Sources/MenuBarIcon.swift
+    dependencies:
+      - package: WheelKit
+      - package: WheelUI
+      - package: libghostty-spm
+        product: GhosttyTerminal
+      - sdk: Carbon.framework
+      - sdk: Metal.framework
+      - sdk: WebKit.framework
+    settings:
+      base:
+        PRODUCT_NAME: WheelGpuiBridge
+        EXECUTABLE_PREFIX: lib
+        # wheel-gpui is built for this Mac only (aarch64); an x86_64 slice of the bridge would go unused.
+        ARCHS: arm64
+        SWIFT_VERSION: "5.0"
+        OTHER_LDFLAGS: -lc++
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+    scheme: {}
   WheelPhone:
     type: application
     platform: iOS
