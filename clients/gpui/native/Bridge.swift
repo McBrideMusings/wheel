@@ -451,6 +451,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     let pageDaemon = PageDaemon()
     /// The artifacts plugin pages embed (`WebView{artifact}`), over the page connection.
     var artifactEmbeds: ArtifactEmbeds?
+    var videoStreams: VideoStreams?
     /// The plugin panes' own connection to wheeld: it asks for each pane's script and hears every change to one. Unlike the
     /// terminal socket it is opened again when it drops, and asks for every script again, as long as a plugin pane exists;
     /// the last plugin pane closing closes it.
@@ -905,6 +906,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
             let surface = PluginPaneView(pane: plugin)
                 .environment(\.paneEmbed, { [weak self] embed in self?.embedView(embed, hostPane: id) })
+                .environment(\.paneVideoStream, { [weak self] stream, input in self?.streamView(stream, input: input, hostPane: id) })
             let view: NSHostingView<AnyView>
             if value["agent"] as? Bool == true {
                 let target = HostAgentTarget(agent: paneTargets[id]?["agent"])
@@ -1166,6 +1168,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             return embeds.view(pane: hostPane, name: embed.pane, cwd: cwd)
         }
     }
+    /// Video stream `stream` inside plugin pane `hostPane`'s page (ADR-0053), asked for over the page connection.
+    func streamView(_ stream: String, input: Bool, hostPane: String) -> AnyView? {
+        guard let ws = pluginURL, let client = pages(ws) else { return nil }
+        let streams = videoStreams ?? VideoStreams(send: { [weak client] in client?.send($0) }, nextReq: { [weak client] in client?.req() ?? 0 })
+        videoStreams = streams
+        return streams.view(pane: hostPane, stream: stream, input: input)
+    }
     /// `agent`'s chat, attached over the page connection the first time an embed asks for it.
     func agentChat(_ agent: String) -> AgentChat {
         chatHolds[agent, default: 0] += 1
@@ -1339,11 +1348,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             agentMessage(status)
             for (agent, chat) in chats { chat.error = nil; attachAgent(agent) }
             artifactEmbeds?.connected()
+            videoStreams?.connected()
         }
         client.onMessage = { [weak self] message in
             guard let self else { return }
             agentMessage(message)
             artifactEmbeds?.handle(message)
+            videoStreams?.handle(message)
         }
         client.log = { [weak self] in self?.errors.append("pages: " + $0) }
         client.start()
@@ -1540,7 +1551,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                     + agentEmbeds.values.filter { $0.hostPane == pane }.map { embed in
                         ["pane": embed.pane, "agent": embed.chat?.name ?? NSNull(), "note": embed.note, "state": embed.chat?.state.map { "\($0)" } ?? NSNull(),
                          "items": embed.chat?.displayItems.count ?? 0, "draft": embed.chat?.draft ?? "", "error": embed.chat?.error ?? NSNull()] as [String: Any] }
-                    + (artifactEmbeds?.state(pane: pane) ?? [])]
+                    + (artifactEmbeds?.state(pane: pane) ?? []) + (videoStreams?.state(pane: pane) ?? [])]
         case "plugin_endpoint":
             if let ws = value["ws"] as? String { pluginEndpoint(ws) }
         case "disconnect":

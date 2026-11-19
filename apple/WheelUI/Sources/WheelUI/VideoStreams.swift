@@ -1,0 +1,544 @@
+#if os(macOS)
+import AppKit
+import AVFoundation
+import GameController
+import SwiftUI
+import WheelKit
+
+/// The video streams plugin pages show (`VideoStream{stream}`, ADR-0053) on the Mac: each asks wheeld for its socket with
+/// `plugin_stream`, reads the backend's frames from it, decodes video with VideoToolbox onto an `AVSampleBufferDisplayLayer`,
+/// plays audio through `AVAudioEngine`, and writes the person's keys, pointer and controller events back. A host makes one,
+/// hands it every wheeld message (`handle`) and calls `connected` on each new connection.
+@MainActor
+public final class VideoStreams {
+    private let send: (ClientMsg) -> Void
+    private let nextReq: () -> UInt64
+    private var waiting: [UInt64: StreamSession] = [:]
+    private var live: [ObjectIdentifier: StreamSession] = [:]
+
+    public init(send: @escaping (ClientMsg) -> Void, nextReq: @escaping () -> UInt64) {
+        self.send = send
+        self.nextReq = nextReq
+    }
+
+    /// The view of stream `stream` inside plugin pane `pane`'s page; `input` sends the person's input on it to the backend.
+    public func view(pane: String, stream: String, input: Bool) -> AnyView {
+        AnyView(VideoStreamHostView(streams: self, pane: pane, stream: stream, input: input).id("\(pane)/\(stream)"))
+    }
+
+    /// Ask again for every stream shown: wheeld may have restarted its backends.
+    public func connected() {
+        waiting = [:]
+        for session in live.values { open(session) }
+    }
+
+    /// Take one wheeld message; true when it was for a stream.
+    @discardableResult
+    public func handle(_ msg: ServerMsg) -> Bool {
+        switch msg {
+        case let .pluginStream(req, _, _, socket):
+            guard let session = waiting.removeValue(forKey: req) else { return false }
+            session.connect(socket)
+        case let .error(req?, _, message):
+            guard let session = waiting.removeValue(forKey: req) else { return false }
+            session.fail(message)
+        default: return false
+        }
+        return true
+    }
+
+    /// What the debug state lists for plugin pane `pane`: each stream, its socket, the frames decoded, the audio chunks
+    /// played, the input events sent and why it shows nothing.
+    public func state(pane: String) -> [[String: Any]] {
+        live.values.filter { $0.pane == pane }.map { $0.state }
+    }
+
+    func appear(_ session: StreamSession) {
+        live[ObjectIdentifier(session)] = session
+        session.retry = { [weak self, weak session] in
+            guard let self, let session, self.live[ObjectIdentifier(session)] != nil else { return }
+            self.open(session)
+        }
+        open(session)
+    }
+
+    func disappear(_ session: StreamSession) {
+        live[ObjectIdentifier(session)] = nil
+        waiting = waiting.filter { $0.value !== session }
+        session.close()
+    }
+
+    private func open(_ session: StreamSession) {
+        let req = nextReq()
+        waiting[req] = session
+        send(.pluginStream(req: req, pane: session.pane, stream: session.stream))
+    }
+}
+
+/// What a stream's reader counts, read on the main actor for the note and the debug state.
+final class StreamStats: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Int] = [:]
+    func add(_ key: String, _ n: Int = 1) { lock.withLock { values[key, default: 0] += n } }
+    subscript(_ key: String) -> Int { lock.withLock { values[key] ?? 0 } }
+}
+
+/// One stream shown in a page: its view, and the connection to the backend while one is open.
+@MainActor @Observable
+final class StreamSession {
+    let pane: String
+    let stream: String
+    let input: Bool
+    /// Why the stream shows no picture: connecting, refused, ended. Nil once frames show.
+    private(set) var note: String?
+    @ObservationIgnored let view: StreamView
+    @ObservationIgnored let stats = StreamStats()
+    @ObservationIgnored private var link: StreamLink?
+    @ObservationIgnored private var socket: String?
+    @ObservationIgnored private var error: String?
+    @ObservationIgnored private var wait: Duration = .seconds(1)
+    @ObservationIgnored var retry: (() -> Void)?
+
+    init(pane: String, stream: String, input: Bool) {
+        self.pane = pane
+        self.stream = stream
+        self.input = input
+        self.note = "Connecting to \(stream)"
+        view = StreamView(frame: .zero)
+        view.takesInput = input
+        view.send = { [weak self] kind, event in self?.send(kind, event) }
+        if input { StreamControllers.shared.add(self) }
+    }
+
+    isolated deinit { link?.close() }
+
+    var state: [String: Any] {
+        var o: [String: Any] = ["stream": stream, "frames": stats["frames"], "audio": stats["audio"], "inputs": stats["inputs"],
+                                "bytes": stats["bytes"]]
+        if let socket { o["socket"] = socket }
+        if let error { o["error"] = error }
+        if let size = link?.videoSize { o["video"] = [Int(size.width), Int(size.height)] }
+        return o
+    }
+
+    func connect(_ path: String) {
+        link?.close()
+        socket = path
+        let link = StreamLink(path: path, renderer: view.display.sampleBufferRenderer, stats: stats)
+        link.onFirstFrame = { [weak self] in Task { @MainActor in self?.shown() } }
+        link.onEnd = { [weak self, weak link] why in Task { @MainActor in if let link { self?.ended(link, why) } } }
+        view.videoSize = { [weak link] in link?.videoSize }
+        self.link = link
+        link.start()
+    }
+
+    func fail(_ message: String) {
+        error = message
+        note = message
+        link?.close()
+        link = nil
+    }
+
+    func close() {
+        link?.close()
+        link = nil
+    }
+
+    private func shown() {
+        error = nil
+        note = nil
+        wait = .seconds(1)
+    }
+
+    /// The connection ended: say why, and ask wheeld again after a wait that doubles to 30 s, since a restarted backend
+    /// serves the stream again on a new socket.
+    private func ended(_ ended: StreamLink, _ why: String) {
+        guard ended === link else { return }
+        link = nil
+        error = why
+        note = why
+        let wait = self.wait
+        self.wait = min(wait * 2, .seconds(30))
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: wait)
+            self?.retry?()
+        }
+    }
+
+    func send(_ kind: StreamFrame.Input, _ event: [String: Any]) {
+        guard input, let link else { return }
+        link.write(StreamFrame.input(kind, event))
+        stats.add("inputs")
+    }
+
+    /// Whether controller events go here: the stream takes input and its window is the key one.
+    var wantsControllers: Bool { input && link != nil && view.window?.isKeyWindow == true }
+}
+
+/// One open connection to a stream socket: a thread reads and decodes, a queue writes.
+final class StreamLink: @unchecked Sendable {
+    private let path: String
+    private let renderer: AVSampleBufferVideoRenderer
+    private let stats: StreamStats
+    private let writes = DispatchQueue(label: "wheel.videostream.write")
+    private let lock = NSLock()
+    private var fd: Int32 = -1
+    private var closed = false
+    private var size: CGSize?
+    var onFirstFrame: (@Sendable () -> Void)?
+    var onEnd: (@Sendable (String) -> Void)?
+
+    init(path: String, renderer: AVSampleBufferVideoRenderer, stats: StreamStats) {
+        self.path = path
+        self.renderer = renderer
+        self.stats = stats
+    }
+
+    /// The video's size in pixels, once parameter sets came.
+    var videoSize: CGSize? { lock.withLock { size } }
+
+    func start() {
+        let thread = Thread { [self] in run() }
+        thread.name = "wheel.videostream.read"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+    }
+
+    /// Ends the connection; the read thread sees the end and returns without reporting it.
+    func close() {
+        lock.withLock {
+            closed = true
+            if fd >= 0 { shutdown(fd, SHUT_RDWR) }
+        }
+    }
+
+    func write(_ data: Data) {
+        writes.async { [self] in
+            let fd = lock.withLock { closed ? -1 : self.fd }
+            guard fd >= 0 else { return }
+            data.withUnsafeBytes { raw in
+                var at = 0
+                while at < raw.count {
+                    let n = Darwin.write(fd, raw.baseAddress! + at, raw.count - at)
+                    if n <= 0 { return }
+                    at += n
+                }
+            }
+        }
+    }
+
+    private func run() {
+        let why = read()
+        let fd = lock.withLock { () -> Int32 in let fd = self.fd; self.fd = -1; return fd }
+        writes.sync {}
+        if fd >= 0 { Darwin.close(fd) }
+        renderer.flush(removingDisplayedImage: false, completionHandler: nil)
+        if !lock.withLock({ closed }) { onEnd?(why) }
+    }
+
+    /// A decoded frame, on VideoToolbox's thread: onto the layer at once.
+    private func show(_ sample: CMSampleBuffer) {
+        if renderer.status == .failed { renderer.flush() }
+        renderer.enqueue(sample)
+        stats.add("frames")
+        if stats["frames"] == 1 { onFirstFrame?() }
+    }
+
+    /// Connects and reads until the stream ends; returns why it ended.
+    private func read() -> String {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return "no socket: \(String(cString: strerror(errno)))" }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            Darwin.close(fd)
+            return "the stream socket path is too long: \(path)"
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        guard connected == 0 else {
+            let why = String(cString: strerror(errno))
+            Darwin.close(fd)
+            return "The backend does not serve \(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent) yet (\(why))"
+        }
+        let open = lock.withLock { () -> Bool in
+            guard !closed else { return false }
+            self.fd = fd
+            return true
+        }
+        guard open else { Darwin.close(fd); return "closed" }
+
+        let audio = StreamAudio()
+        defer { audio.stop() }
+        let decoder = StreamDecoder { [weak self] sample in self?.show(sample) }
+        var reader = StreamFrameReader()
+        var buffer = [UInt8](repeating: 0, count: 1 << 16)
+        while true {
+            let n = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!, $0.count) }
+            if n == 0 { return "The stream ended" }
+            if n < 0 { return "The stream ended: \(String(cString: strerror(errno)))" }
+            stats.add("bytes", n)
+            let frames: [StreamFrame]
+            do { frames = try reader.push(Data(buffer[0..<n])) } catch { return "The stream broke: \(error)" }
+            for frame in frames {
+                switch frame {
+                case let .parameterSets(codec, units):
+                    if !decoder.parameterSets(codec: codec, units: units) { return decoder.lastError ?? "bad parameter sets" }
+                    if let d = decoder.dimensions { lock.withLock { size = CGSize(width: Int(d.width), height: Int(d.height)) } }
+                case let .video(time, units):
+                    decoder.decode(time: time, units: units)
+                case let .audio(rate, channels, pcm):
+                    if audio.play(rate: Double(rate), channels: Int(channels), pcm: pcm) { stats.add("audio") }
+                case .unknown:
+                    break
+                }
+            }
+        }
+    }
+}
+
+/// A stream's audio: interleaved s16 PCM converted to float and scheduled on one player node. Used from the read thread.
+final class StreamAudio {
+    private let engine = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    private var format: AVAudioFormat?
+    private let queued = StreamStats()
+    private var failed = false
+    /// At most this many chunks wait to play; past it a chunk is dropped, so audio never falls behind the picture.
+    static let backlog = 8
+
+    init() { engine.attach(player) }
+
+    /// Plays one chunk; false when it was dropped or no audio device took it.
+    func play(rate: Double, channels: Int, pcm: Data) -> Bool {
+        if format?.sampleRate != rate || format.map({ Int($0.channelCount) }) != channels {
+            guard let made = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: AVAudioChannelCount(channels),
+                                           interleaved: false) else { return false }
+            player.stop()
+            engine.stop()
+            engine.connect(player, to: engine.mainMixerNode, format: made)
+            format = made
+            do {
+                try engine.start()
+                player.play()
+                failed = false
+            } catch {
+                failed = true
+            }
+        }
+        let frames = pcm.count / (2 * channels)
+        guard !failed, let format, frames > 0, queued["n"] < Self.backlog,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let out = buffer.floatChannelData else { return false }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        pcm.withUnsafeBytes { raw in
+            for ch in 0..<channels {
+                for i in 0..<frames {
+                    out[ch][i] = Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: (i * channels + ch) * 2, as: Int16.self))) / 32768
+                }
+            }
+        }
+        queued.add("n")
+        player.scheduleBuffer(buffer) { [queued] in queued.add("n", -1) }
+        return true
+    }
+
+    func stop() {
+        player.stop()
+        engine.stop()
+    }
+}
+
+/// Game controllers, read with GameController and sent to every stream that takes input in the key window.
+@MainActor
+final class StreamControllers {
+    static let shared = StreamControllers()
+    private var sessions: [WeakSession] = []
+    private var watching = false
+
+    private struct WeakSession { weak var session: StreamSession? }
+
+    func add(_ session: StreamSession) {
+        sessions = sessions.filter { $0.session != nil } + [WeakSession(session: session)]
+        guard !watching else { return }
+        watching = true
+        GCController.controllers().forEach(watch)
+        NotificationCenter.default.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { GCController.controllers().forEach(StreamControllers.shared.watch) }
+        }
+        NotificationCenter.default.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { note in
+            guard let pad = note.object as? GCController else { return }
+            let index = pad.playerIndex.rawValue
+            MainActor.assumeIsolated { StreamControllers.shared.broadcast(["kind": "disconnected", "controller": index]) }
+        }
+    }
+
+    private func watch(_ pad: GCController) {
+        if pad.playerIndex == .indexUnset {
+            let used = Set(GCController.controllers().map(\.playerIndex.rawValue))
+            if let free = (0..<4).first(where: { !used.contains($0) }) { pad.playerIndex = GCControllerPlayerIndex(rawValue: free) ?? .indexUnset }
+        }
+        pad.handlerQueue = .main
+        pad.extendedGamepad?.valueChangedHandler = { gamepad, _ in
+            let event = StreamControllers.event(gamepad, index: pad.playerIndex.rawValue)
+            MainActor.assumeIsolated { StreamControllers.shared.broadcast(event) }
+        }
+    }
+
+    private func broadcast(_ event: [String: Any]) {
+        for s in sessions.compactMap(\.session) where s.wantsControllers { s.send(.controller, event) }
+    }
+
+    /// A controller's whole state: every button pressed or not, and each stick and trigger from -1 to 1 (triggers 0 to 1).
+    nonisolated static func event(_ g: GCExtendedGamepad, index: Int) -> [String: Any] {
+        let buttons: [String: Bool] = [
+            "a": g.buttonA.isPressed, "b": g.buttonB.isPressed, "x": g.buttonX.isPressed, "y": g.buttonY.isPressed,
+            "lb": g.leftShoulder.isPressed, "rb": g.rightShoulder.isPressed,
+            "l3": g.leftThumbstickButton?.isPressed ?? false, "r3": g.rightThumbstickButton?.isPressed ?? false,
+            "menu": g.buttonMenu.isPressed, "options": g.buttonOptions?.isPressed ?? false, "home": g.buttonHome?.isPressed ?? false,
+            "up": g.dpad.up.isPressed, "down": g.dpad.down.isPressed, "left": g.dpad.left.isPressed, "right": g.dpad.right.isPressed,
+        ]
+        let axes: [String: Double] = [
+            "lx": Double(g.leftThumbstick.xAxis.value), "ly": Double(g.leftThumbstick.yAxis.value),
+            "rx": Double(g.rightThumbstick.xAxis.value), "ry": Double(g.rightThumbstick.yAxis.value),
+            "lt": Double(g.leftTrigger.value), "rt": Double(g.rightTrigger.value),
+        ]
+        return ["kind": "state", "controller": index, "buttons": buttons, "axes": axes]
+    }
+}
+
+/// The view a stream draws in: the display layer, fitted to the view with the video's aspect, and the keys and pointer
+/// events on it, sent as input frames. A pointer's `x` and `y` are in the video's pixels, from its top left.
+final class StreamView: NSView {
+    let display = AVSampleBufferDisplayLayer()
+    var takesInput = true
+    var send: ((StreamFrame.Input, [String: Any]) -> Void)?
+    var videoSize: () -> CGSize? = { nil }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        display.videoGravity = .resizeAspect
+        layer?.addSublayer(display)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        display.frame = bounds
+        CATransaction.commit()
+    }
+
+    override var acceptsFirstResponder: Bool { takesInput }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { takesInput }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    /// Where `event` falls in the video, in its pixels from the top left; nil before the video's size is known.
+    func videoPoint(_ event: NSEvent) -> CGPoint? {
+        guard let size = videoSize(), size.width > 0, size.height > 0 else { return nil }
+        let rect = AVMakeRect(aspectRatio: size, insideRect: bounds)
+        let p = convert(event.locationInWindow, from: nil)
+        let x = min(max((p.x - rect.minX) / rect.width, 0), 1) * size.width
+        let y = min(max((isFlipped ? p.y - rect.minY : rect.maxY - p.y) / rect.height, 0), 1) * size.height
+        return CGPoint(x: x.rounded(), y: y.rounded())
+    }
+
+    private func pointer(_ kind: String, _ event: NSEvent, button: Int? = nil) {
+        guard takesInput, let at = videoPoint(event) else { return }
+        var o: [String: Any] = ["kind": kind, "x": Int(at.x), "y": Int(at.y)]
+        if let button { o["button"] = button }
+        send?(.pointer, o)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard takesInput else { return super.mouseDown(with: event) }
+        window?.makeFirstResponder(self)
+        pointer("down", event, button: 0)
+    }
+    override func mouseUp(with event: NSEvent) { pointer("up", event, button: 0) }
+    override func rightMouseDown(with event: NSEvent) {
+        guard takesInput else { return super.rightMouseDown(with: event) }
+        window?.makeFirstResponder(self)
+        pointer("down", event, button: 1)
+    }
+    override func rightMouseUp(with event: NSEvent) { pointer("up", event, button: 1) }
+    override func otherMouseDown(with event: NSEvent) { pointer("down", event, button: event.buttonNumber) }
+    override func otherMouseUp(with event: NSEvent) { pointer("up", event, button: event.buttonNumber) }
+    override func mouseMoved(with event: NSEvent) { pointer("move", event) }
+    override func mouseDragged(with event: NSEvent) { pointer("move", event) }
+    override func rightMouseDragged(with event: NSEvent) { pointer("move", event) }
+    override func otherMouseDragged(with event: NSEvent) { pointer("move", event) }
+    override func scrollWheel(with event: NSEvent) {
+        guard takesInput else { return super.scrollWheel(with: event) }
+        send?(.pointer, ["kind": "scroll", "dx": Double(event.scrollingDeltaX), "dy": Double(event.scrollingDeltaY),
+                         "precise": event.hasPreciseScrollingDeltas])
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard takesInput else { return super.keyDown(with: event) }
+        send?(.key, Self.key("down", event))
+    }
+    override func keyUp(with event: NSEvent) {
+        guard takesInput else { return super.keyUp(with: event) }
+        send?(.key, Self.key("up", event))
+    }
+    override func flagsChanged(with event: NSEvent) {
+        guard takesInput else { return super.flagsChanged(with: event) }
+        send?(.key, ["kind": "modifiers", "code": Int(event.keyCode), "modifiers": Self.modifiers(event.modifierFlags)])
+    }
+
+    /// A key event: `code` is the Mac's virtual key code, `key` the characters it types without modifiers.
+    static func key(_ kind: String, _ event: NSEvent) -> [String: Any] {
+        ["kind": kind, "code": Int(event.keyCode), "key": event.charactersIgnoringModifiers ?? "", "repeat": event.isARepeat,
+         "modifiers": modifiers(event.modifierFlags)]
+    }
+
+    static func modifiers(_ flags: NSEvent.ModifierFlags) -> [String] {
+        [(NSEvent.ModifierFlags.shift, "shift"), (.control, "control"), (.option, "option"), (.command, "command"), (.capsLock, "capslock")]
+            .filter { flags.contains($0.0) }.map(\.1)
+    }
+}
+
+private struct VideoStreamHostView: View {
+    let streams: VideoStreams
+    @State private var session: StreamSession
+
+    init(streams: VideoStreams, pane: String, stream: String, input: Bool) {
+        self.streams = streams
+        _session = State(initialValue: StreamSession(pane: pane, stream: stream, input: input))
+    }
+
+    var body: some View {
+        StreamViewHost(view: session.view)
+            .overlay {
+                if let note = session.note {
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .padding(8)
+                }
+            }
+            .onAppear { streams.appear(session) }
+            .onDisappear { streams.disappear(session) }
+    }
+}
+
+private struct StreamViewHost: NSViewRepresentable {
+    let view: StreamView
+    func makeNSView(context: Context) -> StreamView { view }
+    func updateNSView(_ view: StreamView, context: Context) {}
+}
+#endif

@@ -452,6 +452,14 @@ enum PluginCommand {
         #[arg(long, value_name = "FILE")]
         args_file: Option<String>,
     },
+    /// Print the unix socket a plugin's backend serves video stream STREAM on, as plugin pane
+    /// PANE's `VideoStream` asks for it (ADR-0053). Starts the plugin's backend if it is not running.
+    Stream {
+        /// A plugin pane whose `reads` match the stream; it names the space the plugin is resolved in.
+        pane: String,
+        /// The stream: `<plugin>.<name>`.
+        stream: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4602,6 +4610,19 @@ async fn plugin_action(conn: &mut Conn, pane: String, action: String, args: Stri
     Ok(())
 }
 
+/// Print the socket path `wheeld` answers `plugin_stream` with for `stream` in plugin pane `pane`.
+async fn plugin_stream(conn: &mut Conn, pane: String, stream: String) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::PluginStream { socket, .. } = conn
+        .call(ClientMsg::PluginStream { req: Some(req), pane, stream }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to plugin_stream".into()));
+    };
+    println!("{socket}");
+    Ok(())
+}
+
 async fn artifact_ls(
     conn: &mut Conn,
     space: Option<String>,
@@ -6640,6 +6661,7 @@ async fn main() -> ExitCode {
                 };
                 plugin_action(&mut conn, pane, action, args).await
             }
+            Command::Plugin(PluginCommand::Stream { pane, stream }) => plugin_stream(&mut conn, pane, stream).await,
             Command::Stream(command) => stream(&mut conn, command).await,
             Command::Title(TitleCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space)

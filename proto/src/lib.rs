@@ -37,7 +37,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent): a label
 /// for logs and reports. No client decides anything from it; what a client may send is the
 /// server's `ops`, and whether it can connect is `compat` (ADR-0050).
-pub const PROTOCOL_VERSION: u32 = 53;
+pub const PROTOCOL_VERSION: u32 = 54;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -226,6 +226,9 @@ pub struct BackendInfo {
     pub feeds: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,
+    /// The video streams its `initialize` reply named (ADR-0053), by their own names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub streams: Vec<String>,
     /// The file its output and `log` messages go to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
@@ -1730,6 +1733,17 @@ pub enum ClientMsg {
         pane: String,
         artifact: String,
     },
+    /// Plugin pane `pane`'s script shows video stream `stream` (`<plugin>.<name>`,
+    /// `VideoStream{stream}`, ADR-0053). Refused unless the pane's `reads` match the stream and the
+    /// plugin's backend named `<name>` among its `initialize` streams; starts the backend if it is
+    /// not running. Replies `plugin_stream` with the unix socket the backend serves it on.
+    /// `PROTOCOL_VERSION` 54.
+    PluginStream {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        stream: String,
+    },
     /// Restart plugin `plugin`'s backend (as resolved in `space`): wheeld stops its process (sends
     /// `shutdown`, kills its process group after 1 s), starts a new one, or starts one when none
     /// runs, and replays every feed a pane reads. Replies `ok` once the new process answered
@@ -2644,6 +2658,14 @@ pub enum ServerMsg {
         scope: ArtifactScope,
         id: String,
     },
+    /// Where a plugin pane's video stream is served, in reply to `plugin_stream`: `socket` is the
+    /// unix socket path the client connects to.
+    PluginStream {
+        req: u64,
+        pane: String,
+        stream: String,
+        socket: String,
+    },
     /// A plugin backend's log, in reply to `plugin_logs`: `path` is the file, `text` its last lines.
     PluginLogs {
         req: u64,
@@ -2992,6 +3014,7 @@ impl ServerMsg {
             | ServerMsg::PluginLogs { req, .. }
             | ServerMsg::PluginAction { req, .. }
             | ServerMsg::PluginEmbed { req, .. }
+            | ServerMsg::PluginStream { req, .. }
             | ServerMsg::Tools { req, .. }
             | ServerMsg::ToolResult { req, .. }
             | ServerMsg::Resource { req, .. }

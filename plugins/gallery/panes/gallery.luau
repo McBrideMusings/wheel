@@ -616,7 +616,10 @@ local CANVAS_COMMANDS = {
     { "set", "font", "10px sans-serif" }, { "set", "fillStyle", "faint" }, { "fillText", "drawImage: 16x16 RGBA, 1x and 3x", 110, 214 },
 }
 
-local function own_class()
+local function own_class(data)
+    local input = data.feed("gallery.input", {})
+    local last = "no input yet"
+    if type(input) == "table" and input.last then last = input.count .. " events; last: " .. input.last end
     return klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", {
         { "Canvas", "Canvas", {
             { "a display list with a camera and hit regions; needs a scene, not shown",
@@ -637,6 +640,13 @@ local function own_class()
                 put("WebView", nil, { url = "https://example.com", height = 220 }) },
             { "artifact: an artifact's name, resolved in this space as `wheel artifact` does (project, then machine); its page as a web pane shows it, reloading when its files change. \"gallery-sample\" is no artifact in most spaces, so wheeld's refusal shows in place; a space with that artifact shows its page",
                 put("WebView", nil, { artifact = "gallery-sample", height = 220 }) },
+        } },
+        { "VideoStream", "VideoStream", {
+            { "stream: <plugin>.<name>, a live H.264 or HEVC stream the plugin's backend serves (ADR-0053), height: points tall (default 320), as wide as it is offered, the picture fitted to it. input (default true): a click focuses it, and its keys, pointer and game controller events go to the backend; audio plays. The gallery's backend serves gallery.demo, a 320x180 test pattern at 30 fps with a 440 Hz tone. The phone draws a note in its place",
+                put("VideoStream", nil, { stream = "gallery.demo", height = 200 }) },
+            { "input = false: the picture and sound only; nothing is sent",
+                put("VideoStream", nil, { stream = "gallery.demo", height = 120, input = false }) },
+            { "what the backend got: its gallery.input feed", secondary(last) },
         } },
     })
 end
@@ -670,7 +680,7 @@ local function view(state, data)
         system_class(),
         table_class(),
         modifiers_class(),
-        own_class(),
+        own_class(data),
     }, { align = "start", modifiers = { { padding = 28 } } })
     return ui.Column{ align = "stretch", page }
 end
