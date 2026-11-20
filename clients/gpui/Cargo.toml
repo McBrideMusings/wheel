@@ -29,6 +29,7 @@ raw-window-handle = "0.6"
 libloading = "0.8"
 tungstenite = "0.30"
 wheel-proto = { path = "../../proto" }
+regex = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 uuid = { version = "1", features = ["v4"] }

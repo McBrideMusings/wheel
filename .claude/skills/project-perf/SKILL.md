@@ -23,6 +23,7 @@ keeps each table.
 | hidden turns | `bash .claude/skills/project-verify/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
 | layout | `bash .claude/skills/project-verify/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 | build | `bash .claude/skills/project-verify/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
+| transcript links | `python3 clients/gpui/tools/check.py` (its `chat_links` step; `target/check/links-cost.json`) | `clients/gpui/src/chat_links.rs`, `clients/gpui/src/view/links.rs`, or how the GPUI transcript caches and measures rows |
 | plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `Components`, `apple/WheelLuau`, `clients/gpui/native/Bridge.swift`'s plugin pane, or a wheelhouse pane script |
 
 ## chat
@@ -105,6 +106,20 @@ recompile each other's crates on every run.
 | --- | --- | --- | --- |
 | crates the test run compiles | 0 | 0 | 15 (ring, rustls, rcgen, ureq, wheeld …: `CARGO_MANIFEST_DIR` passed on) |
 | crates the build after it compiles | 0 | 0 | 7 |
+
+## transcript links
+
+The GPUI transcript caches each reply's linked blocks and each row's height under one links
+generation (`LinkState::generation`); a move makes every reply's links again and measures every
+row of every agent column from the first. After the `chat_links` step's clicks, the hidden check
+sets a split to the ratio it has (a layout broadcast that changes no pane's chip) and sends a
+second message naming the same file and pane, then reads `/state` `links` before and after.
+
+| Measure | Limit | Now | Broken |
+| --- | --- | --- | --- |
+| generation moves, two layout broadcasts and one turn | 0 | 0 | 8 (a move on every layout and every repeated file answer) |
+| columns measured again from the first row, same | 0 | 0 | 8 |
+| replies whose links were made again, same | | 1 (the new reply) | 24 |
 
 ## plugin keystroke
 

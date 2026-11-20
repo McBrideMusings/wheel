@@ -1681,7 +1681,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // every event made this way), so a context menu is asked for with `control: true` on a
             // left press, as a Mac control-click asks for one.
             let eventType: NSEvent.EventType = kind == "down" ? .leftMouseDown : kind == "drag" ? .leftMouseDragged : kind == "move" ? .mouseMoved : .leftMouseUp
-            let flags: NSEvent.ModifierFlags = value["control"] as? Bool == true ? [.control] : []
+            var flags: NSEvent.ModifierFlags = value["control"] as? Bool == true ? [.control] : []
+            if value["command"] as? Bool == true { flags.insert(.command) }
             mouseNumber += 1
             // NSWindow.sendEvent drops mouse events for an unordered window, so route as AppKit
             // does after its own step: hit test, then the view gets the NSEvent. A drag or release

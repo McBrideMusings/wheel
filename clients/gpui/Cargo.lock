@@ -8210,6 +8210,7 @@ dependencies = [
  "libloading",
  "pulldown-cmark",
  "raw-window-handle",
+ "regex",
  "serde",
  "serde_json",
  "syntect",

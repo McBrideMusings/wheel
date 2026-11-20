@@ -738,6 +738,8 @@ impl Client {
             "quarantine": {"spaces": self.quarantine.spaces, "panes": self.quarantine.panes},
             "bridge": {"visible": native["visible"], "key_window": native["key_window"], "app_active": native["app_active"], "root_focused": native["root_focused"], "errors": native["errors"]},
         });
+        out["last_link"] = json!(self.links.last);
+        out["links"] = json!({"generation": self.links.generation(), "relinked": self.links.relinked.get(), "remeasured": self.links.remeasured.get()});
         out["card_views"] = self.card_views_json();
         out["agents"] = self.agents_json();
         // The plugin panes each space's empty panes offer, as `<plugin>/<pane>` (the buttons' own list), and each plugin pane's header error.

@@ -304,6 +304,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, cards_report) = transcript_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
     let (run, footer_report) = footer(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, links_report) = chat_links(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
     let (run, buttons_inside_short_pane, resolved_from_cli, status_report) = statuses(run, agent_pane.clone(), agent_name.clone(), agent_rect.clone(), cli_path.clone(), cx).await?;
     let (run, splits_above, perm_card, card_shown, answered_by_key, question_card, question_options, clicked, question_answer) = perm_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped) = composer_and_queue(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
@@ -380,6 +381,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "sessions_windows": sessions_windows,
         "agent": agent_report,
         "markdown": markdown_report,
+        "chat_links": links_report,
         "footer": footer_report,
         "status": status_report,
         "web": web_report,
@@ -972,6 +974,230 @@ async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_pa
     let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
         "reply_row": md_row, "wraps": wraps, "pane_right": pane_right, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, markdown_report))
+}
+
+/// Links in the transcript (wheel-6czg): an echoed reply naming a web page, a file that exists,
+/// one that does not and a terminal pane draws the three that exist as links (the file as its
+/// name, the pane as its chip). A click on the pane link focuses that pane, a click on the page
+/// opens a browser pane beside the chat, a Command-click on it goes to the system (recorded, not
+/// opened, in the hidden app), and a click on the file opens its `file://` page beside the chat.
+/// Zoom `pane` in or out through the client, when it is not that way already, and wait for the
+/// grid's motion to end. The links step needs the room; it does not test the zoom button.
+async fn set_zoom(run: &mut Run, pane: &str, on: bool, cx: &mut AsyncApp) -> Result<()> {
+    let zoomed = |run: &Run, cx: &mut AsyncApp| run.window.update(cx, |c, _, _| c.state_json()["grid_motion"].clone());
+    if zoomed(run, cx)?["zoomed"].is_null() == on {
+        run.window.update(cx, |c, _, _| c.toggle_zoom(pane))?;
+    }
+    for _ in 0..60 {
+        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
+        draw(run.window, None, cx)?;
+        let motion = zoomed(run, cx)?;
+        if motion["moving"] != true && motion["zoomed"].is_null() != on {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("the pane {pane} never {} zoomed: {}", if on { "became" } else { "stopped being" }, zoomed(run, cx)?)
+}
+
+async fn chat_links(run: Run, agent_pane: String, agent_name: String, cli_path: String, term_pane: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    let mut run = run;
+    let (window, native, output) = (run.window, run.native.clone(), run.output.clone());
+    // The grid as the step found it, which it gives back to the steps after it.
+    let focus_before = window.update(cx, |c, _, _| c.focus.current.clone())?;
+    let splits_before = window.update(cx, |c, _, _| c.splits_to(&agent_pane).into_iter().map(|s| format!("{}:{}:{}:{:.3}", s.id, if s.horizontal { "h" } else { "v" }, if s.first { "first" } else { "second" }, s.ratio)).collect::<Vec<_>>())?;
+    // Taken once the grid has stopped moving, so a ratio the step before set has finished drawing.
+    let mut frames_before = window.update(cx, |c, _, _| c.state_json()["panes"].as_object().map(|m| m.iter().map(|(id, p)| (id.clone(), p["frame"].clone())).collect::<Vec<_>>()).unwrap_or_default())?;
+    for _ in 0..50 {
+        pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let now = window.update(cx, |c, _, _| c.state_json()["panes"].as_object().map(|m| m.iter().map(|(id, p)| (id.clone(), p["frame"].clone())).collect::<Vec<_>>()).unwrap_or_default())?;
+        let moving = window.update(cx, |c, _, _| c.state_json()["grid_motion"]["moving"] == true)?;
+        let settled = !moving && now == frames_before;
+        frames_before = now;
+        if settled {
+            break;
+        }
+    }
+    // A pane in the grid is short: zoomed, the reply's lines all sit inside the transcript.
+    set_zoom(&mut run, &agent_pane, true, cx).await?;
+    let fixture = output.join("links-fixture.rs");
+    std::fs::write(&fixture, "fn main() {}\nfn two() {}\n")?;
+    let fixture = fixture.to_string_lossy().into_owned();
+    let message = format!("Links: https://example.com/wheel-links, file {fixture}:2, gone /nowhere/missing-file.rs, pane {term_pane}.");
+    let sent = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, &message, "--timeout", "30"])
+        .output()?;
+    ensure!(sent.status.success(), "agent send failed: {}{}", String::from_utf8_lossy(&sent.stdout), String::from_utf8_lossy(&sent.stderr));
+    let reply_row = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).and_then(|t| t.rows.iter().position(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("wheel-links")))));
+    let mut links: Vec<(String, String)> = vec![];
+    let mut row = None;
+    for _ in 0..200 {
+        pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+        row = reply_row(cx)?;
+        if let Some(r) = row {
+            window.update(cx, |c, _, _| c.reveal(&agent_name, r))?;
+            draw(window, None, cx)?;
+            let drawn = window.update(cx, |c, _, _| c.drawn_texts(&agent_name))?;
+            links = drawn.iter().filter(|d| d.row == r && d.kind == "reply").flat_map(|d| d.links.iter().map(|(range, a)| (d.text[range.clone()].to_owned(), a.clone()))).collect();
+            if links.len() >= 3 {
+                break;
+            }
+        }
+    }
+    let row = row.ok_or_else(|| anyhow::anyhow!("no reply naming the links arrived"))?;
+    draw(window, Some(output.join("client-links.png")), cx)?;
+    let labels: Vec<&str> = links.iter().map(|(l, _)| l.as_str()).collect();
+    ensure!(labels.len() == 3 && labels[0] == "https://example.com/wheel-links" && labels[1] == "links-fixture.rs:2" && labels[2].starts_with(&format!("{term_pane} · ")),
+        "reply links drawn: {links:?}");
+    // Press and release on the middle of a link, as the pointer does, with Command or not.
+    async fn click(window: ClientWindow, native: &Native, agent: &str, row: usize, label: &str, command: bool, connection: &mut Connection, layouts: &mut usize, cx: &mut AsyncApp) -> Result<Value> {
+        let drawn = window.update(cx, |c, _, _| c.drawn_texts(agent))?;
+        let d = drawn.iter().find(|d| d.row == row && d.links.iter().any(|(r, _)| &d.text[r.clone()] == label)).ok_or_else(|| anyhow::anyhow!("no link {label}"))?;
+        let (r, _) = d.links.iter().find(|(r, _)| &d.text[r.clone()] == label).unwrap();
+        let mid = r.start + label.len() / 2;
+        let at = window.update(cx, |c, _, _| c.text_point(agent, d.row, d.block, mid))?.ok_or_else(|| anyhow::anyhow!("no point for {label}"))?;
+        window.update(cx, |c, _, _| c.links.last = None)?;
+        let point = [f64::from(at.0) + 2., f64::from(at.1)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":point,"command":command}));
+        tick(cx, 100).await;
+        draw(window, None, cx)?;
+        native.call(json!({"op":"post_mouse","kind":"up","point":point,"command":command}));
+        for _ in 0..30 {
+            tick(cx, 50).await;
+            draw(window, None, cx)?;
+            pump(connection, 50, layouts, window, cx).await?;
+            if let Some(last) = window.update(cx, |c, _, _| c.links.last.clone())? {
+                return Ok(last);
+            }
+        }
+        anyhow::bail!("a click on {label} did nothing")
+    }
+    let panes_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["panes"].as_object().map(|m| m.iter().map(|(id, p)| (id.clone(), p["kind"].as_str().unwrap_or("").to_owned(), p["url"].as_str().map(str::to_owned))).collect::<Vec<_>>()).unwrap_or_default());
+    // A drag from the page link to the pane link selects the text between them and opens nothing.
+    let point_of = |cx: &mut AsyncApp, label: &str| -> Result<[f64; 2]> {
+        let drawn = window.update(cx, |c, _, _| c.drawn_texts(&agent_name))?;
+        let d = drawn.iter().find(|d| d.row == row && d.links.iter().any(|(r, _)| &d.text[r.clone()] == label)).ok_or_else(|| anyhow::anyhow!("no link {label}"))?;
+        let (r, _) = d.links.iter().find(|(r, _)| &d.text[r.clone()] == label).unwrap();
+        let at = window.update(cx, |c, _, _| c.text_point(&agent_name, d.row, d.block, r.start + label.len() / 2))?.ok_or_else(|| anyhow::anyhow!("no point for {label}"))?;
+        Ok([f64::from(at.0) + 2., f64::from(at.1)])
+    };
+    let (from, to) = (point_of(cx, labels[0])?, point_of(cx, labels[2])?);
+    window.update(cx, |c, _, _| c.links.last = None)?;
+    native.call(json!({"op":"post_mouse","kind":"down","point":from}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[(from[0] + to[0]) / 2., (from[1] + to[1]) / 2.]}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":to}));
+    tick(cx, 100).await;
+    draw(window, None, cx)?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":to}));
+    for _ in 0..6 {
+        tick(cx, 50).await;
+        draw(window, None, cx)?;
+    }
+    let (dragged_last, dragged_selection) = window.update(cx, |c, _, _| (c.links.last.clone(), c.selected_text()))?;
+    ensure!(dragged_last.is_none() && dragged_selection.as_deref().is_some_and(|t| t.contains("links-fixture.rs")),
+        "a drag across links opened {dragged_last:?} and selected {dragged_selection:?} (dragged {from:?} to {to:?}; {})", window.update(cx, |c, _, _| c.selection_debug(&agent_name))?);
+    window.update(cx, |c, _, _| c.selection = None)?;
+    // The Command-click goes to the system; the hidden app records it and opens nothing.
+    let system_click = click(window, &native, &agent_name, row, labels[0], true, &mut run.connection, &mut run.layouts, cx).await?;
+    ensure!(system_click["opened"] == "system" && system_click["url"] == "https://example.com/wheel-links" && system_click["skipped"] == true, "Command-click on the page: {system_click}");
+    let file_system_click = click(window, &native, &agent_name, row, labels[1], true, &mut run.connection, &mut run.layouts, cx).await?;
+    ensure!(file_system_click["opened"] == "system" && file_system_click["url"] == format!("file://{fixture}").as_str() && file_system_click["skipped"] == true, "Command-click on the file: {file_system_click}");
+    let mut opened = vec![];
+    for (label, want) in [(labels[0], "https://example.com/wheel-links".to_owned()), (labels[1], format!("file://{fixture}#L2"))] {
+        let before: Vec<String> = panes_now(cx)?.into_iter().map(|p| p.0).collect();
+        let pressed = click(window, &native, &agent_name, row, label, false, &mut run.connection, &mut run.layouts, cx).await?;
+        ensure!(pressed["opened"] == "pane" && pressed["url"] == want.as_str() && pressed["beside"] == agent_pane.as_str(), "click on {label}: {pressed}");
+        let mut new = None;
+        for _ in 0..100 {
+            pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+            new = panes_now(cx)?.into_iter().find(|p| !before.contains(&p.0));
+            if new.is_some() {
+                break;
+            }
+        }
+        let new = new.ok_or_else(|| anyhow::anyhow!("a click on {label} opened no pane"))?;
+        ensure!(new.1 == "browser", "the pane {label} opened: {new:?}");
+        opened.push(json!({"label": label, "pane": new.0, "kind": new.1, "url": new.2, "click": pressed}));
+        let id = new.0.clone();
+        window.update(cx, |c, _, _| c.send_layout(|req| ClientMsg::PaneClose { req: Some(req), pane: id }))?;
+        for _ in 0..50 {
+            pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+            if !panes_now(cx)?.iter().any(|p| p.0 == new.0) {
+                break;
+            }
+        }
+        set_zoom(&mut run, &agent_pane, true, cx).await?;
+        window.update(cx, |c, _, _| c.reveal(&agent_name, row))?;
+        draw(window, None, cx)?;
+    }
+    // Last: focusing the terminal pane moves the window off the zoomed agent pane.
+    let focus_click = click(window, &native, &agent_name, row, labels[2], false, &mut run.connection, &mut run.layouts, cx).await?;
+    let focused = window.update(cx, |c, _, _| c.focus.current.clone())?;
+    ensure!(focus_click["opened"] == "focus" && focused.as_deref() == Some(term_pane.as_str()), "pane link: {focus_click}, focus {focused:?}");
+    let report = json!({"row": row, "links": links, "pane_click": focus_click, "focused": focused, "command_click": system_click, "file_command_click": file_system_click, "drag_selected": dragged_selection, "opened": opened});
+    // The pane link took the keyboard to the terminal, which leaves the zoom kept but not shown
+    // until the agent pane has the keyboard again; a press on the composer gives it back, as the
+    // steps after this one type into the agent pane.
+    draw(window, None, cx)?;
+    let composer = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "composer"))?.ok_or_else(|| anyhow::anyhow!("no composer drawn"))?;
+    let p = [f64::from(composer.0 + composer.2 / 2.), f64::from(composer.1 + composer.3 / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    tick(cx, 300).await;
+    let focus_after = window.update(cx, |c, _, _| c.focus.current.clone())?;
+    ensure!(focus_after == focus_before, "the links step left the keyboard on {focus_after:?}, it found it on {focus_before:?}");
+    // The step leaves the grid as it found it: unzoomed.
+    set_zoom(&mut run, &agent_pane, false, cx).await?;
+    let mut frames_after = vec![];
+    for _ in 0..30 {
+        pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        frames_after = window.update(cx, |c, _, _| c.state_json()["panes"].as_object().map(|m| m.iter().map(|(id, p)| (id.clone(), p["frame"].clone())).collect::<Vec<_>>()).unwrap_or_default())?;
+        if frames_after == frames_before {
+            break;
+        }
+    }
+    let splits_after = window.update(cx, |c, _, _| c.splits_to(&agent_pane).into_iter().map(|s| format!("{}:{}:{}:{:.3}", s.id, if s.horizontal { "h" } else { "v" }, if s.first { "first" } else { "second" }, s.ratio)).collect::<Vec<_>>())?;
+    ensure!(frames_after == frames_before && splits_after == splits_before, "the links step left the grid changed: frames before {frames_before:?}, after {frames_after:?}; splits above {agent_pane} before {splits_before:?}, after {splits_after:?}; zoom {}", window.update(cx, |c, _, _| c.state_json()["grid_motion"].clone())?);
+    // Cost: a layout broadcast that changes no chip, and a turn that names files already answered
+    // (its new rows ask about them again, with the same answers), leave every reply's links and
+    // every row's height as they were: the generation stays, no column is measured again.
+    let counts = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["links"].clone());
+    let (before, layouts_before) = (counts(cx)?, run.layouts);
+    let split = window.update(cx, |c, _, _| c.splits_to(&agent_pane).first().map(|s| (s.id.clone(), s.ratio)))?;
+    if let Some((id, ratio)) = &split {
+        let set = std::process::Command::new(&cli_path)
+            .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "pane", "ratio", id, &ratio.to_string()]).output()?;
+        ensure!(set.status.success(), "pane ratio failed: {}", String::from_utf8_lossy(&set.stderr));
+    }
+    let again = format!("Links again: file {fixture}:2, pane {term_pane}.");
+    let sent = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, &again, "--timeout", "30"]).output()?;
+    ensure!(sent.status.success(), "agent send failed: {}", String::from_utf8_lossy(&sent.stderr));
+    let mut answered = false;
+    for _ in 0..200 {
+        pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let replied = window.update(cx, |c, _, _| c.transcripts.get(&agent_name).is_some_and(|t| t.state == "ready" && t.rows.iter().any(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("Links again")))))?;
+        if replied && !answered {
+            answered = true;
+        } else if answered && window.update(cx, |c, _, _| c.links.waiting() == 0)? {
+            break;
+        }
+    }
+    ensure!(answered, "no reply to the second links message");
+    let after = counts(cx)?;
+    let cost = json!({"layouts": run.layouts - layouts_before, "generation": after["generation"].as_u64().unwrap_or(0) - before["generation"].as_u64().unwrap_or(0),
+        "remeasured": after["remeasured"].as_u64().unwrap_or(0) - before["remeasured"].as_u64().unwrap_or(0), "relinked": after["relinked"].as_u64().unwrap_or(0) - before["relinked"].as_u64().unwrap_or(0)});
+    std::fs::write(output.join("links-cost.json"), cost.to_string())?;
+    ensure!(cost["layouts"].as_u64().unwrap_or(0) > 0 && cost["generation"] == 0 && cost["remeasured"] == 0, "links cost over a turn and a layout: {cost}");
+    let mut report = report;
+    report["cost"] = cost;
+    Ok((run, report))
 }
 
 /// Cards in the transcript (wheel-0but.6): `wheel agent card` puts a terminal pane, the agent's
@@ -2077,7 +2303,9 @@ async fn conversations(run: Run, agent_pane: String, agent_name: String, cli_pat
     };
     click_pane(&native, &codex_pane, cx)?;
     tick(cx, 300).await;
-    ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(codex_pane.as_str()), "clicking the Codex pane did not focus it");
+    let codex_focus = window.update(cx, |c, _, _| (c.focus.current.clone(), c.state_json()))?;
+    ensure!(codex_focus.0.as_deref() == Some(codex_pane.as_str()), "clicking the Codex pane did not focus it: focus {:?}, its frame {}, grid motion {}, last link {}, focus key {}",
+        codex_focus.0, codex_focus.1["panes"][codex_pane.as_str()]["frame"], codex_focus.1["grid_motion"], codex_focus.1["last_link"], codex_focus.1["focus_key"]);
     type_line(&native, "hello codex", cx).await;
     let mut codex_pane_streams = false;
     for _ in 0..150 {

@@ -13,6 +13,7 @@ mod composer_tests;
 mod conversations;
 mod debug;
 pub mod float;
+mod links;
 mod little;
 mod menubar;
 mod messages;
@@ -218,7 +219,9 @@ pub struct Client {
     pending_down: Option<(String, Point<Pixels>)>,
     pending_move: Option<Point<Pixels>>,
     pending_up: bool,
-    /// Each reply row's blocks, parsed again only when its text changed.
+    /// The transcripts' links: settings, file probes, the click waiting for a frame.
+    pub links: links::LinkState,
+    /// Each reply row's blocks with their links, made again only when its text or what its links show changed.
     parsed: Parsed,
     /// Syntax colours by (language, code), kept across frames while a block streams in.
     highlights: Highlights,
@@ -414,7 +417,7 @@ pub struct Control {
 }
 
 /// Reply blocks by (agent, row id), with the text they were parsed from.
-type Parsed = RefCell<HashMap<(String, usize), (String, Rc<Vec<Block>>)>>;
+type Parsed = RefCell<HashMap<(String, usize), (String, u64, Rc<Vec<Block>>)>>;
 /// Syntax colours by (language, code); none for a language `syntect` does not know.
 type Highlights = RefCell<HashMap<(String, String), Option<Rc<Vec<Run>>>>>;
 
@@ -466,6 +469,8 @@ pub struct Drawn {
     pub language: Option<String>,
     pub highlighted: bool,
     pub text: String,
+    /// The links in `text`: (byte range, address).
+    pub links: Vec<(Range<usize>, String)>,
     pub layout: TextLayout,
 }
 
@@ -498,7 +503,7 @@ impl Client {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
-            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, highlights: RefCell::default(), parsed: RefCell::default(),
+            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
@@ -558,6 +563,10 @@ impl Client {
                             if self.opened.contains_key(pane) {
                                 self.native.reload(pane);
                             }
+                            return false;
+                        }
+                        ServerMsg::FilePeek { req, path, found, .. } => {
+                            self.on_file_probe(*req, path, *found);
                             return false;
                         }
                         ServerMsg::Plugins { req, plugins } => {
@@ -635,6 +644,7 @@ impl Client {
                                     }
                                     // Machine-wide: the keys follow Ghostty's one setting.
                                     "keybind" if space.is_none() => self.set_keybind(&s.value),
+                                    key if key.starts_with("chat.links.") => self.link_setting(space.as_deref(), key, &s.value),
                                     key => {
                                         // `agent.<name>.home` changes the home the footer shows; the
                                         // agent list that carries it comes with the next `status`.
@@ -1439,9 +1449,17 @@ impl Client {
             let column = self.columns.entry(agent.clone()).or_insert_with(|| {
                 let state = ListState::new(0, ListAlignment::Bottom, px(OVERDRAW));
                 state.set_follow_mode(FollowMode::Tail);
-                Column { state, count: 0, queue: composer::QueueView::default(), reply_ends: vec![] }
+                Column { state, count: 0, queue: composer::QueueView::default(), reply_ends: vec![], links: 0 }
             });
             let mut from = changed.unwrap_or(usize::MAX);
+            // A link that resolved changes what its row shows and how tall it is: every row is
+            // measured again and its texts, which a copy reads, are made again.
+            let generation = self.links.generation();
+            if column.links != generation {
+                column.links = generation;
+                from = 0;
+                self.links.remeasured.set(self.links.remeasured.get() + 1);
+            }
             // A turn that ends gives its last reply the buttons' line, which makes that row taller.
             let reply_ends = t.turn_ends();
             if column.reply_ends != reply_ends {
@@ -1515,6 +1533,8 @@ impl Client {
     /// Turn the pointer positions of the frame's events into the selection's ends, through the
     /// texts the last frame drew.
     fn settle_selection(&mut self) {
+        // Where the button came up, when it did in this frame.
+        let up_point = if self.pending_up { self.pending_move } else { None };
         if let Some((agent, point)) = self.pending_down.take() {
             self.selection = self.resolve(&agent, point).map(|pos| Selection { agent, anchor: pos, head: pos, dragging: true });
         }
@@ -1531,6 +1551,16 @@ impl Client {
             && let Some(sel) = &mut self.selection
         {
             sel.dragging = false;
+            // A press and release on one place over a link is a click on it, not a selection.
+            if sel.is_empty()
+                && let Some(point) = up_point
+            {
+                let agent = sel.agent.clone();
+                if let Some(address) = self.link_at(&agent, point) {
+                    self.selection = None;
+                    self.links.pending = Some((agent, address, self.links.up_command));
+                }
+            }
         }
     }
     fn end_drag(&mut self) {
@@ -1965,6 +1995,12 @@ impl Client {
     /// The pointer moved anywhere in the window: what the root hears, and the capture layer while
     /// a drag holds the pointer.
     fn window_mouse_move(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
+        // The pointer becomes a hand over a transcript link.
+        let over = e.pressed_button.is_none() && self.over_link(e.position);
+        if over != self.links.hover {
+            self.links.hover = over;
+            cx.notify();
+        }
         let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
         let had = self.space_press.is_some() || self.pane_press.is_some() || self.space_drag.is_some() || self.pane_drag.is_some() || self.hover.is_some();
         self.pointer_moved(x, y, e.pressed_button.is_some());
@@ -2028,6 +2064,7 @@ impl Client {
         if self.pending_down.is_some() || self.selection.as_ref().is_some_and(|s| s.dragging) {
             self.pending_move = Some(e.position);
             self.pending_up = true;
+            self.links.up_command = e.modifiers.platform;
         }
         cx.notify();
     }
@@ -2309,6 +2346,10 @@ impl Render for Client {
         self.sync_agents(&cards.iter().map(|c| Placed { leaf: c.leaf.clone(), rect: c.rect }).collect::<Vec<_>>());
         self.frames += 1;
         self.settle_selection();
+        if let Some((agent, address, command)) = self.links.pending.take() {
+            self.open_link(&agent, &address, command, cx);
+        }
+        self.ask_probes();
         self.sync_columns();
         self.fill_selection_texts(cx);
         self.drawn.borrow_mut().clear();
@@ -2316,7 +2357,7 @@ impl Render for Client {
         self.tick_pairing(cx);
         self.tick_procs(cx);
         self.tick_preview(cx);
-        let mut root = div().relative().track_focus(&self.handle)
+        let mut root = div().relative().track_focus(&self.handle).when(self.links.hover, |d| d.cursor_pointer())
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 // A key with the composer's input focused went through `composer_key` before the
                 // input's own bindings.
@@ -2611,6 +2652,8 @@ struct Column {
     queue: composer::QueueView,
     /// The replies drawn with their buttons on a line under them (`Transcript::turn_ends`).
     reply_ends: Vec<usize>,
+    /// The links generation the rows were measured at (`LinkState::generation`).
+    links: u64,
 }
 /// How far past the visible rows the column lays out, in points, so a scroll finds them ready.
 const OVERDRAW: f32 = 600.;
@@ -2695,22 +2738,23 @@ impl Client {
             Kind::User { text, queued } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
                     .child(div().flex_none().child(if *queued { "queued" } else { "you" }).text_color(rgb(0x8fa89b)).text_xs())
-                    .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
+                    .child(div().flex_1().min_w_0().child(texts.inline("user", &self.linked_text(agent, text), 0xe0b070))))
                 .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, *queued, false, queue, &self.controls, cx))),
             // Drawn as a queued message is, with the same line under it less Edit.
             Kind::Reload { text } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
                     .child(div().flex_none().child("queued").text_color(rgb(0x8fa89b)).text_xs())
-                    .child(div().flex_1().min_w_0().child(texts.plain("user", text, 0xe0b070))))
+                    .child(div().flex_1().min_w_0().child(texts.inline("user", &self.linked_text(agent, text), 0xe0b070))))
                 .children(row.turn.zip(queue).and_then(|(turn, queue)| composer::queue_line(agent, turn, true, true, queue, &self.controls, cx))),
             Kind::Reply(x) => {
                 let blocks = {
                     let mut cache = self.parsed.borrow_mut();
-                    let entry = cache.entry((texts.agent.clone(), row.id)).or_insert_with(|| (String::new(), Rc::new(vec![])));
-                    if entry.0 != *x {
-                        *entry = (x.clone(), Rc::new(markdown::parse(x)));
+                    let generation = self.links.generation();
+                    let entry = cache.entry((texts.agent.clone(), row.id)).or_insert_with(|| (String::new(), u64::MAX, Rc::new(vec![])));
+                    if entry.0 != *x || entry.1 != generation {
+                        *entry = (x.clone(), generation, Rc::new(self.linked_blocks(agent, &markdown::parse(x))));
                     }
-                    entry.1.clone()
+                    entry.2.clone()
                 };
                 let mut col = div().flex().flex_col().gap_1().text_color(rgb(0xd9e8e1));
                 for block in blocks.iter() {
@@ -2732,13 +2776,13 @@ impl Client {
                         .child(actions.absolute().top(px(-2.)).right_0().invisible().group_hover(group, |s| s.visible()))
                 }
             }
-            Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(texts.plain("thought", x, 0x6f8a7c)),
+            Kind::Thought(x) => div().text_color(rgb(0x6f8a7c)).child(texts.inline("thought", &self.linked_text(agent, x), 0x6f8a7c)),
             Kind::Tool { id, title, kind, status, content, detail } => {
                 let info = ToolRow::new(title, kind, status, content, detail.as_deref());
                 let mut line = div().flex().gap_2().items_center().text_color(rgb(0x8fa89b))
                     .child(div().w(px(18.)).flex_none().text_color(rgb(0x6f8a7c)).child(info.glyph))
                     // One line, clipped at the pane's edge, as ToolViews.swift limits it; the figures after it keep their room.
-                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(texts.plain("tool", &info.label, 0x8fa89b)));
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(texts.inline("tool", &self.linked_text(agent, &info.label), 0x8fa89b)));
                 if let (Some(a), Some(r)) = (info.added, info.removed) {
                     line = line.child(div().flex_none().text_xs().text_color(rgb(0x7fb89a)).child(format!("+{a} −{r}")));
                 }
@@ -2756,14 +2800,14 @@ impl Client {
             Kind::Plan(entries) => {
                 let mut plan = div().flex().flex_col().text_color(rgb(0x8fa89b));
                 for e in entries {
-                    plan = plan.child(texts.plain("plan", &format!("{} {}", match e.status.as_str() { "completed" => "☑", "in_progress" => "◐", _ => "☐" }, e.content), 0x8fa89b));
+                    plan = plan.child(texts.inline("plan", &self.linked_text(agent, &format!("{} {}", match e.status.as_str() { "completed" => "☑", "in_progress" => "◐", _ => "☐" }, e.content)), 0x8fa89b));
                 }
                 plan
             }
             Kind::Mode(m) => div().text_xs().text_color(rgb(0x8fa89b)).child(format!("Mode: {m}")),
             Kind::Card(card) => self.card_row(agent, ix, card),
-            Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(texts.plain("notice", x, 0x8fa89b)),
-            Kind::Error(x) => div().text_color(rgb(0xe07070)).child(texts.plain("error", x, 0xe07070)),
+            Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(texts.inline("notice", &self.linked_text(agent, x), 0x8fa89b)),
+            Kind::Error(x) => div().text_color(rgb(0xe07070)).child(texts.inline("error", &self.linked_text(agent, x), 0xe07070)),
         };
         if let Some(kept) = texts.kept {
             self.row_texts.borrow_mut().entry(agent.to_owned()).or_default().insert(ix, kept);
@@ -2960,12 +3004,9 @@ impl Texts<'_> {
         if let Some(kept) = &mut self.kept {
             kept.push(text.to_owned());
         }
-        let entry = Drawn { agent: self.agent.clone(), row: self.row, block, kind, language: language.map(str::to_owned), highlighted, text: text.to_owned(), layout: styled.layout().clone() };
+        let entry = Drawn { agent: self.agent.clone(), row: self.row, block, kind, language: language.map(str::to_owned), highlighted, text: text.to_owned(), links: crate::chat_links::links_of(runs), layout: styled.layout().clone() };
         let drawn = self.drawn.clone();
         div().relative().child(styled).child(canvas(move |_, _, _| drawn.borrow_mut().push(entry), |_, _, _, _| ()).absolute().size_0())
-    }
-    fn plain(&mut self, kind: &'static str, text: &str, base: u32) -> gpui::Div {
-        self.styled(kind, text, &[], base, None, false)
     }
     fn inline(&mut self, kind: &'static str, text: &Text, base: u32) -> gpui::Div {
         self.styled(kind, &text.text, &text.runs, base, None, false)
