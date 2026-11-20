@@ -21,13 +21,20 @@ pub type SnapshotRender = (u64, futures::channel::oneshot::Receiver<Result<Vec<u
 pub struct PaneImages {
     next: u64,
     asked: HashMap<u64, String>,
-    /// Panes the window draws itself, to be cut from the next frame.
-    window_shots: Vec<String>,
+    /// Panes the window draws itself, to be cut from the next frame, each with the id of the
+    /// wheeld request it answers (None for the clipboard's own).
+    window_shots: Vec<(String, Option<u64>)>,
     /// Answers waiting for a render: the pane and its PNG or the reason it was refused.
     ready: Vec<(String, Result<Vec<u8>, String>)>,
     until: Option<u64>,
     /// Renders the debug window snapshot waits on, each answered down its channel.
     snapshots: HashMap<u64, futures::channel::oneshot::Sender<Result<Vec<u8>, String>>>,
+}
+
+/// Whether a native view's last placement leaves it showing on screen: not hidden under a card or
+/// out of the window, and not faded out. No placement yet counts as showing (a card's page view).
+fn shows_native(placement: Option<&Placement>) -> bool {
+    placement.is_none_or(|(_, hidden, _, alpha)| !hidden && *alpha > 0.)
 }
 
 impl PaneImages {
@@ -52,8 +59,7 @@ impl Client {
         let status = self.native.status();
         // The artifact cards' page views in agent transcripts are pasted as the panes' are.
         let renders = self.native_panes.clone().into_iter().chain(self.card_views.keys().cloned()).map(|pane| {
-            let entry = &status["panes"][pane.as_str()];
-            if entry["hidden"] == true || entry["alpha"].as_f64().unwrap_or(1.) <= 0. {
+            if !shows_native(self.placed.get(&pane)) {
                 return (pane, None);
             }
             let (send, receive) = futures::channel::oneshot::channel();
@@ -71,13 +77,30 @@ impl Client {
             self.pane_images.snapshots.remove(id);
         }
     }
+    /// Whether `pane`'s picture is the bridge's render of its native view: it has one and it is on
+    /// screen. Otherwise the window's own drawing is what the person sees (a chat, a browser pane
+    /// whose load failed under its card, a pane whose view is hidden) and its picture is cut from it.
+    pub fn native_on_screen(&self, pane: &str) -> bool {
+        self.native_panes.iter().any(|p| p == pane) && shows_native(self.placed.get(pane))
+    }
+    /// `wheel pane shot`: draw `pane` as the person sees it. True when it is asked (the answer goes
+    /// to wheeld from `tick_pane_image` or the bridge), false when this client does not show it.
+    pub fn render_for_wheeld(&mut self, id: u64, pane: &str) -> bool {
+        if !self.opened.contains_key(pane) {
+            return false;
+        }
+        if self.native_on_screen(pane) {
+            self.native.render(id, pane, false);
+        } else {
+            self.pane_images.window_shots.push((pane.to_owned(), Some(id)));
+        }
+        true
+    }
     /// Draw `pane` and put its PNG on the clipboard once the bridge answers.
     pub fn copy_pane_image(&mut self, pane: &str) {
         self.log(format!("pane {pane}: copy image asked"));
-        if !self.native_panes.iter().any(|p| p == pane) {
-            // The window draws this pane itself (a chat, or a pane whose view went away when it
-            // switched kind, which stays opened but hidden): the bridge has no picture of it to give.
-            self.pane_images.window_shots.push(pane.to_owned());
+        if !self.native_on_screen(pane) {
+            self.pane_images.window_shots.push((pane.to_owned(), None));
             return;
         }
         let id = OWN | self.pane_images.next;
@@ -100,14 +123,18 @@ impl Client {
     /// Each render: put what the bridge drew on the clipboard with its notice, and take the notice
     /// down 3 s after the last copy.
     pub fn tick_pane_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for pane in std::mem::take(&mut self.pane_images.window_shots) {
+        for (pane, wheeld) in std::mem::take(&mut self.pane_images.window_shots) {
             // After this render, drawn the way the debug snapshot is: a hidden window has no display
             // link to call a next-frame callback, and render_to_image needs a current frame.
             cx.spawn_in(window, async move |this, cx| {
                 cx.update(|window, cx| window.draw(cx).clear()).ok();
                 this.update_in(cx, |this, window, cx| {
                     let result = this.cut_pane(&pane, window);
-                    this.pane_images.ready.push((pane, result));
+                    match (wheeld, result) {
+                        (Some(id), Ok(png)) => this.send(&ClientMsg::Rendered { id, png: base64::engine::general_purpose::STANDARD.encode(png) }),
+                        (Some(id), Err(message)) => this.send(&ClientMsg::RenderRefused { id, message }),
+                        (None, result) => this.pane_images.ready.push((pane, result)),
+                    }
                     cx.notify();
                 })
                 .ok();
@@ -135,5 +162,19 @@ impl Client {
                 self.redraw_in(until - now, cx);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_view_hidden_under_a_card_or_faded_out_is_not_what_is_on_screen() {
+        let placed = |hidden, alpha| ([0.; 4], hidden, vec![], alpha);
+        assert!(shows_native(None));
+        assert!(shows_native(Some(&placed(false, 1.))));
+        assert!(!shows_native(Some(&placed(true, 1.))));
+        assert!(!shows_native(Some(&placed(false, 0.))));
     }
 }

@@ -608,8 +608,9 @@ impl Client {
                         }
                         // `wheel pane shot`: the bridge draws the pane and answers through a frame.
                         ServerMsg::RenderPane { id, pane, full } => {
-                            if self.opened.contains_key(pane) {
-                                self.native.render(*id, pane, *full);
+                            if *full && self.opened.contains_key(pane) {
+                                self.native.render(*id, pane, true);
+                            } else if !*full && self.render_for_wheeld(*id, pane) {
                             } else {
                                 self.send(&ClientMsg::RenderRefused { id: *id, message: "not shown".into() });
                             }
