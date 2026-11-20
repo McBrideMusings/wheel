@@ -292,6 +292,8 @@ fn rebuild(node: &mut Node, strategy: Placement, split_id: &str, new_id: &str) -
         id: new_id.to_string(),
         status: None,
         work: None,
+        name: None,
+        title: None,
         kind: PaneKind::empty(),
     });
     let n = leaves.len();
@@ -373,6 +375,8 @@ pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str
         id: new_id.to_string(),
         status: None,
         work: None,
+        name: None,
+        title: None,
         kind: PaneKind::empty(),
     };
     insert_beside(node, pane, dir, split_id, new).is_ok()
@@ -442,6 +446,8 @@ fn leaf_placeholder() -> Node {
         id: String::new(),
         status: None,
         work: None,
+        name: None,
+        title: None,
         kind: PaneKind::empty(),
     }
 }
@@ -481,6 +487,8 @@ pub(crate) fn take_leaf(
                     id: fresh(),
                     status: None,
                     work: None,
+                    name: None,
+                    title: None,
                     kind: PaneKind::empty(),
                 },
             };
@@ -950,6 +958,8 @@ impl AppState {
                 id: pane.clone(),
                 status: None,
                 work: None,
+                name: None,
+                title: None,
                 kind: PaneKind::empty(),
             },
             status: None,
@@ -1126,6 +1136,51 @@ impl AppState {
         Ok(())
     }
 
+    /// Name a pane, or with an empty name clear it. The name is one line.
+    pub fn pane_rename(&self, pane: &str, name: &str) -> Result<(), String> {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name: String = name.chars().take(wheel_proto::PANE_NAME_CHARS).collect();
+        let new = (!name.is_empty()).then_some(name);
+        let mut spaces = self.spaces.lock().unwrap();
+        let Some(Node::Pane { name: held, .. }) = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| space_leaf_mut(s, pane))
+        else {
+            return Err(format!("no pane {pane}"));
+        };
+        if *held == new {
+            return Ok(());
+        }
+        tracing::info!(%pane, from = ?held, to = ?new, "pane renamed");
+        *held = new;
+        self.changed(&spaces);
+        Ok(())
+    }
+
+    /// Put the title a program set on every pane `shows` picks, and tell every client. Not saved
+    /// on its own: the restore drops titles, and the program sets its title again.
+    pub(crate) fn retitle(&self, title: Option<String>, shows: impl Fn(&PaneKind) -> bool) {
+        let spaces = &mut *self.spaces.lock().unwrap();
+        let mut changed = false;
+        for space in &mut spaces.spaces {
+            for tree in space.trees_mut() {
+                each_leaf_mut(tree, &mut |leaf| {
+                    if let Node::Pane { id, title: held, kind, .. } = leaf {
+                        if shows(kind) && *held != title {
+                            tracing::info!(pane = %id, title = title.as_deref().unwrap_or("-"), "pane title");
+                            *held = title.clone();
+                            changed = true;
+                        }
+                    }
+                });
+            }
+        }
+        if changed {
+            self.broadcast_layout(spaces);
+        }
+    }
+
     /// Close a space and every pane in it. With `if_empty`, only while it holds one empty pane.
     pub fn space_close(&self, id: &str, if_empty: bool) -> Result<(), String> {
         let close_empty = self.closes_empty_sessions();
@@ -1251,6 +1306,8 @@ impl AppState {
                 id: new_id.clone(),
                 status: None,
                 work: None,
+                name: None,
+                title: None,
                 kind: PaneKind::empty(),
             };
             let placed = match site {
@@ -1669,7 +1726,7 @@ impl AppState {
         };
         let old = std::mem::replace(slot, new);
         self.drop_content(pane, &old);
-        if let Some(Node::Pane { work, .. }) = spaces
+        if let Some(Node::Pane { work, title, .. }) = spaces
             .spaces
             .iter_mut()
             .find_map(|s| space_leaf_mut(s, pane))
@@ -1677,6 +1734,7 @@ impl AppState {
             if work.take().is_some() {
                 tracing::info!(%pane, "pane kind changed; its declared work is cleared");
             }
+            *title = None;
         }
         if let Some((artifact, cwd)) = &watching {
             self.show_artifact(pane, artifact, cwd);
@@ -2556,6 +2614,16 @@ impl AppState {
             Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
         };
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
+        // A title is the running program's; the programs started now set their own.
+        for space in &mut loaded.spaces {
+            for tree in space.trees_mut() {
+                each_leaf_mut(tree, &mut |leaf| {
+                    if let Node::Pane { title, .. } = leaf {
+                        *title = None;
+                    }
+                });
+            }
+        }
         // The global active space this file once held is gone (ADR-0022).
         extra.remove("active");
         for key in extra.keys() {
@@ -2902,6 +2970,7 @@ impl AppState {
     pub(crate) fn sync_conversations(&self, spaces: &mut Spaces) -> bool {
         let mut changed = false;
         for space in &mut spaces.spaces {
+            self.sync_titles(space);
             each_space_kind_mut(space, &mut |kind| {
                 if let PaneKind::Agent {
                     agent, context, ..
@@ -2933,6 +3002,56 @@ impl AppState {
             });
         }
         changed
+    }
+}
+
+impl AppState {
+    /// Copy each running program's title onto its pane: an agent's conversation title, a
+    /// terminal's last OSC title, which it may have set before the pane took the terminal. A
+    /// title is live, so a change here is broadcast and never itself a reason to save.
+    fn sync_titles(&self, space: &mut SpaceInfo) {
+        let terms = self.terms.lock().unwrap();
+        for tree in space.trees_mut() {
+            each_leaf_mut(tree, &mut |leaf| match leaf {
+                Node::Pane { title, kind: PaneKind::Agent { agent, .. }, .. } => {
+                    if let Ok(running) = self.agent(agent).map(|s| s.title()) {
+                        *title = running;
+                    }
+                }
+                Node::Pane { title, kind: PaneKind::Terminal { term, .. }, .. } => {
+                    if let Some(held) = terms.get(term) {
+                        *title = held.term.title();
+                    }
+                }
+                _ => {}
+            });
+        }
+    }
+
+    /// Follow agents' conversation titles onto their panes as they change.
+    pub(crate) fn follow_agent_titles(self: &Arc<Self>) {
+        let mut events = self.global.subscribe();
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let event = events.recv().await;
+                let Some(state) = me.upgrade() else { return };
+                match event {
+                    Ok(ServerMsg::AgentTitle { agent, title }) => state.retitle(title, |kind| {
+                        matches!(kind, PaneKind::Agent { agent: a, .. } if *a == agent)
+                    }),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let spaces = &mut *state.spaces.lock().unwrap();
+                        for space in &mut spaces.spaces {
+                            state.sync_titles(space);
+                        }
+                        state.broadcast_layout(spaces);
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
     }
 }
 
@@ -3055,6 +3174,16 @@ fn each_space_kind_mut(space: &mut SpaceInfo, f: &mut impl FnMut(&mut PaneKind))
     }
 }
 
+/// Call `f` on every pane.
+fn each_leaf_mut(node: &mut Node, f: &mut impl FnMut(&mut Node)) {
+    if let Node::Split { a, b, .. } = node {
+        each_leaf_mut(a, f);
+        each_leaf_mut(b, f);
+    } else {
+        f(node);
+    }
+}
+
 /// Call `f` on every pane's kind.
 fn each_kind_mut(node: &mut Node, f: &mut impl FnMut(&mut PaneKind)) {
     match node {
@@ -3120,6 +3249,8 @@ mod tests {
             id: id.into(),
             status: None,
             work: None,
+            name: None,
+            title: None,
             kind: PaneKind::empty(),
         }
     }

@@ -715,10 +715,18 @@ impl AppState {
             self.pane_brief(pane, space_cwd);
         }
         let launch = self.term_launch(shell, seat.map(|(pane, _)| pane), picked);
+        let on_title: crate::pty::OnTitle = Box::new({
+            let (me, term) = (self.me.clone(), id.clone());
+            move |title| {
+                if let Some(state) = me.upgrade() {
+                    state.retitle(title, |kind| matches!(kind, wheel_proto::PaneKind::Terminal { term: t, .. } if *t == term));
+                }
+            }
+        });
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
             tokio::task::spawn_blocking(move || {
-                Term::spawn(id, cwd, launch, cols.max(1), rows.max(1))
+                Term::spawn(id, cwd, launch, cols.max(1), rows.max(1), on_title)
             })
             .await
         };
@@ -1100,6 +1108,7 @@ const ARTIFACT_SWEEP: Duration = Duration::from_secs(30);
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     crate::status::follow(state.clone());
+    state.follow_agent_titles();
     crate::push::follow(state.clone());
     state.sync_settings_watch();
     state.sync_plugin_watch();
@@ -2023,6 +2032,7 @@ async fn handle(
             roots: state.dir_roots(),
         }),
         ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
+        ClientMsg::PaneRename { req, pane, name } => done(req, state.pane_rename(&pane, &name)),
         ClientMsg::SpaceClose { req, id, if_empty } => done(req, state.space_close(&id, if_empty)),
         ClientMsg::Focus { req, space, pane } => done(
             req,
@@ -2991,6 +3001,16 @@ async fn handle(
             }
             Err(message) => {
                 tracing::warn!(%peer, %pane, %artifact, %message, "plugin embed refused");
+                Some(failed(req, message))
+            }
+        },
+        ClientMsg::PluginStream { req, pane, stream } => match state.plugin_stream(&pane, &stream).await {
+            Ok(socket) => {
+                tracing::info!(%peer, %pane, %stream, socket = %socket.display(), "plugin stream");
+                req.map(|req| ServerMsg::PluginStream { req, pane, stream, socket: socket.to_string_lossy().into_owned() })
+            }
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %stream, %message, "plugin stream refused");
                 Some(failed(req, message))
             }
         },

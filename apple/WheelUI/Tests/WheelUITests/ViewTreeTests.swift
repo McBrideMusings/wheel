@@ -33,6 +33,18 @@ struct ViewTreeTests {
         return pane
     }
 
+    @Test func aHeldPointerStaysInTheClient() throws {
+        let pane = load(Self.search)
+        let renders = pane.perf.renders
+        #expect(pane.hover(component: "root/TextField0"))
+        #expect(pane.tree.hover.held == "root/TextField0")
+        #expect(!pane.hover(component: "root/nothing"))
+        #expect(pane.tree.hover.held == "root/TextField0")
+        #expect(pane.hover(component: nil))
+        #expect(pane.tree.hover.held == nil)
+        #expect(pane.perf.renders == renders)
+    }
+
     @Test func idsComeFromKeysElseComponentAndPlace() throws {
         let pane = load(Self.search)
         let ids = pane.componentTexts.map { $0["id"] ?? "" }

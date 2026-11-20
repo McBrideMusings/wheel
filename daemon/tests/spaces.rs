@@ -8948,3 +8948,70 @@ async fn a_reload_starts_each_pane_again_on_what_it_is_on() {
     reloaded(&mut other, &browser).await;
     let _ = std::fs::remove_dir_all(&base);
 }
+
+fn name_and_title_of(node: &Node, pane: &str) -> Option<(Option<String>, Option<String>)> {
+    match node {
+        Node::Pane { id, name, title, .. } => (id == pane).then(|| (name.clone(), title.clone())),
+        Node::Split { a, b, .. } => name_and_title_of(a, pane).or_else(|| name_and_title_of(b, pane)),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_keeps_its_name_and_shows_the_title_its_program_sets() {
+    let dir = std::env::temp_dir().join(format!("wheel-pane-name-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state_file = dir.join("spaces.json");
+    let (url, first_daemon) = start_daemon(Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    let rename = |name: &str| ClientMsg::PaneRename { req: Some(9), pane: pane.clone(), name: name.into() };
+
+    ok(&mut ws, terminal(&pane)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let term = term_of(&spaces[0], &pane).expect("a terminal");
+    ok(
+        &mut ws,
+        ClientMsg::TermInput { req: Some(4), id: term, data: wheel_proto::encode_bytes("printf '\\033]2;\u{2733} Pane names\\007'\r".as_bytes()) },
+    )
+    .await;
+    let mut title = None;
+    for _ in 0..200 {
+        let (spaces, _) = layout(&mut ws).await;
+        title = name_and_title_of(&spaces[0].root, &pane).and_then(|(_, t)| t);
+        if title.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(title.as_deref(), Some("Pane names"), "the title loses its spinner glyph");
+
+    ok(&mut ws, rename("  Daemon\n work ")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(
+        name_and_title_of(&spaces[0].root, &pane),
+        Some((Some("Daemon work".into()), Some("Pane names".into()))),
+        "the name is one line, beside the title"
+    );
+    let refused = call(&mut ws, ClientMsg::PaneRename { req: Some(10), pane: "p999".into(), name: "x".into() }).await;
+    assert!(matches!(refused, ServerMsg::Error { ref message, .. } if message == "no pane p999"), "{refused:?}");
+    drop(ws);
+    first_daemon.abort();
+
+    let (url, _) = start_daemon(Some(state_file)).await;
+    let mut ws = connect(&url).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(
+        name_and_title_of(&spaces[0].root, &pane),
+        Some((Some("Daemon work".into()), None)),
+        "a restart keeps the name and drops the old program's title"
+    );
+    ok(&mut ws, terminal(&pane)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(name_and_title_of(&spaces[0].root, &pane).and_then(|(n, _)| n).as_deref(), Some("Daemon work"), "a kind change keeps the name");
+    ok(&mut ws, rename("")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(name_and_title_of(&spaces[0].root, &pane).and_then(|(n, _)| n), None, "an empty name clears it");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1285,8 +1285,12 @@ impl Client {
             self.close_tray();
             closed = true;
         }
-        if let Some(rn) = &self.rename
-            && !self.space_hit_rect(&rn.space.clone()).is_some_and(|r| crate::sidebar::contains(r, x, y))
+        if let Some(rn) = self.rename.clone()
+            && !match &rn.pane {
+                // A pane's name is edited in its header.
+                Some(pane) => self.scene().0.iter().find(|p| &p.leaf.id == pane).is_some_and(|p| crate::sidebar::contains(Rect { h: TITLE, ..p.rect }, x, y)),
+                None => self.space_hit_rect(&rn.space).is_some_and(|r| crate::sidebar::contains(r, x, y)),
+            }
         {
             self.cancel_rename();
             closed = true;
@@ -2244,12 +2248,30 @@ impl Client {
                     let failed = p.leaf.kind == "plugin" && self.plugin_errors.get(&p.leaf.id).is_some_and(|e| e.is_some());
                     let title = div().relative().min_w(px(0.)).overflow_hidden().whitespace_nowrap();
                     let title = if failed { title.flex_none().max_w(px(r.w * 0.6)) } else { title.flex_1() };
+                    let named = p.leaf.name.as_ref().or(p.leaf.title.as_ref());
+                    if let Some(rn) = self.rename.as_ref().filter(|rn| rn.pane.as_deref() == Some(p.leaf.id.as_str())) {
+                        let field = div().h(px(TITLE - 6.)).px(px(4.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(sidebar::ACCENT)).overflow_hidden().whitespace_nowrap().flex().items_center()
+                            .child(format!("{}▏", rn.draft));
+                        let field = if rn.error.is_some() { field.border_color(rgb(0xe0715f)) } else { field };
+                        title.child(field).child(recorded(&p.leaf.id, "pane-title", &self.controls)).into_any_element()
+                    } else {
+                    let pane = p.leaf.id.clone();
+                    let title = title.id(gpui::ElementId::Name(format!("pane-title-{pane}").into())).on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        // A double click names the pane; a single press goes on to the header's drag.
+                        if e.click_count == 2 && this.server_has("pane_rename") {
+                            cx.stop_propagation();
+                            this.begin_pane_rename(&pane);
+                            cx.notify();
+                        }
+                    }));
                     title.child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
+                        _ if named.is_some() => format!("{} · {}", named.unwrap(), p.leaf.id),
                         ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
                         ("plugin", _) => format!("{} · {}", p.leaf.label, p.leaf.id),
                         ("agent", _) if self.mode == "agents" => format!("{} · {}", self.pane_label(&p.leaf), self.spaces.iter().find(|s| s.site_of(&p.leaf.id).is_some()).map(|s| s.name.as_str()).unwrap_or_default()),
                         _ => format!("{} · {}", p.leaf.kind, p.leaf.id),
-                    }).child(recorded(&p.leaf.id, "pane-title", &self.controls))
+                    }).child(recorded(&p.leaf.id, "pane-title", &self.controls)).into_any_element()
+                    }
                 })
                 .children(self.plugin_errors.get(&p.leaf.id).cloned().flatten().filter(|_| p.leaf.kind == "plugin").map(|error| {
                     div().id(gpui::ElementId::Name(format!("plugin-error-{}", p.leaf.id).into())).relative().ml_2().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis()

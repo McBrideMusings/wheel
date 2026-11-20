@@ -117,7 +117,7 @@ mod tests {
     use crate::layout::Leaf;
 
     fn placed(id: &str, x: f32, w: f32) -> Placed {
-        Placed { leaf: Leaf { id: id.into(), kind: "terminal".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: None }, rect: Rect { x, y: 0., w, h: 100. } }
+        Placed { leaf: Leaf { id: id.into(), kind: "terminal".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None }, rect: Rect { x, y: 0., w, h: 100. } }
     }
 
     #[test]

@@ -2,7 +2,12 @@
 id = "gallery"
 version = "0.1.0"
 
+# Serves the stream VideoStream shows (`gallery.demo`) and the last input sent on it (`gallery.input`).
+[backend]
+command = "exec python3 backend.py"
+
 [[pane]]
 id = "gallery"
 title = "Component gallery"
 script = "panes/gallery.luau"
+reads = ["gallery.demo", "gallery.input"]

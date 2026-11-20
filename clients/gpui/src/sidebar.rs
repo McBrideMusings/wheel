@@ -380,7 +380,9 @@ pub const MENU_ROW_H: f32 = 24.0;
 /// An inline rename (InlineName): the draft and the refusal under it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rename {
+    /// The space renamed, or the space holding `pane` when a pane is.
     pub space: String,
+    pub pane: Option<String>,
     pub draft: String,
     pub error: Option<String>,
     /// The `space_rename` sent and not yet answered.
@@ -388,9 +390,10 @@ pub struct Rename {
 }
 
 /// Why a name is refused before it is sent (AppModel.renameSpace), or the trimmed name to send.
-pub fn rename_check(text: &str, connected: bool) -> Result<String, String> {
+pub fn rename_check(text: &str, connected: bool, pane: bool) -> Result<String, String> {
     let name = text.trim();
-    if name.is_empty() {
+    // An empty pane name clears it, and the pane reads its title again.
+    if name.is_empty() && !pane {
         return Err("A space needs a name.".into());
     }
     if !connected {
@@ -584,9 +587,11 @@ mod tests {
 
     #[test]
     fn a_rename_is_checked_before_it_is_sent() {
-        assert_eq!(rename_check("  ", true), Err("A space needs a name.".into()));
-        assert_eq!(rename_check("x", false), Err("Not connected to wheeld.".into()));
-        assert_eq!(rename_check("  wheel ", true), Ok("wheel".into()));
+        assert_eq!(rename_check("  ", true, false), Err("A space needs a name.".into()));
+        assert_eq!(rename_check("x", false, false), Err("Not connected to wheeld.".into()));
+        assert_eq!(rename_check("  wheel ", true, false), Ok("wheel".into()));
+        // An empty pane name clears it.
+        assert_eq!(rename_check("  ", true, true), Ok(String::new()));
     }
 
     #[test]

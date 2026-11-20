@@ -62,6 +62,8 @@ public final class ViewTree {
     public private(set) var modals: [ViewNode] = []
     /// Whether the view takes the pane's height itself (a frame-less Table or vertical List), so the pane has no ScrollView.
     public private(set) var fillsPane = false
+    /// Which nodes show hover feedback, and the pointer a check holds on one.
+    @ObservationIgnored public let hover = PaneHoverProbe()
     /// Every node the last render reached, by id.
     @ObservationIgnored private var index: [String: ViewNode] = [:]
     /// A table a control raised, with its event fields added: the pane sends it to the script's `update`.

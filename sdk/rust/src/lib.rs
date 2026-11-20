@@ -137,11 +137,19 @@ pub struct Call {
     pub peer: Peer,
 }
 
-/// The feeds and actions of one backend.
+/// Where stream `name` is served: `<name>.sock` in the folder wheeld gives the backend
+/// (`WHEEL_PLUGIN_STREAM_DIR`); None when wheeld gave none (an external backend).
+pub fn stream_socket(name: &str) -> Option<std::path::PathBuf> {
+    let dir = std::env::var_os("WHEEL_PLUGIN_STREAM_DIR").filter(|d| !d.is_empty())?;
+    Some(std::path::Path::new(&dir).join(format!("{name}.sock")))
+}
+
+/// The feeds, actions and streams of one backend.
 #[derive(Default)]
 pub struct Backend {
     feeds: Vec<(String, FeedFn)>,
     actions: Vec<(String, ActionFn)>,
+    streams: Vec<String>,
 }
 
 impl Backend {
@@ -167,6 +175,13 @@ impl Backend {
         Fut: Future<Output = Result<Value, ActionError>> + Send + 'static,
     {
         self.actions.push((name.to_string(), Arc::new(move |c| Box::pin(handler(c)))));
+        self
+    }
+
+    /// Declare a video stream (ADR-0053). The backend serves it itself, listening on
+    /// [`stream_socket`] for the client that shows it.
+    pub fn stream(&mut self, name: &str) -> &mut Self {
+        self.streams.push(name.to_string());
         self
     }
 
@@ -198,6 +213,7 @@ impl Backend {
         let names = InitializeResult {
             feeds: self.feeds.iter().map(|(n, _)| n.clone()).collect(),
             actions: self.actions.iter().map(|(n, _)| n.clone()).collect(),
+            streams: self.streams.clone(),
         };
         let (main_loop, _) = MainLoop::new_server(|client| {
             let state = State { peer: Peer { client }, feeds, actions, running: Mutex::default() };

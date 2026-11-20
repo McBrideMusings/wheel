@@ -30,4 +30,14 @@ import WheelKit
         #expect(paneFont(try value(#"{"size": 12, "weight": "semibold", "design": "monospaced"}"#)) != nil)
         #expect(paneFont(try value(#""nonsense""#)) == nil)
     }
+
+    @Test func aBorderlessButtonHighlightsUnlessTheScriptSaysOtherwise() throws {
+        func props(_ json: String) throws -> [String: JSONValue] { try value(json).dictionaryValue ?? [:] }
+        #expect(paneDefaultHighlight("Button", try props(#"{"variant": "borderless"}"#)) == false)
+        #expect(paneDefaultHighlight("Button", try props(#"{"variant": "borderless", "modifiers": [{"padding": 2}, {"disabled": true}]}"#)) == true)
+        #expect(paneDefaultHighlight("Button", try props(#"{"variant": "borderless", "modifiers": [{"hoverEffect": "none"}]}"#)) == nil)
+        #expect(paneDefaultHighlight("Button", try props(#"{"variant": "borderless", "modifiers": [{"hoverEffect": "highlight"}]}"#)) == nil)
+        #expect(paneDefaultHighlight("Button", try props(#"{}"#)) == nil)
+        #expect(paneDefaultHighlight("Text", try props(#"{"variant": "borderless"}"#)) == nil)
+    }
 }

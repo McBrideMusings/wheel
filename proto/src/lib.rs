@@ -37,7 +37,7 @@ pub const DEFAULT_INSTANCE: &str = "wheel";
 /// The protocol this build speaks, which `status` reports as `protocol` (1 when absent): a label
 /// for logs and reports. No client decides anything from it; what a client may send is the
 /// server's `ops`, and whether it can connect is `compat` (ADR-0050).
-pub const PROTOCOL_VERSION: u32 = 53;
+pub const PROTOCOL_VERSION: u32 = 54;
 
 /// The largest file `PUT /uploads/<pane>/<name>` takes (protocol 3): 100 MB.
 pub const UPLOAD_MAX_BYTES: u64 = 100 << 20;
@@ -226,6 +226,9 @@ pub struct BackendInfo {
     pub feeds: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,
+    /// The video streams its `initialize` reply named (ADR-0053), by their own names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub streams: Vec<String>,
     /// The file its output and `log` messages go to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
@@ -1285,6 +1288,14 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// Name a pane. Every client is told through the layout broadcast; the name is saved with the
+    /// pane. An empty name clears it, and the pane reads its title or its kind again.
+    PaneRename {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        name: String,
+    },
     /// Claude Code in a terminal pane says which conversation it is in now. Its `SessionStart`
     /// hook sends this at launch and again after `/clear`, `/resume` and `/compact`, none of which
     /// restarts the process. The pane saves that conversation as its conversation. Refused for
@@ -1729,6 +1740,17 @@ pub enum ClientMsg {
         req: Option<u64>,
         pane: String,
         artifact: String,
+    },
+    /// Plugin pane `pane`'s script shows video stream `stream` (`<plugin>.<name>`,
+    /// `VideoStream{stream}`, ADR-0053). Refused unless the pane's `reads` match the stream and the
+    /// plugin's backend named `<name>` among its `initialize` streams; starts the backend if it is
+    /// not running. Replies `plugin_stream` with the unix socket the backend serves it on.
+    /// `PROTOCOL_VERSION` 54.
+    PluginStream {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        stream: String,
     },
     /// Restart plugin `plugin`'s backend (as resolved in `space`): wheeld stops its process (sends
     /// `shutdown`, kills its process group after 1 s), starts a new one, or starts one when none
@@ -2644,6 +2666,14 @@ pub enum ServerMsg {
         scope: ArtifactScope,
         id: String,
     },
+    /// Where a plugin pane's video stream is served, in reply to `plugin_stream`: `socket` is the
+    /// unix socket path the client connects to.
+    PluginStream {
+        req: u64,
+        pane: String,
+        stream: String,
+        socket: String,
+    },
     /// A plugin backend's log, in reply to `plugin_logs`: `path` is the file, `text` its last lines.
     PluginLogs {
         req: u64,
@@ -2992,6 +3022,7 @@ impl ServerMsg {
             | ServerMsg::PluginLogs { req, .. }
             | ServerMsg::PluginAction { req, .. }
             | ServerMsg::PluginEmbed { req, .. }
+            | ServerMsg::PluginStream { req, .. }
             | ServerMsg::Tools { req, .. }
             | ServerMsg::ToolResult { req, .. }
             | ServerMsg::Resource { req, .. }
@@ -3828,6 +3859,10 @@ pub struct PaneWork {
     pub note: Option<String>,
 }
 
+/// The most characters a pane's name or title keeps; the rest is cut, since every change to
+/// either goes to every client in the layout.
+pub const PANE_NAME_CHARS: usize = 200;
+
 /// A split tree, after Ghostty's: every leaf is a pane, every inner node splits its area in two.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "node", rename_all = "snake_case")]
@@ -3842,6 +3877,16 @@ pub enum Node {
         /// gone when the pane closes or changes kind.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         work: Option<Box<PaneWork>>,
+        /// The name a person or an agent gave the pane (`pane_rename`). Saved with the pane, kept
+        /// when it changes kind; a client shows it over `title` and the kind.
+        /// On the wire as `pane_name`: the kind's own fields sit beside it, and a web pane's
+        /// artifact is `name`.
+        #[serde(rename = "pane_name", default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// The title the pane's program set: a terminal's OSC 0/2 title, an agent pane's
+        /// conversation title. Live: wheeld drops it on restore and the program sets it again.
+        #[serde(rename = "pane_title", default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
         #[serde(flatten)]
         kind: PaneKind,
     },
@@ -5335,6 +5380,16 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(&node).unwrap(), terminal);
 
+        // A pane's name never takes a web pane's artifact name, which is `name` on the wire.
+        let named: Node = serde_json::from_value(
+            serde_json::json!({"node": "pane", "id": "p5", "kind": "web", "scope": "project", "name": "viewer", "pane_name": "Docs"}),
+        )
+        .unwrap();
+        assert!(
+            matches!(&named, Node::Pane { name: Some(n), kind: PaneKind::Web { artifact, .. }, .. } if n == "Docs" && artifact.name() == "viewer"),
+            "{named:?}"
+        );
+        assert_eq!(serde_json::to_value(&named).unwrap()["pane_name"], "Docs");
         // A known kind keeps the fields a newer build added to it.
         let newer = serde_json::json!(
             {"node": "pane", "id": "p2", "kind": "terminal", "term": "t3", "extra": 1}

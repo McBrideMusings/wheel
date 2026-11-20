@@ -527,6 +527,8 @@ impl AppState {
             }
             (_, Err(e)) => return Err(format!("{pane} closed or changed while its shell started again: {e}")),
         };
+        // The new shell may have set its title before the pane held it.
+        self.sync_conversations(&mut spaces);
         self.changed(&spaces);
         result
     }

@@ -18,6 +18,10 @@ use crate::shell::Launch;
 /// Lines of history the daemon's copy of a screen keeps above it.
 pub const SCROLLBACK_LINES: usize = 10_000;
 
+/// Called with a terminal's title each time its program sets a different one (OSC 0 or 2), after
+/// `clean_title`; None when the program clears it.
+pub(crate) type OnTitle = Box<dyn Fn(Option<String>) + Send>;
+
 /// Bytes of shell output that may wait for the screen thread. Past this the reader blocks, the
 /// PTY fills, and the shell stalls until the screen thread catches up.
 const SCREEN_BACKLOG_BYTES: usize = 1024 * 1024;
@@ -109,9 +113,16 @@ pub struct Term {
     /// output arrives. A pane told to resume an agent forgets it once that has happened and the
     /// agent is not running, rather than after a new shell's grace period.
     job_seen: AtomicBool,
+    /// The title the program last set, after `clean_title`: a pane that takes this terminal
+    /// after the program set it reads it here.
+    title: Mutex<Option<String>>,
 }
 
 impl Term {
+    pub fn title(&self) -> Option<String> {
+        self.title.lock().unwrap().clone()
+    }
+
     /// Fork `launch`'s program, else the user's login shell, on a new PTY. Blocking: call from a
     /// blocking context.
     pub(crate) fn spawn(
@@ -120,6 +131,7 @@ impl Term {
         launch: Launch,
         cols: u16,
         rows: u16,
+        on_title: OnTitle,
     ) -> Result<Arc<Term>> {
         let mut cmd = match launch.program {
             Some(program) => {
@@ -136,7 +148,7 @@ impl Term {
         for (key, value) in &launch.env {
             cmd.env(key, value);
         }
-        Term::spawn_with(id, cwd, cmd, cols, rows)
+        Term::spawn_with(id, cwd, cmd, cols, rows, on_title)
     }
 
     fn spawn_with(
@@ -145,6 +157,7 @@ impl Term {
         mut cmd: CommandBuilder,
         cols: u16,
         rows: u16,
+        on_title: OnTitle,
     ) -> Result<Arc<Term>> {
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -178,6 +191,18 @@ impl Term {
             exited: AtomicBool::new(false),
             started: std::time::Instant::now(),
             job_seen: AtomicBool::new(false),
+            title: Mutex::new(None),
+        });
+        // Kept on the terminal before `on_title` hears it; weak, since the screen thread outlives
+        // no terminal.
+        let on_title: OnTitle = Box::new({
+            let term = Arc::downgrade(&term);
+            move |title| {
+                if let Some(term) = term.upgrade() {
+                    *term.title.lock().unwrap() = title.clone();
+                }
+                on_title(title);
+            }
         });
 
         // Writes block when the shell stops reading, so they get their own thread.
@@ -203,7 +228,7 @@ impl Term {
         let screen_backlog = backlog.clone();
         std::thread::Builder::new()
             .name(format!("pty-s-{sid}"))
-            .spawn(move || run_screen(sid, cols, rows, screen_rx, screen_backlog, made))?;
+            .spawn(move || run_screen(sid, cols, rows, screen_rx, screen_backlog, made, on_title))?;
         made_rx
             .recv()
             .context("screen thread stopped")?
@@ -390,6 +415,7 @@ fn run_screen(
     rx: std_mpsc::Receiver<ScreenMsg>,
     backlog: Arc<Backlog>,
     made: std_mpsc::Sender<Result<()>>,
+    on_title: OnTitle,
 ) {
     let mut screen = match new_screen(cols, rows) {
         Ok(screen) => screen,
@@ -402,13 +428,24 @@ fn run_screen(
     let _close = CloseBacklog(backlog.clone());
     let (tx, _) = broadcast::channel(1024);
     let mut exited = None;
+    let mut title = None;
     for msg in rx {
         match msg {
             ScreenMsg::Output(bytes) => {
                 let n = bytes.len();
                 screen.vt_write(&bytes);
                 // Replies to the shell's queries come from the attached clients, not from here.
-                screen.events().for_each(drop);
+                let set = screen
+                    .events()
+                    .filter_map(|event| match event {
+                        ghostty_vt::Event::TitleChanged(raw) => Some(clean_title(&raw)),
+                        _ => None,
+                    })
+                    .last();
+                if let Some(set) = set.filter(|set| *set != title) {
+                    title = set.clone();
+                    on_title(set);
+                }
                 let _ = tx.send(TermEvent::Output(Arc::from(bytes)));
                 backlog.release(n);
             }
@@ -440,6 +477,16 @@ impl Drop for CloseBacklog {
     fn drop(&mut self) {
         self.0.close();
     }
+}
+
+/// A title as a pane shows it: one line, without the spinner or status glyphs a program puts in
+/// front (Claude Code's `✳` and braille frames), so a spinner turning is no change. None when
+/// nothing is left.
+pub(crate) fn clean_title(raw: &str) -> Option<String> {
+    let text = raw.trim_start_matches(|c: char| c.is_whitespace() || (!c.is_ascii() && !c.is_alphanumeric()));
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text: String = text.chars().take(wheel_proto::PANE_NAME_CHARS).collect();
+    (!text.is_empty()).then_some(text)
 }
 
 /// The daemon's copy of a screen: `SCROLLBACK_LINES` of history, and the unfinished tail of the
@@ -579,6 +626,16 @@ const CONTINUATION_CAP: usize = 1 << 20;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_drops_its_spinner_and_keeps_its_text() {
+        assert_eq!(clean_title("✳ Pane naming").as_deref(), Some("Pane naming"));
+        assert_eq!(clean_title("⠂ Pane naming").as_deref(), Some("Pane naming"));
+        assert_eq!(clean_title("~/Projects/wheel").as_deref(), Some("~/Projects/wheel"));
+        assert_eq!(clean_title("Ünïcode  first\nline").as_deref(), Some("Ünïcode first line"));
+        assert_eq!(clean_title(" ✳ "), None);
+        assert_eq!(clean_title(&"x".repeat(500)).map(|t| t.chars().count()), Some(wheel_proto::PANE_NAME_CHARS));
+    }
 
     fn plain(t: &Terminal) -> String {
         let opts = FormatterOptions::new().with_format(Format::Plain);

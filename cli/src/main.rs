@@ -452,6 +452,14 @@ enum PluginCommand {
         #[arg(long, value_name = "FILE")]
         args_file: Option<String>,
     },
+    /// Print the unix socket a plugin's backend serves video stream STREAM on, as plugin pane
+    /// PANE's `VideoStream` asks for it (ADR-0053). Starts the plugin's backend if it is not running.
+    Stream {
+        /// A plugin pane whose `reads` match the stream; it names the space the plugin is resolved in.
+        pane: String,
+        /// The stream: `<plugin>.<name>`.
+        stream: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -871,9 +879,9 @@ enum WindowCommands {
 #[derive(Subcommand)]
 enum PaneCommand {
     /// Print every pane, one per line: its space, id, kind and site (grid, popped or
-    /// backgrounded).
+    /// backgrounded), then its name, or the title its program set, when it has one.
     Ls {
-        /// Print the panes as a JSON array of {space, pane, kind, site}.
+        /// Print the panes as a JSON array of {space, pane, kind, site, name, title}.
         #[arg(long)]
         json: bool,
     },
@@ -1288,6 +1296,14 @@ enum PaneCommand {
     Focus { pane: String },
     /// Set the share of a split its first pane takes (0.1 to 0.9).
     Ratio { split: String, ratio: f64 },
+    /// Name a pane; the name is saved and every client shows it in place of the title its
+    /// program set. With no name, clear it. An agent keeps its own pane's name current with
+    /// `wheel pane rename "$WHEEL_PANE" "<what it is for>"`.
+    Rename {
+        pane: String,
+        /// The name; omit it to clear the pane's name.
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2759,8 +2775,11 @@ fn agent_rows(node: &wheel_proto::Node, space: &wheel_proto::SpaceInfo, out: &mu
             id,
             status,
             work,
+            name,
+            title,
             kind: wheel_proto::PaneKind::Agent { agent, harness, model, place, .. },
         } => out.push(serde_json::json!({
+            "name": name.as_ref().or(title.as_ref()),
             "space": space.name,
             "cwd": place.as_ref().and_then(|p| p.cwd.as_deref()).unwrap_or(&space.cwd),
             "pane": id,
@@ -4602,6 +4621,19 @@ async fn plugin_action(conn: &mut Conn, pane: String, action: String, args: Stri
     Ok(())
 }
 
+/// Print the socket path `wheeld` answers `plugin_stream` with for `stream` in plugin pane `pane`.
+async fn plugin_stream(conn: &mut Conn, pane: String, stream: String) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::PluginStream { socket, .. } = conn
+        .call(ClientMsg::PluginStream { req: Some(req), pane, stream }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to plugin_stream".into()));
+    };
+    println!("{socket}");
+    Ok(())
+}
+
 async fn artifact_ls(
     conn: &mut Conn,
     space: Option<String>,
@@ -5387,14 +5419,15 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
 
 /// Every pane in tab order.
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
-    fn walk(node: &wheel_proto::Node, out: &mut Vec<(String, String)>) {
+    type Row = (String, String, Option<String>, Option<String>);
+    fn walk(node: &wheel_proto::Node, out: &mut Vec<Row>) {
         match node {
-            wheel_proto::Node::Pane { id, kind, .. } => {
+            wheel_proto::Node::Pane { id, kind, name, title, .. } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind));
+                out.push((id.clone(), kind, name.clone(), title.clone()));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -5414,10 +5447,10 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         for tree in space.trees() {
             walk(tree, &mut panes);
         }
-        for (pane, kind) in panes {
+        for (pane, kind, name, title) in panes {
             let site = space.site_of(&pane).map_or("", wheel_proto::PaneSite::name);
             rows.push(serde_json::json!({
-                "space": space.id, "pane": pane, "kind": kind, "site": site,
+                "space": space.id, "pane": pane, "kind": kind, "site": site, "name": name, "title": title,
             }));
         }
     }
@@ -5426,12 +5459,14 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         return Ok(());
     }
     for row in &rows {
+        let named = row["name"].as_str().or(row["title"].as_str());
         println!(
-            "{} {} {} {}",
+            "{} {} {} {}{}",
             row["space"].as_str().unwrap_or_default(),
             row["pane"].as_str().unwrap_or_default(),
             row["kind"].as_str().unwrap_or_default(),
             row["site"].as_str().unwrap_or_default(),
+            named.map(|n| format!(" {n}")).unwrap_or_default(),
         );
     }
     if rows.is_empty() {
@@ -6290,6 +6325,14 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
+        PaneCommand::Rename { pane, name } => {
+            simple(conn, |req| ClientMsg::PaneRename {
+                req: Some(req),
+                pane,
+                name: name.unwrap_or_default(),
+            })
+            .await
+        }
     }
 }
 
@@ -6640,6 +6683,7 @@ async fn main() -> ExitCode {
                 };
                 plugin_action(&mut conn, pane, action, args).await
             }
+            Command::Plugin(PluginCommand::Stream { pane, stream }) => plugin_stream(&mut conn, pane, stream).await,
             Command::Stream(command) => stream(&mut conn, command).await,
             Command::Title(TitleCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space)

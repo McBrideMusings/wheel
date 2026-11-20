@@ -357,6 +357,14 @@ public final class PluginPane {
         return out
     }
 
+    /// Holds a pointer on node `id`, as a check's stand-in for a real one, or takes it away with nil. False when the view has no node `id`.
+    @discardableResult
+    public func hover(component id: String?) -> Bool {
+        if let id, tree.node(id) == nil { return false }
+        tree.hover.held = id
+        return true
+    }
+
     /// Presses the component as its button would; false when the view has no node `id`.
     @discardableResult
     public func press(component id: String) -> Bool {
@@ -450,6 +458,7 @@ public struct PluginPaneView: View {
             .environment(\.paneSize, geo.size)
             .environment(\.paneCanvasSizes, true)
             .overlay { PanePresentedModals(tree: pane.tree) }
+            .environment(\.paneHoverProbe, pane.tree.hover)
         }
         .background(palette.bg)
         .accessibilityIdentifier("plugin.pane")
