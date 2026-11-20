@@ -8,7 +8,8 @@ from fixture import fixture  # noqa: E402
 
 out = here.parent / 'target/check'
 out.mkdir(parents=True, exist_ok=True)
-app = here.parent / 'target/app/Wheel.app/Contents/MacOS'
+# The check copy `build.py release --check` makes: the bundle as installed, plus the check.
+app = here.parent / 'target/app/check/Wheel.app/Contents/MacOS'
 host = app / 'wheel-gpui-check'
 contents = app.parent
 

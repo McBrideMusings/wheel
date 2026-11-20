@@ -52,6 +52,7 @@ wheel-proto = { path = "../proto" }
 similar = "3.2.0"
 tokio-tungstenite = "0.28"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [build-dependencies]
 sha2 = "0.10"

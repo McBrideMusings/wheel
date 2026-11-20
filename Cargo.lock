@@ -3056,6 +3056,7 @@ dependencies = [
  "tokio",
  "toml_edit",
  "wheel-plugin-sdk",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3332,6 +3333,7 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "wheel-proto",
  "wheeld",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3375,6 +3377,7 @@ dependencies = [
  "toml_edit",
  "ureq",
  "wheel-plugin-sdk",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3422,6 +3425,7 @@ dependencies = [
  "webpki-roots",
  "wheel-plugin-sdk",
  "wheel-proto",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3441,6 +3445,7 @@ dependencies = [
  "toml_edit",
  "url",
  "wheel-plugin-sdk",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3778,6 +3783,56 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "bitflags 2.13.2",
+ "clap",
+ "clap_builder",
+ "form_urlencoded",
+ "futures",
+ "futures-channel",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "http",
+ "httparse",
+ "hyper",
+ "hyper-util",
+ "indexmap",
+ "jiff",
+ "libc",
+ "log",
+ "memchr",
+ "once_cell",
+ "percent-encoding",
+ "proc-macro2",
+ "quote",
+ "rmcp",
+ "rustls",
+ "rustls-webpki",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "slab",
+ "smallvec",
+ "syn 2.0.119",
+ "syn 3.0.8",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "tower",
+ "tracing",
+ "tracing-core",
+ "url",
+ "winnow",
+]
 
 [[package]]
 name = "writeable"

@@ -22,3 +22,4 @@ wheel-plugin-sdk = { path = "../../sdk/rust" }
 json-patch = "5.0.0"
 notify = "7.0.0"
 tokio-util = { version = "0.7", features = ["compat"] }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }

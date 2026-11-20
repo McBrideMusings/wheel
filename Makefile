@@ -35,8 +35,9 @@ lint-wheelkit: ## SwiftLint over WheelKit: no force-unwrap, try!, as!, unchecked
 test-wheelkit: lint-wheelkit ## swift test on WheelKit, after the lint
 	swift test --package-path $(ROOT)/apple/WheelKit
 
-vet: ## Clippy with warnings as errors
+vet: ## Clippy with warnings as errors, and the workspace-hack current (cargo install --locked cargo-hakari)
 	cd $(ROOT) && cargo clippy --all-targets -- -D warnings
+	cd $(ROOT) && cargo hakari generate --diff && cargo hakari manage-deps --dry-run
 
 fmt: ## Format the Rust tree
 	cd $(ROOT) && cargo fmt

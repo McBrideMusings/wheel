@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the client: the Rust binaries, the Swift bridge, the bundled server, and the app bundle.
 
-    build.py [release|dev]
+    build.py [release|dev] [--check]
 
 `release` (the default) makes `target/app/Wheel.app`, id `com.piercemakes.wheel`, carrying the
 release wheeld as `com.piercemakes.wheel.daemon` on 7420. `dev` makes `target/app/Wheel Dev.app`, id
@@ -25,6 +25,11 @@ puts `Contents/Helpers/<server name>.wheelserver`, `Helpers/wheel`, `Helpers/whe
 Every binary and the bundle are signed with the keychain's Apple Development certificate
 (`tools/signing-identity`), the identity the Swift apps carry, so macOS keeps the permissions it
 granted across rebuilds; with no certificate the signature is ad hoc.
+
+`--check` also builds the hidden regression check, `wheel-gpui-check`, and makes
+`target/app/check/<name>.app`: a copy of the bundle with the check beside `wheel-gpui`, signed again.
+The check runs from inside a bundle because it finds the bridge and the server through its own
+path; the bundle that is installed never carries it.
 """
 import os, pathlib, plistlib, shutil, subprocess, sys, tempfile
 
@@ -32,9 +37,12 @@ VARIANTS = dict(
     release=dict(name='Wheel', bundle_id='com.piercemakes.wheel', configuration='Release', icon='AppIcon'),
     dev=dict(name='Wheel Dev', bundle_id='com.piercemakes.wheel.dev', configuration='Debug', icon='AppIconDev'),
 )
-variant = sys.argv[1] if len(sys.argv) > 1 else 'release'
-if variant not in VARIANTS or len(sys.argv) > 2:
-    sys.exit('usage: build.py [release|dev]')
+args = sys.argv[1:]
+with_check = '--check' in args
+args = [a for a in args if a != '--check']
+variant = args[0] if args else 'release'
+if variant not in VARIANTS or len(args) > 1:
+    sys.exit('usage: build.py [release|dev] [--check]')
 spec = VARIANTS[variant]
 
 here = pathlib.Path(__file__).resolve().parent
@@ -52,7 +60,8 @@ identity = subprocess.run([str(repo / 'tools/signing-identity')], check=True, ca
 if identity == '-':
     print('warning: no Apple Development certificate in the keychain; signing ad hoc', file=sys.stderr)
 
-subprocess.run(['cargo', '+stable', 'build', '--release', '--manifest-path', str(client / 'Cargo.toml')], check=True)
+packages = ['-p', 'wheel-gpui'] + (['-p', 'wheel-gpui-check'] if with_check else [])
+subprocess.run(['cargo', '+stable', 'build', '--release', *packages, '--manifest-path', str(client / 'Cargo.toml')], check=True)
 # A binary written over one macOS has already run is killed at its next launch ("load code
 # signature error 2": the mapped pages no longer match the signature), so each is replaced, never
 # overwritten, and signed again.
@@ -80,9 +89,10 @@ subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-librar
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)
 sign(contents / 'MacOS/libWheelGpuiBridge.dylib')
-for name in ['wheel-gpui', 'wheel-gpui-check']:
-    shutil.copy2(target / 'release' / name, fresh(contents / 'MacOS' / name))
-    sign(contents / 'MacOS' / name)
+shutil.copy2(target / 'release/wheel-gpui', fresh(contents / 'MacOS/wheel-gpui'))
+sign(contents / 'MacOS/wheel-gpui')
+# A bundle an earlier build made may still hold the check.
+fresh(contents / 'MacOS/wheel-gpui-check')
 for resource in products.glob('*.bundle'):
     shutil.copytree(resource, contents / 'Resources' / resource.name, dirs_exist_ok=True)
 
@@ -108,4 +118,12 @@ subprocess.run(['bash', str(repo / 'apple/Mac/embed-wheeld.sh')], check=True, en
     CONTENTS_FOLDER_PATH=f'{bundle.name}/Contents', EXPANDED_CODE_SIGN_IDENTITY=identity))
 # The bundle is signed last, after every file inside it is in place and signed.
 sign(bundle)
+if with_check:
+    checked = client / 'target/app/check' / bundle.name
+    shutil.rmtree(checked, ignore_errors=True)
+    checked.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['ditto', str(bundle), str(checked)], check=True)
+    shutil.copy2(target / 'release/wheel-gpui-check', checked / 'Contents/MacOS/wheel-gpui-check')
+    sign(checked / 'Contents/MacOS/wheel-gpui-check')
+    sign(checked)
 print(bundle)

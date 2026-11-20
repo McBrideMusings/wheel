@@ -97,7 +97,8 @@ pane's; each wait ends 1 s after the surface's last report.
 ## build
 
 `perf-build.sh` runs one `wheel-cli` integration test and `cargo build` once each to fill the
-target, then the same test and `cargo build` again, and counts the crates those last two compile. The `cli` tests build the fake agent with an inner
+target, then the same test, `cargo build`, `cargo build -p wheelhouse` and `cargo build -p wheeld`,
+counts the crates those last four compile, and counts the `libwheeld` and `libclap` rlibs the run wrote. The `cli` tests build the fake agent with an inner
 `cargo build` (`fake_agent()` in `cli/tests/cli.rs`); a variable Cargo sets for the test process
 reaching that build makes a build script see a changed environment, and the two builds then
 recompile each other's crates on every run.
@@ -106,6 +107,14 @@ recompile each other's crates on every run.
 | --- | --- | --- | --- |
 | crates the test run compiles | 0 | 0 | 15 (ring, rustls, rcgen, ureq, wheeld …: `CARGO_MANIFEST_DIR` passed on) |
 | crates the build after it compiles | 0 | 0 | 7 |
+| crates `cargo build -p wheelhouse` then `-p wheeld` compile after it | 0 | 0 and 0 | 42 for `-p wheelhouse` on main (`-p wheeld` alone not measured there) |
+| `libwheeld` and `libclap` rlibs the run writes | 1 each | 1 and 1 | 5 and 4 in the main checkout's `target/debug/deps` |
+
+Every build compiles each dependency with one set of features because every workspace member
+depends on `workspace-hack` (cargo-hakari, `.config/hakari.toml`). After adding or changing a
+dependency, run `cargo hakari generate && cargo hakari manage-deps --yes`; `make vet` fails while
+the hack is out of date. `wheel-proto` and `wheel-plugin-sdk` stay out of it: the GPUI client and
+plugins in other repos depend on them by path and would compile the daemon's tree.
 
 ## transcript links
 
