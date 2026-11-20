@@ -26,7 +26,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 ring = "0.17"
 webpki-roots = "1"
 libc = "0.2"
-mime_guess = "2.0.5"
+tower-http = { version = "0.6", features = ["fs"] }
 notify = "7.0.0"
 ghostty-vt = "=0.7.0"
 portable-pty = "0.9"

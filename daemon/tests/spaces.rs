@@ -1244,6 +1244,18 @@ async fn a_web_pane_serves_its_artifact_and_reloads_on_change() {
     let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
     assert_eq!(http_get(&addr, &page, &bearer).await.0, 200);
     assert_eq!(http_get(&addr, &page, "").await.0, 401, "no token");
+    // A video player loads its file in byte ranges: each range gets only its bytes, never the
+    // whole file again, and the answer stays out of every cache.
+    let (status, response) = http_get(&addr, &page, &format!("{cookie}Range: bytes=3-5\r\n")).await;
+    assert_eq!(status, 206, "{response}");
+    assert!(response.contains("content-range: bytes 3-5/10\r\n"), "{response}");
+    assert!(response.contains("cache-control: no-store\r\n"), "{response}");
+    assert!(response.ends_with("\r\n\r\none"), "{response}");
+    let (status, response) = http_get(&addr, &page, &format!("{cookie}Range: bytes=50-\r\n")).await;
+    assert_eq!(status, 416, "a range past the end: {response}");
+    let (_, response) = http_get(&addr, &page, &cookie).await;
+    assert!(response.contains("accept-ranges: bytes\r\n"), "{response}");
+    assert!(response.contains("cache-control: no-store\r\n"), "{response}");
     let refusals = [
         (
             format!("/artifacts/{pane}/../../etc/hosts"),
