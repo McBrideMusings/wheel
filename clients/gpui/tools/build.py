@@ -112,7 +112,9 @@ with tempfile.TemporaryDirectory() as tmp:
     CFBundleName=spec['name'], CFBundleDisplayName=spec['name'], CFBundlePackageType='APPL',
     CFBundleInfoDictionaryVersion='6.0', CFBundleIconFile='AppIcon', CFBundleSupportedPlatforms=['MacOSX'],
     LSApplicationCategoryType='public.app-category.developer-tools', LSMinimumSystemVersion='15.0',
-    NSHighResolutionCapable=True)))
+    NSHighResolutionCapable=True,
+    # A browser pane opens whatever address it is given, plain http on a Tailscale or LAN host included.
+    NSAppTransportSecurity=dict(NSAllowsArbitraryLoadsInWebContent=True))))
 subprocess.run(['bash', str(repo / 'apple/Mac/embed-wheeld.sh')], check=True, env=dict(os.environ,
     CONFIGURATION=spec['configuration'], SRCROOT=str(repo / 'apple'), TARGET_BUILD_DIR=str(bundle.parent),
     CONTENTS_FOLDER_PATH=f'{bundle.name}/Contents', EXPANDED_CODE_SIGN_IDENTITY=identity))
