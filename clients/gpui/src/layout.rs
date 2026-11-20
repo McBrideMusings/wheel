@@ -23,6 +23,9 @@ pub struct Leaf {
     /// What the pane asks of the person, as the daemon last said: in the `status` listing, then
     /// `status_changed`; a `spaces` broadcast carries none and the client keeps what it holds.
     pub status: Option<PaneStatus>,
+    /// The name a person or an agent gave the pane, and the title its program set.
+    pub name: Option<String>,
+    pub title: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tree {
@@ -127,8 +130,8 @@ impl From<&Node> for Tree {
                 a: Box::new(Tree::from(a.as_ref())),
                 b: Box::new(Tree::from(b.as_ref())),
             },
-            Node::Pane { id, kind, status, .. } => {
-                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: status.clone() };
+            Node::Pane { id, kind, status, name, title, .. } => {
+                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: status.clone(), name: name.clone(), title: title.clone() };
                 match kind {
                     PaneKind::Empty { .. } => leaf.kind = "empty".into(),
                     PaneKind::Terminal { term, cwd, agent, .. } => {
@@ -351,14 +354,14 @@ mod tests {
     #[test]
     fn every_kind_keeps_what_the_view_draws() {
         let leaves: Vec<_> = leaves_of(&tree()).into_iter().cloned().collect();
-        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, status: None });
-        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, status: None });
-        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, status: None });
+        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, status: None, name: None, title: None });
+        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, status: None, name: None, title: None });
+        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, status: None, name: None, title: None });
         let agent = node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}));
-        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), status: None }));
+        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), status: None, name: None, title: None }));
         // A shell running a coding agent carries the agent as its harness.
         let shell = node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","agent":{"name":"codex","conversation":"c1"}}));
-        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), status: None }));
+        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), status: None, name: None, title: None }));
     }
 
     #[test]
@@ -387,7 +390,7 @@ mod tests {
     #[test]
     fn unknown_kinds_survive_parsing() {
         let leaf = node(json!({"node":"pane","id":"p9","kind":"hologram"}));
-        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: None }));
+        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None }));
     }
 
     #[test]
