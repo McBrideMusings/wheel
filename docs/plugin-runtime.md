@@ -165,6 +165,27 @@ The bridge's debug `plugin` state lists a plugin pane's live embeds as `"embeds"
 
 The fixture `tools/fixtures/plugins/embed` shows a list of this space's terminal panes (from the `wheel.panes` feed), the picked pane's `Terminal`, a `WebView` of `https://example.com` and an `AgentChat` of the space's first agent pane (from `wheel.agents`).
 
+### Video streams
+
+`VideoStream{stream, height?, input?}` draws a live H.264 or HEVC stream that a plugin's backend serves (ADR-0053): `stream` is `<plugin>.<name>`, `height` points tall (default 320, the full width offered, the picture fitted with its aspect), `input` (default true) sends the person's keys, pointer and game controller events on it to the backend. Frames, audio and input never pass through the script or the view tree; the script places the component and draws whatever it likes around it (a stats line from a feed, buttons that invoke actions).
+
+The backend lists its streams in its `initialize` reply (`streams: ["demo"]`) and serves each on the unix socket `<name>.sock` in the folder `wheeld` gives it as `WHEEL_PLUGIN_STREAM_DIR` (one per package, under `wheeld`'s support directory as `v/<hash>`; an `[[external_backend]]` gets none and serves no stream). The client asks `wheeld` for the socket with `plugin_stream {pane, stream}`; `wheeld` refuses a stream the pane's `reads` do not match (as a feed), one the running backend did not list (`plugin gallery has no stream nope; its streams: demo`), a name that is not letters, digits, `_` and `-`, and an external backend's, starts the backend if it is not running, and replies `plugin_stream {pane, stream, socket}`. `PROTOCOL_VERSION` 54. `wheel plugin stream <pane> <stream>` prints the socket.
+
+On the socket each frame is a type byte, a 4-byte big-endian length and the payload:
+
+| Type | Direction | Payload |
+| --- | --- | --- |
+| 1 parameter sets | backend to client | codec byte (1 H.264, 2 HEVC), then the parameter set NAL units in Annex-B (SPS and PPS; VPS, SPS and PPS for HEVC). Sent first, and again whenever they change |
+| 2 video | backend to client | 8-byte big-endian time in microseconds, then one access unit in Annex-B; parameter set units inside it are skipped |
+| 3 audio | backend to client | 4-byte big-endian sample rate, channel count byte, interleaved s16 little-endian PCM |
+| 16 key | client to backend | JSON `{kind: down \| up \| modifiers, code, key, repeat, modifiers: [shift, control, option, command, capslock]}`; `code` is the Mac's virtual key code, `key` the characters without modifiers |
+| 17 pointer | client to backend | JSON `{kind: down \| up \| move, x, y, button}` with `x` and `y` in the video's pixels from its top left (button 0 left, 1 right), or `{kind: scroll, dx, dy, precise}` |
+| 18 controller | client to backend | JSON `{kind: state, controller, buttons: {a, b, x, y, lb, rb, l3, r3, menu, options, home, up, down, left, right}, axes: {lx, ly, rx, ry, lt, rt}}` on every change, or `{kind: disconnected, controller}` |
+
+The Mac host (`VideoStreams`, `apple/WheelUI/Sources/WheelUI/VideoStreams.swift`, made by the GPUI bridge's `streamView` and reached through the environment value `paneVideoStream`) connects from a read thread, decodes each access unit with a VideoToolbox decompression session (`StreamDecoder.swift`) and enqueues the frames, marked to show at once, on an `AVSampleBufferDisplayLayer`; it plays audio through an `AVAudioSourceNode` on an `AVAudioEngine`, pulling from a ring that keeps at most 0.25 s and drops the oldest past it, so sound never lags the picture (no player node's `play()`, which raises an exception Swift cannot catch when the engine has not run yet). A click focuses the stream, and while it is focused its keys go to the backend. Controllers (GameController) go to every stream that takes input in the key window. When the stream ends it shows why and asks `wheeld` again after 1 s, doubling to 30 s, since a restarted backend serves it again. The bridge's debug `plugin` state lists each as `{"stream", "socket", "frames", "audio", "inputs", "bytes", "video": [w, h], "error"}` in `embeds`; its actions `stream_key` (`component=<stream>`, `value=<characters>`) and `stream_click` (`component=<stream>`) hand a key, or a left click at the middle, to the stream's own view, the first one of that name that takes input. The iPhone cannot reach the socket and draws the component's note.
+
+The gallery's backend (`plugins/gallery/backend.py`) serves `gallery.demo`, `plugins/gallery/demo.h264` (2 s of a 320x180 test pattern at 30 fps) in a loop with a 440 Hz tone, and publishes the last input it got as the feed `gallery.input`. `tools/plugin-stream.sh` checks the op, the frames and the input against a throwaway `wheeld`; WheelUI's `VideoStreamTests` decode the clip and `tools/fixtures/streams/demo.hevc` (1 s of HEVC) with VideoToolbox; the GPUI check's gallery step drives both streams, a key and a click.
+
 ## Plugin panes
 
 A plugin package is a folder holding `wheel-plugin.toml`: `[plugin]` (`id`, `version`) and any number of `[[pane]]` (`id`, `title`, `script`, `reads`, `actions`). `wheeld` finds packages in `<project>/.wheel/plugins/<id>/`, then `~/.wheel/plugins/<id>/` (beside the machine `wheel.toml`), then its built-ins (`daemon/plugins/<id>/`, compiled in; `sample` has a counter and a text field). The first package with an id is the one a pane runs, and a project's packages show only in its own spaces (`daemon/src/plugins.rs`). A script path may not leave its package, and a script that with the package's other `.luau` files comes to over 1 MB is refused. Those files are the modules `require` reads: every `.luau` under the package folder but the pane's own script, at most 8 folders deep and 10,000 entries, skipping hidden folders and `node_modules`, `target`, `build`, `dist` and `vendor`, without entering a symlinked folder or reading a symlinked file that resolves outside the package. A module that cannot be read (not UTF-8, no permission) is left out and logged, never a refusal of the pane.
@@ -208,7 +229,7 @@ Every automatic launch (after a wait, or on a watched change) reads the package'
 
 | Method | Direction | Kind | Params and result |
 | --- | --- | --- | --- |
-| `initialize` | wheeld to backend | request | `{wheel_version, plugin_id, config: {}}` gives `{feeds, actions}`, each by its own name; 10 s to answer |
+| `initialize` | wheeld to backend | request | `{wheel_version, plugin_id, config: {}}` gives `{feeds, actions, streams}`, each by its own name (`streams` may be left out; see Video streams); 10 s to answer |
 | `feed/subscribe` | wheeld to backend | notification | `{feed, params}`: start sending `feed/update` for it; sent when the first pane reads the feed |
 | `feed/unsubscribe` | wheeld to backend | notification | `{feed, params}`: stop; sent when the last pane reading it leaves |
 | `action/invoke` | wheeld to backend | request | `{action, args, caller: {pane, space, plugin, plugin_pane}}` gives any JSON value, or a JSON-RPC error; `action` is the name the backend listed (`echo`, not `clock.echo`); `caller` is the invoking pane, its space and its own plugin and pane id; 30 s to answer |

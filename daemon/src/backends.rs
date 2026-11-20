@@ -644,6 +644,9 @@ struct Spec {
     /// asked for at each process start: the daemon's control address may be set after the first.
     env: Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>,
     socket: PathBuf,
+    /// The folder the backend serves its video streams in (`WHEEL_PLUGIN_STREAM_DIR`); none for an
+    /// external backend, which wheeld does not start.
+    stream_dir: Option<PathBuf>,
     log: Log,
     /// The manifest's `[backend]`, which the instance reports until it says more.
     declared: BackendInfo,
@@ -1147,6 +1150,12 @@ async fn serve(backend: &Arc<Backend>, hub: &Arc<Hub>, spec: &Spec) -> Ended {
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .process_group(0);
+    if let Some(dir) = &spec.stream_dir {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        command.env("WHEEL_PLUGIN_STREAM_DIR", dir);
+    }
     let listener = match spec.transport {
         BackendTransport::Stdio => {
             command.stdin(Stdio::piped());
@@ -1311,6 +1320,7 @@ fn initialized(backend: &Backend, hub: &Hub, spec: &Spec, server: ServerSocket, 
         i.state = BackendState::Running;
         i.feeds = result.feeds;
         i.actions = result.actions;
+        i.streams = result.streams;
         i.error = None;
     });
 }
@@ -1732,6 +1742,7 @@ impl Backends {
                     space_dir: space_dir.to_string(),
                     env: Arc::new(Vec::new),
                     socket: PathBuf::new(),
+                    stream_dir: None,
                     log: slot.log.clone(),
                     declared: external_declared(ext),
                     watch_dir: None,
@@ -1762,6 +1773,7 @@ impl Backends {
                 })
             },
             socket: socket_path(&state.instance_dir, &key),
+            stream_dir: Some(stream_dir(&state.instance_dir, &key)),
             log: slot.log.clone(),
             watch_dir: package.dir().map(Path::to_path_buf),
             declared,
@@ -1844,6 +1856,7 @@ impl Backends {
             info.pid = live.pid;
             info.feeds = live.feeds;
             info.actions = live.actions;
+            info.streams = live.streams;
             info.log = live.log;
             info.error = live.error;
         }
@@ -1895,6 +1908,25 @@ async fn settle(backend: Arc<Backend>) -> Result<Arc<Backend>, String> {
             backend.plugin,
             info.error.unwrap_or_else(|| "it stopped".into())
         )),
+    }
+}
+
+/// The longest stream socket path: a unix socket path is at most 104 bytes on macOS.
+const SOCKET_PATH_MAX: usize = 103;
+
+/// The folder a backend serves its video streams in, one per package key: under wheeld's support
+/// directory, or as `wv-<hash>` in the user's own temp directory when that leaves too little room
+/// for a stream's socket name (`<name>.sock`, 40 bytes kept for it). Never a folder other users can
+/// write to: the client sends the person's input to whatever listens there.
+fn stream_dir(support: &Path, key: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key.as_bytes());
+    let name: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    let dir = support.join("v").join(&name);
+    if dir.as_os_str().len() + 40 <= SOCKET_PATH_MAX {
+        dir
+    } else {
+        std::env::temp_dir().join(format!("wv-{name}"))
     }
 }
 
@@ -2180,6 +2212,41 @@ impl AppState {
             ));
         }
         Ok(hub.subscribe(&source.key(), name, params, None))
+    }
+
+    /// Where plugin pane `pane` reads video stream `stream` (`<plugin>.<name>`, ADR-0053): the unix
+    /// socket `<name>.sock` in the folder wheeld gave the plugin's backend. Refused unless the
+    /// pane's `reads` match the stream and the running backend named `<name>` in `initialize`;
+    /// starts the backend if it is not running.
+    pub(crate) async fn plugin_stream(&self, pane: &str, stream: &str) -> Result<PathBuf, String> {
+        let ctx = self.feed_grant(pane, stream).await?;
+        let (plugin, name) = stream
+            .split_once('.')
+            .filter(|(p, n)| !p.is_empty() && !n.is_empty())
+            .ok_or_else(|| format!("stream {stream:?} is not <plugin>.<name>"))?;
+        // The name becomes a file name in the backend's folder.
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return Err(format!("stream {stream:?}: a stream name is letters, digits, _ and -"));
+        }
+        if plugin == "wheel" {
+            return Err(format!("wheeld serves no stream; {stream} names it"));
+        }
+        let source = self.backend_source(Some(&ctx.cwd), plugin).await?;
+        if matches!(source, Source::External(_)) {
+            return Err(format!(
+                "plugin {plugin} is an [[external_backend]], which serves no stream: wheeld gives a stream folder only to a backend it starts"
+            ));
+        }
+        let backend = self.backends.ensure(self, &source, &ctx.cwd).await?;
+        let streams = backend.info.lock().unwrap().streams.clone();
+        if !streams.iter().any(|s| s == name) {
+            return Err(format!("plugin {plugin} has no stream {name}; its streams: {}", list_or_none(&streams)));
+        }
+        let socket = stream_dir(&self.instance_dir, &source.key()).join(format!("{name}.sock"));
+        if socket.as_os_str().len() > SOCKET_PATH_MAX {
+            return Err(format!("stream {stream}: its socket path {} is longer than a unix socket allows", socket.display()));
+        }
+        Ok(socket)
     }
 
     /// Whether pane `pane` may invoke `action` now: its package's `[[pane]]` entry lists it under
@@ -2574,6 +2641,7 @@ mod tests {
             space_dir: "/space".into(),
             env: Arc::new(Vec::new),
             socket: dir.join("s.sock"),
+            stream_dir: None,
             log: Log::open(&dir.join("p.log")).unwrap(),
             declared,
             watch_dir: Some(dir.to_path_buf()),
@@ -2655,6 +2723,15 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(backends.stop_all());
         assert!(backends.closing.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_stream_folder_leaves_room_for_a_socket_name() {
+        let short = stream_dir(Path::new("/tmp/s"), "/some/package");
+        assert!(short.starts_with("/tmp/s/v"));
+        assert_ne!(short, stream_dir(Path::new("/tmp/s"), "/other/package"), "one folder per package");
+        let long = stream_dir(Path::new(&format!("/{}", "x".repeat(70))), "/some/package");
+        assert!(long.as_os_str().len() + 40 <= SOCKET_PATH_MAX, "{}", long.display());
     }
 
     #[test]

@@ -3004,6 +3004,16 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
+        ClientMsg::PluginStream { req, pane, stream } => match state.plugin_stream(&pane, &stream).await {
+            Ok(socket) => {
+                tracing::info!(%peer, %pane, %stream, socket = %socket.display(), "plugin stream");
+                req.map(|req| ServerMsg::PluginStream { req, pane, stream, socket: socket.to_string_lossy().into_owned() })
+            }
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %stream, %message, "plugin stream refused");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::PluginAction {
             req,
             pane,

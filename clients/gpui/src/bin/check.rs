@@ -4571,6 +4571,45 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             draw(window, Some(output.join("client-plugin-beads-graph.png")), cx)?;
             entry["graph_canvases"] = json!(components(&graph).iter().filter(|c| c["type"] == "Canvas").count());
         }
+        if name == "gallery" {
+            // The gallery's VideoStream plays its backend's gallery.demo: frames decode and audio plays, and a key typed on
+            // the view reaches the backend, whose gallery.input feed the page then shows.
+            let demo = |s: &Value| s["embeds"].as_array().cloned().unwrap_or_default().into_iter()
+                .filter(|e| e["stream"] == "gallery.demo").collect::<Vec<_>>();
+            let mut streams = Vec::new();
+            for _ in 0..200 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                streams = demo(&state(&native));
+                if streams.len() == 2 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10)) { break; }
+            }
+            ensure!(streams.len() == 2 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10) && e["video"] == json!([320, 180])),
+                "the gallery's two VideoStreams decoded no picture: {streams:?}");
+            let typed = native.call(json!({"op":"plugin","pane":pane,"action":"stream_key","component":"gallery.demo","value":"q"}));
+            ensure!(typed["ok"] == true, "stream_key on gallery.demo: {typed}");
+            let mut last = Vec::new();
+            for _ in 0..100 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                last = texts(&state(&native)).into_iter().filter(|t| t.contains("events; last: key")).collect();
+                if last.iter().any(|t| t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)) { break; }
+            }
+            ensure!(last.iter().any(|t| t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)), "the key typed on the stream never reached the backend: {last:?}");
+            let clicked = native.call(json!({"op":"plugin","pane":pane,"action":"stream_click","component":"gallery.demo"}));
+            ensure!(clicked["ok"] == true, "stream_click on gallery.demo: {clicked}");
+            let mut pointer = Vec::new();
+            for _ in 0..100 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                pointer = texts(&state(&native)).into_iter().filter(|t| t.contains("last: pointer")).collect();
+                if pointer.iter().any(|t| t.contains(r#""kind":"up""#)) { break; }
+            }
+            ensure!(pointer.iter().any(|t| t.contains(r#""button":0"#) && t.contains(r#""kind":"up""#) && t.contains(r#""x":160"#) && t.contains(r#""y":90"#)),
+                "a click at the middle of the stream should reach the backend at (160, 90): {pointer:?}");
+            let png = output.join("client-plugin-gallery-stream.png");
+            let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
+            ensure!(ok, "pane shot of the gallery: {err}");
+            eprintln!("wheel-gpui: gallery streams {streams:?}; backend saw {last:?}");
+            entry["streams"] = json!(streams);
+            entry["stream_input"] = json!(last);
+        }
         if name == "graph" {
             // The Graph pane's cases, each driven through the pointer events the Canvas stage raises (`pointerAction` with
             // `{kind, x, y, button, dx, dy}`): 1 the fixture's three open beads and its one edge, 2 hover, 3 click, 4 drag.

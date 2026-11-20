@@ -42,6 +42,7 @@ struct PaneCatalog {
         case "Terminal": PaneEmbedView(kind: .terminal, node: node)
         case "AgentChat": PaneEmbedView(kind: .agentChat, node: node)
         case "WebView": PaneWebViewView(node: node)
+        case "VideoStream": PaneVideoStreamView(node: node)
         case "Unsupported": PaneUnsupportedView(name: node.props["name"]?.stringValue ?? "?")
         case "ProgressView": PaneProgressViewView(node: node)
         case "Gauge": PaneGaugeView(node: node)

@@ -813,6 +813,7 @@ pub async fn run() -> anyhow::Result<()> {
                 Ok(InitializeResult {
                     feeds: FEEDS.map(String::from).to_vec(),
                     actions: ACTIONS.map(String::from).to_vec(),
+                    streams: Vec::new(),
                 })
             })
             .notification::<FeedSubscribe>(|core, r| {

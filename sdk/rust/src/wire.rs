@@ -7,7 +7,8 @@ use async_lsp::lsp_types::request::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `initialize` (request, wheeld to backend): the backend answers with its feeds and actions.
+/// `initialize` (request, wheeld to backend): the backend answers with its feeds, actions and
+/// streams.
 pub struct Initialize;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -26,6 +27,10 @@ pub struct InitializeResult {
     pub feeds: Vec<String>,
     #[serde(default)]
     pub actions: Vec<String>,
+    /// The video streams it serves (ADR-0053), each on the unix socket `<name>.sock` in the folder
+    /// `WHEEL_PLUGIN_STREAM_DIR` names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub streams: Vec<String>,
 }
 
 impl Request for Initialize {
