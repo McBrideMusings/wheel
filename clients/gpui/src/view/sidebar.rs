@@ -141,7 +141,7 @@ const ROW_BG_ACTIVE: u32 = 0x31483e;
 const CARD_BG: u32 = 0x17201c;
 const CARD_BORDER: u32 = 0x2c3d34;
 const DIM: u32 = 0x8fa89b;
-const RED: u32 = 0xe07070;
+pub(super) const RED: u32 = 0xe07070;
 
 impl Client {
     /// The sidebar's rectangle: under the title row, down the left edge, over the bottom row.

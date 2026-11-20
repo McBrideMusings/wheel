@@ -334,9 +334,44 @@ impl Client {
                     let held = dragged.as_deref() == Some(id.as_str());
                     // A pane held over the tab outlines it in a layer of its own, so nothing in the tab moves.
                     let pane_over = self.pane_is_over(id);
-                    el = el.when(pane_over, |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(7.)).border_2().border_color(rgb(super::sidebar::ACCENT)))).when(held, |d| d.opacity(0.4)).when(away && !held, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
-                        .text_color(rgb(if chip.active { TEXT } else { DIM }))
-                        .child(div().overflow_hidden().whitespace_nowrap().child(chip.label.clone())).children(dots);
+                    let renaming = self.rename.as_ref().filter(|rn| &rn.space == id && rn.pane.is_none()).cloned();
+                    let group = format!("tab:{id}");
+                    el = el.group(group.clone()).when(pane_over, |d| d.child(div().absolute().left_0().top_0().size_full().rounded(px(7.)).border_2().border_color(rgb(super::sidebar::ACCENT)))).when(held, |d| d.opacity(0.4)).when(away && !held, |d| d.opacity(super::little::AWAY_OPACITY)).rounded(px(7.)).px_2().gap_1().cursor_pointer().bg(rgb(if chip.active { ACCENT } else { 0x1a2420 }))
+                        .text_color(rgb(if chip.active { TEXT } else { DIM }));
+                    el = match &renaming {
+                        Some(rn) => el.child(div().flex_1().min_w(px(0.)).h(px(20.)).px(px(4.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(super::sidebar::ACCENT)).overflow_hidden().whitespace_nowrap().text_xs().text_color(rgb(TEXT)).flex().items_center().child(format!("{}▏", rn.draft))),
+                        None => el.child(div().overflow_hidden().whitespace_nowrap().child(chip.label.clone())).children(dots),
+                    };
+                    // The sidebar row's close button, over the end of the name while the tab is hovered
+                    // or active; a space in a little window shows its way back instead.
+                    if renaming.is_none() {
+                        let close_id = id.clone();
+                        let close = div().absolute().right(px(4.)).top(px((r.h - 18.) / 2.)).w(px(18.)).h(px(18.)).rounded(px(5.)).flex().items_center().justify_center()
+                            .bg(rgb(if chip.active { ACCENT } else { 0x1a2420 })).hover(|s| s.bg(rgb(0x2a3832))).text_xs().text_color(rgb(DIM)).cursor_pointer()
+                            .child(if away { "↩" } else { "×" })
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if away {
+                                    this.press(format!("back space {close_id}"));
+                                    this.bring_back(&close_id, cx);
+                                } else {
+                                    this.press(format!("close space {close_id}"));
+                                    this.ask_close_space(&close_id);
+                                }
+                                cx.notify();
+                            }));
+                        el = el.child(if chip.active || away { close } else { close.invisible().group_hover(group, |s| s.visible()) });
+                    }
+                    // A right press or a control-click opens the space's menu, as on a sidebar row.
+                    let menu_id = id.clone();
+                    el = el.on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.open_space_menu(&menu_id, f32::from(e.position.x), f32::from(e.position.y));
+                        cx.notify();
+                    }));
+                    if let Some(err) = renaming.and_then(|rn| rn.error) {
+                        bar = bar.child(div().absolute().left(px(r.x + 6.)).top(px(r.y + r.h + 2.)).w(px(r.w.max(180.))).text_xs().text_color(rgb(super::sidebar::RED)).child(err));
+                    }
                 }
                 Hit::Title => {
                     // A double click names the window; a right press opens the title's menu.
@@ -375,6 +410,23 @@ impl Client {
             }
             if chip.pressable {
                 el = el.on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    if let Hit::Space(id) = &hit {
+                        // A press inside the tab's own name field edits it, never shows or drags.
+                        if this.rename.as_ref().is_some_and(|rn| &rn.space == id && rn.pane.is_none()) {
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if e.modifiers.control {
+                            cx.stop_propagation();
+                            this.open_space_menu(id, f32::from(e.position.x), f32::from(e.position.y));
+                            cx.notify();
+                            return;
+                        }
+                        // A press on another tab ends a rename, as a press on another sidebar row does.
+                        if this.rename.is_some() {
+                            this.cancel_rename();
+                        }
+                    }
                     this.press_title(&hit);
                     // A press on a tab that then moves drags its space, as a sidebar row's does.
                     if let Hit::Space(id) = &hit
