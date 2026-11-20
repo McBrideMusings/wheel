@@ -40,7 +40,7 @@
     display: inline-block; max-width: 100%; padding: 0; margin: 2px 0; border: 1px solid var(--separator); border-radius: 8px;
     background: var(--group); cursor: zoom-in; overflow: hidden; font: inherit; color: inherit; box-shadow: none; vertical-align: middle;
   }
-  .thumb img { display: block; max-width: 100%; max-height: 480px; height: auto; }
+  .thumb img, video { display: block; max-width: 100%; max-height: 480px; height: auto; }
 </style>
 <main id="root"><div class="notice plain">Waiting for the post…</div></main>
 <script src=".wheel/client.js"></script>
@@ -72,7 +72,7 @@
   // Markdown is drawn by marked (vendored beside this page as marked.umd.js). Raw HTML is shown as text,
   // except the <details>, <details open> and <summary> tags and their closing tags, which make a
   // collapsible section; a link or image whose target is refused is drawn as its text, and an image
-  // opens the lightbox.
+  // opens the lightbox. Videos use their native inline controls instead.
   const collapsible = /&lt;(\/?)(details|summary)&gt;|&lt;details open&gt;/g;
   marked.use({
     gfm: true,
@@ -86,6 +86,9 @@
       image({ href, text }) {
         const t = target(href);
         if (!t || t.anchor) return esc(text);
+        if (/\.(mp4|webm|mov)$/i.test(href.split(/[?#]/)[0])) {
+          return `<video src="${esc(t.url)}" aria-label="${esc(text || href)}" autoplay loop muted playsinline controls></video>`;
+        }
         return `<button type="button" class="thumb" data-lightbox data-src="${esc(t.url)}" data-cap="${esc(text)}"><img src="${esc(t.url)}" alt="${esc(text || href)}"></button>`;
       },
       code({ text, lang }) {

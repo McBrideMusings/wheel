@@ -101,7 +101,7 @@ with `wheel artifact builtin install markdown` (`wheel artifact builtin ls` says
 there).
 
 ```sh
-wheel artifact new notes --renderer markdown index.md   # the post: index.md plus every local image it points at
+wheel artifact new notes --renderer markdown index.md   # the post: index.md plus every local image or video it points at
 P=$(wheel pane split "$WHEEL_PANE" right)               # a pane for it
 wheel pane kind "$P" web --artifact notes
 # next turn: edit index.md, then push it; the open page changes with no reload
@@ -111,12 +111,12 @@ wheel artifact data "$P" index.md
 `--renderer markdown` names the page that draws the post; `notes` is the post's own name. A post
 made with `--ends-with-agent` or `--expires 2h` deletes itself; without them it stays.
 
-An image path is a file beside `index.md` (or below it); `wheel artifact new` copies each one into
+An image or video path is a file beside `index.md` (or below it); `wheel artifact new` copies each one into
 the post and stops with the file name if one is missing. A link to a file beside `index.md` is
 copied too and opens from the post; an `http(s)` link, or a bare `http(s)` address, opens in the
 default browser. Other schemes and paths outside the folder are not links, and raw HTML is shown as
 text. A click on any image opens a spotlight (click again to zoom, drag to pan, Esc to close, arrow
-keys step between images).
+keys step between images). Use `![caption](clip.mp4)` for an inline video; `.mp4`, `.webm`, and `.mov` play muted, looping, with controls. Videos stay inline rather than opening the image spotlight.
 
 ## Showing a mockup, and getting a pick: the `mockup` built-in
 

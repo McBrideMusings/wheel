@@ -489,7 +489,7 @@ enum ArtifactCommand {
         #[arg(long, value_parser = parse_duration)]
         expires: Option<u64>,
         /// Make a post instead: a folder holding only the files given, drawn by this artifact's
-        /// page (for example `markdown`), with no page of its own. Images a markdown file points
+        /// page (for example `markdown`), with no page of its own. Images and videos a markdown file points
         /// at are copied with it.
         #[arg(long, visible_alias = "as", requires = "files")]
         renderer: Option<String>,
@@ -509,7 +509,7 @@ enum ArtifactCommand {
         /// server behind it. Not `--url`, which is the daemon's address.
         #[arg(id = "page", long = "page", conflicts_with_all = ["path", "ends_with_agent", "expires", "renderer", "reply_to", "notify"])]
         url: Option<String>,
-        /// The files a post holds; each must be named here or, for a markdown file's images,
+        /// The files a post holds; each must be named here or, for a markdown file's images and videos,
         /// pointed at from it.
         files: Vec<PathBuf>,
     },
