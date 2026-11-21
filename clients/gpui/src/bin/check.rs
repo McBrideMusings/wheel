@@ -4840,7 +4840,8 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             let refused = native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"bottom"}));
             ensure!(refused["ok"] == false, "a pane that fills has no ScrollView, so a scroll should answer ok false: {refused}");
             let picker = components(&seen).iter().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Beads pane has no view picker"))?;
-            let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","path":format!("/{picker}"),"value":["graph"]}));
+            // The bridge's `set` names its node by `component` (Bridge.swift's plugin op).
+            let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","component":picker,"value":["graph"]}));
             ensure!(set["ok"] == true, "the Beads view picker refused `graph`: {set}");
             let mut graph = Value::Null;
             for _ in 0..200 {
@@ -5984,6 +5985,31 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     let resized = until!("the card resized by its corner", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want));
     let card_resized = card_now(&resized);
     draw(window, Some(output.join("client-popped-card-moved.png")), cx)?;
+    // wheel-eg4e.19.2 case 3: the release sent the card's frame to wheeld, in grid coordinates.
+    let in_grid = |f: [f64; 4]| [f[0] - area[0], f[1] - area[1], f[2], f[3]];
+    let listed = |stdout: &str| -> [f64; 4] {
+        let rows: Value = serde_json::from_str(stdout).unwrap_or(Value::Null);
+        let frame = rows.as_array().and_then(|r| r.iter().find(|r| r["pane"] == grid_c.as_str())).map(|r| r["frame"].clone()).unwrap_or(Value::Null);
+        [frame["x"].as_f64().unwrap_or(-1.), frame["y"].as_f64().unwrap_or(-1.), frame["w"].as_f64().unwrap_or(-1.), frame["h"].as_f64().unwrap_or(-1.)]
+    };
+    let (ok, out, err) = run_pumped(&["pane", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && near(listed(&out), in_grid(card_resized)), "after the drag wheel pane ls --json lists {:?} for {grid_c}, not the card's {:?} ({err})", listed(&out), in_grid(card_resized));
+    // Case 2: `wheel pane place` moves the card, and its view goes with it.
+    let (ok, _, err) = run_pumped(&["pane", "place", &grid_c, "--frame", "40,40,400,260"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane place failed: {err}");
+    let placed_at = [area[0] + 40., area[1] + 40., 400., 260.];
+    let placed = until!("the card at the frame wheel pane place set", |s: &Value| near(card_now(s), placed_at)
+        && near(four(&s["panes"][grid_c.as_str()]["bridge"]["frame_top"]), body_of(placed_at)));
+    let (ok, out, err) = run_pumped(&["pane", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok && near(listed(&out), [40., 40., 400., 260.]), "after pane place wheel pane ls --json lists {:?} ({err})", listed(&out));
+    draw(window, Some(output.join("client-popped-card-placed.png")), cx)?;
+    let card_placed = card_now(&placed);
+    // Put it back where the person left it, through the same op, for the pop checks below.
+    let back_at = in_grid(card_resized);
+    let frame_arg = format!("{},{},{},{}", back_at[0], back_at[1], back_at[2], back_at[3]);
+    let (ok, _, err) = run_pumped(&["pane", "place", &grid_c, "--frame", &frame_arg], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane place back failed: {err}");
+    until!("the card back where it was dragged", |s: &Value| near(card_now(s), card_resized));
     let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane pop failed: {err}");
     let back = until!("the third pane back in the grid", |s: &Value| grid_panes(s).contains(&grid_c) && s["cards"].as_array().is_some_and(Vec::is_empty));
@@ -5996,7 +6022,7 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane pop back failed: {err}");
     until!("the third pane back in the grid again", |s: &Value| grid_panes(s).contains(&grid_c));
-    let popped_card_report = json!({"pane": grid_c, "grid": area, "before": card_before, "moved": card_moved, "resized": card_resized, "popped_again": card_now(&again),
+    let popped_card_report = json!({"pane": grid_c, "grid": area, "before": card_before, "moved": card_moved, "resized": card_resized, "placed": card_placed, "popped_again": card_now(&again),
         "grid_view_holes": holes, "card_view_holes": card_holes, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report))
 }
