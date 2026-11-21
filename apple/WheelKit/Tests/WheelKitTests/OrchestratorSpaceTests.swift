@@ -33,7 +33,7 @@ struct OrchestratorSpaceTests {
     }
 
     @Test func encodesTheGlobalStartAndDecodesItsReply() throws {
-        #expect(try ClientMsg.orchestratorStartGlobal(req: 7).json() == #"{"op":"orchestrator_start","req":7,"scope":"global"}"#)
+        #expect(try ClientMsg.orchestratorStartGlobal(req: 7).json() == #"{"if_none":true,"op":"orchestrator_start","req":7,"scope":"global"}"#)
         guard case let .orchestratorStarted(req, pane, agent) = try ServerMsg.decode(#"{"ev":"orchestrator_started","req":7,"pane":"p9","agent":"w9"}"#) else {
             Issue.record("wrong case"); return
         }

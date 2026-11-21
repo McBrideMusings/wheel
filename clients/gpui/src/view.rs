@@ -851,6 +851,8 @@ impl Client {
         } else if !self.little && !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
+        // A window that opens in Orchestrator mode, or whose orchestrator stopped, starts one.
+        self.start_orchestrator_if_none();
         self.ask_space_settings();
         // A palette is for the pane as it was when it opened: a pane that left, or that
         // something else changed, closes it. One still waiting for a listing asks again.
@@ -915,6 +917,10 @@ impl Client {
             Some(session) => session.spaces.iter().filter_map(|id| self.spaces.iter().find(|s| &s.id == id)).collect(),
             None => self.spaces.iter().filter(|s| !s.orchestrator).collect(),
         }
+    }
+    /// Whether a global orchestrator runs: the Orchestrator space stays after its last one stops.
+    pub fn orchestrator_space_running(&self) -> bool {
+        self.spaces.iter().any(|s| s.orchestrator && !s.global_orchestrators.is_empty())
     }
     /// The Orchestrator space's id, once wheeld has made it.
     pub fn orchestrator_space(&self) -> Option<&str> {
@@ -2545,7 +2551,7 @@ impl Render for Client {
         if !space_held && !grid_off {
             root = root.children(self.tray_elements(cx));
         }
-        if !little && self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
+        if !little && self.sidebar_shown() && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.sidebar_element(cx));
         }
         root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.message_menu_overlay(cx)).children(self.title_overlays(cx)).children(self.space_drop_outline()).children(self.drag_chip()).children(self.space_drag_capture(cx));

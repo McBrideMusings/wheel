@@ -5744,7 +5744,7 @@ async fn orchestrator(
     scope: wheel_proto::OrchestratorScope,
     pull_after_secs: Option<u64>,
 ) -> Result<(String, String), String> {
-    send(ws, ClientMsg::OrchestratorStart { req: Some(req), space: space.map(String::from), scope, pull_after_secs, turn_limit_secs: None }).await;
+    send(ws, ClientMsg::OrchestratorStart { req: Some(req), space: space.map(String::from), scope, pull_after_secs, turn_limit_secs: None, if_none: false }).await;
     loop {
         match recv(ws).await {
             ServerMsg::OrchestratorStarted { req: r, pane, agent } if r == req => return Ok((pane, agent)),
@@ -5953,6 +5953,46 @@ async fn orchestrator_space(ws: &mut Ws) -> (wheel_proto::SpaceInfo, wheel_proto
     assert!(marked.next().is_none(), "one Orchestrator space");
     let session = sessions.into_iter().find(|n| n.spaces.contains(&space.id)).expect("a session holds it");
     (space, session)
+}
+
+/// Two clients that each start the global orchestrator with `if_none` when Orchestrator mode opens
+/// start one between them (wheel-eg4e.19.23).
+#[tokio::test(flavor = "multi_thread")]
+async fn two_if_none_global_starts_make_one_orchestrator() {
+    use wheel_proto::OrchestratorScope::Global;
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, _first) = start_daemon_with(fake, None).await;
+    let (mut a, mut b) = (connect(&url).await, connect(&url).await);
+    // Both sent before either is answered, as two clients opening Orchestrator mode at once.
+    let start = |req| ClientMsg::OrchestratorStart { req: Some(req), space: None, scope: Global, pull_after_secs: Some(3600), turn_limit_secs: None, if_none: true };
+    send(&mut a, start(401)).await;
+    send(&mut b, start(402)).await;
+    async fn started(ws: &mut Ws, req: u64) -> (String, String) {
+        loop {
+            match recv(ws).await {
+                ServerMsg::OrchestratorStarted { req: r, pane, agent } if r == req => return (pane, agent),
+                ServerMsg::Error { req: Some(r), message, .. } if r == req => panic!("refused: {message}"),
+                _ => {}
+            }
+        }
+    }
+    let (pa, aa) = started(&mut a, 401).await;
+    let (pb, ab) = started(&mut b, 402).await;
+    assert_eq!((pa.as_str(), aa.as_str()), (pb.as_str(), ab.as_str()), "both starts answered with the one orchestrator");
+    let (orch, _) = orchestrator_space(&mut a).await;
+    fn globals(v: &serde_json::Value) -> usize {
+        match v {
+            serde_json::Value::Object(o) => usize::from(o.get("orchestrator").and_then(|x| x.as_str()) == Some("global")) + o.values().map(globals).sum::<usize>(),
+            serde_json::Value::Array(a) => a.iter().map(globals).sum(),
+            _ => 0,
+        }
+    }
+    assert_eq!(globals(&serde_json::to_value(&orch).unwrap()), 1, "one global orchestrator runs: {orch:?}");
+    // A later start with `if_none` finds it; one without starts a second, as before.
+    send(&mut a, start(403)).await;
+    assert_eq!(started(&mut a, 403).await.0, pa);
+    let (second, _) = orchestrator(&mut a, 404, None, Global, Some(3600)).await.unwrap();
+    assert_ne!(second, pa, "a start without if_none starts another");
 }
 
 /// Global orchestrators run in the Orchestrator space (wheel-eg4e.19.9): the first global start

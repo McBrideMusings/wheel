@@ -75,14 +75,28 @@ impl AppState {
     /// Start an orchestrator of `scope` as a new agent pane; returns its pane and agent. A space
     /// orchestrator goes in `space`, a global one in the Orchestrator space and takes no `space`.
     ///
-    /// `pull_after` and `turn_limit` set its inbox's timers (`crate::inbox`).
+    /// `pull_after` and `turn_limit` set its inbox's timers (`crate::inbox`). With `if_none`, a
+    /// global start returns the first global orchestrator running already and starts none; the
+    /// check and the start share `orchestrator_starting`, so two such starts make one.
     pub(crate) async fn orchestrator_start(
         &self,
         space: Option<&str>,
         scope: OrchestratorScope,
         pull_after: Option<Duration>,
         turn_limit: Option<Duration>,
+        if_none: bool,
     ) -> Result<(String, String), String> {
+        let _starting = if if_none && scope == OrchestratorScope::Global {
+            let held = self.orchestrator_starting.lock().await;
+            let running = self.orchestrators.lock().unwrap().iter().find(|o| o.scope == OrchestratorScope::Global).map(|o| (o.pane.clone(), o.agent.clone()));
+            if let Some((pane, agent)) = running {
+                tracing::info!(%pane, %agent, "orchestrator start: a global orchestrator runs already");
+                return Ok((pane, agent));
+            }
+            Some(held)
+        } else {
+            None
+        };
         if turn_limit == Some(Duration::ZERO) {
             return Err("the turn limit must be at least one second".into());
         }

@@ -813,6 +813,11 @@ pub enum ClientMsg {
         pull_after_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_limit_secs: Option<u64>,
+        /// For a global start: when a global orchestrator runs already, reply with it and start none.
+        /// The check and the start share one lock, so clients that each start one when Orchestrator
+        /// mode opens start one between them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        if_none: bool,
     },
     /// Take the orchestrator lease: this connection owns orchestrator until it releases it or closes. Another
     /// connection's claim takes it over. Replies `orchestrator_claimed` naming this connection, and

@@ -6028,8 +6028,8 @@ async fn debug_server_and_processes(run: Run, terms: Vec<&String>, cx: &mut Asyn
 }
 
 /// The pane grid: a space of its own, splits, a real header drag, dock, and a popped card.
-/// Orchestrator mode (wheel-eg4e.8): with no Orchestrator space it says so and Start makes one by
-/// starting the global orchestrator (case 5); then it draws that space's grid (case 1), which no
+/// Orchestrator mode (wheel-eg4e.8): opening it with no global orchestrator starts one (case 5,
+/// wheel-eg4e.19.23); then it draws that space's grid (case 1), which no
 /// session, sidebar row or tab holds (case 2); `wheel pane place` moves its popped pane (case 3)
 /// and a real header drag and corner drag move and resize it (case 4). Leaving the mode shows the
 /// Spaces mode space again.
@@ -6059,22 +6059,49 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     }
     let four = |v: &Value| -> [f64; 4] { [0, 1, 2, 3].map(|i| v[i].as_f64().unwrap_or(-1.)) };
     let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
+    // The global orchestrators running, by pane, from `wheel space ls`.
+    fn globals(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(o) => {
+                if o.get("orchestrator").and_then(Value::as_str) == Some("global") && let Some(id) = o.get("id").and_then(Value::as_str) {
+                    out.push(id.to_owned());
+                }
+                o.values().for_each(|x| globals(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| globals(x, out)),
+            _ => {}
+        }
+    }
+    let (ok, out, err) = run_pumped(&["space", "ls"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space ls failed: {err}");
+    let mut stopped = vec![];
+    globals(&serde_json::from_str(&out).unwrap_or(Value::Null), &mut stopped);
+    // The mode menu step opened Orchestrator mode, which started one on its own; stop it, so this step opens the mode
+    // with none running.
+    for pane in &stopped {
+        let (ok, _, err) = run_pumped(&["orchestrator", "stop", pane], &mut connection, &mut layouts, window, cx).await?;
+        ensure!(ok, "wheel orchestrator stop {pane} failed: {err}");
+    }
     let start = state!();
-    ensure!(start["active"] == grid.as_str() && start["orchestrator"]["space"].is_null(), "before Orchestrator mode the window shows {} with Orchestrator space {}", start["active"], start["orchestrator"]["space"]);
-    // Case 5: the empty state, with the Spaces mode space still the one the window holds.
+    ensure!(start["active"] == grid.as_str(), "before Orchestrator mode the window shows {}", start["active"]);
+    // Case 5 (wheel-eg4e.19.23): opening the mode with no global orchestrator running starts one with no tap; the mode
+    // then draws the Orchestrator space.
     pick_mode(window, "orchestrator", cx).await?;
-    let empty = until!("the empty state with its Start button", |s: &Value| s["title"]["mode"] == "orchestrator" && s["orchestrator"]["empty"] == true && s["orchestrator"]["start"].is_array());
-    ensure!(empty["active"] == grid.as_str() && empty["cards"].as_array().is_none_or(Vec::is_empty), "the empty state shows {} with cards {}", empty["active"], empty["cards"]);
-    let drawn = window.update(cx, |c, _, _| c.grid_drawn_count())?;
-    ensure!(drawn == 0, "the empty state drew {drawn} grid panes");
-    draw(window, Some(output.join("client-orchestrator-empty.png")), cx)?;
-    let button = four(&empty["orchestrator"]["start"]);
-    let at = [button[0] + button[2] / 2., button[1] + button[3] / 2.];
-    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
-    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
-    // Case 1: Start made the Orchestrator space, and the mode draws its grid.
-    let shown = until!("the Orchestrator space shown after Start", |s: &Value| s["orchestrator"]["space"].is_string() && s["active"] == s["orchestrator"]["space"] && s["orchestrator"]["empty"] == false
-        && s["orchestrator"]["starting"] == false);
+    let shown = until!("the Orchestrator space shown, started by opening the mode", |s: &Value| s["title"]["mode"] == "orchestrator" && s["orchestrator"]["space"].is_string() && s["active"] == s["orchestrator"]["space"]
+        && s["orchestrator"]["empty"] == false && s["orchestrator"]["starting"] == false);
+    ensure!(shown["orchestrator"]["refused"].is_null(), "the start was refused: {}", shown["orchestrator"]);
+    let mut running = vec![];
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        let (_, out, _) = run_pumped(&["space", "ls"], &mut connection, &mut layouts, window, cx).await?;
+        running.clear();
+        globals(&serde_json::from_str(&out).unwrap_or(Value::Null), &mut running);
+        if running.iter().any(|p| !stopped.contains(p)) {
+            break;
+        }
+    }
+    ensure!(running.len() == 1 && !stopped.contains(&running[0]), "opening the mode started {running:?} after stopping {stopped:?}");
+    let button = Value::Null;
     let space = shown["orchestrator"]["space"].as_str().unwrap_or_default().to_owned();
     let panes_of = |s: &Value| -> Vec<String> {
         s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == space.as_str())).and_then(|x| x["panes"].as_array())
@@ -6093,6 +6120,15 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     let in_tabs = shown["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == format!("tab:{space}"));
     let in_palette = window.update(cx, |c, _, _| c.session_spaces().iter().any(|s| s.id == space))?;
     ensure!(!in_sessions && !in_sidebar && !in_tabs && !in_palette, "the Orchestrator space {space} is listed: sessions {in_sessions}, sidebar {in_sidebar}, tabs {in_tabs}, session spaces {in_palette}");
+    // No sidebar in Orchestrator mode (wheel-eg4e.19.22): the grid starts at the window's left edge, the title shows in
+    // place of tabs, and the sidebar button holds its place, disabled. The person's own choice is kept for Spaces mode.
+    let sidebar_open = shown["sidebar"]["open"] == true;
+    let sidebar_chip = shown["title"]["row"].as_array().and_then(|r| r.iter().find(|c| c["id"] == "sidebar")).cloned().unwrap_or(Value::Null);
+    let titled = shown["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == "title");
+    ensure!(shown["sidebar"]["shown"] == false && area[0] == 0. && sidebar_chip["enabled"] == false && titled,
+        "Orchestrator mode drew the sidebar: shown {}, grid {area:?}, sidebar button {sidebar_chip}, title shown {titled}", shown["sidebar"]["shown"]);
+    window.update(cx, |c, _, _| c.toggle_sidebar())?;
+    ensure!(window.update(cx, |c, _, _| c.sidebar_open)? == sidebar_open, "a sidebar toggle in Orchestrator mode changed the person's choice");
     // Case 3: the orchestrator pane popped, then placed by `wheel pane place`.
     let (ok, _, err) = run_pumped(&["pane", "pop", &pane], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane pop {pane} failed: {err}");
@@ -6135,7 +6171,7 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     ensure!(ok && near(listed, in_grid), "after the drags wheel pane ls --json lists {listed:?} for {pane}, not {in_grid:?} ({err})");
     // Leaving the mode shows the Spaces mode space again; coming back shows the Orchestrator space.
     pick_mode(window, "spaces", cx).await?;
-    until!("the Spaces mode space back", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
+    until!("the Spaces mode space back, with the sidebar as the person left it", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str() && s["sidebar"]["shown"] == sidebar_open);
     pick_mode(window, "orchestrator", cx).await?;
     until!("the Orchestrator space shown again", |s: &Value| s["active"] == space.as_str() && s["cards"].as_array().is_some_and(|c| c.len() == 1));
     // A space picked in the sidebar is a Spaces mode space: the mode ends.
@@ -6145,7 +6181,7 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     let (ok, _, err) = run_pumped(&["orchestrator", "stop", &pane], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel orchestrator stop {pane} failed: {err}");
     let report = json!({"space": space, "pane": pane, "start": button, "grid": area, "pane_frame": pane_frame, "popped": popped_at, "placed": placed_at, "dragged": want, "listed": listed,
-        "listed_in": {"sessions": in_sessions, "sidebar": in_sidebar, "tabs": in_tabs}});
+        "listed_in": {"sessions": in_sessions, "sidebar": in_sidebar, "tabs": in_tabs}, "sidebar": {"open": sidebar_open, "shown_in_mode": false, "button": sidebar_chip}});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, report))
 }
 

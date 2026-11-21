@@ -47,13 +47,19 @@ final class ModeUITests: XCTestCase {
                 XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
                 XCTAssertFalse(body.exists, "Spaces shows the pages")
             } else {
-                // With no Orchestrator space in this fixture, Orchestrator mode says so and offers Start.
-                let shown = id == "orchestrator" ? app.descendants(matching: .any)["no orchestrator"] : body
+                // Orchestrator mode starts the global orchestrator on its own and shows its space with it pinned.
+                let shown = id == "orchestrator" ? app.otherElements["pin sheet"] : body
                 XCTAssertTrue(shown.waitForExistence(timeout: 5), "\(title) shows its body")
                 shot(id)
             }
-            // Orchestrator mode's title names another space, so only its width may follow that name.
-            XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
+            // Orchestrator mode's title names another space, so only its width may follow that name; that mode has
+            // no eye, and its slot stays empty.
+            if id == "orchestrator" {
+                XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
+                XCTAssertEqual(placed(rects(id), without: "agents"), placed(launch, without: "agents"), "no control moved in \(title)")
+            } else {
+                XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
+            }
             sync(id)
         }
 
@@ -88,8 +94,8 @@ final class ModeUITests: XCTestCase {
     }
 
     /// The rect lines with the title's width left out: the title is the shown space's name, and holds its place.
-    private func placed(_ lines: String) -> String {
-        lines.split(separator: "\n").map { line -> String in
+    private func placed(_ lines: String, without left: String? = nil) -> String {
+        lines.split(separator: "\n").filter { left == nil || !$0.hasPrefix("\(left!) ") }.map { line -> String in
             var f = line.split(separator: " ").map(String.init)
             if f.first == "title", f.count == 5 { f[3] = "-" }
             return f.joined(separator: " ")
@@ -99,7 +105,10 @@ final class ModeUITests: XCTestCase {
     /// Each control's frame, one `<id> x y w h` line per control, written to the shots folder.
     private func rects(_ state: String) -> String {
         let lines = controls.map { id -> String in
-            let f = app.buttons[id].firstMatch.frame
+            // The title is a label, not a button, in Orchestrator mode.
+            // A control the mode drops (Orchestrator mode's eye) has no frame to read.
+            let element = (id == "title" ? app.descendants(matching: .any)[id] : app.buttons[id]).firstMatch
+            let f = element.exists ? element.frame : .zero
             return "\(id) \(Int(f.minX)) \(Int(f.minY)) \(Int(f.width)) \(Int(f.height))"
         }.joined(separator: "\n")
         if let dir = env["WHEEL_SHOTS"] {

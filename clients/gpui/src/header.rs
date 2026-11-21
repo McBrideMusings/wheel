@@ -172,8 +172,13 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
         chips.push(chip);
         x += BUTTON_W + GAP;
     };
+    // Orchestrator mode has one agent and no spaces to list: no sidebar and no tabs, and the sidebar button holds its
+    // place, disabled.
+    let orchestrator = mode == "orchestrator";
     if !hidden("sidebar") {
-        left(button(Hit::Sidebar, 0., "sidebar.left", if sidebar_open { "Hide the sidebar; spaces become tabs" } else { "Show the sidebar" }), &mut chips);
+        let mut sidebar = button(Hit::Sidebar, 0., "sidebar.left", if sidebar_open { "Hide the sidebar; spaces become tabs" } else { "Show the sidebar" });
+        sidebar.enabled = !orchestrator;
+        left(sidebar, &mut chips);
     }
     left(button(Hit::SessionMenu, 0., "rectangle.stack", "Session"), &mut chips);
     if !hidden("mode") {
@@ -222,7 +227,7 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
     let mut tab_w = TAB_WIDEST;
     let mut scrolls = false;
     let mut tabs = vec![];
-    if sidebar_open {
+    if sidebar_open || orchestrator {
         let x0 = left_end + GAP + TITLE_LEAD;
         chips.push(Chip { hit: Hit::Title, rect: Rect { x: x0, y: BUTTON_Y, w: (right_start - SPACER - x0).max(0.), h: BUTTON_H }, label: space_name.to_owned(), active: false, icon: String::new(), badge: None, tint: None, enabled: true, pressable: false });
     } else if !spaces.is_empty() {
@@ -294,6 +299,17 @@ mod tests {
         assert_eq!(r.chips[r.chips.len() - 2].rect.x, 1200. - 10. - 28. - 2. - 28.);
         assert_eq!(r.chips[4].rect.x, 1200. - 10. - 4. * 28. - 3. * 2.);
         assert!(r.track.is_none());
+    }
+
+    #[test]
+    fn orchestrator_mode_shows_the_title_not_tabs_and_disables_the_sidebar_button_in_place() {
+        let spaces = row(1200., false, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces");
+        let orchestrator = row(1200., false, &[], &named("s", 2), Some("so"), "Orchestrator", false, "orchestrator");
+        assert!(ids(&spaces).iter().any(|id| id.starts_with("tab")), "Spaces mode with the sidebar closed shows tabs: {:?}", ids(&spaces));
+        assert_eq!(ids(&orchestrator), ["sidebar", "session", "mode", "title", "processes", "palette", "pin", "new-space"]);
+        assert!(!orchestrator.chips[0].enabled, "the sidebar button is disabled");
+        assert_eq!(orchestrator.chips[0].rect, spaces.chips[0].rect, "and holds its place");
+        assert!(orchestrator.track.is_none() && orchestrator.tabs.is_empty());
     }
 
     #[test]

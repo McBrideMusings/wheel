@@ -3285,7 +3285,7 @@ async fn orchestrator_start(
         },
     };
     let req = conn.req();
-    let start = ClientMsg::OrchestratorStart { req: Some(req), space, scope, pull_after_secs, turn_limit_secs };
+    let start = ClientMsg::OrchestratorStart { req: Some(req), space, scope, pull_after_secs, turn_limit_secs, if_none: false };
     match conn.call(start, req).await? {
         ServerMsg::OrchestratorStarted { pane, .. } => {
             println!("{pane}");

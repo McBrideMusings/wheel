@@ -230,6 +230,11 @@ impl Client {
             self.ask_space_settings();
             self.sync_view();
         }
+        if mode == "orchestrator" {
+            // Each entry tries again after a refusal.
+            self.orchestrator_refused = None;
+            self.start_orchestrator_if_none();
+        }
     }
     /// The pin: the window floats over every other while it is on.
     pub fn set_pinned(&mut self, on: bool) {
@@ -529,42 +534,35 @@ impl Client {
         Some(card)
     }
 
-    /// Orchestrator mode's body while wheeld has no Orchestrator space: Start makes one by starting
-    /// the global orchestrator, and the mode then shows its space (wheel-eg4e.8).
-    pub(super) fn mode_element(&self, cx: &mut Context<Self>) -> gpui::Div {
+    /// Orchestrator mode's body while no global orchestrator runs: the start this window sent on its own, wheeld's
+    /// refusal of it, or that the running wheeld cannot start one (wheel-eg4e.19.23).
+    pub(super) fn mode_element(&self, _cx: &mut Context<Self>) -> gpui::Div {
         let r = self.grid_area();
         let (_, title, icon) = header::MODES.iter().find(|m| m.0 == self.mode).copied().unwrap_or(header::MODES[0]);
-        let offered = self.server_has("orchestrator_start");
-        let waiting = self.orchestrator_start_req.is_some();
-        let label = if waiting { "Starting…" } else { "Start" };
-        let start = if offered && !waiting {
-            button(label, cx.listener(|this, _, _, cx| {
-                this.start_orchestrator();
-                cx.stop_propagation();
-                cx.notify();
-            }))
-        } else {
-            div().px_2().py(px(2.)).rounded_sm().text_xs().bg(rgb(BOX)).text_color(rgb(DIM)).child(label)
+        let line = match &self.orchestrator_refused {
+            Some(message) => message.clone(),
+            None if !self.server_has("orchestrator_start") => ORCHESTRATOR_UNOFFERED.into(),
+            None => ORCHESTRATOR_STARTING.into(),
         };
-        let start = start.relative().child(super::recorded("", "orchestrator-start", &self.controls));
+        let colour = if self.orchestrator_refused.is_some() { 0xd98a7a } else { DIM };
         div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).flex().flex_col().items_center().justify_center().gap(px(6.))
             .children(self.symbol(icon, 28., 0x5a7266))
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(title))
-            .child(div().text_color(rgb(DIM)).child(ORCHESTRATOR_EMPTY))
-            .child(start)
-            .children(self.orchestrator_refused.clone().map(|m| div().text_xs().text_color(rgb(0xd98a7a)).child(m)))
+            .child(div().text_color(rgb(colour)).child(line))
     }
-    /// Start the global orchestrator, which wheeld runs in the Orchestrator space it makes.
-    pub fn start_orchestrator(&mut self) {
-        if self.orchestrator_start_req.is_some() || !self.server_has("orchestrator_start") {
+    /// Start the global orchestrator when Orchestrator mode shows and none runs: no tap, and `if_none`, so two
+    /// clients opening the mode at once start one. A refusal stays until the mode is entered again.
+    pub fn start_orchestrator_if_none(&mut self) {
+        if self.little || self.mode != "orchestrator" || self.orchestrator_space_running() || self.orchestrator_start_req.is_some()
+            || self.orchestrator_refused.is_some() || !self.server_has("orchestrator_start")
+        {
             return;
         }
         let req = self.next_req;
         self.next_req += 1;
         self.orchestrator_start_req = Some(req);
-        self.orchestrator_refused = None;
-        self.press("orchestrator start".into());
-        self.send(&ClientMsg::OrchestratorStart { req: Some(req), space: None, scope: wheel_proto::OrchestratorScope::Global, pull_after_secs: None, turn_limit_secs: None });
+        self.log("orchestrator start: none runs, starting the global one".into());
+        self.send(&ClientMsg::OrchestratorStart { req: Some(req), space: None, scope: wheel_proto::OrchestratorScope::Global, pull_after_secs: None, turn_limit_secs: None, if_none: true });
     }
     /// Orchestrator mode as `/state` `orchestrator` carries it: the Orchestrator space, the Start
     /// button's frame while the empty state draws, and a start in flight or refused.
@@ -572,7 +570,6 @@ impl Client {
         json!({
             "space": self.orchestrator_space(),
             "empty": self.mode == "orchestrator" && self.grid_off(),
-            "start": self.control_bounds("", "orchestrator-start").filter(|_| self.mode == "orchestrator" && self.grid_off()).map(|(x, y, w, h)| [x, y, w, h]),
             "starting": self.orchestrator_start_req.is_some(),
             "refused": self.orchestrator_refused,
         })
@@ -916,7 +913,8 @@ impl Client {
 }
 
 /// What Orchestrator mode says while there is no Orchestrator space.
-pub const ORCHESTRATOR_EMPTY: &str = "No orchestrator yet";
+pub const ORCHESTRATOR_STARTING: &str = "Starting the orchestrator…";
+pub const ORCHESTRATOR_UNOFFERED: &str = "This wheeld cannot start an orchestrator";
 
 /// The width of `text` at `size` in the window's font.
 pub(super) fn text_width(window: &Window, text: &str, size: f32) -> f32 {

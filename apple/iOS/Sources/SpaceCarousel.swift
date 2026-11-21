@@ -236,6 +236,8 @@ struct SpaceCarousel: View {
         if ids.isEmpty, page == Pages.trayID { page = model.activeSpace?.focus }
     }
 
+    private var orchestratorMode: Bool { model.mode == WindowMode.orchestrator }
+
     /// Whether the body shows a space's pages: Spaces mode's space, or the Orchestrator space in Orchestrator mode.
     private var showsPages: Bool { model.mode != WindowMode.agents && model.activeSpace != nil }
 
@@ -267,9 +269,14 @@ struct SpaceCarousel: View {
             }
             // Leftmost of the right-hand group, so every control that was there keeps its place.
             ModeButton(mode: model.mode) { model.setMode($0) }
-            AgentsButton(needsYou: model.sessionNeedsYou > 0) {
-                Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
-                agentsOpen = true
+            // Orchestrator mode is the one global orchestrator: no agents sheet. The eye's slot stays, so search and
+            // the ⋯ keep their places.
+            Group {
+                let eye = AgentsButton(needsYou: model.sessionNeedsYou > 0) {
+                    Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
+                    agentsOpen = true
+                }
+                if orchestratorMode { eye.hidden() } else { eye }
             }
             .sheet(isPresented: $agentsOpen) {
                 AgentsList(model: model, scope: .all, place: "agents sheet") { agentsOpen = false }
@@ -317,7 +324,7 @@ struct SpaceCarousel: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("page handle")
-        .accessibilityAction(named: "Open spaces and agents") { titleOpen = true }
+        .accessibilityAction(named: "Open spaces and agents") { if !orchestratorMode { titleOpen = true } }
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: if let next { go(ids[next]) }
@@ -334,7 +341,8 @@ struct SpaceCarousel: View {
                 if let target { go(ids[target]) }
                 return
             }
-            guard up > 0 else { return }
+            // Orchestrator mode has no spaces or agents sheet to open.
+            guard up > 0, !orchestratorMode else { return }
             if up > Self.longSwipe { sheetTab = .agents }
             Log.info("page handle: swipe up \(Int(up)) pt, sheet on \(sheetTab)")
             titleOpen = true
@@ -557,31 +565,29 @@ private struct ModeBody: View {
     }
 }
 
-/// Orchestrator mode's body while wheeld has no Orchestrator space: Start starts the global orchestrator, and wheeld
-/// makes the space it runs in. Start is disabled while a start is in flight or the running wheeld lacks the op.
+/// Orchestrator mode's body while wheeld has no Orchestrator space: the start the phone sent on its own, wheeld's
+/// refusal of it, or that the running wheeld cannot start one.
 private struct NoOrchestrator: View {
     let model: PhoneModel
 
     var body: some View {
         let entry = WindowMode.entry(WindowMode.orchestrator)
-        let waiting = model.orchestratorStartReq != nil
         VStack(spacing: 6) {
             Image(systemName: entry.symbol).font(.system(size: 28)).foregroundStyle(.secondary)
             Text(entry.title).font(.headline)
-            Text("No orchestrator yet")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Button(waiting ? "Starting…" : "Start") { model.startOrchestrator() }
-                .buttonStyle(.bordered)
-                .disabled(waiting || !model.canStartOrchestrator)
-                .accessibilityIdentifier("orchestrator start")
-            // Reserved, so a refusal coming or going moves no control.
-            Text(model.orchestratorRefused ?? " ")
-                .font(.footnote)
-                .foregroundStyle(.red)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-                .accessibilityIdentifier("orchestrator refused")
+            if let refused = model.orchestratorRefused {
+                Text(refused)
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .accessibilityIdentifier("orchestrator refused")
+            } else {
+                Text(model.canStartOrchestrator ? "Starting the orchestrator…" : "This wheeld cannot start an orchestrator")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("orchestrator starting")
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .contain)

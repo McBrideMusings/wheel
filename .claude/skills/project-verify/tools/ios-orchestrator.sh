@@ -22,22 +22,28 @@ w pane start "$P1" agent >/dev/null
 
 ios_ui_start OrchestratorUITests/testOrchestratorMode
 
+noplog() { ! plog "$1"; }
 orchestrator_space() { w space ls | jq -r '.spaces[] | select(.orchestrator == true) | .id'; }
 global_pane() { w space ls | jq -r '.spaces[] | select(.orchestrator == true) | [.root, (.popped // [])[], (.backgrounded // [])[] | .. | select(.node? == "pane" and .orchestrator? == "global")][0].id'; }
 
-if step empty; then
-  check "no Orchestrator space before Start" test -z "$(orchestrator_space)"
-  check "phone.log records the mode" plog "mode spaces -> orchestrator"
-  ack empty
+if step before; then
+  check "no Orchestrator space before the mode opens" test -z "$(orchestrator_space)"
+  ack before
 fi
 if step pinned; then
   O="$(orchestrator_space)"; G="$(global_pane)"
-  check "Start made the Orchestrator space" test -n "$O"
+  check "opening the mode made the Orchestrator space" test -n "$O"
   check "the Orchestrator space holds a global orchestrator pane" test -n "$G" -a "$G" != null
-  check "phone.log records the start" plog "orchestrator start (req"
+  check "phone.log records the mode" plog "mode spaces -> orchestrator"
+  check "opening the mode started it, with no tap" plog "none runs"
   check "phone.log records the reply" plog "orchestrator started in $G"
   check "the first open pinned that pane" plog "orchestrator space $O first open: pinned $G"
   ack pinned
+fi
+if step chrome; then
+  check "the handle's swipe up in Orchestrator mode opened no sheet" noplog "page handle: swipe up"
+  check "no agents sheet opened" noplog "agents sheet: eye tapped"
+  ack chrome
 fi
 if step fullscreen; then ack fullscreen; fi
 if step lists; then

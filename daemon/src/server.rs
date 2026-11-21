@@ -163,6 +163,8 @@ pub struct AppState {
     pub(crate) agent_timing: Mutex<AgentTiming>,
     /// The connection that owns orchestrator, if any (`crate::orchestrator`).
     pub(crate) orchestrator_lease: Mutex<Option<SocketAddr>>,
+    /// Held across a global `orchestrator_start` with `if_none`, from the check to the started pane.
+    pub(crate) orchestrator_starting: tokio::sync::Mutex<()>,
     /// The running orchestrators in the order they started (`crate::orchestrator`).
     pub(crate) orchestrators: Mutex<Vec<crate::orchestrator::Orchestrator>>,
     /// A pane agent's failed build or test command, as (agent, command), for the orchestrators'
@@ -389,6 +391,7 @@ impl AppState {
             agent_added: watch::channel(()).0,
             agent_timing: Mutex::new(AgentTiming::default()),
             orchestrator_lease: Mutex::new(None),
+            orchestrator_starting: tokio::sync::Mutex::new(()),
             orchestrators: Mutex::new(Vec::new()),
             build_failures: broadcast::channel(64).0,
             agent_starts: Mutex::new(HashSet::new()),
@@ -1671,7 +1674,7 @@ async fn handle(
             None
         }
         // On a task of its own: the pane's agent starts as `pane_start`'s does.
-        ClientMsg::OrchestratorStart { req, space, scope, pull_after_secs, turn_limit_secs } => {
+        ClientMsg::OrchestratorStart { req, space, scope, pull_after_secs, turn_limit_secs, if_none } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = state
@@ -1680,6 +1683,7 @@ async fn handle(
                         scope,
                         pull_after_secs.map(std::time::Duration::from_secs),
                         turn_limit_secs.map(std::time::Duration::from_secs),
+                        if_none,
                     )
                     .await;
                 let reply = match started {

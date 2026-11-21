@@ -154,7 +154,7 @@ impl Client {
     }
     /// Where a space's row or chip is, for a check that presses it.
     pub fn space_hit_rect(&self, space: &str) -> Option<Rect> {
-        if self.sidebar_open {
+        if self.sidebar_shown() {
             self.sidebar_rows().into_iter().find(|r| r.id == space).map(|r| r.rect)
         } else {
             self.header_chips().into_iter().find(|c| c.hit == Hit::Space(space.to_owned())).map(|c| c.rect)
@@ -165,10 +165,18 @@ impl Client {
         if self.is_little() {
             return self.little_grid_area();
         }
-        let left = if self.sidebar_open { header::MARGIN + sidebar::WIDTH + sidebar::GAP } else { 0. };
+        let left = if self.sidebar_shown() { header::MARGIN + sidebar::WIDTH + sidebar::GAP } else { 0. };
         Rect { x: left, y: HEADER, w: (self.viewport.0 - left).max(0.), h: (self.viewport.1 - HEADER - BOTTOM).max(0.) }
     }
+    /// Whether the sidebar draws: the person's choice, except in Orchestrator mode, which has one agent and no spaces to list.
+    pub fn sidebar_shown(&self) -> bool {
+        self.sidebar_open && self.mode != "orchestrator"
+    }
     pub fn set_sidebar(&mut self, open: bool) {
+        // Orchestrator mode draws no sidebar, so a toggle there would change nothing the person sees.
+        if self.mode == "orchestrator" {
+            return;
+        }
         if self.sidebar_open != open {
             self.sidebar_open = open;
             self.log(format!("sidebar: {}", if open { "shown" } else { "hidden" }));
@@ -236,7 +244,7 @@ impl Client {
         if self.pane_drag.is_some() {
             self.move_pane_drag(x, y);
         }
-        let over = if self.sidebar_open && self.space_drag.is_none() && self.pane_drag.is_none() && self.space_menu.is_none() && self.rename.is_none() {
+        let over = if self.sidebar_shown() && self.space_drag.is_none() && self.pane_drag.is_none() && self.space_menu.is_none() && self.rename.is_none() {
             sidebar::row_at(&self.sidebar_rows(), x, y).map(|r| r.id.clone())
         } else {
             None
@@ -316,7 +324,7 @@ impl Client {
         if self.is_little() {
             return DropWindow { id: self.window_id.clone(), frame: Rect { x: origin.0, y: origin.1, w: f32::MAX, h: f32::MAX }, sidebar: None, rows: vec![], tab_strip: None, tabs: vec![], little: true, spaces: vec![], shown: self.space_id.clone(), layers: vec![] };
         }
-        let row = (!self.sidebar_open).then(|| self.title_row());
+        let row = (!self.sidebar_shown() && self.mode != "orchestrator").then(|| self.title_row());
         let layers = self.layers().into_iter().map(|l| DropLayer { card: l.card.map(|c| at(c.frame)), panes: l.leaves.iter().map(|p| (p.leaf.id.clone(), at(p.rect))).collect() }).collect();
         DropWindow {
             little: false,
@@ -325,8 +333,8 @@ impl Client {
             layers,
             id: self.window_id.clone(),
             frame: Rect { x: origin.0, y: origin.1, w: f32::MAX, h: f32::MAX },
-            sidebar: self.sidebar_open.then(|| at(self.sidebar_rect())),
-            rows: if self.sidebar_open { self.sidebar_rows().into_iter().map(|r| at(r.rect)).collect() } else { vec![] },
+            sidebar: self.sidebar_shown().then(|| at(self.sidebar_rect())),
+            rows: if self.sidebar_shown() { self.sidebar_rows().into_iter().map(|r| at(r.rect)).collect() } else { vec![] },
             tab_strip: row.as_ref().and_then(|r| r.track).map(at),
             tabs: row.map(|r| r.tabs.into_iter().map(at).collect()).unwrap_or_default(),
         }
@@ -1251,7 +1259,7 @@ impl Client {
         }).collect();
         let r = self.sidebar_rect();
         json!({
-            "open": self.sidebar_open, "frame": [r.x, r.y, r.w, r.h], "rows": rows,
+            "open": self.sidebar_open, "shown": self.sidebar_shown(), "frame": [r.x, r.y, r.w, r.h], "rows": rows,
             "drag": self.space_drag.as_ref().map(|d| json!({"space": d.space, "target": d.target.as_ref().map(describe_target), "insertion": self.space_drag_insertion(), "tab_bar": self.space_drag_tab_bar(), "hint": self.space_drag_hint(),
                 "screen": d.screen.map(|(x, y)| [x, y]), "measured": self.space_drag_world.as_ref().map(|w| json!({"origin": [w.origin.0, w.origin.1], "windows": w.windows.iter().filter(|d| !d.little).map(|d| d.id.clone()).collect::<Vec<_>>(), "popover": w.popover.as_ref().map(|p| p.cards.len())}))})),
             // A drag from any window, as this window draws it.

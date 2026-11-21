@@ -56,6 +56,11 @@ final class PhoneModel {
         Log.info("mode \(mode) -> \(new)")
         mode = new
         UserDefaults.standard.set(new, forKey: Self.modeKey)
+        if new == WindowMode.orchestrator {
+            // Each entry tries again after a refusal.
+            orchestratorRefused = nil
+            startOrchestratorIfNone()
+        }
         pinOrchestratorOnFirstOpen()
         reportView()
         showTerm()
@@ -84,19 +89,21 @@ final class PhoneModel {
         Log.info("orchestrator space \(space.id) first open: pinned \(pane)")
     }
 
-    /// The `orchestrator_start` Start sent that wheeld has not answered, and why wheeld refused the last one.
+    /// The `orchestrator_start` the phone sent on its own that wheeld has not answered, and why wheeld refused the last one.
     private(set) var orchestratorStartReq: UInt64?
     private(set) var orchestratorRefused: String?
-    /// Whether the running wheeld takes `orchestrator_start` (ADR-0050); Start is disabled when it does not.
+    /// Whether the running wheeld takes `orchestrator_start` (ADR-0050).
     var canStartOrchestrator: Bool { isConnected && serverOffer.has("orchestrator_start") }
 
-    /// Start the global orchestrator; wheeld makes the Orchestrator space for it, and Orchestrator mode then shows it.
-    func startOrchestrator() {
-        guard orchestratorStartReq == nil, canStartOrchestrator, let client else { return }
+    /// Orchestrator mode with no global orchestrator running starts one, with no tap; `if_none` makes two clients
+    /// opening the mode at once start one. wheeld makes the Orchestrator space for it, and the mode then shows it.
+    /// A refusal stays until the mode is entered again.
+    private func startOrchestratorIfNone() {
+        guard mode == WindowMode.orchestrator, orchestratorSpace?.firstGlobalOrchestrator == nil, orchestratorStartReq == nil,
+              orchestratorRefused == nil, canStartOrchestrator, let client else { return }
         let req = client.req()
         orchestratorStartReq = req
-        orchestratorRefused = nil
-        Log.info("orchestrator start (req \(req))")
+        Log.info("orchestrator start (req \(req)): none runs")
         client.send(.orchestratorStartGlobal(req: req))
     }
     /// The panes pinned in each space, drawn as a sheet over the carousel in place of a page. Saved per paired Mac,
@@ -967,6 +974,7 @@ final class PhoneModel {
             pins = kept
             savePins()
         }
+        startOrchestratorIfNone()
         pinOrchestratorOnFirstOpen()
         reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")

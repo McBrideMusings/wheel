@@ -19,36 +19,49 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 20))
 
-        // With no Orchestrator space, the mode says so and offers Start.
+        // Opening the mode with no global orchestrator starts one with no tap (wheel-eg4e.19.23); there is no Start.
+        sync("before")
         pick("Orchestrator")
-        XCTAssertTrue(any("no orchestrator").waitForExistence(timeout: 5), "Orchestrator mode shows its empty state")
-        let start = app.buttons["orchestrator start"]
-        XCTAssertTrue(start.waitForExistence(timeout: 5))
-        XCTAssertTrue(start.isEnabled, "Start is offered: the running wheeld lists orchestrator_start")
-        shot("empty")
-        sync("empty")
+        XCTAssertFalse(app.buttons["orchestrator start"].exists, "no Start button")
 
-        // 2. Start makes the Orchestrator space; its first open pins the global orchestrator as the sheet.
-        start.tap()
+        // 2. The start makes the Orchestrator space; its first open pins the global orchestrator as the sheet.
         XCTAssertTrue(sheet.waitForExistence(timeout: 30), "the first open pins the orchestrator as the sheet")
         XCTAssertFalse(any("no orchestrator").exists)
-        XCTAssertEqual(app.buttons["title"].label.contains("Orchestrator"), true, "the title names the Orchestrator space: \(app.buttons["title"].label)")
+        XCTAssertEqual(title.label.contains("Orchestrator"), true, "the title names the Orchestrator space: \(title.label)")
         shot("pinned")
         sync("pinned")
+
+        // One global orchestrator: the title is a label with no menu, there is no eye, and the handle's swipe up opens
+        // nothing. Search and the ⋯ hold the places they have in Spaces mode.
+        XCTAssertFalse(app.buttons["title"].exists, "the title is no button in Orchestrator mode")
+        XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
+        let here = (app.buttons["search"].frame, app.buttons["Pane menu"].frame)
+        title.tap()
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertFalse(app.buttons["space wheel"].exists, "a tap on the title opens no menu")
+        let handle = app.otherElements["page handle"]
+        handle.press(forDuration: 0.05, thenDragTo: app.buttons["mode"])
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertFalse(app.buttons["space wheel"].exists, "a swipe up on the handle opens no sheet")
+        shot("chrome")
+        sync("chrome")
 
         // 1. Full screen under the top bar, no modal: the bar's title sits above the body, the body reaches the
         // bottom edge, and no presented sheet covers it.
         let window = app.windows.firstMatch.frame
-        let bar = app.buttons["title"].frame
-        let handle = app.otherElements["page handle"].frame
+        let bar = title.frame
+        let handleFrame = handle.frame
         XCTAssertLessThan(bar.maxY, sheet.frame.minY, "the pin sheet lies under the top bar")
-        XCTAssertGreaterThan(handle.maxY, window.maxY - 60, "the body reaches the bottom edge: \(handle) in \(window)")
+        XCTAssertGreaterThan(handleFrame.maxY, window.maxY - 60, "the body reaches the bottom edge: \(handleFrame) in \(window)")
         XCTAssertFalse(app.otherElements["PopoverDismissRegion"].exists, "no modal is presented")
         sync("fullscreen")
 
         // 4. The Orchestrator space is in no Spaces mode list: the title menu lists the other space and session only.
         pick("Spaces")
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["agents"].exists, "Spaces mode keeps the eye")
+        XCTAssertEqual(app.buttons["search"].frame, here.0, "search holds its place across the modes")
+        XCTAssertEqual(app.buttons["Pane menu"].frame, here.1, "the ⋯ holds its place across the modes")
         app.buttons["title"].tap()
         XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 10), "the title menu lists the Spaces mode space")
         XCTAssertFalse(app.buttons["space Orchestrator"].exists, "the title menu lists no Orchestrator space")
@@ -87,6 +100,7 @@ final class OrchestratorUITests: XCTestCase {
     }
 
     private var sheet: XCUIElement { app.otherElements["pin sheet"] }
+    private var title: XCUIElement { app.descendants(matching: .any)["title"].firstMatch }
 
     private func any(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
 

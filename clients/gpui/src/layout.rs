@@ -96,6 +96,27 @@ pub struct Space {
     /// The Orchestrator space (`SpaceInfo::orchestrator`): Orchestrator mode draws it, and no
     /// session, tab or space list holds it.
     pub orchestrator: bool,
+    /// The panes running a global orchestrator (`PaneKind::Agent::orchestrator`), wherever they sit.
+    pub global_orchestrators: Vec<String>,
+}
+
+/// The panes of `nodes` whose agent is a global orchestrator.
+fn global_orchestrators<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<String> {
+    fn walk(node: &Node, out: &mut Vec<String>) {
+        match node {
+            Node::Split { a, b, .. } => {
+                walk(a, out);
+                walk(b, out);
+            }
+            Node::Pane { id, kind: PaneKind::Agent { orchestrator: Some(wheel_proto::OrchestratorScope::Global), .. }, .. } => out.push(id.clone()),
+            Node::Pane { .. } => {}
+        }
+    }
+    let mut out = vec![];
+    for node in nodes {
+        walk(node, &mut out);
+    }
+    out
 }
 
 impl Space {
@@ -256,7 +277,7 @@ pub struct Layout {
 impl Layout {
     fn new(spaces: &[SpaceInfo], sessions: &[SessionInfo]) -> Self {
         let mut layout = Self {
-            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone(), popped: s.popped.iter().map(Tree::from).collect(), backgrounded: s.backgrounded.iter().map(Tree::from).collect(), frames: s.frames.iter().map(|(p, f)| (p.clone(), Rect { x: f.x as f32, y: f.y as f32, w: f.w as f32, h: f.h as f32 })).collect(), orchestrator: s.orchestrator }).collect(),
+            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone(), popped: s.popped.iter().map(Tree::from).collect(), backgrounded: s.backgrounded.iter().map(Tree::from).collect(), frames: s.frames.iter().map(|(p, f)| (p.clone(), Rect { x: f.x as f32, y: f.y as f32, w: f.w as f32, h: f.h as f32 })).collect(), orchestrator: s.orchestrator, global_orchestrators: global_orchestrators(std::iter::once(&s.root).chain(&s.popped).chain(&s.backgrounded)) }).collect(),
             // The Orchestrator space's session is wheeld's own: no tab row, sidebar or session menu lists it.
             sessions: sessions.iter().filter(|s| !s.spaces.iter().any(|id| spaces.iter().any(|sp| sp.orchestrator && &sp.id == id))).map(|s| Session { id: s.id.clone(), name: s.name.clone(), spaces: s.spaces.clone() }).collect(),
         };
@@ -403,7 +424,7 @@ mod tests {
             id: "s1".into(), name: "w".into(), cwd: "/w".into(), root: tree(), status: None,
             popped: vec![node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}))],
             backgrounded: vec![node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","cwd":"/tmp"}))],
-            frames: Default::default(), orchestrator: false,
+            frames: Default::default(), orchestrator: false, global_orchestrators: vec![],
         };
         assert_eq!(pane_targets(&[space]), json!({"p2":{"term":"t1"},"p4":{"agent":"w1"},"p5":{"term":"t2"}}));
     }

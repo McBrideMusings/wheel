@@ -34,8 +34,8 @@ public enum ClientMsg: Sendable, Equatable {
     case spaceRename(req: UInt64?, space: String, name: String)
     /// Make an empty session named `name` (ADR-0021); the daemon answers `created` with its id.
     case sessionNew(req: UInt64?, name: String)
-    /// Start the global orchestrator (ADR-0054), which wheeld runs in the Orchestrator space, made at the first
-    /// global start; the daemon answers `orchestratorStarted`.
+    /// Start the global orchestrator (ADR-0054) unless one runs (`if_none`), which wheeld runs in the Orchestrator
+    /// space, made at the first global start; the daemon answers `orchestratorStarted` with the new or running one.
     case orchestratorStartGlobal(req: UInt64?)
     /// Name a session, by id or current name. An empty name is refused.
     case sessionRename(req: UInt64?, session: String, name: String)
@@ -482,7 +482,7 @@ public enum ClientMsg: Sendable, Equatable {
         case let .sessionNew(req, name):
             o = ["op": "session_new", "name": name]; put(req)
         case let .orchestratorStartGlobal(req):
-            o = ["op": "orchestrator_start", "scope": "global"]; put(req)
+            o = ["op": "orchestrator_start", "scope": "global", "if_none": true]; put(req)
         case let .sessionRename(req, session, name):
             o = ["op": "session_rename", "session": session, "name": name]; put(req)
         case let .sessionClose(req, session):

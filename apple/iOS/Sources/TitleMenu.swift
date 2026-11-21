@@ -13,7 +13,7 @@ enum TitleMenuRequest: Equatable {
 
 /// The phone's title, at the bar's left: the shown space, a ▾, and how many agents wait for the
 /// person in any space. The count has a reserved slot, blank at zero, so the name never moves.
-/// A tap opens the title menu.
+/// A tap opens the title menu. In Orchestrator mode, which shows the one global orchestrator, it is a label with no menu.
 struct TitleButton: View {
     let model: PhoneModel
     @Binding var open: Bool
@@ -25,25 +25,38 @@ struct TitleButton: View {
 
     var body: some View {
         let waiting = model.needsYouCount
-        Button { open = true } label: {
-            HStack(spacing: 4) {
-                Text(name).font(.headline).lineLimit(1).truncationMode(.middle)
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
-                Text(waiting > 0 ? "\(waiting)" : "")
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.orange)
-                    .frame(minWidth: 22, alignment: .leading)
-                    .accessibilityIdentifier("needs you count")
-            }
-            .foregroundStyle(.primary)
-            .contentShape(Rectangle())
+        if model.mode == WindowMode.orchestrator {
+            label(menu: false, waiting: waiting)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("title")
+                .accessibilityLabel(name)
+                .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+        } else {
+            Button { open = true } label: { label(menu: true, waiting: waiting) }
+                .buttonStyle(.plain)
+                .tint(.primary)
+                .accessibilityIdentifier("title")
+                .accessibilityLabel("\(name), session \(model.shownSession?.name ?? "none")")
+                .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
         }
-        .buttonStyle(.plain)
-        .tint(.primary)
-        .accessibilityIdentifier("title")
-        .accessibilityLabel("\(name), session \(model.shownSession?.name ?? "none")")
-        .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+    }
+
+    private func label(menu: Bool, waiting: Int) -> some View {
+        HStack(spacing: 4) {
+            Text(name).font(.headline).lineLimit(1).truncationMode(.middle)
+            if menu {
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
+            Text(waiting > 0 ? "\(waiting)" : "")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.orange)
+                .frame(minWidth: 22, alignment: .leading)
+                .accessibilityIdentifier("needs you count")
+        }
+        .foregroundStyle(.primary)
+        .contentShape(Rectangle())
     }
 }
 
