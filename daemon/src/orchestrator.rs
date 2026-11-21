@@ -62,12 +62,13 @@ pub(crate) fn brief(pane: &str, scope: OrchestratorScope) -> String {
          agent to do, needs the person to say yes first: ask in one short sentence, wait, and only \
          then answer with `wheel perm answer <id> allow --confirmed`; the command refuses without \
          `--confirmed`.\n\
-         What the agents do waits in your inbox, one item per agent and kind. Once you have been \
-         quiet a while, wheeld sends you a message that starts with \"Inbox:\" and lists the new \
-         items as `[id] text`: tell the person, one short sentence per agent, then mark them done \
-         with `wheel inbox ack {pane} <ids>`. When the person asks what happened, run `wheel inbox \
-         list {pane}`. To answer the agent an item is about, run `wheel inbox reply {pane} <id> \
-         \"<message>\"`, which sends it the message and marks the item done."
+         What the agents do waits in your inbox, one item per agent and kind; wheeld never writes \
+         it into this chat. Read it with `wheel inbox list {pane}` before you end a turn and \
+         whenever the person asks what happened: items marked `(told)` you have listed before. \
+         Tell the person about the new ones, one short sentence per agent, then mark what you \
+         reported done with `wheel inbox ack {pane} <ids>`. To answer the agent an item is about, \
+         run `wheel inbox reply {pane} <id> \"<message>\"`, which sends it the message and marks \
+         the item done."
     )
 }
 
@@ -75,14 +76,13 @@ impl AppState {
     /// Start an orchestrator of `scope` as a new agent pane; returns its pane and agent. A space
     /// orchestrator goes in `space`, a global one in the Orchestrator space and takes no `space`.
     ///
-    /// `pull_after` and `turn_limit` set its inbox's timers (`crate::inbox`). With `if_none`, a
+    /// `turn_limit` sets its inbox's turn limit (`crate::inbox`). With `if_none`, a
     /// global start returns the first global orchestrator running already and starts none; the
     /// check and the start share `orchestrator_starting`, so two such starts make one.
     pub(crate) async fn orchestrator_start(
         &self,
         space: Option<&str>,
         scope: OrchestratorScope,
-        pull_after: Option<Duration>,
         turn_limit: Option<Duration>,
         if_none: bool,
     ) -> Result<(String, String), String> {
@@ -100,8 +100,8 @@ impl AppState {
         if turn_limit == Some(Duration::ZERO) {
             return Err("the turn limit must be at least one second".into());
         }
-        if [pull_after, turn_limit].into_iter().flatten().any(|d| d > LONGEST) {
-            return Err(format!("an inbox timer is at most {} seconds", LONGEST.as_secs()));
+        if turn_limit.is_some_and(|d| d > LONGEST) {
+            return Err(format!("the turn limit is at most {} seconds", LONGEST.as_secs()));
         }
         let (space, dir) = match (scope, space) {
             (OrchestratorScope::Space, None) => return Err("a space orchestrator needs a space".into()),
@@ -122,9 +122,6 @@ impl AppState {
         let agent = started.agent.ok_or("the orchestrator pane started no agent")?;
         let inbox = self.inbox(&started.pane)?;
         let mut inbox = inbox.lock().unwrap();
-        if let Some(pull_after) = pull_after {
-            inbox.pull_after = pull_after;
-        }
         if let Some(turn_limit) = turn_limit {
             inbox.turn_limit = turn_limit;
         }
@@ -251,9 +248,8 @@ impl AppState {
 
     /// Fill the inbox of the orchestrator in `pane` from the global broadcast and the failed
     /// builds, keeping the events [`AppState::orchestrator_for`] sends it, until its agent `name`
-    /// is no longer the pane's orchestrator, and send it the untold items once it has been idle
-    /// the inbox's `pull_after`. Nothing reaches it while it works on a turn. The task sleeps
-    /// until the next event or deadline: the pull, or a turn reaching the turn limit.
+    /// is no longer the pane's orchestrator. It sends the orchestrator nothing: the orchestrator
+    /// reads its inbox. The task sleeps until the next event or a turn reaching the turn limit.
     fn orchestrator_follow(&self, pane: &str, name: &str, inbox: Arc<Mutex<Inbox>>) {
         let Some(state) = self.me.upgrade() else { return };
         let pane = pane.to_string();
@@ -263,25 +259,14 @@ impl AppState {
         tokio::spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
             let mut filter = crate::orchestrator_events::Filter::default();
-            let mut idle_since = state
-                .agent(&name)
-                .ok()
-                .filter(|o| o.state() == wheel_proto::AgentState::Ready)
-                .map(|_| Instant::now());
             let why = loop {
-                let (pull_after, turn_limit, untold) = {
-                    let kept = inbox.lock().unwrap();
-                    (kept.pull_after, kept.turn_limit, kept.has_untold())
-                };
-                let pull_at = idle_since.filter(|_| untold).map(|since| since + pull_after);
-                let wake = [pull_at, filter.next_overdue(turn_limit)].into_iter().flatten().min();
+                let turn_limit = inbox.lock().unwrap().turn_limit;
+                let wake = filter.next_overdue(turn_limit);
                 let far = Instant::now() + Duration::from_secs(86_400);
                 let events: Vec<Event> = tokio::select! {
                     msg = global.recv() => match msg {
-                        Ok(wheel_proto::ServerMsg::AgentStateChanged { agent, state: now }) if agent == name => {
-                            idle_since = (now == wheel_proto::AgentState::Ready).then(Instant::now);
-                            Vec::new()
-                        }
+                        // The orchestrator's own turns are not its inbox's.
+                        Ok(wheel_proto::ServerMsg::AgentStateChanged { agent, .. }) if agent == name => continue,
                         Ok(msg) => match filter.event(&msg, Instant::now()) {
                             Some(event) => vec![event],
                             // Most of the broadcast is about something else: nothing to recompute.
@@ -317,7 +302,9 @@ impl AppState {
                 if !current {
                     break "the pane's orchestrator ended";
                 }
-                let Ok(orchestrator) = state.agent(&name) else { break "the orchestrator ended" };
+                if state.agent(&name).is_err() {
+                    break "the orchestrator ended";
+                }
                 let mut kept = inbox.lock().unwrap();
                 for event in events {
                     if let Event::Add { agent, .. } = &event {
@@ -326,15 +313,6 @@ impl AppState {
                         }
                     }
                     kept.apply(event);
-                }
-                if idle_since.is_some_and(|since| since.elapsed() >= kept.pull_after) {
-                    if let Some((text, ids)) = kept.take_untold(&pane) {
-                        idle_since = None;
-                        if let Err(e) = orchestrator.send(text) {
-                            tracing::warn!(%pane, error = %e, "orchestrator inbox: could not send the items; they stay untold");
-                            kept.untell(&ids);
-                        }
-                    }
                 }
             };
             tracing::info!(%pane, why, "orchestrator inbox stops");

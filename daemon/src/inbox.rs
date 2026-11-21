@@ -1,8 +1,8 @@
 //! An orchestrator's inbox (wheel-eg4e.13): agent events for its scope, queued in wheeld until
 //! the orchestrator reads them. One item stands per agent and kind until it is acked; a repeat of
-//! the event raises the item's count instead of adding another. wheeld sends the orchestrator the
-//! items it has not been told only once it has been idle a while (`crate::orchestrator`), so an
-//! event never starts or interrupts one of its turns.
+//! the event raises the item's count instead of adding another. wheeld never writes into the
+//! orchestrator's chat: the orchestrator reads its inbox with `wheel inbox list` (its brief says
+//! when), so an event never starts, interrupts or puts words in one of its turns.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,8 +16,6 @@ const KEPT: usize = 200;
 pub(crate) struct Inbox {
     items: Vec<Kept>,
     next_id: u64,
-    /// How long the orchestrator is idle before it is sent the untold items.
-    pub pull_after: Duration,
     /// How long one agent turn runs before it is reported over time.
     pub turn_limit: Duration,
 }
@@ -27,7 +25,6 @@ impl Default for Inbox {
         Self {
             items: Vec::new(),
             next_id: 1,
-            pull_after: Duration::from_secs(15),
             turn_limit: Duration::from_secs(1800),
         }
     }
@@ -107,9 +104,14 @@ impl Inbox {
         }
     }
 
-    /// The items not acked, oldest first, or every item kept when `all`.
-    pub(crate) fn list(&self, all: bool) -> Vec<InboxItem> {
-        self.items.iter().filter(|k| all || !k.item.acked).map(|k| k.item.clone()).collect()
+    /// The items not acked, oldest first, or every item kept when `all`, each as it stood before this listing;
+    /// every item listed is then marked told, so the next listing shows which happened since.
+    pub(crate) fn list(&mut self, all: bool) -> Vec<InboxItem> {
+        let listed: Vec<InboxItem> = self.items.iter().filter(|k| all || !k.item.acked).map(|k| k.item.clone()).collect();
+        for kept in self.items.iter_mut().filter(|k| all || !k.item.acked) {
+            kept.item.told = true;
+        }
+        listed
     }
 
     pub(crate) fn get(&self, id: u64) -> Option<&InboxItem> {
@@ -132,55 +134,6 @@ impl Inbox {
         Ok(())
     }
 
-    /// Whether an item waits that the orchestrator has not been told.
-    pub(crate) fn has_untold(&self) -> bool {
-        self.items.iter().any(|k| !k.item.acked && !k.item.told)
-    }
-
-    /// Mark `ids` untold again: the message naming them never reached the orchestrator.
-    pub(crate) fn untell(&mut self, ids: &[u64]) {
-        for kept in self.items.iter_mut().filter(|k| ids.contains(&k.item.id)) {
-            kept.item.told = false;
-        }
-    }
-
-    /// The message that tells the orchestrator in `pane` its untold items, grouped by agent in
-    /// the order each agent first appears, with their ids, and marks them told. None when
-    /// nothing is untold.
-    pub(crate) fn take_untold(&mut self, pane: &str) -> Option<(String, Vec<u64>)> {
-        let mut agents: Vec<&str> = Vec::new();
-        for kept in self.items.iter().filter(|k| !k.item.acked && !k.item.told) {
-            if !agents.contains(&kept.item.agent.as_str()) {
-                agents.push(&kept.item.agent);
-            }
-        }
-        if agents.is_empty() {
-            return None;
-        }
-        let mut lines = Vec::new();
-        let mut ids = Vec::new();
-        for agent in agents {
-            for kept in self.items.iter().filter(|k| !k.item.acked && !k.item.told && k.item.agent == agent) {
-                let mut line = format!("[{}] {}", kept.item.id, kept.item.text);
-                if kept.item.count > 1 {
-                    line.push_str(&format!(" ({} times)", kept.item.count));
-                }
-                lines.push(line);
-                ids.push(kept.item.id);
-            }
-        }
-        for kept in self.items.iter_mut().filter(|k| ids.contains(&k.item.id)) {
-            kept.item.told = true;
-        }
-        tracing::info!(%pane, ?ids, "inbox told");
-        let n = ids.len();
-        let noun = if n == 1 { "item" } else { "items" };
-        let text = format!(
-            "Inbox: {n} new {noun}. Tell the person, then run `wheel inbox ack {pane} <ids>`.\n{}",
-            lines.join("\n")
-        );
-        Some((text, ids))
-    }
 }
 
 #[cfg(test)]
@@ -227,28 +180,16 @@ mod tests {
     }
 
     #[test]
-    fn untold_items_are_told_once_grouped_by_agent() {
+    fn a_listing_marks_its_items_told_and_a_repeat_makes_one_new_again() {
         let mut inbox = Inbox::default();
         inbox.apply(add("w5", InboxKind::Finished, "w5 finished its turn"));
         inbox.apply(add("w7", InboxKind::Finished, "w7 finished its turn"));
-        inbox.apply(add("w5", InboxKind::Failed, "w5 failed: exit 1"));
-        assert!(inbox.has_untold());
-        assert_eq!(
-            inbox.take_untold("s1").unwrap().0,
-            "Inbox: 3 new items. Tell the person, then run `wheel inbox ack s1 <ids>`.\n\
-             [1] w5 finished its turn\n[3] w5 failed: exit 1\n[2] w7 finished its turn"
-        );
-        assert!(!inbox.has_untold());
-        assert_eq!(inbox.take_untold("s1"), None);
-        inbox.untell(&[1]);
-        assert!(inbox.has_untold(), "an untold item is sent again");
-        inbox.take_untold("s1");
-        // A repeat makes its item untold again.
+        let first = inbox.list(false);
+        assert!(first.iter().all(|i| !i.told), "a first listing shows every item new: {first:?}");
+        assert!(inbox.list(false).iter().all(|i| i.told), "listed once, they are told");
         inbox.apply(add("w7", InboxKind::Finished, "w7 finished its turn"));
-        assert_eq!(
-            inbox.take_untold("s1").unwrap().0,
-            "Inbox: 1 new item. Tell the person, then run `wheel inbox ack s1 <ids>`.\n[2] w7 finished its turn (2 times)"
-        );
+        let again = inbox.list(false);
+        assert_eq!(again.iter().map(|i| (i.agent.as_str(), i.told)).collect::<Vec<_>>(), [("w5", true), ("w7", false)], "a repeat is new again");
     }
 
     #[test]

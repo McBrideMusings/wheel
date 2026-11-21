@@ -562,7 +562,7 @@ impl Client {
         self.next_req += 1;
         self.orchestrator_start_req = Some(req);
         self.log("orchestrator start: none runs, starting the global one".into());
-        self.send(&ClientMsg::OrchestratorStart { req: Some(req), space: None, scope: wheel_proto::OrchestratorScope::Global, pull_after_secs: None, turn_limit_secs: None, if_none: true });
+        self.send(&ClientMsg::OrchestratorStart { req: Some(req), space: None, scope: wheel_proto::OrchestratorScope::Global, turn_limit_secs: None, if_none: true });
     }
     /// Orchestrator mode as `/state` `orchestrator` carries it: the Orchestrator space, the Start
     /// button's frame while the empty state draws, and a start in flight or refused.

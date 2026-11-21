@@ -1174,7 +1174,7 @@ async fn mermaid_reply(run: Run, agent_pane: String, agent_name: String, cli_pat
     let (mut run, ordinary) = shown(run, &agent_pane, &agent_name, "client-mermaid.png", &cli, cx).await?;
     // Case 2: an orchestrator pane in the same space draws the same reply the same way.
     let space = run.window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["space"].as_str().map(str::to_owned))?.ok_or_else(|| anyhow::anyhow!("{agent_pane} has no space"))?;
-    let orchestrator = cli(&["orchestrator", "start", "--space", &space, "--pull-after", "3600"])?;
+    let orchestrator = cli(&["orchestrator", "start", "--space", &space])?;
     let mut agent = Value::Null;
     for _ in 0..100 {
         pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
