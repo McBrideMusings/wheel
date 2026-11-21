@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 import Textual
 import WheelKit
@@ -62,8 +63,9 @@ public final class CodeBlockRegistry {
         public let text: String
         /// False when Textual's proxy gave no code, so `text` is empty because the read failed.
         public let readable: Bool
-        /// How the block draws: `code`, `diff`, or `svg` (the image) / `svg-source` (the SVG did not
-        /// parse as an image, so its source shows).
+        /// How the block draws: `code`, `diff`, `svg` (the image) / `svg-source` (the SVG did not
+        /// parse as an image, so its source shows), or `chart` / `chart-source` (the chart fence did
+        /// not parse, so its source shows with the reason).
         public let drawn: String
         /// Presses the block's copy button.
         public let press: () -> Void
@@ -99,15 +101,18 @@ public final class CodeBlockRegistry {
 struct ChatCodeBlockStyle: StructuredText.CodeBlockStyle {
     let look: ChatAppearance
     let agent: String
+    /// False while the reply can still grow, so a fence in it may be half received.
+    let settled: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        CodeBlockView(look: look, agent: agent, configuration: configuration)
+        CodeBlockView(look: look, agent: agent, settled: settled, configuration: configuration)
     }
 }
 
 private struct CodeBlockView: View {
     let look: ChatAppearance
     let agent: String
+    let settled: Bool
     let configuration: StructuredText.CodeBlockStyleConfiguration
     @State private var id = UUID()
     @Environment(\.drawnTextSink) private var sink
@@ -155,9 +160,19 @@ private struct CodeBlockView: View {
         #endif
     }
 
-    /// `code`, `diff`, `svg`, or `svg-source` when an svg fence could not be drawn.
+    /// The fence's chart, or why it cannot be drawn; nil when the language is not chart, or when
+    /// the reply is still streaming and the chart does not parse yet, so it shows as code with no reason.
+    private var chart: Result<ChartFence.Chart, ChartFenceError>? {
+        guard ChartFence.handles(language), let read else { return nil }
+        let parsed = ChartFence.parse(read)
+        if case .failure = parsed, !settled { return nil }
+        return parsed
+    }
+
+    /// `code`, `diff`, `svg`, `chart`, or `svg-source` / `chart-source` when the fence could not be drawn.
     private var drawn: String {
         if diff != nil { return "diff" }
+        if let chart { return (try? chart.get()) == nil ? "chart-source" : "chart" }
         if SVGFence.handles(language) { return svgImage == nil ? "svg-source" : "svg" }
         return "code"
     }
@@ -215,6 +230,8 @@ private struct CodeBlockView: View {
                         DiffFenceView(lines: diff, look: look)
                     } else if let svgImage {
                         svgImage.resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+                    } else if case .success(let chart) = chart {
+                        ChartFenceView(chart: chart).frame(height: 200)
                     } else {
                         configuration.label
                             .font(look.codeFont(look.codeSize))
@@ -233,6 +250,13 @@ private struct CodeBlockView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 10)
             }
+            if case .failure(let error) = chart {
+                Text("The chart could not draw: \(error.reason)").customAttribute(ChatNonProse())
+                    .font(look.meta)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
         }
         .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -247,6 +271,7 @@ private struct CodeBlockView: View {
         }
         .onAppear { register(code) }
         .onChange(of: code) { register(code) }
+        .onChange(of: settled) { register(code) }
         .onDisappear { CodeBlockRegistry.shared.remove(id) }
     }
 
@@ -272,6 +297,11 @@ private struct CodeBlockView: View {
         if !readable {
             UILog.info("code block in \(agent): Textual's CodeBlockProxy holds no AttributedSubstring, so its code cannot be read")
         }
+        switch chart {
+        case .success(let c)?: UILog.info("chart in \(agent): \(c.mark), \(c.rows.count) rows")
+        case .failure(let e)?: UILog.info("chart in \(agent) could not draw: \(e.reason)")
+        case nil: break
+        }
         CodeBlockRegistry.shared.set(id, agent: agent, language: language, text: code, readable: readable, drawn: drawn) {
             press(code)
         }
@@ -284,6 +314,26 @@ private struct CodeBlockView: View {
             try? await Task.sleep(for: .milliseconds(1500))
             copied = false
         }
+    }
+}
+
+/// A chart fence drawn with Swift Charts, as the page Chart component draws its rows.
+private struct ChartFenceView: View {
+    let chart: ChartFence.Chart
+
+    var body: some View {
+        Chart(Array(chart.rows.enumerated()), id: \.offset) { _, r in
+            let x = PlottableValue.value("x", r.x)
+            let y = PlottableValue.value("y", r.y)
+            let s = PlottableValue.value("series", r.series)
+            switch chart.mark {
+            case "line": LineMark(x: x, y: y).foregroundStyle(by: s)
+            case "point": PointMark(x: x, y: y).foregroundStyle(by: s)
+            case "area": AreaMark(x: x, y: y).foregroundStyle(by: s)
+            default: BarMark(x: x, y: y).foregroundStyle(by: s)
+            }
+        }
+        .chartLegend(chart.rows.contains { !$0.series.isEmpty } ? .visible : .hidden)
     }
 }
 

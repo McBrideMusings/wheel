@@ -10,6 +10,7 @@ mod commands;
 mod composer;
 #[cfg(test)]
 mod composer_tests;
+mod charts;
 mod conversations;
 mod debug;
 mod diagrams;
@@ -231,6 +232,8 @@ pub struct Client {
     images: images::ImageState,
     /// The replies' Mermaid diagrams, drawn once per source.
     diagrams: diagrams::Diagrams,
+    /// The replies' charts, parsed once per source.
+    charts: charts::Charts,
     /// The ranks `status.dots` lists: the statuses that draw a dot. Every rank until the daemon says.
     pub status_dots: HashSet<&'static str>,
     /// What the line under an agent's composer shows, in order: `chat.footer.items`, as the
@@ -509,7 +512,7 @@ impl Client {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
-            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), parsed: RefCell::default(),
+            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
@@ -2783,7 +2786,7 @@ impl Client {
         let selection = self.selection.as_ref().filter(|s| s.agent == agent);
         let kept = (!self.texts_kept(agent, ix)).then(Vec::new);
         let dir = self.agent_place(agent).map(|p| p.2).unwrap_or_default();
-        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept, images: &self.images, diagrams: &self.diagrams, diagram: 0, dir };
+        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept, images: &self.images, diagrams: &self.diagrams, diagram: 0, charts: &self.charts, chart: 0, dir };
         let el = match &row.kind {
             Kind::User { text, queued } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
@@ -3047,6 +3050,9 @@ struct Texts<'a> {
     diagrams: &'a diagrams::Diagrams,
     /// How many Mermaid blocks this row has drawn so far.
     diagram: usize,
+    charts: &'a charts::Charts,
+    /// How many chart blocks this row has drawn so far.
+    chart: usize,
 }
 impl Texts<'_> {
     /// A text with `runs` already flat; `base` is its colour where no run says otherwise. It is
@@ -3135,6 +3141,12 @@ fn block_el(block: &Block, texts: &mut Texts, highlights: &Highlights, cx: &mut 
             Err(error) => div().flex().flex_col().gap_1()
                 .child(code_el(language.as_deref(), code, texts, highlights, cx))
                 .child(div().text_xs().text_color(rgb(0xe08a7a)).child(format!("Mermaid could not draw this: {error}"))),
+        },
+        Block::Code { language, code, open: false } if charts::is_chart(language.as_deref()) => match charts::chart_el(code, texts, cx) {
+            Ok(el) => el,
+            Err(error) => div().flex().flex_col().gap_1()
+                .child(code_el(language.as_deref(), code, texts, highlights, cx))
+                .child(div().text_xs().text_color(rgb(0xe08a7a)).child(format!("The chart could not draw: {error}"))),
         },
         Block::Code { language, code, .. } => code_el(language.as_deref(), code, texts, highlights, cx),
         Block::Quote(t) => div().pl_2().border_l_2().border_color(rgb(0x3d5247)).text_color(rgb(0x8fa89b)).child(texts.inline("quote", t, 0x8fa89b)),

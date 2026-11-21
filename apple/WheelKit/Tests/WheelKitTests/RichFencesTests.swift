@@ -124,3 +124,20 @@ private final class RequestCounter: @unchecked Sendable {
     func stop() { listener.cancel() }
 }
 #endif
+
+@Suite struct ChartFenceTests {
+    @Test func aChartFenceParsesRowsAndSaysWhyABadOneCannotDraw() throws {
+        let ok = ChartFence.parse(#"{"mark":"line","data":[{"x":"Mon","y":3,"series":"a"},{"x":2026,"y":1.5}]}"#)
+        #expect(ok == .success(.init(mark: "line", rows: [.init(x: "Mon", y: 3, series: "a"), .init(x: "2026", y: 1.5, series: "")])))
+        #expect(try ChartFence.parse(#"{"data":[{"x":"a","y":1}]}"#).get().mark == "bar")
+        func reason(_ s: String) -> String? { if case .failure(let e) = ChartFence.parse(s) { e.reason } else { nil } }
+        #expect(reason("{nope") == "it is not JSON")
+        #expect(reason("[1]") == "it must be one JSON object with mark and data")
+        #expect(reason(#"{"mark":"pie","data":[]}"#) == "mark \"pie\" is not bar, line, point or area")
+        #expect(reason(#"{"mark":"line"}"#) == "data must be a list of {x, y, series} rows")
+        #expect(reason(#"{"data":[]}"#) == "data has no rows")
+        #expect(reason(#"{"data":[{"x":"a","y":1},{"x":"b","y":"2"}]}"#) == "row 2 has no number y")
+        #expect(reason(#"{"data":[{"y":1}]}"#) == "row 1 has no x")
+        #expect(ChartFence.handles("Chart") && !ChartFence.handles("json") && !ChartFence.handles(nil))
+    }
+}

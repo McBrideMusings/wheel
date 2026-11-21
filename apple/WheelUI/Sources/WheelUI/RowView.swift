@@ -385,12 +385,14 @@ struct AgentText: View {
     /// The timestamp whose local time the popover shows.
     @State private var timeShown: String?
 
+    /// Whether the reply is done growing: only the last item can still be streaming.
+    private var settled: Bool { !chat.isBusy || chat.items.last?.id != id }
+
     /// The reply's links, rich text and selectable prose. The transcript redraws every row on each
     /// streamed chunk and each keystroke in the composer; these are redone only when something this
     /// reply read changed. Tracking its reads redraws the row when one of its own lookups answers.
     private func prepared(_ pictured: String) -> PreparedReply.Value {
-        // Only the last item can still be streaming; every reply above it is settled.
-        let agent = chat.name, settled = !chat.isBusy || chat.items.last?.id != id
+        let agent = chat.name, settled = self.settled
         let key = PreparedReply.Key(text: pictured, look: look, settled: settled, day: Calendar.current.startOfDay(for: .now))
         let value = PreparedReply.reply(agent: agent, row: id, links: links, key) {
             guard let links else {
@@ -441,7 +443,7 @@ struct AgentText: View {
             // a row that grows chunk by chunk.
             StructuredText(markdown: shown, syntaxExtensions: rich.syntax)
                 .font(look.body)
-                .chatMarkdownStyle(look, agent: chat.name)
+                .chatMarkdownStyle(look, agent: chat.name, settled: settled)
                 .textual.imageAttachmentLoader(
                     ChatImageLoader(agent: chat.name, row: id, maxHeight: look.imageMaxHeight, resolver: links))
                 .textual.emojiAttachmentLoader(SwatchLoader(side: (look.size * 0.85).rounded()))
@@ -551,8 +553,9 @@ private struct TimeStamp: Identifiable {
 extension View {
     /// The block styles a reply's Markdown draws with: paragraphs, headings, inline code and links,
     /// list bullets and spacing, quotes and code blocks as the `chat.*` settings in `look` give them.
-    /// `agent` names whose code blocks these are in `CodeBlockRegistry`.
-    func chatMarkdownStyle(_ look: ChatAppearance, agent: String) -> some View {
+    /// `agent` names whose code blocks these are in `CodeBlockRegistry`; `settled` is false while the
+    /// reply can still grow.
+    func chatMarkdownStyle(_ look: ChatAppearance, agent: String, settled: Bool) -> some View {
         textual.paragraphStyle(ChatParagraphStyle(
             lineSpacing: look.lineSpacing(for: look.size) / look.size,
             spacing: look.blockGap(look.paragraphSpacing)))
@@ -561,7 +564,7 @@ extension View {
             .textual.unorderedListMarker(ChatListMarker(bullet: look.listBullet))
             .textual.listItemSpacing(.fontScaled(top: look.blockGap(look.listSpacing) / look.size))
             .textual.blockQuoteStyle(ChatBlockQuoteStyle(style: look.quoteStyle))
-            .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, agent: agent))
+            .textual.codeBlockStyle(ChatCodeBlockStyle(look: look, agent: agent, settled: settled))
             .textual.highlighterTheme(look.codeTheme.highlighter)
             .textual.overflowMode(look.codeWrap == .wrap ? .wrap : .scroll)
     }

@@ -184,3 +184,72 @@ public enum SVGFence {
         }
     }
 }
+
+/// A ```chart fence: one JSON object with the page Chart component's props, `mark` (bar, line,
+/// point or area; bar when absent) and `data` [{x, y, series}]. The reasons a block cannot be drawn
+/// match the GPUI client's `charts::parse`.
+public enum ChartFence {
+    public struct Row: Equatable, Sendable {
+        public var x: String
+        public var y: Double
+        public var series: String
+    }
+
+    public struct Chart: Equatable, Sendable {
+        public var mark: String
+        public var rows: [Row]
+    }
+
+    /// Whether a fence's language hint names a chart.
+    public static func handles(_ language: String?) -> Bool {
+        language?.trimmingCharacters(in: .whitespaces).lowercased() == "chart"
+    }
+
+    /// A JSON value as the text a category shows: a string as written, a whole number without `.0`.
+    private static func label(_ v: Any?) -> String? {
+        if let s = v as? String { return s }
+        if let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() {
+            let d = n.doubleValue
+            return d == d.rounded() && abs(d) < 1e15 ? String(Int64(d)) : String(format: "%.2f", d)
+        }
+        return nil
+    }
+
+    /// The chart in `source`, or why it cannot be drawn.
+    public static func parse(_ source: String) -> Result<Chart, ChartFenceError> {
+        func fail(_ s: String) -> Result<Chart, ChartFenceError> { .failure(ChartFenceError(reason: s)) }
+        let parsed: Any
+        do {
+            parsed = try JSONSerialization.jsonObject(with: Data(source.utf8), options: [.fragmentsAllowed])
+        } catch {
+            return fail("it is not JSON")
+        }
+        guard let o = parsed as? [String: Any] else { return fail("it must be one JSON object with mark and data") }
+        var mark = "bar"
+        if let m = o["mark"], !(m is NSNull) {
+            guard let m = m as? String else { return fail("mark must be bar, line, point or area") }
+            guard ["bar", "line", "point", "area"].contains(m) else { return fail("mark \"\(m)\" is not bar, line, point or area") }
+            mark = m
+        }
+        guard let data = o["data"] as? [Any] else { return fail("data must be a list of {x, y, series} rows") }
+        if data.isEmpty { return fail("data has no rows") }
+        var rows: [Row] = []
+        for (i, item) in data.enumerated() {
+            let n = i + 1
+            let row = item as? [String: Any] ?? [:]
+            guard let x = label(row["x"]) else { return fail("row \(n) has no x") }
+            guard let y = row["y"] as? NSNumber, CFGetTypeID(y) != CFBooleanGetTypeID() else { return fail("row \(n) has no number y") }
+            var series = ""
+            if let s = row["series"], !(s is NSNull) {
+                guard let s = label(s) else { return fail("row \(n)'s series is not text") }
+                series = s
+            }
+            rows.append(Row(x: x, y: y.doubleValue, series: series))
+        }
+        return .success(Chart(mark: mark, rows: rows))
+    }
+}
+
+public struct ChartFenceError: Error, Equatable, Sendable {
+    public var reason: String
+}

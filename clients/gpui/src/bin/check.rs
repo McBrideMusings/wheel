@@ -304,6 +304,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, image_report) = inline_image(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, mermaid_report) = mermaid_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, chart_report) = chart_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, cards_report) = transcript_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
     let (run, footer_report) = footer(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, links_report) = chat_links(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
@@ -408,6 +409,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     });
     report["inline_image"] = image_report;
     report["mermaid"] = mermaid_report;
+    report["chart"] = chart_report;
     report["cards"] = cards_report;
     report["mirrors"] = mirrors_report;
     report["plugin_panes"] = plugin_panes_report;
@@ -1164,6 +1166,50 @@ async fn mermaid_reply(run: Run, agent_pane: String, agent_name: String, cli_pat
     }
     draw(run.window, None, cx)?;
     Ok((run, json!({"agent_pane": ordinary, "orchestrator_pane": orchestrated})))
+}
+
+/// The reply the chart step sends: a bar chart with two series and a block with a mark no chart has.
+const CHART_REPLY: &str = "Builds this week:\n\n```chart\n{\"mark\": \"bar\", \"data\": [{\"x\": \"Mon\", \"y\": 3, \"series\": \"green\"}, {\"x\": \"Mon\", \"y\": 1, \"series\": \"red\"}, {\"x\": \"Tue\", \"y\": 5, \"series\": \"green\"}, {\"x\": \"Wed\", \"y\": 2, \"series\": \"green\"}, {\"x\": \"Wed\", \"y\": 2, \"series\": \"red\"}]}\n```\n\nAnd a pie:\n\n```chart\n{\"mark\": \"pie\", \"data\": []}\n```\n";
+
+/// Charts from data (wheel-eg4e.19.12): an echoed reply holding a bar chart block and one whose mark
+/// is not a chart's draws the first as a stacked bar chart and the second as its source with the
+/// reason under it.
+async fn chart_reply(mut run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    set_zoom(&mut run, &agent_pane, true, cx).await?;
+    let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(["agent", "send", &agent_pane, CHART_REPLY, "--timeout", "30"]).output()?;
+    ensure!(out.status.success(), "wheel agent send: {}", String::from_utf8_lossy(&out.stderr));
+    let window = run.window;
+    let agent = agent_name.as_str();
+    let mut row = None;
+    let mut listed = Value::Null;
+    for _ in 0..200 {
+        pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+        if row.is_none() {
+            row = window.update(cx, |c, _, _| c.transcripts.get(agent).and_then(|t| t.rows.iter().rposition(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("And a pie")))))?;
+            if let Some(r) = row {
+                window.update(cx, |c, _, _| c.reveal(agent, r))?;
+            }
+        }
+        draw(window, None, cx)?;
+        listed = window.update(cx, |c, _, _| c.state_json()["chat_charts"][agent].clone())?;
+        if let Some(r) = row && listed.as_array().is_some_and(|l| l.iter().filter(|d| d["row"] == json!(r)).count() == 2) {
+            break;
+        }
+    }
+    let row = row.ok_or_else(|| anyhow::anyhow!("no reply with the charts reached {agent}"))?;
+    draw(window, None, cx)?;
+    draw(window, Some(run.output.join("client-chart.png")), cx)?;
+    let list: Vec<Value> = listed.as_array().cloned().unwrap_or_default().into_iter().filter(|d| d["row"] == json!(row)).collect();
+    let drawn = list.iter().find(|d| d["drawn"] == true).ok_or_else(|| anyhow::anyhow!("no chart drew in row {row}: {listed}"))?;
+    ensure!(drawn["mark"] == "bar" && drawn["rows"] == 5 && drawn["series"] == json!(["green", "red"]) && drawn["x"] == json!(["Mon", "Tue", "Wed"]), "the bar chart: {drawn}");
+    ensure!(drawn["height"].as_f64().unwrap_or(0.) > 100., "the bar chart's height: {drawn}");
+    let failed = list.iter().find(|d| d["drawn"] == false).ok_or_else(|| anyhow::anyhow!("the pie block was not listed: {listed}"))?;
+    ensure!(failed["error"] == "mark \"pie\" is not bar, line, point or area", "the pie block should say why: {failed}");
+    // The pie block's source is drawn as text (its reason line, under it, is in client-chart.png); the bar chart's source is not.
+    let texts: Vec<String> = window.update(cx, |c, _, _| c.drawn_texts(agent))?.into_iter().filter(|d| d.row == row).map(|d| d.text).collect();
+    ensure!(texts.iter().any(|t| t.contains("\"pie\"")) && texts.iter().all(|t| !t.contains("\"Tue\"")), "the reply's texts: {texts:?}");
+    set_zoom(&mut run, &agent_pane, false, cx).await?;
+    Ok((run, json!({"row": row, "charts": list, "texts": texts})))
 }
 
 /// Links in the transcript (wheel-6czg): an echoed reply naming a web page, a file that exists,
