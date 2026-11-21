@@ -83,6 +83,11 @@ fn on_body(a: [f64; 4], r: Rect, kind: &str) -> bool {
     let top = if kind == "browser" { TITLE + CHROME } else { TITLE };
     (a[0] - f64::from(r.x)).abs() < 1.0 && (a[1] - f64::from(r.y + top)).abs() < 1.0 && (a[2] - f64::from(r.w)).abs() < 1.0 && (a[3] - f64::from(r.h - top)).abs() < 1.0
 }
+/// A point in empty pane `r`'s body that presses none of its chooser buttons: the body's top right corner, just under the
+/// title. The buttons start at the left and, in a narrow pane, fill the rest of the body.
+fn empty_body_point(r: Rect) -> [f64; 2] {
+    [f64::from(r.x + r.w - 6.), f64::from(r.y + TITLE + 3.)]
+}
 fn viewport(status: &Value, pane: &str) -> String {
     status["panes"][pane]["viewport"].as_str().unwrap_or_default().to_owned()
 }
@@ -4698,12 +4703,13 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
     }
     let new_rect = new_rect.ok_or_else(|| anyhow::anyhow!("the split pane {new_pane} never arrived as an empty pane"))?;
     draw(window, None, cx)?;
-    let body = [f64::from(new_rect.x + new_rect.w / 2.), f64::from(new_rect.y + new_rect.h / 2.)];
+    let body = empty_body_point(new_rect);
     native.call(json!({"op":"post_mouse","kind":"down","point":body}));
     native.call(json!({"op":"post_mouse","kind":"up","point":body}));
     tick(cx, 200).await;
     draw(window, None, cx)?;
     ensure!(window.update(cx, |c, _, _| c.focus.current.clone())?.as_deref() == Some(new_pane.as_str()), "the click did not focus the empty pane");
+    ensure!(window.update(cx, |c, _, _| c.palette(&new_pane).is_none())?, "the click on the empty pane's body opened the palette before `a`");
     native.call(json!({"op":"post_key","text":"a","code":keycode('a')}));
     tick(cx, 200).await;
     draw(window, None, cx)?;
@@ -4716,10 +4722,10 @@ async fn web_panes(run: Run, webs: Vec<&String>, cli_path: String, before: Value
             break;
         }
     }
-    let failure = window.update(cx, |c, _, _| c.palette(&new_pane).and_then(|p| p.failure().map(str::to_owned)))?;
+    let failure = window.update(cx, |c, _, _| c.palette(&new_pane).map(|p| format!("failure {:?}, loading {}, query {:?}, {} listed", p.failure(), p.is_loading(), p.query, p.all().len())))?;
     // The project's two artifacts; the fixture's machine file names none.
     let want: Vec<String> = ["project/fixture-html", "project/fixture-page"].map(String::from).into();
-    ensure!(listed == want, "the palette listed {listed:?} (failure {failure:?})");
+    ensure!(listed == want, "the palette listed {listed:?} ({failure:?})");
     for ch in "html".chars() {
         native.call(json!({"op":"post_key","text":ch.to_string(),"code":keycode(ch)}));
         tick(cx, 30).await;
@@ -5047,7 +5053,8 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             let refused = native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"bottom"}));
             ensure!(refused["ok"] == false, "a pane that fills has no ScrollView, so a scroll should answer ok false: {refused}");
             let picker = components(&seen).iter().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Beads pane has no view picker"))?;
-            let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","path":format!("/{picker}"),"value":["graph"]}));
+            // The bridge's `set` names its node by `component` (Bridge.swift's plugin op).
+            let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","component":picker,"value":["graph"]}));
             ensure!(set["ok"] == true, "the Beads view picker refused `graph`: {set}");
             let mut graph = Value::Null;
             for _ in 0..200 {
@@ -5413,7 +5420,7 @@ async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &m
     ensure!(window.update(cx, |c, _, _| c.keymap.action(&wheel_gpui::keymap::KeyChord::parse("cmd+d").unwrap()).map(str::to_owned))? == None, "⌘D is still bound after the setting moved it");
     // The empty pane the first split made has the keyboard; ⌘E splits it.
     let empty_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == split_pane).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("the split pane left"))?;
-    let empty_body = [f64::from(empty_rect.x + empty_rect.w / 2.), f64::from(empty_rect.y + empty_rect.h / 2.)];
+    let empty_body = empty_body_point(empty_rect);
     native.call(json!({"op":"post_mouse","kind":"down","point":empty_body}));
     native.call(json!({"op":"post_mouse","kind":"up","point":empty_body}));
     tick(cx, 200).await;
