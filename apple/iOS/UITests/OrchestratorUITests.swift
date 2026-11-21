@@ -46,6 +46,17 @@ final class OrchestratorUITests: XCTestCase {
         shot("chrome")
         sync("chrome")
 
+        // The composer's keyboard button (wheel-eg4e.19.25): it shows while the keyboard is up and hides it.
+        XCTAssertFalse(app.buttons["hide keyboard"].exists, "no keyboard button while the keyboard is down")
+        sheet.textViews.firstMatch.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the composer raised the keyboard")
+        let hide = app.buttons["hide keyboard"]
+        XCTAssertTrue(hide.waitForExistence(timeout: 5), "the composer shows the keyboard button")
+        shot("keyboard")
+        hide.tap()
+        XCTAssertTrue(waitFor { !self.app.keyboards.firstMatch.exists }, "the button hid the keyboard")
+        XCTAssertFalse(app.buttons["hide keyboard"].exists, "the button goes with the keyboard")
+
         // 1. Full screen under the top bar, no modal: the bar's title sits above the body, the body reaches the
         // bottom edge, and no presented sheet covers it.
         let window = app.windows.firstMatch.frame

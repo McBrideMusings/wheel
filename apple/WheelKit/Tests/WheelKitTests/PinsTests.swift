@@ -26,7 +26,7 @@ struct PinsTests {
         #expect(SheetPosition.nearest(to: 600, in: 640) == .full)
         #expect(SheetPosition.nearest(to: 420, in: 640) == .high)
         #expect(SheetPosition.nearest(to: 250, in: 640) == .low)
-        #expect(SheetPosition.nearest(to: 40, in: 640) == .hidden)
-        #expect(SheetPosition.nearest(to: -90, in: 640) == .hidden)
+        #expect(SheetPosition.nearest(to: 40, in: 640) == .header)
+        #expect(SheetPosition.nearest(to: -90, in: 640) == .header, "a drag past the bottom edge ends at the header")
     }
 }

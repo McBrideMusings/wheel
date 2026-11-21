@@ -1,10 +1,10 @@
 import CoreGraphics
 import Foundation
 
-/// Where the iPhone's pin sheet sits over the carousel: everything under the top bar, two partial heights, or
-/// below the bottom edge with a button to bring it back.
+/// Where the iPhone's pin sheet sits over the carousel: everything under the top bar, two partial heights, or its
+/// header alone at the bottom edge. It never leaves the screen while a pane is pinned.
 public enum SheetPosition: String, CaseIterable, Sendable {
-    case full, high, low, hidden
+    case full, high, low, header
 
     /// The sheet's height as a share of the area under the top bar.
     public var fraction: CGFloat {
@@ -12,7 +12,7 @@ public enum SheetPosition: String, CaseIterable, Sendable {
         case .full: 1
         case .high: 0.7
         case .low: 0.38
-        case .hidden: 0
+        case .header: 0
         }
     }
 

@@ -236,6 +236,15 @@ public struct Composer: View {
                     .buttonStyle(.chat("composer", "Toggle reading replies aloud"))
                     .help(readAloud ? "Stop reading replies aloud" : "Read this agent's replies aloud")
                 }
+                #if os(iOS)
+                // Last in the left group, so its coming and going moves no other control.
+                if focused {
+                    Button("Hide the keyboard", systemImage: "keyboard.chevron.compact.down") { focused = false }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.chat("composer", "Hide the keyboard"))
+                        .accessibilityIdentifier("hide keyboard")
+                }
+                #endif
                 if let error {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
                 }

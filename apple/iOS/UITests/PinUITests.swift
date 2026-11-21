@@ -30,7 +30,7 @@ final class PinUITests: XCTestCase {
         shot("low")
         sync("pinned")
 
-        // 3, 4. A drag on the header moves it through full, high, low and hidden; full covers everything under the bar.
+        // 3, 4. A drag on the header moves it through full, high, low and header; full covers everything under the bar.
         let title = app.buttons["title"].frame
         drag(toY: title.maxY + 4)
         XCTAssertTrue(at("full"))
@@ -46,16 +46,19 @@ final class PinUITests: XCTestCase {
         drag(toFraction: 0.38)
         XCTAssertTrue(at("low"))
         drag(toFraction: 0)
-        XCTAssertTrue(at("hidden"))
-        // 5. At hidden a round button shows; a tap brings the sheet back at low.
-        let show = app.buttons["sheet show"]
-        XCTAssertTrue(show.waitForExistence(timeout: 5), "the hidden sheet leaves a button")
-        XCTAssertFalse(app.otherElements["pin sheet header"].exists, "the hidden sheet is below the bottom edge")
-        shot("hidden")
+        XCTAssertTrue(at("header"))
+        // 5. At its lowest the header stays at the bottom edge, with the pages and the dots bar above it; there is no
+        // button to bring it back, and a drag up opens it at low.
+        let low = app.otherElements["pin sheet header"]
+        XCTAssertTrue(low.waitForExistence(timeout: 5), "the header stays on the screen")
+        XCTAssertGreaterThan(low.frame.maxY, app.windows.firstMatch.frame.maxY - 80, "the header sits at the bottom edge: \(low.frame)")
+        XCTAssertFalse(app.buttons["sheet show"].exists, "no button to bring the sheet back")
+        let handle = app.otherElements["page handle"]
+        if handle.exists { XCTAssertLessThanOrEqual(handle.frame.maxY, low.frame.minY + 1, "the dots bar ends above the header: \(handle.frame) over \(low.frame)") }
+        shot("header")
         sync("positions")
-        show.tap()
+        drag(toFraction: 0.38)
         XCTAssertTrue(at("low"))
-        XCTAssertFalse(show.exists)
         sync("shown")
 
         // 2. A terminal and a web pane pin too; with every pane pinned the carousel says so.
@@ -63,11 +66,11 @@ final class PinUITests: XCTestCase {
         XCTAssertTrue(dots(""), "one page left: no dots")
         let terminal = try XCTUnwrap(menuValue, "the sheet names the terminal")
         sync("terminal")
-        // Hidden, the sheet's terminal stops streaming; brought back, it streams again.
+        // Down to its header, the sheet's terminal stops streaming; dragged up again, it streams again.
         drag(toFraction: 0)
-        XCTAssertTrue(at("hidden"))
+        XCTAssertTrue(at("header"))
         sync("terminal-hidden")
-        app.buttons["sheet show"].tap()
+        drag(toFraction: 0.38)
         XCTAssertTrue(at("low"))
         sync("terminal-shown")
         pin()

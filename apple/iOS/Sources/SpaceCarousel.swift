@@ -34,7 +34,8 @@ struct SpaceCarousel: View {
             let spacesMode = showsPages
             VStack(spacing: 0) {
                 topBar(pages: pages, dots: dots, landscape: landscape)
-                // The sheet lies over the pages and the dots bar, so pinning or moving it moves neither.
+                // The sheet lies over the pages and the dots bar, so moving it moves neither. Its header never leaves the
+                // screen, so while a pane is pinned the pages and the dots bar end above it and it covers no control.
                 ZStack(alignment: .bottom) {
                     VStack(spacing: 0) {
                         if model.mode == WindowMode.agents {
@@ -60,6 +61,7 @@ struct SpaceCarousel: View {
                             pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
                         }
                     }
+                    .padding(.bottom, spacesMode && model.activeSpace.flatMap { model.sheet(in: $0.id) } != nil ? PinSheetView<EmptyView>.headerHeight : 0)
                     if spacesMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
                        let pane = space.allPanes.first(where: { $0.id == sheet.pane }) {
                         PinSheetView(model: model, space: space, sheet: sheet, pane: pane) { kindView($0) }

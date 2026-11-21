@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# iPhone pin sheet (wheel-eg4e.19.10): a pinned pane leaves the carousel for a bottom sheet at full, high, low or hidden,
+# iPhone pin sheet (wheel-eg4e.19.10): a pinned pane leaves the carousel for a bottom sheet at full, high, low or its header alone,
 # driven with real taps and drags by the WheelPhoneUITests target (apple/iOS/UITests/PinUITests.swift) against this
 # script's own wheeld: one space holding an agent, a terminal and a web pane. The test writes `$SYNC/step-<name>`
 # after each step and waits for `$SYNC/ack-<name>`; this script checks phone.log and wheeld, then acknowledges.
@@ -41,11 +41,11 @@ if step positions; then
   check "phone.log records low -> full" plog "sheet $W: low -> full"
   check "phone.log records full -> high" plog "sheet $W: full -> high"
   check "phone.log records high -> low" plog "sheet $W: high -> low"
-  check "phone.log records low -> hidden" plog "sheet $W: low -> hidden"
+  check "phone.log records low -> header" plog "sheet $W: low -> header"
   ack positions
 fi
 if step shown; then
-  check "the hidden sheet's button brings it to low" plog "sheet $W: hidden -> low"
+  check "a drag up from the header brings it to low" plog "sheet $W: header -> low"
   ack shown
 fi
 # after <marker> <text>: phone.log holds <text> on a line after the last line holding <marker>.
@@ -57,12 +57,12 @@ if step terminal; then
   ack terminal
 fi
 if step terminal-hidden; then
-  check "the hidden sheet lets its terminal go" poll 10 after "sheet $W: low -> hidden" "sheet terminal: none"
-  check "the hidden sheet's terminal is detached" poll 10 after "sheet $W: low -> hidden" "detached from $TERM_ID"
+  check "the hidden sheet lets its terminal go" poll 10 after "sheet $W: low -> header" "sheet terminal: none"
+  check "the hidden sheet's terminal is detached" poll 10 after "sheet $W: low -> header" "detached from $TERM_ID"
   ack terminal-hidden
 fi
 if step terminal-shown; then
-  check "the sheet brought back attaches its terminal again" poll 10 after "sheet $W: hidden -> low" "attaching to $TERM_ID"
+  check "the sheet brought back attaches its terminal again" poll 10 after "sheet $W: header -> low" "attaching to $TERM_ID"
   ack terminal-shown
 fi
 if step web; then

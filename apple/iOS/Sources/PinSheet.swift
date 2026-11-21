@@ -2,9 +2,9 @@ import SwiftUI
 import WheelKit
 
 /// The shown space's pinned pane as a bottom sheet over the carousel. It sits full (everything under the top bar),
-/// high, low or hidden below the bottom edge; a drag on its header moves it and ends at the nearest of the four, and
-/// while it is hidden a round button brings it back at low. The header names the pane, and its menu switches among the
-/// space's pinned panes and unpins.
+/// high, low or as its header alone at the bottom edge, so it never leaves the screen; a drag on its header moves it
+/// and ends at the nearest of the four. The header names the pane, and its menu switches among the space's pinned
+/// panes and unpins.
 struct PinSheetView<Content: View>: View {
     let model: PhoneModel
     let space: SpaceInfo
@@ -20,23 +20,19 @@ struct PinSheetView<Content: View>: View {
         GeometryReader { geo in
             let total = geo.size.height
             let settled = sheet.position.fraction * total
-            let height = min(max(settled + lift, sheet.position == .hidden ? 0 : Self.headerHeight), total)
+            let height = min(max(settled + lift, Self.headerHeight), total)
             ZStack(alignment: .bottomTrailing) {
                 Color.clear
-                if sheet.position == .hidden && lift == 0 {
-                    showButton
-                } else {
-                    VStack(spacing: 0) {
-                        header(total: total)
-                        content(pane)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .clipped()
-                    }
-                    .frame(height: height)
-                    .background(Color(.systemBackground))
-                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 12, topTrailingRadius: 12))
-                    .shadow(color: .black.opacity(0.18), radius: 8, y: -2)
+                VStack(spacing: 0) {
+                    header(total: total)
+                    content(pane)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
                 }
+                .frame(height: height)
+                .background(Color(.systemBackground))
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 12, topTrailingRadius: 12))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: -2)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
@@ -89,26 +85,6 @@ struct PinSheetView<Content: View>: View {
                 Log.info("pin sheet: dragged \(Int(-drag.translation.height)) pt from \(sheet.position.rawValue), ends \(position.rawValue)")
                 withAnimation(.snappy) { model.moveSheet(to: position) }
             })
-    }
-
-    /// While the sheet is hidden: a round button over the carousel's bottom right that brings it back at low.
-    private var showButton: some View {
-        Button {
-            Log.info("pin sheet: show button tapped")
-            withAnimation(.snappy) { model.moveSheet(to: .low) }
-        } label: {
-            Image(systemName: "pin.fill")
-                .font(.title3)
-                .frame(width: 48, height: 48)
-                .background(.regularMaterial, in: Circle())
-                .shadow(color: .black.opacity(0.2), radius: 4, y: 1)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Show pinned pane")
-        .accessibilityIdentifier("sheet show")
-        // Above the dots bar and a page's bottom controls (a terminal's key row, an agent's composer), so it covers none.
-        .padding(.trailing, 16)
-        .padding(.bottom, 152)
     }
 
     private func title(of id: String) -> String {

@@ -1339,7 +1339,7 @@ final class PhoneModel {
 
     private func showTerm() {
         shownTerm = ownTerm(of: shownPane)
-        sheetPane = activeSpace.flatMap { space in sheet(in: space.id).flatMap { $0.position == .hidden ? nil : $0.pane } }
+        sheetPane = activeSpace.flatMap { space in sheet(in: space.id).flatMap { $0.position == .header ? nil : $0.pane } }
         let term = ownTerm(of: sheetPane)
         if term != sheetTerm { Log.info("sheet terminal: \(term ?? "none")") }
         sheetTerm = term
