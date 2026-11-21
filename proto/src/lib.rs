@@ -1149,6 +1149,14 @@ pub enum ClientMsg {
         pane: String,
         site: PaneSite,
     },
+    /// Move a popped pane's floating window: every pane of its popped tree takes `frame`
+    /// ([`SpaceInfo::frames`]). Refused for a pane in the grid or the tray.
+    PaneSetFrame {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        frame: PaneFrame,
+    },
     /// Swap the places of two panes in one space. Each keeps running; only the layout changes.
     PaneSwap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3767,10 +3775,16 @@ pub struct SpaceInfo {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
     /// Panes popped out of the grid (a floating window over it, always visible). Each is its own
-    /// split tree, splittable like the grid; one that loses its last pane is gone. Window
-    /// positions and sizes belong to each client (ADR-0022), not to wheeld.
+    /// split tree, splittable like the grid; one that loses its last pane is gone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub popped: Vec<Node>,
+    /// Where each pane's floating window sits over the grid, by pane id: set by `pane_set_frame`
+    /// (an agent's `wheel pane place`, a person's drag). Every pane of a popped tree carries its
+    /// tree's frame. Kept while a pane visits the grid or the tray, so popping it out again puts
+    /// it back; dropped when the space no longer holds the pane. A popped pane with no entry
+    /// draws where its client cascades it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub frames: std::collections::BTreeMap<String, PaneFrame>,
     /// Panes in the space's tray, each a single pane leaf: running, shown nowhere, in the order
     /// they were backgrounded. Backgrounding is per pane, even out of a popped tree.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3779,6 +3793,29 @@ pub struct SpaceInfo {
     /// orchestrators run. Clients keep it out of the space tabs and Spaces mode.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub orchestrator: bool,
+}
+
+/// A floating pane's window, in points from the top left of its space's body (the grid's area).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct PaneFrame {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl PaneFrame {
+    /// Read `x,y,w,h`; none for anything else, or a width or height that is not above zero.
+    pub fn parse(text: &str) -> Option<Self> {
+        let parts: Vec<f64> = text.split(',').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+        let [x, y, w, h] = parts[..] else { return None };
+        Some(Self { x, y, w, h }).filter(Self::valid)
+    }
+
+    /// Every number finite, and a width and height above zero.
+    pub fn valid(&self) -> bool {
+        [self.x, self.y, self.w, self.h].iter().all(|v| v.is_finite()) && self.w > 0.0 && self.h > 0.0
+    }
 }
 
 /// Where a pane is in its space: in the grid, popped out, or in the tray.
@@ -5151,6 +5188,14 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pane_frame_reads_four_numbers_with_a_size_above_zero() {
+        assert_eq!(super::PaneFrame::parse("40, 40,600,400"), Some(super::PaneFrame { x: 40., y: 40., w: 600., h: 400. }));
+        for bad in ["40,40,600", "40,40,0,400", "a,b,c,d", "1,2,3,4,5", "1,2,inf,4"] {
+            assert_eq!(super::PaneFrame::parse(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn a_plugin_pane_round_trips_and_a_torn_one_is_kept_whole() {
         use super::*;

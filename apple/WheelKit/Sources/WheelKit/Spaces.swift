@@ -21,8 +21,8 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     /// Made to run with no window (`wheel space new --background`): a window never shows it until
     /// the person brings it forward.
     public let background: Bool
-    /// Panes popped out of the grid: each tree is a floating window over it. Where those windows
-    /// sit and how big they are is the client's own (ADR-0022).
+    /// Panes popped out of the grid: each tree is a floating window over it. wheeld also lists where
+    /// those windows sit (`frames`); this package does not read it, since the phone has no floating windows.
     public var popped: [Node]
     /// The space's tray: one pane leaf each, running and shown nowhere.
     public var backgrounded: [Node]

@@ -1,6 +1,7 @@
 //! A space's popped-out trees drawn as cards over its grid (SpacesView.swift `PoppedWindow`,
-//! AppModel.swift `poppedFrame`, `poppedSize`, `poppedWindows`). Where each card sits is this
-//! client's own (ADR-0022): wheeld never hears it, and a second client keeps its own.
+//! AppModel.swift `poppedFrame`, `poppedSize`, `poppedWindows`). Where each card sits is wheeld's
+//! (`SpaceInfo::frames`): a drag's release sends it, and `wheel pane place` moves it. [`Frames`]
+//! keeps this client's copy, read only when the running wheeld has no `pane_set_frame`.
 use crate::layout::{Divider, Placed, Rect, Tree, leaves_of};
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 

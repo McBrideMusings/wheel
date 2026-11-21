@@ -91,6 +91,8 @@ pub struct Space {
     /// panes in its tray, which nothing draws.
     pub popped: Vec<Tree>,
     pub backgrounded: Vec<Tree>,
+    /// Where wheeld says each pane's card sits, by pane id, in grid coordinates (`SpaceInfo::frames`).
+    pub frames: HashMap<String, Rect>,
 }
 
 impl Space {
@@ -251,7 +253,7 @@ pub struct Layout {
 impl Layout {
     fn new(spaces: &[SpaceInfo], sessions: &[SessionInfo]) -> Self {
         let mut layout = Self {
-            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone(), popped: s.popped.iter().map(Tree::from).collect(), backgrounded: s.backgrounded.iter().map(Tree::from).collect() }).collect(),
+            spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone(), popped: s.popped.iter().map(Tree::from).collect(), backgrounded: s.backgrounded.iter().map(Tree::from).collect(), frames: s.frames.iter().map(|(p, f)| (p.clone(), Rect { x: f.x as f32, y: f.y as f32, w: f.w as f32, h: f.h as f32 })).collect() }).collect(),
             sessions: sessions.iter().map(|s| Session { id: s.id.clone(), name: s.name.clone(), spaces: s.spaces.clone() }).collect(),
         };
         for space in &mut layout.spaces {
@@ -397,6 +399,7 @@ mod tests {
             id: "s1".into(), name: "w".into(), cwd: "/w".into(), root: tree(), status: None,
             popped: vec![node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}))],
             backgrounded: vec![node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","cwd":"/tmp"}))],
+            frames: Default::default(),
         };
         assert_eq!(pane_targets(&[space]), json!({"p2":{"term":"t1"},"p4":{"agent":"w1"},"p5":{"term":"t2"}}));
     }

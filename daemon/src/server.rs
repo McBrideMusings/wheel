@@ -2054,6 +2054,7 @@ async fn handle(
             Err(message) => Some(failed(req, message)),
         },
         ClientMsg::PaneSetSite { req, pane, site } => done(req, state.pane_set_site(&pane, site)),
+        ClientMsg::PaneSetFrame { req, pane, frame } => done(req, state.pane_set_frame(&pane, frame)),
         ClientMsg::PaneSwap { req, pane, with } => done(req, state.pane_swap(&pane, &with)),
         ClientMsg::PaneMove { req, pane, to } => {
             let focus = matches!(&to, wheel_proto::MoveTarget::NewSpace { focus: true, .. });

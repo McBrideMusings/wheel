@@ -28,7 +28,7 @@ fn rig(cx: &mut TestAppContext) -> Rig {
         ClientWindow::open(cx, gpui::WindowOptions::default(), move |_, cx| {
             cx.new(|cx| {
                 let mut client = Client::new(native, bridge, true, "test".into(), out, endpoint, None, None, cx.focus_handle());
-                client.spaces = vec![Space { id: "s1".into(), name: "s1".into(), cwd: "/tmp".into(), root: Tree::Pane(leaf("p1", "agent", Some("a1"))), status: None, popped: vec![], backgrounded: vec![] }];
+                client.spaces = vec![Space { id: "s1".into(), name: "s1".into(), cwd: "/tmp".into(), root: Tree::Pane(leaf("p1", "agent", Some("a1"))), status: None, popped: vec![], backgrounded: vec![], frames: Default::default() }];
                 client.space_id = Some("s1".into());
                 client.focus.current = Some("p1".into());
                 client.link = Link::Up;

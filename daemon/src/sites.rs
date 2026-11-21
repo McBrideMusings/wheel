@@ -1,12 +1,12 @@
 //! Where a pane is in its space: the grid, popped out (its own split tree, a floating window over
-//! the grid), or backgrounded (the space's tray). wheeld holds which; each client holds where its
-//! windows sit and how big they are (ADR-0022).
+//! the grid), or backgrounded (the space's tray). wheeld holds which, and where each floating
+//! window sits and how big it is (`SpaceInfo::frames`), so an agent can arrange them.
 
-use wheel_proto::{Node, PaneKind, PaneSite};
+use wheel_proto::{Node, PaneFrame, PaneKind, PaneSite};
 
 use crate::server::AppState;
 use crate::settings::PLACEMENT;
-use crate::spaces::{find_leaf_mut, last_pane, place, take_leaf, Placement};
+use crate::spaces::{find_leaf_mut, last_pane, panes, place, take_leaf, Placement};
 
 impl AppState {
     /// Put `pane` in the grid, in a popped tree of its own, or in the tray, keeping its id, its
@@ -72,6 +72,31 @@ impl AppState {
             }
         }
         tracing::info!(space = %space.id, %pane, from = from.name(), to = site.name(), placed_by = strategy.map(Placement::name), "pane site changed");
+        self.changed(&mut spaces);
+        Ok(())
+    }
+
+    /// Move `pane`'s floating window to `frame`: every pane of the popped tree holding it takes
+    /// the frame. A pane in the grid or the tray is refused, naming it.
+    pub fn pane_set_frame(&self, pane: &str, frame: PaneFrame) -> Result<(), String> {
+        if !frame.valid() {
+            return Err(format!("frame {},{},{},{} for pane {pane} needs finite numbers and a width and height above 0", frame.x, frame.y, frame.w, frame.h));
+        }
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(pane)?;
+        let space = &mut spaces.spaces[index];
+        let Some(tree) = space.popped.iter().find(|t| t.holds(pane)) else {
+            let site = match space.site_of(pane) {
+                Some(PaneSite::Backgrounded) => "backgrounded",
+                _ => "in the grid",
+            };
+            return Err(format!("pane {pane} is {site}, not popped out: pop it out first (wheel pane pop {pane})"));
+        };
+        let ids: Vec<String> = panes(tree).into_iter().map(|(id, _)| id.to_owned()).collect();
+        for id in ids {
+            space.frames.insert(id, frame);
+        }
+        tracing::info!(space = %space.id, %pane, x = frame.x, y = frame.y, w = frame.w, h = frame.h, "pane frame set");
         self.changed(&mut spaces);
         Ok(())
     }
