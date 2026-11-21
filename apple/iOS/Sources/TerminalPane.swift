@@ -7,7 +7,8 @@ import WheelKit
 @MainActor
 final class PhoneTerminal: ObservableObject {
     let term: String
-    /// The plugin pane whose page draws this surface (`Terminal{pane}`, ADR-0042); nil for the terminal's own page.
+    /// The plugin pane (`Terminal{pane}`, ADR-0042) or mirror pane whose page draws this surface; nil for the terminal's
+    /// own page.
     let host: String?
     let view: TerminalViewState
     let session: InMemoryTerminalSession
@@ -19,6 +20,9 @@ final class PhoneTerminal: ObservableObject {
     var layout: (size: CGSize, scale: CGFloat)?
     /// The surface's latest grid, held until `layout` says the surface has its final frame.
     var reported: InMemoryTerminalViewport?
+    /// The surface took its last replay before its grid fitted its page. The replay draws the screen at the grid the
+    /// surface had then, so the surface asks again once it sizes the shell.
+    var replayBeforeLayout = false
     /// The most a page exceeds its surface by on one axis, besides the cell remainder: the
     /// surface's padding (20 pt wide, 16 pt tall), rounded up to one value for both axes.
     static let paddingPoints: CGFloat = 24

@@ -178,7 +178,11 @@ struct SpaceCarousel: View {
 
     /// The page a pane of this kind draws.
     @ViewBuilder private func kindView(_ pane: (id: String, kind: PaneKind)) -> some View {
-        if case let .terminal(term, _) = pane.kind {
+        if case let .terminal(term, _) = pane.kind, model.mirror(pane.id) != nil {
+            // A mirror can sit in its source's space, beside the source's page, so it draws a surface of its own.
+            TerminalEmbed(model: model, host: pane.id, term: term).id(term)
+                .overlay(SwipeArea.tint.allowsHitTesting(false))
+        } else if case let .terminal(term, _) = pane.kind {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
                 // The surface draws its own opaque background, so the tint goes over it.
@@ -382,12 +386,15 @@ struct SpaceCarousel: View {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
-        // `WHEEL_SWIPE=<n>` raises the keyboard in the shown terminal, then swipes to the n-th page.
+        // `WHEEL_SWIPE=<n>` raises the keyboard in the shown terminal, then swipes to the n-th page and logs what the
+        // page's surface holds once the swipe settles.
         if let n = env["WHEEL_SWIPE"].flatMap(Int.init), case let panes = Pages(model.activeSpace, pinned: pinnedIDs).panes, (1...max(panes.count, 1)).contains(n) {
             model.focusShown()
             try? await Task.sleep(for: .seconds(2))
             Log.info("swipe to page \(n)")
             withAnimation { page = panes[n - 1].id }
+            try? await Task.sleep(for: .seconds(2))
+            model.logShownScreen()
         }
         if env["WHEEL_NEW_SPACE"] != nil {
             Log.info("open new space sheet")
@@ -595,7 +602,7 @@ private struct PluginEmbed: View {
                 AgentPane(model: model, pane: embed.pane, agent: agent, harness: harness, chat: model.chats[agent]!)
             case let (.terminal, .terminal(term, _)?):
                 // A new identity per term: a pane that starts another shell gets a new surface.
-                PluginTerminalEmbed(model: model, host: host, term: term).id(term)
+                TerminalEmbed(model: model, host: host, term: term).id(term)
             default:
                 note(kind == nil ? "Pane \(embed.pane) is gone" : "Pane \(embed.pane) holds no \(embed.kind == .terminal ? "terminal" : "agent")")
             }
@@ -613,9 +620,10 @@ private struct PluginEmbed: View {
 
 }
 
-/// A terminal pane inside a plugin pane's page: a Ghostty surface of its own, never the terminal page's (one surface draws
-/// in one view), streamed while the page is on screen and sizing the shell while the page is the one shown.
-private struct PluginTerminalEmbed: View {
+/// A terminal pane inside a plugin pane's page, or a mirror's page of its source terminal: a Ghostty surface of its own,
+/// never the terminal page's (one surface draws in one view), streamed while the page is on screen and sizing the shell
+/// while the page is the one shown.
+private struct TerminalEmbed: View {
     let model: PhoneModel
     @StateObject private var terminal: PhoneTerminal
 

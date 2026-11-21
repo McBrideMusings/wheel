@@ -228,8 +228,9 @@ final class PhoneModel {
     private var sheetPane: String?
     /// `sheetPane`'s terminal, when it is one.
     private var sheetTerm: String?
-    /// The surfaces plugin pages draw for `Terminal{pane}` (ADR-0042), one per embed view while it is on screen, in the
-    /// order they came up; each is its own Ghostty surface, never the terminal page's, since one surface draws in one view.
+    /// The surfaces plugin pages draw for `Terminal{pane}` (ADR-0042) and mirror pages draw for their source terminal, one
+    /// per embed view while it is on screen, in the order they came up; each is its own Ghostty surface, never the terminal
+    /// page's, since one surface draws in one view.
     /// The carousel's paged TabView holds extra copies of a page for a moment while the space's tree changes, so one
     /// embed can be here more than once; the newest of a term sizes the shell.
     private var embeds: [PhoneTerminal] = []
@@ -597,6 +598,7 @@ final class PhoneModel {
             for terminal in to {
                 terminal.session.receive(Data("\u{1b}c".utf8))
                 terminal.attached = true
+                terminal.replayBeforeLayout = !fitsPage(terminal)
                 settle(terminal)
             }
             Log.info("attached to \(id), replay \(replayBytes) bytes to \(to.count) of \(all.count) surfaces")
@@ -1195,9 +1197,20 @@ final class PhoneModel {
 
     // MARK: Terminals
 
-    /// The surface for `term`, made the first time a page asks.
+    /// The surface for `term`'s own page, made the first time the page asks.
     func terminal(_ term: String) -> PhoneTerminal {
         if let existing = terminals[term] { return existing }
+        let terminal = makeSurface(term)
+        if attachedTerms.contains(term) {
+            // Already streamed for another surface (a mirror's or an embed's): attach again for the replay, which goes to
+            // this surface alone.
+            Log.info("attaching to \(term) for a new surface")
+            client?.send(.termAttach(req: client?.req(), id: term))
+        }
+        return terminal
+    }
+
+    private func makeSurface(_ term: String) -> PhoneTerminal {
         let terminal = PhoneTerminal(term: term, controller: terminalController(for: spaceId(ofTerm: term)), model: self)
         terminals[term] = terminal
         return terminal
@@ -1241,16 +1254,20 @@ final class PhoneModel {
     }
 
     private func showTerm() {
-        shownTerm = activeSpace?.allPanes.first { $0.id == shownPane }.flatMap { entry -> String? in
-            if case let .terminal(term, _) = entry.kind { term } else { nil }
-        }
+        shownTerm = ownTerm(of: shownPane)
         sheetPane = activeSpace.flatMap { space in sheet(in: space.id).flatMap { $0.position == .hidden ? nil : $0.pane } }
-        let term = activeSpace?.allPanes.first { $0.id == sheetPane }.flatMap { entry -> String? in
-            if case let .terminal(term, _) = entry.kind { term } else { nil }
-        }
+        let term = ownTerm(of: sheetPane)
         if term != sheetTerm { Log.info("sheet terminal: \(term ?? "none")") }
         sheetTerm = term
         syncAttachments()
+    }
+
+    /// The term whose own page surface `pane` draws: a terminal pane's, never a mirror's, which draws an embed of its own.
+    private func ownTerm(of pane: String?) -> String? {
+        guard let pane, mirror(pane) == nil else { return nil }
+        return activeSpace?.allPanes.first { $0.id == pane }.flatMap { entry -> String? in
+            if case let .terminal(term, _) = entry.kind { term } else { nil }
+        }
     }
 
     /// Every surface that draws `term`: its page's and each embed's.
@@ -1280,7 +1297,8 @@ final class PhoneModel {
         for term in added { attach(term) }
     }
 
-    /// A plugin page's `Terminal{pane}` came on screen: a surface of its own for `term`, streamed while `host` is shown.
+    /// A plugin page's `Terminal{pane}`, or a mirror page of a terminal, came on screen: a surface of its own for `term`,
+    /// streamed while `host` is shown.
     func embedTerminal(host: String, term: String) -> PhoneTerminal {
         PhoneTerminal(term: term, host: host, controller: terminalController(for: spaceId(ofTerm: term)), model: self)
     }
@@ -1290,7 +1308,7 @@ final class PhoneModel {
         embeds.append(terminal)
         terminal.attached = false
         terminal.size = nil
-        Log.info("plugin embed terminal \(terminal.host ?? "?") shows \(terminal.term): \(embeds.count) embed surfaces")
+        Log.info("\(embedKind(terminal)) embed terminal \(terminal.host ?? "?") shows \(terminal.term): \(embeds.count) embed surfaces")
         if attachedTerms.contains(terminal.term) {
             // Already streamed (another embed of it): attach again for the replay, which goes to this surface alone.
             Log.info("attaching to \(terminal.term) for a new surface")
@@ -1305,13 +1323,17 @@ final class PhoneModel {
         embeds.remove(at: i)
         terminal.attached = false
         if let replay = replays[terminal.term] { replays[terminal.term] = (replay.bytes, replay.to.filter { $0 !== terminal }) }
-        Log.info("plugin embed terminal \(terminal.host ?? "?") hid \(terminal.term): \(embeds.count) embed surfaces")
+        Log.info("\(embedKind(terminal)) embed terminal \(terminal.host ?? "?") hid \(terminal.term): \(embeds.count) embed surfaces")
         syncAttachments()
         // The next newest embed of the term, if one is left, sizes the shell now.
         if let next = drivingEmbed(of: terminal.term) {
             next.size = nil
             settle(next)
         }
+    }
+
+    private func embedKind(_ terminal: PhoneTerminal) -> String {
+        terminal.host.flatMap { mirror($0) } == nil ? "plugin" : "mirror"
     }
 
     /// Artifact `name` shown inside plugin pane `host`'s page, its page asked of wheeld over this connection.
@@ -1391,6 +1413,14 @@ final class PhoneModel {
         return true
     }
 
+    /// Checks read what the shown page's own surface holds: `screen <pane>: <surface> <rows joined by " | ">`, where
+    /// `<surface>` is `own` for the terminal page's surface and `embed` for a mirror's or plugin page's.
+    func logShownScreen() {
+        guard let pane = shownPane, let terminal = shownSurface else { return Log.info("screen \(shownPane ?? "none"): no surface") }
+        let rows = (terminal.session.readViewportText() ?? "").split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        Log.info("screen \(pane): \(terminal.host == nil ? "own" : "embed") \(rows.filter { !$0.isEmpty }.joined(separator: " | "))")
+    }
+
     /// Checks raise the keyboard in the shown terminal as a tap on it does.
     func focusShown() {
         guard let terminal = shownSurface else { return }
@@ -1400,7 +1430,8 @@ final class PhoneModel {
     #endif
 
     private func attach(_ term: String) {
-        if term == shownTerm || term == sheetTerm { _ = terminal(term) }
+        // Made here, before the attach this sends, so it takes this attach's replay.
+        if term == shownTerm || term == sheetTerm, terminals[term] == nil { _ = makeSurface(term) }
         replays[term] = nil
         for terminal in surfaces(of: term) {
             terminal.attached = false
@@ -1435,6 +1466,18 @@ final class PhoneModel {
         settle(terminal)
     }
 
+    /// The surface's grid fills its laid-out page, give or take its padding and one cell.
+    private func fitsPage(_ terminal: PhoneTerminal) -> Bool {
+        guard let vp = terminal.reported, let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0,
+              vp.columns > 0, vp.rows > 0 else { return false }
+        let slack = PhoneTerminal.paddingPoints * layout.scale
+        let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
+        let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
+        // The surface reports no cell size on iOS (0x0), so the cell is the grid's pixels over its count.
+        let cellW = CGFloat(vp.widthPixels) / CGFloat(vp.columns), cellH = CGFloat(vp.heightPixels) / CGFloat(vp.rows)
+        return (0...slack + cellW).contains(dw) && (0...slack + cellH).contains(dh)
+    }
+
     /// Send the surface's grid to the daemon once it fits the page's laid-out size, and only for
     /// the terminal the page shows. A new surface first reports a default frame before SwiftUI
     /// lays it out, which would resize the shell to a grid that is not the phone's.
@@ -1449,17 +1492,20 @@ final class PhoneModel {
             Log.info("surface \(terminal.term) \(cols)x\(rows): held until the page is laid out")
             return
         }
-        let slack = PhoneTerminal.paddingPoints * layout.scale
-        let dw = layout.size.width * layout.scale - CGFloat(vp.widthPixels)
-        let dh = layout.size.height * layout.scale - CGFloat(vp.heightPixels)
-        // The surface reports no cell size on iOS (0x0), so the cell is the grid's pixels over its count.
-        let cellW = CGFloat(vp.widthPixels) / CGFloat(cols), cellH = CGFloat(vp.heightPixels) / CGFloat(rows)
-        let fits = (0...slack + cellW).contains(dw) && (0...slack + cellH).contains(dh)
+        let fits = fitsPage(terminal)
         Log.info("surface \(terminal.term) \(cols)x\(rows) at \(vp.widthPixels)x\(vp.heightPixels)px in page \(layout.size.width)x\(layout.size.height)pt @\(layout.scale)x: \(fits ? "sent" : "held until laid out")")
         guard fits else { return }
         if let size = terminal.size, size == (cols, rows) { return }
         terminal.size = (cols, rows)
         client?.send(.termResize(req: nil, id: terminal.term, cols: cols, rows: rows))
+        if terminal.attached, terminal.replayBeforeLayout {
+            // The replay came while the surface still had its frame from before layout: ask again, after the resize, so
+            // it draws the screen at this grid. It goes to this surface alone.
+            Log.info("surface \(terminal.term) took its replay before layout: attaching again at \(cols)x\(rows)")
+            terminal.replayBeforeLayout = false
+            terminal.attached = false
+            client?.send(.termAttach(req: client?.req(), id: terminal.term))
+        }
     }
     // MARK: Usage and settings
 
