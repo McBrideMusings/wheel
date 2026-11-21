@@ -574,8 +574,8 @@ impl Client {
                             }
                             return false;
                         }
-                        ServerMsg::FileImage { req, path, found, mime, data, error } => {
-                            self.on_file_image(*req, path, *found, mime.as_deref(), data.as_deref(), error.as_deref());
+                        ServerMsg::FileImage { req, path, found, mime, data, error, version, unchanged } => {
+                            self.on_file_image(*req, path, *found, mime.as_deref(), data.as_deref(), error.as_deref(), version.as_deref(), *unchanged);
                             return false;
                         }
                         ServerMsg::FilePeek { req, path, found, .. } => {

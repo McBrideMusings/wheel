@@ -1049,6 +1049,8 @@ async fn inline_image(run: Run, agent_pane: String, agent_name: String, cli_path
     let png = output.join("inline-image.png");
     image::RgbaImage::from_fn(160, 90, |x, y| image::Rgba([(x * 255 / 160) as u8, (y * 255 / 90) as u8, 160, 255])).save(&png)?;
     let missing = output.join("no-such-image.png");
+    // A run before this one wrote it (the step below does).
+    let _ = std::fs::remove_file(&missing);
     let message = format!("The chart:\n\n![a gradient]({})\n\nAnd one that is gone: ![gone]({})", png.display(), missing.display());
     let sent = std::process::Command::new(&cli_path)
         .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, &message, "--timeout", "30"])
@@ -1085,7 +1087,31 @@ async fn inline_image(run: Run, agent_pane: String, agent_name: String, cli_path
     let drawn = window.update(cx, |c, _, _| c.drawn_texts(&agent_name))?;
     let texts: Vec<String> = drawn.iter().filter(|d| d.row == row).map(|d| d.text.clone()).collect();
     ensure!(texts.iter().any(|t| t.ends_with("The chart:")) && texts.iter().all(|t| !t.contains("a gradient")), "the reply's texts: {texts:?}");
-    let report = json!({"row": row, "images": listed, "texts": texts});
+    // wheel-eg4e.19.13: the missing file is written and the PNG rewritten at another size; a new
+    // row asks again, and both draw what is on disk now.
+    image::RgbaImage::from_fn(40, 30, |_, _| image::Rgba([200, 60, 60, 255])).save(&missing)?;
+    image::RgbaImage::from_fn(120, 60, |x, _| image::Rgba([60, (x * 2) as u8, 200, 255])).save(&png)?;
+    let sent = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, "Both are on disk now.", "--timeout", "30"])
+        .output()?;
+    ensure!(sent.status.success(), "agent send failed: {}{}", String::from_utf8_lossy(&sent.stdout), String::from_utf8_lossy(&sent.stderr));
+    let size = |l: &Value, src: &str| l.as_array().and_then(|l| l.iter().find(|i| i["source"] == json!(src)).map(|i| (i["loaded"].clone(), i["width"].clone(), i["height"].clone())));
+    let gone_src = missing.to_string_lossy().into_owned();
+    let mut again = Value::Null;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        window.update(cx, |c, _, _| c.reveal(&agent_name, row))?;
+        draw(window, None, cx)?;
+        again = window.update(cx, |c, _, _| c.state_json()["chat_images"][agent_name.as_str()].clone())?;
+        if size(&again, &source) == Some((json!(true), json!(120), json!(60))) && size(&again, &gone_src) == Some((json!(true), json!(40), json!(30))) {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-inline-image-again.png")), cx)?;
+    ensure!(size(&again, &source) == Some((json!(true), json!(120), json!(60))), "the rewritten PNG should load again at 120x60: {again}");
+    ensure!(size(&again, &gone_src) == Some((json!(true), json!(40), json!(30))), "the image written after its reply should load at 40x30: {again}");
+    let report = json!({"row": row, "images": listed, "texts": texts, "after_rewrite": again});
     let mut run = Run { bridge, connection, layouts, window, native, markers, output };
     set_zoom(&mut run, &agent_pane, false, cx).await?;
     Ok((run, report))

@@ -988,13 +988,16 @@ pub enum ClientMsg {
     /// phone) to draw in a reply. Only `.png`, `.jpg`, `.jpeg`, `.gif` and `.webp` files of at
     /// most 20 MB are sent. `~` starts at the daemon user's home; a relative `path` is read against
     /// `cwd`. Replies `file_image`; a file that is not there or not a small image is
-    /// `found: false` with `error` saying why when it exists.
+    /// `found: false` with `error` saying why when it exists. `unless` is the `version` of the file
+    /// the client already holds: a file still at it replies `unchanged` with no `data`.
     FileImage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unless: Option<String>,
     },
     /// Split `pane`, putting a new pane on its `dir` side that shows `url` in a browser pane, or
     /// the artifact `artifact` in a web pane. Give one. Replies `created` with the new pane's id.
@@ -2765,6 +2768,8 @@ pub enum ServerMsg {
     /// An image file's bytes, in reply to `file_image`. `path` is the absolute path (symlinks
     /// resolved) when the file exists, else the request's path with `~` expanded. `mime` and
     /// `data` (base64) are set when `found`; `error` says why a file that exists was not sent.
+    /// `version` names the file's size and modification time when `found`; `unchanged` says the
+    /// file is still at the request's `unless`, and then no `data` is sent.
     FileImage {
         req: u64,
         path: String,
@@ -2773,6 +2778,10 @@ pub enum ServerMsg {
         mime: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unchanged: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },

@@ -140,6 +140,10 @@ pub(crate) struct Image {
     pub mime: Option<&'static str>,
     pub bytes: Vec<u8>,
     pub error: Option<String>,
+    /// The file's size and modification time, when found.
+    pub version: Option<String>,
+    /// The file is still at the version the client holds, so `bytes` is empty.
+    pub unchanged: bool,
 }
 
 /// The MIME type of an image file by its extension, for the five types a reply may show.
@@ -153,8 +157,9 @@ fn image_mime(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// The bytes of the image at `path`. A relative path is read against `cwd`.
-pub(crate) fn image(path: &str, cwd: Option<&str>) -> Image {
+/// The bytes of the image at `path`, unless it is still at version `unless`. A relative path is
+/// read against `cwd`.
+pub(crate) fn image(path: &str, cwd: Option<&str>, unless: Option<&str>) -> Image {
     let expanded = expand_home(path.trim());
     let missing = |path: String, error: Option<String>| Image {
         path,
@@ -162,6 +167,8 @@ pub(crate) fn image(path: &str, cwd: Option<&str>) -> Image {
         mime: None,
         bytes: Vec::new(),
         error,
+        version: None,
+        unchanged: false,
     };
     let joined = if Path::new(&expanded).is_absolute() {
         expanded.clone()
@@ -189,6 +196,11 @@ pub(crate) fn image(path: &str, cwd: Option<&str>) -> Image {
             Some(format!("image over {} MB", MAX_IMAGE_BYTES >> 20)),
         );
     }
+    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    let version = format!("{}-{modified}", meta.len());
+    if unless == Some(version.as_str()) {
+        return Image { path: real_str, found: true, mime: Some(mime), bytes: Vec::new(), error: None, version: Some(version), unchanged: true };
+    }
     match std::fs::read(&real) {
         Ok(bytes) => Image {
             path: real_str,
@@ -196,28 +208,31 @@ pub(crate) fn image(path: &str, cwd: Option<&str>) -> Image {
             mime: Some(mime),
             bytes,
             error: None,
+            version: Some(version),
+            unchanged: false,
         },
         Err(e) => missing(real_str, Some(format!("cannot read: {e}"))),
     }
 }
 
 /// Answer `file_image` and log what was asked and how many bytes went back.
-pub(crate) fn file_image(req: u64, path: &str, cwd: Option<&str>) -> ServerMsg {
+pub(crate) fn file_image(req: u64, path: &str, cwd: Option<&str>, unless: Option<&str>) -> ServerMsg {
     use base64::Engine;
-    let img = image(path, cwd);
+    let img = image(path, cwd, unless);
     tracing::info!(
         path, ?cwd, resolved = %img.path, found = img.found, mime = ?img.mime,
-        bytes = img.bytes.len(), error = ?img.error, "file_image"
+        bytes = img.bytes.len(), unchanged = img.unchanged, error = ?img.error, "file_image"
     );
     ServerMsg::FileImage {
         req,
         path: img.path,
         found: img.found,
         mime: img.mime.map(str::to_string),
-        data: img
-            .found
+        data: (img.found && !img.unchanged)
             .then(|| base64::engine::general_purpose::STANDARD.encode(&img.bytes)),
         error: img.error,
+        version: img.version,
+        unchanged: img.unchanged,
     }
 }
 
@@ -239,21 +254,26 @@ mod tests {
         std::fs::write(dir.join("a.PNG"), png).unwrap();
         std::fs::write(dir.join("notes.txt"), "hi").unwrap();
         let cwd = dir.to_string_lossy().into_owned();
-        let img = image("a.PNG", Some(&cwd));
+        let img = image("a.PNG", Some(&cwd), None);
         assert!(img.found, "{img:?}");
         assert_eq!(
             (img.mime, img.bytes.as_slice()),
             (Some("image/png"), png.as_slice())
         );
-        let text = image("notes.txt", Some(&cwd));
+        let again = image("a.PNG", Some(&cwd), img.version.as_deref());
+        assert!(again.found && again.unchanged && again.bytes.is_empty(), "{again:?}");
+        std::fs::write(dir.join("a.PNG"), [0x89u8, b'P', b'N', b'G', 9]).unwrap();
+        let rewritten = image("a.PNG", Some(&cwd), img.version.as_deref());
+        assert!(!rewritten.unchanged && rewritten.bytes.len() == 5, "{rewritten:?}");
+        let text = image("notes.txt", Some(&cwd), None);
         assert!(
             !text.found && text.error.as_deref() == Some("not an image file"),
             "{text:?}"
         );
-        let none = image("none.png", Some(&cwd));
+        let none = image("none.png", Some(&cwd), None);
         assert!(!none.found && none.error.is_none());
         assert!(
-            !image("a.PNG", None).found,
+            !image("a.PNG", None, None).found,
             "a relative path with no cwd is not found"
         );
     }

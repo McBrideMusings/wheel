@@ -16,17 +16,23 @@ pub const MAX_HEIGHT: f32 = 220.;
 #[derive(Clone)]
 pub enum Load {
     Waiting,
-    Loaded { path: String, image: Arc<gpui::Image>, width: u32, height: u32, bytes: usize },
+    /// `version` is wheeld's name for the file as read, sent back so an unchanged file comes
+    /// back without its bytes.
+    Loaded { path: String, image: Arc<gpui::Image>, width: u32, height: u32, bytes: usize, version: Option<String> },
     Failed { path: String, error: String },
 }
 
-/// Every image the transcripts asked for, by (directory, path), and what each reply drew.
-// hack: loads and failures are kept for the client's life and never asked again, so a file rewritten on disk keeps its old picture and one written after its reply stays missing; evict and re-ask when a transcript grows, as link probes do, once a reply redraws a changing image.
+/// Every image the transcripts asked for, by (directory, path), and what each reply drew. An
+/// agent's transcript that gains a row asks again about the images its replies drew, since a tool
+/// may have written or rewritten them; each keeps its answer until the new one comes, and a loaded
+/// one names its version so wheeld sends no bytes for a file that has not changed.
 #[derive(Default)]
 pub struct ImageState {
     loads: RefCell<HashMap<(String, String), Load>>,
     asks: RefCell<Vec<(String, String)>>,
     reqs: HashMap<u64, (String, String)>,
+    /// Each agent's row count when its images were last asked about.
+    rows_seen: HashMap<String, usize>,
     /// Per agent, each (row, source) a reply drew and the directory it was read against.
     shown: RefCell<HashMap<String, BTreeMap<(usize, String), String>>>,
 }
@@ -110,6 +116,29 @@ impl ImageState {
         self.reqs.clear();
         self.loads.get_mut().retain(|_, l| !matches!(l, Load::Waiting));
     }
+
+    /// Queue again every answered image `agent`'s replies drew whose answer is not being waited for.
+    fn ask_again(&mut self, agent: &str) {
+        let Some(shown) = self.shown.get_mut().get(agent) else { return };
+        let waiting: HashSet<&(String, String)> = self.reqs.values().collect();
+        let loads = self.loads.get_mut();
+        let asks = self.asks.get_mut();
+        for ((_, source), dir) in shown {
+            let key = (dir.clone(), source.clone());
+            if loads.get(&key).is_some_and(|l| !matches!(l, Load::Waiting)) && !waiting.contains(&key) && !asks.contains(&key) {
+                asks.push(key);
+            }
+        }
+    }
+}
+
+/// Whether a new answer shows what the old one showed: the same bytes, or the same failure.
+fn same(old: &Load, new: &Load) -> bool {
+    match (old, new) {
+        (Load::Loaded { path: a, image: x, .. }, Load::Loaded { path: b, image: y, .. }) => a == b && x.bytes == y.bytes,
+        (Load::Failed { path: a, error: x }, Load::Failed { path: b, error: y }) => a == b && x == y,
+        _ => false,
+    }
 }
 
 impl Client {
@@ -128,6 +157,13 @@ impl Client {
         if self.server_offer.is_none() {
             return;
         }
+        let grown: Vec<(String, usize)> = self.transcripts.iter()
+            .filter(|(agent, t)| self.images.rows_seen.get(*agent) != Some(&t.rows.len()))
+            .map(|(agent, t)| (agent.clone(), t.rows.len())).collect();
+        for (agent, rows) in grown {
+            self.images.rows_seen.insert(agent.clone(), rows);
+            self.images.ask_again(&agent);
+        }
         let asks: Vec<(String, String)> = self.images.asks.borrow_mut().drain(..).collect();
         if !self.server_has("file_image") {
             let mut loads = self.images.loads.borrow_mut();
@@ -138,14 +174,23 @@ impl Client {
         }
         for (dir, path) in asks {
             let req = self.req();
+            let unless = match self.images.loads.borrow().get(&(dir.clone(), path.clone())) {
+                Some(Load::Loaded { version, .. }) => version.clone(),
+                _ => None,
+            };
             self.images.reqs.insert(req, (dir.clone(), path.clone()));
-            self.send(&ClientMsg::FileImage { req: Some(req), path, cwd: (!dir.is_empty()).then_some(dir) });
+            self.send(&ClientMsg::FileImage { req: Some(req), path, cwd: (!dir.is_empty()).then_some(dir), unless });
         }
     }
 
     /// wheeld's answer to an image asked here; false for any other `file_image`.
-    pub(super) fn on_file_image(&mut self, req: u64, path: &str, found: bool, mime: Option<&str>, data: Option<&str>, error: Option<&str>) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn on_file_image(&mut self, req: u64, path: &str, found: bool, mime: Option<&str>, data: Option<&str>, error: Option<&str>, version: Option<&str>, unchanged: bool) -> bool {
         let Some(key) = self.images.reqs.remove(&req) else { return false };
+        // The file is still the one drawn: nothing was sent and nothing changes.
+        if unchanged && matches!(self.images.loads.borrow().get(&key), Some(Load::Loaded { .. })) {
+            return true;
+        }
         let failed = |error: String| Load::Failed { path: path.to_owned(), error };
         let load = if !found {
             failed(error.map(str::to_owned).unwrap_or_else(|| format!("No image at {path}")))
@@ -154,13 +199,17 @@ impl Client {
                 (Some(format), Some(Ok(bytes))) => match image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()) {
                     Some((width, height)) if width > 0 && height > 0 => {
                         let size = bytes.len();
-                        Load::Loaded { path: path.to_owned(), image: Arc::new(gpui::Image::from_bytes(format, bytes)), width, height, bytes: size }
+                        Load::Loaded { path: path.to_owned(), image: Arc::new(gpui::Image::from_bytes(format, bytes)), width, height, bytes: size, version: version.map(str::to_owned) }
                     }
                     _ => failed("Cannot read the image".into()),
                 },
                 _ => failed("Cannot read the image".into()),
             }
         };
+        // The same answer again (a re-ask after a row) changes nothing a reply draws.
+        if self.images.loads.borrow().get(&key).is_some_and(|old| same(old, &load)) {
+            return true;
+        }
         match &load {
             Load::Loaded { bytes, width, height, .. } => self.log(format!("chat image {} in {}: {width}x{height}, {bytes} bytes", key.1, key.0)),
             Load::Failed { error, .. } => self.log(format!("chat image {} in {}: {error}", key.1, key.0)),
@@ -218,5 +267,35 @@ mod tests {
     fn a_tall_image_fits_the_height_and_a_small_one_keeps_its_size() {
         assert_eq!(fitted(100, 50), (100., 50.));
         assert_eq!(fitted(880, 440), (440., 220.));
+    }
+
+    fn loaded(bytes: &[u8]) -> Load {
+        Load::Loaded { path: "/a.png".into(), image: Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.to_vec())), width: 1, height: 1, bytes: bytes.len(), version: None }
+    }
+
+    #[test]
+    fn an_answer_is_new_when_its_bytes_or_its_failure_differ() {
+        let failed = |e: &str| Load::Failed { path: "/a.png".into(), error: e.into() };
+        assert!(same(&loaded(b"x"), &loaded(b"x")));
+        assert!(!same(&loaded(b"x"), &loaded(b"y")));
+        assert!(same(&failed("No image"), &failed("No image")));
+        assert!(!same(&failed("No image"), &loaded(b"x")));
+    }
+
+    #[test]
+    fn a_grown_transcript_asks_again_only_about_answered_images_not_waited_for() {
+        let mut state = ImageState::default();
+        assert!(matches!(state.shown("a", 1, "/d", "x.png"), Load::Waiting));
+        state.shown("a", 2, "/d", "y.png");
+        state.shown("a", 3, "/d", "z.png");
+        state.asks.get_mut().clear();
+        state.loads.get_mut().insert(("/d".into(), "x.png".into()), loaded(b"x"));
+        state.loads.get_mut().insert(("/d".into(), "y.png".into()), Load::Failed { path: "/d/y.png".into(), error: "No image".into() });
+        state.reqs.insert(7, ("/d".into(), "y.png".into()));
+        state.ask_again("a");
+        state.ask_again("a");
+        assert_eq!(*state.asks.get_mut(), vec![("/d".to_owned(), "x.png".to_owned())]);
+        state.ask_again("b");
+        assert_eq!(state.asks.get_mut().len(), 1);
     }
 }

@@ -5732,6 +5732,7 @@ async fn file_image(
         req: Some(req),
         path: path.clone(),
         cwd,
+        unless: None,
     };
     let ServerMsg::FileImage {
         path: resolved,

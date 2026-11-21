@@ -5099,6 +5099,7 @@ async fn file_image_sends_an_image_files_bytes_and_refuses_other_files() {
         req: Some(9),
         path: path.into(),
         cwd: Some(cwd.clone()),
+        unless: None,
     };
     let reply = |msg: ServerMsg| match msg {
         ServerMsg::FileImage {
