@@ -285,13 +285,19 @@ struct SpaceCarousel: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
-            Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
-                .accessibilityLabel("Search")
-                .accessibilityIdentifier("search")
+            // Orchestrator mode takes the whole screen for the orchestrator: no palette. Its slot stays, so the mode
+            // button and the ⋯ keep their places.
+            Group {
+                let search = Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
+                    .accessibilityLabel("Search")
+                    .accessibilityIdentifier("search")
+                if orchestratorMode { search.hidden() } else { search }
+            }
             // One ⋯ holds the pane's actions and Settings. The pane's logo and status dot are in the
             // agent header below, once. With no pane to act on (none in the space, or another mode
             // in place of the pages), the ⋯ holds Settings alone.
-            if spacesMode, let current = panes.first(where: { $0.id == page }) ?? panes.first {
+            // Orchestrator mode is for talking to the orchestrator: no pane to split, change or close, so Settings alone.
+            if spacesMode, !orchestratorMode, let current = panes.first(where: { $0.id == page }) ?? panes.first {
                 PaneMenu(model: model, pane: current.id, kind: current.kind) { openSettings(.global) }
             } else {
                 Menu {

@@ -61,7 +61,7 @@ final class PhoneModel {
             orchestratorRefused = nil
             startOrchestratorIfNone()
         }
-        pinOrchestratorOnFirstOpen()
+        pinOrchestrator()
         reportView()
         showTerm()
     }
@@ -70,23 +70,20 @@ final class PhoneModel {
     var orchestratorSpace: SpaceInfo? { spaces.first(where: \.orchestrator) }
     /// The spaces a list offers: every one but the Orchestrator space, which only Orchestrator mode shows.
     var listedSpaces: [SpaceInfo] { spaces.filter { !$0.orchestrator } }
-    /// The Orchestrator spaces whose first open has pinned their first global orchestrator, saved per paired Mac.
-    /// Pinning once and never again is what keeps an unpin.
-    private var orchestratorPinned: Set<String> = []
-    private static func orchestratorPinnedKey(_ pairing: Pairing) -> String { "orchestrator pinned \(pairing.url.absoluteString)" }
-
-    /// The first time Orchestrator mode shows the Orchestrator space with a global orchestrator in it, that pane is
-    /// pinned, so the sheet shows it over the space's pages.
-    private func pinOrchestratorOnFirstOpen() {
+    /// In Orchestrator mode the person talks to the global orchestrator only, so it is always the pinned sheet: pinned
+    /// whenever the mode shows its space unpinned, and never unpinned there (`unpin`).
+    private func pinOrchestrator() {
         guard mode == WindowMode.orchestrator, !restorePending, let space = orchestratorSpace,
-              !orchestratorPinned.contains(space.id), let pane = space.firstGlobalOrchestrator else { return }
-        orchestratorPinned.insert(space.id)
-        if let pairing { UserDefaults.standard.set(Array(orchestratorPinned), forKey: Self.orchestratorPinnedKey(pairing)) }
-        guard !pins.isPinned(pane, in: space.id) else { return }
+              let pane = space.firstGlobalOrchestrator, !pins.isPinned(pane, in: space.id) else { return }
         pins.pin(pane, in: space.id)
         sheets[space.id] = PinSheet(pane: pane, position: .low)
         savePins()
-        Log.info("orchestrator space \(space.id) first open: pinned \(pane)")
+        Log.info("orchestrator space \(space.id): pinned \(pane)")
+    }
+
+    /// Whether `pane` is the global orchestrator Orchestrator mode keeps pinned.
+    func isPinnedOrchestrator(_ pane: String) -> Bool {
+        mode == WindowMode.orchestrator && orchestratorSpace?.firstGlobalOrchestrator == pane
     }
 
     /// The `orchestrator_start` the phone sent on its own that wheeld has not answered, and why wheeld refused the last one.
@@ -134,7 +131,7 @@ final class PhoneModel {
 
     /// Unpin `pane` of the shown space: it goes back to the carousel, and the sheet shows the next pinned pane.
     func unpin(_ pane: String) {
-        guard let space = activeSpace?.id else { return }
+        guard let space = activeSpace?.id, !isPinnedOrchestrator(pane) else { return }
         pins.unpin(pane, in: space)
         if sheets[space]?.pane == pane { sheets[space]?.pane = pins.pinned(in: space).first ?? pane }
         savePins()
@@ -170,7 +167,6 @@ final class PhoneModel {
         let saved = pairing.flatMap { UserDefaults.standard.dictionary(forKey: Self.pinsKey($0)) as? [String: [String]] } ?? [:]
         pins = Pins(saved)
         sheets = [:]
-        orchestratorPinned = Set(pairing.flatMap { UserDefaults.standard.stringArray(forKey: Self.orchestratorPinnedKey($0)) } ?? [])
         Log.info("pins restored: \(pins.bySpace.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.joined(separator: ","))" }.joined(separator: " "))")
     }
 
@@ -975,7 +971,7 @@ final class PhoneModel {
             savePins()
         }
         startOrchestratorIfNone()
-        pinOrchestratorOnFirstOpen()
+        pinOrchestrator()
         reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
         for space in self.spaces {

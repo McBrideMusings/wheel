@@ -51,7 +51,9 @@ final class PinUITests: XCTestCase {
         // button to bring it back, and a drag up opens it at low.
         let low = app.otherElements["pin sheet header"]
         XCTAssertTrue(low.waitForExistence(timeout: 5), "the header stays on the screen")
-        XCTAssertGreaterThan(low.frame.maxY, app.windows.firstMatch.frame.maxY - 80, "the header sits at the bottom edge: \(low.frame)")
+        // The value changes as the drag ends; the frame settles once the sheet's animation does.
+        let bottom = app.windows.firstMatch.frame.maxY - 80
+        XCTAssertTrue(waitFor { low.frame.maxY > bottom }, "the header sits at the bottom edge: \(low.frame)")
         XCTAssertFalse(app.buttons["sheet show"].exists, "no button to bring the sheet back")
         let handle = app.otherElements["page handle"]
         if handle.exists { XCTAssertLessThanOrEqual(handle.frame.maxY, low.frame.minY + 1, "the dots bar ends above the header: \(handle.frame) over \(low.frame)") }

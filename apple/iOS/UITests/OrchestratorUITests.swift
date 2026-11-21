@@ -35,7 +35,8 @@ final class OrchestratorUITests: XCTestCase {
         // nothing. Search and the ⋯ hold the places they have in Spaces mode.
         XCTAssertFalse(app.buttons["title"].exists, "the title is no button in Orchestrator mode")
         XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
-        let here = (app.buttons["search"].frame, app.buttons["Pane menu"].frame)
+        XCTAssertFalse(app.buttons["search"].exists, "Orchestrator mode has no search (wheel-eg4e.19.27)")
+        let here = (app.buttons["mode"].frame, app.buttons["Pane menu"].frame)
         title.tap()
         Thread.sleep(forTimeInterval: 1)
         XCTAssertFalse(app.buttons["space wheel"].exists, "a tap on the title opens no menu")
@@ -52,9 +53,13 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the composer raised the keyboard")
         let hide = app.buttons["hide keyboard"]
         XCTAssertTrue(hide.waitForExistence(timeout: 5), "the composer shows the keyboard button")
+        // While the keyboard is up the sheet sits full, so the chat shows above the composer (wheel-eg4e.19.30).
+        let sheetHeader = app.otherElements["pin sheet header"]
+        XCTAssertTrue(waitFor { sheetHeader.frame.minY < self.title.frame.maxY + 24 }, "the sheet opens full while typing: \(sheetHeader.frame)")
         shot("keyboard")
         hide.tap()
         XCTAssertTrue(waitFor { !self.app.keyboards.firstMatch.exists }, "the button hid the keyboard")
+        XCTAssertTrue(waitFor { sheetHeader.frame.minY > self.title.frame.maxY + 100 }, "the sheet goes back down with the keyboard: \(sheetHeader.frame)")
         XCTAssertFalse(app.buttons["hide keyboard"].exists, "the button goes with the keyboard")
 
         // 1. Full screen under the top bar, no modal: the bar's title sits above the body, the body reaches the
@@ -63,7 +68,9 @@ final class OrchestratorUITests: XCTestCase {
         let bar = title.frame
         let handleFrame = handle.frame
         XCTAssertLessThan(bar.maxY, sheet.frame.minY, "the pin sheet lies under the top bar")
-        XCTAssertGreaterThan(handleFrame.maxY, window.maxY - 60, "the body reaches the bottom edge: \(handleFrame) in \(window)")
+        // The pinned sheet reaches the bottom edge, and the pages and their handle end above its header.
+        XCTAssertGreaterThan(sheet.frame.maxY, window.maxY - 60, "the body reaches the bottom edge: \(sheet.frame) in \(window)")
+        XCTAssertLessThanOrEqual(handleFrame.maxY, sheet.frame.maxY, "the handle ends inside the body: \(handleFrame)")
         XCTAssertFalse(app.otherElements["PopoverDismissRegion"].exists, "no modal is presented")
         sync("fullscreen")
 
@@ -71,7 +78,7 @@ final class OrchestratorUITests: XCTestCase {
         pick("Spaces")
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["agents"].exists, "Spaces mode keeps the eye")
-        XCTAssertEqual(app.buttons["search"].frame, here.0, "search holds its place across the modes")
+        XCTAssertEqual(app.buttons["mode"].frame, here.0, "the mode button holds its place across the modes")
         XCTAssertEqual(app.buttons["Pane menu"].frame, here.1, "the ⋯ holds its place across the modes")
         app.buttons["title"].tap()
         XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 10), "the title menu lists the Spaces mode space")
@@ -82,30 +89,31 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(waitFor { !self.app.buttons["space wheel"].isHittable })
         sync("lists")
 
-        // 3. Unpinning the orchestrator there keeps it unpinned on the next open, and across a relaunch.
+        // 3 (wheel-eg4e.19.27). The person only talks to the orchestrator: it stays pinned, its header has no picker or
+        // Unpin, and the ⋯ holds Settings alone.
         pick("Orchestrator")
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "the orchestrator is still pinned on the second open")
-        // The element named `pin sheet menu` spans the header, so the tap goes to the name inside it; a row is found by
-        // its title, since the header's own button carries the same name as its value.
-        app.buttons["pin sheet menu"].buttons.firstMatch.tap()
-        let unpin = app.buttons.matching(NSPredicate(format: "label == 'Unpin' AND identifier != 'pin sheet menu'")).firstMatch
-        XCTAssertTrue(unpin.waitForExistence(timeout: 5))
-        unpin.tap()
-        XCTAssertTrue(waitFor { !self.sheet.exists }, "unpinning removes the sheet")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "the orchestrator is pinned on the second open")
+        XCTAssertFalse(app.buttons["pin sheet menu"].exists, "no picker or Unpin over the orchestrator")
+        XCTAssertTrue(any("pin sheet title").exists, "the header names the orchestrator")
+        app.buttons["Pane menu"].tap()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5), "the ⋯ holds Settings")
+        for row in ["Split Right", "Split Down", "Pin", "Close", "Pane info"] {
+            XCTAssertFalse(app.buttons[row].exists, "the ⋯ offers no \(row) in Orchestrator mode")
+        }
+        shot("menu")
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "Settings opened")
+        app.buttons["Done"].tap()
         pick("Spaces")
         pick("Orchestrator")
-        XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
-        Thread.sleep(forTimeInterval: 1)
-        XCTAssertFalse(sheet.exists, "the orchestrator stays unpinned on the next open")
-        shot("unpinned")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "still pinned after a mode switch")
         app.terminate()
         // The pairing code is spent; the relaunch connects with the credential the first launch saved.
         app.launchEnvironment.removeValue(forKey: "WHEEL_PAIR_JSON")
         app.launch()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Orchestrator'")).firstMatch.waitForExistence(timeout: 40), "Orchestrator mode restored")
-        XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 20))
-        Thread.sleep(forTimeInterval: 2)
-        XCTAssertFalse(sheet.exists, "the orchestrator stays unpinned after a relaunch")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 20), "still pinned after a relaunch")
+        shot("pinned-relaunch")
         sync("unpinned")
         pick("Spaces")
     }

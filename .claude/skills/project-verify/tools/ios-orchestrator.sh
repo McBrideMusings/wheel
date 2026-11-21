@@ -37,7 +37,7 @@ if step pinned; then
   check "phone.log records the mode" plog "mode spaces -> orchestrator"
   check "opening the mode started it, with no tap" plog "none runs"
   check "phone.log records the reply" plog "orchestrator started in $G"
-  check "the first open pinned that pane" plog "orchestrator space $O first open: pinned $G"
+  check "the mode pinned that pane" plog "orchestrator space $O: pinned $G"
   ack pinned
 fi
 if step chrome; then
@@ -51,7 +51,7 @@ if step lists; then
   ack lists
 fi
 if step unpinned; then
-  check "phone.log records the unpin" plog "unpin $(global_pane) in $(orchestrator_space)"
+  check "nothing unpinned the orchestrator" noplog "unpin $(global_pane)"
   check "phone.log restored Orchestrator mode after the relaunch" plog "mode restored: orchestrator"
   ack unpinned
 fi

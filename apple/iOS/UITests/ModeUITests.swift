@@ -55,8 +55,8 @@ final class ModeUITests: XCTestCase {
             // Orchestrator mode's title names another space, so only its width may follow that name; that mode has
             // no eye, and its slot stays empty.
             if id == "orchestrator" {
-                XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
-                XCTAssertEqual(placed(rects(id), without: "agents"), placed(launch, without: "agents"), "no control moved in \(title)")
+                XCTAssertFalse(app.buttons["agents"].exists || app.buttons["search"].exists, "Orchestrator mode has no eye and no search")
+                XCTAssertEqual(placed(rects(id), without: ["agents", "search"]), placed(launch, without: ["agents", "search"]), "no control moved in \(title)")
             } else {
                 XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
             }
@@ -94,8 +94,8 @@ final class ModeUITests: XCTestCase {
     }
 
     /// The rect lines with the title's width left out: the title is the shown space's name, and holds its place.
-    private func placed(_ lines: String, without left: String? = nil) -> String {
-        lines.split(separator: "\n").filter { left == nil || !$0.hasPrefix("\(left!) ") }.map { line -> String in
+    private func placed(_ lines: String, without left: [String] = []) -> String {
+        lines.split(separator: "\n").filter { line in !left.contains { line.hasPrefix("\($0) ") } }.map { line -> String in
             var f = line.split(separator: " ").map(String.init)
             if f.first == "title", f.count == 5 { f[3] = "-" }
             return f.joined(separator: " ")
