@@ -12,6 +12,7 @@ mod composer;
 mod composer_tests;
 mod conversations;
 mod debug;
+mod diagrams;
 pub mod float;
 mod images;
 mod links;
@@ -228,6 +229,8 @@ pub struct Client {
     highlights: Highlights,
     /// The replies' inline images: what wheeld answered and what each reply drew.
     images: images::ImageState,
+    /// The replies' Mermaid diagrams, drawn once per source.
+    diagrams: diagrams::Diagrams,
     /// The ranks `status.dots` lists: the statuses that draw a dot. Every rank until the daemon says.
     pub status_dots: HashSet<&'static str>,
     /// What the line under an agent's composer shows, in order: `chat.footer.items`, as the
@@ -506,7 +509,7 @@ impl Client {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
-            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), parsed: RefCell::default(),
+            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
@@ -2780,7 +2783,7 @@ impl Client {
         let selection = self.selection.as_ref().filter(|s| s.agent == agent);
         let kept = (!self.texts_kept(agent, ix)).then(Vec::new);
         let dir = self.agent_place(agent).map(|p| p.2).unwrap_or_default();
-        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept, images: &self.images, dir };
+        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept, images: &self.images, diagrams: &self.diagrams, diagram: 0, dir };
         let el = match &row.kind {
             Kind::User { text, queued } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
@@ -3041,6 +3044,9 @@ struct Texts<'a> {
     /// The replies' images, and the directory this agent's relative paths start from.
     images: &'a images::ImageState,
     dir: String,
+    diagrams: &'a diagrams::Diagrams,
+    /// How many Mermaid blocks this row has drawn so far.
+    diagram: usize,
 }
 impl Texts<'_> {
     /// A text with `runs` already flat; `base` is its colour where no run says otherwise. It is
@@ -3124,28 +3130,13 @@ fn block_el(block: &Block, texts: &mut Texts, highlights: &Highlights, cx: &mut 
             }
             list
         }
-        Block::Code { language, code } => {
-            let key = (language.clone().unwrap_or_default(), code.clone());
-            let runs = {
-                let mut cache = highlights.borrow_mut();
-                if cache.len() > 256 {
-                    cache.clear();
-                }
-                cache.entry(key).or_insert_with(|| markdown::highlight(language.as_deref(), code).map(Rc::new)).clone()
-            };
-            let highlighted = runs.as_ref().is_some_and(|r| !r.is_empty());
-            let body = texts.styled("code", code, runs.as_deref().map(Vec::as_slice).unwrap_or(&[]), 0xd9e8e1, language.as_deref(), highlighted);
-            let copied = code.clone();
-            div().rounded_sm().bg(rgb(CODE_BG)).border_1().border_color(rgb(0x2c3d34)).flex().flex_col().overflow_hidden()
-                .child(div().h(px(20.)).px_2().flex().items_center().justify_between().bg(rgb(CODE_HEADER)).text_xs().text_color(rgb(0x8fa89b))
-                    .child(language.clone().unwrap_or_else(|| "code".to_owned()))
-                    .child(div().id(gpui::ElementId::Name(format!("copy-{}-{}", texts.row, texts.next).into())).px_1().rounded_sm().cursor_pointer().bg(rgb(0x22302a)).child("Copy")
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |_, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
-                            cx.stop_propagation();
-                        }))))
-                .child(div().p_2().font_family("Menlo").text_xs().child(body))
-        }
+        Block::Code { language, code, open: false } if diagrams::is_mermaid(language.as_deref()) => match diagrams::diagram_el(code, texts, cx) {
+            Ok(el) => el,
+            Err(error) => div().flex().flex_col().gap_1()
+                .child(code_el(language.as_deref(), code, texts, highlights, cx))
+                .child(div().text_xs().text_color(rgb(0xe08a7a)).child(format!("Mermaid could not draw this: {error}"))),
+        },
+        Block::Code { language, code, .. } => code_el(language.as_deref(), code, texts, highlights, cx),
         Block::Quote(t) => div().pl_2().border_l_2().border_color(rgb(0x3d5247)).text_color(rgb(0x8fa89b)).child(texts.inline("quote", t, 0x8fa89b)),
         Block::Table { header, rows } => {
             let cell = |texts: &mut Texts, t: &Text, bold: bool| {
@@ -3170,4 +3161,28 @@ fn block_el(block: &Block, texts: &mut Texts, highlights: &Highlights, cx: &mut 
         Block::Rule => div().h(px(1.)).bg(rgb(0x2c3d34)),
         Block::Image { src, alt } => images::image_el(src, alt, texts, cx),
     }
+}
+
+/// A fenced code block: its language and Copy over the highlighted code.
+fn code_el(language: Option<&str>, code: &str, texts: &mut Texts, highlights: &Highlights, cx: &mut Context<Client>) -> gpui::Div {
+    let key = (language.unwrap_or_default().to_owned(), code.to_owned());
+    let runs = {
+        let mut cache = highlights.borrow_mut();
+        if cache.len() > 256 {
+            cache.clear();
+        }
+        cache.entry(key).or_insert_with(|| markdown::highlight(language, code).map(Rc::new)).clone()
+    };
+    let highlighted = runs.as_ref().is_some_and(|r| !r.is_empty());
+    let body = texts.styled("code", code, runs.as_deref().map(Vec::as_slice).unwrap_or(&[]), 0xd9e8e1, language, highlighted);
+    let copied = code.to_owned();
+    div().rounded_sm().bg(rgb(CODE_BG)).border_1().border_color(rgb(0x2c3d34)).flex().flex_col().overflow_hidden()
+        .child(div().h(px(20.)).px_2().flex().items_center().justify_between().bg(rgb(CODE_HEADER)).text_xs().text_color(rgb(0x8fa89b))
+            .child(language.unwrap_or("code").to_owned())
+            .child(div().id(gpui::ElementId::Name(format!("copy-{}-{}", texts.row, texts.next).into())).px_1().rounded_sm().cursor_pointer().bg(rgb(0x22302a)).child("Copy")
+                .on_mouse_down(MouseButton::Left, cx.listener(move |_, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                    cx.stop_propagation();
+                }))))
+        .child(div().p_2().font_family("Menlo").text_xs().child(body))
 }

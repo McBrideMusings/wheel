@@ -303,6 +303,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, image_report) = inline_image(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, mermaid_report) = mermaid_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, cards_report) = transcript_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
     let (run, footer_report) = footer(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, links_report) = chat_links(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
@@ -406,6 +407,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     });
     report["inline_image"] = image_report;
+    report["mermaid"] = mermaid_report;
     report["cards"] = cards_report;
     report["mirrors"] = mirrors_report;
     report["plugin_panes"] = plugin_panes_report;
@@ -1085,6 +1087,83 @@ async fn inline_image(run: Run, agent_pane: String, agent_name: String, cli_path
     let mut run = Run { bridge, connection, layouts, window, native, markers, output };
     set_zoom(&mut run, &agent_pane, false, cx).await?;
     Ok((run, report))
+}
+
+/// The reply the Mermaid step sends: a flowchart that draws and a block that does not parse.
+const MERMAID_REPLY: &str = "The plan:\n\n```mermaid\nflowchart LR\n  A[Plan] --> B{Green?}\n  B -->|yes| C[Land]\n  B -->|no| A\n```\n\nAnd a broken one:\n\n```mermaid\nflowchart LR\n  A --> \n  ((((\n```\n";
+
+/// Mermaid diagrams (wheel-eg4e.19.11): an echoed reply holding a flowchart block and one that
+/// does not parse draws the flowchart as a picture and the other as its source with the error under
+/// it, in an ordinary agent pane and then in an orchestrator pane, which uses the same renderer.
+async fn mermaid_reply(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    let cli = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?;
+        ensure!(out.status.success(), "wheel {args:?}: {}", String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    // Sends the reply to `pane`'s agent `agent`, zoomed, and waits for its two blocks to draw.
+    async fn shown(mut run: Run, pane: &str, agent: &str, shot: &str, cli: &dyn Fn(&[&str]) -> Result<String>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+        set_zoom(&mut run, pane, true, cx).await?;
+        cli(&["agent", "send", pane, MERMAID_REPLY, "--timeout", "30"])?;
+        let window = run.window;
+        let mut row = None;
+        let mut listed = Value::Null;
+        for _ in 0..200 {
+            pump(&mut run.connection, 100, &mut run.layouts, window, cx).await?;
+            if row.is_none() {
+                row = window.update(cx, |c, _, _| c.transcripts.get(agent).and_then(|t| t.rows.iter().rposition(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("And a broken one")))))?;
+                if let Some(r) = row {
+                    window.update(cx, |c, _, _| c.reveal(agent, r))?;
+                }
+            }
+            draw(window, None, cx)?;
+            listed = window.update(cx, |c, _, _| c.state_json()["chat_diagrams"][agent].clone())?;
+            if let Some(r) = row && listed.as_array().is_some_and(|l| l.iter().filter(|d| d["row"] == json!(r)).count() == 2) {
+                break;
+            }
+        }
+        let row = row.ok_or_else(|| anyhow::anyhow!("no reply with the diagrams reached {agent}"))?;
+        draw(window, None, cx)?;
+        draw(window, Some(run.output.join(shot)), cx)?;
+        let list: Vec<Value> = listed.as_array().cloned().unwrap_or_default().into_iter().filter(|d| d["row"] == json!(row)).collect();
+        let drawn = list.iter().find(|d| d["drawn"] == true).ok_or_else(|| anyhow::anyhow!("no diagram drew in row {row}: {listed}"))?;
+        ensure!(drawn["width"].as_f64().unwrap_or(0.) > 100. && drawn["height"].as_f64().unwrap_or(0.) > 20., "the flowchart's size: {drawn}");
+        let failed = list.iter().find(|d| d["drawn"] == false).ok_or_else(|| anyhow::anyhow!("the broken block was not listed: {listed}"))?;
+        ensure!(failed["error"].as_str().is_some_and(|e| !e.is_empty()), "the broken block should say why: {failed}");
+        // The broken block's source and its error are drawn as texts; the flowchart's source is not.
+        let texts: Vec<String> = window.update(cx, |c, _, _| c.drawn_texts(agent))?.into_iter().filter(|d| d.row == row).map(|d| d.text).collect();
+        ensure!(texts.iter().any(|t| t.contains("((((")) && texts.iter().all(|t| !t.contains("B -->|yes| C[Land]")), "the reply's texts: {texts:?}");
+        set_zoom(&mut run, pane, false, cx).await?;
+        Ok((run, json!({"pane": pane, "agent": agent, "row": row, "diagrams": list, "texts": texts})))
+    }
+    let (mut run, ordinary) = shown(run, &agent_pane, &agent_name, "client-mermaid.png", &cli, cx).await?;
+    // Case 2: an orchestrator pane in the same space draws the same reply the same way.
+    let space = run.window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["space"].as_str().map(str::to_owned))?.ok_or_else(|| anyhow::anyhow!("{agent_pane} has no space"))?;
+    let orchestrator = cli(&["orchestrator", "start", "--space", &space, "--pull-after", "3600"])?;
+    let mut agent = Value::Null;
+    for _ in 0..100 {
+        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
+        draw(run.window, None, cx)?;
+        let state = pane_state(run.window, &orchestrator, cx)?;
+        if state["visible"] == true && state["agent"].is_string() {
+            agent = state["agent"].clone();
+            break;
+        }
+    }
+    let agent = agent.as_str().map(str::to_owned).ok_or_else(|| anyhow::anyhow!("the orchestrator pane {orchestrator} never showed its agent: {}", pane_state(run.window, &orchestrator, cx).unwrap_or_default()))?;
+    let (mut run, orchestrated) = shown(run, &orchestrator, &agent, "client-mermaid-orchestrator.png", &cli, cx).await?;
+    let (a, b) = (&ordinary["diagrams"], &orchestrated["diagrams"]);
+    let sizes = |l: &Value| l.as_array().map(|l| l.iter().map(|d| (d["drawn"].clone(), d["width"].clone(), d["height"].clone())).collect::<Vec<_>>()).unwrap_or_default();
+    ensure!(sizes(a) == sizes(b), "the orchestrator drew {b}, the agent pane {a}");
+    cli(&["orchestrator", "stop", &orchestrator])?;
+    for _ in 0..50 {
+        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
+        if pane_state(run.window, &orchestrator, cx)?.is_null() {
+            break;
+        }
+    }
+    draw(run.window, None, cx)?;
+    Ok((run, json!({"agent_pane": ordinary, "orchestrator_pane": orchestrated})))
 }
 
 /// Links in the transcript (wheel-6czg): an echoed reply naming a web page, a file that exists,

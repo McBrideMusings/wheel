@@ -50,8 +50,9 @@ pub enum Block {
     Paragraph(Text),
     Heading { level: u8, text: Text },
     List(Vec<Item>),
-    /// A fenced or indented code block, `code` without the fence's final newline.
-    Code { language: Option<String>, code: String },
+    /// A fenced or indented code block, `code` without the fence's final newline; `open` when its
+    /// fence has not closed yet, as in a reply still streaming.
+    Code { language: Option<String>, code: String, open: bool },
     Quote(Text),
     Table { header: Vec<Text>, rows: Vec<Vec<Text>> },
     Rule,
@@ -217,7 +218,7 @@ pub fn parse(markdown: &str) -> Vec<Block> {
     // The image being read, (src, alt): its text is its alt, not the paragraph's.
     let mut image: Option<(String, String)> = None;
     let parser = Parser::new_ext(markdown, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH);
-    for event in parser {
+    for (event, range) in parser.into_offset_iter() {
         // Inside an image everything is its alt text: words, code and breaks; its marks are dropped.
         if let Some((_, alt)) = &mut image {
             match event {
@@ -335,7 +336,12 @@ pub fn parse(markdown: &str) -> Vec<Block> {
                         if text.ends_with('\n') {
                             text.pop();
                         }
-                        emit(Block::Code { language, code: text }, &mut blocks, &mut inline, &mut lists, &mut marked, &mut items);
+                        // Fenced and unclosed: its source's last line is not a fence of its own.
+                        let source = markdown[range].trim_end();
+                        let fence = source.trim_start().chars().next().filter(|c| *c == '`' || *c == '~');
+                        let last = source.rsplit('\n').next().unwrap_or_default().trim();
+                        let open = fence.is_some_and(|f| !(source.contains('\n') && last.len() >= 3 && last.chars().all(|c| c == f)));
+                        emit(Block::Code { language, code: text, open }, &mut blocks, &mut inline, &mut lists, &mut marked, &mut items);
                     }
                 }
                 TagEnd::Item => {
@@ -451,7 +457,7 @@ mod tests {
     fn fenced_code_keeps_its_language_and_drops_the_fence_newline() {
         let blocks = parse("Before:\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\nAfter.");
         assert_eq!(blocks.len(), 3);
-        assert_eq!(blocks[1], Block::Code { language: Some("rust".into()), code: "fn main() {\n    println!(\"hi\");\n}".into() });
+        assert_eq!(blocks[1], Block::Code { language: Some("rust".into()), code: "fn main() {\n    println!(\"hi\");\n}".into(), open: false });
         assert_eq!(blocks[2], Block::Paragraph(Text { text: "After.".into(), runs: vec![] }));
     }
 
@@ -470,7 +476,7 @@ mod tests {
         let Block::List(items) = &blocks[0] else { panic!("{blocks:?}") };
         let seen: Vec<(usize, &str, &str, bool)> = items.iter().map(|i| (i.depth, i.marker.as_str(), plain(&i.text), i.block.is_some())).collect();
         assert_eq!(seen, vec![(0, "1.", "Run:", false), (0, "", "", true), (0, "2.", "two", false), (1, "•", "inner", false), (0, "", "more text", false), (0, "3.", "three", false)]);
-        assert_eq!(items[1].block.as_deref(), Some(&Block::Code { language: Some("sh".into()), code: "make".into() }));
+        assert_eq!(items[1].block.as_deref(), Some(&Block::Code { language: Some("sh".into()), code: "make".into(), open: false }));
     }
 
     #[test]
@@ -481,6 +487,16 @@ mod tests {
         assert_eq!(rows[0].iter().map(plain).collect::<Vec<_>>(), vec!["1", "2"]);
         assert!(rows[0][1].runs[0].mark.bold);
         assert_eq!(blocks[1], Block::Quote(Text { text: "quoted words".into(), runs: vec![] }));
+    }
+
+    #[test]
+    fn a_fence_still_streaming_is_open() {
+        let closed = parse("```mermaid\nflowchart LR\n  A --> B\n```\n");
+        assert_eq!(closed, vec![Block::Code { language: Some("mermaid".into()), code: "flowchart LR\n  A --> B".into(), open: false }]);
+        let open = parse("Here:\n\n```mermaid\nflowchart LR\n  A --> ");
+        assert_eq!(open[1], Block::Code { language: Some("mermaid".into()), code: "flowchart LR\n  A --> ".into(), open: true });
+        assert!(matches!(parse("```\n```")[0], Block::Code { open: false, .. }));
+        assert!(matches!(parse("    indented")[0], Block::Code { open: false, .. }));
     }
 
     #[test]
