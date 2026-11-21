@@ -159,7 +159,7 @@ public struct ChatAppearances: Equatable, Sendable {
     /// The appearance of the chat showing `agent`: its space's, else the defaults.
     public func appearance(forAgent agent: String, in spaces: [SpaceInfo]) -> ChatAppearance {
         for space in spaces {
-            for pane in space.allPanes {
+            for pane in space.ownedPanes {
                 if case let .agent(name, _) = pane.kind, name == agent { return bySpace[space.id] ?? .standard }
             }
         }

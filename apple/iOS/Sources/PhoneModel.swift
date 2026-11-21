@@ -793,7 +793,8 @@ final class PhoneModel {
         // The layout broadcast leaves statuses out; `status_changed` carries them. The daemon keeps no
         // focused pane, so each space keeps the one this phone had, while that pane is there.
         let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
-        self.spaces = spaces.map { space in
+        // A mirror draws as its source, so its terminal, chat or page attaches to the source's.
+        self.spaces = spaces.resolvingMirrors().map { space in
             var space = space.keepingStatuses(of: held[space.id])
             if let was = held[space.id] { space.focus = was.focusKept(in: space) }
             return space
@@ -822,6 +823,11 @@ final class PhoneModel {
         }
         reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
+        for space in self.spaces {
+            for (pane, shown) in space.mirrors.sorted(by: { $0.key < $1.key }) {
+                Log.info("mirror \(pane) in \(space.id) shows \(shown.source) as \(space.allPanes.first { $0.id == pane }?.kind.name ?? "-"): \(shown.title)")
+            }
+        }
         Log.info("sessions: \(sessions.map { "\($0.id)=\($0.name)[\($0.spaces.joined(separator: ","))]" }.joined(separator: " ")); shown \(view.session ?? "none")")
         appearances.keep(only: self.spaces)
         askAppearances()
@@ -1126,7 +1132,7 @@ final class PhoneModel {
 
     private func spaceId(ofTerm term: String) -> String? {
         spaces.first { space in
-            space.root.panes.contains { if case let .terminal(t, _) = $0.kind { return t == term } else { return false } }
+            space.ownedPanes.contains { if case let .terminal(t, _) = $0.kind { return t == term } else { return false } }
         }?.id
     }
 
@@ -1224,6 +1230,11 @@ final class PhoneModel {
         artifactEmbeds = embeds
         let cwd = spaces.first { $0.allPanes.contains { $0.id == host } }?.cwd ?? ""
         return embeds.view(pane: host, name: name, cwd: cwd)
+    }
+
+    /// What mirror pane `pane` shows and is called; nil for any other pane.
+    func mirror(_ pane: String) -> MirrorShown? {
+        spaces.lazy.compactMap { $0.mirrors[pane] }.first
     }
 
     /// What pane `pane` shows, in any space; nil when it is gone.

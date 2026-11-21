@@ -32,7 +32,7 @@ extension PhoneModel {
     func agentRows(scope: AgentScope) -> [AgentRow] {
         let spaces = scope == .all ? sessionSpaces : sessionSpaces.filter { $0.id == active }
         let rows = spaces.flatMap { space in
-            space.allPanes.compactMap { pane -> AgentRow? in
+            space.ownedPanes.compactMap { pane -> AgentRow? in
                 let agent: String, harness: String
                 switch pane.kind {
                 case let .agent(name, program): (agent, harness) = (name, program)

@@ -146,6 +146,25 @@ struct SpaceCarousel: View {
     }
 
     @ViewBuilder private func paneView(_ pane: (id: String, kind: PaneKind)) -> some View {
+        if let mirror = model.mirror(pane.id) {
+            // The phone's pages have no header, so a mirror names what it shows in a line of its own.
+            VStack(spacing: 0) {
+                Text(mirror.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .accessibilityIdentifier("mirror title \(pane.id)")
+                kindView(pane)
+            }
+        } else {
+            kindView(pane)
+        }
+    }
+
+    /// The page a pane of this kind draws.
+    @ViewBuilder private func kindView(_ pane: (id: String, kind: PaneKind)) -> some View {
         if case let .terminal(term, _) = pane.kind {
             let terminal = model.terminal(term)
             TerminalPage(model: model, terminal: terminal, termState: terminal.view)
@@ -160,7 +179,8 @@ struct SpaceCarousel: View {
         } else if let web = model.webPanes[pane.id] {
             WebBody(web: web)
         } else if case .browser = pane.kind {
-            BrowserPage(model: model, pane: pane.id)
+            // A mirror draws its source's browser: wheeld knows only the source as a browser pane.
+            BrowserPage(model: model, pane: model.mirror(pane.id)?.source ?? pane.id)
         } else {
             PanePlaceholder(id: pane.id, kind: pane.kind)
         }
@@ -671,7 +691,7 @@ private struct BackgroundedPage<Content: View>: View {
                         Image(systemName: paneSymbol(pane.kind))
                             .foregroundStyle(Color.secondary)
                             .frame(width: 24)
-                        Text(PhoneCommands.paneName(pane.kind, status: nil) ?? pane.id)
+                        Text(model.mirror(pane.id)?.title ?? PhoneCommands.paneName(pane.kind, status: nil) ?? pane.id)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                         Spacer()

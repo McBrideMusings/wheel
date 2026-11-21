@@ -26,10 +26,16 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     public var popped: [Node]
     /// The space's tray: one pane leaf each, running and shown nowhere.
     public var backgrounded: [Node]
+    /// What each pane is called, by pane id: the name a person or an agent gave it, else the title
+    /// its program set. A pane with neither has none.
+    public var paneNames: [String: String]
+    /// Each mirror pane drawn as its source, by the mirror's id (`resolvingMirrors`). Empty as
+    /// decoded: a mirror's source can sit in another space.
+    public var mirrors: [String: MirrorShown] = [:]
 
     public init(id: String, name: String, cwd: String, root: Node, focus: String,
                 status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:], background: Bool = false,
-                popped: [Node] = [], backgrounded: [Node] = []) {
+                popped: [Node] = [], backgrounded: [Node] = [], paneNames: [String: String] = [:]) {
         self.id = id
         self.name = name
         self.cwd = cwd
@@ -40,6 +46,7 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         self.background = background
         self.popped = popped
         self.backgrounded = backgrounded
+        self.paneNames = paneNames
     }
 
     private enum K: String, CodingKey { case id, name, cwd, root, status, background, popped, backgrounded }
@@ -55,11 +62,12 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         status = try? c.decodeIfPresent(PaneStatus.self, forKey: .status)
         popped = try c.decodeIfPresent([Node].self, forKey: .popped) ?? []
         backgrounded = try c.decodeIfPresent([Node].self, forKey: .backgrounded) ?? []
-        var statuses = (try? c.decode(StatusTree.self, forKey: .root).statuses) ?? [:]
+        var fields = (try? c.decode(LeafFields.self, forKey: .root)) ?? LeafFields()
         for key in [K.popped, K.backgrounded] {
-            for tree in (try? c.decodeIfPresent([StatusTree].self, forKey: key)) ?? [] { statuses.merge(tree.statuses) { $1 } }
+            for tree in (try? c.decodeIfPresent([LeafFields].self, forKey: key)) ?? [] { fields.merge(tree) }
         }
-        paneStatuses = statuses
+        paneStatuses = fields.statuses
+        paneNames = fields.names
         background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? false
     }
 }
@@ -73,6 +81,12 @@ extension SpaceInfo {
     /// Every pane the space holds, wherever it is: the grid, each popped tree, then the tray.
     public var allPanes: [(id: String, kind: PaneKind)] {
         root.panes + popped.flatMap(\.panes) + backgrounded.flatMap(\.panes)
+    }
+
+    /// The panes whose terminal, agent or page belong to this space: every pane but its mirrors,
+    /// which draw another pane's. A lookup by terminal, agent or page reads these.
+    public var ownedPanes: [(id: String, kind: PaneKind)] {
+        allPanes.filter { mirrors[$0.id] == nil }
     }
 
     /// Where `pane` is, or nil when the space does not hold it.
@@ -109,19 +123,77 @@ extension SpaceInfo {
     public var firstPaneKind: PaneKind { root.panes.first?.kind ?? .empty }
 }
 
-/// The `status` fields of a split tree, by pane id, read apart from the layout.
-private struct StatusTree: Decodable {
+/// The `status`, `pane_name` and `pane_title` fields of a split tree, by pane id, read apart from the layout.
+private struct LeafFields: Decodable {
     var statuses: [String: PaneStatus] = [:]
+    var names: [String: String] = [:]
 
-    private enum K: String, CodingKey { case id, status, a, b }
+    private enum K: String, CodingKey { case id, status, a, b, pane_name, pane_title }
+
+    init() {}
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         if let status = try? c.decodeIfPresent(PaneStatus.self, forKey: .status) {
             statuses[try c.decode(String.self, forKey: .id)] = status
         }
+        let named = (try? c.decodeIfPresent(String.self, forKey: .pane_name)) ?? nil
+        let titled = (try? c.decodeIfPresent(String.self, forKey: .pane_title)) ?? nil
+        if let name = named ?? titled { names[try c.decode(String.self, forKey: .id)] = name }
         for side in [K.a, K.b] {
-            if let tree = try c.decodeIfPresent(StatusTree.self, forKey: side) { statuses.merge(tree.statuses) { $1 } }
+            if let tree = try c.decodeIfPresent(LeafFields.self, forKey: side) { merge(tree) }
+        }
+    }
+
+    mutating func merge(_ other: LeafFields) {
+        statuses.merge(other.statuses) { $1 }
+        names.merge(other.names) { $1 }
+    }
+}
+
+/// A mirror pane as a client draws it: the pane it shows and the title naming that pane,
+/// `<space> · <pane name>`.
+public struct MirrorShown: Sendable, Equatable {
+    public let source: String
+    public let title: String
+}
+
+extension Array where Element == SpaceInfo {
+    /// The pane `pane` shows: itself, or the source of a mirror. Nil when either is missing or the
+    /// source is a mirror itself. The same lookup as `wheel_proto::shown_pane`.
+    public func shownPane(_ pane: String) -> (id: String, kind: PaneKind)? {
+        func find(_ id: String) -> (id: String, kind: PaneKind)? {
+            lazy.flatMap(\.allPanes).first { $0.id == id }
+        }
+        guard let found = find(pane) else { return nil }
+        guard let source = found.kind.mirrorSource else { return found }
+        guard let shown = find(source), shown.kind.mirrorSource == nil else { return nil }
+        return shown
+    }
+
+    /// Each mirror drawn as its source: the source's kind under the mirror's own id, so whatever
+    /// attaches by kind (a terminal, an agent, a page) attaches to the source's, and the mirror's
+    /// title in `mirrors`. A mirror whose source is gone stays `unknown`.
+    public func resolvingMirrors() -> [SpaceInfo] {
+        map { space in
+            var space = space
+            var mirrors: [String: MirrorShown] = [:]
+            func resolve(_ node: Node) -> Node {
+                switch node {
+                case let .pane(id, kind):
+                    guard kind.mirrorSource != nil, let shown = shownPane(id),
+                          let home = first(where: { $0.site(of: shown.id) != nil }) else { return node }
+                    mirrors[id] = MirrorShown(source: shown.id, title: "\(home.name) · \(home.paneNames[shown.id] ?? shown.kind.name)")
+                    return .pane(id: id, kind: shown.kind)
+                case let .split(id, axis, ratio, a, b):
+                    return .split(id: id, axis: axis, ratio: ratio, a: resolve(a), b: resolve(b))
+                }
+            }
+            space.root = resolve(space.root)
+            space.popped = space.popped.map(resolve)
+            space.backgrounded = space.backgrounded.map(resolve)
+            space.mirrors = mirrors
+            return space
         }
     }
 }
@@ -266,6 +338,13 @@ public enum PaneKind: Sendable, Equatable {
     public var plugin: (plugin: String, pane: String)? {
         guard case let .unknown("plugin", raw) = self, case let .string(plugin)? = raw["plugin"], case let .string(pane)? = raw["pane"] else { return nil }
         return (plugin, pane)
+    }
+
+    /// The pane a mirror pane draws (`kind = "mirror"`), which this build carries as `unknown`
+    /// with its fields; nil for any other pane.
+    public var mirrorSource: String? {
+        guard case let .unknown("mirror", raw) = self, case let .string(source)? = raw["source"] else { return nil }
+        return source
     }
 }
 

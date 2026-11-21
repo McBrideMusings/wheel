@@ -20,7 +20,7 @@ public enum AgentPanes {
     /// The harness (`claude`, `codex`, `pi`) of the pane running `agent`; nil when no pane runs it.
     public static func harness(ofAgent agent: String, in spaces: [SpaceInfo]) -> String? {
         for space in spaces {
-            for pane in space.allPanes {
+            for pane in space.ownedPanes {
                 if case let .agent(name, harness) = pane.kind, name == agent { return harness }
             }
         }

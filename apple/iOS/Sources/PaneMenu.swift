@@ -27,7 +27,7 @@ struct PaneMenu: View {
                 Button("Split Right", systemImage: "square.split.2x1") { model.split(pane, .right) }
                 Button("Split Down", systemImage: "square.split.1x2") { model.split(pane, .down) }
             }
-            if let view = model.otherView(kind) {
+            if !mirrored, let view = model.otherView(kind) {
                 Button(view == .agent ? "Show as Chat" : "Show in Terminal",
                        systemImage: view == .agent ? "bubble.left.and.text.bubble.right" : "terminal") {
                     model.switchView(pane, to: view)
@@ -53,7 +53,7 @@ struct PaneMenu: View {
             Button("Settings", systemImage: "gearshape", action: openSettings)
             Divider()
             Button("Close", systemImage: "xmark", role: .destructive) {
-                if kind.endsAnAgent { confirmingClose = true } else { model.closePane(pane) }
+                if endsAnAgent { confirmingClose = true } else { model.closePane(pane) }
             }
         } label: {
             Image(systemName: "ellipsis.circle").font(.title3)
@@ -104,8 +104,12 @@ struct PaneMenu: View {
 
     /// Runs `change`, asking first when the pane runs a shell or an agent.
     private func changeKind(_ change: @escaping () -> Void) {
-        if kind.endsAnAgent { confirmingKind = change } else { change() }
+        if endsAnAgent { confirmingKind = change } else { change() }
     }
+
+    /// A mirror draws its source's kind, but closing or changing it leaves the source running.
+    private var mirrored: Bool { model.mirror(pane) != nil }
+    private var endsAnAgent: Bool { kind.endsAnAgent && !mirrored }
 
     /// Runs one menu item without the confirmation a finger would answer, for the debug launch
     /// variable `WHEEL_MENU`: `split-right`, `split-down`, `close`, `view-chat`, `view-terminal`,

@@ -561,7 +561,7 @@ extension ChatLinks {
     /// Where agent `agent`'s pane is: its space, the space's directory and the pane's id.
     public static func place(ofAgent agent: String, in spaces: [SpaceInfo]) -> (space: String, cwd: String, pane: String)? {
         for space in spaces {
-            for pane in space.allPanes {
+            for pane in space.ownedPanes {
                 if case let .agent(name, _) = pane.kind, name == agent { return (space.id, space.cwd, pane.id) }
             }
         }
