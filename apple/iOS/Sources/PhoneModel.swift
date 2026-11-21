@@ -57,6 +57,73 @@ final class PhoneModel {
         mode = new
         UserDefaults.standard.set(new, forKey: Self.modeKey)
     }
+    /// The panes pinned in each space, drawn as a sheet over the carousel in place of a page. Saved per paired Mac,
+    /// since each Mac's ids are its own; the phone holds them alone and wheeld never hears of a pin (ADR-0022).
+    private(set) var pins = Pins()
+    /// Each space's pin sheet as last moved: the pinned pane it shows and where it sits. Held for this launch only.
+    private var sheets: [String: PinSheet] = [:]
+
+    /// The pin sheet of `space`: the pinned pane it shows (the first pinned until the person picks one) and its
+    /// position (low until moved); nil while the space has no pins.
+    func sheet(in space: String) -> PinSheet? {
+        let list = pins.pinned(in: space)
+        guard let first = list.first else { return nil }
+        let held = sheets[space]
+        let pane = held.map(\.pane).flatMap { list.contains($0) ? $0 : nil } ?? first
+        return PinSheet(pane: pane, position: held?.position ?? .low)
+    }
+
+    /// Pin `pane` of the shown space: it leaves the carousel and the sheet shows it at low.
+    func pin(_ pane: String) {
+        guard let space = activeSpace?.id else { return }
+        pins.pin(pane, in: space)
+        sheets[space] = PinSheet(pane: pane, position: .low)
+        savePins()
+        Log.info("pin \(pane) in \(space): pinned \(pins.pinned(in: space)), sheet low")
+        showTerm()
+    }
+
+    /// Unpin `pane` of the shown space: it goes back to the carousel, and the sheet shows the next pinned pane.
+    func unpin(_ pane: String) {
+        guard let space = activeSpace?.id else { return }
+        pins.unpin(pane, in: space)
+        if sheets[space]?.pane == pane { sheets[space]?.pane = pins.pinned(in: space).first ?? pane }
+        savePins()
+        Log.info("unpin \(pane) in \(space): pinned \(pins.pinned(in: space))")
+        showTerm()
+    }
+
+    /// Show pinned pane `pane` in the shown space's sheet, where the sheet already sits.
+    func showPinned(_ pane: String) {
+        guard let space = activeSpace?.id, let held = sheet(in: space), pins.isPinned(pane, in: space), held.pane != pane else { return }
+        sheets[space] = PinSheet(pane: pane, position: held.position)
+        Log.info("sheet \(space): shows \(pane)")
+        showTerm()
+    }
+
+    /// Move the shown space's sheet to `position`, as a drag ending there or the hidden sheet's button does.
+    func moveSheet(to position: SheetPosition) {
+        guard let space = activeSpace?.id, let held = sheet(in: space), held.position != position else { return }
+        sheets[space] = PinSheet(pane: held.pane, position: position)
+        Log.info("sheet \(space): \(held.position.rawValue) -> \(position.rawValue)")
+        showTerm()
+    }
+
+    private static func pinsKey(_ pairing: Pairing) -> String { "pins \(pairing.url.absoluteString)" }
+
+    private func savePins() {
+        guard let pairing else { return }
+        UserDefaults.standard.set(pins.bySpace, forKey: Self.pinsKey(pairing))
+    }
+
+    /// The pins saved at the last launch for this Mac.
+    private func restorePins() {
+        let saved = pairing.flatMap { UserDefaults.standard.dictionary(forKey: Self.pinsKey($0)) as? [String: [String]] } ?? [:]
+        pins = Pins(saved)
+        sheets = [:]
+        Log.info("pins restored: \(pins.bySpace.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.joined(separator: ","))" }.joined(separator: " "))")
+    }
+
     /// The space this phone shows; nil while the shown session holds none.
     var active: String? { view.space }
     private var reportedView: String?
@@ -156,6 +223,11 @@ final class PhoneModel {
     /// The terminal the visible page shows. With the terms `embeds` the shown plugin page draws, the only ones attached,
     /// so the phone's grid size is the size the shell has while the page is up.
     private var shownTerm: String?
+    /// The pane the shown space's pin sheet draws while the sheet is up: shown as the visible page is, so its terminal, or a
+    /// plugin pane's embedded terminals, attach and size their shells.
+    private var sheetPane: String?
+    /// `sheetPane`'s terminal, when it is one.
+    private var sheetTerm: String?
     /// The surfaces plugin pages draw for `Terminal{pane}` (ADR-0042), one per embed view while it is on screen, in the
     /// order they came up; each is its own Ghostty surface, never the terminal page's, since one surface draws in one view.
     /// The carousel's paged TabView holds extra copies of a page for a moment while the space's tree changes, so one
@@ -283,7 +355,11 @@ final class PhoneModel {
         terminalControllers = [:]
         terminalLooks = [:]
         shownTerm = nil
+        sheetTerm = nil
+        sheetPane = nil
         shownPane = nil
+        pins = Pins()
+        sheets = [:]
         pageDaemon.url = nil
         pageDaemon.token = nil
         pageDaemon.pairing = nil
@@ -805,6 +881,7 @@ final class PhoneModel {
         if restorePending, !sessions.isEmpty {
             restorePending = false
             restoreView()
+            restorePins()
         } else {
             view.layoutChanged(from: old, to: sessions)
         }
@@ -820,6 +897,13 @@ final class PhoneModel {
         if let session = pendingSession, sessions.contains(where: { $0.id == session }) {
             pendingSession = nil
             selectSession(session)
+        }
+        // A pinned pane that closed leaves its space's pins.
+        let kept = pins.kept(in: self.spaces)
+        if kept != pins {
+            Log.info("pins: \(pins.bySpace) -> \(kept.bySpace), a pinned pane closed")
+            pins = kept
+            savePins()
         }
         reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
@@ -1160,6 +1244,12 @@ final class PhoneModel {
         shownTerm = activeSpace?.allPanes.first { $0.id == shownPane }.flatMap { entry -> String? in
             if case let .terminal(term, _) = entry.kind { term } else { nil }
         }
+        sheetPane = activeSpace.flatMap { space in sheet(in: space.id).flatMap { $0.position == .hidden ? nil : $0.pane } }
+        let term = activeSpace?.allPanes.first { $0.id == sheetPane }.flatMap { entry -> String? in
+            if case let .terminal(term, _) = entry.kind { term } else { nil }
+        }
+        if term != sheetTerm { Log.info("sheet terminal: \(term ?? "none")") }
+        sheetTerm = term
         syncAttachments()
     }
 
@@ -1171,14 +1261,15 @@ final class PhoneModel {
 
     /// The embed of `term` on the shown plugin page that sizes the shell: the newest one up.
     private func drivingEmbed(of term: String) -> PhoneTerminal? {
-        embeds.last { $0.term == term && $0.host == shownPane }
+        embeds.last { $0.term == term && ($0.host == shownPane || ($0.host != nil && $0.host == sheetPane)) }
     }
 
     /// Attach the terms the shown page needs (its own, or the embeds of a plugin page) and detach the rest.
     private func syncAttachments() {
         var wanted = Set<String>()
         if let shownTerm { wanted.insert(shownTerm) }
-        for embed in embeds where embed.host == shownPane { wanted.insert(embed.term) }
+        if let sheetTerm { wanted.insert(sheetTerm) }
+        for embed in embeds where embed.host == shownPane || (embed.host != nil && embed.host == sheetPane) { wanted.insert(embed.term) }
         for old in attachedTerms.subtracting(wanted) {
             client?.send(.termDetach(id: old))
             for terminal in surfaces(of: old) { terminal.attached = false }
@@ -1309,7 +1400,7 @@ final class PhoneModel {
     #endif
 
     private func attach(_ term: String) {
-        if term == shownTerm { _ = terminal(term) }
+        if term == shownTerm || term == sheetTerm { _ = terminal(term) }
         replays[term] = nil
         for terminal in surfaces(of: term) {
             terminal.attached = false
@@ -1327,6 +1418,7 @@ final class PhoneModel {
         for term in terminals.keys where !held.contains(term) {
             terminals[term] = nil
             if shownTerm == term { shownTerm = nil }
+            if sheetTerm == term { sheetTerm = nil }
             Log.info("terminal \(term) left the layout")
         }
         attachedTerms.formIntersection(held)
@@ -1350,7 +1442,7 @@ final class PhoneModel {
     /// whichever comes last.
     func settle(_ terminal: PhoneTerminal) {
         // The shown page sizes the shell: the terminal's own page, or the newest embed of it on a plugin page.
-        let drives = terminal.host == nil ? terminal.term == shownTerm : drivingEmbed(of: terminal.term) === terminal
+        let drives = terminal.host == nil ? terminal.term == shownTerm || terminal.term == sheetTerm : drivingEmbed(of: terminal.term) === terminal
         guard drives, terminal.attached || terminal.size == nil, let vp = terminal.reported else { return }
         let cols = Int(vp.columns), rows = Int(vp.rows)
         guard let layout = terminal.layout, vp.widthPixels > 0, vp.heightPixels > 0 else {
@@ -1626,4 +1718,10 @@ struct SettingField: Hashable {
 struct PaneHeaderInfo: Equatable {
     var folder: String?
     var login: PaneLogin?
+}
+
+/// A space's pin sheet: the pinned pane it shows and where it sits.
+struct PinSheet: Equatable {
+    var pane: String
+    var position: SheetPosition
 }

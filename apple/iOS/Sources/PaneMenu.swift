@@ -49,6 +49,8 @@ struct PaneMenu: View {
                 }
                 Button("Browser…", systemImage: "safari") { askingForAddress = true }
             }
+            // The phone's own: the pane leaves the pages for the sheet over them, and the Mac shows nothing different.
+            Button("Pin", systemImage: "pin") { model.pin(pane) }
             Divider()
             Button("Settings", systemImage: "gearshape", action: openSettings)
             Divider()
@@ -114,7 +116,7 @@ struct PaneMenu: View {
     /// Runs one menu item without the confirmation a finger would answer, for the debug launch
     /// variable `WHEEL_MENU`: `split-right`, `split-down`, `close`, `view-chat`, `view-terminal`,
     /// `kind-empty`, `kind-terminal`, `kind-agent:<name>`, `kind-web:<artifact name>`,
-    /// `kind-browser[:<url>]`.
+    /// `kind-browser[:<url>]`, `pin`.
     @MainActor static func drive(_ item: String, model: PhoneModel, pane: String, kind: PaneKind) async {
         Log.info("menu item \(item) on \(pane)")
         let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
@@ -123,6 +125,7 @@ struct PaneMenu: View {
         case "split-right": model.split(pane, .right)
         case "split-down": model.split(pane, .down)
         case "close": model.closePane(pane)
+        case "pin": model.pin(pane)
         case "view-chat": model.switchView(pane, to: .agent)
         case "view-terminal": model.switchView(pane, to: .terminal)
         case "kind-empty": model.setKind(pane, .empty)

@@ -28,34 +28,44 @@ struct SpaceCarousel: View {
     var body: some View {
         GeometryReader { geo in
             let landscape = geo.size.width > geo.size.height
-            let pages = Pages(model.activeSpace)
+            let pages = Pages(model.activeSpace, pinned: pinnedIDs)
             let panes = pages.panes
             let dots = Dots(kinds: pages.dotKinds, current: pages.index(of: page), trayNeedsYou: trayNeedsYou(pages.tray))
             let spacesMode = model.mode == WindowMode.spaces
             VStack(spacing: 0) {
                 topBar(pages: pages, dots: dots, landscape: landscape)
-                if !spacesMode {
-                    ModeBody(mode: model.mode)
-                } else if panes.isEmpty {
-                    ContentUnavailableView(connectionText, systemImage: "rectangle.on.rectangle")
-                        .accessibilityIdentifier("no panes")
-                } else {
-                    TabView(selection: $page) {
-                        ForEach(panes, id: \.id) { pane in
-                            paneView(pane).tag(Optional(pane.id))
+                // The sheet lies over the pages and the dots bar, so pinning or moving it moves neither.
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 0) {
+                        if !spacesMode {
+                            ModeBody(mode: model.mode)
+                        } else if panes.isEmpty && pages.tray.isEmpty {
+                            ContentUnavailableView(pinnedIDs.isEmpty ? connectionText : "Every pane is pinned", systemImage: "rectangle.on.rectangle")
+                                .accessibilityIdentifier("no panes")
+                        } else {
+                            TabView(selection: $page) {
+                                ForEach(panes, id: \.id) { pane in
+                                    paneView(pane).tag(Optional(pane.id))
+                                }
+                                if !pages.tray.isEmpty {
+                                    BackgroundedPage(model: model, tray: pages.tray, open: $openTray) { paneView($0) }
+                                        .tag(Optional(Pages.trayID))
+                                }
+                            }
+                            .tabViewStyle(.page(indexDisplayMode: .never))
                         }
-                        if !pages.tray.isEmpty {
-                            BackgroundedPage(model: model, tray: pages.tray, open: $openTray) { paneView($0) }
-                                .tag(Optional(Pages.trayID))
+                        if !landscape {
+                            pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
                         }
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                }
-                if !landscape {
-                    pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
+                    if spacesMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
+                       let pane = space.allPanes.first(where: { $0.id == sheet.pane }) {
+                        PinSheetView(model: model, space: space, sheet: sheet, pane: pane) { kindView($0) }
+                    }
                 }
             }
             .onChange(of: trayIDs) { _, ids in trayChanged(ids) }
+            .onChange(of: pinnedIDs) { old, new in pinsChanged(from: old, to: new) }
         }
         .onChange(of: model.activeSpace?.focus, initial: true) { _, focus in follow(focus) }
         .onChange(of: model.activeSpace?.id) { _, _ in follow(model.activeSpace?.focus) }
@@ -119,7 +129,10 @@ struct SpaceCarousel: View {
     /// space: the page follows. A backgrounded pane is on the last page, open in place.
     private func follow(_ focus: String?) {
         guard let focus else { return }
-        if model.activeSpace?.site(of: focus) == .backgrounded {
+        if pinnedIDs.contains(focus) {
+            // A pinned pane is the sheet's, never a page: the sheet shows it and the page stays.
+            model.showPinned(focus)
+        } else if model.activeSpace?.site(of: focus) == .backgrounded {
             if openTray != focus { openTray = focus }
             if page != Pages.trayID { page = Pages.trayID }
         } else if page != focus {
@@ -194,7 +207,23 @@ struct SpaceCarousel: View {
         }
     }
 
-    private var trayIDs: [String] { Pages(model.activeSpace).tray.map(\.id) }
+    private var trayIDs: [String] { Pages(model.activeSpace, pinned: pinnedIDs).tray.map(\.id) }
+
+    /// The shown space's pinned panes, drawn in the sheet and left out of the pages.
+    private var pinnedIDs: [String] { model.activeSpace.map { model.pins.pinned(in: $0.id) } ?? [] }
+
+    /// The page on screen was pinned: its neighbour takes its place, the next page else the one before, the backgrounded
+    /// panes' page included. With no page on screen (every pane was pinned), the first page there is now.
+    private func pinsChanged(from old: [String], to new: [String]) {
+        let now = Pages(model.activeSpace, pinned: new).pageIDs
+        guard page == nil || !now.contains(page ?? "") else { return }
+        let was = Pages(model.activeSpace, pinned: old).pageIDs
+        guard let page, let i = was.firstIndex(of: page) else {
+            self.page = now.first
+            return
+        }
+        self.page = (was[(i + 1)...] + was[..<i].reversed()).first(where: now.contains) ?? now.first
+    }
 
     /// The pane open in place left the tray, or the tray emptied: back to the list, or to the grid.
     private func trayChanged(_ ids: [String]) {
@@ -340,7 +369,7 @@ struct SpaceCarousel: View {
             Log.info("start page tray")
             openTray = env["WHEEL_TRAY_OPEN"]
             withAnimation { page = Pages.trayID }
-        } else if let n = env["WHEEL_START_PAGE"].flatMap(Int.init), case let panes = Pages(model.activeSpace).panes, (1...max(panes.count, 1)).contains(n) {
+        } else if let n = env["WHEEL_START_PAGE"].flatMap(Int.init), case let panes = Pages(model.activeSpace, pinned: pinnedIDs).panes, (1...max(panes.count, 1)).contains(n) {
             Log.info("start page \(n)")
             withAnimation { page = panes[n - 1].id }
         }
@@ -354,7 +383,7 @@ struct SpaceCarousel: View {
             }
         }
         // `WHEEL_SWIPE=<n>` raises the keyboard in the shown terminal, then swipes to the n-th page.
-        if let n = env["WHEEL_SWIPE"].flatMap(Int.init), case let panes = Pages(model.activeSpace).panes, (1...max(panes.count, 1)).contains(n) {
+        if let n = env["WHEEL_SWIPE"].flatMap(Int.init), case let panes = Pages(model.activeSpace, pinned: pinnedIDs).panes, (1...max(panes.count, 1)).contains(n) {
             model.focusShown()
             try? await Task.sleep(for: .seconds(2))
             Log.info("swipe to page \(n)")
@@ -642,10 +671,12 @@ private struct Pages {
     let popped: [(id: String, kind: PaneKind)]
     let tray: [(id: String, kind: PaneKind)]
 
-    init(_ space: SpaceInfo?) {
-        grid = space?.root.readingOrder ?? []
-        popped = space?.popped.flatMap(\.readingOrder) ?? []
-        tray = space?.backgrounded.flatMap(\.panes) ?? []
+    /// The pages of `space`, less the `pinned` panes the sheet draws.
+    init(_ space: SpaceInfo?, pinned: [String] = []) {
+        let pinned = Set(pinned)
+        grid = (space?.root.readingOrder ?? []).filter { !pinned.contains($0.id) }
+        popped = (space?.popped.flatMap(\.readingOrder) ?? []).filter { !pinned.contains($0.id) }
+        tray = (space?.backgrounded.flatMap(\.panes) ?? []).filter { !pinned.contains($0.id) }
     }
 
     var panes: [(id: String, kind: PaneKind)] { grid + popped }
