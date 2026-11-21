@@ -56,6 +56,48 @@ final class PhoneModel {
         Log.info("mode \(mode) -> \(new)")
         mode = new
         UserDefaults.standard.set(new, forKey: Self.modeKey)
+        pinOrchestratorOnFirstOpen()
+        reportView()
+        showTerm()
+    }
+
+    /// The Orchestrator space, once wheeld has made it: Orchestrator mode shows it in place of the shown space.
+    var orchestratorSpace: SpaceInfo? { spaces.first(where: \.orchestrator) }
+    /// The spaces a list offers: every one but the Orchestrator space, which only Orchestrator mode shows.
+    var listedSpaces: [SpaceInfo] { spaces.filter { !$0.orchestrator } }
+    /// The Orchestrator spaces whose first open has pinned their first global orchestrator, saved per paired Mac.
+    /// Pinning once and never again is what keeps an unpin.
+    private var orchestratorPinned: Set<String> = []
+    private static func orchestratorPinnedKey(_ pairing: Pairing) -> String { "orchestrator pinned \(pairing.url.absoluteString)" }
+
+    /// The first time Orchestrator mode shows the Orchestrator space with a global orchestrator in it, that pane is
+    /// pinned, so the sheet shows it over the space's pages.
+    private func pinOrchestratorOnFirstOpen() {
+        guard mode == WindowMode.orchestrator, !restorePending, let space = orchestratorSpace,
+              !orchestratorPinned.contains(space.id), let pane = space.firstGlobalOrchestrator else { return }
+        orchestratorPinned.insert(space.id)
+        if let pairing { UserDefaults.standard.set(Array(orchestratorPinned), forKey: Self.orchestratorPinnedKey(pairing)) }
+        guard !pins.isPinned(pane, in: space.id) else { return }
+        pins.pin(pane, in: space.id)
+        sheets[space.id] = PinSheet(pane: pane, position: .low)
+        savePins()
+        Log.info("orchestrator space \(space.id) first open: pinned \(pane)")
+    }
+
+    /// The `orchestrator_start` Start sent that wheeld has not answered, and why wheeld refused the last one.
+    private(set) var orchestratorStartReq: UInt64?
+    private(set) var orchestratorRefused: String?
+    /// Whether the running wheeld takes `orchestrator_start` (ADR-0050); Start is disabled when it does not.
+    var canStartOrchestrator: Bool { isConnected && serverOffer.has("orchestrator_start") }
+
+    /// Start the global orchestrator; wheeld makes the Orchestrator space for it, and Orchestrator mode then shows it.
+    func startOrchestrator() {
+        guard orchestratorStartReq == nil, canStartOrchestrator, let client else { return }
+        let req = client.req()
+        orchestratorStartReq = req
+        orchestratorRefused = nil
+        Log.info("orchestrator start (req \(req))")
+        client.send(.orchestratorStartGlobal(req: req))
     }
     /// The panes pinned in each space, drawn as a sheet over the carousel in place of a page. Saved per paired Mac,
     /// since each Mac's ids are its own; the phone holds them alone and wheeld never hears of a pin (ADR-0022).
@@ -121,11 +163,13 @@ final class PhoneModel {
         let saved = pairing.flatMap { UserDefaults.standard.dictionary(forKey: Self.pinsKey($0)) as? [String: [String]] } ?? [:]
         pins = Pins(saved)
         sheets = [:]
+        orchestratorPinned = Set(pairing.flatMap { UserDefaults.standard.stringArray(forKey: Self.orchestratorPinnedKey($0)) } ?? [])
         Log.info("pins restored: \(pins.bySpace.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.joined(separator: ","))" }.joined(separator: " "))")
     }
 
     /// The space this phone shows; nil while the shown session holds none.
-    var active: String? { view.space }
+    /// The space this phone shows: Orchestrator mode's is the Orchestrator space; nil while there is none.
+    var active: String? { mode == WindowMode.orchestrator ? orchestratorSpace?.id : view.space }
     private var reportedView: String?
     /// Set until the first layout of a launch arrives: that layout restores the view saved last time.
     private var restorePending = true
@@ -415,6 +459,8 @@ final class PhoneModel {
             if state != .connected { for terminal in terminals.values { terminal.attached = false } }
             if wasConnected, state != .connected { for link in pluginPanes.values { link.dropped() } }
             if state != .connected { links.forget(); consoleReqs = [:] }
+            // No answer comes over a dropped link, so Start is offered again.
+            if state != .connected { orchestratorStartReq = nil }
             if case .connected = state {
                 settingListReq = nil
                 settingChangeReqs = [:]
@@ -657,8 +703,18 @@ final class PhoneModel {
                 if let space = spaces.first(where: { $0.allPanes.contains { $0.id == id } }) { focus(space: space.id, pane: id) } else { pendingPane = id }
             case nil: break
             }
+        case let .orchestratorStarted(req, pane, agent):
+            if req == orchestratorStartReq {
+                orchestratorStartReq = nil
+                Log.info("orchestrator started in \(pane), agent \(agent)")
+            }
         case let .error(req, _, message):
             if let req { taskOutputAsks[req] = nil }
+            if let req, req == orchestratorStartReq {
+                orchestratorStartReq = nil
+                orchestratorRefused = message
+                Log.info("orchestrator start refused: \(message)")
+            }
             if let req, let pane = consoleAnswered(req) {
                 Log.info("browser pane \(pane) console report refused: \(message)")
             }
@@ -867,7 +923,10 @@ final class PhoneModel {
         Log.info(line)
     }
 
-    private func layoutArrived(_ spaces: [SpaceInfo], sessions: [SessionInfo]) {
+    private func layoutArrived(_ spaces: [SpaceInfo], sessions listed: [SessionInfo]) {
+        // The Orchestrator space's session is wheeld's alone: no list offers it, no view falls back to it, and only
+        // Orchestrator mode shows its space.
+        let sessions = listed.leavingOut(orchestratorOf: spaces)
         // The layout broadcast leaves statuses out; `status_changed` carries them. The daemon keeps no
         // focused pane, so each space keeps the one this phone had, while that pane is there.
         let held = Dictionary(uniqueKeysWithValues: self.spaces.map { ($0.id, $0) })
@@ -879,8 +938,9 @@ final class PhoneModel {
         }
         let old = self.sessions
         self.sessions = sessions
+        if spaces.contains(where: \.orchestrator) { orchestratorRefused = nil }
         // A layout with no sessions (a server still loading) restores nothing and saves nothing.
-        if restorePending, !sessions.isEmpty {
+        if restorePending, !listed.isEmpty {
             restorePending = false
             restoreView()
             restorePins()
@@ -907,6 +967,7 @@ final class PhoneModel {
             pins = kept
             savePins()
         }
+        pinOrchestratorOnFirstOpen()
         reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
         for space in self.spaces {
@@ -1061,6 +1122,16 @@ final class PhoneModel {
     /// Showing a pane shows Spaces, whichever mode was shown.
     func focus(space: String, pane: String) {
         Log.info("focus pane \(pane) in \(space)")
+        if space == orchestratorSpace?.id {
+            // The Orchestrator space is Orchestrator mode's: its pane shows there, and the Spaces mode view stays.
+            setMode(WindowMode.orchestrator)
+            if let i = spaces.firstIndex(where: { $0.id == space }), spaces[i].allPanes.contains(where: { $0.id == pane }), spaces[i].focus != pane {
+                spaces[i].focus = pane
+            }
+            reportView()
+            showTerm()
+            return
+        }
         setMode(WindowMode.spaces)
         guard let i = spaces.firstIndex(where: { $0.id == space && $0.allPanes.contains { $0.id == pane } }) else {
             pendingShow = (space, pane)
@@ -1075,6 +1146,10 @@ final class PhoneModel {
     /// Show `space` on this phone: no other client moves. Showing a space shows Spaces, whichever mode was shown.
     func select(space: String) {
         Log.info("switch to space \(space)")
+        if space == orchestratorSpace?.id {
+            setMode(WindowMode.orchestrator)
+            return
+        }
         setMode(WindowMode.spaces)
         guard spaces.contains(where: { $0.id == space }) else {
             pendingShow = (space, nil)
@@ -1118,10 +1193,12 @@ final class PhoneModel {
         guard key != reportedView else { return }
         reportedView = key
         if let pairing, view.session != nil {
+            // The saved view is Spaces mode's; the mode is saved apart.
+            let shown = spaces.first { $0.id == view.space }
             var saved: [String: String] = [:]
             saved["session"] = view.session
-            saved["space"] = space?.id
-            saved["pane"] = space?.focus
+            saved["space"] = shown?.id
+            saved["pane"] = shown?.focus
             UserDefaults.standard.set(saved, forKey: Self.viewKey(pairing))
         }
         client?.send(.view(req: nil, window: "phone", space: space?.id, pane: space?.focus, session: view.session))

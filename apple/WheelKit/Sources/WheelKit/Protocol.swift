@@ -34,6 +34,9 @@ public enum ClientMsg: Sendable, Equatable {
     case spaceRename(req: UInt64?, space: String, name: String)
     /// Make an empty session named `name` (ADR-0021); the daemon answers `created` with its id.
     case sessionNew(req: UInt64?, name: String)
+    /// Start the global orchestrator (ADR-0054), which wheeld runs in the Orchestrator space, made at the first
+    /// global start; the daemon answers `orchestratorStarted`.
+    case orchestratorStartGlobal(req: UInt64?)
     /// Name a session, by id or current name. An empty name is refused.
     case sessionRename(req: UInt64?, session: String, name: String)
     /// Close a session, by id or name: closes every space in it and every pane in those.
@@ -478,6 +481,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "space_rename", "space": space, "name": name]; put(req)
         case let .sessionNew(req, name):
             o = ["op": "session_new", "name": name]; put(req)
+        case let .orchestratorStartGlobal(req):
+            o = ["op": "orchestrator_start", "scope": "global"]; put(req)
         case let .sessionRename(req, session, name):
             o = ["op": "session_rename", "session": session, "name": name]; put(req)
         case let .sessionClose(req, session):
@@ -1390,6 +1395,8 @@ public enum ServerMsg: Sendable {
     /// `builtinUpdate` with `ask` found files a person edited and changed nothing.
     case builtinEdited(req: UInt64, name: String, edited: [EditedFile])
     case created(req: UInt64, id: String)
+    /// The reply to `orchestratorStartGlobal`: the orchestrator's new pane and its agent.
+    case orchestratorStarted(req: UInt64, pane: String, agent: String)
     /// The directories spaces were made for, newest first, in reply to `spaceRecent`.
     case spaceRecent(req: UInt64, dirs: [RecentDir])
     /// The subfolders of `path` (expanded, absolute), in reply to `dirList`; `error` says why there are none.
@@ -1594,6 +1601,9 @@ extension ServerMsg: Decodable {
             self = .builtinEdited(req: try c.decode(UInt64.self, forKey: .req), name: try c.decode(String.self, forKey: .name),
                                   edited: try c.decode([EditedFile].self, forKey: .edited))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
+        case "orchestrator_started":
+            self = .orchestratorStarted(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
+                                        agent: try c.decode(String.self, forKey: .agent))
         case "space_recent": self = .spaceRecent(req: try c.decode(UInt64.self, forKey: .req), dirs: try c.decode([RecentDir].self, forKey: .dirs))
         case "dir_list":
             self = .dirList(req: try c.decode(UInt64.self, forKey: .req), path: try c.decode(String.self, forKey: .path),

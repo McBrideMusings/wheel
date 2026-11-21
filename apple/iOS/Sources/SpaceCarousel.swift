@@ -31,14 +31,16 @@ struct SpaceCarousel: View {
             let pages = Pages(model.activeSpace, pinned: pinnedIDs)
             let panes = pages.panes
             let dots = Dots(kinds: pages.dotKinds, current: pages.index(of: page), trayNeedsYou: trayNeedsYou(pages.tray))
-            let spacesMode = model.mode == WindowMode.spaces
+            let spacesMode = showsPages
             VStack(spacing: 0) {
                 topBar(pages: pages, dots: dots, landscape: landscape)
                 // The sheet lies over the pages and the dots bar, so pinning or moving it moves neither.
                 ZStack(alignment: .bottom) {
                     VStack(spacing: 0) {
-                        if !spacesMode {
+                        if model.mode == WindowMode.agents {
                             ModeBody(mode: model.mode)
+                        } else if model.mode == WindowMode.orchestrator && model.activeSpace == nil {
+                            NoOrchestrator(model: model)
                         } else if panes.isEmpty && pages.tray.isEmpty {
                             ContentUnavailableView(pinnedIDs.isEmpty ? connectionText : "Every pane is pinned", systemImage: "rectangle.on.rectangle")
                                 .accessibilityIdentifier("no panes")
@@ -234,13 +236,16 @@ struct SpaceCarousel: View {
         if ids.isEmpty, page == Pages.trayID { page = model.activeSpace?.focus }
     }
 
+    /// Whether the body shows a space's pages: Spaces mode's space, or the Orchestrator space in Orchestrator mode.
+    private var showsPages: Bool { model.mode != WindowMode.agents && model.activeSpace != nil }
+
     private func trayNeedsYou(_ tray: [(id: String, kind: PaneKind)]) -> Bool {
         tray.contains { if case .needsYou = model.paneStatus($0.id) { true } else { false } }
     }
 
     private func topBar(pages: Pages, dots: Dots, landscape: Bool) -> some View {
         let panes = pages.panes
-        let spacesMode = model.mode == WindowMode.spaces
+        let spacesMode = showsPages
         return HStack {
             TitleButton(model: model, open: $titleOpen)
                 // A sheet, not a popover: a popover is as tall as its content and clips it, so a
@@ -346,8 +351,8 @@ struct SpaceCarousel: View {
 
     private func openSettings(_ tab: SettingsTab) {
         settingsTab = tab
-        if settingsProject == nil || !model.spaces.contains(where: { $0.id == settingsProject }) {
-            settingsProject = model.activeSpace?.id
+        if settingsProject == nil || !model.listedSpaces.contains(where: { $0.id == settingsProject }) {
+            settingsProject = model.listedSpaces.first { $0.id == model.view.space }?.id ?? model.listedSpaces.first?.id
         }
         settingsOpen = true
     }
@@ -533,8 +538,7 @@ private struct ModeButton: View {
     }
 }
 
-/// What a mode other than Spaces shows in place of the pages, as the Mac's title row mode does
-/// until that mode draws its own surface.
+/// What Agents mode shows in place of the pages until that mode draws its own surface.
 private struct ModeBody: View {
     let mode: String
 
@@ -543,13 +547,45 @@ private struct ModeBody: View {
         VStack(spacing: 6) {
             Image(systemName: entry.symbol).font(.system(size: 28)).foregroundStyle(.secondary)
             Text(entry.title).font(.headline)
-            Text(mode == WindowMode.orchestrator ? "The orchestrator's chat will be here." : "Every agent of the session will be here.")
+            Text("Every agent of the session will be here.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("mode body")
+    }
+}
+
+/// Orchestrator mode's body while wheeld has no Orchestrator space: Start starts the global orchestrator, and wheeld
+/// makes the space it runs in. Start is disabled while a start is in flight or the running wheeld lacks the op.
+private struct NoOrchestrator: View {
+    let model: PhoneModel
+
+    var body: some View {
+        let entry = WindowMode.entry(WindowMode.orchestrator)
+        let waiting = model.orchestratorStartReq != nil
+        VStack(spacing: 6) {
+            Image(systemName: entry.symbol).font(.system(size: 28)).foregroundStyle(.secondary)
+            Text(entry.title).font(.headline)
+            Text("No orchestrator yet")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Button(waiting ? "Starting…" : "Start") { model.startOrchestrator() }
+                .buttonStyle(.bordered)
+                .disabled(waiting || !model.canStartOrchestrator)
+                .accessibilityIdentifier("orchestrator start")
+            // Reserved, so a refusal coming or going moves no control.
+            Text(model.orchestratorRefused ?? " ")
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+                .accessibilityIdentifier("orchestrator refused")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("no orchestrator")
     }
 }
 

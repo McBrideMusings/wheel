@@ -47,10 +47,13 @@ final class ModeUITests: XCTestCase {
                 XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
                 XCTAssertFalse(body.exists, "Spaces shows the pages")
             } else {
-                XCTAssertTrue(body.waitForExistence(timeout: 5), "\(title) shows its body")
+                // With no Orchestrator space in this fixture, Orchestrator mode says so and offers Start.
+                let shown = id == "orchestrator" ? app.descendants(matching: .any)["no orchestrator"] : body
+                XCTAssertTrue(shown.waitForExistence(timeout: 5), "\(title) shows its body")
                 shot(id)
             }
-            XCTAssertEqual(rects(id), launch, "no control moved in \(title)")
+            // Orchestrator mode's title names another space, so only its width may follow that name.
+            XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
             sync(id)
         }
 
@@ -82,6 +85,15 @@ final class ModeUITests: XCTestCase {
     /// A row of the open mode menu; the eye is also labelled Agents, so it is left out by its id.
     private func menuRow(_ title: String) -> XCUIElement {
         app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != 'agents' AND identifier != 'mode'", title)).firstMatch
+    }
+
+    /// The rect lines with the title's width left out: the title is the shown space's name, and holds its place.
+    private func placed(_ lines: String) -> String {
+        lines.split(separator: "\n").map { line -> String in
+            var f = line.split(separator: " ").map(String.init)
+            if f.first == "title", f.count == 5 { f[3] = "-" }
+            return f.joined(separator: " ")
+        }.joined(separator: "\n")
     }
 
     /// Each control's frame, one `<id> x y w h` line per control, written to the shots folder.

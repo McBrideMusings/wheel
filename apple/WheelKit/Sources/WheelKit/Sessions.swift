@@ -16,6 +16,13 @@ public struct SessionInfo: Decodable, Sendable, Equatable, Identifiable {
 }
 
 extension Array where Element == SessionInfo {
+    /// Every session but the one holding the Orchestrator space (`SpaceInfo.orchestrator`), which wheeld keeps alone
+    /// in a session of its own: Spaces mode lists, shows and falls back to only these.
+    public func leavingOut(orchestratorOf spaces: [SpaceInfo]) -> [SessionInfo] {
+        let orchestrators = Set(spaces.filter(\.orchestrator).map(\.id))
+        return filter { !$0.spaces.contains(where: orchestrators.contains) }
+    }
+
     /// The session holding `space`.
     public func session(of space: String) -> SessionInfo? { first { $0.spaces.contains(space) } }
 }

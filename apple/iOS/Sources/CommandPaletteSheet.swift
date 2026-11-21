@@ -18,7 +18,7 @@ enum PhoneCommands {
     /// agent pane needs an agent installed on the Mac.
     @MainActor static func palette(for model: PhoneModel, query: String = "") -> CommandPalette {
         var palette = CommandPalette()
-        let spaces = model.spaces
+        let spaces = model.listedSpaces
         var actions: [PaletteAction] = []
         if let space = model.activeSpace {
             actions.append(PaletteAction(id: renameID, title: "Rename space…"))

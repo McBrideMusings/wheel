@@ -32,10 +32,16 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     /// Each mirror pane drawn as its source, by the mirror's id (`resolvingMirrors`). Empty as
     /// decoded: a mirror's source can sit in another space.
     public var mirrors: [String: MirrorShown] = [:]
+    /// The Orchestrator space (ADR-0054): the one space, in a session of its own, where global
+    /// orchestrators run. Orchestrator mode shows it, and no Spaces mode list holds it.
+    public var orchestrator: Bool
+    /// The scope of each orchestrator pane (`space` or `global`), by pane id.
+    public var orchestratorScopes: [String: String]
 
     public init(id: String, name: String, cwd: String, root: Node, focus: String,
                 status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:], background: Bool = false,
-                popped: [Node] = [], backgrounded: [Node] = [], paneNames: [String: String] = [:]) {
+                popped: [Node] = [], backgrounded: [Node] = [], paneNames: [String: String] = [:],
+                orchestrator: Bool = false, orchestratorScopes: [String: String] = [:]) {
         self.id = id
         self.name = name
         self.cwd = cwd
@@ -47,9 +53,11 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         self.popped = popped
         self.backgrounded = backgrounded
         self.paneNames = paneNames
+        self.orchestrator = orchestrator
+        self.orchestratorScopes = orchestratorScopes
     }
 
-    private enum K: String, CodingKey { case id, name, cwd, root, status, background, popped, backgrounded }
+    private enum K: String, CodingKey { case id, name, cwd, root, status, background, popped, backgrounded, orchestrator }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -68,7 +76,9 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         }
         paneStatuses = fields.statuses
         paneNames = fields.names
+        orchestratorScopes = fields.orchestrators
         background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? false
+        orchestrator = try c.decodeIfPresent(Bool.self, forKey: .orchestrator) ?? false
     }
 }
 
@@ -78,6 +88,11 @@ public enum PaneSite: String, Sendable, Equatable {
 }
 
 extension SpaceInfo {
+    /// The first global orchestrator pane the space holds, in `allPanes` order.
+    public var firstGlobalOrchestrator: String? {
+        allPanes.first { orchestratorScopes[$0.id] == "global" }?.id
+    }
+
     /// Every pane the space holds, wherever it is: the grid, each popped tree, then the tray.
     public var allPanes: [(id: String, kind: PaneKind)] {
         root.panes + popped.flatMap(\.panes) + backgrounded.flatMap(\.panes)
@@ -123,12 +138,13 @@ extension SpaceInfo {
     public var firstPaneKind: PaneKind { root.panes.first?.kind ?? .empty }
 }
 
-/// The `status`, `pane_name` and `pane_title` fields of a split tree, by pane id, read apart from the layout.
+/// The `status`, `pane_name`, `pane_title` and `orchestrator` fields of a split tree, by pane id, read apart from the layout.
 private struct LeafFields: Decodable {
     var statuses: [String: PaneStatus] = [:]
     var names: [String: String] = [:]
+    var orchestrators: [String: String] = [:]
 
-    private enum K: String, CodingKey { case id, status, a, b, pane_name, pane_title }
+    private enum K: String, CodingKey { case id, status, a, b, pane_name, pane_title, orchestrator }
 
     init() {}
 
@@ -140,6 +156,9 @@ private struct LeafFields: Decodable {
         let named = (try? c.decodeIfPresent(String.self, forKey: .pane_name)) ?? nil
         let titled = (try? c.decodeIfPresent(String.self, forKey: .pane_title)) ?? nil
         if let name = named ?? titled { names[try c.decode(String.self, forKey: .id)] = name }
+        if let scope = (try? c.decodeIfPresent(String.self, forKey: .orchestrator)) ?? nil {
+            orchestrators[try c.decode(String.self, forKey: .id)] = scope
+        }
         for side in [K.a, K.b] {
             if let tree = try c.decodeIfPresent(LeafFields.self, forKey: side) { merge(tree) }
         }
@@ -148,6 +167,7 @@ private struct LeafFields: Decodable {
     mutating func merge(_ other: LeafFields) {
         statuses.merge(other.statuses) { $1 }
         names.merge(other.names) { $1 }
+        orchestrators.merge(other.orchestrators) { $1 }
     }
 }
 

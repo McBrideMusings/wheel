@@ -18,11 +18,16 @@ struct TitleButton: View {
     let model: PhoneModel
     @Binding var open: Bool
 
+    /// The shown space's name; in Orchestrator mode before wheeld has made its space, the mode's.
+    private var name: String {
+        model.activeSpace?.name ?? (model.mode == WindowMode.orchestrator ? WindowMode.entry(WindowMode.orchestrator).title : "No space")
+    }
+
     var body: some View {
         let waiting = model.needsYouCount
         Button { open = true } label: {
             HStack(spacing: 4) {
-                Text(model.activeSpace?.name ?? "No space").font(.headline).lineLimit(1).truncationMode(.middle)
+                Text(name).font(.headline).lineLimit(1).truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
                 Text(waiting > 0 ? "\(waiting)" : "")
@@ -37,7 +42,7 @@ struct TitleButton: View {
         .buttonStyle(.plain)
         .tint(.primary)
         .accessibilityIdentifier("title")
-        .accessibilityLabel("\(model.activeSpace?.name ?? "No space"), session \(model.shownSession?.name ?? "none")")
+        .accessibilityLabel("\(name), session \(model.shownSession?.name ?? "none")")
         .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
     }
 }
