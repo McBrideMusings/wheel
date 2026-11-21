@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["proto", "daemon", "cli", "plugins/wheelhouse", "plugins/runner", "plugins/turn-feed", "sdk/rust", "workspace-hack"]
+members = ["proto", "diagrams", "daemon", "cli", "plugins/wheelhouse", "plugins/runner", "plugins/turn-feed", "sdk/rust", "workspace-hack"]
 
 [workspace.package]
 version = "0.1.0"

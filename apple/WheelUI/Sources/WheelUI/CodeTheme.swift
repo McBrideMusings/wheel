@@ -51,6 +51,25 @@ extension ChatAppearance.CodeTheme {
     var background: DynamicColor { DynamicColor(light: Color(hex: light.background), dark: Color(hex: dark.background)) }
     var dim: DynamicColor { DynamicColor(light: Color(hex: light.dim), dark: Color(hex: dark.dim)) }
 
+    /// The colours wheeld lays a Mermaid diagram out in for this theme: its ground, text and dim
+    /// colours, with node fills and borders tinted from its function colour.
+    func diagramPalette(dark: Bool) -> DiagramPalette {
+        let p = dark ? self.dark : light
+        func mix(_ a: UInt32, _ b: UInt32, _ t: Double) -> UInt32 {
+            func channel(_ shift: UInt32) -> UInt32 {
+                let x = Double((a >> shift) & 0xff), y = Double((b >> shift) & 0xff)
+                return UInt32((x + (y - x) * t).rounded()) << shift
+            }
+            return channel(16) | channel(8) | channel(0)
+        }
+        func hex(_ c: UInt32) -> String { String(format: "#%06x", c) }
+        return DiagramPalette(
+            background: hex(p.background), fill: hex(mix(p.background, p.function, 0.16)),
+            fillAlt: hex(mix(p.background, p.plain, 0.12)), ground: hex(mix(p.background, p.plain, 0.05)),
+            border: hex(p.function), clusterBorder: hex(mix(p.background, p.dim, 0.6)),
+            line: hex(p.dim), text: hex(p.plain))
+    }
+
     /// The theme Textual colours a block's tokens with.
     var highlighter: StructuredText.HighlighterTheme {
         func pick(_ key: KeyPath<CodePalette, UInt32>) -> DynamicColor {

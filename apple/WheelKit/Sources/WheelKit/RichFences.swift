@@ -39,6 +39,13 @@ public enum DiffFence {
     }
 }
 
+public enum MermaidFence {
+    /// Whether a fence's language hint names Mermaid.
+    public static func handles(_ language: String?) -> Bool {
+        language?.trimmingCharacters(in: .whitespaces).lowercased() == "mermaid"
+    }
+}
+
 public enum SVGFence {
     /// Whether a fence's language hint names SVG.
     public static func handles(_ language: String?) -> Bool { language?.lowercased() == "svg" }

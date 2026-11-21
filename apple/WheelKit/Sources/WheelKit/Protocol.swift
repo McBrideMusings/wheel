@@ -54,6 +54,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// The bytes of an image file on the daemon's machine (png, jpg, jpeg, gif or webp, up to 20 MB), so a
     /// phone can draw it in a reply; the daemon answers `fileImage`.
     case fileImage(req: UInt64?, path: String, cwd: String?)
+    /// A Mermaid diagram laid out in `palette` on the daemon's machine, whose fonts the layout
+    /// measures with, and drawn as PNG at `scale` pixels per point; the daemon answers `diagram`.
+    case diagram(req: UInt64?, source: String, palette: DiagramPalette, scale: Double)
     /// Split `pane` and show a page in a browser pane, or an artifact in a web pane, on its `dir`
     /// side; the daemon answers `created` with the new pane's id.
     case paneOpen(req: UInt64?, pane: String, dir: Dir, url: String?, artifact: String?, focus: Bool)
@@ -292,6 +295,8 @@ public enum ClientMsg: Sendable, Equatable {
         case let .fileImage(req, path, cwd):
             o = ["op": "file_image", "path": path]; put(req)
             if let cwd { o["cwd"] = cwd }
+        case let .diagram(req, source, palette, scale):
+            o = ["op": "diagram", "source": source, "palette": palette.json, "scale": scale]; put(req)
         case let .paneOpen(req, pane, dir, url, artifact, focus):
             o = ["op": "pane_open", "pane": pane, "dir": dir.rawValue]; put(req)
             if let url { o["url"] = url }
@@ -1391,6 +1396,8 @@ public enum ServerMsg: Sendable {
     /// An image file's bytes, in reply to `fileImage`: `found` is false when there is no such file or it is not
     /// a small image, and `error` says why for one that exists.
     case fileImage(req: UInt64, image: FileImage)
+    /// A Mermaid diagram as PNG with its natural size, or why it did not lay out, in reply to `diagram`.
+    case diagram(req: UInt64, drawing: DiagramDrawing)
     /// The homes found for an agent and the reading of the path asked about, in reply to `agentHomes`.
     case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)
     /// A space's title-row buttons, in reply to `titleButtonLs`.
@@ -1436,7 +1443,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, stream, socket, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, compat, ops, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, origin, session, artifact
+        case ev, buttons, req, stream, socket, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, compat, ops, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, origin, session, artifact, png, width, height
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1592,6 +1599,12 @@ extension ServerMsg: Decodable {
             self = .filePeek(req: try c.decode(UInt64.self, forKey: .req), peek: FilePeek(
                 path: try c.decode(String.self, forKey: .path), found: try c.decode(Bool.self, forKey: .found),
                 start: try c.decode(Int.self, forKey: .start), lines: try c.decode([String].self, forKey: .lines),
+                error: try c.decodeIfPresent(String.self, forKey: .error)))
+        case "diagram":
+            self = .diagram(req: try c.decode(UInt64.self, forKey: .req), drawing: DiagramDrawing(
+                png: try c.decodeIfPresent(String.self, forKey: .png).flatMap { Data(base64Encoded: $0) },
+                width: try c.decodeIfPresent(Double.self, forKey: .width) ?? 0,
+                height: try c.decodeIfPresent(Double.self, forKey: .height) ?? 0,
                 error: try c.decodeIfPresent(String.self, forKey: .error)))
         case "file_image":
             self = .fileImage(req: try c.decode(UInt64.self, forKey: .req), image: FileImage(

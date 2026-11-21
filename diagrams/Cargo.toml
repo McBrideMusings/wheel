@@ -1,0 +1,12 @@
+[package]
+name = "wheel-diagrams"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Rasterizing to PNG, for wheeld's `diagram` op; the GPUI client draws the SVG itself.
+png = ["dep:resvg"]
+
+[dependencies]
+mermaid-rs-renderer = { version = "0.3", default-features = false }
+resvg = { version = "0.47", optional = true }

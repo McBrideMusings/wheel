@@ -1,4 +1,4 @@
-//! A reply's Mermaid diagrams: a ```mermaid block is laid out as SVG by `mermaid-rs-renderer`
+//! A reply's Mermaid diagrams: a ```mermaid block is laid out as SVG by `wheel-diagrams`
 //! and drawn to a picture by GPUI's SVG renderer once per source, in the client, in the chat's palette, and shown in the code block's frame
 //! in place of its source. A block that does not parse keeps its source with the parse error under
 //! it. `/state` lists every diagram a reply drew under `chat_diagrams`, by agent.
@@ -26,48 +26,26 @@ pub struct Diagrams {
     shown: RefCell<HashMap<String, Shown>>,
 }
 
-/// Whether a fenced block's language names Mermaid.
-pub fn is_mermaid(language: Option<&str>) -> bool {
-    language.is_some_and(|l| l.trim().eq_ignore_ascii_case("mermaid"))
-}
+pub use wheel_diagrams::is_mermaid;
 
-/// The chat's palette (`block_el`'s colours) as a Mermaid theme.
-fn theme() -> mermaid_rs_renderer::Theme {
-    let mut t = mermaid_rs_renderer::Theme::dark();
-    t.font_family = "-apple-system, 'Helvetica Neue', Helvetica, sans-serif".into();
-    t.font_size = 14.;
-    t.background = format!("#{CODE_BG:06x}");
-    t.primary_color = "#1a2621".into();
-    t.primary_text_color = "#d9e8e1".into();
-    t.text_color = "#d9e8e1".into();
-    t.primary_border_color = "#7fb89a".into();
-    t.line_color = "#8fa89b".into();
-    t.secondary_color = "#22302a".into();
-    t.tertiary_color = "#141d19".into();
-    t.edge_label_background = "#22302a".into();
-    t.cluster_background = "#141d19".into();
-    t.cluster_border = "#3d5247".into();
-    t.sequence_actor_fill = "#1a2621".into();
-    t.sequence_actor_border = "#7fb89a".into();
-    t.sequence_actor_line = "#8fa89b".into();
-    t.sequence_note_fill = "#22302a".into();
-    t.sequence_note_border = "#3d5247".into();
-    t.pie_title_text_color = "#d9e8e1".into();
-    t.pie_section_text_color = "#d9e8e1".into();
-    t.pie_legend_text_color = "#d9e8e1".into();
-    t
+/// The chat's palette (`block_el`'s colours).
+fn palette() -> wheel_diagrams::Palette {
+    let c = |s: &str| s.to_owned();
+    wheel_diagrams::Palette {
+        background: format!("#{CODE_BG:06x}"),
+        fill: c("#1a2621"),
+        fill_alt: c("#22302a"),
+        ground: c("#141d19"),
+        border: c("#7fb89a"),
+        cluster_border: c("#3d5247"),
+        line: c("#8fa89b"),
+        text: c("#d9e8e1"),
+    }
 }
 
 /// `source` laid out as SVG with its natural size, or the parse error.
 pub fn layout(source: &str) -> Result<(String, f32, f32), String> {
-    let options = mermaid_rs_renderer::RenderOptions { theme: theme(), layout: Default::default() };
-    let parsed = mermaid_rs_renderer::parse_mermaid_strict(source).map_err(|e| e.to_string())?;
-    let layout = mermaid_rs_renderer::compute_layout(&parsed.graph, &options.theme, &options.layout);
-    let size = mermaid_rs_renderer::measure_svg_dimensions(&layout, &options.layout, None);
-    if !(size.width > 0. && size.height > 0.) {
-        return Err("The diagram is empty".into());
-    }
-    Ok((mermaid_rs_renderer::render_svg(&layout, &options.theme, &options.layout), size.width, size.height))
+    wheel_diagrams::layout(source, &palette())
 }
 
 /// `source` laid out and drawn to a picture now, so its first frame already shows it.

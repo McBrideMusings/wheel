@@ -26,6 +26,8 @@ public final class ChatLinkResolver {
     @ObservationIgnored public var paneChip: (String) -> String? = { _ in nil }
     /// Send a request; returns its id, or nil while the client is offline.
     @ObservationIgnored public var request: (_ make: (UInt64) -> ClientMsg) -> UInt64? = { _ in nil }
+    /// Whether the connected wheeld handles the op named.
+    @ObservationIgnored public var offers: (String) -> Bool = { _ in false }
     /// Do what a click on a link asks, for the chat of `agent`.
     @ObservationIgnored public var perform: (_ action: Action, _ agent: String) -> Void = { _, _ in }
 
@@ -114,6 +116,14 @@ public final class ChatLinkResolver {
     @ObservationIgnored private var waitingPeek: [UInt64: (key: String, then: (FilePeek) -> Void)] = [:]
     @ObservationIgnored private var waitingArtifacts: [UInt64: String] = [:]
     @ObservationIgnored private var waitingImage: [UInt64: CheckedContinuation<FileImage, Never>] = [:]
+    @ObservationIgnored private var waitingDiagram: [UInt64: CheckedContinuation<DiagramDrawing?, Never>] = [:]
+    /// wheeld's answer for each (palette, source, scale) asked, so a redrawn reply asks once.
+    @ObservationIgnored private var diagrams: [DiagramKey: DiagramDrawing] = [:]
+    private struct DiagramKey: Hashable {
+        let palette: DiagramPalette
+        let source: String
+        let scale: Double
+    }
 
     public init() {}
 
@@ -250,6 +260,28 @@ public final class ChatLinkResolver {
         }
     }
 
+    /// The Mermaid diagram `source` laid out by wheeld in `palette` and drawn at `scale` pixels per
+    /// point; nil when the connected wheeld
+    /// has no `diagram` op, is offline or does not answer in 20 seconds, so the block stays code.
+    func diagram(_ source: String, palette: DiagramPalette, scale: Double) async -> DiagramDrawing? {
+        let key = DiagramKey(palette: palette, source: source, scale: scale)
+        if let known = diagrams[key] { return known }
+        guard offers("diagram") else { return nil }
+        let drawing: DiagramDrawing? = await withCheckedContinuation { continuation in
+            let sent = request { .diagram(req: $0, source: source, palette: palette, scale: scale) }
+            guard let sent else { return continuation.resume(returning: nil) }
+            waitingDiagram[sent] = continuation
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(20))
+                self?.waitingDiagram.removeValue(forKey: sent)?.resume(returning: nil)
+            }
+        }
+        guard let drawing else { return nil }
+        if diagrams.count > 64 { diagrams.removeAll() }
+        diagrams[key] = drawing
+        return drawing
+    }
+
     /// The image open at full size over a reply: the reply's row and the picture.
     public struct FullImage: Identifiable, Equatable, Sendable {
         public let row: Int
@@ -272,6 +304,10 @@ public final class ChatLinkResolver {
     /// Take the daemon's answer to a request this resolver made; false for any other message.
     public func received(_ message: ServerMsg) -> Bool {
         switch message {
+        case let .diagram(req, drawing):
+            guard let waiting = waitingDiagram.removeValue(forKey: req) else { return false }
+            waiting.resume(returning: drawing)
+            return true
         case let .fileImage(req, image):
             guard let waiting = waitingImage.removeValue(forKey: req) else { return false }
             waiting.resume(returning: image)

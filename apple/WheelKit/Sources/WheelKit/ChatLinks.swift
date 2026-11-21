@@ -219,6 +219,45 @@ public struct FilePeek: Sendable, Equatable {
     }
 }
 
+/// The colours a `diagram` is drawn in, each `#rrggbb`: the block's ground, a node's fill, the
+/// fill of edge labels and notes, a subgraph's fill, a node's border, a subgraph's border, edges,
+/// and labels.
+public struct DiagramPalette: Sendable, Hashable {
+    public var background, fill, fillAlt, ground, border, clusterBorder, line, text: String
+
+    public init(background: String, fill: String, fillAlt: String, ground: String, border: String,
+                clusterBorder: String, line: String, text: String) {
+        self.background = background
+        self.fill = fill
+        self.fillAlt = fillAlt
+        self.ground = ground
+        self.border = border
+        self.clusterBorder = clusterBorder
+        self.line = line
+        self.text = text
+    }
+
+    var json: [String: Any] {
+        ["background": background, "fill": fill, "fill_alt": fillAlt, "ground": ground, "border": border,
+         "cluster_border": clusterBorder, "line": line, "text": text]
+    }
+}
+
+/// A Mermaid diagram as `diagram` answered: the PNG and its natural size in points, or the error.
+public struct DiagramDrawing: Sendable, Equatable {
+    public var png: Data?
+    public var width: Double
+    public var height: Double
+    public var error: String?
+
+    public init(png: Data? = nil, width: Double = 0, height: Double = 0, error: String? = nil) {
+        self.png = png
+        self.width = width
+        self.height = height
+        self.error = error
+    }
+}
+
 /// An image file's bytes, as `file_image` answered.
 public struct FileImage: Sendable, Equatable {
     public var path: String

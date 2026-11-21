@@ -1499,6 +1499,7 @@ final class PhoneModel {
             client.send(make(req))
             return req
         }
+        resolver.offers = { [unowned self] op in serverOffer.has(op) }
         resolver.perform = { [unowned self] action, agent in performChatLink(action, agent: agent) }
         return resolver
     }()

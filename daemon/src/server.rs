@@ -1962,6 +1962,11 @@ async fn handle(
             .ok(),
             None => None,
         },
+        ClientMsg::Diagram { req, source, palette, scale } => match req {
+            // Laying out measures every label against the system fonts: off the async threads.
+            Some(req) => tokio::task::spawn_blocking(move || diagram(req, &source, palette, scale)).await.ok(),
+            None => None,
+        },
         ClientMsg::PaneOpen {
             req,
             pane,
@@ -3900,5 +3905,31 @@ mod tests {
         }
         tokio::time::timeout(Duration::from_secs(5), forward).await.unwrap().unwrap();
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+/// Answer `diagram`: `source` laid out in `palette` and drawn at `scale`, or why it did not lay out.
+fn diagram(req: u64, source: &str, p: wheel_proto::DiagramPalette, scale: f32) -> ServerMsg {
+    let palette = wheel_diagrams::Palette {
+        background: p.background,
+        fill: p.fill,
+        fill_alt: p.fill_alt,
+        ground: p.ground,
+        border: p.border,
+        cluster_border: p.cluster_border,
+        line: p.line,
+        text: p.text,
+    };
+    let drawn = wheel_diagrams::layout(source, &palette)
+        .and_then(|(svg, width, height)| Ok((wheel_diagrams::png(&svg, scale)?, width, height)));
+    match drawn {
+        Ok((png, width, height)) => {
+            tracing::info!(req, bytes = source.len(), png = png.len(), width, height, "diagram");
+            ServerMsg::Diagram { req, png: Some(encode_bytes(&png)), width, height, error: None }
+        }
+        Err(error) => {
+            tracing::info!(req, bytes = source.len(), error, "diagram did not lay out");
+            ServerMsg::Diagram { req, png: None, width: 0., height: 0., error: Some(error) }
+        }
     }
 }

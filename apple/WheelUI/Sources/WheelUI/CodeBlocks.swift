@@ -64,8 +64,9 @@ public final class CodeBlockRegistry {
         /// False when Textual's proxy gave no code, so `text` is empty because the read failed.
         public let readable: Bool
         /// How the block draws: `code`, `diff`, `svg` (the image) / `svg-source` (the SVG did not
-        /// parse as an image, so its source shows), or `chart` / `chart-source` (the chart fence did
-        /// not parse, so its source shows with the reason).
+        /// parse as an image, so its source shows), `chart` / `chart-source` (the chart fence did
+        /// not parse, so its source shows with the reason), or `mermaid` / `mermaid-source` (the
+        /// diagram did not lay out, so its source shows with the error).
         public let drawn: String
         /// Presses the block's copy button.
         public let press: () -> Void
@@ -116,6 +117,12 @@ private struct CodeBlockView: View {
     let configuration: StructuredText.CodeBlockStyleConfiguration
     @State private var id = UUID()
     @Environment(\.drawnTextSink) private var sink
+    @Environment(\.chatLinks) private var links
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.displayScale) private var displayScale
+    /// wheeld's drawing of the block's Mermaid source and its decoded picture; nil until it
+    /// answers, or when it cannot.
+    @State private var mermaid: (drawing: DiagramDrawing, image: PlatformImage?)?
     @State private var copied = false
     @State private var labelWidth: CGFloat = 0
     @State private var heights: [Int: CGFloat] = [:]
@@ -169,9 +176,32 @@ private struct CodeBlockView: View {
         return parsed
     }
 
-    /// `code`, `diff`, `svg`, `chart`, or `svg-source` / `chart-source` when the fence could not be drawn.
+    /// The block's Mermaid source once the reply has settled, so a fence still streaming stays code.
+    private var mermaidSource: String? {
+        guard MermaidFence.handles(language), settled, let read, !read.isEmpty else { return nil }
+        return read
+    }
+
+    /// The diagram wheeld drew, with its natural size in points; nil before wheeld answers or when
+    /// it gave an error.
+    private var mermaidImage: (image: Image, width: CGFloat, height: CGFloat)? {
+        guard mermaidSource != nil, let mermaid, let image = mermaid.image else { return nil }
+        return (Image(platform: image), mermaid.drawing.width, mermaid.drawing.height)
+    }
+
+    /// Why wheeld's answer draws no diagram.
+    private var mermaidError: String? {
+        guard mermaidSource != nil, let mermaid else { return nil }
+        if let error = mermaid.drawing.error { return error }
+        return mermaidImage == nil ? "The diagram's PNG did not load" : nil
+    }
+
+    /// `code`, `diff`, `svg`, `chart`, `mermaid`, or `svg-source` / `chart-source` / `mermaid-source`
+    /// when the fence could not be drawn.
     private var drawn: String {
         if diff != nil { return "diff" }
+        if mermaidImage != nil { return "mermaid" }
+        if mermaidError != nil { return "mermaid-source" }
         if let chart { return (try? chart.get()) == nil ? "chart-source" : "chart" }
         if SVGFence.handles(language) { return svgImage == nil ? "svg-source" : "svg" }
         return "code"
@@ -204,51 +234,72 @@ private struct CodeBlockView: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 2)
-            Overflow {
-                HStack(alignment: .top, spacing: 12) {
-                    if look.lineNumbers && lines > 3 && drawn == "code" {
-                        if look.codeWrap == .wrap {
-                            // A wrapped line is taller than one row, so each number takes the
-                            // height its line measures at the label's width (see `measuring`).
-                            VStack(alignment: .trailing, spacing: 0) {
-                                ForEach(0..<lines, id: \.self) { index in
-                                    Text(String(index + 1)).customAttribute(ChatNonProse())
-                                        .font(look.codeFont(look.codeSize))
-                                        .foregroundStyle(theme.dim)
-                                        .frame(height: (heights[index] ?? 0) + spacing, alignment: .top)
+            // A diagram scales down to the block's width, so it sits outside the code's horizontal scroller.
+            if let mermaidImage {
+                mermaidImage.image.resizable().scaledToFit()
+                    .frame(maxWidth: mermaidImage.width, maxHeight: min(mermaidImage.height, 420))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("chat-mermaid")
+                    .onGeometryChange(for: CGSize.self, of: \.size) {
+                        UILog.info("mermaid in \(agent) shown \(Int($0.width))x\(Int($0.height))")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                    .padding(.bottom, 10)
+            } else {
+                Overflow {
+                    HStack(alignment: .top, spacing: 12) {
+                        if look.lineNumbers && lines > 3 && drawn == "code" {
+                            if look.codeWrap == .wrap {
+                                // A wrapped line is taller than one row, so each number takes the
+                                // height its line measures at the label's width (see `measuring`).
+                                VStack(alignment: .trailing, spacing: 0) {
+                                    ForEach(0..<lines, id: \.self) { index in
+                                        Text(String(index + 1)).customAttribute(ChatNonProse())
+                                            .font(look.codeFont(look.codeSize))
+                                            .foregroundStyle(theme.dim)
+                                            .frame(height: (heights[index] ?? 0) + spacing, alignment: .top)
+                                    }
                                 }
+                            } else {
+                                Text((1...lines).map(String.init).joined(separator: "\n")).customAttribute(ChatNonProse())
+                                    .font(look.codeFont(look.codeSize))
+                                    .lineSpacing(spacing)
+                                    .multilineTextAlignment(.trailing)
+                                    .foregroundStyle(theme.dim)
                             }
+                        }
+                        if let diff {
+                            DiffFenceView(lines: diff, look: look)
+                        } else if let svgImage {
+                            svgImage.resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+                        } else if case .success(let chart) = chart {
+                            ChartFenceView(chart: chart).frame(height: 200)
                         } else {
-                            Text((1...lines).map(String.init).joined(separator: "\n")).customAttribute(ChatNonProse())
+                            configuration.label
                                 .font(look.codeFont(look.codeSize))
-                                .lineSpacing(spacing)
-                                .multilineTextAlignment(.trailing)
-                                .foregroundStyle(theme.dim)
+                                .textual.lineSpacing(.fontScaled(0.3))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .onGeometryChange(for: CGFloat.self, of: \.size.width) { labelWidth = $0 }
+                                .modifier(DrawnBlock(id: id, sink: look.codeWrap == .scroll ? sink : nil))
+                                .background(alignment: .topLeading) {
+                                    if look.lineNumbers && lines > 3 && look.codeWrap == .wrap {
+                                        measuring(lineTexts, spacing: spacing)
+                                    }
+                                }
                         }
                     }
-                    if let diff {
-                        DiffFenceView(lines: diff, look: look)
-                    } else if let svgImage {
-                        svgImage.resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
-                    } else if case .success(let chart) = chart {
-                        ChartFenceView(chart: chart).frame(height: 200)
-                    } else {
-                        configuration.label
-                            .font(look.codeFont(look.codeSize))
-                            .textual.lineSpacing(.fontScaled(0.3))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .onGeometryChange(for: CGFloat.self, of: \.size.width) { labelWidth = $0 }
-                            .modifier(DrawnBlock(id: id, sink: look.codeWrap == .scroll ? sink : nil))
-                            .background(alignment: .topLeading) {
-                                if look.lineNumbers && lines > 3 && look.codeWrap == .wrap {
-                                    measuring(lineTexts, spacing: spacing)
-                                }
-                            }
-                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                    .padding(.bottom, 10)
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
-                .padding(.bottom, 10)
+            }
+            if let mermaidError {
+                Text("Mermaid could not draw this: \(mermaidError)").customAttribute(ChatNonProse())
+                    .font(look.meta)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
             }
             if case .failure(let error) = chart {
                 Text("The chart could not draw: \(error.reason)").customAttribute(ChatNonProse())
@@ -272,6 +323,12 @@ private struct CodeBlockView: View {
         .onAppear { register(code) }
         .onChange(of: code) { register(code) }
         .onChange(of: settled) { register(code) }
+        .task(id: mermaidSource.map { "\(scheme == .dark) \(displayScale)\u{0}\($0)" }) {
+            guard let source = mermaidSource else { return mermaid = nil }
+            let drawing = await links?.diagram(source, palette: look.codeTheme.diagramPalette(dark: scheme == .dark), scale: displayScale)
+            mermaid = drawing.map { ($0, $0.png.flatMap(PlatformImage.init(data:))) }
+            register(code)
+        }
         .onDisappear { CodeBlockRegistry.shared.remove(id) }
     }
 
@@ -301,6 +358,11 @@ private struct CodeBlockView: View {
         case .success(let c)?: UILog.info("chart in \(agent): \(c.mark), \(c.rows.count) rows")
         case .failure(let e)?: UILog.info("chart in \(agent) could not draw: \(e.reason)")
         case nil: break
+        }
+        if let mermaidImage {
+            UILog.info("mermaid in \(agent): drawn \(Int(mermaidImage.width))x\(Int(mermaidImage.height))")
+        } else if let mermaidError {
+            UILog.info("mermaid in \(agent) could not draw: \(mermaidError)")
         }
         CodeBlockRegistry.shared.set(id, agent: agent, language: language, text: code, readable: readable, drawn: drawn) {
             press(code)

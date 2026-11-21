@@ -26,11 +26,11 @@ platforms = [
 # Write out exact versions rather than a semver range. (Defaults to false.)
 # exact-versions = true
 
-# wheel-proto is also a path dependency of the GPUI client's workspace, and wheel-plugin-sdk of
+# wheel-proto and wheel-diagrams are also path dependencies of the GPUI client's workspace, and wheel-plugin-sdk of
 # plugins in other repos; a hack line in either would make those builds compile the daemon's
 # dependency tree (ADR-0020).
 [final-excludes]
-workspace-members = ["wheel-proto", "wheel-plugin-sdk"]
+workspace-members = ["wheel-proto", "wheel-diagrams", "wheel-plugin-sdk"]
 
 # ghostty-vt-sys's build script downloads Ghostty's source with ureq's native-tls; left in, that
 # feature would be unified into the ureq wheeld and wheel-runner link.

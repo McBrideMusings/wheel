@@ -593,6 +593,21 @@ impl ArtifactRef {
     }
 }
 
+/// The colours a `diagram` is drawn in, each `#rrggbb`: the block's ground, a node's fill, the
+/// fill of edge labels and notes, a subgraph's fill, a node's border, a subgraph's border, edges,
+/// and labels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagramPalette {
+    pub background: String,
+    pub fill: String,
+    pub fill_alt: String,
+    pub ground: String,
+    pub border: String,
+    pub cluster_border: String,
+    pub line: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -998,6 +1013,17 @@ pub enum ClientMsg {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unless: Option<String>,
+    },
+    /// A Mermaid diagram laid out in `palette` and drawn as PNG at `scale` pixels per point (1 to
+    /// 4), for a client that cannot lay one out itself (a phone: the layout measures labels with
+    /// the Mac's fonts). Replies `diagram`, with the picture and its natural size in points, or
+    /// `error` saying why the source did not lay out.
+    Diagram {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        source: String,
+        palette: DiagramPalette,
+        scale: f32,
     },
     /// Split `pane`, putting a new pane on its `dir` side that shows `url` in a browser pane, or
     /// the artifact `artifact` in a web pane. Give one. Replies `created` with the new pane's id.
@@ -2785,6 +2811,19 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// A Mermaid diagram as PNG (base64) with its natural size in points, in reply to `diagram`;
+    /// `error` (and no `png`) when the source did not lay out.
+    Diagram {
+        req: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        png: Option<String>,
+        #[serde(default)]
+        width: f32,
+        #[serde(default)]
+        height: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// The homes found for an agent and, when `agent_homes` named a path, that path's own
     /// reading, in reply to `agent_homes`. `error` says why the agent is not one wheel knows.
     AgentHomes {
@@ -3063,6 +3102,7 @@ impl ServerMsg {
             | ServerMsg::DirRoots { req, .. }
             | ServerMsg::FilePeek { req, .. }
             | ServerMsg::FileImage { req, .. }
+            | ServerMsg::Diagram { req, .. }
             | ServerMsg::AgentHomes { req, .. }
             | ServerMsg::Created { req, .. }
             | ServerMsg::Clients { req, .. }
